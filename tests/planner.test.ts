@@ -4,12 +4,14 @@ const {
   READ_ONLY_TOOLS,
   FORBIDDEN_WRITE_TOOLS,
   PLANNER_SUBAGENT_DEF,
-  getPlannerSystemPrompt,
-  getPlannerDefinition,
-  buildPlanningTaskPrompt
-} = require('../lib/planner');
+  ResolveSubagentUseCase,
+  FileConfigRepository
+} = require('../dist');
 
-describe('Planning Subagent Definition & Safety Guarantees', () => {
+const configRepo = new FileConfigRepository();
+const resolveUseCase = new ResolveSubagentUseCase(configRepo);
+
+describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => {
   test('PLANNER_SUBAGENT_DEF enforces physical write suppression', () => {
     assert.strictEqual(PLANNER_SUBAGENT_DEF.name, 'planner');
     assert.strictEqual(PLANNER_SUBAGENT_DEF.role, 'Architectural Planning Subagent');
@@ -26,7 +28,7 @@ describe('Planning Subagent Definition & Safety Guarantees', () => {
 
     for (const forbidden of FORBIDDEN_WRITE_TOOLS) {
       assert.strictEqual(
-        PLANNER_SUBAGENT_DEF.tools.includes(forbidden),
+        (PLANNER_SUBAGENT_DEF.tools as readonly string[]).includes(forbidden),
         false,
         `Forbidden write tool '${forbidden}' must not be present in planner toolset.`
       );
@@ -34,7 +36,7 @@ describe('Planning Subagent Definition & Safety Guarantees', () => {
   });
 
   test('getPlannerSystemPrompt returns comprehensive guidance with key architectural invariants', () => {
-    const prompt = getPlannerSystemPrompt();
+    const prompt = resolveUseCase.getPlannerSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 500);
     assert.ok(prompt.includes('AgyLoop Architectural Planning Subagent'));
     assert.ok(prompt.includes('Zero Source Code Modifications'));
@@ -45,31 +47,39 @@ describe('Planning Subagent Definition & Safety Guarantees', () => {
   });
 
   test('getPlannerDefinition integrates with config and resolves model tier', () => {
-    const defaultDef = getPlannerDefinition();
-    assert.strictEqual(defaultDef.name, 'planner');
-    assert.strictEqual(defaultDef.model, 'pro');
-    assert.strictEqual(defaultDef.capabilities.enable_write_tools, false);
-    assert.strictEqual(defaultDef.capabilities.enable_mcp_tools, true);
-    assert.ok(defaultDef.system_prompt.length > 0);
-
-    // Test with custom config override
     const customConfig = {
-      models: { planner: 'flash' },
-      options: { enableMcpInPlanner: false }
+      models: {
+        planner: 'gemini-3.5-pro',
+        implementer: 'inherit',
+        gate: 'flash_lite',
+        reviewer: 'flash'
+      },
+      options: {
+        commitAfter: false,
+        gateTimeoutSeconds: 300,
+        autoApproveInYolo: true,
+        enableMcpInPlanner: false
+      }
     };
-    const customDef = getPlannerDefinition(customConfig);
-    assert.strictEqual(customDef.model, 'flash');
-    assert.strictEqual(customDef.capabilities.enable_mcp_tools, false);
+
+    const def = resolveUseCase.execute({ customConfig });
+    assert.strictEqual(def.name, 'planner');
+    assert.strictEqual(def.model, 'pro');
+    assert.strictEqual(def.apiModel, 'gemini-3.5-pro');
+    assert.strictEqual(def.capabilities.enable_mcp_tools, false);
+    assert.strictEqual(def.capabilities.enable_write_tools, false);
+    assert.ok(def.tools.includes('view_file'));
+    assert.ok(def.tools.includes('grep_search'));
   });
 
   test('buildPlanningTaskPrompt formats execution directives and user instructions', () => {
-    const prompt = buildPlanningTaskPrompt({
-      userInstructions: 'Refactor database query optimization'
+    const prompt = resolveUseCase.buildPlanningTaskPrompt({
+      userInstructions: 'Refactor database client to use connection pooling.'
     });
 
-    assert.ok(prompt.includes('Task: Architectural Investigation & Plan Generation'));
-    assert.ok(prompt.includes('Read-Only'));
-    assert.ok(prompt.includes('Refactor database query optimization'));
-    assert.ok(prompt.includes('templates/implementation-plan.md'));
+    assert.ok(prompt.includes('# Task: Architectural Investigation & Plan Generation'));
+    assert.ok(prompt.includes('Operating Constraints:'));
+    assert.ok(prompt.includes('User / Developer Directives:'));
+    assert.ok(prompt.includes('Refactor database client to use connection pooling.'));
   });
 });
