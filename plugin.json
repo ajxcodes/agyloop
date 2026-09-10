@@ -61,8 +61,20 @@
       "model": "pro",
       "role": "Architectural Planning Subagent",
       "tools": {
-        "read_only": true
-      }
+        "read_only": true,
+        "whitelist": [
+          "view_file",
+          "grep_search",
+          "find_by_name",
+          "list_dir"
+        ]
+      },
+      "capabilities": {
+        "enable_write_tools": false,
+        "enable_subagent_tools": false,
+        "enable_mcp_tools": true
+      },
+      "system_prompt": "prompts/planner.md"
     },
     "implementer": {
       "name": "implementer",

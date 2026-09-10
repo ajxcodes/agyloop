@@ -19,7 +19,12 @@ $$\text{Discovery} \longrightarrow \text{Plan} \longrightarrow \text{Approval Ga
 - Run `bin/agyloop transition DISCOVERY`.
 
 ### 2. Planning Subagent (`PLAN`)
-- Launch the read-only **`planner`** subagent.
+- Define the read-only **`planner`** subagent with physical write suppression:
+  - `enable_write_tools: false` (zero mutating file or execute commands)
+  - `enable_mcp_tools: true` (read-only diagnostic MCP inspection enabled)
+  - Tool whitelist: strictly `view_file`, `grep_search`, `find_by_name`, `list_dir`
+  - System prompt: `prompts/planner.md`
+- Invoke subagent with `Model: "pro"` (or tier resolved from `.agyloop.json`).
 - Produce technical specifications in `artifacts/plans/`:
   - `[Discovery] - {Title}.md` (for defects)
   - `[Implementation] - {Title}.md` (technical plan)
