@@ -13,12 +13,16 @@
  *   gates          Run quality and AI review gates on current diff
  *   yolo           Execute unattended fast-path mode
  *   status         Inspect active stage and checkpoint history
+ *   config         Display active configuration and model routing table
+ *   models         Discover and list available Gemini models & tier mappings
  *   reset          Reset pipeline checkpoint state
  *   transition <s> Advance state to specified target stage
  *
  * Options:
  *   --commit-after Automatically commit if all quality gates pass
  *   --issue <num>  Associate execution with an issue number
+ *   --config <p>   Path to custom configuration JSON
+ *   --refresh      Force refresh of cached Gemini models
  *   --dry-run      Simulate transitions without writing to disk
  *   -h, --help     Show this help message
  *   -v, --version  Show version
@@ -26,6 +30,12 @@
 
 const path = require('path');
 const { StateMachine, STAGES } = require('../lib/state-machine');
+const {
+  loadConfig,
+  resolveModel,
+  fetchAvailableModels,
+  DEFAULT_CONFIG
+} = require('../lib/config');
 
 const VERSION = '0.1.0';
 
@@ -43,12 +53,16 @@ Commands:
   gates              Run quality and AI review gates on current working diff
   yolo               Unattended fast-path mode (auto-approves plan gate)
   status             Display current pipeline stage and checkpoint history
+  config             Display active configuration and model routing table
+  models             List available Gemini models and mapped Antigravity tiers
   reset              Reset .agyloop/state.json checkpoint
   transition <STAGE> Advance state machine to target stage
 
 Options:
   --commit-after     Opt-in flag to automatically commit if all gates pass
   --issue <number>   Specify GitHub issue number
+  --config <path>    Path to custom configuration file
+  --refresh          Force refresh of discovered Gemini models from API
   --dry-run          Simulate execution without modifying state on disk
   -h, --help         Show help
   -v, --version      Show version
@@ -61,6 +75,8 @@ function parseArguments(args) {
     commitAfter: false,
     dryRun: false,
     issue: null,
+    configPath: null,
+    refresh: false,
     help: false,
     version: false,
     stageArg: null
@@ -79,10 +95,16 @@ function parseArguments(args) {
       options.commitAfter = true;
     } else if (arg === '--dry-run') {
       options.dryRun = true;
+    } else if (arg === '--refresh') {
+      options.refresh = true;
     } else if (arg === '--issue') {
       options.issue = args[++i];
     } else if (arg.startsWith('--issue=')) {
       options.issue = arg.split('=')[1];
+    } else if (arg === '--config') {
+      options.configPath = args[++i];
+    } else if (arg.startsWith('--config=')) {
+      options.configPath = arg.split('=')[1];
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
@@ -129,6 +151,10 @@ async function main() {
     process.exit(0);
   }
 
+  const config = loadConfig({
+    customPath: options.configPath
+  });
+
   const mode = command === 'yolo' ? 'yolo' : command === 'plan' ? 'plan' : 'standard';
   const sm = new StateMachine({
     mode,
@@ -149,6 +175,47 @@ async function main() {
         console.log(`  ${idx + 1}. ${formatStageBadge(entry.stage)} at ${entry.timestamp}`);
       });
       console.log('');
+      break;
+    }
+
+    case 'config': {
+      console.log('\n=== AgyLoop: Configuration & Model Routing ===');
+      const roles = ['planner', 'implementer', 'gate', 'reviewer'];
+      console.log('\nSubagent Model Routing Table:');
+      console.log('----------------------------------------------------------------------');
+      console.log('Role         Configured           AGY Subagent Tier   Canonical API Model');
+      console.log('----------------------------------------------------------------------');
+      for (const role of roles) {
+        const resolved = resolveModel(role, config);
+        const rPad = role.padEnd(12);
+        const cPad = resolved.configured.padEnd(20);
+        const tPad = resolved.tier.padEnd(19);
+        console.log(`${rPad} ${cPad} ${tPad} ${resolved.apiModel}`);
+      }
+      console.log('----------------------------------------------------------------------');
+      console.log('\nPipeline Options:');
+      console.log(`  Commit After Passes   : ${config.options.commitAfter}`);
+      console.log(`  Gate Timeout (seconds): ${config.options.gateTimeoutSeconds}`);
+      console.log(`  Auto-Approve In YOLO  : ${config.options.autoApproveInYolo}`);
+      console.log('');
+      break;
+    }
+
+    case 'models': {
+      console.log('\n=== AgyLoop: Discovering Available Gemini Models ===');
+      const models = await fetchAvailableModels({
+        forceRefresh: options.refresh
+      });
+      console.log(`Found ${models.length} candidate models:\n`);
+      console.log('----------------------------------------------------------------------');
+      console.log('Model ID                               Antigravity Tier Mapping');
+      console.log('----------------------------------------------------------------------');
+      models.forEach((m) => {
+        const idPad = m.id.padEnd(38);
+        console.log(`${idPad} ${m.tier}`);
+      });
+      console.log('----------------------------------------------------------------------');
+      console.log('Tip: Run with --refresh to re-fetch live models from Gemini API.\n');
       break;
     }
 
@@ -230,10 +297,12 @@ async function main() {
     default: {
       console.log(`\n🔄 AgyLoop Development Lifecycle Coordinator`);
       console.log(`Current Stage: ${formatStageBadge(sm.state.currentStage)}`);
-      console.log(`To view detailed state:  agyloop status`);
-      console.log(`To run planning mode:    agyloop plan`);
-      console.log(`To run quality gates:    agyloop gates`);
-      console.log(`To see all options:      agyloop --help\n`);
+      console.log(`To inspect configuration: agyloop config`);
+      console.log(`To discover models:       agyloop models`);
+      console.log(`To view pipeline status:  agyloop status`);
+      console.log(`To run planning mode:     agyloop plan`);
+      console.log(`To run quality gates:     agyloop gates`);
+      console.log(`To see all options:       agyloop --help\n`);
       break;
     }
   }

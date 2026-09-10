@@ -1,0 +1,14 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/agyloop.json",
+  "models": {
+    "planner": "pro",
+    "implementer": "inherit",
+    "gate": "flash_lite",
+    "reviewer": "flash"
+  },
+  "options": {
+    "commitAfter": false,
+    "gateTimeoutSeconds": 300,
+    "autoApproveInYolo": true
+  }
+}
