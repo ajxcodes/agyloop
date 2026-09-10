@@ -28,6 +28,7 @@ import {
   STATUS_PASSED,
   STATUS_FAILED,
   STATUS_TIMED_OUT,
+  STATUS_DISPLAY_TIMED_OUT,
   STATUS_SKIPPED,
   NOTE_EXECUTING_GATES,
   NOTE_GATES_PASSED,
@@ -37,6 +38,15 @@ import {
   GateCommandDefinition,
   MAX_FILTERED_LOG_LINES,
   MAX_FILTERED_OUTPUT_CHARS,
+  MS_PER_SECOND,
+  ECOSYSTEM_UNKNOWN,
+  CMD_ID_BUILD,
+  CMD_ID_TYPECHECK,
+  CMD_ID_TEST,
+  CMD_ID_PLAYWRIGHT,
+  CMD_ID_E2E,
+  CMD_PREFIX_CUSTOM,
+  CMD_PREFIX_CONFIG,
   InvalidTransitionError,
   QualityGateTimeoutError
 } from '../domain';
@@ -45,7 +55,8 @@ import {
   ConfigRepository,
   AgyLoopConfig,
   PlanGeneratorPort,
-  CommandExecutorPort
+  CommandExecutorPort,
+  BuildDetectorPort
 } from '../ports';
 
 import { ResolveSubagentUseCase } from './resolve-subagent';
@@ -82,6 +93,8 @@ export interface QualityGateRunResult {
   readonly summaryReport: string;
   readonly buildStatus: string;
   readonly testsStatus: string;
+  readonly buildSystem?: string;
+  readonly detectedEcosystems?: readonly string[];
 }
 
 export class RunQualityGateUseCase {
@@ -89,6 +102,7 @@ export class RunQualityGateUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly planGenerator: PlanGeneratorPort;
   private readonly commandExecutor: CommandExecutorPort;
+  private readonly buildDetector?: BuildDetectorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
 
   constructor(
@@ -96,12 +110,14 @@ export class RunQualityGateUseCase {
     configRepo: ConfigRepository,
     planGenerator: PlanGeneratorPort,
     commandExecutor: CommandExecutorPort,
+    buildDetector?: BuildDetectorPort,
     resolveSubagentUseCase?: ResolveSubagentUseCase
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
     this.commandExecutor = commandExecutor;
+    this.buildDetector = buildDetector;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo);
   }
@@ -156,10 +172,31 @@ export class RunQualityGateUseCase {
       params.timeoutSeconds && params.timeoutSeconds > 0
         ? params.timeoutSeconds
         : config.options.gateTimeoutSeconds || DEFAULT_GATE_TIMEOUT_SECONDS;
-    const timeoutMs = timeoutSeconds * 1000;
+    const timeoutMs = timeoutSeconds * MS_PER_SECOND;
 
-    // 4. Resolve commands to execute
-    const commandDefinitions = this.resolveCommands(params.commands, config);
+    // 4. Resolve commands to execute (supporting auto-detection engine and config overrides)
+    let commandDefinitions: readonly GateCommandDefinition[];
+    let detectedEcosystemNames: string[] = [];
+    let primaryEcosystemName: string | undefined;
+
+    if (this.buildDetector) {
+      commandDefinitions = await this.buildDetector.resolveCommands(
+        workspace,
+        config,
+        params.commands
+      );
+      try {
+        const detected = await this.buildDetector.detect(workspace);
+        detectedEcosystemNames = detected.ecosystems.map((e) => e.toString());
+        primaryEcosystemName = detected.primaryEcosystem.toString();
+      } catch (err: unknown) {
+        // Fall back gracefully if detector metadata extraction encounters an issue
+        detectedEcosystemNames = [ECOSYSTEM_UNKNOWN];
+        primaryEcosystemName = ECOSYSTEM_UNKNOWN;
+      }
+    } else {
+      commandDefinitions = this.resolveCommands(params.commands, config);
+    }
 
     // 5. Execute commands in isolated shell with log buffering and filtering
     const reports: GateCommandReport[] = [];
@@ -186,14 +223,14 @@ export class RunQualityGateUseCase {
         failureSnippet = this.extractFailureSnippet(execResult.combinedOutput, execResult.stderr);
       }
 
-      if (cmdDef.id.toLowerCase().includes('build') || cmdDef.id.toLowerCase().includes('typecheck')) {
-        if (!passed) buildStatus = STATUS_FAILED;
+      if (this.isBuildCommand(cmdDef.id) && !passed) {
+        buildStatus = STATUS_FAILED;
       }
 
-      if (cmdDef.id.toLowerCase().includes('test')) {
+      if (this.isTestCommand(cmdDef.id)) {
         if (!passed) {
           testsStatus = STATUS_FAILED;
-        } else if (testMetrics && testMetrics.total) {
+        } else if (testMetrics && (testMetrics.passed || testMetrics.total)) {
           testsMetricSummary = ` (${testMetrics.passed || testMetrics.total} passed)`;
         }
       }
@@ -235,7 +272,7 @@ export class RunQualityGateUseCase {
       planDir: params.planDir
     });
 
-    const durationStr = `${(totalDurationMs / 1000).toFixed(1)}s`;
+    const durationStr = `${(totalDurationMs / MS_PER_SECOND).toFixed(1)}s`;
     const gateStatus = allPassed ? SUMMARY_STATUS_COMPLETED : SUMMARY_STATUS_FAILED;
 
     if (!params.dryRun) {
@@ -250,6 +287,9 @@ export class RunQualityGateUseCase {
           duration: durationStr,
           buildStatus,
           testsStatus,
+          buildSystem: primaryEcosystemName,
+          detectedEcosystems: detectedEcosystemNames,
+          executedCommands: reports.map((r) => r.command),
           reviewNote: allPassed
             ? `All quality gates passed successfully in ${durationStr}.`
             : `Quality gates failed during execution. Pipeline reverted to IMPLEMENT.`
@@ -263,7 +303,8 @@ export class RunQualityGateUseCase {
       totalDurationMs,
       reports,
       nextStage: sm.currentStage,
-      summaryPath: resolvedPlan?.summaryPath
+      summaryPath: resolvedPlan?.summaryPath,
+      buildSystem: primaryEcosystemName
     });
 
     return {
@@ -274,7 +315,9 @@ export class RunQualityGateUseCase {
       totalDurationMs,
       summaryReport,
       buildStatus,
-      testsStatus
+      testsStatus,
+      buildSystem: primaryEcosystemName,
+      detectedEcosystems: detectedEcosystemNames
     };
   }
 
@@ -287,7 +330,7 @@ export class RunQualityGateUseCase {
       return inputCommands.map((cmd, idx) => {
         if (typeof cmd === 'string') {
           return {
-            id: `gate-cmd-${idx + 1}`,
+            id: `${CMD_PREFIX_CUSTOM}-cmd-${idx + 1}`,
             label: `Custom Command ${idx + 1}`,
             command: cmd
           };
@@ -300,7 +343,7 @@ export class RunQualityGateUseCase {
       return config.options.gateCommands.map((cmd: string | GateCommandDefinition, idx: number) => {
         if (typeof cmd === 'string') {
           return {
-            id: `config-cmd-${idx + 1}`,
+            id: `${CMD_PREFIX_CONFIG}-cmd-${idx + 1}`,
             label: `Configured Command ${idx + 1}`,
             command: cmd
           };
@@ -315,15 +358,35 @@ export class RunQualityGateUseCase {
   private extractTestMetrics(output: string): { total?: number; passed?: number; failed?: number } | null {
     if (!output) return null;
 
-    const testsMatch = output.match(/tests\s+(\d+)/i);
-    const passMatch = output.match(/pass\s+(\d+)/i);
-    const failMatch = output.match(/fail\s+(\d+)/i);
+    // Strip ANSI escape codes to ensure reliable regex matching
+    const cleanOutput = output.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 
-    if (testsMatch || passMatch || failMatch) {
+    // Standard Node / Tap format
+    const testsMatch = cleanOutput.match(/tests\s+(\d+)/i);
+    const passMatch = cleanOutput.match(/pass(?:ed)?\s+(\d+)/i);
+    const failMatch = cleanOutput.match(/fail(?:ed)?\s+(\d+)/i);
+
+    // Playwright format: "X passed", "Y failed" e.g. "5 passed (3.2s)", "1 failed, 4 passed"
+    const pwPassMatch = cleanOutput.match(/(\d+)\s+passed/i);
+    const pwFailMatch = cleanOutput.match(/(\d+)\s+failed/i);
+
+    const total = testsMatch ? parseInt(testsMatch[1], 10) : undefined;
+    let passed = passMatch ? parseInt(passMatch[1], 10) : undefined;
+    let failed = failMatch ? parseInt(failMatch[1], 10) : undefined;
+
+    if (passed === undefined && pwPassMatch) {
+      passed = parseInt(pwPassMatch[1], 10);
+    }
+    if (failed === undefined && pwFailMatch) {
+      failed = parseInt(pwFailMatch[1], 10);
+    }
+
+    if (total !== undefined || passed !== undefined || failed !== undefined) {
+      const computedTotal = total ?? (passed !== undefined ? (passed + (failed || 0)) : undefined);
       return {
-        total: testsMatch ? parseInt(testsMatch[1], 10) : undefined,
-        passed: passMatch ? parseInt(passMatch[1], 10) : undefined,
-        failed: failMatch ? parseInt(failMatch[1], 10) : undefined
+        total: computedTotal,
+        passed,
+        failed
       };
     }
 
@@ -351,25 +414,43 @@ export class RunQualityGateUseCase {
     return snippet.trim();
   }
 
+  private isBuildCommand(cmdId: string): boolean {
+    const id = cmdId.toLowerCase();
+    return id.includes(CMD_ID_BUILD) || id.includes(CMD_ID_TYPECHECK);
+  }
+
+  private isTestCommand(cmdId: string): boolean {
+    const id = cmdId.toLowerCase();
+    return (
+      id.includes(CMD_ID_TEST) ||
+      id.includes(CMD_ID_PLAYWRIGHT) ||
+      id.includes(CMD_ID_E2E)
+    );
+  }
+
   private generateSummaryReport(data: {
     allPassed: boolean;
     totalDurationMs: number;
     reports: readonly GateCommandReport[];
     nextStage: string;
     summaryPath?: string;
+    buildSystem?: string;
   }): string {
-    const verdict = data.allPassed ? 'PASSED' : 'FAILED';
-    const duration = `${(data.totalDurationMs / 1000).toFixed(2)}s`;
+    const verdict = data.allPassed ? STATUS_PASSED : STATUS_FAILED;
+    const duration = `${(data.totalDurationMs / MS_PER_SECOND).toFixed(2)}s`;
 
     let report = `=== AgyLoop: Quality Gate Report ===\n`;
     report += `Overall Verdict : ${verdict}\n`;
+    if (data.buildSystem) {
+      report += `Build System    : ${data.buildSystem}\n`;
+    }
     report += `Total Duration  : ${duration}\n`;
     report += `Next Stage      : ${data.nextStage}\n\n`;
 
     report += `Execution Matrix:\n`;
     data.reports.forEach((r, idx) => {
-      const status = r.timedOut ? 'TIMED OUT' : r.passed ? 'PASSED' : 'FAILED';
-      const cmdDuration = `${(r.durationMs / 1000).toFixed(2)}s`;
+      const status = r.timedOut ? STATUS_DISPLAY_TIMED_OUT : r.passed ? STATUS_PASSED : STATUS_FAILED;
+      const cmdDuration = `${(r.durationMs / MS_PER_SECOND).toFixed(2)}s`;
       let details = '';
       if (r.testMetrics && r.testMetrics.total) {
         details = ` (${r.testMetrics.passed ?? 0}/${r.testMetrics.total} tests passed)`;

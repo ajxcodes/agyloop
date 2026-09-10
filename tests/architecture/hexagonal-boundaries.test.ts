@@ -304,6 +304,12 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         className: 'ProcessCommandExecutor',
         portName: 'CommandExecutorPort',
         requiredMethods: ['execute']
+      },
+      {
+        adapterFile: 'file-build-detector.ts',
+        className: 'FileBuildDetector',
+        portName: 'BuildDetectorPort',
+        requiredMethods: ['detect', 'resolveCommands']
       }
     ];
 

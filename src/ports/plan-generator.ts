@@ -33,6 +33,9 @@ export interface SummaryUpdateData {
   readonly buildStatus?: string;
   readonly testsStatus?: string;
   readonly reviewNote?: string;
+  readonly buildSystem?: string;
+  readonly detectedEcosystems?: readonly string[] | string;
+  readonly executedCommands?: readonly string[];
 }
 
 export interface GeneratePlanOptions {

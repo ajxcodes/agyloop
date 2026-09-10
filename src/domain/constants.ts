@@ -172,6 +172,7 @@ export const ERR_STATE_STORAGE = 'ERR_STATE_STORAGE' as const;
 export const ERR_VALIDATION = 'ERR_VALIDATION' as const;
 export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
 export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
+export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -181,7 +182,8 @@ export const ERROR_CODES = Object.freeze({
   STATE_STORAGE: ERR_STATE_STORAGE,
   VALIDATION: ERR_VALIDATION,
   GATE_TIMEOUT: ERR_GATE_TIMEOUT,
-  GATE_EXECUTION: ERR_GATE_EXECUTION
+  GATE_EXECUTION: ERR_GATE_EXECUTION,
+  BUILD_DETECTION: ERR_BUILD_DETECTION
 });
 
 
@@ -191,6 +193,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
 export const CLI_VERSION = '0.1.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
+export const MS_PER_SECOND = 1000 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
 export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
@@ -259,6 +262,7 @@ export const NOTE_GATES_FAILED = 'Quality gates failed' as const;
 export const STATUS_PASSED = 'PASSED' as const;
 export const STATUS_FAILED = 'FAILED' as const;
 export const STATUS_TIMED_OUT = 'TIMED_OUT' as const;
+export const STATUS_DISPLAY_TIMED_OUT = 'TIMED OUT' as const;
 export const STATUS_SKIPPED = 'SKIPPED' as const;
 
 // Gate Commands & Thresholds
@@ -286,6 +290,202 @@ export const DEFAULT_GATE_COMMANDS: readonly GateCommandDefinition[] = Object.fr
 
 export const MAX_FILTERED_LOG_LINES = 30 as const;
 export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;
+
+// Ecosystem Identifiers
+export const ECOSYSTEM_NODE = 'node' as const;
+export const ECOSYSTEM_PYTHON = 'python' as const;
+export const ECOSYSTEM_GO = 'go' as const;
+export const ECOSYSTEM_RUST = 'rust' as const;
+export const ECOSYSTEM_GRADLE = 'gradle' as const;
+export const ECOSYSTEM_MAVEN = 'maven' as const;
+export const ECOSYSTEM_DOTNET = 'dotnet' as const;
+export const ECOSYSTEM_UNKNOWN = 'unknown' as const;
+
+export const SUPPORTED_ECOSYSTEMS = Object.freeze([
+  ECOSYSTEM_NODE,
+  ECOSYSTEM_GO,
+  ECOSYSTEM_RUST,
+  ECOSYSTEM_PYTHON,
+  ECOSYSTEM_GRADLE,
+  ECOSYSTEM_MAVEN,
+  ECOSYSTEM_DOTNET,
+  ECOSYSTEM_UNKNOWN
+] as const);
+
+export type EcosystemType = typeof SUPPORTED_ECOSYSTEMS[number];
+
+// Deterministic Prioritization for Polyglot/Multi-Ecosystem Repositories
+export const ECOSYSTEM_PRIORITY_ORDER: readonly EcosystemType[] = Object.freeze([
+  ECOSYSTEM_NODE,
+  ECOSYSTEM_GO,
+  ECOSYSTEM_RUST,
+  ECOSYSTEM_PYTHON,
+  ECOSYSTEM_GRADLE,
+  ECOSYSTEM_MAVEN,
+  ECOSYSTEM_DOTNET
+]);
+
+// Package Manager Identifiers
+export const PKG_MGR_PNPM = 'pnpm' as const;
+export const PKG_MGR_YARN = 'yarn' as const;
+export const PKG_MGR_BUN = 'bun' as const;
+export const PKG_MGR_NPM = 'npm' as const;
+
+export const PACKAGE_MANAGERS = Object.freeze([
+  PKG_MGR_PNPM,
+  PKG_MGR_YARN,
+  PKG_MGR_BUN,
+  PKG_MGR_NPM
+] as const);
+
+export type PackageManagerName = typeof PACKAGE_MANAGERS[number];
+
+// Build & Test Runner Markers
+export const MARKER_PACKAGE_JSON = 'package.json' as const;
+export const MARKER_PNPM_LOCK = 'pnpm-lock.yaml' as const;
+export const MARKER_YARN_LOCK = 'yarn.lock' as const;
+export const MARKER_BUN_LOCK = 'bun.lockb' as const;
+export const MARKER_PACKAGE_LOCK = 'package-lock.json' as const;
+
+export const MARKER_PLAYWRIGHT_CONFIG_TS = 'playwright.config.ts' as const;
+export const MARKER_PLAYWRIGHT_CONFIG_JS = 'playwright.config.js' as const;
+export const MARKER_PLAYWRIGHT_CONFIG_MJS = 'playwright.config.mjs' as const;
+export const MARKER_PLAYWRIGHT_CONFIG_CJS = 'playwright.config.cjs' as const;
+
+export const PLAYWRIGHT_CONFIG_MARKERS = Object.freeze([
+  MARKER_PLAYWRIGHT_CONFIG_TS,
+  MARKER_PLAYWRIGHT_CONFIG_JS,
+  MARKER_PLAYWRIGHT_CONFIG_MJS,
+  MARKER_PLAYWRIGHT_CONFIG_CJS
+] as const);
+
+export const PLAYWRIGHT_SCRIPT_CANDIDATES = Object.freeze([
+  'test:e2e',
+  'e2e',
+  'test:playwright',
+  'playwright'
+] as const);
+
+export const MARKER_GO_MOD = 'go.mod' as const;
+export const MARKER_CARGO_TOML = 'Cargo.toml' as const;
+export const MARKER_PYPROJECT_TOML = 'pyproject.toml' as const;
+export const MARKER_PYTEST_INI = 'pytest.ini' as const;
+export const MARKER_SETUP_PY = 'setup.py' as const;
+export const MARKER_REQUIREMENTS_TXT = 'requirements.txt' as const;
+
+export const PYTHON_MARKERS = Object.freeze([
+  MARKER_PYPROJECT_TOML,
+  MARKER_PYTEST_INI,
+  MARKER_SETUP_PY,
+  MARKER_REQUIREMENTS_TXT
+] as const);
+
+export const MARKER_GRADLEW = 'gradlew' as const;
+export const MARKER_GRADLEW_BAT = 'gradlew.bat' as const;
+export const MARKER_BUILD_GRADLE = 'build.gradle' as const;
+export const MARKER_BUILD_GRADLE_KTS = 'build.gradle.kts' as const;
+export const MARKER_SETTINGS_GRADLE = 'settings.gradle' as const;
+export const MARKER_SETTINGS_GRADLE_KTS = 'settings.gradle.kts' as const;
+
+export const GRADLE_MARKERS = Object.freeze([
+  MARKER_BUILD_GRADLE,
+  MARKER_BUILD_GRADLE_KTS,
+  MARKER_SETTINGS_GRADLE,
+  MARKER_SETTINGS_GRADLE_KTS
+] as const);
+
+export const MARKER_POM_XML = 'pom.xml' as const;
+
+export const MARKER_EXT_CSPROJ = '.csproj' as const;
+export const MARKER_EXT_SLN = '.sln' as const;
+export const MARKER_EXT_FSPROJ = '.fsproj' as const;
+
+export const DOTNET_EXTENSIONS = Object.freeze([
+  MARKER_EXT_CSPROJ,
+  MARKER_EXT_SLN,
+  MARKER_EXT_FSPROJ
+] as const);
+
+// Ecosystem Priority Numbers
+export const PRIORITY_ECOSYSTEM_NODE = 1 as const;
+export const PRIORITY_ECOSYSTEM_GO = 2 as const;
+export const PRIORITY_ECOSYSTEM_RUST = 3 as const;
+export const PRIORITY_ECOSYSTEM_PYTHON = 4 as const;
+export const PRIORITY_ECOSYSTEM_GRADLE = 5 as const;
+export const PRIORITY_ECOSYSTEM_MAVEN = 6 as const;
+export const PRIORITY_ECOSYSTEM_DOTNET = 7 as const;
+export const DEFAULT_ECOSYSTEM_PRIORITY = 100 as const;
+export const FALLBACK_ECOSYSTEM_PRIORITY = 999 as const;
+
+// Confidence Levels
+export const CONFIDENCE_CERTAIN = 1.0 as const;
+export const CONFIDENCE_NONE = 0.0 as const;
+
+// Command IDs
+export const CMD_ID_TYPECHECK = 'typecheck' as const;
+export const CMD_ID_BUILD = 'build' as const;
+export const CMD_ID_TEST = 'test' as const;
+export const CMD_ID_PLAYWRIGHT = 'playwright' as const;
+export const CMD_ID_GO_VET = 'go-vet' as const;
+export const CMD_ID_GO_TEST = 'go-test' as const;
+export const CMD_ID_CARGO_CHECK = 'cargo-check' as const;
+export const CMD_ID_CARGO_TEST = 'cargo-test' as const;
+export const CMD_ID_PYTEST = 'pytest' as const;
+export const CMD_ID_PYTHON_UNITTEST = 'python-unittest' as const;
+export const CMD_ID_GRADLE_CHECK = 'gradle-check' as const;
+export const CMD_ID_GRADLE_TEST = 'gradle-test' as const;
+export const CMD_ID_MAVEN_TEST = 'maven-test' as const;
+export const CMD_ID_DOTNET_TEST = 'dotnet-test' as const;
+export const CMD_ID_E2E = 'e2e' as const;
+
+export const KEYWORD_CHECK = 'check' as const;
+export const KEYWORD_VET = 'vet' as const;
+
+// Command Labels
+export const CMD_LABEL_TYPECHECK = 'TypeScript Compilation & Typecheck' as const;
+export const CMD_LABEL_BUILD = 'Build Script' as const;
+export const CMD_LABEL_TEST = 'Automated Test Suite' as const;
+export const CMD_LABEL_PLAYWRIGHT = 'Playwright End-to-End Test Suite' as const;
+export const CMD_LABEL_GO_VET = 'Go Vet Analysis' as const;
+export const CMD_LABEL_GO_TEST = 'Go Automated Test Suite' as const;
+export const CMD_LABEL_CARGO_CHECK = 'Cargo Compilation Check' as const;
+export const CMD_LABEL_CARGO_TEST = 'Cargo Automated Test Suite' as const;
+export const CMD_LABEL_PYTEST = 'Pytest Automated Test Suite' as const;
+export const CMD_LABEL_PYTHON_UNITTEST = 'Python Unittest Suite' as const;
+export const CMD_LABEL_GRADLE_CHECK = 'Gradle Check' as const;
+export const CMD_LABEL_GRADLE_TEST = 'Gradle Test Suite' as const;
+export const CMD_LABEL_MAVEN_TEST = 'Maven Test Suite' as const;
+export const CMD_LABEL_DOTNET_TEST = '.NET Automated Test Suite' as const;
+
+// Command Prefixes
+export const CMD_PREFIX_CUSTOM = 'custom' as const;
+export const CMD_PREFIX_CONFIG = 'config' as const;
+
+// Detection Indicators & Script Constants
+export const SCRIPT_NAME_TYPECHECK = 'typecheck' as const;
+export const SCRIPT_NAME_BUILD = 'build' as const;
+export const SCRIPT_NAME_TEST = 'test' as const;
+export const NPM_DEFAULT_TEST_STUB = 'no test specified' as const;
+export const PYTEST_INDICATOR_KEYWORD = 'pytest' as const;
+export const PYTEST_CONFIG_HEADER = '[tool.pytest' as const;
+
+// Ecosystem Command Templates
+export const CMD_GO_VET = 'go vet ./...' as const;
+export const CMD_GO_TEST = 'go test ./...' as const;
+export const CMD_CARGO_CHECK = 'cargo check' as const;
+export const CMD_CARGO_TEST = 'cargo test' as const;
+export const CMD_GRADLEW_CHECK = './gradlew check' as const;
+export const CMD_GRADLEW_TEST = './gradlew test' as const;
+export const CMD_GRADLE_CHECK = 'gradle check' as const;
+export const CMD_GRADLE_TEST = 'gradle test' as const;
+export const CMD_MAVEN_TEST = 'mvn test' as const;
+export const CMD_DOTNET_TEST = 'dotnet test' as const;
+export const CMD_PYTEST = 'pytest' as const;
+export const CMD_PYTHON_UNITTEST = 'python -m unittest' as const;
+export const CMD_PLAYWRIGHT_TEST = 'npx playwright test' as const;
+export const CMD_PLAYWRIGHT_PNPM = 'pnpm exec playwright test' as const;
+export const CMD_PLAYWRIGHT_BUN = 'bunx playwright test' as const;
+export const CMD_PLAYWRIGHT_YARN = 'yarn playwright test' as const;
 
 // Validation & Plan Constants
 export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;

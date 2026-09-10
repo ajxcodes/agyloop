@@ -6,6 +6,8 @@ const {
   ModelTier,
   SubagentRole,
   ToolWhitelist,
+  Ecosystem,
+  VerificationCommandSet,
   ValidationError,
   PhysicalWriteViolationError,
   STAGE_INITIALIZED,
@@ -22,7 +24,10 @@ const {
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
-  ROLE_REVIEWER
+  ROLE_REVIEWER,
+  ECOSYSTEM_NODE,
+  ECOSYSTEM_GO,
+  ECOSYSTEM_UNKNOWN
 } = require('../../dist/domain');
 
 describe('Domain Value Objects (Pure)', () => {
@@ -162,6 +167,109 @@ describe('Domain Value Objects (Pure)', () => {
     test('rejects non-array or empty tool inputs', () => {
       assert.throws(() => new ToolWhitelist(null as unknown as string[]), ValidationError);
       assert.throws(() => new ToolWhitelist(['view_file', '']), ValidationError);
+    });
+  });
+
+  describe('Ecosystem Value Object', () => {
+    test('creates valid ecosystem and validates invariants', () => {
+      const eco = new Ecosystem({
+        type: ECOSYSTEM_NODE,
+        markerFiles: ['package.json', 'pnpm-lock.yaml'],
+        packageManager: 'pnpm',
+        confidence: 0.95,
+        priority: 1
+      });
+
+      assert.strictEqual(eco.type, ECOSYSTEM_NODE);
+      assert.strictEqual(eco.packageManager, 'pnpm');
+      assert.strictEqual(eco.hasMarker('package.json'), true);
+      assert.strictEqual(eco.hasMarker('nonexistent'), false);
+      assert.strictEqual(eco.isNode(), true);
+      assert.strictEqual(eco.isGo(), false);
+      assert.strictEqual(eco.toString(), 'node (pnpm)');
+    });
+
+    test('validates equality across instances', () => {
+      const e1 = new Ecosystem({ type: ECOSYSTEM_GO, markerFiles: ['go.mod'] });
+      const e2 = new Ecosystem({ type: ECOSYSTEM_GO, markerFiles: ['go.mod'] });
+      const e3 = new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'] });
+
+      assert.strictEqual(e1.equals(e2), true);
+      assert.strictEqual(e1.equals(e3), false);
+      assert.strictEqual(e1.equals(null), false);
+    });
+
+    test('rejects invalid ecosystem types and invalid confidences', () => {
+      assert.throws(() => new Ecosystem({ type: 'not-a-real-ecosystem' }), ValidationError);
+      assert.throws(() => new Ecosystem({ type: ECOSYSTEM_NODE, confidence: 2.0 }), ValidationError);
+      assert.throws(() => new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: [''] }), ValidationError);
+    });
+
+    test('creates unknown ecosystem safely', () => {
+      const unk = Ecosystem.unknown();
+      assert.strictEqual(unk.type, ECOSYSTEM_UNKNOWN);
+      assert.strictEqual(unk.isUnknown(), true);
+      assert.strictEqual(unk.confidence, 0);
+    });
+  });
+
+  describe('VerificationCommandSet Value Object', () => {
+    test('validates valid command set and provides helper methods', () => {
+      const set = new VerificationCommandSet([
+        { id: 'typecheck', label: 'Typecheck', command: 'npm run typecheck' },
+        { id: 'test', label: 'Tests', command: 'npm test' },
+        { id: 'playwright', label: 'Playwright E2E', command: 'npx playwright test' }
+      ]);
+
+      assert.strictEqual(set.isEmpty(), false);
+      assert.strictEqual(set.size(), 3);
+      assert.strictEqual(set.hasBuild(), true);
+      assert.strictEqual(set.hasTest(), true);
+      assert.strictEqual(set.hasE2E(), true);
+      assert.deepStrictEqual(set.getCommandStrings(), [
+        'npm run typecheck',
+        'npm test',
+        'npx playwright test'
+      ]);
+      assert.strictEqual(set.get('typecheck')?.command, 'npm run typecheck');
+    });
+
+    test('rejects duplicate command IDs and invalid command definitions', () => {
+      assert.throws(
+        () =>
+          new VerificationCommandSet([
+            { id: 'cmd', label: 'Label 1', command: 'echo 1' },
+            { id: 'cmd', label: 'Label 2', command: 'echo 2' }
+          ]),
+        ValidationError
+      );
+
+      assert.throws(
+        () =>
+          new VerificationCommandSet([
+            { id: '', label: 'Label 1', command: 'echo 1' }
+          ]),
+        ValidationError
+      );
+
+      assert.throws(
+        () =>
+          new VerificationCommandSet([
+            { id: 'c1', label: 'L1', command: '' }
+          ]),
+        ValidationError
+      );
+    });
+
+    test('creates default and empty command sets', () => {
+      const empty = VerificationCommandSet.empty();
+      assert.strictEqual(empty.isEmpty(), true);
+      assert.strictEqual(empty.size(), 0);
+
+      const def = VerificationCommandSet.default();
+      assert.strictEqual(def.isEmpty(), false);
+      assert.strictEqual(def.hasBuild(), true);
+      assert.strictEqual(def.hasTest(), true);
     });
   });
 });

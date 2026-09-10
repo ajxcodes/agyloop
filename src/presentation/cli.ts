@@ -32,7 +32,8 @@ import {
   GeminiModelCatalog,
   FilePlanGenerator,
   FilePromptRepository,
-  ProcessCommandExecutor
+  ProcessCommandExecutor,
+  FileBuildDetector
 } from '../infrastructure';
 import {
   StartPlanningUseCase,
@@ -215,6 +216,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const planGenerator = new FilePlanGenerator();
   const promptRepo = new FilePromptRepository();
   const commandExecutor = new ProcessCommandExecutor();
+  const buildDetector = new FileBuildDetector();
 
   const config = configRepo.loadConfig({ customPath: options.configPath });
 
@@ -430,6 +432,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           configRepo,
           planGenerator,
           commandExecutor,
+          buildDetector,
           resolveSubagentUseCase
         );
 

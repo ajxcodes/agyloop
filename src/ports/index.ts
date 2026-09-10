@@ -9,4 +9,6 @@ export * from './model-catalog';
 export * from './plan-generator';
 export * from './prompt-repository';
 export * from './command-executor';
+export * from './build-detector';
+
 
