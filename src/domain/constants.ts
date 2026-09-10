@@ -82,6 +82,9 @@ export const ROLE_DESC_PLANNER =
   'Architectural reasoning, deep read-only inspection, and specification generation subagent' as const;
 export const ROLE_DESC_IMPLEMENTER =
   'Precise code implementation, refactoring, test authoring, and build verification subagent' as const;
+export const ROLE_DESC_GATE =
+  'Automated build, test suite, typecheck, and lint verification subagent executing in isolated shell execution' as const;
+
 
 export const TIER_INHERIT = 'inherit' as const;
 export const TIER_FLASH_LITE = 'flash_lite' as const;
@@ -155,12 +158,20 @@ export const IMPLEMENTER_TOOLS = Object.freeze([
   TOOL_RUN_COMMAND
 ] as const);
 
+export const GATE_TOOLS = Object.freeze([
+  TOOL_RUN_COMMAND,
+  TOOL_VIEW_FILE
+] as const);
+
+
 export const ERR_INVALID_TRANSITION = 'ERR_INVALID_TRANSITION' as const;
 export const ERR_PHYSICAL_WRITE_VIOLATION = 'ERR_PHYSICAL_WRITE_VIOLATION' as const;
 export const ERR_GITHUB_CONTEXT = 'ERR_GITHUB_CONTEXT' as const;
 export const ERR_CONFIG_RESOLUTION = 'ERR_CONFIG_RESOLUTION' as const;
 export const ERR_STATE_STORAGE = 'ERR_STATE_STORAGE' as const;
 export const ERR_VALIDATION = 'ERR_VALIDATION' as const;
+export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
+export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -168,8 +179,11 @@ export const ERROR_CODES = Object.freeze({
   GITHUB_CONTEXT: ERR_GITHUB_CONTEXT,
   CONFIG_RESOLUTION: ERR_CONFIG_RESOLUTION,
   STATE_STORAGE: ERR_STATE_STORAGE,
-  VALIDATION: ERR_VALIDATION
+  VALIDATION: ERR_VALIDATION,
+  GATE_TIMEOUT: ERR_GATE_TIMEOUT,
+  GATE_EXECUTION: ERR_GATE_EXECUTION
 });
+
 
 export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
@@ -227,6 +241,7 @@ export const SUMMARY_STATUS_FAILED = 'FAILED' as const;
 export const DEFAULT_PROMPTS_DIR = 'prompts' as const;
 export const PROMPT_FILE_PLANNER = 'planner.md' as const;
 export const PROMPT_FILE_IMPLEMENTER = 'implementer.md' as const;
+export const PROMPT_FILE_GATE = 'gate.md' as const;
 
 // Transition Notes
 export const NOTE_DEVELOPER_APPROVED = 'Approved by developer' as const;
@@ -236,11 +251,47 @@ export const NOTE_INITIATED_PLANNING = 'Initiated planning mode' as const;
 export const NOTE_GENERATING_SPECS = 'Generating plan specifications' as const;
 export const NOTE_AWAITING_REVIEW = 'Awaiting human review' as const;
 export const NOTE_MANUAL_GATES_RUN = 'Manual gates run' as const;
+export const NOTE_EXECUTING_GATES = 'Executing quality gates' as const;
+export const NOTE_GATES_PASSED = 'Quality gates passed successfully' as const;
+export const NOTE_GATES_FAILED = 'Quality gates failed' as const;
+
+// Status Identifiers
+export const STATUS_PASSED = 'PASSED' as const;
+export const STATUS_FAILED = 'FAILED' as const;
+export const STATUS_TIMED_OUT = 'TIMED_OUT' as const;
+export const STATUS_SKIPPED = 'SKIPPED' as const;
+
+// Gate Commands & Thresholds
+export interface GateCommandDefinition {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+}
+
+export const DEFAULT_GATE_COMMAND_TYPECHECK = 'npm run typecheck' as const;
+export const DEFAULT_GATE_COMMAND_TEST = 'npm test' as const;
+
+export const DEFAULT_GATE_COMMANDS: readonly GateCommandDefinition[] = Object.freeze([
+  Object.freeze({
+    id: 'typecheck',
+    label: 'TypeScript Compilation & Typecheck',
+    command: DEFAULT_GATE_COMMAND_TYPECHECK
+  }),
+  Object.freeze({
+    id: 'test',
+    label: 'Automated Test Suite',
+    command: DEFAULT_GATE_COMMAND_TEST
+  })
+]);
+
+export const MAX_FILTERED_LOG_LINES = 30 as const;
+export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;
 
 // Validation & Plan Constants
 export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;
 export const PLAN_DEFAULT_SPECIFICATION_TITLE = 'Plan Specification' as const;
 export const PLAN_DEFAULT_TITLE = 'Task Plan' as const;
+
 
 // Default System Prompts (Embedded Domain Fallbacks)
 export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt
@@ -363,4 +414,49 @@ Your primary purpose is to execute code changes, refactoring, test authoring, an
 - Provide structured, concise status reports on completed checklist items.
 - Reference modified files and test verification results explicitly.
 - When all plan items are satisfied and tests pass, signal completion to the parent coordinator.` as const;
+
+export const DEFAULT_GATE_SYSTEM_PROMPT = `# AgyLoop Quality Gate Subagent System Prompt
+
+You are the **AgyLoop Quality Gate Verification Subagent**, an autonomous, rigorous test engineer and quality barrier in Google Antigravity.
+
+Your primary purpose is to execute verification suites (typechecking, linting, build pipelines, unit/integration tests) inside an isolated shell environment, evaluate objective pass/fail verdicts, and shield the parent coordinator from verbose log pollution.
+
+---
+
+## 1. Operating Mandate & Safety Invariants
+
+1. **Verification-Only Mandate**:
+   - You are equipped exclusively with verification and inspection tools: \`run_command\` and \`view_file\`.
+   - You are physically and procedurally restricted from modifying code files (\`write_to_file\`, \`replace_file_content\` are disabled).
+   - Never attempt to modify or refactor workspace source files. If verification fails, isolate the diagnostics so the \`implementer\` subagent can address them.
+
+2. **Log Isolation & Shielding Mandate**:
+   - Compilers and test runners generate massive terminal output (hundreds or thousands of lines).
+   - You must NEVER dump raw, unfiltered logs into the parent conversational context.
+   - Buffer raw output, filter out noise (passing assertions, progress spinners), and extract actionable diagnostic signals (failure counts, exact error lines, stack traces).
+
+---
+
+## 2. Verification Methodology
+
+### Phase A: Execution
+- Execute verification commands sequentially (e.g. \`npm run typecheck\`, \`npm test\`).
+- Track execution status, exit code, and runtime duration for each command.
+- Respect execution timeouts strictly.
+
+### Phase B: Diagnostics Extraction & Filtering
+- When a command succeeds (exit code 0):
+  - Extract headline metrics (e.g. test count, suite count, pass count).
+  - Suppress verbose pass details.
+- When a command fails (exit code != 0 or timeout):
+  - Extract the specific failure block, error message, and stack trace.
+  - Limit the diagnostic snippet to the top essential lines (omitting redundant boilerplate).
+
+### Phase C: Structured Reporting
+Produce a concise, structured Quality Gate report covering:
+1. **Overall Verdict**: \`PASSED\` or \`FAILED\`.
+2. **Execution Matrix**: Table of command label, exit code, duration, and status.
+3. **Test Metrics**: Total tests executed, passed, failed, skipped.
+4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.` as const;
+
 

@@ -10,17 +10,23 @@ import {
   ToolWhitelist,
   READ_ONLY_TOOLS,
   IMPLEMENTER_TOOLS,
+  GATE_TOOLS,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
+  ROLE_GATE,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
+  ROLE_TITLE_GATE,
   ROLE_DESC_PLANNER,
   ROLE_DESC_IMPLEMENTER,
+  ROLE_DESC_GATE,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
+  DEFAULT_GATE_SYSTEM_PROMPT,
   PLAN_DEFAULT_SPECIFICATION_TITLE,
   TIER_PRO,
-  TIER_INHERIT
+  TIER_INHERIT,
+  TIER_FLASH_LITE
 } from '../domain';
 import {
   ConfigRepository,
@@ -56,6 +62,20 @@ export const IMPLEMENTER_SUBAGENT_DEF = Object.freeze({
     enable_mcp_tools: false
   })
 });
+
+export const GATE_SUBAGENT_DEF = Object.freeze({
+  name: ROLE_GATE,
+  role: ROLE_TITLE_GATE,
+  description: ROLE_DESC_GATE,
+  defaultTier: TIER_FLASH_LITE,
+  tools: GATE_TOOLS,
+  capabilities: Object.freeze({
+    enable_write_tools: false,
+    enable_subagent_tools: false,
+    enable_mcp_tools: false
+  })
+});
+
 
 export interface SubagentCapabilities {
   readonly enable_write_tools: boolean;
@@ -102,6 +122,14 @@ export interface ImplementationTaskPromptParams {
   readonly config?: AgyLoopConfig;
 }
 
+export interface GateTaskPromptParams {
+  readonly commands?: readonly string[];
+  readonly issueNumber?: number | string | null;
+  readonly userInstructions?: string | null;
+  readonly workspaceDir?: string;
+  readonly config?: AgyLoopConfig;
+}
+
 export class ResolveSubagentUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly githubGateway?: GitHubGateway;
@@ -137,6 +165,17 @@ export class ResolveSubagentUseCase {
     return DEFAULT_IMPLEMENTER_SYSTEM_PROMPT;
   }
 
+  public getGateSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_GATE, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
+    }
+    return DEFAULT_GATE_SYSTEM_PROMPT;
+  }
+
+
   public execute(options: ResolveSubagentOptions = {}): SubagentDescriptor {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
     const config = options.customConfig || this.configRepo.loadConfig({ cwd: options.workspaceDir });
@@ -162,6 +201,28 @@ export class ResolveSubagentUseCase {
         })
       };
     }
+
+    if (roleVo.value === ROLE_GATE) {
+      const whitelist = ToolWhitelist.gate();
+      return {
+        name: roleVo.value,
+        role: GATE_SUBAGENT_DEF.role,
+        description: GATE_SUBAGENT_DEF.description,
+        model: resolved.tier,
+        apiModel: resolved.apiModel,
+        tools: whitelist.toArray(),
+        capabilities: {
+          enable_write_tools: false,
+          enable_subagent_tools: false,
+          enable_mcp_tools: false
+        },
+        system_prompt: this.getGateSystemPrompt({
+          promptPath: options.promptPath,
+          workspaceDir: options.workspaceDir
+        })
+      };
+    }
+
 
     const enableMcp =
       config && config.options && typeof config.options.enableMcpInPlanner === 'boolean'
@@ -280,5 +341,40 @@ export class ResolveSubagentUseCase {
 
     return prompt.trim();
   }
+
+  public buildGateTaskPrompt(params: GateTaskPromptParams = {}): string {
+    let prompt = `# Task: Quality Gate Verification\n\n`;
+    prompt += `You are executing the **QUALITY_GATE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `Your goal is to execute automated build, typecheck, and test suites, isolate diagnostics, and report an objective quality verdict.\n\n`;
+
+    prompt += `### Operating Constraints:\n`;
+    prompt += `1. **Verification Only**: You have access strictly to \`run_command\` and \`view_file\`. Never attempt to edit source files.\n`;
+    prompt += `2. **Log Shielding Mandate**: Do not flood the parent conversation with raw terminal output. Filter noise and extract concise failure summaries.\n`;
+    prompt += `3. **Strict Timeout & Exit Code Respect**: Any non-zero exit code or timeout is an immediate gate failure.\n\n`;
+
+    if (params.issueNumber) {
+      prompt += `### Active Issue: #${params.issueNumber}\n\n`;
+    }
+
+    if (params.commands && params.commands.length > 0) {
+      prompt += `### Target Verification Commands:\n`;
+      params.commands.forEach((cmd, idx) => {
+        prompt += `${idx + 1}. \`${cmd}\`\n`;
+      });
+      prompt += `\n`;
+    }
+
+    if (params.userInstructions) {
+      prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
+    }
+
+    prompt += `### Required Verdict Output:\n`;
+    prompt += `- Overall Status: PASSED or FAILED\n`;
+    prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
+    prompt += `- Concise Failure Diagnostics (if failed)\n`;
+
+    return prompt.trim();
+  }
 }
+
 

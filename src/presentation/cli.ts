@@ -20,6 +20,7 @@ import {
   MODE_STANDARD,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
+  ROLE_GATE,
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE
@@ -30,7 +31,8 @@ import {
   FileConfigRepository,
   GeminiModelCatalog,
   FilePlanGenerator,
-  FilePromptRepository
+  FilePromptRepository,
+  ProcessCommandExecutor
 } from '../infrastructure';
 import {
   StartPlanningUseCase,
@@ -39,8 +41,10 @@ import {
   ResetPipelineUseCase,
   ListModelsUseCase,
   ResolveSubagentUseCase,
-  StartImplementationUseCase
+  StartImplementationUseCase,
+  RunQualityGateUseCase
 } from '../application';
+
 
 export interface CliOptions {
   commitAfter: boolean;
@@ -210,8 +214,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const modelCatalog = new GeminiModelCatalog({ configRepo });
   const planGenerator = new FilePlanGenerator();
   const promptRepo = new FilePromptRepository();
+  const commandExecutor = new ProcessCommandExecutor();
 
   const config = configRepo.loadConfig({ customPath: options.configPath });
+
 
   switch (command) {
     case 'status': {
@@ -300,10 +306,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'prompt': {
       const role = options.roleArg || ROLE_PLANNER;
-      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER) {
-        console.error(`Currently, detailed prompts are defined for '${ROLE_PLANNER}' and '${ROLE_IMPLEMENTER}'. Received: '${role}'.`);
+      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE) {
+        console.error(`Currently, detailed prompts are defined for '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', and '${ROLE_GATE}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
+
       const resolveSubagentUseCase = new ResolveSubagentUseCase(
         configRepo,
         githubGateway,
@@ -411,16 +418,44 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'gates': {
-      console.log(`\n🧪 Executing AgyLoop Quality & Review Gates`);
-      const transitionUseCase = new TransitionStageUseCase(stateRepo);
-      const sm = await transitionUseCase.execute({
-        targetStage: STAGE_QUALITY_GATE,
-        metadata: { note: 'Manual gates run' }
-      });
-      console.log(`Active Stage: ${formatStageBadge(sm.currentStage)}`);
-      console.log(`Run tests, linters, and ai-reviewer diagnostics.\n`);
-      return EXIT_CODE_SUCCESS;
+      console.log(`\n🧪 Executing AgyLoop Quality Gates`);
+      try {
+        const resolveSubagentUseCase = new ResolveSubagentUseCase(
+          configRepo,
+          githubGateway,
+          promptRepo
+        );
+        const runQualityGateUseCase = new RunQualityGateUseCase(
+          stateRepo,
+          configRepo,
+          planGenerator,
+          commandExecutor,
+          resolveSubagentUseCase
+        );
+
+        const result = await runQualityGateUseCase.execute({
+          issue: options.issue,
+          configPath: options.configPath,
+          dryRun: options.dryRun
+        });
+
+        console.log('\n' + result.summaryReport + '\n');
+
+        if (result.passed) {
+          console.log(`✓ Quality gates passed. Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+          console.log(`Next Step: Run AI PR review before committing and creating PR.\n`);
+          return EXIT_CODE_SUCCESS;
+        } else {
+          console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
+          console.error(`Resolve failures and re-run 'agyloop gates'.\n`);
+          return EXIT_CODE_FAILURE;
+        }
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
+
 
     case 'yolo': {
       console.log(`\n⚡ Starting AgyLoop [YOLO] Mode (Auto-Approval Gate)`);

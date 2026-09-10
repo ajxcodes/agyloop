@@ -11,12 +11,16 @@ import { PromptRepository, PromptLoadOptions } from '../ports';
 import {
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
+  ROLE_GATE,
   DEFAULT_PROMPTS_DIR,
   PROMPT_FILE_PLANNER,
   PROMPT_FILE_IMPLEMENTER,
+  PROMPT_FILE_GATE,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
-  DEFAULT_IMPLEMENTER_SYSTEM_PROMPT
+  DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
+  DEFAULT_GATE_SYSTEM_PROMPT
 } from '../domain';
+
 
 export class FilePromptRepository implements PromptRepository {
   public loadPrompt(role: string, options: PromptLoadOptions = {}): string {
@@ -27,6 +31,8 @@ export class FilePromptRepository implements PromptRepository {
       promptFileName = PROMPT_FILE_PLANNER;
     } else if (role === ROLE_IMPLEMENTER) {
       promptFileName = PROMPT_FILE_IMPLEMENTER;
+    } else if (role === ROLE_GATE) {
+      promptFileName = PROMPT_FILE_GATE;
     } else {
       promptFileName = `${role}.md`;
     }
@@ -48,7 +54,11 @@ export class FilePromptRepository implements PromptRepository {
     if (role === ROLE_IMPLEMENTER) {
       return DEFAULT_IMPLEMENTER_SYSTEM_PROMPT;
     }
+    if (role === ROLE_GATE) {
+      return DEFAULT_GATE_SYSTEM_PROMPT;
+    }
 
     return '';
   }
 }
+

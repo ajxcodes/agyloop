@@ -19,8 +19,10 @@ export interface PipelineOptionsConfig {
   readonly gateTimeoutSeconds: number;
   readonly autoApproveInYolo: boolean;
   readonly enableMcpInPlanner: boolean;
+  readonly gateCommands?: readonly string[] | readonly unknown[];
   readonly [option: string]: unknown;
 }
+
 
 export interface AgyLoopConfig {
   readonly models: ModelRoutingConfig;

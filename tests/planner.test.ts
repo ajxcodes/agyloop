@@ -3,10 +3,14 @@ const assert = require('node:assert');
 const {
   READ_ONLY_TOOLS,
   FORBIDDEN_WRITE_TOOLS,
+  GATE_TOOLS,
   PLANNER_SUBAGENT_DEF,
+  GATE_SUBAGENT_DEF,
+  ToolWhitelist,
   ResolveSubagentUseCase,
   FileConfigRepository
 } = require('../dist');
+
 
 const configRepo = new FileConfigRepository();
 const resolveUseCase = new ResolveSubagentUseCase(configRepo);
@@ -114,4 +118,79 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('Step 1: Implement feature'));
     assert.ok(prompt.includes('Definition of Done:'));
   });
+
+  test('GATE_SUBAGENT_DEF enforces verification-only capabilities and flash_lite routing', () => {
+    assert.strictEqual(GATE_SUBAGENT_DEF.name, 'gate');
+    assert.strictEqual(GATE_SUBAGENT_DEF.role, 'Quality Gate Verification Subagent');
+    assert.strictEqual(GATE_SUBAGENT_DEF.defaultTier, 'flash_lite');
+    assert.strictEqual(GATE_SUBAGENT_DEF.capabilities.enable_write_tools, false);
+    assert.strictEqual(GATE_SUBAGENT_DEF.capabilities.enable_subagent_tools, false);
+    assert.strictEqual(GATE_SUBAGENT_DEF.capabilities.enable_mcp_tools, false);
+    assert.deepStrictEqual([...GATE_SUBAGENT_DEF.tools], ['run_command', 'view_file']);
+  });
+
+  test('ToolWhitelist.gate() strictly permits run_command and view_file and rejects write_to_file', () => {
+    const whitelist = ToolWhitelist.gate();
+    assert.strictEqual(whitelist.isAllowed('run_command'), true);
+    assert.strictEqual(whitelist.isAllowed('view_file'), true);
+    assert.strictEqual(whitelist.isAllowed('write_to_file'), false);
+    assert.strictEqual(whitelist.isAllowed('replace_file_content'), false);
+    assert.strictEqual(whitelist.hasForbiddenWriteTools(), true); // contains run_command which is modifying
+    assert.throws(() => whitelist.assertAllowed('write_to_file'));
+  });
+
+  test('getGateSystemPrompt returns comprehensive guidance with log shielding mandate', () => {
+    const prompt = resolveUseCase.getGateSystemPrompt();
+    assert.ok(typeof prompt === 'string' && prompt.length > 500);
+    assert.ok(prompt.includes('AgyLoop Quality Gate Verification Subagent'));
+    assert.ok(prompt.includes('Verification-Only Mandate'));
+    assert.ok(prompt.includes('Log Isolation & Shielding Mandate'));
+    assert.ok(prompt.includes('run_command'));
+    assert.ok(prompt.includes('view_file'));
+    assert.ok(prompt.includes('Structured Reporting'));
+  });
+
+  test('getGateDefinition integrates with config and resolves model tier', () => {
+    const customConfig = {
+      models: {
+        planner: 'gemini-3.5-pro',
+        implementer: 'inherit',
+        gate: 'gemini-3.5-flash-lite',
+        reviewer: 'flash'
+      },
+      options: {
+        commitAfter: false,
+        gateTimeoutSeconds: 300,
+        autoApproveInYolo: true,
+        enableMcpInPlanner: false
+      }
+    };
+
+    const def = resolveUseCase.execute({ role: 'gate', customConfig });
+    assert.strictEqual(def.name, 'gate');
+    assert.strictEqual(def.model, 'flash_lite');
+    assert.strictEqual(def.apiModel, 'gemini-3.5-flash-lite');
+    assert.strictEqual(def.capabilities.enable_mcp_tools, false);
+    assert.strictEqual(def.capabilities.enable_write_tools, false);
+    assert.strictEqual(def.capabilities.enable_subagent_tools, false);
+    assert.deepStrictEqual([...def.tools], ['run_command', 'view_file']);
+  });
+
+  test('buildGateTaskPrompt formats verification directives and command list', () => {
+    const prompt = resolveUseCase.buildGateTaskPrompt({
+      issueNumber: 20,
+      commands: ['npm run typecheck', 'npm test'],
+      userInstructions: 'Verify strict hexagonal boundaries.'
+    });
+
+    assert.ok(prompt.includes('# Task: Quality Gate Verification'));
+    assert.ok(prompt.includes('Operating Constraints:'));
+    assert.ok(prompt.includes('Active Issue: #20'));
+    assert.ok(prompt.includes('1. `npm run typecheck`'));
+    assert.ok(prompt.includes('2. `npm test`'));
+    assert.ok(prompt.includes('Developer Directives:'));
+    assert.ok(prompt.includes('Verify strict hexagonal boundaries.'));
+    assert.ok(prompt.includes('Required Verdict Output:'));
+  });
 });
+
