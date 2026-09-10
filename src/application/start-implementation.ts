@@ -10,8 +10,6 @@
  * 6. Checkpoints state to StateRepository and updates AgyLoop Summary.md
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import {
   StateMachine,
   STAGE_NONE,
@@ -21,14 +19,13 @@ import {
   MODE_STANDARD,
   MODE_YOLO,
   ROLE_IMPLEMENTER,
-  DEFAULT_SUMMARY_FILENAME,
-  CANDIDATE_PLAN_FILENAMES,
   SUMMARY_STAGE_PLAN_REVIEW,
   SUMMARY_STAGE_IMPLEMENTATION,
   SUMMARY_STATUS_APPROVED,
   SUMMARY_STATUS_IN_PROGRESS,
   NOTE_DEVELOPER_APPROVED,
   NOTE_AUTO_APPROVED_YOLO,
+  VALIDATION_FIELD_PLAN_PATH,
   IssueNumber,
   InvalidTransitionError,
   ValidationError
@@ -40,7 +37,6 @@ import {
   GitHubGateway,
   GitHubIssueData
 } from '../ports';
-import { CliGitHubGateway } from '../infrastructure/cli-github-gateway';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 
 export interface StartImplementationParams {
@@ -67,20 +63,22 @@ export class StartImplementationUseCase {
   private readonly stateRepo: StateRepository;
   private readonly configRepo: ConfigRepository;
   private readonly planGenerator: PlanGeneratorPort;
-  private readonly githubGateway: GitHubGateway;
+  private readonly githubGateway?: GitHubGateway;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
 
   constructor(
     stateRepo: StateRepository,
     configRepo: ConfigRepository,
     planGenerator: PlanGeneratorPort,
-    githubGateway: GitHubGateway = new CliGitHubGateway()
+    githubGateway?: GitHubGateway,
+    resolveSubagentUseCase?: ResolveSubagentUseCase
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
     this.githubGateway = githubGateway;
-    this.resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo);
+    this.resolveSubagentUseCase =
+      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
   }
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
@@ -120,64 +118,28 @@ export class StartImplementationUseCase {
       );
     }
 
-    // 3. Resolve plan directory & plan file
-    let resolvedPlanDir: string | null = null;
-    let resolvedPlanPath: string | null = null;
+    // 3. Resolve plan directory & plan file via PlanGeneratorPort
+    const resolved = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: activeIssue,
+      planPath: params.planPath,
+      planDir: params.planDir
+    });
 
-    if (params.planPath) {
-      resolvedPlanPath = path.isAbsolute(params.planPath)
-        ? params.planPath
-        : path.resolve(workspace, params.planPath);
-      resolvedPlanDir = path.dirname(resolvedPlanPath);
-    } else {
-      if (params.planDir) {
-        resolvedPlanDir = path.isAbsolute(params.planDir)
-          ? params.planDir
-          : path.resolve(workspace, params.planDir);
-      } else if (activeIssue) {
-        resolvedPlanDir = this.planGenerator.findPlanDirectory(workspace, activeIssue);
-      }
-
-      if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {
-        for (const candidate of CANDIDATE_PLAN_FILENAMES) {
-          const candidatePath = path.join(resolvedPlanDir, candidate);
-          if (fs.existsSync(candidatePath)) {
-            resolvedPlanPath = candidatePath;
-            break;
-          }
-        }
-
-        // Fallback: search for any .md file that is not summary log
-        if (!resolvedPlanPath) {
-          try {
-            const files = fs.readdirSync(resolvedPlanDir);
-            const mdFile = files.find(
-              (f) => f.endsWith('.md') && !f.toLowerCase().includes('summary')
-            );
-            if (mdFile) {
-              resolvedPlanPath = path.join(resolvedPlanDir, mdFile);
-            }
-          } catch {
-            // directory read error
-          }
-        }
-      }
-    }
-
-    if (!resolvedPlanPath || !fs.existsSync(resolvedPlanPath)) {
+    if (!resolved) {
       throw new ValidationError(
-        'planPath',
-        resolvedPlanPath,
+        VALIDATION_FIELD_PLAN_PATH,
+        params.planPath || null,
         `Approved plan document could not be found${activeIssue ? ` for issue #${activeIssue}` : ''}. Ensure a plan exists in artifacts/plans/.`
       );
     }
 
-    const planContent = fs.readFileSync(resolvedPlanPath, 'utf8');
+    const planContent = this.planGenerator.readPlanDocument(resolved.planPath);
 
     // 4. Resolve GitHub issue context if available
     let issueData: GitHubIssueData | null = null;
     const issueVo = IssueNumber.tryFrom(activeIssue);
-    if (issueVo) {
+    if (issueVo && this.githubGateway) {
       try {
         issueData = await this.githubGateway.fetchIssue(issueVo.value, { cwd: workspace });
       } catch {
@@ -200,7 +162,7 @@ export class StartImplementationUseCase {
     // 6. Format token-minimized handoff prompt
     const taskPrompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
-      planPath: resolvedPlanPath,
+      planPath: resolved.planPath,
       issueNumber: activeIssue,
       issueTitle: issueData && !issueData.error ? issueData.title : undefined,
       issueBody: issueData && !issueData.error ? issueData.body : undefined,
@@ -213,27 +175,24 @@ export class StartImplementationUseCase {
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
 
-      if (resolvedPlanDir) {
-        const summaryPath = path.join(resolvedPlanDir, DEFAULT_SUMMARY_FILENAME);
-        if (fs.existsSync(summaryPath)) {
-          this.planGenerator.updateSummaryLog(summaryPath, {
-            stage: SUMMARY_STAGE_PLAN_REVIEW,
-            status: SUMMARY_STATUS_APPROVED
-          });
-          this.planGenerator.updateSummaryLog(summaryPath, {
-            stage: SUMMARY_STAGE_IMPLEMENTATION,
-            subagent: implementerDef.name,
-            model: implementerDef.model,
-            status: SUMMARY_STATUS_IN_PROGRESS
-          });
-        }
+      if (resolved.summaryPath) {
+        this.planGenerator.updateSummaryLog(resolved.summaryPath, {
+          stage: SUMMARY_STAGE_PLAN_REVIEW,
+          status: SUMMARY_STATUS_APPROVED
+        });
+        this.planGenerator.updateSummaryLog(resolved.summaryPath, {
+          stage: SUMMARY_STAGE_IMPLEMENTATION,
+          subagent: implementerDef.name,
+          model: implementerDef.model,
+          status: SUMMARY_STATUS_IN_PROGRESS
+        });
       }
     }
 
     return {
       stateMachine: sm,
-      planDir: resolvedPlanDir,
-      planPath: resolvedPlanPath,
+      planDir: resolved.planDir,
+      planPath: resolved.planPath,
       planContent,
       implementerDef,
       taskPrompt,

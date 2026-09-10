@@ -12,7 +12,8 @@ import {
   GitHubGateway,
   GitHubGatewayOptions,
   GitHubIssueData,
-  GitHubComment
+  GitHubComment,
+  formatIssueForPrompt
 } from '../ports';
 import { GitHubContextError } from '../domain';
 
@@ -135,26 +136,6 @@ export class CliGitHubGateway implements GitHubGateway {
   }
 
   public static formatIssueForPrompt(issueData: GitHubIssueData | null): string {
-    if (!issueData) return '';
-    if (issueData.error) {
-      return `### Associated GitHub Issue: #${issueData.number} (Repository: ${issueData.repo})\n*(Warning: Unable to fetch live issue details: ${issueData.error})*\n`;
-    }
-
-    const labelBadge = issueData.labels.length > 0 ? issueData.labels.join(', ') : 'None';
-    let formatted = `### Active Issue: #${issueData.number} - ${issueData.title}\n`;
-    formatted += `- **Repository:** \`${issueData.repo}\`\n`;
-    formatted += `- **Labels:** ${labelBadge}\n\n`;
-    formatted += `#### Description:\n${issueData.body || '*(No description provided)*'}\n`;
-
-    if (issueData.comments && issueData.comments.length > 0) {
-      formatted += `\n#### Discussion & Comments (${issueData.comments.length}):\n`;
-      issueData.comments.forEach((c) => {
-        formatted += `> **@${c.author}** (${c.createdAt || 'recent'}):\n`;
-        const quotedBody = (c.body || '').split('\n').map((line) => `> ${line}`).join('\n');
-        formatted += `${quotedBody}\n\n`;
-      });
-    }
-
-    return formatted.trim();
+    return formatIssueForPrompt(issueData);
   }
 }

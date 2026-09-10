@@ -29,7 +29,8 @@ import {
   CliGitHubGateway,
   FileConfigRepository,
   GeminiModelCatalog,
-  FilePlanGenerator
+  FilePlanGenerator,
+  FilePromptRepository
 } from '../infrastructure';
 import {
   StartPlanningUseCase,
@@ -208,6 +209,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const configRepo = new FileConfigRepository();
   const modelCatalog = new GeminiModelCatalog({ configRepo });
   const planGenerator = new FilePlanGenerator();
+  const promptRepo = new FilePromptRepository();
 
   const config = configRepo.loadConfig({ customPath: options.configPath });
 
@@ -302,7 +304,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.error(`Currently, detailed prompts are defined for '${ROLE_PLANNER}' and '${ROLE_IMPLEMENTER}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
-      const resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo);
+      const resolveSubagentUseCase = new ResolveSubagentUseCase(
+        configRepo,
+        githubGateway,
+        promptRepo
+      );
       const def = resolveSubagentUseCase.execute({ role, customConfig: config });
       console.log('\n=== AgyLoop: Subagent Definition ===');
       console.log(`Subagent Name : ${def.name}`);
@@ -364,11 +370,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'implement': {
       console.log(`\n🚀 Resuming AgyLoop Implementation`);
       try {
+        const resolveSubagentUseCase = new ResolveSubagentUseCase(
+          configRepo,
+          githubGateway,
+          promptRepo
+        );
         const startImplementationUseCase = new StartImplementationUseCase(
           stateRepo,
           configRepo,
           planGenerator,
-          githubGateway
+          githubGateway,
+          resolveSubagentUseCase
         );
 
         const result = await startImplementationUseCase.execute({

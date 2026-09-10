@@ -70,6 +70,20 @@ export interface GenerateSummaryLogResult {
   readonly created: boolean;
 }
 
+export interface ResolvePlanOptions {
+  readonly projectRoot?: string;
+  readonly issue?: number | string | null;
+  readonly planPath?: string | null;
+  readonly planDir?: string | null;
+}
+
+export interface ResolvedPlanLocation {
+  readonly planDir: string;
+  readonly planPath: string;
+  readonly planFileName: string;
+  readonly summaryPath?: string;
+}
+
 export interface PlanGeneratorPort {
   /**
    * Scaffolds an issue plan directory with templates and execution summary.
@@ -95,4 +109,14 @@ export interface PlanGeneratorPort {
    * Finds the existing plan directory for an issue.
    */
   findPlanDirectory(projectRoot: string, issueNumber: number | string): string | null;
+
+  /**
+   * Resolves the target plan directory and plan specification file.
+   */
+  resolvePlanFile(options: ResolvePlanOptions): ResolvedPlanLocation | null;
+
+  /**
+   * Reads the plan document content from disk.
+   */
+  readPlanDocument(planPath: string): string;
 }

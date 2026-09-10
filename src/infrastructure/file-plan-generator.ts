@@ -15,7 +15,9 @@ import {
   GeneratePlanOptions,
   GeneratePlanResult,
   GenerateSummaryLogOptions,
-  GenerateSummaryLogResult
+  GenerateSummaryLogResult,
+  ResolvePlanOptions,
+  ResolvedPlanLocation
 } from '../ports';
 import {
   DEFAULT_PLANS_DIR,
@@ -24,7 +26,8 @@ import {
   TEMPLATE_IMPLEMENTATION,
   TEMPLATE_SUMMARY,
   DEFAULT_TEMPLATES_DIRNAME,
-  TEMPLATE_FILES
+  TEMPLATE_FILES,
+  CANDIDATE_PLAN_FILENAMES
 } from '../domain';
 
 export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freeze({
@@ -443,5 +446,69 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     }
 
     return null;
+  }
+
+  public resolvePlanFile(options: ResolvePlanOptions): ResolvedPlanLocation | null {
+    const cwd = options.projectRoot || process.cwd();
+    let resolvedPlanDir: string | null = null;
+    let resolvedPlanPath: string | null = null;
+
+    if (options.planPath) {
+      resolvedPlanPath = path.isAbsolute(options.planPath)
+        ? options.planPath
+        : path.resolve(cwd, options.planPath);
+      if (!fs.existsSync(resolvedPlanPath)) {
+        return null;
+      }
+      resolvedPlanDir = path.dirname(resolvedPlanPath);
+    } else {
+      if (options.planDir) {
+        resolvedPlanDir = path.isAbsolute(options.planDir)
+          ? options.planDir
+          : path.resolve(cwd, options.planDir);
+      } else if (options.issue) {
+        resolvedPlanDir = this.findPlanDirectory(cwd, options.issue);
+      }
+
+      if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {
+        for (const candidate of CANDIDATE_PLAN_FILENAMES) {
+          const candidatePath = path.join(resolvedPlanDir, candidate);
+          if (fs.existsSync(candidatePath)) {
+            resolvedPlanPath = candidatePath;
+            break;
+          }
+        }
+
+        if (!resolvedPlanPath) {
+          try {
+            const files = fs.readdirSync(resolvedPlanDir);
+            const mdFile = files.find(
+              (f) => f.endsWith('.md') && !f.toLowerCase().includes('summary')
+            );
+            if (mdFile) {
+              resolvedPlanPath = path.join(resolvedPlanDir, mdFile);
+            }
+          } catch {
+            // directory read error
+          }
+        }
+      }
+    }
+
+    if (!resolvedPlanPath || !resolvedPlanDir || !fs.existsSync(resolvedPlanPath)) {
+      return null;
+    }
+
+    const summaryPath = path.join(resolvedPlanDir, DEFAULT_SUMMARY_FILENAME);
+    return {
+      planDir: resolvedPlanDir,
+      planPath: resolvedPlanPath,
+      planFileName: path.basename(resolvedPlanPath),
+      summaryPath: fs.existsSync(summaryPath) ? summaryPath : undefined
+    };
+  }
+
+  public readPlanDocument(planPath: string): string {
+    return fs.readFileSync(planPath, 'utf8');
   }
 }

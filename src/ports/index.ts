@@ -7,3 +7,4 @@ export * from './github-gateway';
 export * from './config-repository';
 export * from './model-catalog';
 export * from './plan-generator';
+export * from './prompt-repository';
