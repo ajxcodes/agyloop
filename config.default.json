@@ -9,6 +9,7 @@
   "options": {
     "commitAfter": false,
     "gateTimeoutSeconds": 300,
-    "autoApproveInYolo": true
+    "autoApproveInYolo": true,
+    "enableMcpInPlanner": true
   }
 }

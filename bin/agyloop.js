@@ -36,6 +36,17 @@ const {
   fetchAvailableModels,
   DEFAULT_CONFIG
 } = require('../lib/config');
+const {
+  getPlannerDefinition,
+  getPlannerSystemPrompt,
+  buildPlanningTaskPrompt,
+  READ_ONLY_TOOLS
+} = require('../lib/planner');
+const {
+  fetchIssueContext,
+  formatIssueForPrompt,
+  getCurrentRepo
+} = require('../lib/github');
 
 const VERSION = '0.1.0';
 
@@ -55,6 +66,7 @@ Commands:
   status             Display current pipeline stage and checkpoint history
   config             Display active configuration and model routing table
   models             List available Gemini models and mapped Antigravity tiers
+  prompt [role]      Inspect subagent definition, whitelist, and system prompt
   reset              Reset .agyloop/state.json checkpoint
   transition <STAGE> Advance state machine to target stage
 
@@ -79,7 +91,8 @@ function parseArguments(args) {
     refresh: false,
     help: false,
     version: false,
-    stageArg: null
+    stageArg: null,
+    roleArg: null
   };
 
   const positional = [];
@@ -114,6 +127,8 @@ function parseArguments(args) {
     command = positional[0];
     if (command === 'transition' && positional.length > 1) {
       options.stageArg = positional[1].toUpperCase();
+    } else if (command === 'prompt' && positional.length > 1) {
+      options.roleArg = positional[1].toLowerCase();
     }
   }
 
@@ -241,9 +256,50 @@ async function main() {
       break;
     }
 
+    case 'prompt': {
+      const role = options.roleArg || 'planner';
+      if (role !== 'planner') {
+        console.error(`Currently, detailed prompts are defined for 'planner'. Received: '${role}'.`);
+        process.exit(1);
+      }
+      const def = getPlannerDefinition(config);
+      console.log('\n=== AgyLoop: Subagent Definition ===');
+      console.log(`Subagent Name : ${def.name}`);
+      console.log(`Subagent Role : ${def.role}`);
+      console.log(`Resolved Tier : ${def.model} (API default: ${def.apiModel})`);
+      console.log(`Read-Only     : true`);
+      console.log(`Tool Whitelist: ${def.tools.join(', ')}`);
+      console.log(`Capabilities  : write_tools=${def.capabilities.enable_write_tools}, mcp_tools=${def.capabilities.enable_mcp_tools}`);
+      console.log('\n=== AgyLoop: System Prompt (prompts/planner.md) ===\n');
+      console.log(def.system_prompt);
+      console.log('');
+      break;
+    }
+
     case 'plan': {
       console.log(`\n🚀 Starting AgyLoop [PLAN-ONLY] Mode`);
       console.log(`Current Stage: ${formatStageBadge(sm.state.currentStage)}`);
+
+      const activeIssue = options.issue || sm.state.issue;
+      if (activeIssue) {
+        console.log(`Querying GitHub context for Issue #${activeIssue}...`);
+        const issueData = fetchIssueContext(activeIssue);
+        if (issueData && !issueData.error) {
+          console.log(`  ✓ Issue: ${issueData.title}`);
+          if (issueData.labels && issueData.labels.length > 0) {
+            console.log(`  ✓ Labels: ${issueData.labels.join(', ')}`);
+          }
+        } else if (issueData && issueData.error) {
+          console.log(`  ! Warning: Could not fetch GitHub issue (${issueData.error})`);
+        }
+      }
+
+      const plannerDef = getPlannerDefinition(config);
+      console.log(`Subagent     : ${plannerDef.name} (${plannerDef.role})`);
+      console.log(`Model Tier   : ${plannerDef.model}`);
+      console.log(`Whitelisted  : ${plannerDef.tools.join(', ')}`);
+      console.log(`Safety Guard : Physical write suppression enabled (write_tools=false, mcp_tools=${plannerDef.capabilities.enable_mcp_tools})\n`);
+
       if (sm.state.currentStage === STAGES.INITIALIZED) {
         sm.transition(STAGES.DISCOVERY, { note: 'Initiated planning mode' });
       }
