@@ -1,0 +1,86 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "agyloop",
+  "version": "0.1.0",
+  "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
+  "author": {
+    "name": "Alvin Jorrel Pascual",
+    "email": "me@ajx.codes",
+    "url": "https://github.com/ajxcodes"
+  },
+  "repository": "https://github.com/ajxcodes/agyloop",
+  "license": "MIT",
+  "keywords": [
+    "antigravity",
+    "agy",
+    "plugin",
+    "orchestrator",
+    "subagents",
+    "pair-programming",
+    "development-lifecycle",
+    "quality-gates"
+  ],
+  "engines": {
+    "antigravity": ">=2.0.0"
+  },
+  "dependencies": {
+    "gh": ">=2.40.0"
+  },
+  "commands": {
+    "agyloop": {
+      "name": "agyloop",
+      "description": "Multi-subagent development lifecycle orchestrator (Context -> Plan -> Implement -> Gate -> Review -> Commit)",
+      "usage": "/agyloop [plan | implement | gates | yolo] [--commit-after]",
+      "subcommands": {
+        "plan": {
+          "description": "Run read-only planning subagent and generate persistent specs in artifacts/plans/"
+        },
+        "implement": {
+          "description": "Resume straight from an approved plan with a fresh context"
+        },
+        "gates": {
+          "description": "Run quality and AI review gates on current working diff"
+        },
+        "yolo": {
+          "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
+        }
+      },
+      "flags": {
+        "--commit-after": {
+          "type": "boolean",
+          "description": "Automatically commit if all quality gates and reviews pass green",
+          "default": false
+        }
+      }
+    }
+  },
+  "subagents": {
+    "planner": {
+      "name": "planner",
+      "description": "Architectural reasoning and deep read-only inspection subagent",
+      "model": "pro",
+      "role": "Architectural Planning Subagent",
+      "tools": {
+        "read_only": true
+      }
+    },
+    "implementer": {
+      "name": "implementer",
+      "description": "Focused code generation and refactoring subagent loaded strictly from approved plan",
+      "model": "inherit",
+      "role": "Code Implementation Subagent"
+    },
+    "gate": {
+      "name": "gate",
+      "description": "Fast, isolated quality gate subagent executing builds, tests, and linters",
+      "model": "flash_lite",
+      "role": "Quality Gate Verification Subagent"
+    },
+    "reviewer": {
+      "name": "reviewer",
+      "description": "Standards compliance and acceptance criteria review subagent",
+      "model": "flash",
+      "role": "AI Reviewer Subagent"
+    }
+  }
+}
