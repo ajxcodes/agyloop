@@ -1,0 +1,249 @@
+#!/usr/bin/env node
+
+/**
+ * agyloop - Multi-Subagent Development Lifecycle Orchestrator CLI
+ *
+ * Usage:
+ *   agyloop [command] [options]
+ *
+ * Commands:
+ *   (default)      Execute complete pair-programming loop
+ *   plan           Run planning stage and stop at human approval gate
+ *   implement      Resume execution from approved plan
+ *   gates          Run quality and AI review gates on current diff
+ *   yolo           Execute unattended fast-path mode
+ *   status         Inspect active stage and checkpoint history
+ *   reset          Reset pipeline checkpoint state
+ *   transition <s> Advance state to specified target stage
+ *
+ * Options:
+ *   --commit-after Automatically commit if all quality gates pass
+ *   --issue <num>  Associate execution with an issue number
+ *   --dry-run      Simulate transitions without writing to disk
+ *   -h, --help     Show this help message
+ *   -v, --version  Show version
+ */
+
+const path = require('path');
+const { StateMachine, STAGES } = require('../lib/state-machine');
+
+const VERSION = '0.1.0';
+
+function printHelp() {
+  console.log(`
+agyloop v${VERSION} - Antigravity Development Lifecycle Orchestrator
+
+Usage:
+  agyloop [command] [options]
+
+Commands:
+  (default)          Run full lifecycle (Context -> Plan -> Approve -> Implement -> Gate -> Review -> Commit)
+  plan               Run planning subagent and stop at approval gate
+  implement          Resume implementation directly from approved plan
+  gates              Run quality and AI review gates on current working diff
+  yolo               Unattended fast-path mode (auto-approves plan gate)
+  status             Display current pipeline stage and checkpoint history
+  reset              Reset .agyloop/state.json checkpoint
+  transition <STAGE> Advance state machine to target stage
+
+Options:
+  --commit-after     Opt-in flag to automatically commit if all gates pass
+  --issue <number>   Specify GitHub issue number
+  --dry-run          Simulate execution without modifying state on disk
+  -h, --help         Show help
+  -v, --version      Show version
+`);
+}
+
+function parseArguments(args) {
+  let command = null;
+  const options = {
+    commitAfter: false,
+    dryRun: false,
+    issue: null,
+    help: false,
+    version: false,
+    stageArg: null
+  };
+
+  const positional = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--help' || arg === '-h') {
+      options.help = true;
+    } else if (arg === '--version' || arg === '-v') {
+      options.version = true;
+    } else if (arg === '--commit-after') {
+      options.commitAfter = true;
+    } else if (arg === '--dry-run') {
+      options.dryRun = true;
+    } else if (arg === '--issue') {
+      options.issue = args[++i];
+    } else if (arg.startsWith('--issue=')) {
+      options.issue = arg.split('=')[1];
+    } else if (!arg.startsWith('-')) {
+      positional.push(arg);
+    }
+  }
+
+  if (positional.length > 0) {
+    command = positional[0];
+    if (command === 'transition' && positional.length > 1) {
+      options.stageArg = positional[1].toUpperCase();
+    }
+  }
+
+  return { command, options };
+}
+
+function formatStageBadge(stage) {
+  const colors = {
+    INITIALIZED: '\x1b[36m', // Cyan
+    DISCOVERY: '\x1b[34m',   // Blue
+    PLAN: '\x1b[35m',        // Magenta
+    APPROVAL: '\x1b[33m',    // Yellow
+    IMPLEMENT: '\x1b[32m',   // Green
+    QUALITY_GATE: '\x1b[36m',// Cyan
+    REVIEW: '\x1b[34m',      // Blue
+    COMMIT: '\x1b[32m',      // Green
+    COMPLETED: '\x1b[32m\x1b[1m' // Bold Green
+  };
+  const reset = '\x1b[0m';
+  const color = colors[stage] || '';
+  return `${color}[${stage}]${reset}`;
+}
+
+async function main() {
+  const rawArgs = process.argv.slice(2);
+  const { command, options } = parseArguments(rawArgs);
+
+  if (options.help) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (options.version) {
+    console.log(`agyloop v${VERSION}`);
+    process.exit(0);
+  }
+
+  const mode = command === 'yolo' ? 'yolo' : command === 'plan' ? 'plan' : 'standard';
+  const sm = new StateMachine({
+    mode,
+    issue: options.issue
+  });
+
+  switch (command) {
+    case 'status': {
+      const status = sm.getStatus();
+      console.log('\n=== AgyLoop: Pipeline Status ===');
+      console.log(`Current Stage : ${formatStageBadge(status.currentStage)}`);
+      console.log(`Execution Mode: ${status.mode}`);
+      console.log(`Active Issue  : ${status.issue ? '#' + status.issue : 'None'}`);
+      console.log(`Updated At    : ${status.updatedAt}`);
+      console.log(`Checkpoint    : ${status.stateFile}`);
+      console.log('\nTransition History:');
+      sm.state.history.forEach((entry, idx) => {
+        console.log(`  ${idx + 1}. ${formatStageBadge(entry.stage)} at ${entry.timestamp}`);
+      });
+      console.log('');
+      break;
+    }
+
+    case 'reset': {
+      sm.reset(true);
+      console.log('✓ AgyLoop pipeline state reset. .agyloop/state.json cleared.');
+      break;
+    }
+
+    case 'transition': {
+      if (!options.stageArg) {
+        console.error('Error: Please specify target stage. Example: agyloop transition PLAN');
+        console.error('Valid stages:', Object.keys(STAGES).join(', '));
+        process.exit(1);
+      }
+      try {
+        sm.transition(options.stageArg, { note: 'Manual CLI transition' });
+        console.log(`✓ Transitioned to ${formatStageBadge(options.stageArg)}`);
+      } catch (err) {
+        console.error(`✗ ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'plan': {
+      console.log(`\n🚀 Starting AgyLoop [PLAN-ONLY] Mode`);
+      console.log(`Current Stage: ${formatStageBadge(sm.state.currentStage)}`);
+      if (sm.state.currentStage === STAGES.INITIALIZED) {
+        sm.transition(STAGES.DISCOVERY, { note: 'Initiated planning mode' });
+      }
+      if (sm.state.currentStage === STAGES.DISCOVERY) {
+        sm.transition(STAGES.PLAN, { note: 'Generating plan specifications' });
+      }
+      if (sm.state.currentStage === STAGES.PLAN) {
+        sm.transition(STAGES.APPROVAL, { note: 'Awaiting human review' });
+      }
+      console.log(`🛑 Paused at ${formatStageBadge(STAGES.APPROVAL)} gate.`);
+      console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+      break;
+    }
+
+    case 'implement': {
+      console.log(`\n🚀 Resuming AgyLoop Implementation`);
+      if (sm.state.currentStage === STAGES.APPROVAL) {
+        sm.transition(STAGES.IMPLEMENT, { note: 'Approved by developer' });
+        console.log(`✓ Advanced to ${formatStageBadge(STAGES.IMPLEMENT)}. Ready for code modifications.\n`);
+      } else if (sm.state.currentStage === STAGES.IMPLEMENT) {
+        console.log(`Already at ${formatStageBadge(STAGES.IMPLEMENT)}. Continuing code generation.\n`);
+      } else {
+        console.error(`✗ Cannot resume into IMPLEMENT from ${formatStageBadge(sm.state.currentStage)}.`);
+        console.error(`Run 'agyloop plan' first or verify your .agyloop/state.json checkpoint.`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'gates': {
+      console.log(`\n🧪 Executing AgyLoop Quality & Review Gates`);
+      if (sm.canTransition(STAGES.QUALITY_GATE)) {
+        sm.transition(STAGES.QUALITY_GATE, { note: 'Manual gates run' });
+      }
+      console.log(`Active Stage: ${formatStageBadge(sm.state.currentStage)}`);
+      console.log(`Run tests, linters, and ai-reviewer diagnostics.\n`);
+      break;
+    }
+
+    case 'yolo': {
+      console.log(`\n⚡ Starting AgyLoop [YOLO] Mode (Auto-Approval Gate)`);
+      if (sm.state.currentStage === STAGES.INITIALIZED) {
+        sm.transition(STAGES.DISCOVERY);
+        sm.transition(STAGES.PLAN);
+        sm.transition(STAGES.IMPLEMENT, { note: 'Auto-approved in YOLO mode' });
+      }
+      console.log(`Active Stage: ${formatStageBadge(sm.state.currentStage)}`);
+      break;
+    }
+
+    default: {
+      console.log(`\n🔄 AgyLoop Development Lifecycle Coordinator`);
+      console.log(`Current Stage: ${formatStageBadge(sm.state.currentStage)}`);
+      console.log(`To view detailed state:  agyloop status`);
+      console.log(`To run planning mode:    agyloop plan`);
+      console.log(`To run quality gates:    agyloop gates`);
+      console.log(`To see all options:      agyloop --help\n`);
+      break;
+    }
+  }
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { main, parseArguments };
