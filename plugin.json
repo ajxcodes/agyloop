@@ -80,7 +80,25 @@
       "name": "implementer",
       "description": "Focused code generation and refactoring subagent loaded strictly from approved plan",
       "model": "inherit",
-      "role": "Code Implementation Subagent"
+      "role": "Code Implementation Subagent",
+      "tools": {
+        "read_only": false,
+        "whitelist": [
+          "view_file",
+          "grep_search",
+          "find_by_name",
+          "list_dir",
+          "write_to_file",
+          "replace_file_content",
+          "run_command"
+        ]
+      },
+      "capabilities": {
+        "enable_write_tools": true,
+        "enable_subagent_tools": false,
+        "enable_mcp_tools": false
+      },
+      "system_prompt": "prompts/implementer.md"
     },
     "gate": {
       "name": "gate",

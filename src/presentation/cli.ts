@@ -18,6 +18,9 @@ import {
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
+  ROLE_PLANNER,
+  ROLE_IMPLEMENTER,
+  DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE
 } from '../domain';
@@ -34,7 +37,8 @@ import {
   GetPipelineStatusUseCase,
   ResetPipelineUseCase,
   ListModelsUseCase,
-  ResolveSubagentUseCase
+  ResolveSubagentUseCase,
+  StartImplementationUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -293,23 +297,23 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'prompt': {
-      const role = options.roleArg || 'planner';
-      if (role !== 'planner') {
-        console.error(`Currently, detailed prompts are defined for 'planner'. Received: '${role}'.`);
+      const role = options.roleArg || ROLE_PLANNER;
+      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER) {
+        console.error(`Currently, detailed prompts are defined for '${ROLE_PLANNER}' and '${ROLE_IMPLEMENTER}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
       const resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo);
-      const def = resolveSubagentUseCase.execute({ customConfig: config });
+      const def = resolveSubagentUseCase.execute({ role, customConfig: config });
       console.log('\n=== AgyLoop: Subagent Definition ===');
       console.log(`Subagent Name : ${def.name}`);
       console.log(`Subagent Role : ${def.role}`);
       console.log(`Resolved Tier : ${def.model} (API default: ${def.apiModel})`);
-      console.log(`Read-Only     : true`);
+      console.log(`Write Tools   : ${def.capabilities.enable_write_tools ? 'ENABLED' : 'DISABLED (Read-Only)'}`);
       console.log(`Tool Whitelist: ${def.tools.join(', ')}`);
       console.log(
         `Capabilities  : write_tools=${def.capabilities.enable_write_tools}, mcp_tools=${def.capabilities.enable_mcp_tools}`
       );
-      console.log('\n=== AgyLoop: System Prompt (prompts/planner.md) ===\n');
+      console.log(`\n=== AgyLoop: System Prompt (${DEFAULT_PROMPTS_DIR}/${role}.md) ===\n`);
       console.log(def.system_prompt);
       console.log('');
       return EXIT_CODE_SUCCESS;
@@ -359,39 +363,37 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'implement': {
       console.log(`\n🚀 Resuming AgyLoop Implementation`);
-      const currentSnapshot = await stateRepo.load();
-      const currentStage = currentSnapshot ? currentSnapshot.currentStage : STAGE_INITIALIZED;
+      try {
+        const startImplementationUseCase = new StartImplementationUseCase(
+          stateRepo,
+          configRepo,
+          planGenerator,
+          githubGateway
+        );
 
-      if (currentStage === STAGE_APPROVAL) {
-        const transitionUseCase = new TransitionStageUseCase(stateRepo);
-        const sm = await transitionUseCase.execute({
-          targetStage: STAGE_IMPLEMENT,
-          metadata: { note: 'Approved by developer' }
+        const result = await startImplementationUseCase.execute({
+          issue: options.issue,
+          configPath: options.configPath,
+          dryRun: options.dryRun
         });
-        console.log(`✓ Advanced to ${formatStageBadge(STAGE_IMPLEMENT)}. Ready for code modifications.\n`);
 
-        const activeIssue = options.issue || sm.issue;
-        if (activeIssue) {
-          const planDir = planGenerator.findPlanDirectory(process.cwd(), activeIssue);
-          if (planDir) {
-            const summaryFile = path.join(planDir, 'AgyLoop Summary.md');
-            planGenerator.updateSummaryLog(summaryFile, {
-              stage: 'Plan Review',
-              status: 'APPROVED'
-            });
-            planGenerator.updateSummaryLog(summaryFile, {
-              stage: 'Implementation',
-              status: 'IN PROGRESS'
-            });
-          }
+        if (result.resumed) {
+          console.log(`Already at ${formatStageBadge(STAGE_IMPLEMENT)}. Resuming code modifications.\n`);
+        } else {
+          console.log(`✓ Advanced to ${formatStageBadge(STAGE_IMPLEMENT)}. Ready for code modifications.\n`);
         }
+
+        if (result.planPath) {
+          console.log(`📁 Loaded Approved Plan: ${result.planPath}`);
+        }
+        console.log(`Subagent     : ${result.implementerDef.name} (${result.implementerDef.role})`);
+        console.log(`Model Tier   : ${result.implementerDef.model}`);
+        console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
+        console.log(`Whitelisted  : ${result.implementerDef.tools.join(', ')}\n`);
+        console.log(`Next Step    : Execute checklist items and run 'agyloop gates' when complete.\n`);
         return EXIT_CODE_SUCCESS;
-      } else if (currentStage === STAGE_IMPLEMENT) {
-        console.log(`Already at ${formatStageBadge(STAGE_IMPLEMENT)}. Continuing code generation.\n`);
-        return EXIT_CODE_SUCCESS;
-      } else {
-        console.error(`✗ Cannot resume into IMPLEMENT from ${formatStageBadge(currentStage)}.`);
-        console.error(`Run 'agyloop plan' first or verify your .agyloop/state.json checkpoint.`);
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
     }

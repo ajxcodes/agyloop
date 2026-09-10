@@ -150,6 +150,15 @@ describe('Domain Value Objects (Pure)', () => {
       assert.strictEqual(unsafeList.hasForbiddenWriteTools(), true);
     });
 
+    test('ToolWhitelist.implementation() includes all read and write tools', () => {
+      const implWhitelist = ToolWhitelist.implementation();
+      assert.strictEqual(implWhitelist.isAllowed('view_file'), true);
+      assert.strictEqual(implWhitelist.isAllowed('write_to_file'), true);
+      assert.strictEqual(implWhitelist.isAllowed('replace_file_content'), true);
+      assert.strictEqual(implWhitelist.isAllowed('run_command'), true);
+      assert.strictEqual(implWhitelist.hasForbiddenWriteTools(), true);
+    });
+
     test('rejects non-array or empty tool inputs', () => {
       assert.throws(() => new ToolWhitelist(null as unknown as string[]), ValidationError);
       assert.throws(() => new ToolWhitelist(['view_file', '']), ValidationError);

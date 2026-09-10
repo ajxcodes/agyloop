@@ -37,9 +37,14 @@ $$\text{Discovery} \longrightarrow \text{Plan} \longrightarrow \text{Approval Ga
 - *(Skipped automatically in `yolo` mode).*
 
 ### 4. Implementation Subagent (`IMPLEMENT`)
-- Launch the **`implementer`** subagent with a fresh context primed strictly with the approved plan.
-- Execute clean code modifications.
-- Advance state: `bin/agyloop transition IMPLEMENT`.
+- Launch the **`implementer`** subagent with a fresh, token-minimized context primed strictly with the approved plan:
+  - `enable_write_tools: true` (full read/write access for surgical editing and verification)
+  - `enable_mcp_tools: false`
+  - Tool whitelist: `view_file`, `grep_search`, `find_by_name`, `list_dir`, `write_to_file`, `replace_file_content`, `run_command`
+  - System prompt: `prompts/implementer.md`
+- Model tier resolved via `ConfigRepository` (defaulting to `"inherit"`).
+- Execute surgical code modifications adhering strictly to the approved plan.
+- Advance state: `bin/agyloop transition IMPLEMENT` (or run `bin/agyloop implement`).
 
 ### 5. Quality Gate Subagent (`QUALITY_GATE`)
 - Launch the isolated **`gate`** subagent.
