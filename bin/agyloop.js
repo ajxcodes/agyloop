@@ -47,6 +47,11 @@ const {
   formatIssueForPrompt,
   getCurrentRepo
 } = require('../lib/github');
+const {
+  scaffoldPlanDirectory,
+  updateSummaryLog,
+  findPlanDirectory
+} = require('../lib/generator');
 
 const VERSION = '0.1.0';
 
@@ -73,6 +78,8 @@ Commands:
 Options:
   --commit-after     Opt-in flag to automatically commit if all gates pass
   --issue <number>   Specify GitHub issue number
+  --title <text>     Specify plan title (for scaffolding)
+  --type <type>      Specify plan type (discovery | implementation)
   --config <path>    Path to custom configuration file
   --refresh          Force refresh of discovered Gemini models from API
   --dry-run          Simulate execution without modifying state on disk
@@ -87,6 +94,8 @@ function parseArguments(args) {
     commitAfter: false,
     dryRun: false,
     issue: null,
+    title: null,
+    type: null,
     configPath: null,
     refresh: false,
     help: false,
@@ -111,13 +120,37 @@ function parseArguments(args) {
     } else if (arg === '--refresh') {
       options.refresh = true;
     } else if (arg === '--issue') {
-      options.issue = args[++i];
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.issue = args[++i];
+      } else {
+        options.issue = null;
+      }
     } else if (arg.startsWith('--issue=')) {
-      options.issue = arg.split('=')[1];
+      options.issue = arg.split('=')[1] || null;
+    } else if (arg === '--title') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.title = args[++i];
+      } else {
+        options.title = null;
+      }
+    } else if (arg.startsWith('--title=')) {
+      options.title = arg.split('=')[1] || null;
+    } else if (arg === '--type') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.type = args[++i];
+      } else {
+        options.type = null;
+      }
+    } else if (arg.startsWith('--type=')) {
+      options.type = arg.split('=')[1] || null;
     } else if (arg === '--config') {
-      options.configPath = args[++i];
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.configPath = args[++i];
+      } else {
+        options.configPath = null;
+      }
     } else if (arg.startsWith('--config=')) {
-      options.configPath = arg.split('=')[1];
+      options.configPath = arg.split('=')[1] || null;
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
@@ -150,6 +183,15 @@ function formatStageBadge(stage) {
   const reset = '\x1b[0m';
   const color = colors[stage] || '';
   return `${color}[${stage}]${reset}`;
+}
+
+function updateActiveSummaryLog(issueNumber, updateData, customPlanDir = null) {
+  const planDir = customPlanDir || findPlanDirectory(process.cwd(), issueNumber);
+  if (planDir) {
+    const summaryFile = path.join(planDir, 'AgyLoop Summary.md');
+    return updateSummaryLog(summaryFile, updateData);
+  }
+  return false;
 }
 
 async function main() {
@@ -281,9 +323,10 @@ async function main() {
       console.log(`Current Stage: ${formatStageBadge(sm.state.currentStage)}`);
 
       const activeIssue = options.issue || sm.state.issue;
+      let issueData = null;
       if (activeIssue) {
         console.log(`Querying GitHub context for Issue #${activeIssue}...`);
-        const issueData = fetchIssueContext(activeIssue);
+        issueData = fetchIssueContext(activeIssue);
         if (issueData && !issueData.error) {
           console.log(`  ✓ Issue: ${issueData.title}`);
           if (issueData.labels && issueData.labels.length > 0) {
@@ -294,8 +337,32 @@ async function main() {
         }
       }
 
+      const planTitle = options.title || (issueData && !issueData.error ? issueData.title : 'Task Plan');
+      const planLabels = (issueData && !issueData.error ? issueData.labels : []) || [];
+      const planType = options.type || 'auto';
+
+      let scaffoldInfo = null;
+      if (!options.dryRun) {
+        scaffoldInfo = scaffoldPlanDirectory({
+          projectRoot: process.cwd(),
+          issue: activeIssue,
+          title: planTitle,
+          type: planType,
+          labels: planLabels
+        });
+
+        console.log(`\n📁 Initialized plan directory: artifacts/plans/${scaffoldInfo.folderName}/`);
+        console.log(`  ✓ Specification (${scaffoldInfo.type}): ${path.basename(scaffoldInfo.planPath)}`);
+        if (scaffoldInfo.mirrorPath) {
+          console.log(`  ✓ Canonical Mirror  : ${path.basename(scaffoldInfo.mirrorPath)}`);
+        }
+        console.log(`  ✓ Execution Log     : ${path.basename(scaffoldInfo.summaryPath)}`);
+      } else {
+        console.log(`\n[DRY RUN] Would scaffold artifacts/plans/ for: "${planTitle}" (type: ${planType})`);
+      }
+
       const plannerDef = getPlannerDefinition(config);
-      console.log(`Subagent     : ${plannerDef.name} (${plannerDef.role})`);
+      console.log(`\nSubagent     : ${plannerDef.name} (${plannerDef.role})`);
       console.log(`Model Tier   : ${plannerDef.model}`);
       console.log(`Whitelisted  : ${plannerDef.tools.join(', ')}`);
       console.log(`Safety Guard : Physical write suppression enabled (write_tools=false, mcp_tools=${plannerDef.capabilities.enable_mcp_tools})\n`);
@@ -309,6 +376,20 @@ async function main() {
       if (sm.state.currentStage === STAGES.PLAN) {
         sm.transition(STAGES.APPROVAL, { note: 'Awaiting human review' });
       }
+
+      if (scaffoldInfo && scaffoldInfo.summaryPath) {
+        updateSummaryLog(scaffoldInfo.summaryPath, {
+          stage: 'Discovery',
+          subagent: plannerDef.name,
+          model: plannerDef.model,
+          status: 'COMPLETED'
+        });
+        updateSummaryLog(scaffoldInfo.summaryPath, {
+          stage: 'Plan Review',
+          status: 'PENDING'
+        });
+      }
+
       console.log(`🛑 Paused at ${formatStageBadge(STAGES.APPROVAL)} gate.`);
       console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
       break;
@@ -319,6 +400,16 @@ async function main() {
       if (sm.state.currentStage === STAGES.APPROVAL) {
         sm.transition(STAGES.IMPLEMENT, { note: 'Approved by developer' });
         console.log(`✓ Advanced to ${formatStageBadge(STAGES.IMPLEMENT)}. Ready for code modifications.\n`);
+
+        const activeIssue = options.issue || sm.state.issue;
+        updateActiveSummaryLog(activeIssue, {
+          stage: 'Plan Review',
+          status: 'APPROVED'
+        });
+        updateActiveSummaryLog(activeIssue, {
+          stage: 'Implementation',
+          status: 'IN PROGRESS'
+        });
       } else if (sm.state.currentStage === STAGES.IMPLEMENT) {
         console.log(`Already at ${formatStageBadge(STAGES.IMPLEMENT)}. Continuing code generation.\n`);
       } else {
