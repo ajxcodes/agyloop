@@ -6,6 +6,7 @@
  * Strictly avoids magic strings and magic numbers across the entire system.
  */
 
+export const STAGE_NONE = 'NONE' as const;
 export const STAGE_INITIALIZED = 'INITIALIZED' as const;
 export const STAGE_DISCOVERY = 'DISCOVERY' as const;
 export const STAGE_PLAN = 'PLAN' as const;
@@ -71,6 +72,16 @@ export const SUBAGENT_ROLES = Object.freeze({
 });
 
 export type SubagentRoleName = typeof SUBAGENT_ROLES[keyof typeof SUBAGENT_ROLES];
+
+export const ROLE_TITLE_PLANNER = 'Architectural Planning Subagent' as const;
+export const ROLE_TITLE_IMPLEMENTER = 'Code Implementation Subagent' as const;
+export const ROLE_TITLE_GATE = 'Quality Gate Verification Subagent' as const;
+export const ROLE_TITLE_REVIEWER = 'AI Reviewer Subagent' as const;
+
+export const ROLE_DESC_PLANNER =
+  'Architectural reasoning, deep read-only inspection, and specification generation subagent' as const;
+export const ROLE_DESC_IMPLEMENTER =
+  'Precise code implementation, refactoring, test authoring, and build verification subagent' as const;
 
 export const TIER_INHERIT = 'inherit' as const;
 export const TIER_FLASH_LITE = 'flash_lite' as const;
@@ -187,3 +198,41 @@ export const TEMPLATE_FILES = Object.freeze({
   IMPLEMENTATION: TEMPLATE_IMPLEMENTATION,
   SUMMARY: TEMPLATE_SUMMARY
 });
+
+export const FILENAME_ALT_IMPLEMENTATION_PLAN = 'implementation_plan.md' as const;
+export const FILENAME_ALT_DISCOVERY_PLAN = 'discovery_plan.md' as const;
+
+export const CANDIDATE_PLAN_FILENAMES = Object.freeze([
+  TEMPLATE_IMPLEMENTATION,
+  FILENAME_ALT_IMPLEMENTATION_PLAN,
+  TEMPLATE_DISCOVERY,
+  FILENAME_ALT_DISCOVERY_PLAN
+] as const);
+
+// Summary Log Stage Names & Statuses
+export const SUMMARY_STAGE_DISCOVERY = 'Discovery' as const;
+export const SUMMARY_STAGE_PLAN_REVIEW = 'Plan Review' as const;
+export const SUMMARY_STAGE_IMPLEMENTATION = 'Implementation' as const;
+export const SUMMARY_STAGE_QUALITY_GATES = 'Quality Gates' as const;
+export const SUMMARY_STAGE_AI_REVIEW = 'AI Review' as const;
+export const SUMMARY_STAGE_COMMIT_PR = 'Commit / PR' as const;
+
+export const SUMMARY_STATUS_PENDING = 'PENDING' as const;
+export const SUMMARY_STATUS_IN_PROGRESS = 'IN PROGRESS' as const;
+export const SUMMARY_STATUS_APPROVED = 'APPROVED' as const;
+export const SUMMARY_STATUS_COMPLETED = 'COMPLETED' as const;
+export const SUMMARY_STATUS_FAILED = 'FAILED' as const;
+
+// Prompt Paths & Files
+export const DEFAULT_PROMPTS_DIR = 'prompts' as const;
+export const PROMPT_FILE_PLANNER = 'planner.md' as const;
+export const PROMPT_FILE_IMPLEMENTER = 'implementer.md' as const;
+
+// Transition Notes
+export const NOTE_DEVELOPER_APPROVED = 'Approved by developer' as const;
+export const NOTE_AUTO_APPROVED_YOLO = 'Auto-approved in YOLO mode' as const;
+export const NOTE_MANUAL_TRANSITION = 'Manual CLI transition' as const;
+export const NOTE_INITIATED_PLANNING = 'Initiated planning mode' as const;
+export const NOTE_GENERATING_SPECS = 'Generating plan specifications' as const;
+export const NOTE_AWAITING_REVIEW = 'Awaiting human review' as const;
+export const NOTE_MANUAL_GATES_RUN = 'Manual gates run' as const;

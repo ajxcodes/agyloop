@@ -18,6 +18,9 @@ import {
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
+  ROLE_PLANNER,
+  ROLE_IMPLEMENTER,
+  DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE
 } from '../domain';
@@ -294,9 +297,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'prompt': {
-      const role = options.roleArg || 'planner';
-      if (role !== 'planner' && role !== 'implementer') {
-        console.error(`Currently, detailed prompts are defined for 'planner' and 'implementer'. Received: '${role}'.`);
+      const role = options.roleArg || ROLE_PLANNER;
+      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER) {
+        console.error(`Currently, detailed prompts are defined for '${ROLE_PLANNER}' and '${ROLE_IMPLEMENTER}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
       const resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo);
@@ -310,7 +313,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.log(
         `Capabilities  : write_tools=${def.capabilities.enable_write_tools}, mcp_tools=${def.capabilities.enable_mcp_tools}`
       );
-      console.log(`\n=== AgyLoop: System Prompt (prompts/${role}.md) ===\n`);
+      console.log(`\n=== AgyLoop: System Prompt (${DEFAULT_PROMPTS_DIR}/${role}.md) ===\n`);
       console.log(def.system_prompt);
       console.log('');
       return EXIT_CODE_SUCCESS;

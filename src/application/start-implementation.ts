@@ -14,12 +14,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   StateMachine,
+  STAGE_NONE,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_PLAN,
+  MODE_STANDARD,
   MODE_YOLO,
   ROLE_IMPLEMENTER,
   DEFAULT_SUMMARY_FILENAME,
+  CANDIDATE_PLAN_FILENAMES,
+  SUMMARY_STAGE_PLAN_REVIEW,
+  SUMMARY_STAGE_IMPLEMENTATION,
+  SUMMARY_STATUS_APPROVED,
+  SUMMARY_STATUS_IN_PROGRESS,
+  NOTE_DEVELOPER_APPROVED,
+  NOTE_AUTO_APPROVED_YOLO,
   IssueNumber,
   InvalidTransitionError,
   ValidationError
@@ -81,9 +90,9 @@ export class StartImplementationUseCase {
     const snapshot = await this.stateRepo.load();
     if (!snapshot) {
       throw new InvalidTransitionError(
-        'NONE',
+        STAGE_NONE,
         STAGE_IMPLEMENT,
-        'standard',
+        MODE_STANDARD,
         'Cannot start implementation: No pipeline state found. Run "agyloop plan" first.'
       );
     }
@@ -97,9 +106,9 @@ export class StartImplementationUseCase {
     // 2. Enforce lifecycle transition rules
     let resumed = false;
     if (sm.currentStage === STAGE_APPROVAL) {
-      sm.transition(STAGE_IMPLEMENT, { note: 'Approved by developer' });
+      sm.transition(STAGE_IMPLEMENT, { note: NOTE_DEVELOPER_APPROVED });
     } else if (sm.currentStage === STAGE_PLAN && sm.mode === MODE_YOLO) {
-      sm.transition(STAGE_IMPLEMENT, { note: 'Auto-approved in YOLO mode' });
+      sm.transition(STAGE_IMPLEMENT, { note: NOTE_AUTO_APPROVED_YOLO });
     } else if (sm.currentStage === STAGE_IMPLEMENT) {
       resumed = true;
     } else {
@@ -130,15 +139,7 @@ export class StartImplementationUseCase {
       }
 
       if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {
-        // Candidate plan filenames in priority order
-        const candidates = [
-          'implementation-plan.md',
-          'implementation_plan.md',
-          'discovery-plan.md',
-          'discovery_plan.md'
-        ];
-
-        for (const candidate of candidates) {
+        for (const candidate of CANDIDATE_PLAN_FILENAMES) {
           const candidatePath = path.join(resolvedPlanDir, candidate);
           if (fs.existsSync(candidatePath)) {
             resolvedPlanPath = candidatePath;
@@ -216,14 +217,14 @@ export class StartImplementationUseCase {
         const summaryPath = path.join(resolvedPlanDir, DEFAULT_SUMMARY_FILENAME);
         if (fs.existsSync(summaryPath)) {
           this.planGenerator.updateSummaryLog(summaryPath, {
-            stage: 'Plan Review',
-            status: 'APPROVED'
+            stage: SUMMARY_STAGE_PLAN_REVIEW,
+            status: SUMMARY_STATUS_APPROVED
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
-            stage: 'Implementation',
+            stage: SUMMARY_STAGE_IMPLEMENTATION,
             subagent: implementerDef.name,
             model: implementerDef.model,
-            status: 'IN PROGRESS'
+            status: SUMMARY_STATUS_IN_PROGRESS
           });
         }
       }

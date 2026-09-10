@@ -14,6 +14,13 @@ import {
   IMPLEMENTER_TOOLS,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
+  ROLE_TITLE_PLANNER,
+  ROLE_TITLE_IMPLEMENTER,
+  ROLE_DESC_PLANNER,
+  ROLE_DESC_IMPLEMENTER,
+  DEFAULT_PROMPTS_DIR,
+  PROMPT_FILE_PLANNER,
+  PROMPT_FILE_IMPLEMENTER,
   TIER_PRO,
   TIER_INHERIT
 } from '../domain';
@@ -22,9 +29,8 @@ import { CliGitHubGateway } from '../infrastructure/cli-github-gateway';
 
 export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
-  role: 'Architectural Planning Subagent',
-  description:
-    'Architectural reasoning, deep read-only inspection, and specification generation subagent',
+  role: ROLE_TITLE_PLANNER,
+  description: ROLE_DESC_PLANNER,
   defaultTier: TIER_PRO,
   tools: READ_ONLY_TOOLS,
   capabilities: Object.freeze({
@@ -36,9 +42,8 @@ export const PLANNER_SUBAGENT_DEF = Object.freeze({
 
 export const IMPLEMENTER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_IMPLEMENTER,
-  role: 'Code Implementation Subagent',
-  description:
-    'Precise code implementation, refactoring, test authoring, and build verification subagent',
+  role: ROLE_TITLE_IMPLEMENTER,
+  description: ROLE_DESC_IMPLEMENTER,
   defaultTier: TIER_INHERIT,
   tools: IMPLEMENTER_TOOLS,
   capabilities: Object.freeze({
@@ -103,7 +108,7 @@ export class ResolveSubagentUseCase {
 
   public getPlannerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
     const cwd = options.workspaceDir || process.cwd();
-    const defaultPath = path.resolve(cwd, 'prompts', 'planner.md');
+    const defaultPath = path.resolve(cwd, DEFAULT_PROMPTS_DIR, PROMPT_FILE_PLANNER);
     const targetPath = options.promptPath || defaultPath;
 
     if (fs.existsSync(targetPath)) {
@@ -119,7 +124,7 @@ export class ResolveSubagentUseCase {
 
   public getImplementerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
     const cwd = options.workspaceDir || process.cwd();
-    const defaultPath = path.resolve(cwd, 'prompts', 'implementer.md');
+    const defaultPath = path.resolve(cwd, DEFAULT_PROMPTS_DIR, PROMPT_FILE_IMPLEMENTER);
     const targetPath = options.promptPath || defaultPath;
 
     if (fs.existsSync(targetPath)) {
