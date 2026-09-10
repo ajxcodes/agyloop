@@ -14,7 +14,8 @@ import {
   ERR_STATE_STORAGE,
   ERR_VALIDATION,
   ERR_GATE_TIMEOUT,
-  ERR_GATE_EXECUTION
+  ERR_GATE_EXECUTION,
+  ERR_BUILD_DETECTION
 } from './constants';
 
 
@@ -147,4 +148,21 @@ export class QualityGateExecutionError extends AgyLoopError {
     this.failureSnippet = failureSnippet;
   }
 }
+
+export class BuildDetectionError extends AgyLoopError {
+  public readonly code = ERR_BUILD_DETECTION;
+  public readonly target: string;
+  public readonly reason: string;
+
+  constructor(target: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Build system detection failed for '${target}': ${reason}${causeMsg}`, { target, reason, ...details });
+    this.target = target;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
 

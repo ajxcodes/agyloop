@@ -413,6 +413,24 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         );
       }
 
+      if (updateData.buildSystem || updateData.detectedEcosystems) {
+        const sys = updateData.buildSystem || (Array.isArray(updateData.detectedEcosystems) ? updateData.detectedEcosystems.join(', ') : updateData.detectedEcosystems);
+        if (content.includes('- **Build System:**')) {
+          content = content.replace(/- \*\*Build System:\*\* .*/i, `- **Build System:** ${sys}`);
+        } else if (content.includes('- **Build Status:**')) {
+          content = content.replace(/- \*\*Build Status:\*\*/i, `- **Build System:** ${sys}\n- **Build Status:**`);
+        }
+      }
+
+      if (updateData.executedCommands && updateData.executedCommands.length > 0) {
+        const cmds = updateData.executedCommands.map((c) => `\`${c}\``).join(', ');
+        if (content.includes('- **Executed Commands:**')) {
+          content = content.replace(/- \*\*Executed Commands:\*\* .*/i, `- **Executed Commands:** ${cmds}`);
+        } else if (content.includes('- **Tests:**')) {
+          content = content.replace(/- \*\*Tests:\*\* (.*)/i, `- **Tests:** $1\n- **Executed Commands:** ${cmds}`);
+        }
+      }
+
       if (updateData.reviewNote) {
         if (content.includes('## Review Notes')) {
           content = content.replace(

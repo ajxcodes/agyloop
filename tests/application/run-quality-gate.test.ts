@@ -9,7 +9,9 @@ const {
   MODE_STANDARD,
   STATUS_PASSED,
   STATUS_FAILED,
-  InvalidTransitionError
+  InvalidTransitionError,
+  Ecosystem,
+  ECOSYSTEM_NODE
 } = require('../../dist');
 
 type StateRepository = import('../../src').StateRepository;
@@ -156,6 +158,60 @@ class MockCommandExecutor implements CommandExecutorPort {
       durationMs: 150,
       timedOut: false
     };
+  }
+}
+
+type BuildDetectorPort = import('../../src').BuildDetectorPort;
+type DetectedProject = import('../../src').DetectedProject;
+type GateCommandDefinition = import('../../src').GateCommandDefinition;
+
+class MockBuildDetector implements BuildDetectorPort {
+  public detectedProject: DetectedProject;
+  public commandsToResolve: readonly GateCommandDefinition[];
+
+  constructor(
+    detectedProject?: DetectedProject,
+    commandsToResolve?: readonly GateCommandDefinition[]
+  ) {
+    this.detectedProject = detectedProject || {
+      workspaceDir: process.cwd(),
+      ecosystems: [
+        new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'], packageManager: 'pnpm' })
+      ],
+      primaryEcosystem: new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'], packageManager: 'pnpm' }),
+      commands: [
+        { id: 'custom-detect', label: 'Auto-detected Runner', command: 'pnpm run test:detected' }
+      ],
+      hasOverrides: false
+    };
+    this.commandsToResolve = commandsToResolve || this.detectedProject.commands;
+  }
+
+  public async detect(workspaceDir: string): Promise<DetectedProject> {
+    return this.detectedProject;
+  }
+
+  public async resolveCommands(
+    workspaceDir: string,
+    config?: AgyLoopConfig,
+    explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
+  ): Promise<readonly GateCommandDefinition[]> {
+    if (explicitCommands && explicitCommands.length > 0) {
+      return explicitCommands.map((c, i) =>
+        typeof c === 'string'
+          ? { id: `cli-${i}`, label: `CLI ${i}`, command: c }
+          : c
+      );
+    }
+    const anyConfig = config as unknown as Record<string, unknown> | undefined;
+    if (config?.options?.gateCommands && Array.isArray(config.options.gateCommands) && config.options.gateCommands.length > 0) {
+      return config.options.gateCommands.map((c: any, i: number) =>
+        typeof c === 'string'
+          ? { id: `cfg-${i}`, label: `Config ${i}`, command: c }
+          : c
+      );
+    }
+    return this.commandsToResolve;
   }
 }
 
@@ -407,5 +463,131 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
     assert.strictEqual(result.reports[0].testMetrics.total, 42);
     assert.strictEqual(result.reports[0].testMetrics.passed, 42);
     assert.ok(result.summaryReport.includes('42/42 tests passed'));
+  });
+
+  test('uses BuildDetectorPort when provided to execute auto-detected commands and records buildSystem in summary', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 22,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor();
+    const buildDetector = new MockBuildDetector();
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor,
+      buildDetector
+    );
+
+    const result = await useCase.execute({ issue: 22 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.buildSystem, 'node (pnpm)');
+    assert.deepStrictEqual(result.detectedEcosystems, ['node (pnpm)']);
+    assert.ok(result.summaryReport.includes('Build System    : node (pnpm)'));
+
+    // Check executor ran auto-detected command
+    assert.strictEqual(commandExecutor.executed.length, 1);
+    assert.strictEqual(commandExecutor.executed[0].command, 'pnpm run test:detected');
+
+    // Check plan generator update
+    assert.strictEqual(planGenerator.updates.length, 1);
+    const update = planGenerator.updates[0].updateData;
+    assert.strictEqual(update.buildSystem, 'node (pnpm)');
+    assert.deepStrictEqual(update.executedCommands, ['pnpm run test:detected']);
+  });
+
+  test('parses Playwright test metrics ("X passed, Y failed")', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 22,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor([
+      {
+        command: 'npx playwright test',
+        exitCode: 0,
+        stdout: 'Running 8 tests using 4 workers\n  8 passed (4.2s)\nTo open last HTML report run: npx playwright show-report',
+        stderr: '',
+        combinedOutput: 'Running 8 tests using 4 workers\n  8 passed (4.2s)\nTo open last HTML report run: npx playwright show-report',
+        durationMs: 4200,
+        timedOut: false
+      }
+    ]);
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor
+    );
+
+    const result = await useCase.execute({
+      issue: 22,
+      commands: [
+        { id: 'playwright', label: 'Playwright E2E Test Suite', command: 'npx playwright test' }
+      ]
+    });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.reports.length, 1);
+    const report = result.reports[0];
+    assert.ok(report.testMetrics);
+    assert.strictEqual(report.testMetrics.passed, 8);
+    assert.strictEqual(report.testMetrics.total, 8);
+    assert.ok(result.summaryReport.includes('8/8 tests passed'));
+  });
+
+  test('respects config overrides over auto-detected commands via BuildDetectorPort', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 22,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository({
+      gateCommands: ['echo from-config-override']
+    });
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor();
+    const buildDetector = new MockBuildDetector();
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor,
+      buildDetector
+    );
+
+    const result = await useCase.execute({ issue: 22 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(commandExecutor.executed.length, 1);
+    assert.strictEqual(commandExecutor.executed[0].command, 'echo from-config-override');
   });
 });

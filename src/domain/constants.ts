@@ -172,6 +172,7 @@ export const ERR_STATE_STORAGE = 'ERR_STATE_STORAGE' as const;
 export const ERR_VALIDATION = 'ERR_VALIDATION' as const;
 export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
 export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
+export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -181,7 +182,8 @@ export const ERROR_CODES = Object.freeze({
   STATE_STORAGE: ERR_STATE_STORAGE,
   VALIDATION: ERR_VALIDATION,
   GATE_TIMEOUT: ERR_GATE_TIMEOUT,
-  GATE_EXECUTION: ERR_GATE_EXECUTION
+  GATE_EXECUTION: ERR_GATE_EXECUTION,
+  BUILD_DETECTION: ERR_BUILD_DETECTION
 });
 
 
@@ -286,6 +288,116 @@ export const DEFAULT_GATE_COMMANDS: readonly GateCommandDefinition[] = Object.fr
 
 export const MAX_FILTERED_LOG_LINES = 30 as const;
 export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;
+
+// Ecosystem Identifiers
+export const ECOSYSTEM_NODE = 'node' as const;
+export const ECOSYSTEM_PYTHON = 'python' as const;
+export const ECOSYSTEM_GO = 'go' as const;
+export const ECOSYSTEM_RUST = 'rust' as const;
+export const ECOSYSTEM_GRADLE = 'gradle' as const;
+export const ECOSYSTEM_MAVEN = 'maven' as const;
+export const ECOSYSTEM_DOTNET = 'dotnet' as const;
+export const ECOSYSTEM_UNKNOWN = 'unknown' as const;
+
+export const SUPPORTED_ECOSYSTEMS = Object.freeze([
+  ECOSYSTEM_NODE,
+  ECOSYSTEM_GO,
+  ECOSYSTEM_RUST,
+  ECOSYSTEM_PYTHON,
+  ECOSYSTEM_GRADLE,
+  ECOSYSTEM_MAVEN,
+  ECOSYSTEM_DOTNET,
+  ECOSYSTEM_UNKNOWN
+] as const);
+
+export type EcosystemType = typeof SUPPORTED_ECOSYSTEMS[number];
+
+// Deterministic Prioritization for Polyglot/Multi-Ecosystem Repositories
+export const ECOSYSTEM_PRIORITY_ORDER: readonly EcosystemType[] = Object.freeze([
+  ECOSYSTEM_NODE,
+  ECOSYSTEM_GO,
+  ECOSYSTEM_RUST,
+  ECOSYSTEM_PYTHON,
+  ECOSYSTEM_GRADLE,
+  ECOSYSTEM_MAVEN,
+  ECOSYSTEM_DOTNET
+]);
+
+// Package Manager Identifiers
+export const PKG_MGR_PNPM = 'pnpm' as const;
+export const PKG_MGR_YARN = 'yarn' as const;
+export const PKG_MGR_BUN = 'bun' as const;
+export const PKG_MGR_NPM = 'npm' as const;
+
+export const PACKAGE_MANAGERS = Object.freeze([
+  PKG_MGR_PNPM,
+  PKG_MGR_YARN,
+  PKG_MGR_BUN,
+  PKG_MGR_NPM
+] as const);
+
+export type PackageManagerName = typeof PACKAGE_MANAGERS[number];
+
+// Build & Test Runner Markers
+export const MARKER_PACKAGE_JSON = 'package.json' as const;
+export const MARKER_PNPM_LOCK = 'pnpm-lock.yaml' as const;
+export const MARKER_YARN_LOCK = 'yarn.lock' as const;
+export const MARKER_BUN_LOCK = 'bun.lockb' as const;
+export const MARKER_PACKAGE_LOCK = 'package-lock.json' as const;
+
+export const MARKER_PLAYWRIGHT_CONFIG_TS = 'playwright.config.ts' as const;
+export const MARKER_PLAYWRIGHT_CONFIG_JS = 'playwright.config.js' as const;
+export const MARKER_PLAYWRIGHT_CONFIG_MJS = 'playwright.config.mjs' as const;
+export const MARKER_PLAYWRIGHT_CONFIG_CJS = 'playwright.config.cjs' as const;
+
+export const PLAYWRIGHT_CONFIG_MARKERS = Object.freeze([
+  MARKER_PLAYWRIGHT_CONFIG_TS,
+  MARKER_PLAYWRIGHT_CONFIG_JS,
+  MARKER_PLAYWRIGHT_CONFIG_MJS,
+  MARKER_PLAYWRIGHT_CONFIG_CJS
+] as const);
+
+export const PLAYWRIGHT_SCRIPT_CANDIDATES = Object.freeze([
+  'test:e2e',
+  'e2e',
+  'test:playwright',
+  'playwright'
+] as const);
+
+export const MARKER_GO_MOD = 'go.mod' as const;
+export const MARKER_CARGO_TOML = 'Cargo.toml' as const;
+export const MARKER_PYPROJECT_TOML = 'pyproject.toml' as const;
+export const MARKER_PYTEST_INI = 'pytest.ini' as const;
+export const MARKER_SETUP_PY = 'setup.py' as const;
+export const MARKER_REQUIREMENTS_TXT = 'requirements.txt' as const;
+
+export const MARKER_GRADLEW = 'gradlew' as const;
+export const MARKER_GRADLEW_BAT = 'gradlew.bat' as const;
+export const MARKER_BUILD_GRADLE = 'build.gradle' as const;
+export const MARKER_BUILD_GRADLE_KTS = 'build.gradle.kts' as const;
+export const MARKER_SETTINGS_GRADLE = 'settings.gradle' as const;
+export const MARKER_SETTINGS_GRADLE_KTS = 'settings.gradle.kts' as const;
+
+export const MARKER_POM_XML = 'pom.xml' as const;
+
+export const MARKER_EXT_CSPROJ = '.csproj' as const;
+export const MARKER_EXT_SLN = '.sln' as const;
+export const MARKER_EXT_FSPROJ = '.fsproj' as const;
+
+// Ecosystem Command Templates
+export const CMD_GO_VET = 'go vet ./...' as const;
+export const CMD_GO_TEST = 'go test ./...' as const;
+export const CMD_CARGO_CHECK = 'cargo check' as const;
+export const CMD_CARGO_TEST = 'cargo test' as const;
+export const CMD_GRADLEW_CHECK = './gradlew check' as const;
+export const CMD_GRADLEW_TEST = './gradlew test' as const;
+export const CMD_GRADLE_CHECK = 'gradle check' as const;
+export const CMD_GRADLE_TEST = 'gradle test' as const;
+export const CMD_MAVEN_TEST = 'mvn test' as const;
+export const CMD_DOTNET_TEST = 'dotnet test' as const;
+export const CMD_PYTEST = 'pytest' as const;
+export const CMD_PYTHON_UNITTEST = 'python -m unittest' as const;
+export const CMD_PLAYWRIGHT_TEST = 'npx playwright test' as const;
 
 // Validation & Plan Constants
 export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;
