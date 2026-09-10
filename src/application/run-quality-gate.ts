@@ -28,6 +28,7 @@ import {
   STATUS_PASSED,
   STATUS_FAILED,
   STATUS_TIMED_OUT,
+  STATUS_DISPLAY_TIMED_OUT,
   STATUS_SKIPPED,
   NOTE_EXECUTING_GATES,
   NOTE_GATES_PASSED,
@@ -37,6 +38,15 @@ import {
   GateCommandDefinition,
   MAX_FILTERED_LOG_LINES,
   MAX_FILTERED_OUTPUT_CHARS,
+  MS_PER_SECOND,
+  ECOSYSTEM_UNKNOWN,
+  CMD_ID_BUILD,
+  CMD_ID_TYPECHECK,
+  CMD_ID_TEST,
+  CMD_ID_PLAYWRIGHT,
+  CMD_ID_E2E,
+  CMD_PREFIX_CUSTOM,
+  CMD_PREFIX_CONFIG,
   InvalidTransitionError,
   QualityGateTimeoutError
 } from '../domain';
@@ -162,7 +172,7 @@ export class RunQualityGateUseCase {
       params.timeoutSeconds && params.timeoutSeconds > 0
         ? params.timeoutSeconds
         : config.options.gateTimeoutSeconds || DEFAULT_GATE_TIMEOUT_SECONDS;
-    const timeoutMs = timeoutSeconds * 1000;
+    const timeoutMs = timeoutSeconds * MS_PER_SECOND;
 
     // 4. Resolve commands to execute (supporting auto-detection engine and config overrides)
     let commandDefinitions: readonly GateCommandDefinition[];
@@ -181,8 +191,8 @@ export class RunQualityGateUseCase {
         primaryEcosystemName = detected.primaryEcosystem.toString();
       } catch (err: unknown) {
         // Fall back gracefully if detector metadata extraction encounters an issue
-        detectedEcosystemNames = ['unknown'];
-        primaryEcosystemName = 'unknown';
+        detectedEcosystemNames = [ECOSYSTEM_UNKNOWN];
+        primaryEcosystemName = ECOSYSTEM_UNKNOWN;
       }
     } else {
       commandDefinitions = this.resolveCommands(params.commands, config);
@@ -213,14 +223,14 @@ export class RunQualityGateUseCase {
         failureSnippet = this.extractFailureSnippet(execResult.combinedOutput, execResult.stderr);
       }
 
-      if (cmdDef.id.toLowerCase().includes('build') || cmdDef.id.toLowerCase().includes('typecheck')) {
-        if (!passed) buildStatus = STATUS_FAILED;
+      if (this.isBuildCommand(cmdDef.id) && !passed) {
+        buildStatus = STATUS_FAILED;
       }
 
-      if (cmdDef.id.toLowerCase().includes('test') || cmdDef.id.toLowerCase().includes('playwright') || cmdDef.id.toLowerCase().includes('e2e')) {
+      if (this.isTestCommand(cmdDef.id)) {
         if (!passed) {
           testsStatus = STATUS_FAILED;
-        } else if (testMetrics && testMetrics.total) {
+        } else if (testMetrics && (testMetrics.passed || testMetrics.total)) {
           testsMetricSummary = ` (${testMetrics.passed || testMetrics.total} passed)`;
         }
       }
@@ -262,7 +272,7 @@ export class RunQualityGateUseCase {
       planDir: params.planDir
     });
 
-    const durationStr = `${(totalDurationMs / 1000).toFixed(1)}s`;
+    const durationStr = `${(totalDurationMs / MS_PER_SECOND).toFixed(1)}s`;
     const gateStatus = allPassed ? SUMMARY_STATUS_COMPLETED : SUMMARY_STATUS_FAILED;
 
     if (!params.dryRun) {
@@ -320,7 +330,7 @@ export class RunQualityGateUseCase {
       return inputCommands.map((cmd, idx) => {
         if (typeof cmd === 'string') {
           return {
-            id: `gate-cmd-${idx + 1}`,
+            id: `${CMD_PREFIX_CUSTOM}-cmd-${idx + 1}`,
             label: `Custom Command ${idx + 1}`,
             command: cmd
           };
@@ -333,7 +343,7 @@ export class RunQualityGateUseCase {
       return config.options.gateCommands.map((cmd: string | GateCommandDefinition, idx: number) => {
         if (typeof cmd === 'string') {
           return {
-            id: `config-cmd-${idx + 1}`,
+            id: `${CMD_PREFIX_CONFIG}-cmd-${idx + 1}`,
             label: `Configured Command ${idx + 1}`,
             command: cmd
           };
@@ -404,6 +414,20 @@ export class RunQualityGateUseCase {
     return snippet.trim();
   }
 
+  private isBuildCommand(cmdId: string): boolean {
+    const id = cmdId.toLowerCase();
+    return id.includes(CMD_ID_BUILD) || id.includes(CMD_ID_TYPECHECK);
+  }
+
+  private isTestCommand(cmdId: string): boolean {
+    const id = cmdId.toLowerCase();
+    return (
+      id.includes(CMD_ID_TEST) ||
+      id.includes(CMD_ID_PLAYWRIGHT) ||
+      id.includes(CMD_ID_E2E)
+    );
+  }
+
   private generateSummaryReport(data: {
     allPassed: boolean;
     totalDurationMs: number;
@@ -412,8 +436,8 @@ export class RunQualityGateUseCase {
     summaryPath?: string;
     buildSystem?: string;
   }): string {
-    const verdict = data.allPassed ? 'PASSED' : 'FAILED';
-    const duration = `${(data.totalDurationMs / 1000).toFixed(2)}s`;
+    const verdict = data.allPassed ? STATUS_PASSED : STATUS_FAILED;
+    const duration = `${(data.totalDurationMs / MS_PER_SECOND).toFixed(2)}s`;
 
     let report = `=== AgyLoop: Quality Gate Report ===\n`;
     report += `Overall Verdict : ${verdict}\n`;
@@ -425,8 +449,8 @@ export class RunQualityGateUseCase {
 
     report += `Execution Matrix:\n`;
     data.reports.forEach((r, idx) => {
-      const status = r.timedOut ? 'TIMED OUT' : r.passed ? 'PASSED' : 'FAILED';
-      const cmdDuration = `${(r.durationMs / 1000).toFixed(2)}s`;
+      const status = r.timedOut ? STATUS_DISPLAY_TIMED_OUT : r.passed ? STATUS_PASSED : STATUS_FAILED;
+      const cmdDuration = `${(r.durationMs / MS_PER_SECOND).toFixed(2)}s`;
       let details = '';
       if (r.testMetrics && r.testMetrics.total) {
         details = ` (${r.testMetrics.passed ?? 0}/${r.testMetrics.total} tests passed)`;

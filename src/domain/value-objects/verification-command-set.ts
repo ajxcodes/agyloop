@@ -4,7 +4,17 @@
  * Immutable, self-validating value object encapsulating an ordered set of verification commands.
  */
 
-import { GateCommandDefinition, DEFAULT_GATE_COMMANDS } from '../constants';
+import {
+  GateCommandDefinition,
+  DEFAULT_GATE_COMMANDS,
+  CMD_ID_BUILD,
+  CMD_ID_TYPECHECK,
+  CMD_ID_TEST,
+  CMD_ID_PLAYWRIGHT,
+  CMD_ID_E2E,
+  KEYWORD_CHECK,
+  KEYWORD_VET
+} from '../constants';
 import { ValidationError } from '../errors';
 
 export class VerificationCommandSet {
@@ -69,26 +79,31 @@ export class VerificationCommandSet {
   }
 
   public hasBuild(): boolean {
-    return this.commandList.some(
-      (c) =>
-        c.id.toLowerCase().includes('build') ||
-        c.id.toLowerCase().includes('typecheck') ||
-        c.id.toLowerCase().includes('check') ||
-        c.id.toLowerCase().includes('vet')
-    );
+    return this.commandList.some((c) => {
+      const id = c.id.toLowerCase();
+      return (
+        id.includes(CMD_ID_BUILD) ||
+        id.includes(CMD_ID_TYPECHECK) ||
+        id.includes(KEYWORD_CHECK) ||
+        id.includes(KEYWORD_VET)
+      );
+    });
   }
 
   public hasTest(): boolean {
-    return this.commandList.some((c) => c.id.toLowerCase().includes('test'));
+    return this.commandList.some((c) => c.id.toLowerCase().includes(CMD_ID_TEST));
   }
 
   public hasE2E(): boolean {
-    return this.commandList.some(
-      (c) =>
-        c.id.toLowerCase().includes('e2e') ||
-        c.id.toLowerCase().includes('playwright') ||
-        c.label.toLowerCase().includes('playwright')
-    );
+    return this.commandList.some((c) => {
+      const id = c.id.toLowerCase();
+      const label = c.label.toLowerCase();
+      return (
+        id.includes(CMD_ID_E2E) ||
+        id.includes(CMD_ID_PLAYWRIGHT) ||
+        label.includes(CMD_ID_PLAYWRIGHT)
+      );
+    });
   }
 
   public get(id: string): GateCommandDefinition | undefined {

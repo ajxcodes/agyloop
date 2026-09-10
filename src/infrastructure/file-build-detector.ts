@@ -49,10 +49,13 @@ import {
   MARKER_BUILD_GRADLE_KTS,
   MARKER_SETTINGS_GRADLE,
   MARKER_SETTINGS_GRADLE_KTS,
+  GRADLE_MARKERS,
   MARKER_POM_XML,
   MARKER_EXT_CSPROJ,
   MARKER_EXT_SLN,
   MARKER_EXT_FSPROJ,
+  DOTNET_EXTENSIONS,
+  PYTHON_MARKERS,
   CMD_GO_VET,
   CMD_GO_TEST,
   CMD_CARGO_CHECK,
@@ -66,7 +69,55 @@ import {
   CMD_PYTEST,
   CMD_PYTHON_UNITTEST,
   CMD_PLAYWRIGHT_TEST,
-  DEFAULT_GATE_COMMANDS
+  CMD_PLAYWRIGHT_PNPM,
+  CMD_PLAYWRIGHT_BUN,
+  CMD_PLAYWRIGHT_YARN,
+  DEFAULT_GATE_COMMANDS,
+  PRIORITY_ECOSYSTEM_NODE,
+  PRIORITY_ECOSYSTEM_GO,
+  PRIORITY_ECOSYSTEM_RUST,
+  PRIORITY_ECOSYSTEM_PYTHON,
+  PRIORITY_ECOSYSTEM_GRADLE,
+  PRIORITY_ECOSYSTEM_MAVEN,
+  PRIORITY_ECOSYSTEM_DOTNET,
+  FALLBACK_ECOSYSTEM_PRIORITY,
+  CONFIDENCE_CERTAIN,
+  CMD_ID_TYPECHECK,
+  CMD_ID_BUILD,
+  CMD_ID_TEST,
+  CMD_ID_PLAYWRIGHT,
+  CMD_ID_GO_VET,
+  CMD_ID_GO_TEST,
+  CMD_ID_CARGO_CHECK,
+  CMD_ID_CARGO_TEST,
+  CMD_ID_PYTEST,
+  CMD_ID_PYTHON_UNITTEST,
+  CMD_ID_GRADLE_CHECK,
+  CMD_ID_GRADLE_TEST,
+  CMD_ID_MAVEN_TEST,
+  CMD_ID_DOTNET_TEST,
+  CMD_LABEL_TYPECHECK,
+  CMD_LABEL_BUILD,
+  CMD_LABEL_TEST,
+  CMD_LABEL_PLAYWRIGHT,
+  CMD_LABEL_GO_VET,
+  CMD_LABEL_GO_TEST,
+  CMD_LABEL_CARGO_CHECK,
+  CMD_LABEL_CARGO_TEST,
+  CMD_LABEL_PYTEST,
+  CMD_LABEL_PYTHON_UNITTEST,
+  CMD_LABEL_GRADLE_CHECK,
+  CMD_LABEL_GRADLE_TEST,
+  CMD_LABEL_MAVEN_TEST,
+  CMD_LABEL_DOTNET_TEST,
+  CMD_PREFIX_CUSTOM,
+  CMD_PREFIX_CONFIG,
+  SCRIPT_NAME_TYPECHECK,
+  SCRIPT_NAME_BUILD,
+  SCRIPT_NAME_TEST,
+  NPM_DEFAULT_TEST_STUB,
+  PYTEST_INDICATOR_KEYWORD,
+  PYTEST_CONFIG_HEADER
 } from '../domain';
 
 import { BuildDetectorPort, DetectedProject, AgyLoopConfig } from '../ports';
@@ -115,13 +166,13 @@ export class FileBuildDetector implements BuildDetectorPort {
           new Ecosystem({
             type: ECOSYSTEM_GO,
             markerFiles: [MARKER_GO_MOD],
-            confidence: 1.0,
-            priority: 2
+            confidence: CONFIDENCE_CERTAIN,
+            priority: PRIORITY_ECOSYSTEM_GO
           })
         );
         ecosystemCommands.push(
-          { id: 'go-vet', label: 'Go Vet Analysis', command: CMD_GO_VET },
-          { id: 'go-test', label: 'Go Automated Test Suite', command: CMD_GO_TEST }
+          { id: CMD_ID_GO_VET, label: CMD_LABEL_GO_VET, command: CMD_GO_VET },
+          { id: CMD_ID_GO_TEST, label: CMD_LABEL_GO_TEST, command: CMD_GO_TEST }
         );
       }
 
@@ -131,23 +182,18 @@ export class FileBuildDetector implements BuildDetectorPort {
           new Ecosystem({
             type: ECOSYSTEM_RUST,
             markerFiles: [MARKER_CARGO_TOML],
-            confidence: 1.0,
-            priority: 3
+            confidence: CONFIDENCE_CERTAIN,
+            priority: PRIORITY_ECOSYSTEM_RUST
           })
         );
         ecosystemCommands.push(
-          { id: 'cargo-check', label: 'Cargo Compilation Check', command: CMD_CARGO_CHECK },
-          { id: 'cargo-test', label: 'Cargo Automated Test Suite', command: CMD_CARGO_TEST }
+          { id: CMD_ID_CARGO_CHECK, label: CMD_LABEL_CARGO_CHECK, command: CMD_CARGO_CHECK },
+          { id: CMD_ID_CARGO_TEST, label: CMD_LABEL_CARGO_TEST, command: CMD_CARGO_TEST }
         );
       }
 
       // 4. Python Detection
-      const pythonMarkers: string[] = [];
-      if (fileNames.has(MARKER_PYPROJECT_TOML)) pythonMarkers.push(MARKER_PYPROJECT_TOML);
-      if (fileNames.has(MARKER_PYTEST_INI)) pythonMarkers.push(MARKER_PYTEST_INI);
-      if (fileNames.has(MARKER_SETUP_PY)) pythonMarkers.push(MARKER_SETUP_PY);
-      if (fileNames.has(MARKER_REQUIREMENTS_TXT)) pythonMarkers.push(MARKER_REQUIREMENTS_TXT);
-
+      const pythonMarkers: string[] = PYTHON_MARKERS.filter((m) => fileNames.has(m));
       if (pythonMarkers.length > 0) {
         const { ecosystem, commands } = this.detectPythonEcosystem(resolvedDir, pythonMarkers);
         detectedEcosystems.push(ecosystem);
@@ -155,12 +201,7 @@ export class FileBuildDetector implements BuildDetectorPort {
       }
 
       // 5. Gradle Detection (Java / Kotlin)
-      const gradleMarkers: string[] = [];
-      if (fileNames.has(MARKER_BUILD_GRADLE)) gradleMarkers.push(MARKER_BUILD_GRADLE);
-      if (fileNames.has(MARKER_BUILD_GRADLE_KTS)) gradleMarkers.push(MARKER_BUILD_GRADLE_KTS);
-      if (fileNames.has(MARKER_SETTINGS_GRADLE)) gradleMarkers.push(MARKER_SETTINGS_GRADLE);
-      if (fileNames.has(MARKER_SETTINGS_GRADLE_KTS)) gradleMarkers.push(MARKER_SETTINGS_GRADLE_KTS);
-
+      const gradleMarkers: string[] = GRADLE_MARKERS.filter((m) => fileNames.has(m));
       if (gradleMarkers.length > 0) {
         const hasWrapper = fileNames.has(MARKER_GRADLEW) || fileNames.has(MARKER_GRADLEW_BAT);
         if (hasWrapper) {
@@ -171,22 +212,17 @@ export class FileBuildDetector implements BuildDetectorPort {
           new Ecosystem({
             type: ECOSYSTEM_GRADLE,
             markerFiles: gradleMarkers,
-            confidence: 1.0,
-            priority: 5
+            confidence: CONFIDENCE_CERTAIN,
+            priority: PRIORITY_ECOSYSTEM_GRADLE
           })
         );
 
-        if (hasWrapper) {
-          ecosystemCommands.push(
-            { id: 'gradle-check', label: 'Gradle Check', command: CMD_GRADLEW_CHECK },
-            { id: 'gradle-test', label: 'Gradle Test Suite', command: CMD_GRADLEW_TEST }
-          );
-        } else {
-          ecosystemCommands.push(
-            { id: 'gradle-check', label: 'Gradle Check', command: CMD_GRADLE_CHECK },
-            { id: 'gradle-test', label: 'Gradle Test Suite', command: CMD_GRADLE_TEST }
-          );
-        }
+        const checkCmd = hasWrapper ? CMD_GRADLEW_CHECK : CMD_GRADLE_CHECK;
+        const testCmd = hasWrapper ? CMD_GRADLEW_TEST : CMD_GRADLE_TEST;
+        ecosystemCommands.push(
+          { id: CMD_ID_GRADLE_CHECK, label: CMD_LABEL_GRADLE_CHECK, command: checkCmd },
+          { id: CMD_ID_GRADLE_TEST, label: CMD_LABEL_GRADLE_TEST, command: testCmd }
+        );
       }
 
       // 6. Maven Detection (Java)
@@ -195,23 +231,20 @@ export class FileBuildDetector implements BuildDetectorPort {
           new Ecosystem({
             type: ECOSYSTEM_MAVEN,
             markerFiles: [MARKER_POM_XML],
-            confidence: 1.0,
-            priority: 6
+            confidence: CONFIDENCE_CERTAIN,
+            priority: PRIORITY_ECOSYSTEM_MAVEN
           })
         );
         ecosystemCommands.push({
-          id: 'maven-test',
-          label: 'Maven Test Suite',
+          id: CMD_ID_MAVEN_TEST,
+          label: CMD_LABEL_MAVEN_TEST,
           command: CMD_MAVEN_TEST
         });
       }
 
       // 7. .NET Detection (C# / F# / VB)
-      const dotnetFiles = Array.from(fileNames).filter(
-        (f) =>
-          f.endsWith(MARKER_EXT_CSPROJ) ||
-          f.endsWith(MARKER_EXT_SLN) ||
-          f.endsWith(MARKER_EXT_FSPROJ)
+      const dotnetFiles = Array.from(fileNames).filter((f) =>
+        DOTNET_EXTENSIONS.some((ext) => f.endsWith(ext))
       );
 
       if (dotnetFiles.length > 0) {
@@ -219,13 +252,13 @@ export class FileBuildDetector implements BuildDetectorPort {
           new Ecosystem({
             type: ECOSYSTEM_DOTNET,
             markerFiles: dotnetFiles,
-            confidence: 1.0,
-            priority: 7
+            confidence: CONFIDENCE_CERTAIN,
+            priority: PRIORITY_ECOSYSTEM_DOTNET
           })
         );
         ecosystemCommands.push({
-          id: 'dotnet-test',
-          label: '.NET Automated Test Suite',
+          id: CMD_ID_DOTNET_TEST,
+          label: CMD_LABEL_DOTNET_TEST,
           command: CMD_DOTNET_TEST
         });
       }
@@ -234,8 +267,8 @@ export class FileBuildDetector implements BuildDetectorPort {
       detectedEcosystems.sort((a, b) => {
         const orderA = ECOSYSTEM_PRIORITY_ORDER.indexOf(a.type);
         const orderB = ECOSYSTEM_PRIORITY_ORDER.indexOf(b.type);
-        const posA = orderA === -1 ? 999 : orderA;
-        const posB = orderB === -1 ? 999 : orderB;
+        const posA = orderA === -1 ? FALLBACK_ECOSYSTEM_PRIORITY : orderA;
+        const posB = orderB === -1 ? FALLBACK_ECOSYSTEM_PRIORITY : orderB;
         return posA - posB;
       });
 
@@ -277,13 +310,13 @@ export class FileBuildDetector implements BuildDetectorPort {
   ): Promise<readonly GateCommandDefinition[]> {
     // 1. Explicit CLI / parameter commands (Highest precedence)
     if (explicitCommands && explicitCommands.length > 0) {
-      return this.normalizeCommands(explicitCommands, 'custom');
+      return this.normalizeCommands(explicitCommands, CMD_PREFIX_CUSTOM);
     }
 
     // 2. Explicit configuration overrides (.agyloop.json / config.default.json)
     const configuredCommands = this.extractConfiguredCommands(config);
     if (configuredCommands && configuredCommands.length > 0) {
-      return this.normalizeCommands(configuredCommands, 'config');
+      return this.normalizeCommands(configuredCommands, CMD_PREFIX_CONFIG);
     }
 
     // 3. Auto-detected commands from workspace filesystem markers
@@ -300,113 +333,71 @@ export class FileBuildDetector implements BuildDetectorPort {
     workspaceDir: string,
     fileNames: Set<string>
   ): { ecosystem: Ecosystem; commands: GateCommandDefinition[] } {
-    let pkgMgr: PackageManagerName = PKG_MGR_NPM;
+    const { pkgMgr, lockfileMarker } = this.detectNodePackageManager(fileNames);
     const markers: string[] = [MARKER_PACKAGE_JSON];
-
-    if (fileNames.has(MARKER_PNPM_LOCK)) {
-      pkgMgr = PKG_MGR_PNPM;
-      markers.push(MARKER_PNPM_LOCK);
-    } else if (fileNames.has(MARKER_YARN_LOCK)) {
-      pkgMgr = PKG_MGR_YARN;
-      markers.push(MARKER_YARN_LOCK);
-    } else if (fileNames.has(MARKER_BUN_LOCK)) {
-      pkgMgr = PKG_MGR_BUN;
-      markers.push(MARKER_BUN_LOCK);
-    } else if (fileNames.has(MARKER_PACKAGE_LOCK)) {
-      markers.push(MARKER_PACKAGE_LOCK);
+    if (lockfileMarker) {
+      markers.push(lockfileMarker);
     }
 
-    // Read package.json scripts
-    let scripts: Record<string, string> = {};
-    const pkgJsonPath = path.join(workspaceDir, MARKER_PACKAGE_JSON);
-    try {
-      const content = fs.readFileSync(pkgJsonPath, 'utf8');
-      const parsed = JSON.parse(content);
-      if (parsed && typeof parsed.scripts === 'object' && parsed.scripts !== null) {
-        scripts = parsed.scripts;
-      }
-    } catch {
-      // If parsing fails, proceed with default fallbacks
-    }
-
+    const scripts = this.readPackageScripts(workspaceDir);
     const commands: GateCommandDefinition[] = [];
 
     // Check typecheck script
-    if (scripts.typecheck) {
+    if (scripts[SCRIPT_NAME_TYPECHECK]) {
       commands.push({
-        id: 'typecheck',
-        label: `TypeScript Compilation & Typecheck (${pkgMgr})`,
-        command: `${pkgMgr} run typecheck`
+        id: CMD_ID_TYPECHECK,
+        label: `${CMD_LABEL_TYPECHECK} (${pkgMgr})`,
+        command: `${pkgMgr} run ${SCRIPT_NAME_TYPECHECK}`
       });
     }
 
     // Check build script (if no typecheck script or build present)
-    if (scripts.build && !scripts.typecheck) {
+    if (scripts[SCRIPT_NAME_BUILD] && !scripts[SCRIPT_NAME_TYPECHECK]) {
       commands.push({
-        id: 'build',
-        label: `Build Script (${pkgMgr})`,
-        command: `${pkgMgr} run build`
+        id: CMD_ID_BUILD,
+        label: `${CMD_LABEL_BUILD} (${pkgMgr})`,
+        command: `${pkgMgr} run ${SCRIPT_NAME_BUILD}`
       });
     }
 
     // Check test script
-    if (scripts.test) {
-      // Check if it's the default npm init stub
-      const isDefaultStub = scripts.test.includes('no test specified');
+    if (scripts[SCRIPT_NAME_TEST]) {
+      const isDefaultStub = scripts[SCRIPT_NAME_TEST].includes(NPM_DEFAULT_TEST_STUB);
       if (!isDefaultStub) {
         commands.push({
-          id: 'test',
-          label: `Automated Test Suite (${pkgMgr})`,
+          id: CMD_ID_TEST,
+          label: `${CMD_LABEL_TEST} (${pkgMgr})`,
           command: `${pkgMgr} test`
         });
       }
     }
 
     // Playwright Detection
-    const hasPlaywrightConfig = (PLAYWRIGHT_CONFIG_MARKERS as readonly string[]).some((m) =>
-      fileNames.has(m)
-    );
-    if (hasPlaywrightConfig) {
-      const matched = (PLAYWRIGHT_CONFIG_MARKERS as readonly string[]).find((m) => fileNames.has(m));
-      if (matched) markers.push(matched);
+    const matchedPlaywrightMarker = PLAYWRIGHT_CONFIG_MARKERS.find((m) => fileNames.has(m));
+    if (matchedPlaywrightMarker) {
+      markers.push(matchedPlaywrightMarker);
     }
 
-    let playwrightScript: string | null = null;
-    for (const cand of PLAYWRIGHT_SCRIPT_CANDIDATES) {
-      if (scripts[cand]) {
-        playwrightScript = cand;
-        break;
-      }
-    }
-
+    const playwrightScript = PLAYWRIGHT_SCRIPT_CANDIDATES.find((cand) => Boolean(scripts[cand]));
     if (playwrightScript) {
       commands.push({
-        id: 'playwright',
-        label: `Playwright End-to-End Test Suite (${pkgMgr})`,
+        id: CMD_ID_PLAYWRIGHT,
+        label: `${CMD_LABEL_PLAYWRIGHT} (${pkgMgr})`,
         command: `${pkgMgr} run ${playwrightScript}`
       });
-    } else if (hasPlaywrightConfig) {
-      const runnerCmd =
-        pkgMgr === PKG_MGR_PNPM
-          ? 'pnpm exec playwright test'
-          : pkgMgr === PKG_MGR_BUN
-            ? 'bunx playwright test'
-            : pkgMgr === PKG_MGR_YARN
-              ? 'yarn playwright test'
-              : CMD_PLAYWRIGHT_TEST;
-
+    } else if (matchedPlaywrightMarker) {
       commands.push({
-        id: 'playwright',
-        label: 'Playwright End-to-End Test Suite',
-        command: runnerCmd
+        id: CMD_ID_PLAYWRIGHT,
+        label: CMD_LABEL_PLAYWRIGHT,
+        command: this.resolvePlaywrightRunner(pkgMgr)
       });
     }
 
     // If no commands were inferred from scripts, provide safe default test
     if (commands.length === 0) {
       commands.push({
-        id: 'test',
-        label: `Automated Test Suite (${pkgMgr})`,
+        id: CMD_ID_TEST,
+        label: `${CMD_LABEL_TEST} (${pkgMgr})`,
         command: `${pkgMgr} test`
       });
     }
@@ -415,86 +406,124 @@ export class FileBuildDetector implements BuildDetectorPort {
       type: ECOSYSTEM_NODE,
       markerFiles: markers,
       packageManager: pkgMgr,
-      confidence: 1.0,
-      priority: 1
+      confidence: CONFIDENCE_CERTAIN,
+      priority: PRIORITY_ECOSYSTEM_NODE
     });
 
     return { ecosystem, commands };
+  }
+
+  private detectNodePackageManager(fileNames: Set<string>): {
+    pkgMgr: PackageManagerName;
+    lockfileMarker?: string;
+  } {
+    if (fileNames.has(MARKER_PNPM_LOCK)) {
+      return { pkgMgr: PKG_MGR_PNPM, lockfileMarker: MARKER_PNPM_LOCK };
+    }
+    if (fileNames.has(MARKER_YARN_LOCK)) {
+      return { pkgMgr: PKG_MGR_YARN, lockfileMarker: MARKER_YARN_LOCK };
+    }
+    if (fileNames.has(MARKER_BUN_LOCK)) {
+      return { pkgMgr: PKG_MGR_BUN, lockfileMarker: MARKER_BUN_LOCK };
+    }
+    if (fileNames.has(MARKER_PACKAGE_LOCK)) {
+      return { pkgMgr: PKG_MGR_NPM, lockfileMarker: MARKER_PACKAGE_LOCK };
+    }
+    return { pkgMgr: PKG_MGR_NPM };
+  }
+
+  private resolvePlaywrightRunner(pkgMgr: PackageManagerName): string {
+    switch (pkgMgr) {
+      case PKG_MGR_PNPM:
+        return CMD_PLAYWRIGHT_PNPM;
+      case PKG_MGR_BUN:
+        return CMD_PLAYWRIGHT_BUN;
+      case PKG_MGR_YARN:
+        return CMD_PLAYWRIGHT_YARN;
+      case PKG_MGR_NPM:
+      default:
+        return CMD_PLAYWRIGHT_TEST;
+    }
+  }
+
+  private readPackageScripts(workspaceDir: string): Record<string, string> {
+    const pkgJsonPath = path.join(workspaceDir, MARKER_PACKAGE_JSON);
+    try {
+      const content = fs.readFileSync(pkgJsonPath, 'utf8');
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed.scripts === 'object' && parsed.scripts !== null) {
+        return parsed.scripts;
+      }
+    } catch {
+      // If parsing fails, return empty scripts
+    }
+    return {};
   }
 
   private detectPythonEcosystem(
     workspaceDir: string,
     markers: string[]
   ): { ecosystem: Ecosystem; commands: GateCommandDefinition[] } {
-    let usesPytest = markers.includes(MARKER_PYTEST_INI);
-
-    if (!usesPytest && markers.includes(MARKER_PYPROJECT_TOML)) {
-      try {
-        const content = fs.readFileSync(path.join(workspaceDir, MARKER_PYPROJECT_TOML), 'utf8');
-        if (content.includes('pytest') || content.includes('[tool.pytest')) {
-          usesPytest = true;
-        }
-      } catch {
-        // Ignore read failure
-      }
-    }
-
-    if (!usesPytest && markers.includes(MARKER_REQUIREMENTS_TXT)) {
-      try {
-        const content = fs.readFileSync(path.join(workspaceDir, MARKER_REQUIREMENTS_TXT), 'utf8');
-        if (content.toLowerCase().includes('pytest')) {
-          usesPytest = true;
-        }
-      } catch {
-        // Ignore read failure
-      }
-    }
-
-    if (!usesPytest && markers.includes(MARKER_SETUP_PY)) {
-      try {
-        const content = fs.readFileSync(path.join(workspaceDir, MARKER_SETUP_PY), 'utf8');
-        if (content.toLowerCase().includes('pytest')) {
-          usesPytest = true;
-        }
-      } catch {
-        // Ignore read failure
-      }
-    }
+    const usesPytest = this.hasPytestConfigured(workspaceDir, markers);
 
     const commands: GateCommandDefinition[] = usesPytest
-      ? [{ id: 'pytest', label: 'Pytest Automated Test Suite', command: CMD_PYTEST }]
-      : [{ id: 'python-unittest', label: 'Python Unittest Suite', command: CMD_PYTHON_UNITTEST }];
+      ? [{ id: CMD_ID_PYTEST, label: CMD_LABEL_PYTEST, command: CMD_PYTEST }]
+      : [{ id: CMD_ID_PYTHON_UNITTEST, label: CMD_LABEL_PYTHON_UNITTEST, command: CMD_PYTHON_UNITTEST }];
 
     const ecosystem = new Ecosystem({
       type: ECOSYSTEM_PYTHON,
       markerFiles: markers,
-      confidence: 1.0,
-      priority: 4
+      confidence: CONFIDENCE_CERTAIN,
+      priority: PRIORITY_ECOSYSTEM_PYTHON
     });
 
     return { ecosystem, commands };
   }
 
+  private hasPytestConfigured(workspaceDir: string, markers: string[]): boolean {
+    if (markers.includes(MARKER_PYTEST_INI)) {
+      return true;
+    }
+
+    const candidateFiles = [
+      MARKER_PYPROJECT_TOML,
+      MARKER_REQUIREMENTS_TXT,
+      MARKER_SETUP_PY
+    ];
+
+    return candidateFiles.some(
+      (file) =>
+        markers.includes(file) &&
+        (this.fileContainsCaseInsensitive(path.join(workspaceDir, file), PYTEST_INDICATOR_KEYWORD) ||
+          this.fileContainsCaseInsensitive(path.join(workspaceDir, file), PYTEST_CONFIG_HEADER))
+    );
+  }
+
+  private fileContainsCaseInsensitive(filePath: string, needle: string): boolean {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      return content.toLowerCase().includes(needle.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
   private extractConfiguredCommands(config?: AgyLoopConfig): readonly unknown[] | null {
     if (!config) return null;
 
-    if (config.options && Array.isArray(config.options.gateCommands) && config.options.gateCommands.length > 0) {
-      return config.options.gateCommands;
+    const gateCommands = config.options?.gateCommands;
+    if (Array.isArray(gateCommands) && gateCommands.length > 0) {
+      return gateCommands;
     }
 
-    const anyConfig = config as unknown as Record<string, unknown>;
-    if (anyConfig.quality_gates && typeof anyConfig.quality_gates === 'object') {
-      const qg = anyConfig.quality_gates as { commands?: readonly unknown[] };
-      if (Array.isArray(qg.commands) && qg.commands.length > 0) {
-        return qg.commands;
-      }
-    }
-
-    if (anyConfig.qualityGates && typeof anyConfig.qualityGates === 'object') {
-      const qg = anyConfig.qualityGates as { commands?: readonly unknown[] };
-      if (Array.isArray(qg.commands) && qg.commands.length > 0) {
-        return qg.commands;
-      }
+    const anyConfig = config as Record<string, any>;
+    const qualityGatesSection = anyConfig.quality_gates || anyConfig.qualityGates;
+    if (
+      qualityGatesSection &&
+      Array.isArray(qualityGatesSection.commands) &&
+      qualityGatesSection.commands.length > 0
+    ) {
+      return qualityGatesSection.commands;
     }
 
     return null;
@@ -505,24 +534,29 @@ export class FileBuildDetector implements BuildDetectorPort {
     prefix: string
   ): readonly GateCommandDefinition[] {
     return commands.map((cmd, idx) => {
+      const defaultId = `${prefix}-cmd-${idx + 1}`;
+      const defaultLabel = prefix === CMD_PREFIX_CUSTOM
+        ? `Custom Command ${idx + 1}`
+        : `Configured Command ${idx + 1}`;
+
       if (typeof cmd === 'string') {
         return {
-          id: `${prefix}-cmd-${idx + 1}`,
-          label: `Configured Command ${idx + 1}`,
+          id: defaultId,
+          label: defaultLabel,
           command: cmd
         };
       }
       if (cmd && typeof cmd === 'object') {
         const c = cmd as { id?: string; label?: string; command?: string };
         return {
-          id: c.id || `${prefix}-cmd-${idx + 1}`,
-          label: c.label || `Command ${idx + 1}`,
+          id: c.id || defaultId,
+          label: c.label || defaultLabel,
           command: String(c.command || '')
         };
       }
       return {
-        id: `${prefix}-cmd-${idx + 1}`,
-        label: `Command ${idx + 1}`,
+        id: defaultId,
+        label: defaultLabel,
         command: String(cmd)
       };
     });

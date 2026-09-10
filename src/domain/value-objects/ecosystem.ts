@@ -15,7 +15,11 @@ import {
   ECOSYSTEM_MAVEN,
   ECOSYSTEM_DOTNET,
   ECOSYSTEM_UNKNOWN,
-  PackageManagerName
+  PackageManagerName,
+  DEFAULT_ECOSYSTEM_PRIORITY,
+  FALLBACK_ECOSYSTEM_PRIORITY,
+  CONFIDENCE_CERTAIN,
+  CONFIDENCE_NONE
 } from '../constants';
 import { ValidationError } from '../errors';
 
@@ -52,12 +56,12 @@ export class Ecosystem {
       }
     }
 
-    const confidence = props.confidence !== undefined ? props.confidence : 1.0;
-    if (typeof confidence !== 'number' || isNaN(confidence) || confidence < 0 || confidence > 1) {
+    const confidence = props.confidence !== undefined ? props.confidence : CONFIDENCE_CERTAIN;
+    if (typeof confidence !== 'number' || isNaN(confidence) || confidence < CONFIDENCE_NONE || confidence > CONFIDENCE_CERTAIN) {
       throw new ValidationError('confidence', confidence, 'Ecosystem confidence must be a number between 0 and 1.');
     }
 
-    const priority = props.priority !== undefined ? props.priority : 100;
+    const priority = props.priority !== undefined ? props.priority : DEFAULT_ECOSYSTEM_PRIORITY;
     if (typeof priority !== 'number' || isNaN(priority)) {
       throw new ValidationError('priority', priority, 'Ecosystem priority must be a valid number.');
     }
@@ -133,8 +137,8 @@ export class Ecosystem {
     return new Ecosystem({
       type: ECOSYSTEM_UNKNOWN,
       markerFiles: [],
-      confidence: 0,
-      priority: 999
+      confidence: CONFIDENCE_NONE,
+      priority: FALLBACK_ECOSYSTEM_PRIORITY
     });
   }
 }
