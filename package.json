@@ -1,0 +1,30 @@
+{
+  "name": "agyloop",
+  "version": "0.1.0",
+  "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
+  "main": "lib/state-machine.js",
+  "bin": {
+    "agyloop": "./bin/agyloop.js"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Alvin Jorrel Pascual <me@ajx.codes> (https://github.com/ajxcodes)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ajxcodes/agyloop.git"
+  },
+  "keywords": [
+    "antigravity",
+    "agy",
+    "orchestrator",
+    "subagents",
+    "pair-programming",
+    "lifecycle",
+    "state-machine"
+  ]
+}

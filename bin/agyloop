@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# agyloop - POSIX Shell Launcher
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if ! command -v node &>/dev/null; then
+  echo "Error: Node.js (>=18) is required to run the agyloop CLI." >&2
+  echo "Please install Node.js or run '/agyloop' inside the Antigravity chat canvas." >&2
+  exit 1
+fi
+
+exec node "${SCRIPT_DIR}/agyloop.js" "$@"
