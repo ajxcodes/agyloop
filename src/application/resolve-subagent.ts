@@ -5,8 +5,6 @@
  * and system prompts with strict physical write suppression guarantees.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import {
   SubagentRole,
   ToolWhitelist,
@@ -18,14 +16,20 @@ import {
   ROLE_TITLE_IMPLEMENTER,
   ROLE_DESC_PLANNER,
   ROLE_DESC_IMPLEMENTER,
-  DEFAULT_PROMPTS_DIR,
-  PROMPT_FILE_PLANNER,
-  PROMPT_FILE_IMPLEMENTER,
+  DEFAULT_PLANNER_SYSTEM_PROMPT,
+  DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
+  PLAN_DEFAULT_SPECIFICATION_TITLE,
   TIER_PRO,
   TIER_INHERIT
 } from '../domain';
-import { ConfigRepository, AgyLoopConfig } from '../ports';
-import { CliGitHubGateway } from '../infrastructure/cli-github-gateway';
+import {
+  ConfigRepository,
+  AgyLoopConfig,
+  GitHubGateway,
+  GitHubIssueData,
+  PromptRepository,
+  formatIssueForPrompt
+} from '../ports';
 
 export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
@@ -80,6 +84,7 @@ export interface ResolveSubagentOptions {
 export interface PlanningTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly repo?: string | null;
+  readonly issueData?: GitHubIssueData | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
@@ -99,43 +104,37 @@ export interface ImplementationTaskPromptParams {
 
 export class ResolveSubagentUseCase {
   private readonly configRepo: ConfigRepository;
-  private readonly githubGateway: CliGitHubGateway;
+  private readonly githubGateway?: GitHubGateway;
+  private readonly promptRepo?: PromptRepository;
 
-  constructor(configRepo: ConfigRepository, githubGateway: CliGitHubGateway = new CliGitHubGateway()) {
+  constructor(
+    configRepo: ConfigRepository,
+    githubGateway?: GitHubGateway,
+    promptRepo?: PromptRepository
+  ) {
     this.configRepo = configRepo;
     this.githubGateway = githubGateway;
+    this.promptRepo = promptRepo;
   }
 
   public getPlannerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
-    const cwd = options.workspaceDir || process.cwd();
-    const defaultPath = path.resolve(cwd, DEFAULT_PROMPTS_DIR, PROMPT_FILE_PLANNER);
-    const targetPath = options.promptPath || defaultPath;
-
-    if (fs.existsSync(targetPath)) {
-      try {
-        return fs.readFileSync(targetPath, 'utf8');
-      } catch {
-        // Fall back to embedded prompt
-      }
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_PLANNER, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
     }
-
-    return `# AgyLoop Planning Subagent System Prompt\n\nYou are the AgyLoop Architectural Planning Subagent, an analytical, read-only software architect.\nYou are equipped strictly with read inspection tools (view_file, grep_search, find_by_name, list_dir).\nYou are physically incapable of modifying files. Your output is comprehensive technical plans following templates/discovery-plan.md and templates/implementation-plan.md.`;
+    return DEFAULT_PLANNER_SYSTEM_PROMPT;
   }
 
   public getImplementerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
-    const cwd = options.workspaceDir || process.cwd();
-    const defaultPath = path.resolve(cwd, DEFAULT_PROMPTS_DIR, PROMPT_FILE_IMPLEMENTER);
-    const targetPath = options.promptPath || defaultPath;
-
-    if (fs.existsSync(targetPath)) {
-      try {
-        return fs.readFileSync(targetPath, 'utf8');
-      } catch {
-        // Fall back to embedded prompt
-      }
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_IMPLEMENTER, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
     }
-
-    return `# AgyLoop Implementation Subagent System Prompt\n\nYou are the AgyLoop Code Implementation Subagent, an autonomous, rigorous software engineer.\nYou are equipped with full read and write tools (view_file, grep_search, find_by_name, list_dir, write_to_file, replace_file_content, run_command).\nYour objective is to implement changes strictly adhering to an approved plan, verify with automated tests, and ensure high code quality.`;
+    return DEFAULT_IMPLEMENTER_SYSTEM_PROMPT;
   }
 
   public execute(options: ResolveSubagentOptions = {}): SubagentDescriptor {
@@ -192,18 +191,22 @@ export class ResolveSubagentUseCase {
 
   public buildPlanningTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
-    const repo = params.repo || this.githubGateway.getCurrentRepo(workspaceDir);
+    const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
+    const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+    const repo = params.repo || resolvedRepo;
     let issueContextBlock = '';
 
-    if (params.issueNumber) {
+    if (params.issueData) {
+      issueContextBlock = formatIssueForPrompt(params.issueData);
+    } else if (params.issueNumber && this.githubGateway) {
       const issueVo = parseInt(String(params.issueNumber), 10);
       if (!isNaN(issueVo)) {
-        const issueData = this.githubGateway.fetchIssue(issueVo, {
-          repo: repo || undefined,
+        const fetched = this.githubGateway.fetchIssue(issueVo, {
+          repo,
           cwd: workspaceDir
         });
-        if (issueData) {
-          issueContextBlock = CliGitHubGateway.formatIssueForPrompt(issueData);
+        if (fetched && !(fetched instanceof Promise)) {
+          issueContextBlock = formatIssueForPrompt(fetched);
         }
       }
     }
@@ -264,7 +267,9 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    const planFileName = params.planPath ? path.basename(params.planPath) : 'Plan Specification';
+    const planFileName = params.planPath
+      ? params.planPath.replace(/^.*[\\/]/, '')
+      : PLAN_DEFAULT_SPECIFICATION_TITLE;
     prompt += `### Approved Technical Plan (${planFileName}):\n\n`;
     prompt += `${params.planContent.trim()}\n\n`;
 

@@ -124,6 +124,13 @@ class MockConfigRepository implements ConfigRepository {
     }
     return { role, configured, tier, apiModel };
   }
+
+  public mapModelToTier(inputModel: string): import('../../src').ModelTierName {
+    if (inputModel.includes('pro')) return 'pro' as const;
+    if (inputModel.includes('flash_lite')) return 'flash_lite' as const;
+    if (inputModel.includes('flash')) return 'flash' as const;
+    return 'inherit' as const;
+  }
 }
 
 class MockPlanGenerator implements PlanGeneratorPort {
@@ -153,6 +160,41 @@ class MockPlanGenerator implements PlanGeneratorPort {
 
   public findPlanDirectory(_root: string, _issue: number | string): string | null {
     return this.planDir;
+  }
+
+  public resolvePlanFile(
+    options: import('../../src').ResolvePlanOptions
+  ): import('../../src').ResolvedPlanLocation | null {
+    if (options.planPath && fs.existsSync(options.planPath)) {
+      return {
+        planDir: path.dirname(options.planPath),
+        planPath: options.planPath,
+        planFileName: path.basename(options.planPath),
+        summaryPath: path.join(path.dirname(options.planPath), 'AgyLoop Summary.md')
+      };
+    }
+    const dir =
+      this.planDir ||
+      (options.issue ? this.findPlanDirectory(options.projectRoot || '', options.issue) : null);
+    if (!dir || !fs.existsSync(dir)) return null;
+
+    const files = fs.readdirSync(dir);
+    const planFile = files.find(
+      (f: string) => f.endsWith('.md') && !f.toLowerCase().includes('summary')
+    );
+    if (!planFile) return null;
+
+    const planPath = path.join(dir, planFile);
+    return {
+      planDir: dir,
+      planPath,
+      planFileName: planFile,
+      summaryPath: path.join(dir, 'AgyLoop Summary.md')
+    };
+  }
+
+  public readPlanDocument(planPath: string): string {
+    return fs.readFileSync(planPath, 'utf8');
   }
 }
 

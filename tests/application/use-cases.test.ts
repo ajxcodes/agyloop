@@ -101,6 +101,13 @@ class MockConfigRepository implements ConfigRepository {
       apiModel: 'gemini-2.5-pro'
     };
   }
+
+  public mapModelToTier(inputModel: string): import('../../src').ModelTierName {
+    if (inputModel.includes('pro')) return 'pro' as const;
+    if (inputModel.includes('flash_lite')) return 'flash_lite' as const;
+    if (inputModel.includes('flash')) return 'flash' as const;
+    return 'inherit' as const;
+  }
 }
 
 class MockPlanGenerator implements PlanGeneratorPort {
@@ -134,6 +141,19 @@ class MockPlanGenerator implements PlanGeneratorPort {
 
   public findPlanDirectory(): string | null {
     return '/mock/plans/1-test';
+  }
+
+  public resolvePlanFile(_options: import('../../src').ResolvePlanOptions): import('../../src').ResolvedPlanLocation | null {
+    return {
+      planDir: '/mock/plans/1-test',
+      planPath: '/mock/plans/1-test/[Implementation] - Test.md',
+      planFileName: '[Implementation] - Test.md',
+      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md'
+    };
+  }
+
+  public readPlanDocument(_planPath: string): string {
+    return '# Mock Plan Content';
   }
 }
 

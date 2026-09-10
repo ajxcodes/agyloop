@@ -49,4 +49,9 @@ export interface ConfigRepository {
     tier: ModelTierName;
     apiModel: string;
   };
+
+  /**
+   * Maps an arbitrary model name or tier string to canonical ModelTierName.
+   */
+  mapModelToTier(inputModel: string): ModelTierName;
 }

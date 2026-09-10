@@ -8,10 +8,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ModelCatalogPort, DiscoveredModel, FetchModelsOptions } from '../ports';
+import { ModelCatalogPort, DiscoveredModel, FetchModelsOptions, ConfigRepository } from '../ports';
 import {
-  ModelTierName,
   STATIC_MODELS,
+  ModelTierName,
+  TIER_INHERIT,
   TIER_PRO,
   TIER_FLASH,
   TIER_FLASH_LITE,
@@ -26,9 +27,9 @@ interface CachedCatalog {
 
 export class GeminiModelCatalog implements ModelCatalogPort {
   private readonly cacheFilePath: string;
-  private readonly configRepo: FileConfigRepository;
+  private readonly configRepo: ConfigRepository;
 
-  constructor(options: { cacheFilePath?: string; configRepo?: FileConfigRepository } = {}) {
+  constructor(options: { cacheFilePath?: string; configRepo?: ConfigRepository } = {}) {
     this.cacheFilePath =
       options.cacheFilePath ||
       path.join(os.homedir(), '.gemini', 'cache', 'agyloop-models.json');
