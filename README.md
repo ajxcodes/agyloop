@@ -134,6 +134,52 @@ Plans remain persistent across IDE reloads, branch changes, and multi-day tasks 
 
 ---
 
+## 📦 Installation & Symlink Setup
+
+To register `agyloop` with your local Antigravity installation, symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/agyloop`):
+
+### 1. Run Setup Script
+```bash
+./bin/setup-symlink.sh
+```
+*This idempotently links `{project-root}` to `~/.gemini/config/plugins/agyloop`.*
+
+### 2. Verify Plugin Registration
+```bash
+./bin/verify-install.sh
+```
+*This validates symlink resolution, `plugin.json` schema structure, subagent declarations, and Antigravity environment readiness.*
+
+---
+
+## 🛠️ Troubleshooting & Plugin Resolution
+
+If Antigravity does not immediately discover the `/agyloop` command or subagents:
+
+1. **Check Symlink Resolution**:
+   Ensure `~/.gemini/config/plugins/agyloop` points directly to your repository root:
+   ```bash
+   ls -la ~/.gemini/config/plugins/agyloop
+   ```
+2. **Validate Manifest Syntax**:
+   Verify that `plugin.json` has valid JSON and required fields:
+   ```bash
+   ./bin/verify-install.sh
+   ```
+3. **Check Plugin State in `config.json`**:
+   Ensure the plugin is not disabled in your Antigravity configuration (`~/.gemini/antigravity-cli/config.json` or project settings):
+   ```json
+   {
+     "plugins": {
+       "agyloop": { "enabled": true }
+     }
+   }
+   ```
+4. **Reload Workspace / App**:
+   Reload the Antigravity window or restart the CLI session so the plugin manager rescans `~/.gemini/config/plugins/`.
+
+---
+
 ## 🗺️ Roadmap & Tracking
 
 Track the development of `agyloop` in the central [ajxcodes/projects](https://github.com/ajxcodes/projects) management board:
