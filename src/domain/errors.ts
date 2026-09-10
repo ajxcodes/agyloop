@@ -15,7 +15,8 @@ import {
   ERR_VALIDATION,
   ERR_GATE_TIMEOUT,
   ERR_GATE_EXECUTION,
-  ERR_BUILD_DETECTION
+  ERR_BUILD_DETECTION,
+  ERR_GATE_SUMMARY_PARSE
 } from './constants';
 
 
@@ -162,6 +163,18 @@ export class BuildDetectionError extends AgyLoopError {
     if (cause) {
       this.cause = cause;
     }
+  }
+}
+
+export class QualityGateSummaryParseError extends AgyLoopError {
+  public readonly code = ERR_GATE_SUMMARY_PARSE;
+  public readonly rawContent: string;
+  public readonly reason: string;
+
+  constructor(rawContent: string, reason: string, details?: Record<string, unknown>) {
+    super(`Failed to parse Quality Gate summary protocol: ${reason}`, { rawContent, reason, ...details });
+    this.rawContent = rawContent;
+    this.reason = reason;
   }
 }
 

@@ -590,4 +590,72 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
     assert.strictEqual(commandExecutor.executed.length, 1);
     assert.strictEqual(commandExecutor.executed[0].command, 'echo from-config-override');
   });
+
+  test('generates structured GateSummaryReport and transition metadata for self-correction handoff', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 24,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor([
+      {
+        command: 'npm test',
+        exitCode: 1,
+        stdout: '',
+        stderr: `
+✖ failing test in value-objects.test.ts
+AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
+    at Context.<anonymous> (tests/domain/value-objects.test.ts:35:12)
+`,
+        combinedOutput: `
+✖ failing test in value-objects.test.ts
+AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
+    at Context.<anonymous> (tests/domain/value-objects.test.ts:35:12)
+`,
+        durationMs: 800,
+        timedOut: false
+      }
+    ]);
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor
+    );
+
+    const result = await useCase.execute({
+      issue: 24,
+      commands: [{ id: 'test', label: 'Unit Tests', command: 'npm test' }]
+    });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.ok(result.gateReport);
+    assert.strictEqual(result.gateReport.isFailed(), true);
+    assert.ok(result.diagnosticSnippet);
+    assert.strictEqual(result.diagnosticSnippet.fileLocation, 'tests/domain/value-objects.test.ts:35:12');
+
+    // Inspect transition history metadata for self-correction payload
+    const history = result.stateMachine.history;
+    const lastTransition = history[history.length - 1];
+    assert.strictEqual(lastTransition.stage, STAGE_IMPLEMENT);
+    assert.ok(lastTransition.metadata);
+    assert.strictEqual(lastTransition.metadata.gateVerdict, 'FAILED');
+    assert.ok(String(lastTransition.metadata.gateTokens).includes('GATE_STATUS: FAILED'));
+    assert.strictEqual(lastTransition.metadata.failureFile, 'tests/domain/value-objects.test.ts:35:12');
+    assert.ok(String(lastTransition.metadata.selfCorrectionPayload).includes('Self-Correction Quality Gate Failure Diagnostics'));
+
+    // Plan generator update reviewNote recorded failing file
+    assert.strictEqual(planGenerator.updates.length, 1);
+    assert.ok(planGenerator.updates[0].updateData.reviewNote?.includes('tests/domain/value-objects.test.ts:35:12'));
+  });
 });

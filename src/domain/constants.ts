@@ -173,6 +173,7 @@ export const ERR_VALIDATION = 'ERR_VALIDATION' as const;
 export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
 export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
 export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
+export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -183,7 +184,8 @@ export const ERROR_CODES = Object.freeze({
   VALIDATION: ERR_VALIDATION,
   GATE_TIMEOUT: ERR_GATE_TIMEOUT,
   GATE_EXECUTION: ERR_GATE_EXECUTION,
-  BUILD_DETECTION: ERR_BUILD_DETECTION
+  BUILD_DETECTION: ERR_BUILD_DETECTION,
+  GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE
 });
 
 
@@ -290,6 +292,65 @@ export const DEFAULT_GATE_COMMANDS: readonly GateCommandDefinition[] = Object.fr
 
 export const MAX_FILTERED_LOG_LINES = 30 as const;
 export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;
+
+// Structured Quality Gate Summary Protocol Tokens & Thresholds
+export const TOKEN_GATE_STATUS = 'GATE_STATUS' as const;
+export const TOKEN_BUILD_STATUS = 'BUILD_STATUS' as const;
+export const TOKEN_TEST_METRICS = 'TEST_METRICS' as const;
+export const TOKEN_TEST_COUNT = 'TEST_COUNT' as const;
+export const TOKEN_FAILURE_FILE = 'FAILURE_FILE' as const;
+export const TOKEN_FAILING_ASSERTION = 'FAILING_ASSERTION' as const;
+export const TOKEN_DIAGNOSTIC_SNIPPET = 'DIAGNOSTIC_SNIPPET' as const;
+export const TOKEN_EXECUTION_MATRIX = 'EXECUTION_MATRIX' as const;
+
+export const MAX_DIAGNOSTIC_LINES = 25 as const;
+export const MAX_DIAGNOSTIC_CHARS = 2000 as const;
+export const DIAGNOSTIC_TRUNCATION_MARKER = '... [diagnostics truncated under 25 lines limit]' as const;
+
+export const HEADER_QUALITY_GATE_REPORT = '=== AgyLoop: Quality Gate Report ===' as const;
+export const LABEL_OVERALL_VERDICT = 'Overall Verdict' as const;
+export const LABEL_BUILD_STATUS = 'Build Status' as const;
+export const LABEL_BUILD_SYSTEM = 'Build System' as const;
+export const LABEL_TOTAL_DURATION = 'Total Duration' as const;
+export const LABEL_NEXT_STAGE = 'Next Stage' as const;
+export const LABEL_EXECUTION_MATRIX = 'Execution Matrix:' as const;
+export const LABEL_TEST_METRICS = 'Test Metrics' as const;
+export const LABEL_DIAGNOSTIC_FAILURE_DETAILS = 'Diagnostic Failure Details' as const;
+export const LABEL_EXECUTION_LOG = 'Execution Log' as const;
+export const LABEL_FAILURE_FILE = 'Failing File' as const;
+export const LABEL_FAILING_ASSERTION = 'Failing Assertion' as const;
+export const SECTION_SELF_CORRECTION_TITLE = '### Self-Correction Quality Gate Failure Diagnostics:' as const;
+export const MSG_NO_FAILURES = 'All verification commands passed without failures.' as const;
+export const MSG_COMMAND_FAILED_NO_OUTPUT = 'Command failed without output.' as const;
+export const DIVIDER_DASHED = '----------------------------------------------------------------------' as const;
+
+// Structured Protocol Regex Patterns
+export const REGEX_GATE_STATUS_TOKEN = /^GATE_STATUS:\s*(PASSED|FAILED|TIMED_OUT)$/im;
+export const REGEX_BUILD_STATUS_TOKEN = /^BUILD_STATUS:\s*(PASSED|FAILED)$/im;
+export const REGEX_TEST_METRICS_TOKEN = /^(?:TEST_METRICS|TEST_COUNT):\s*(.+)$/im;
+export const REGEX_FAILURE_FILE_TOKEN = /^FAILURE_FILE:\s*(.+)$/im;
+export const REGEX_FAILING_ASSERTION_TOKEN = /^FAILING_ASSERTION:\s*(.+)$/im;
+
+export const REGEX_METRIC_PASSED = /(\d+)\s+pass(?:ed)?/i;
+export const REGEX_METRIC_FAILED = /(\d+)\s+fail(?:ed)?/i;
+export const REGEX_METRIC_SKIPPED = /(\d+)\s+skip(?:ped)?/i;
+export const REGEX_METRIC_TOTAL = /(?:tests?|total):\s*(\d+)/i;
+export const REGEX_TAP_TESTS = /tests\s+(\d+)/i;
+export const REGEX_TAP_PASS = /pass\s+(\d+)/i;
+export const REGEX_TAP_FAIL = /fail\s+(\d+)/i;
+export const REGEX_TAP_SKIPPED = /skipped\s+(\d+)/i;
+
+export const REGEX_MD_TABLE_HEADER = /\|\s*Command\s*\|\s*Exit Code\s*\|\s*Duration\s*\|\s*Status\s*\|/i;
+export const REGEX_MD_TABLE_ROW = /\|\s*([^|]+?)\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([A-Z_\s]+?)\s*\|/;
+
+export const REGEX_ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+export const REGEX_STACK_FRAME = /^\s*at\s+(?:(?<callSite>.*?)\s+\((?<fileLocation>[^)]+:\d+:\d+)\)|(?<directLocation>[^\s()]+\.[a-zA-Z0-9]+:\d+:\d+))/;
+export const REGEX_FILE_LOCATION = /(?:at\s+.*?\(([^)]+:\d+:\d+)\)|at\s+([^\s()]+\.[a-zA-Z0-9]+:\d+:\d+)|([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+:\d+:\d+))/;
+export const REGEX_ASSERTION_FAILURE = /(?:AssertionError|Assertion failed|Expected:|Received:|assert(?:\.[a-zA-Z0-9_]+)?\s*\(|Error:\s*.+|expect\(.*\)\..*)/i;
+export const REGEX_ERROR_BANNER = /(?:FAIL|ERROR|FAILURE|✖|×)\s+(.+)/;
+export const REGEX_NOISE_NODE_INTERNAL = /(?:node:internal\/|\/node_modules\/)/;
+export const REGEX_NOISE_NPM_ERR = /^npm\s+ERR!/;
+export const REGEX_NOISE_PASSING = /^\s*(?:✔|√|PASS|ok\s+\d+)\s+/;
 
 // Ecosystem Identifiers
 export const ECOSYSTEM_NODE = 'node' as const;
