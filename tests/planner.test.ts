@@ -82,4 +82,36 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('User / Developer Directives:'));
     assert.ok(prompt.includes('Refactor database client to use connection pooling.'));
   });
+
+  test('getImplementerSystemPrompt returns detailed instructions with write capabilities', () => {
+    const prompt = resolveUseCase.getImplementerSystemPrompt();
+    assert.ok(typeof prompt === 'string' && prompt.length > 300);
+    assert.ok(prompt.includes('AgyLoop Code Implementation Subagent'));
+    assert.ok(prompt.includes('Strict Plan Adherence') || prompt.includes('strictly adhering'));
+    assert.ok(prompt.includes('replace_file_content'));
+    assert.ok(prompt.includes('write_to_file'));
+    assert.ok(prompt.includes('run_command'));
+  });
+
+  test('buildImplementationTaskPrompt formats focused token-minimized handoff prompt', () => {
+    const prompt = resolveUseCase.buildImplementationTaskPrompt({
+      planContent: '## Checklist\n- [ ] Step 1: Implement feature',
+      planPath: 'artifacts/plans/16-task/implementation-plan.md',
+      issueNumber: 16,
+      issueTitle: 'Build Execution Pipeline',
+      issueBody: 'Detailed issue description for pipeline.',
+      userInstructions: 'Ensure strict typing.'
+    });
+
+    assert.ok(prompt.includes('# Task: Implementation Execution'));
+    assert.ok(prompt.includes('Operating Constraints:'));
+    assert.ok(prompt.includes('Issue Context (#16)'));
+    assert.ok(prompt.includes('Build Execution Pipeline'));
+    assert.ok(prompt.includes('Detailed issue description for pipeline.'));
+    assert.ok(prompt.includes('Developer Directives:'));
+    assert.ok(prompt.includes('Ensure strict typing.'));
+    assert.ok(prompt.includes('Approved Technical Plan (implementation-plan.md)'));
+    assert.ok(prompt.includes('Step 1: Implement feature'));
+    assert.ok(prompt.includes('Definition of Done:'));
+  });
 });

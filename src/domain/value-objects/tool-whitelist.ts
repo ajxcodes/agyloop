@@ -6,7 +6,8 @@
 
 import {
   READ_ONLY_TOOLS,
-  FORBIDDEN_WRITE_TOOLS
+  FORBIDDEN_WRITE_TOOLS,
+  IMPLEMENTER_TOOLS
 } from '../constants';
 import { PhysicalWriteViolationError, ValidationError } from '../errors';
 
@@ -49,6 +50,10 @@ export class ToolWhitelist {
 
   public static readOnly(): ToolWhitelist {
     return new ToolWhitelist(READ_ONLY_TOOLS);
+  }
+
+  public static implementation(): ToolWhitelist {
+    return new ToolWhitelist(IMPLEMENTER_TOOLS);
   }
 
   public static custom(tools: readonly string[]): ToolWhitelist {
