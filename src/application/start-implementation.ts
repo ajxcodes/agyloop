@@ -47,6 +47,8 @@ export interface StartImplementationParams {
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
   readonly workspaceDir?: string;
+  readonly failureDiagnostics?: string | null;
+  readonly selfCorrectionPayload?: string | null;
 }
 
 export interface StartImplementationResult {
@@ -57,6 +59,8 @@ export interface StartImplementationResult {
   readonly implementerDef: SubagentDescriptor;
   readonly taskPrompt: string;
   readonly resumed: boolean;
+  readonly isSelfCorrection?: boolean;
+  readonly failureDiagnostics?: string | null;
 }
 
 export class StartImplementationUseCase {
@@ -159,7 +163,25 @@ export class StartImplementationUseCase {
       workspaceDir: workspace
     });
 
-    // 6. Format token-minimized handoff prompt
+    // 6. Format token-minimized handoff prompt (with automated self-correction diagnostics if applicable)
+    let failureDiagnostics: string | undefined = params.failureDiagnostics || undefined;
+    let selfCorrectionPayload: string | undefined = params.selfCorrectionPayload || undefined;
+    let isSelfCorrection = Boolean(failureDiagnostics || selfCorrectionPayload);
+
+    if (!isSelfCorrection && sm.history.length > 0) {
+      const lastEntry = sm.history[sm.history.length - 1];
+      if (lastEntry.metadata) {
+        if (typeof lastEntry.metadata.selfCorrectionPayload === 'string') {
+          selfCorrectionPayload = lastEntry.metadata.selfCorrectionPayload;
+          isSelfCorrection = true;
+        }
+        if (typeof lastEntry.metadata.failureSnippet === 'string') {
+          failureDiagnostics = lastEntry.metadata.failureSnippet;
+          isSelfCorrection = true;
+        }
+      }
+    }
+
     const taskPrompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
       planPath: resolved.planPath,
@@ -168,7 +190,9 @@ export class StartImplementationUseCase {
       issueBody: issueData && !issueData.error ? issueData.body : undefined,
       userInstructions: params.userInstructions,
       workspaceDir: workspace,
-      config
+      config,
+      failureDiagnostics,
+      selfCorrectionPayload
     });
 
     // 7. Checkpoint state and update summary log
@@ -196,7 +220,9 @@ export class StartImplementationUseCase {
       planContent,
       implementerDef,
       taskPrompt,
-      resumed
+      resumed,
+      isSelfCorrection,
+      failureDiagnostics: failureDiagnostics ?? null
     };
   }
 }

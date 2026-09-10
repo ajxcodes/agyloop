@@ -47,6 +47,14 @@ import {
   CMD_ID_E2E,
   CMD_PREFIX_CUSTOM,
   CMD_PREFIX_CONFIG,
+  TestMetrics,
+  DiagnosticSnippet,
+  GateSummaryReport,
+  TOKEN_GATE_STATUS,
+  TOKEN_BUILD_STATUS,
+  TOKEN_FAILURE_FILE,
+  TOKEN_FAILING_ASSERTION,
+  MSG_COMMAND_FAILED_NO_OUTPUT,
   InvalidTransitionError,
   QualityGateTimeoutError
 } from '../domain';
@@ -69,8 +77,9 @@ export interface GateCommandReport {
   readonly durationMs: number;
   readonly passed: boolean;
   readonly timedOut: boolean;
-  readonly testMetrics?: { total?: number; passed?: number; failed?: number } | null;
+  readonly testMetrics?: { total?: number; passed?: number; failed?: number } | TestMetrics | null;
   readonly failureSnippet?: string;
+  readonly diagnosticSnippet?: DiagnosticSnippet | null;
 }
 
 export interface QualityGateRunParams {
@@ -95,6 +104,8 @@ export interface QualityGateRunResult {
   readonly testsStatus: string;
   readonly buildSystem?: string;
   readonly detectedEcosystems?: readonly string[];
+  readonly gateReport?: GateSummaryReport;
+  readonly diagnosticSnippet?: DiagnosticSnippet | null;
 }
 
 export class RunQualityGateUseCase {
@@ -217,10 +228,12 @@ export class RunQualityGateUseCase {
 
       const testMetrics = this.extractTestMetrics(execResult.combinedOutput);
       let failureSnippet: string | undefined;
+      let diagnosticSnippet: DiagnosticSnippet | null = null;
 
       if (!passed) {
         allPassed = false;
-        failureSnippet = this.extractFailureSnippet(execResult.combinedOutput, execResult.stderr);
+        diagnosticSnippet = DiagnosticSnippet.extract(execResult.combinedOutput, execResult.stderr);
+        failureSnippet = diagnosticSnippet ? diagnosticSnippet.toString() : this.extractFailureSnippet(execResult.combinedOutput, execResult.stderr);
       }
 
       if (this.isBuildCommand(cmdDef.id) && !passed) {
@@ -244,7 +257,8 @@ export class RunQualityGateUseCase {
         passed,
         timedOut: execResult.timedOut,
         testMetrics,
-        failureSnippet
+        failureSnippet,
+        diagnosticSnippet
       });
 
       // Fail fast on build/test failure
@@ -257,11 +271,52 @@ export class RunQualityGateUseCase {
       testsStatus = `${STATUS_PASSED}${testsMetricSummary}`;
     }
 
+    const failedReport = reports.find((r) => !r.passed);
+    const primaryDiagnostic = failedReport?.diagnosticSnippet ?? (failedReport?.failureSnippet ? DiagnosticSnippet.fromRaw(failedReport.failureSnippet) : null);
+    const primaryTestMetrics = reports.find((r) => r.testMetrics)?.testMetrics;
+    const testMetricsVO = primaryTestMetrics instanceof TestMetrics
+      ? primaryTestMetrics
+      : (primaryTestMetrics ? TestMetrics.create(primaryTestMetrics) : null);
+
+    const gateReport = GateSummaryReport.create({
+      verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
+      totalDurationMs,
+      commands: reports.map((r) => ({
+        id: r.id,
+        label: r.label,
+        command: r.command,
+        exitCode: r.exitCode,
+        durationMs: r.durationMs,
+        passed: r.passed,
+        timedOut: r.timedOut,
+        testMetrics: r.testMetrics instanceof TestMetrics ? r.testMetrics : (r.testMetrics ? TestMetrics.create(r.testMetrics) : null),
+        failureSnippet: r.failureSnippet
+      })),
+      testMetrics: testMetricsVO,
+      buildStatus,
+      testsStatus,
+      diagnosticSnippet: primaryDiagnostic,
+      buildSystem: primaryEcosystemName,
+      detectedEcosystems: detectedEcosystemNames
+    });
+
     // 6. Enforce State Transition: Success -> REVIEW, Failure -> Fallback to IMPLEMENT
     if (allPassed) {
-      sm.transition(STAGE_REVIEW, { note: NOTE_GATES_PASSED });
+      sm.transition(STAGE_REVIEW, {
+        note: NOTE_GATES_PASSED,
+        gateVerdict: STATUS_PASSED,
+        gateTokens: gateReport.formatStructuredTokens()
+      });
     } else {
-      sm.transition(STAGE_IMPLEMENT, { note: NOTE_GATES_FAILED });
+      sm.transition(STAGE_IMPLEMENT, {
+        note: NOTE_GATES_FAILED,
+        gateVerdict: STATUS_FAILED,
+        gateTokens: gateReport.formatStructuredTokens(),
+        failureSnippet: failedReport?.failureSnippet,
+        failureFile: primaryDiagnostic?.fileLocation,
+        failingAssertion: primaryDiagnostic?.failingAssertion,
+        selfCorrectionPayload: gateReport.formatSelfCorrectionPayload()
+      });
     }
 
     // 7. Update AgyLoop Summary.md via PlanGeneratorPort
@@ -292,19 +347,15 @@ export class RunQualityGateUseCase {
           executedCommands: reports.map((r) => r.command),
           reviewNote: allPassed
             ? `All quality gates passed successfully in ${durationStr}.`
-            : `Quality gates failed during execution. Pipeline reverted to IMPLEMENT.`
+            : `Quality gates failed during execution.${primaryDiagnostic?.fileLocation ? ` Failing location: ${primaryDiagnostic.fileLocation}.` : ''} Pipeline reverted to IMPLEMENT.`
         });
       }
     }
 
     // 8. Generate concise token-minimized summary report
-    const summaryReport = this.generateSummaryReport({
-      allPassed,
-      totalDurationMs,
-      reports,
+    const summaryReport = gateReport.formatTextReport({
       nextStage: sm.currentStage,
-      summaryPath: resolvedPlan?.summaryPath,
-      buildSystem: primaryEcosystemName
+      summaryPath: resolvedPlan?.summaryPath
     });
 
     return {
@@ -317,7 +368,9 @@ export class RunQualityGateUseCase {
       buildStatus,
       testsStatus,
       buildSystem: primaryEcosystemName,
-      detectedEcosystems: detectedEcosystemNames
+      detectedEcosystems: detectedEcosystemNames,
+      gateReport,
+      diagnosticSnippet: primaryDiagnostic
     };
   }
 
@@ -355,63 +408,14 @@ export class RunQualityGateUseCase {
     return DEFAULT_GATE_COMMANDS;
   }
 
-  private extractTestMetrics(output: string): { total?: number; passed?: number; failed?: number } | null {
+  private extractTestMetrics(output: string): TestMetrics | null {
     if (!output) return null;
-
-    // Strip ANSI escape codes to ensure reliable regex matching
-    const cleanOutput = output.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
-
-    // Standard Node / Tap format
-    const testsMatch = cleanOutput.match(/tests\s+(\d+)/i);
-    const passMatch = cleanOutput.match(/pass(?:ed)?\s+(\d+)/i);
-    const failMatch = cleanOutput.match(/fail(?:ed)?\s+(\d+)/i);
-
-    // Playwright format: "X passed", "Y failed" e.g. "5 passed (3.2s)", "1 failed, 4 passed"
-    const pwPassMatch = cleanOutput.match(/(\d+)\s+passed/i);
-    const pwFailMatch = cleanOutput.match(/(\d+)\s+failed/i);
-
-    const total = testsMatch ? parseInt(testsMatch[1], 10) : undefined;
-    let passed = passMatch ? parseInt(passMatch[1], 10) : undefined;
-    let failed = failMatch ? parseInt(failMatch[1], 10) : undefined;
-
-    if (passed === undefined && pwPassMatch) {
-      passed = parseInt(pwPassMatch[1], 10);
-    }
-    if (failed === undefined && pwFailMatch) {
-      failed = parseInt(pwFailMatch[1], 10);
-    }
-
-    if (total !== undefined || passed !== undefined || failed !== undefined) {
-      const computedTotal = total ?? (passed !== undefined ? (passed + (failed || 0)) : undefined);
-      return {
-        total: computedTotal,
-        passed,
-        failed
-      };
-    }
-
-    return null;
+    return TestMetrics.parse(output);
   }
 
   private extractFailureSnippet(combinedOutput: string, stderr: string): string {
-    const raw = (stderr && stderr.trim().length > 0 ? stderr : combinedOutput) || 'Command failed without output.';
-    const lines = raw.split('\n');
-
-    // Filter out common noise lines (empty lines, formatting lines)
-    const significantLines = lines.filter((l) => l.trim().length > 0);
-
-    // Grab up to MAX_FILTERED_LOG_LINES from end or error section
-    const snippetLines =
-      significantLines.length > MAX_FILTERED_LOG_LINES
-        ? significantLines.slice(-MAX_FILTERED_LOG_LINES)
-        : significantLines;
-
-    let snippet = snippetLines.join('\n');
-    if (snippet.length > MAX_FILTERED_OUTPUT_CHARS) {
-      snippet = snippet.substring(snippet.length - MAX_FILTERED_OUTPUT_CHARS);
-    }
-
-    return snippet.trim();
+    const diag = DiagnosticSnippet.extract(combinedOutput, stderr);
+    return diag ? diag.toString() : MSG_COMMAND_FAILED_NO_OUTPUT;
   }
 
   private isBuildCommand(cmdId: string): boolean {
@@ -436,42 +440,33 @@ export class RunQualityGateUseCase {
     summaryPath?: string;
     buildSystem?: string;
   }): string {
-    const verdict = data.allPassed ? STATUS_PASSED : STATUS_FAILED;
-    const duration = `${(data.totalDurationMs / MS_PER_SECOND).toFixed(2)}s`;
+    const failedReport = data.reports.find((r) => !r.passed);
+    const primaryDiagnostic = failedReport?.diagnosticSnippet ?? (failedReport?.failureSnippet ? DiagnosticSnippet.fromRaw(failedReport.failureSnippet) : null);
+    const testMetrics = data.reports.find((r) => r.testMetrics)?.testMetrics;
+    const testMetricsVO = testMetrics instanceof TestMetrics ? testMetrics : (testMetrics ? TestMetrics.create(testMetrics) : null);
 
-    let report = `=== AgyLoop: Quality Gate Report ===\n`;
-    report += `Overall Verdict : ${verdict}\n`;
-    if (data.buildSystem) {
-      report += `Build System    : ${data.buildSystem}\n`;
-    }
-    report += `Total Duration  : ${duration}\n`;
-    report += `Next Stage      : ${data.nextStage}\n\n`;
-
-    report += `Execution Matrix:\n`;
-    data.reports.forEach((r, idx) => {
-      const status = r.timedOut ? STATUS_DISPLAY_TIMED_OUT : r.passed ? STATUS_PASSED : STATUS_FAILED;
-      const cmdDuration = `${(r.durationMs / MS_PER_SECOND).toFixed(2)}s`;
-      let details = '';
-      if (r.testMetrics && r.testMetrics.total) {
-        details = ` (${r.testMetrics.passed ?? 0}/${r.testMetrics.total} tests passed)`;
-      } else if (!r.passed) {
-        details = ` (exit code ${r.exitCode})`;
-      }
-      report += `  ${idx + 1}. [${status}] ${r.label}${details} [${cmdDuration}]\n`;
+    const reportVO = GateSummaryReport.create({
+      verdict: data.allPassed ? STATUS_PASSED : STATUS_FAILED,
+      totalDurationMs: data.totalDurationMs,
+      commands: data.reports.map((r) => ({
+        id: r.id,
+        label: r.label,
+        command: r.command,
+        exitCode: r.exitCode,
+        durationMs: r.durationMs,
+        passed: r.passed,
+        timedOut: r.timedOut,
+        testMetrics: r.testMetrics instanceof TestMetrics ? r.testMetrics : (r.testMetrics ? TestMetrics.create(r.testMetrics) : null),
+        failureSnippet: r.failureSnippet
+      })),
+      testMetrics: testMetricsVO,
+      diagnosticSnippet: primaryDiagnostic,
+      buildSystem: data.buildSystem
     });
 
-    const failedReport = data.reports.find((r) => !r.passed);
-    if (failedReport && failedReport.failureSnippet) {
-      report += `\nDiagnostic Failure Details (${failedReport.label}):\n`;
-      report += `----------------------------------------------------------------------\n`;
-      report += `${failedReport.failureSnippet}\n`;
-      report += `----------------------------------------------------------------------\n`;
-    }
-
-    if (data.summaryPath) {
-      report += `\nExecution Log   : ${data.summaryPath}\n`;
-    }
-
-    return report.trim();
+    return reportVO.formatTextReport({
+      nextStage: data.nextStage,
+      summaryPath: data.summaryPath
+    });
   }
 }

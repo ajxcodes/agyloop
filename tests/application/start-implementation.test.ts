@@ -476,4 +476,76 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.ok(IMPLEMENTER_SUBAGENT_DEF.tools.includes('replace_file_content'));
     assert.ok(IMPLEMENTER_SUBAGENT_DEF.tools.includes('run_command'));
   });
+
+  test('automatically injects self-correction failure diagnostics when resuming from failed quality gate', async () => {
+    const testPlanDir = path.join(tempDir, 'artifacts', 'plans', '24-self-correction');
+    fs.mkdirSync(testPlanDir, { recursive: true });
+    fs.writeFileSync(path.join(testPlanDir, 'implementation_plan.md'), '# Plan 24\n- [ ] Task 1');
+
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 24,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() },
+        { stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() },
+        { stage: 'QUALITY_GATE', timestamp: new Date().toISOString() },
+        {
+          stage: STAGE_IMPLEMENT,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            note: 'Quality gates failed',
+            failureSnippet: 'AssertionError: expected false to be true\n    at tests/domain/test.ts:20:5',
+            selfCorrectionPayload: '### Self-Correction Quality Gate Failure Diagnostics:\n- **Failing File**: `tests/domain/test.ts:20:5`\n```\nAssertionError: expected false to be true\n```'
+          }
+        }
+      ]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir);
+
+    const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
+    const result = await useCase.execute({
+      issue: 24,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.resumed, true);
+    assert.strictEqual(result.isSelfCorrection, true);
+    assert.ok(result.taskPrompt.includes('### Self-Correction Quality Gate Failure Diagnostics:'));
+    assert.ok(result.taskPrompt.includes('tests/domain/test.ts:20:5'));
+    assert.ok(result.taskPrompt.includes('AssertionError: expected false to be true'));
+  });
+
+  test('supports explicit failureDiagnostics parameter in StartImplementationUseCase', async () => {
+    const testPlanDir = path.join(tempDir, 'artifacts', 'plans', '24-explicit-diag');
+    fs.mkdirSync(testPlanDir, { recursive: true });
+    fs.writeFileSync(path.join(testPlanDir, 'implementation_plan.md'), '# Plan 24\n- [ ] Task 1');
+
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 24,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir);
+
+    const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
+    const result = await useCase.execute({
+      issue: 24,
+      workspaceDir: tempDir,
+      failureDiagnostics: 'Error: Cannot find module "foo" at index.ts:15:3'
+    });
+
+    assert.strictEqual(result.isSelfCorrection, true);
+    assert.ok(result.taskPrompt.includes('### Self-Correction Quality Gate Failure Diagnostics:'));
+    assert.ok(result.taskPrompt.includes('Cannot find module "foo"'));
+  });
 });

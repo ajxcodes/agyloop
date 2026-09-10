@@ -26,7 +26,9 @@ import {
   PLAN_DEFAULT_SPECIFICATION_TITLE,
   TIER_PRO,
   TIER_INHERIT,
-  TIER_FLASH_LITE
+  TIER_FLASH_LITE,
+  DiagnosticSnippet,
+  SECTION_SELF_CORRECTION_TITLE
 } from '../domain';
 import {
   ConfigRepository,
@@ -120,6 +122,8 @@ export interface ImplementationTaskPromptParams {
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+  readonly failureDiagnostics?: string | DiagnosticSnippet | null;
+  readonly selfCorrectionPayload?: string | null;
 }
 
 export interface GateTaskPromptParams {
@@ -333,6 +337,22 @@ export class ResolveSubagentUseCase {
       : PLAN_DEFAULT_SPECIFICATION_TITLE;
     prompt += `### Approved Technical Plan (${planFileName}):\n\n`;
     prompt += `${params.planContent.trim()}\n\n`;
+
+    if (params.selfCorrectionPayload && params.selfCorrectionPayload.trim()) {
+      prompt += `${params.selfCorrectionPayload.trim()}\n\n`;
+    } else if (params.failureDiagnostics) {
+      const diagStr =
+        params.failureDiagnostics instanceof DiagnosticSnippet
+          ? params.failureDiagnostics.formatForPrompt()
+          : typeof params.failureDiagnostics === 'string'
+          ? params.failureDiagnostics.trim()
+          : '';
+      if (diagStr) {
+        prompt += `${SECTION_SELF_CORRECTION_TITLE}\n`;
+        prompt += `The previous Quality Gate verification failed. Address these errors before proceeding:\n\n`;
+        prompt += `${diagStr}\n\n`;
+      }
+    }
 
     prompt += `### Definition of Done:\n`;
     prompt += `1. All tasks in the plan checklist are implemented.\n`;

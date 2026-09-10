@@ -11,5 +11,8 @@ export * from './value-objects/subagent-role';
 export * from './value-objects/tool-whitelist';
 export * from './value-objects/ecosystem';
 export * from './value-objects/verification-command-set';
+export * from './value-objects/test-metrics';
+export * from './value-objects/diagnostic-snippet';
+export * from './value-objects/gate-summary-report';
 export * from './entities/state-machine';
 
