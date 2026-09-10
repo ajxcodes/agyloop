@@ -1,0 +1,28 @@
+# Antigravity Persistent Plans & Local State
+artifacts/plans/
+.agyloop/
+config.json
+
+# Environment & Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Runtime Caches & Logs
+*.log
+__pycache__/
+*.py[cod]
+*$py.class
+node_modules/
+dist/
+build/
+.cache/
