@@ -12,8 +12,11 @@ import {
   ERR_GITHUB_CONTEXT,
   ERR_CONFIG_RESOLUTION,
   ERR_STATE_STORAGE,
-  ERR_VALIDATION
+  ERR_VALIDATION,
+  ERR_GATE_TIMEOUT,
+  ERR_GATE_EXECUTION
 } from './constants';
+
 
 export abstract class AgyLoopError extends Error {
   public abstract readonly code: ErrorCode;
@@ -110,3 +113,38 @@ export class ValidationError extends AgyLoopError {
     this.value = value;
   }
 }
+
+export class QualityGateTimeoutError extends AgyLoopError {
+  public readonly code = ERR_GATE_TIMEOUT;
+  public readonly command: string;
+  public readonly timeoutSeconds: number;
+  public readonly elapsedMs: number;
+
+  constructor(command: string, timeoutSeconds: number, elapsedMs: number, customMessage?: string) {
+    const msg =
+      customMessage ||
+      `Quality gate command '${command}' timed out after ${timeoutSeconds}s (${elapsedMs}ms elapsed).`;
+    super(msg, { command, timeoutSeconds, elapsedMs });
+    this.command = command;
+    this.timeoutSeconds = timeoutSeconds;
+    this.elapsedMs = elapsedMs;
+  }
+}
+
+export class QualityGateExecutionError extends AgyLoopError {
+  public readonly code = ERR_GATE_EXECUTION;
+  public readonly command: string;
+  public readonly exitCode: number;
+  public readonly failureSnippet?: string;
+
+  constructor(command: string, exitCode: number, failureSnippet?: string, customMessage?: string) {
+    const msg =
+      customMessage ||
+      `Quality gate command '${command}' failed with exit code ${exitCode}.`;
+    super(msg, { command, exitCode, failureSnippet });
+    this.command = command;
+    this.exitCode = exitCode;
+    this.failureSnippet = failureSnippet;
+  }
+}
+

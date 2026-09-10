@@ -8,3 +8,5 @@ export * from './file-config-repository';
 export * from './gemini-model-catalog';
 export * from './file-plan-generator';
 export * from './file-prompt-repository';
+export * from './process-command-executor';
+

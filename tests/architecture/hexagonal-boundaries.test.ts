@@ -298,8 +298,15 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         className: 'FilePromptRepository',
         portName: 'PromptRepository',
         requiredMethods: ['loadPrompt']
+      },
+      {
+        adapterFile: 'process-command-executor.ts',
+        className: 'ProcessCommandExecutor',
+        portName: 'CommandExecutorPort',
+        requiredMethods: ['execute']
       }
     ];
+
 
     for (const check of expectedAdapters) {
       const fullPath = path.join(SRC_DIR, 'infrastructure', check.adapterFile);
