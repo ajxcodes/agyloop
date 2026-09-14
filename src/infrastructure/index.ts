@@ -12,5 +12,6 @@ export * from './process-command-executor';
 export * from './file-build-detector';
 export * from './cli-ai-reviewer-gateway';
 export * from './ai-reviewer/ai-reviewer-engine';
+export * from './file-standards-repository';
 
 

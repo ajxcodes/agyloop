@@ -11,22 +11,28 @@ import {
   READ_ONLY_TOOLS,
   IMPLEMENTER_TOOLS,
   GATE_TOOLS,
+  REVIEWER_TOOLS,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
+  ROLE_REVIEWER,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
+  ROLE_TITLE_REVIEWER,
   ROLE_DESC_PLANNER,
   ROLE_DESC_IMPLEMENTER,
   ROLE_DESC_GATE,
+  ROLE_DESC_REVIEWER,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
   DEFAULT_GATE_SYSTEM_PROMPT,
+  DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT,
   PLAN_DEFAULT_SPECIFICATION_TITLE,
   TIER_PRO,
   TIER_INHERIT,
   TIER_FLASH_LITE,
+  TIER_FLASH,
   DiagnosticSnippet,
   SECTION_SELF_CORRECTION_TITLE
 } from '../domain';
@@ -71,6 +77,19 @@ export const GATE_SUBAGENT_DEF = Object.freeze({
   description: ROLE_DESC_GATE,
   defaultTier: TIER_FLASH_LITE,
   tools: GATE_TOOLS,
+  capabilities: Object.freeze({
+    enable_write_tools: false,
+    enable_subagent_tools: false,
+    enable_mcp_tools: false
+  })
+});
+
+export const REVIEWER_SUBAGENT_DEF = Object.freeze({
+  name: ROLE_REVIEWER,
+  role: ROLE_TITLE_REVIEWER,
+  description: ROLE_DESC_REVIEWER,
+  defaultTier: TIER_FLASH,
+  tools: REVIEWER_TOOLS,
   capabilities: Object.freeze({
     enable_write_tools: false,
     enable_subagent_tools: false,
@@ -134,6 +153,18 @@ export interface GateTaskPromptParams {
   readonly config?: AgyLoopConfig;
 }
 
+export interface ReviewerTaskPromptParams {
+  readonly issueNumber?: number | string | null;
+  readonly issueTitle?: string | null;
+  readonly issueBody?: string | null;
+  readonly acceptanceCriteria?: readonly string[];
+  readonly standardsContent?: string | null;
+  readonly workingDiff?: string | null;
+  readonly userInstructions?: string | null;
+  readonly workspaceDir?: string;
+  readonly config?: AgyLoopConfig;
+}
+
 export class ResolveSubagentUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly githubGateway?: GitHubGateway;
@@ -179,6 +210,15 @@ export class ResolveSubagentUseCase {
     return DEFAULT_GATE_SYSTEM_PROMPT;
   }
 
+  public getReviewerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_REVIEWER, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
+    }
+    return DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+  }
 
   public execute(options: ResolveSubagentOptions = {}): SubagentDescriptor {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
@@ -221,6 +261,27 @@ export class ResolveSubagentUseCase {
           enable_mcp_tools: false
         },
         system_prompt: this.getGateSystemPrompt({
+          promptPath: options.promptPath,
+          workspaceDir: options.workspaceDir
+        })
+      };
+    }
+
+    if (roleVo.value === ROLE_REVIEWER) {
+      const whitelist = ToolWhitelist.reviewer();
+      return {
+        name: roleVo.value,
+        role: REVIEWER_SUBAGENT_DEF.role,
+        description: REVIEWER_SUBAGENT_DEF.description,
+        model: resolved.tier,
+        apiModel: resolved.apiModel,
+        tools: whitelist.toArray(),
+        capabilities: {
+          enable_write_tools: false,
+          enable_subagent_tools: false,
+          enable_mcp_tools: false
+        },
+        system_prompt: this.getReviewerSystemPrompt({
           promptPath: options.promptPath,
           workspaceDir: options.workspaceDir
         })
@@ -392,6 +453,66 @@ export class ResolveSubagentUseCase {
     prompt += `- Overall Status: PASSED or FAILED\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
     prompt += `- Concise Failure Diagnostics (if failed)\n`;
+
+    return prompt.trim();
+  }
+
+  public buildReviewerTaskPrompt(params: ReviewerTaskPromptParams = {}): string {
+    let prompt = `# Task: Code Review & Standards Verification\n\n`;
+    prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
+
+    prompt += `### Operating Constraints:\n`;
+    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${REVIEWER_TOOLS.join(', ')}). Never attempt to write or edit files.\n`;
+    prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
+    prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
+
+    if (params.issueNumber) {
+      prompt += `### Active Issue: #${params.issueNumber}\n`;
+      if (params.issueTitle) {
+        prompt += `**Title**: ${params.issueTitle}\n`;
+      }
+      if (params.issueBody) {
+        prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+      } else {
+        prompt += `\n`;
+      }
+    }
+
+    if (params.acceptanceCriteria && params.acceptanceCriteria.length > 0) {
+      prompt += `### Target Acceptance Criteria:\n`;
+      params.acceptanceCriteria.forEach((ac, idx) => {
+        prompt += `${idx + 1}. ${ac}\n`;
+      });
+      prompt += `\n`;
+    }
+
+    if (params.standardsContent && params.standardsContent.trim()) {
+      prompt += `### Repository Standards & Guidelines:\n`;
+      prompt += `${params.standardsContent.trim()}\n\n`;
+    }
+
+    if (params.workingDiff && params.workingDiff.trim()) {
+      prompt += `### Working Code Diff:\n\`\`\`diff\n${params.workingDiff.trim()}\n\`\`\`\n\n`;
+    } else {
+      prompt += `### Working Diff Inspection:\n`;
+      prompt += `Inspect the working diff using \`run_command\` with \`git diff\` (or \`git diff --staged\`).\n\n`;
+    }
+
+    if (params.userInstructions) {
+      prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
+    }
+
+    prompt += `### Required Verdict Output:\n`;
+    prompt += `You must output a structured review verdict block adhering to this exact format:\n\n`;
+    prompt += `\`\`\`markdown\n`;
+    prompt += `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\n`;
+    prompt += `REVIEW_SUMMARY: <Summary of review findings>\n`;
+    prompt += `UNFULFILLED_AC:\n`;
+    prompt += `- <Unfulfilled criterion 1> (or "None" if all criteria are met)\n`;
+    prompt += `REMEDIATION_GUIDANCE:\n`;
+    prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
+    prompt += `\`\`\`\n`;
 
     return prompt.trim();
   }

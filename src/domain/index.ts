@@ -17,5 +17,6 @@ export * from './value-objects/gate-summary-report';
 export * from './value-objects/review-confidence';
 export * from './value-objects/ai-review-finding';
 export * from './value-objects/ai-review-report';
+export * from './value-objects/review-verdict';
 export * from './entities/state-machine';
 

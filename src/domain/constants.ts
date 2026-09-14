@@ -165,6 +165,14 @@ export const GATE_TOOLS = Object.freeze([
   TOOL_VIEW_FILE
 ] as const);
 
+export const REVIEWER_TOOLS = Object.freeze([
+  TOOL_VIEW_FILE,
+  TOOL_GREP_SEARCH,
+  TOOL_FIND_BY_NAME,
+  TOOL_LIST_DIR,
+  TOOL_RUN_COMMAND
+] as const);
+
 
 export const ERR_INVALID_TRANSITION = 'ERR_INVALID_TRANSITION' as const;
 export const ERR_PHYSICAL_WRITE_VIOLATION = 'ERR_PHYSICAL_WRITE_VIOLATION' as const;
@@ -177,6 +185,7 @@ export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
 export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
 export const ERR_AI_REVIEWER = 'ERR_AI_REVIEWER' as const;
+export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -189,7 +198,8 @@ export const ERROR_CODES = Object.freeze({
   GATE_EXECUTION: ERR_GATE_EXECUTION,
   BUILD_DETECTION: ERR_BUILD_DETECTION,
   GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
-  AI_REVIEWER: ERR_AI_REVIEWER
+  AI_REVIEWER: ERR_AI_REVIEWER,
+  REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT
 });
 
 
@@ -251,6 +261,7 @@ export const DEFAULT_PROMPTS_DIR = 'prompts' as const;
 export const PROMPT_FILE_PLANNER = 'planner.md' as const;
 export const PROMPT_FILE_IMPLEMENTER = 'implementer.md' as const;
 export const PROMPT_FILE_GATE = 'gate.md' as const;
+export const PROMPT_FILE_REVIEWER = 'reviewer.md' as const;
 
 // Transition Notes
 export const NOTE_DEVELOPER_APPROVED = 'Approved by developer' as const;
@@ -263,6 +274,9 @@ export const NOTE_MANUAL_GATES_RUN = 'Manual gates run' as const;
 export const NOTE_EXECUTING_GATES = 'Executing quality gates' as const;
 export const NOTE_GATES_PASSED = 'Quality gates passed successfully' as const;
 export const NOTE_GATES_FAILED = 'Quality gates failed' as const;
+export const NOTE_EXECUTING_REVIEW = 'Executing AI review' as const;
+export const NOTE_REVIEW_APPROVED = 'AI review approved: Code changes verified' as const;
+export const NOTE_REVIEW_CHANGES_REQUESTED = 'AI review requested changes: Reverting to IMPLEMENT' as const;
 
 // Status Identifiers
 export const STATUS_PASSED = 'PASSED' as const;
@@ -327,6 +341,44 @@ export const SECTION_SELF_CORRECTION_TITLE = '### Self-Correction Quality Gate F
 export const MSG_NO_FAILURES = 'All verification commands passed without failures.' as const;
 export const MSG_COMMAND_FAILED_NO_OUTPUT = 'Command failed without output.' as const;
 export const DIVIDER_DASHED = '----------------------------------------------------------------------' as const;
+
+// Structured Review Verdict Protocol Tokens, Verdicts & Thresholds
+export const TOKEN_REVIEW_STATUS = 'REVIEW_STATUS' as const;
+export const TOKEN_REVIEW_SUMMARY = 'REVIEW_SUMMARY' as const;
+export const TOKEN_UNFULFILLED_AC = 'UNFULFILLED_AC' as const;
+export const TOKEN_REMEDIATION_GUIDANCE = 'REMEDIATION_GUIDANCE' as const;
+export const TOKEN_REVIEW_FINDINGS = 'REVIEW_FINDINGS' as const;
+
+export const VERDICT_APPROVED = 'APPROVED' as const;
+export const VERDICT_CHANGES_REQUESTED = 'CHANGES_REQUESTED' as const;
+
+export const REVIEW_VERDICTS = Object.freeze([
+  VERDICT_APPROVED,
+  VERDICT_CHANGES_REQUESTED
+] as const);
+
+export type ReviewVerdictState = typeof REVIEW_VERDICTS[number];
+
+export const HEADER_REVIEW_VERDICT_REPORT = '=== AgyLoop: Review Verdict Report ===' as const;
+export const LABEL_REVIEW_STATUS = 'Review Status' as const;
+export const LABEL_REVIEW_SUMMARY = 'Review Summary' as const;
+export const LABEL_UNFULFILLED_AC = 'Unfulfilled Acceptance Criteria' as const;
+export const LABEL_REMEDIATION_GUIDANCE = 'Remediation Guidance' as const;
+export const SECTION_REVIEW_SELF_CORRECTION_TITLE = '### Reviewer Subagent Self-Correction Remediation Guidance:' as const;
+
+export const REGEX_REVIEW_STATUS_TOKEN = /^REVIEW_STATUS:\s*(APPROVED|CHANGES_REQUESTED)$/im;
+export const REGEX_REVIEW_SUMMARY_TOKEN = /^REVIEW_SUMMARY:\s*(.+)$/im;
+export const REGEX_UNFULFILLED_AC_TOKEN = /^UNFULFILLED_AC:\s*(.+)$/im;
+export const REGEX_REMEDIATION_GUIDANCE_TOKEN = /^REMEDIATION_GUIDANCE:\s*(.+)$/im;
+
+export const STANDARD_CANDIDATE_PATHS = Object.freeze([
+  '.github/ai-reviewer-standards.md',
+  'AGENTS.md',
+  'STANDARDS.md',
+  '.github/CONTRIBUTING.md',
+  'CONTRIBUTING.md',
+  'docs/standards.md'
+] as const);
 
 // Structured Protocol Regex Patterns
 export const REGEX_GATE_STATUS_TOKEN = /^GATE_STATUS:\s*(PASSED|FAILED|TIMED_OUT)$/im;
@@ -862,24 +914,53 @@ export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Su
 
 You are the **AgyLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.
 
-Your primary purpose is to perform independent, comprehensive pre-commit and PR code reviews against working diffs, validating correctness, design integrity, security, and acceptance criteria.
+Your primary purpose is to perform independent, comprehensive pre-commit and PR code reviews against working diffs, validating correctness, architectural alignment, standards compliance, and acceptance criteria fulfillment.
 
 ---
 
-## 1. Operating Mandate & Standards
+## 1. Operating Mandate & Safety Guarantees
 
-1. **Thorough Diff Inspection**:
-   - Inspect all modifications in the diff carefully.
-   - Cross-reference with the active task specification, plan, and requirements.
-   - Detect subtle regression bugs, concurrency flaws, memory leaks, unhandled exceptions, and contract deviations.
+1. **Read-Only Inspection Tools**:
+   - You have access strictly to inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`, and \`run_command\` (for diff inspection and test execution).
+   - You are strictly forbidden from modifying source files (\`write_to_file\` and \`replace_file_content\` are disabled).
+
+2. **Objective Standards Enforcement**:
+   - Inspect all modifications against repository standards (e.g. \`.github/ai-reviewer-standards.md\`, \`AGENTS.md\`, clean architecture rules).
+   - Zero tolerance for magic strings, magic numbers, missing error types, or architectural boundary leaks.
+
+3. **Rigorous Acceptance Criteria Verification**:
+   - Verify each Acceptance Criterion specified in the approved implementation plan.
+   - Ground any claim of unfulfilled criteria with exact file locations and reasoning.
+
+---
+
+## 2. Review Methodology
+
+1. **Diff Inspection**:
+   - Run \`git diff\` via \`run_command\` or inspect the provided working diff.
+   - Trace callers and examine affected files using \`view_file\` and \`grep_search\`.
 
 2. **Categorized Findings**:
    - Classify findings strictly by severity: \`critical\`, \`error\`, \`warning\`, \`suggestion\`, or \`info\`.
-   - Provide concrete, actionable remediation steps for every comment.
-   - Ground line numbers and file paths accurately.
+   - Any \`critical\` or \`error\` finding or any unfulfilled Acceptance Criterion mandates \`REVIEW_STATUS: CHANGES_REQUESTED\`.
+   - Provide concrete, actionable remediation steps for every finding.
 
-3. **High Confidence Threshold**:
-   - Rate review confidence as \`High\`, \`Medium\`, or \`Low\` with clear justification.
-   - \`High\` confidence requires complete diff coverage, passing quality gates, and zero unresolved blocking issues.` as const;
+---
+
+## 3. Structured Review Verdict Protocol
+
+You MUST emit a structured verdict block adhering strictly to the following format:
+
+\`\`\`markdown
+REVIEW_STATUS: APPROVED | CHANGES_REQUESTED
+REVIEW_SUMMARY: <High-level summary of review findings and verdict rationale>
+UNFULFILLED_AC:
+- <Unfulfilled criterion 1> (or "None" if all criteria are fulfilled)
+REMEDIATION_GUIDANCE:
+- <Actionable remediation item 1> (or "None" if approved)
+\`\`\`
+
+If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set \`REVIEW_STATUS: APPROVED\`. Otherwise, set \`REVIEW_STATUS: CHANGES_REQUESTED\`.` as const;
+
 
 

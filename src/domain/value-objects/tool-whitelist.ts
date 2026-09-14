@@ -8,7 +8,8 @@ import {
   READ_ONLY_TOOLS,
   FORBIDDEN_WRITE_TOOLS,
   IMPLEMENTER_TOOLS,
-  GATE_TOOLS
+  GATE_TOOLS,
+  REVIEWER_TOOLS
 } from '../constants';
 
 import { PhysicalWriteViolationError, ValidationError } from '../errors';
@@ -60,6 +61,10 @@ export class ToolWhitelist {
 
   public static gate(): ToolWhitelist {
     return new ToolWhitelist(GATE_TOOLS);
+  }
+
+  public static reviewer(): ToolWhitelist {
+    return new ToolWhitelist(REVIEWER_TOOLS);
   }
 
   public static custom(tools: readonly string[]): ToolWhitelist {

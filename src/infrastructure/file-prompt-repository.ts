@@ -12,13 +12,16 @@ import {
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
+  ROLE_REVIEWER,
   DEFAULT_PROMPTS_DIR,
   PROMPT_FILE_PLANNER,
   PROMPT_FILE_IMPLEMENTER,
   PROMPT_FILE_GATE,
+  PROMPT_FILE_REVIEWER,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
-  DEFAULT_GATE_SYSTEM_PROMPT
+  DEFAULT_GATE_SYSTEM_PROMPT,
+  DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT
 } from '../domain';
 
 
@@ -33,6 +36,8 @@ export class FilePromptRepository implements PromptRepository {
       promptFileName = PROMPT_FILE_IMPLEMENTER;
     } else if (role === ROLE_GATE) {
       promptFileName = PROMPT_FILE_GATE;
+    } else if (role === ROLE_REVIEWER) {
+      promptFileName = PROMPT_FILE_REVIEWER;
     } else {
       promptFileName = `${role}.md`;
     }
@@ -56,6 +61,9 @@ export class FilePromptRepository implements PromptRepository {
     }
     if (role === ROLE_GATE) {
       return DEFAULT_GATE_SYSTEM_PROMPT;
+    }
+    if (role === ROLE_REVIEWER) {
+      return DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
     }
 
     return '';
