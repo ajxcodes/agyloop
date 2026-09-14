@@ -47,6 +47,7 @@ export const MODE_STANDARD = 'standard' as const;
 export const MODE_PLAN = 'plan' as const;
 export const MODE_IMPLEMENT = 'implement' as const;
 export const MODE_GATES = 'gates' as const;
+export const MODE_COMMIT = 'commit' as const;
 export const MODE_YOLO = 'yolo' as const;
 
 export const EXECUTION_MODES = Object.freeze({
@@ -54,6 +55,7 @@ export const EXECUTION_MODES = Object.freeze({
   PLAN: MODE_PLAN,
   IMPLEMENT: MODE_IMPLEMENT,
   GATES: MODE_GATES,
+  COMMIT: MODE_COMMIT,
   YOLO: MODE_YOLO
 });
 
@@ -1016,6 +1018,97 @@ export const NOTE_COMMIT_REJECTED = 'Commit rejected by user' as const;
 
 export const HEADER_COMMIT_DRAFT_REPORT = '=== AgyLoop: Conventional Commit Draft ===' as const;
 export const SECTION_COMMIT_DETAILS_TITLE = '## Commit & Release Details' as const;
+
+// ============================================================================
+// Operational Modes, Flags, Gate Names & Lifecycle Notes
+// ============================================================================
+
+export const GATE_APPROVAL = 'APPROVAL' as const;
+export const GATE_COMMIT = 'COMMIT' as const;
+
+export const LIFECYCLE_GATES = Object.freeze({
+  APPROVAL: GATE_APPROVAL,
+  COMMIT: GATE_COMMIT
+});
+
+export type LifecycleGateName = typeof LIFECYCLE_GATES[keyof typeof LIFECYCLE_GATES];
+
+export const NOTE_LIFECYCLE_STARTED = 'Lifecycle execution started' as const;
+export const NOTE_LIFECYCLE_COMPLETED = 'Lifecycle completed successfully' as const;
+export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const;
+export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as const;
+export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
+export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;
+export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
+
+export const COMMAND_PLAN = 'plan' as const;
+export const COMMAND_IMPLEMENT = 'implement' as const;
+export const COMMAND_GATES = 'gates' as const;
+export const COMMAND_COMMIT = 'commit' as const;
+export const COMMAND_YOLO = 'yolo' as const;
+export const COMMAND_STATUS = 'status' as const;
+export const COMMAND_CONFIG = 'config' as const;
+export const COMMAND_MODELS = 'models' as const;
+export const COMMAND_PROMPT = 'prompt' as const;
+export const COMMAND_RESET = 'reset' as const;
+export const COMMAND_TRANSITION = 'transition' as const;
+
+export const CLI_COMMANDS = Object.freeze({
+  PLAN: COMMAND_PLAN,
+  IMPLEMENT: COMMAND_IMPLEMENT,
+  GATES: COMMAND_GATES,
+  COMMIT: COMMAND_COMMIT,
+  YOLO: COMMAND_YOLO,
+  STATUS: COMMAND_STATUS,
+  CONFIG: COMMAND_CONFIG,
+  MODELS: COMMAND_MODELS,
+  PROMPT: COMMAND_PROMPT,
+  RESET: COMMAND_RESET,
+  TRANSITION: COMMAND_TRANSITION
+});
+
+export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
+
+export const FLAG_YOLO = '--yolo' as const;
+export const FLAG_COMMIT_AFTER = '--commit-after' as const;
+export const FLAG_YES = '--yes' as const;
+export const FLAG_YES_SHORT = '-y' as const;
+export const FLAG_STAGED = '--staged' as const;
+export const FLAG_STAGED_SHORT = '-s' as const;
+export const FLAG_MESSAGE = '--message' as const;
+export const FLAG_MESSAGE_SHORT = '-m' as const;
+export const FLAG_ISSUE = '--issue' as const;
+export const FLAG_TITLE = '--title' as const;
+export const FLAG_TYPE = '--type' as const;
+export const FLAG_CONFIG = '--config' as const;
+export const FLAG_DRY_RUN = '--dry-run' as const;
+export const FLAG_REFRESH = '--refresh' as const;
+export const FLAG_HELP = '--help' as const;
+export const FLAG_HELP_SHORT = '-h' as const;
+export const FLAG_VERSION = '--version' as const;
+export const FLAG_VERSION_SHORT = '-v' as const;
+
+export const CLI_FLAGS = Object.freeze({
+  YOLO: FLAG_YOLO,
+  COMMIT_AFTER: FLAG_COMMIT_AFTER,
+  YES: FLAG_YES,
+  YES_SHORT: FLAG_YES_SHORT,
+  STAGED: FLAG_STAGED,
+  STAGED_SHORT: FLAG_STAGED_SHORT,
+  MESSAGE: FLAG_MESSAGE,
+  MESSAGE_SHORT: FLAG_MESSAGE_SHORT,
+  ISSUE: FLAG_ISSUE,
+  TITLE: FLAG_TITLE,
+  TYPE: FLAG_TYPE,
+  CONFIG: FLAG_CONFIG,
+  DRY_RUN: FLAG_DRY_RUN,
+  REFRESH: FLAG_REFRESH,
+  HELP: FLAG_HELP,
+  HELP_SHORT: FLAG_HELP_SHORT,
+  VERSION: FLAG_VERSION,
+  VERSION_SHORT: FLAG_VERSION_SHORT
+});
+
 
 
 
