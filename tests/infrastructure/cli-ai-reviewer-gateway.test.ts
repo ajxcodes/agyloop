@@ -134,6 +134,40 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
     }
   });
 
+  test('resolves macOS Library/Application Support critique when on darwin', () => {
+    const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-res-mac-'));
+    const origPlatform = process.platform;
+    const origHomedir = os.homedir;
+    const origXdg = process.env.XDG_DATA_HOME;
+    delete process.env.XDG_DATA_HOME;
+
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      const fakeHome = path.join(tempDir, 'home');
+      const macCritiqueDir = path.join(fakeHome, 'Library', 'Application Support', 'critique', 'bin');
+      fs.mkdirSync(macCritiqueDir, { recursive: true });
+      const critiqueJs = path.join(macCritiqueDir, 'critique.js');
+      fs.writeFileSync(critiqueJs, '// mac critique');
+
+      const isolatedWorkspace = path.join(tempDir, 'workspace');
+      fs.mkdirSync(isolatedWorkspace, { recursive: true });
+
+      os.homedir = () => fakeHome;
+
+      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const resolution = gateway.resolveReviewer(isolatedWorkspace);
+
+      assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_DATA);
+      assert.strictEqual(resolution.isAvailable, true);
+      assert.strictEqual(resolution.path, critiqueJs);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+      os.homedir = origHomedir;
+      if (origXdg !== undefined) process.env.XDG_DATA_HOME = origXdg;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolves user-local critique when present in ~/.local/bin', () => {
     const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-user-local-'));
     const origHomedir = os.homedir;
