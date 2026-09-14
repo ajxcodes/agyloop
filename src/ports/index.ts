@@ -10,7 +10,7 @@ export * from './plan-generator';
 export * from './prompt-repository';
 export * from './command-executor';
 export * from './build-detector';
-export * from './ai-reviewer';
+export * from './critique';
 export * from './standards-repository';
 export * from './confirmation-prompt';
 

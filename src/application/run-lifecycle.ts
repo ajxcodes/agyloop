@@ -57,7 +57,7 @@ import {
   CommandExecutorPort,
   BuildDetectorPort,
   StandardsRepository,
-  AiReviewerPort,
+  CritiquePort,
   ConfirmationPromptPort
 } from '../ports';
 import { StartPlanningUseCase, StartPlanningResult } from './start-planning';
@@ -114,7 +114,8 @@ export interface RunLifecycleDependencies {
   readonly commandExecutor: CommandExecutorPort;
   readonly buildDetector?: BuildDetectorPort;
   readonly standardsRepo?: StandardsRepository;
-  readonly aiReviewer?: AiReviewerPort;
+  readonly critique?: CritiquePort;
+  readonly aiReviewer?: CritiquePort;
   readonly confirmationPrompt?: ConfirmationPromptPort;
   readonly startPlanningUseCase?: StartPlanningUseCase;
   readonly startImplementationUseCase?: StartImplementationUseCase;
@@ -132,7 +133,7 @@ export class RunLifecycleUseCase {
   private readonly commandExecutor: CommandExecutorPort;
   private readonly buildDetector?: BuildDetectorPort;
   private readonly standardsRepo?: StandardsRepository;
-  private readonly aiReviewer?: AiReviewerPort;
+  private readonly critique?: CritiquePort;
   private readonly confirmationPrompt?: ConfirmationPromptPort;
 
   private readonly startPlanningUseCase: StartPlanningUseCase;
@@ -150,7 +151,7 @@ export class RunLifecycleUseCase {
     this.commandExecutor = deps.commandExecutor;
     this.buildDetector = deps.buildDetector;
     this.standardsRepo = deps.standardsRepo;
-    this.aiReviewer = deps.aiReviewer;
+    this.critique = deps.critique ?? deps.aiReviewer;
     this.confirmationPrompt = deps.confirmationPrompt;
 
     const resolveSubagentUseCase = new ResolveSubagentUseCase(
@@ -195,7 +196,7 @@ export class RunLifecycleUseCase {
         this.configRepo,
         this.planGenerator,
         this.standardsRepo,
-        this.aiReviewer,
+        this.critique,
         this.commandExecutor,
         resolveSubagentUseCase
       );

@@ -137,7 +137,7 @@ export class DiffAnalyzer {
     for (const file of files) {
       const lower = file.toLowerCase();
 
-      if (lower.includes('reviewer') || lower.includes('ai-reviewer') || lower.includes('review')) {
+      if (lower.includes('critique') || lower.includes('reviewer') || lower.includes('review')) {
         recordScore('reviewer', 3);
       } else if (lower.includes('quality-gate') || lower.includes('gate')) {
         recordScore('gate', 3);

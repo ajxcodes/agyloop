@@ -14,7 +14,7 @@ import {
   MSG_CLEAN_DIFF_REVIEW,
   REGEX_JSON_CODE_BLOCK
 } from '../constants';
-import { ValidationError, AiReviewerError } from '../errors';
+import { ValidationError, CritiqueError, AiReviewerError } from '../errors';
 import { ReviewConfidence } from './review-confidence';
 import { AiReviewFinding, AiReviewFindingProps } from './ai-review-finding';
 
@@ -177,7 +177,7 @@ export class AiReviewReport {
 
   public static parse(rawText: string): AiReviewReport {
     if (typeof rawText !== 'string' || !rawText.trim()) {
-      throw new AiReviewerError('parse', 'Cannot parse empty review payload.');
+      throw new CritiqueError('parse', 'Cannot parse empty review payload.');
     }
 
     const candidateJson = extractJsonString(rawText);
@@ -186,7 +186,7 @@ export class AiReviewReport {
     try {
       parsed = JSON.parse(candidateJson);
     } catch (err) {
-      throw new AiReviewerError(
+      throw new CritiqueError(
         'parse',
         `Failed to parse review JSON response: ${err instanceof Error ? err.message : String(err)}`,
         { rawSnippet: rawText.substring(0, 300) },

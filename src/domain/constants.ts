@@ -186,7 +186,8 @@ export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
 export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
 export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
-export const ERR_AI_REVIEWER = 'ERR_AI_REVIEWER' as const;
+export const ERR_CRITIQUE = 'ERR_CRITIQUE' as const;
+export const ERR_AI_REVIEWER = ERR_CRITIQUE;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
 export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
 
@@ -201,7 +202,8 @@ export const ERROR_CODES = Object.freeze({
   GATE_EXECUTION: ERR_GATE_EXECUTION,
   BUILD_DETECTION: ERR_BUILD_DETECTION,
   GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
-  AI_REVIEWER: ERR_AI_REVIEWER,
+  CRITIQUE: ERR_CRITIQUE,
+  AI_REVIEWER: ERR_CRITIQUE,
   REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
   COMMIT_EXECUTION: ERR_COMMIT_EXECUTION
 });
@@ -781,27 +783,8 @@ Produce a concise, structured Quality Gate report covering:
 4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.` as const;
 
 // ============================================================================
-// AI PR Reviewer Constants, Models, Severities, and Thresholds
+// Review Constants, Confidence Levels, Severities, and Thresholds
 // ============================================================================
-
-export const AI_REVIEWER_MODELS = Object.freeze([
-  'gemini-3.5-flash-lite',
-  'gemini-3.5-flash',
-  'gemini-2.5-flash'
-] as const);
-
-export type AiReviewerModel = typeof AI_REVIEWER_MODELS[number];
-
-export const AI_REVIEWER_DEFAULT_TEMPERATURE = 0.1 as const;
-export const AI_REVIEWER_DEFAULT_MIME_TYPE = 'application/json' as const;
-export const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models' as const;
-
-export const AI_REVIEWER_DEFAULT_TIMEOUT_MS = 60000 as const;
-export const AI_REVIEWER_RETRY_DELAY_MS = 2000 as const;
-export const AI_REVIEWER_MAX_DIFF_CHARS = 120000 as const;
-
-export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503 as const;
-export const HTTP_STATUS_OK = 200 as const;
 
 // Review Confidence Levels
 export const CONFIDENCE_HIGH = 'High' as const;

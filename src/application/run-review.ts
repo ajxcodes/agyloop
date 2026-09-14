@@ -39,7 +39,7 @@ import {
   ConfigRepository,
   PlanGeneratorPort,
   StandardsRepository,
-  AiReviewerPort,
+  CritiquePort,
   CommandExecutorPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
@@ -139,7 +139,7 @@ export class RunReviewUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly planGenerator: PlanGeneratorPort;
   private readonly standardsRepo?: StandardsRepository;
-  private readonly aiReviewer?: AiReviewerPort;
+  private readonly critique?: CritiquePort;
   private readonly commandExecutor?: CommandExecutorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
 
@@ -148,7 +148,7 @@ export class RunReviewUseCase {
     configRepo: ConfigRepository,
     planGenerator: PlanGeneratorPort,
     standardsRepo?: StandardsRepository,
-    aiReviewer?: AiReviewerPort,
+    critique?: CritiquePort,
     commandExecutor?: CommandExecutorPort,
     resolveSubagentUseCase?: ResolveSubagentUseCase
   ) {
@@ -156,7 +156,7 @@ export class RunReviewUseCase {
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
     this.standardsRepo = standardsRepo;
-    this.aiReviewer = aiReviewer;
+    this.critique = critique;
     this.commandExecutor = commandExecutor;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo);
@@ -253,15 +253,15 @@ export class RunReviewUseCase {
 
     if (params.reviewOutput) {
       verdict = ReviewVerdict.parse(params.reviewOutput);
-    } else if (this.aiReviewer) {
-      const aiReport = await this.aiReviewer.review({
+    } else if (this.critique) {
+      const aiReport = await this.critique.review({
         cwd: workspace,
         staged: params.staged,
         baseRef: params.baseRef
       });
       verdict = ReviewVerdict.fromAiReviewReport(aiReport);
     } else {
-      // Default inspection verdict when neither raw subagent output nor AI reviewer gateway provided
+      // Default inspection verdict when neither raw subagent output nor critique gateway provided
       verdict = new ReviewVerdict({
         status: VERDICT_APPROVED,
         summary: 'Review passed: All acceptance criteria and code standards verified.',

@@ -1,5 +1,5 @@
 /**
- * agyloop - CliAiReviewerGateway Infrastructure Tests
+ * agyloop - CliCritiqueGateway Infrastructure Tests
  */
 
 const { describe, test } = require('node:test');
@@ -8,7 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { CliAiReviewerGateway } = require('../../dist/infrastructure');
+const { CliCritiqueGateway, CliAiReviewerGateway } = require('../../dist/infrastructure');
 const {
   RESOLVER_SOURCE_SIBLING,
   RESOLVER_SOURCE_BUNDLED,
@@ -51,9 +51,9 @@ class MockCommandExecutor {
   }
 }
 
-describe('CliAiReviewerGateway Resolution Hierarchy', () => {
+describe('CliCritiqueGateway Resolution Hierarchy', () => {
   test('prioritizes critique resolution when present in repository workspace', () => {
-    const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+    const gateway = new CliCritiqueGateway(new MockCommandExecutor());
     const resolution = gateway.resolveReviewer();
 
     assert.strictEqual(resolution.isAvailable, true);
@@ -70,7 +70,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
       const critiqueJs = path.join(siblingCritique, 'bin', 'critique.js');
       fs.writeFileSync(critiqueJs, '// critique binary');
 
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(workspace);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_SIBLING);
@@ -89,7 +89,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
       const critiqueJs = path.join(binDir, 'critique.js');
       fs.writeFileSync(critiqueJs, '// bundled critique');
 
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(tempDir);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_BUNDLED);
@@ -117,7 +117,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
 
       os.homedir = () => path.join(tempDir, 'home');
 
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(isolatedWorkspace);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_DATA);
@@ -154,7 +154,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
 
       os.homedir = () => fakeHome;
 
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(isolatedWorkspace);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_DATA);
@@ -179,7 +179,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
       fs.writeFileSync(critiqueExec, '#!/usr/bin/env node');
 
       os.homedir = () => fakeHome;
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(path.join(tempDir, 'workspace'));
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_LOCAL);
@@ -204,7 +204,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
       os.homedir = () => path.join(tempDir, 'emptyhome');
       process.env.PATH = binDir;
 
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(path.join(tempDir, 'workspace'));
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_SYSTEM_PATH);
@@ -224,7 +224,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
     try {
       os.homedir = () => path.join(tempDir, 'home');
       process.env.PATH = '';
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const resolution = gateway.resolveReviewer(tempDir);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_NONE);
@@ -238,10 +238,10 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
   });
 });
 
-describe('CliAiReviewerGateway Execution & Diagnostics', () => {
+describe('CliCritiqueGateway Execution & Diagnostics', () => {
   test('handles explicit bypass gracefully without querying external services', async () => {
     const mockExecutor = new MockCommandExecutor();
-    const gateway = new CliAiReviewerGateway(mockExecutor);
+    const gateway = new CliCritiqueGateway(mockExecutor);
 
     const report = await gateway.review({ bypass: true });
     assert.strictEqual(report.bypassed, true);
@@ -256,7 +256,7 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
     try {
       os.homedir = () => path.join(tempDir, 'home');
       process.env.PATH = '';
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
       const report = await gateway.review({ cwd: tempDir });
 
       assert.strictEqual(report.bypassed, true);
@@ -295,7 +295,7 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
         };
       });
 
-      const gateway = new CliAiReviewerGateway(mockExecutor);
+      const gateway = new CliCritiqueGateway(mockExecutor);
       const report = await gateway.review({
         cwd: tempDir,
         staged: true,
@@ -359,7 +359,7 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
         };
       });
 
-      const gateway = new CliAiReviewerGateway(mockExecutor);
+      const gateway = new CliCritiqueGateway(mockExecutor);
       const report = await gateway.review({ cwd: workspace });
 
       const buildCalls = mockExecutor.calls.filter((c) => c.command === 'npm run build');
@@ -390,7 +390,7 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
         };
       });
 
-      const gateway = new CliAiReviewerGateway(mockExecutor);
+      const gateway = new CliCritiqueGateway(mockExecutor);
       const report = await gateway.review({ cwd: tempDir });
 
       assert.strictEqual(report.bypassed, true);

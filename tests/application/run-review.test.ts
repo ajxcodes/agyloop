@@ -35,9 +35,9 @@ import type {
   ConfigRepository,
   PlanGeneratorPort,
   StandardsRepository,
-  AiReviewerPort,
-  AiReviewOptions,
-  AiReviewerResolution,
+  CritiquePort,
+  CritiqueOptions,
+  CritiqueResolution,
   AgyLoopConfig,
   ResolvedPlanLocation
 } from '../../src/ports';
@@ -134,18 +134,18 @@ class MockStandardsRepository implements StandardsRepository {
   }
 
   public findStandardsPath(): string | null {
-    return this.standardsText ? '/fake/.github/ai-reviewer-standards.md' : null;
+    return this.standardsText ? '/fake/.github/critique.md' : null;
   }
 }
 
-class MockAiReviewer implements AiReviewerPort {
+class MockCritique implements CritiquePort {
   public reportToReturn: AiReviewReportType | null = null;
 
-  public resolveReviewer(): AiReviewerResolution {
-    return { source: 'bundled', path: '/fake/bin/ai-reviewer.js', isAvailable: true };
+  public resolveReviewer(): CritiqueResolution {
+    return { source: 'bundled', path: '/fake/bin/critique.js', isAvailable: true };
   }
 
-  public async review(options?: AiReviewOptions): Promise<AiReviewReportType> {
+  public async review(options?: CritiqueOptions): Promise<AiReviewReportType> {
     if (this.reportToReturn) {
       return this.reportToReturn;
     }
@@ -215,7 +215,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
   let configRepo: MockConfigRepository;
   let planGenerator: MockPlanGenerator;
   let standardsRepo: MockStandardsRepository;
-  let aiReviewer: MockAiReviewer;
+  let critique: MockCritique;
 
   beforeEach(() => {
     const initialSm = new StateMachine({
@@ -233,7 +233,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
 `;
     standardsRepo = new MockStandardsRepository();
     standardsRepo.standardsText = '# Standards\nRule: Pure domain only.';
-    aiReviewer = new MockAiReviewer();
+    critique = new MockCritique();
   });
 
   test('rejects execution when no pipeline state exists', async () => {
@@ -266,7 +266,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
       configRepo,
       planGenerator,
       standardsRepo,
-      aiReviewer
+      critique
     );
 
     const reviewOutput = `
@@ -305,7 +305,7 @@ REMEDIATION_GUIDANCE:
       configRepo,
       planGenerator,
       standardsRepo,
-      aiReviewer
+      critique
     );
 
     const reviewOutput = `
@@ -340,8 +340,8 @@ REMEDIATION_GUIDANCE:
     assert.ok(update.reviewNote.includes('Pipeline reverted to IMPLEMENT'));
   });
 
-  test('uses injected AiReviewerPort when reviewOutput is not provided', async () => {
-    aiReviewer.reportToReturn = new AiReviewReport({
+  test('uses injected CritiquePort when reviewOutput is not provided', async () => {
+    critique.reportToReturn = new AiReviewReport({
       summary: 'Automated AI PR review passed cleanly.',
       confidence: ReviewConfidence.high('No issues detected.'),
       findings: []
@@ -352,7 +352,7 @@ REMEDIATION_GUIDANCE:
       configRepo,
       planGenerator,
       standardsRepo,
-      aiReviewer
+      critique
     );
 
     const result = await useCase.execute();
@@ -368,7 +368,7 @@ REMEDIATION_GUIDANCE:
       configRepo,
       planGenerator,
       standardsRepo,
-      aiReviewer
+      critique
     );
 
     const result = await useCase.execute({
@@ -390,7 +390,7 @@ REMEDIATION_GUIDANCE:
       configRepo,
       planGenerator,
       standardsRepo,
-      aiReviewer
+      critique
     );
 
     await useCase.execute({

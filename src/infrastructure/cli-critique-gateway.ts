@@ -1,7 +1,7 @@
 /**
- * agyloop - CliAiReviewerGateway (Infrastructure Adapter)
+ * agyloop - CliCritiqueGateway (Infrastructure Adapter)
  *
- * Implements AiReviewerPort with resolution hierarchy:
+ * Implements CritiquePort with resolution hierarchy:
  * 1. Sibling ../critique (bin/critique or bin/critique.js)
  * 2. Bundled / local in agyloop repository root / cwd: bin/critique, bin/critique.js
  * 3. User data tool dir (LOCALAPPDATA/critique on Windows, ~/Library/Application Support/critique on macOS, ~/.local/share/critique on Linux/macOS)
@@ -38,10 +38,10 @@ import {
 } from '../domain/constants';
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
 import {
-  AiReviewerPort,
-  AiReviewOptions,
-  AiReviewerResolution
-} from '../ports/ai-reviewer';
+  CritiquePort,
+  CritiqueOptions,
+  CritiqueResolution
+} from '../ports/critique';
 import { CommandExecutorPort } from '../ports/command-executor';
 import { ProcessCommandExecutor } from './process-command-executor';
 
@@ -143,14 +143,14 @@ function resolveUserDataDir(): string[] {
   return dirs;
 }
 
-export class CliAiReviewerGateway implements AiReviewerPort {
+export class CliCritiqueGateway implements CritiquePort {
   private readonly commandExecutor: CommandExecutorPort;
 
   constructor(commandExecutor: CommandExecutorPort = new ProcessCommandExecutor()) {
     this.commandExecutor = commandExecutor;
   }
 
-  public resolveReviewer(cwd: string = process.cwd()): AiReviewerResolution {
+  public resolveReviewer(cwd: string = process.cwd()): CritiqueResolution {
     const repoRoot = path.resolve(__dirname, '../../');
 
     // 1. Sibling ../critique (../critique/bin/critique or ../critique/bin/critique.js)
@@ -284,7 +284,7 @@ export class CliAiReviewerGateway implements AiReviewerPort {
     };
   }
 
-  public async review(options: AiReviewOptions = {}): Promise<AiReviewReport> {
+  public async review(options: CritiqueOptions = {}): Promise<AiReviewReport> {
     if (options.bypass) {
       return AiReviewReport.bypassed('Bypassed by option');
     }
@@ -309,21 +309,26 @@ export class CliAiReviewerGateway implements AiReviewerPort {
       try {
         await this.commandExecutor.execute(CRITIQUE_BUILD_COMMAND, { cwd: potentialDir });
       } catch {
-        // Continue execution if build fails
-      }
-      const builtJs = path.join(potentialDir, PATH_BUNDLED_CRITIQUE_JS);
-      if (fs.existsSync(builtJs)) {
-        execPath = builtJs;
+        // Continue and attempt execution
       }
     }
 
-    const flags: string[] = [CRITIQUE_FLAG_JSON];
-    if (options.staged) flags.push(CRITIQUE_FLAG_STAGED);
-    if (options.baseRef) flags.push(`${CRITIQUE_FLAG_BASE} ${options.baseRef}`);
+    // Direct node invocation if js file
+    const isJs = execPath.endsWith('.js');
+    let command: string;
+    if (isJs) {
+      command = `node "${execPath}" ${CRITIQUE_FLAG_JSON}`;
+    } else {
+      command = `"${execPath}" ${CRITIQUE_FLAG_JSON}`;
+    }
 
-    const command = execPath.endsWith('.js')
-      ? `node "${execPath}" ${flags.join(' ')}`
-      : `"${execPath}" ${flags.join(' ')}`;
+    if (options.staged) {
+      command += ` ${CRITIQUE_FLAG_STAGED}`;
+    }
+
+    if (options.baseRef) {
+      command += ` ${CRITIQUE_FLAG_BASE} ${options.baseRef}`;
+    }
 
     try {
       const result = await this.commandExecutor.execute(command, {
@@ -351,3 +356,7 @@ export class CliAiReviewerGateway implements AiReviewerPort {
     }
   }
 }
+
+// Backwards compatibility aliases
+export const CliAiReviewerGateway = CliCritiqueGateway;
+export type CliAiReviewerGateway = CliCritiqueGateway;

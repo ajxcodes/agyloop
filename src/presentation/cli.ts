@@ -42,7 +42,7 @@ import {
   ProcessCommandExecutor,
   FileBuildDetector,
   ReadlineConfirmationPrompt,
-  CliAiReviewerGateway,
+  CliCritiqueGateway,
   FileStandardsRepository
 } from '../infrastructure';
 import {
@@ -272,7 +272,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const commandExecutor = new ProcessCommandExecutor();
   const buildDetector = new FileBuildDetector();
   const standardsRepo = new FileStandardsRepository();
-  const aiReviewer = new CliAiReviewerGateway();
+  const critique = new CliCritiqueGateway();
   const confirmationPrompt = new ReadlineConfirmationPrompt();
 
   const config = configRepo.loadConfig({ customPath: options.configPath });
@@ -285,7 +285,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     commandExecutor,
     buildDetector,
     standardsRepo,
-    aiReviewer,
+    critique,
     confirmationPrompt
   });
 

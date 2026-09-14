@@ -10,6 +10,7 @@ const {
   AiReviewFinding,
   AiReviewReport,
   ValidationError,
+  CritiqueError,
   AiReviewerError,
   CONFIDENCE_HIGH,
   CONFIDENCE_MEDIUM,
@@ -89,7 +90,7 @@ describe('AiReviewFinding Value Object', () => {
     assert.strictEqual(crit.getIcon(), '🔴');
 
     const warn = new AiReviewFinding({
-      path: 'src/ports/ai-reviewer.ts',
+      path: 'src/ports/critique.ts',
       line: 10,
       severity: 'warning',
       body: 'Consider making this property optional'
@@ -165,7 +166,7 @@ describe('AiReviewReport Value Object & Parser', () => {
       resolvedThreads: ['thread-1', 'thread-2'],
       comments: [
         {
-          path: 'src/ports/ai-reviewer.ts',
+          path: 'src/ports/critique.ts',
           line: 12,
           severity: 'warning',
           body: 'Consider adding JSDoc comments.'
@@ -177,7 +178,7 @@ describe('AiReviewReport Value Object & Parser', () => {
     assert.strictEqual(report.summary.includes('High-level PR summary.'), true);
     assert.strictEqual(report.confidence.isHigh(), true);
     assert.strictEqual(report.findings.length, 1);
-    assert.strictEqual(report.findings[0].path, 'src/ports/ai-reviewer.ts');
+    assert.strictEqual(report.findings[0].path, 'src/ports/critique.ts');
     assert.strictEqual(report.findings[0].isWarning(), true);
     assert.strictEqual(report.warningCount(), 1);
     assert.strictEqual(report.errorCount(), 0);
@@ -235,11 +236,11 @@ Hope this helps!`;
     assert.strictEqual(bypassed.diagnosticMessage, 'GEMINI_API_KEY missing');
   });
 
-  test('throws AiReviewerError on unparseable JSON', () => {
+  test('throws CritiqueError on unparseable JSON', () => {
     assert.throws(
       () => AiReviewReport.parse('This is not json { ['),
-      (err: unknown) => err instanceof AiReviewerError
+      (err: unknown) => err instanceof CritiqueError && err instanceof AiReviewerError
     );
-    assert.throws(() => AiReviewReport.parse(''), AiReviewerError);
+    assert.throws(() => AiReviewReport.parse(''), CritiqueError);
   });
 });
