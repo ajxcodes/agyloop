@@ -322,6 +322,12 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         className: 'FileStandardsRepository',
         portName: 'StandardsRepository',
         requiredMethods: ['loadStandards', 'findStandardsPath']
+      },
+      {
+        adapterFile: 'readline-confirmation-prompt.ts',
+        className: 'ReadlineConfirmationPrompt',
+        portName: 'ConfirmationPromptPort',
+        requiredMethods: ['confirm']
       }
     ];
 

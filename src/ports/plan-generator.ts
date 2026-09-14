@@ -36,6 +36,9 @@ export interface SummaryUpdateData {
   readonly buildSystem?: string;
   readonly detectedEcosystems?: readonly string[] | string;
   readonly executedCommands?: readonly string[];
+  readonly commitHash?: string;
+  readonly commitMessage?: string;
+  readonly commitTimestamp?: string;
 }
 
 export interface GeneratePlanOptions {

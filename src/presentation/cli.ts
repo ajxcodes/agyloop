@@ -33,7 +33,8 @@ import {
   FilePlanGenerator,
   FilePromptRepository,
   ProcessCommandExecutor,
-  FileBuildDetector
+  FileBuildDetector,
+  ReadlineConfirmationPrompt
 } from '../infrastructure';
 import {
   StartPlanningUseCase,
@@ -43,8 +44,11 @@ import {
   ListModelsUseCase,
   ResolveSubagentUseCase,
   StartImplementationUseCase,
-  RunQualityGateUseCase
+  RunQualityGateUseCase,
+  DraftCommitUseCase,
+  ExecuteCommitUseCase
 } from '../application';
+
 
 
 export interface CliOptions {
@@ -59,6 +63,9 @@ export interface CliOptions {
   version: boolean;
   stageArg: string | null;
   roleArg: string | null;
+  yes: boolean;
+  message: string | null;
+  staged: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -78,6 +85,7 @@ Commands:
   plan               Run planning subagent and stop at approval gate
   implement          Resume implementation directly from approved plan
   gates              Run quality and AI review gates on current working diff
+  commit             Draft Conventional Commit and execute human approval gate
   yolo               Unattended fast-path mode (auto-approves plan gate)
   status             Display current pipeline stage and checkpoint history
   config             Display active configuration and model routing table
@@ -88,6 +96,9 @@ Commands:
 
 Options:
   --commit-after     Opt-in flag to automatically commit if all gates pass
+  -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
+  -m, --message <msg> Explicit commit message override
+  -s, --staged       Commit staged changes only
   --issue <number>   Specify GitHub issue number
   --title <text>     Specify plan title (for scaffolding)
   --type <type>      Specify plan type (discovery | implementation)
@@ -112,7 +123,10 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     help: false,
     version: false,
     stageArg: null,
-    roleArg: null
+    roleArg: null,
+    yes: false,
+    message: null,
+    staged: false
   };
 
   const positional: string[] = [];
@@ -126,6 +140,18 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.version = true;
     } else if (arg === '--commit-after') {
       options.commitAfter = true;
+    } else if (arg === '--yes' || arg === '-y') {
+      options.yes = true;
+    } else if (arg === '--staged' || arg === '-s') {
+      options.staged = true;
+    } else if (arg === '--message' || arg === '-m') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.message = args[++i];
+      } else {
+        options.message = null;
+      }
+    } else if (arg.startsWith('--message=')) {
+      options.message = arg.split('=')[1] || null;
     } else if (arg === '--dry-run') {
       options.dryRun = true;
     } else if (arg === '--refresh') {
@@ -458,6 +484,70 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
     }
+
+    case 'commit': {
+      console.log(`\n📦 AgyLoop: Semantic Conventional Commit Gate`);
+      try {
+        const confirmationPrompt = new ReadlineConfirmationPrompt();
+        const draftCommitUseCase = new DraftCommitUseCase(
+          stateRepo,
+          commandExecutor,
+          githubGateway,
+          planGenerator
+        );
+
+        const draftResult = await draftCommitUseCase.execute({
+          issue: options.issue,
+          staged: options.staged,
+          userMessage: options.message,
+          workspaceDir: process.cwd()
+        });
+
+        console.log(`\nProposed Conventional Commit:`);
+        console.log(`  \x1b[32m${draftResult.commitMessage.toSingleLine()}\x1b[0m`);
+        if (draftResult.commitMessage.body) {
+          console.log(`\nBody:\n${draftResult.commitMessage.body}`);
+        }
+        if (draftResult.plan.isBreaking) {
+          console.log(`\n⚠️  BREAKING CHANGE detected!`);
+        }
+        console.log(`\nFiles to commit (${draftResult.plan.modifiedFiles.length}):`);
+        draftResult.plan.modifiedFiles.forEach((f) => console.log(`  - ${f}`));
+
+        const executeCommitUseCase = new ExecuteCommitUseCase(
+          stateRepo,
+          commandExecutor,
+          planGenerator,
+          confirmationPrompt
+        );
+
+        const execResult = await executeCommitUseCase.execute({
+          commitMessage: draftResult.commitMessage,
+          confirmed: options.yes,
+          bypassConfirmation: options.yes,
+          staged: options.staged,
+          dryRun: options.dryRun,
+          issue: options.issue,
+          workspaceDir: process.cwd()
+        });
+
+        if (execResult.confirmed && execResult.success) {
+          console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
+          console.log(`✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.`);
+          if (execResult.summaryUpdated) {
+            console.log(`✓ AgyLoop Summary.md updated with commit hash and timestamp.\n`);
+          }
+          return EXIT_CODE_SUCCESS;
+        } else {
+          console.log(`\nCommit cancelled by user. Working tree remains uncommitted.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+      } catch (err: unknown) {
+        console.error(`\n✗ ${err instanceof Error ? err.message : String(err)}\n`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
 
 
     case 'yolo': {

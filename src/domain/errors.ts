@@ -18,7 +18,8 @@ import {
   ERR_BUILD_DETECTION,
   ERR_GATE_SUMMARY_PARSE,
   ERR_AI_REVIEWER,
-  ERR_REVIEWER_SUBAGENT
+  ERR_REVIEWER_SUBAGENT,
+  ERR_COMMIT_EXECUTION
 } from './constants';
 
 
@@ -211,5 +212,22 @@ export class ReviewerSubagentError extends AgyLoopError {
     }
   }
 }
+
+export class CommitExecutionError extends AgyLoopError {
+  public readonly code = ERR_COMMIT_EXECUTION;
+  public readonly operation: string;
+  public readonly reason: string;
+
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Commit execution error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    this.operation = operation;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
 
 

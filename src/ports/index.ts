@@ -12,5 +12,7 @@ export * from './command-executor';
 export * from './build-detector';
 export * from './ai-reviewer';
 export * from './standards-repository';
+export * from './confirmation-prompt';
+
 
 
