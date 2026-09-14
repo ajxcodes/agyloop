@@ -316,6 +316,12 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         className: 'CliAiReviewerGateway',
         portName: 'AiReviewerPort',
         requiredMethods: ['resolveReviewer', 'review']
+      },
+      {
+        adapterFile: 'file-standards-repository.ts',
+        className: 'FileStandardsRepository',
+        portName: 'StandardsRepository',
+        requiredMethods: ['loadStandards', 'findStandardsPath']
       }
     ];
 

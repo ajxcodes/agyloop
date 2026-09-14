@@ -4,8 +4,10 @@ const {
   READ_ONLY_TOOLS,
   FORBIDDEN_WRITE_TOOLS,
   GATE_TOOLS,
+  REVIEWER_TOOLS,
   PLANNER_SUBAGENT_DEF,
   GATE_SUBAGENT_DEF,
+  REVIEWER_SUBAGENT_DEF,
   ToolWhitelist,
   ResolveSubagentUseCase,
   FileConfigRepository
@@ -191,6 +193,73 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('Developer Directives:'));
     assert.ok(prompt.includes('Verify strict hexagonal boundaries.'));
     assert.ok(prompt.includes('Required Verdict Output:'));
+  });
+
+  test('REVIEWER_SUBAGENT_DEF enforces read-only inspection and flash routing', () => {
+    assert.strictEqual(REVIEWER_SUBAGENT_DEF.name, 'reviewer');
+    assert.strictEqual(REVIEWER_SUBAGENT_DEF.role, 'AI Reviewer Subagent');
+    assert.strictEqual(REVIEWER_SUBAGENT_DEF.defaultTier, 'flash');
+    assert.strictEqual(REVIEWER_SUBAGENT_DEF.capabilities.enable_write_tools, false);
+    assert.strictEqual(REVIEWER_SUBAGENT_DEF.capabilities.enable_subagent_tools, false);
+    assert.strictEqual(REVIEWER_SUBAGENT_DEF.capabilities.enable_mcp_tools, false);
+    assert.deepStrictEqual(
+      [...REVIEWER_SUBAGENT_DEF.tools],
+      ['view_file', 'grep_search', 'find_by_name', 'list_dir', 'run_command']
+    );
+  });
+
+  test('ToolWhitelist.reviewer() permits inspection tools and run_command', () => {
+    const whitelist = ToolWhitelist.reviewer();
+    assert.strictEqual(whitelist.isAllowed('view_file'), true);
+    assert.strictEqual(whitelist.isAllowed('grep_search'), true);
+    assert.strictEqual(whitelist.isAllowed('find_by_name'), true);
+    assert.strictEqual(whitelist.isAllowed('list_dir'), true);
+    assert.strictEqual(whitelist.isAllowed('run_command'), true);
+    assert.strictEqual(whitelist.isAllowed('write_to_file'), false);
+    assert.strictEqual(whitelist.isAllowed('replace_file_content'), false);
+  });
+
+  test('getReviewerSystemPrompt returns comprehensive guidance with verdict tokens', () => {
+    const prompt = resolveUseCase.getReviewerSystemPrompt();
+    assert.ok(prompt.includes('# AgyLoop AI Reviewer Subagent System Prompt'));
+    assert.ok(prompt.includes('REVIEW_STATUS: APPROVED | CHANGES_REQUESTED'));
+    assert.ok(prompt.includes('UNFULFILLED_AC:'));
+    assert.ok(prompt.includes('REMEDIATION_GUIDANCE:'));
+  });
+
+  test('getReviewerDefinition integrates with config and resolves model tier', () => {
+    const def = resolveUseCase.execute({ role: 'reviewer' });
+    assert.strictEqual(def.name, 'reviewer');
+    assert.strictEqual(def.model, 'flash');
+    assert.strictEqual(def.apiModel, 'gemini-3.5-flash');
+    assert.strictEqual(def.capabilities.enable_write_tools, false);
+    assert.strictEqual(def.capabilities.enable_subagent_tools, false);
+    assert.strictEqual(def.capabilities.enable_mcp_tools, false);
+    assert.deepStrictEqual(
+      [...def.tools],
+      ['view_file', 'grep_search', 'find_by_name', 'list_dir', 'run_command']
+    );
+  });
+
+  test('buildReviewerTaskPrompt formats review directives, AC, and standards', () => {
+    const prompt = resolveUseCase.buildReviewerTaskPrompt({
+      issueNumber: 28,
+      issueTitle: 'Build Reviewer Subagent',
+      acceptanceCriteria: ['AC 1: Whitelist read-only', 'AC 2: Standards ingestion'],
+      standardsContent: '# Standards\nRule: Hexagonal only.',
+      workingDiff: '+export const REVIEWER = true;',
+      userInstructions: 'Zero magic numbers.'
+    });
+
+    assert.ok(prompt.includes('# Task: Code Review & Standards Verification'));
+    assert.ok(prompt.includes('Active Issue: #28'));
+    assert.ok(prompt.includes('Build Reviewer Subagent'));
+    assert.ok(prompt.includes('1. AC 1: Whitelist read-only'));
+    assert.ok(prompt.includes('2. AC 2: Standards ingestion'));
+    assert.ok(prompt.includes('# Standards\nRule: Hexagonal only.'));
+    assert.ok(prompt.includes('+export const REVIEWER = true;'));
+    assert.ok(prompt.includes('Zero magic numbers.'));
+    assert.ok(prompt.includes('REVIEW_STATUS: APPROVED | CHANGES_REQUESTED'));
   });
 });
 

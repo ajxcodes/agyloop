@@ -10,4 +10,5 @@ export * from './reset-pipeline';
 export * from './list-models';
 export * from './start-implementation';
 export * from './run-quality-gate';
+export * from './run-review';
 

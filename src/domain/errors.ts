@@ -17,7 +17,8 @@ import {
   ERR_GATE_EXECUTION,
   ERR_BUILD_DETECTION,
   ERR_GATE_SUMMARY_PARSE,
-  ERR_AI_REVIEWER
+  ERR_AI_REVIEWER,
+  ERR_REVIEWER_SUBAGENT
 } from './constants';
 
 
@@ -187,6 +188,22 @@ export class AiReviewerError extends AgyLoopError {
   constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
     const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
     super(`AI Reviewer error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    this.operation = operation;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
+export class ReviewerSubagentError extends AgyLoopError {
+  public readonly code = ERR_REVIEWER_SUBAGENT;
+  public readonly operation: string;
+  public readonly reason: string;
+
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Reviewer subagent error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
     this.operation = operation;
     this.reason = reason;
     if (cause) {
