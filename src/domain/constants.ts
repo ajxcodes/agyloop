@@ -868,7 +868,6 @@ export const RESOLVER_SOURCES = Object.freeze([
 export type ResolverSource = typeof RESOLVER_SOURCES[number];
 
 export const BINARY_CRITIQUE = 'critique' as const;
-export const BINARY_AI_REVIEWER = 'ai-reviewer' as const;
 export const PATH_BUNDLED_CRITIQUE = 'bin/critique' as const;
 export const PATH_BUNDLED_CRITIQUE_JS = 'bin/critique.js' as const;
 export const PATH_USER_LOCAL_CRITIQUE = '.local/bin/critique' as const;
@@ -879,19 +878,14 @@ export const CRITIQUE_FLAG_STAGED = '--staged' as const;
 export const CRITIQUE_FLAG_BASE = '--base' as const;
 export const CRITIQUE_BUILD_COMMAND = 'npm run build' as const;
 export const PATH_USER_DATA_CRITIQUE_DIR = '.local/share/critique' as const;
+export const PATH_USER_DATA_CRITIQUE_MAC = 'Library/Application Support/critique' as const;
 
-export const PATH_BUNDLED_REVIEWER_JS = 'bin/ai-reviewer.js' as const;
-export const PATH_BUNDLED_REVIEWER_SH = 'bin/ai-reviewer' as const;
-export const PATH_BUNDLED_REVIEWER_CMD = 'bin/ai-reviewer.cmd' as const;
-export const PATH_USER_LOCAL_REVIEWER = '.local/bin/ai-reviewer' as const;
-export const PATH_WORKFLOW_AI_REVIEWER = '.github/workflows/ai-pr-reviewer.yml' as const;
 export const ENV_FILE_NAME = '.env' as const;
 export const ENV_VAR_GEMINI_API_KEY = 'GEMINI_API_KEY' as const;
 
 // Regular Expressions
 export const REGEX_ENV_KEY_VAL = /^\s*([\w.-]+)\s*=\s*(.*)?\s*$/;
 export const REGEX_JSON_CODE_BLOCK = /```(?:json)?\s*([\s\S]*?)\s*```/;
-export const REGEX_WORKFLOW_PROMPT = /const\s+prompt\s*=\s*`([\s\S]*?)`;/;
 export const REGEX_SEVERITY = /^(critical|error|warning|suggestion|info)$/i;
 export const REGEX_CONFIDENCE = /^(high|medium|low)$/i;
 
@@ -902,34 +896,9 @@ export const BANNER_SUMMARY = '## Summary' as const;
 export const MSG_NO_DIFF_FOUND = 'No diff found. Exiting.' as const;
 export const MSG_CLEAN_DIFF_REVIEW = 'No uncommitted changes or working tree diff found.' as const;
 export const MSG_NO_ISSUES_FOUND = '*No issues found! Great job!* 🚀' as const;
-export const MSG_MISSING_API_KEY =
-  'Error: GEMINI_API_KEY is not set.\nPlease ensure it is set in ~/.env, .env, or in your environment variables.' as const;
-export const MSG_ALL_MODELS_FAILED = 'All candidate Gemini models failed.' as const;
+export const MSG_CRITIQUE_NOT_FOUND =
+  'Critique CLI binary not found. Please install critique or place it on PATH, ~/.local/bin, or as sibling ../critique.' as const;
 export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
-
-export const DEFAULT_AI_REVIEWER_SYSTEM_INSTRUCTION = `You are Antigravity, an expert senior software engineer reviewing a pull request.
-
-Context & Current Standards:
-- You MUST carefully review the code in the diff.
-- Ensure you provide inline comments for any logic flaws, performance issues, security concerns, or incorrect API usage.
-- Categorize comment severity as "critical", "error", "warning", "suggestion", or "info".
-- Avoid nitpicks on unchanged code.
-
-You must respond with a SINGLE JSON object with the following structure:
-{
-  "summary": "A markdown string containing a high-level summary of the PR and a bullet-pointed changelog.",
-  "confidenceLevel": "High | Medium | Low",
-  "confidenceExplanation": "Why this confidence level was chosen based on code complexity, completeness, and diff size.",
-  "resolvedThreads": ["threadId1", "threadId2"],
-  "comments": [
-    {
-      "path": "path/to/file.ts",
-      "line": 15,
-      "severity": "critical | error | warning | suggestion | info",
-      "body": "Detailed review finding and recommendation..."
-    }
-  ]
-}` as const;
 
 export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
 

@@ -8,11 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const {
-  CliAiReviewerGateway,
-  loadEnvironmentFile,
-  resolveGeminiApiKey
-} = require('../../dist/infrastructure');
+const { CliAiReviewerGateway } = require('../../dist/infrastructure');
 const {
   RESOLVER_SOURCE_SIBLING,
   RESOLVER_SOURCE_BUNDLED,
@@ -187,31 +183,7 @@ describe('CliAiReviewerGateway Resolution Hierarchy', () => {
     }
   });
 
-  test('falls back to bundled bin/ai-reviewer.js when critique is absent in workspace', () => {
-    const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-no-critique-'));
-    const binDir = path.join(tempDir, 'bin');
-    fs.mkdirSync(binDir, { recursive: true });
-    const dummyAiReviewer = path.join(binDir, 'ai-reviewer.js');
-    fs.writeFileSync(dummyAiReviewer, '// dummy ai-reviewer');
-
-    const origHomedir = os.homedir;
-    const origPath = process.env.PATH;
-    try {
-      os.homedir = () => path.join(tempDir, 'home');
-      process.env.PATH = '';
-      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
-      const resolution = gateway.resolveReviewer(tempDir);
-      assert.strictEqual(resolution.source, RESOLVER_SOURCE_BUNDLED);
-      assert.strictEqual(resolution.isAvailable, true);
-      assert.strictEqual(resolution.path, dummyAiReviewer);
-    } finally {
-      os.homedir = origHomedir;
-      process.env.PATH = origPath;
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('returns RESOLVER_SOURCE_NONE when neither binary is present in isolated workspace', () => {
+  test('returns RESOLVER_SOURCE_NONE when critique is not present in isolated workspace', () => {
     const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-empty-ws-'));
     const origPath = process.env.PATH;
     const origHomedir = os.homedir;
@@ -243,50 +215,23 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
     assert.strictEqual(mockExecutor.calls.length, 0);
   });
 
-  test('handles missing GEMINI_API_KEY with diagnostic report', async () => {
-    const mockExecutor = new MockCommandExecutor();
-    const gateway = new CliAiReviewerGateway(mockExecutor);
-
-    // Provide an empty environment with no GEMINI_API_KEY
-    const origKey = process.env.GEMINI_API_KEY;
-    delete process.env.GEMINI_API_KEY;
-
+  test('handles missing critique binary with diagnostic bypassed report', async () => {
+    const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-nobin-ws-'));
+    const origPath = process.env.PATH;
+    const origHomedir = os.homedir;
     try {
-      const report = await gateway.review({
-        cwd: '/tmp/nonexistent-agyloop-test-dir',
-        env: {}
-      });
+      os.homedir = () => path.join(tempDir, 'home');
+      process.env.PATH = '';
+      const gateway = new CliAiReviewerGateway(new MockCommandExecutor());
+      const report = await gateway.review({ cwd: tempDir });
+
       assert.strictEqual(report.bypassed, true);
-      assert.ok(report.diagnosticMessage && report.diagnosticMessage.includes('GEMINI_API_KEY'));
+      assert.ok(report.diagnosticMessage && report.diagnosticMessage.includes('Critique CLI binary not found'));
     } finally {
-      if (origKey !== undefined) {
-        process.env.GEMINI_API_KEY = origKey;
-      }
+      os.homedir = origHomedir;
+      process.env.PATH = origPath;
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
-  });
-
-  test('handles clean working tree with empty diff report', async () => {
-    const mockExecutor = new MockCommandExecutor((cmd: string) => {
-      // Simulate git diff commands returning empty string
-      return {
-        command: cmd,
-        exitCode: 0,
-        stdout: '',
-        stderr: '',
-        combinedOutput: '',
-        durationMs: 5,
-        timedOut: false
-      };
-    });
-
-    const gateway = new CliAiReviewerGateway(mockExecutor);
-    const report = await gateway.review({
-      env: { GEMINI_API_KEY: 'test-dummy-key' }
-    });
-
-    assert.strictEqual(report.findings.length, 0);
-    assert.strictEqual(report.confidence.isHigh(), true);
-    assert.strictEqual(report.bypassed, false);
   });
 
   test('executes critique with --json, --staged, and --base flags', async () => {
@@ -344,19 +289,16 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
       fs.mkdirSync(path.join(siblingCritique, 'bin'), { recursive: true });
       fs.mkdirSync(path.join(siblingCritique, 'src'), { recursive: true });
 
-      // Create package.json for critique
       fs.writeFileSync(
         path.join(siblingCritique, 'package.json'),
         JSON.stringify({ name: 'critique' })
       );
 
-      // Create bin/critique.js with older timestamp
       const critiqueJs = path.join(siblingCritique, 'bin', 'critique.js');
       fs.writeFileSync(critiqueJs, '// old build');
       const oldTime = new Date(Date.now() - 50000);
       fs.utimesSync(critiqueJs, oldTime, oldTime);
 
-      // Create src/index.ts with newer timestamp
       const srcFile = path.join(siblingCritique, 'src', 'index.ts');
       fs.writeFileSync(srcFile, '// source code');
 
@@ -369,7 +311,6 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
 
       const mockExecutor = new MockCommandExecutor((cmd: string) => {
         if (cmd === 'npm run build') {
-          // Simulate build updating critique.js
           fs.writeFileSync(critiqueJs, '// newly built');
           return { command: cmd, exitCode: 0, stdout: 'Build OK', stderr: '', combinedOutput: '', durationMs: 20, timedOut: false };
         }
@@ -387,7 +328,6 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
       const gateway = new CliAiReviewerGateway(mockExecutor);
       const report = await gateway.review({ cwd: workspace });
 
-      // Verify npm run build was triggered
       const buildCalls = mockExecutor.calls.filter((c) => c.command === 'npm run build');
       assert.strictEqual(buildCalls.length, 1);
       assert.strictEqual((buildCalls[0].options as any)?.cwd, siblingCritique);
@@ -397,7 +337,7 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
     }
   });
 
-  test('falls back to internal engine when critique binary execution fails', async () => {
+  test('returns diagnostic report when critique binary execution fails', async () => {
     const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-fallback-critique-'));
     try {
       const binDir = path.join(tempDir, 'bin');
@@ -405,64 +345,24 @@ describe('CliAiReviewerGateway Execution & Diagnostics', () => {
       fs.writeFileSync(path.join(binDir, 'critique.js'), '// broken critique');
 
       const mockExecutor = new MockCommandExecutor((cmd: string) => {
-        if (cmd.includes('critique.js')) {
-          // Simulate binary crashing or failing
-          return {
-            command: cmd,
-            exitCode: 1,
-            stdout: '',
-            stderr: 'Fatal crash in critique',
-            combinedOutput: 'Fatal crash',
-            durationMs: 10,
-            timedOut: false
-          };
-        }
-        // Fallback internal engine git diff calls
         return {
           command: cmd,
-          exitCode: 0,
+          exitCode: 1,
           stdout: '',
-          stderr: '',
-          combinedOutput: '',
-          durationMs: 5,
+          stderr: 'Fatal crash in critique',
+          combinedOutput: 'Fatal crash',
+          durationMs: 10,
           timedOut: false
         };
       });
 
       const gateway = new CliAiReviewerGateway(mockExecutor);
-      const report = await gateway.review({
-        cwd: tempDir,
-        env: { GEMINI_API_KEY: 'test-dummy-key' }
-      });
+      const report = await gateway.review({ cwd: tempDir });
 
-      // Assert review fell back cleanly without uncaught exception
-      assert.strictEqual(report.bypassed, false);
-      assert.strictEqual(report.findings.length, 0);
+      assert.strictEqual(report.bypassed, true);
+      assert.ok(report.diagnosticMessage && report.diagnosticMessage.includes('Critique CLI execution failed'));
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-  });
-});
-
-describe('Environment Discovery', () => {
-  test('loadEnvironmentFile parses key-value pairs and ignores comments', () => {
-    const tmpEnv = path.join(__dirname, 'test.env');
-    fs.writeFileSync(tmpEnv, 'KEY_ONE=val1\nKEY_TWO="val2"\n# Comment\nINVALID LINE\n');
-
-    try {
-      const env = loadEnvironmentFile(tmpEnv);
-      assert.strictEqual(env.KEY_ONE, 'val1');
-      assert.strictEqual(env.KEY_TWO, 'val2');
-    } finally {
-      if (fs.existsSync(tmpEnv)) {
-        fs.unlinkSync(tmpEnv);
-      }
-    }
-  });
-
-  test('resolveGeminiApiKey prioritizes explicit environment variables', () => {
-    const explicit = { GEMINI_API_KEY: 'explicit-key' };
-    const resolved = resolveGeminiApiKey('/tmp', explicit);
-    assert.strictEqual(resolved, 'explicit-key');
   });
 });

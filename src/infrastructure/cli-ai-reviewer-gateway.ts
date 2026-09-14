@@ -4,13 +4,12 @@
  * Implements AiReviewerPort with resolution hierarchy:
  * 1. Sibling ../critique (bin/critique or bin/critique.js)
  * 2. Bundled / local in agyloop repository root / cwd: bin/critique, bin/critique.js
- * 3. User data tool dir (LOCALAPPDATA/critique on Windows, ~/.local/share/critique on Linux/macOS)
- * 4. User-local: ~/.local/bin/critique
+ * 3. User data tool dir (LOCALAPPDATA/critique on Windows, ~/Library/Application Support/critique on macOS, ~/.local/share/critique on Linux/macOS)
+ * 4. User-local: ~/.local/bin/critique (or .cmd/.bat/.exe on Windows)
  * 5. System $PATH: critique executable on $PATH
- * 6. Fallback: ai-reviewer (bin/ai-reviewer.js, ~/.local/bin/ai-reviewer, $PATH ai-reviewer)
- * 7. None found: RESOLVER_SOURCE_NONE
+ * 6. None found: RESOLVER_SOURCE_NONE
  *
- * Enforces Dependency Inversion, graceful diagnostics for missing keys,
+ * Enforces Dependency Inversion, cross-platform resolution (Linux, macOS, Windows),
  * automatic compilation of critique source repos, and zero uncaught exceptions.
  */
 
@@ -25,17 +24,17 @@ import {
   RESOLVER_SOURCE_SYSTEM_PATH,
   RESOLVER_SOURCE_NONE,
   BINARY_CRITIQUE,
-  BINARY_AI_REVIEWER,
   PATH_BUNDLED_CRITIQUE,
   PATH_BUNDLED_CRITIQUE_JS,
   PATH_USER_LOCAL_CRITIQUE,
   PATH_SIBLING_CRITIQUE_DIR,
+  PATH_USER_DATA_CRITIQUE_DIR,
+  PATH_USER_DATA_CRITIQUE_MAC,
   CRITIQUE_FLAG_JSON,
   CRITIQUE_FLAG_STAGED,
   CRITIQUE_FLAG_BASE,
   CRITIQUE_BUILD_COMMAND,
-  PATH_BUNDLED_REVIEWER_JS,
-  PATH_USER_LOCAL_REVIEWER
+  MSG_CRITIQUE_NOT_FOUND
 } from '../domain/constants';
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
 import {
@@ -45,7 +44,6 @@ import {
 } from '../ports/ai-reviewer';
 import { CommandExecutorPort } from '../ports/command-executor';
 import { ProcessCommandExecutor } from './process-command-executor';
-import { runAiReviewEngine } from './ai-reviewer/ai-reviewer-engine';
 
 function findInSystemPath(binaryName: string, envPath?: string): string | null {
   const p = envPath !== undefined ? envPath : (process.env.PATH || '');
@@ -123,15 +121,26 @@ function isBuildRequired(critiqueDir: string): boolean {
   return hasNewerFiles(srcDir);
 }
 
-function resolveUserDataDir(): string {
+function resolveUserDataDir(): string[] {
+  const dirs: string[] = [];
   if (process.platform === 'win32') {
-    return process.env.LOCALAPPDATA
-      ? path.join(process.env.LOCALAPPDATA, BINARY_CRITIQUE)
-      : path.join(os.homedir(), 'AppData', 'Local', BINARY_CRITIQUE);
+    if (process.env.LOCALAPPDATA) {
+      dirs.push(path.join(process.env.LOCALAPPDATA, BINARY_CRITIQUE));
+    }
+    dirs.push(path.join(os.homedir(), 'AppData', 'Local', BINARY_CRITIQUE));
+  } else if (process.platform === 'darwin') {
+    dirs.push(path.join(os.homedir(), PATH_USER_DATA_CRITIQUE_MAC));
+    if (process.env.XDG_DATA_HOME) {
+      dirs.push(path.join(process.env.XDG_DATA_HOME, BINARY_CRITIQUE));
+    }
+    dirs.push(path.join(os.homedir(), PATH_USER_DATA_CRITIQUE_DIR));
+  } else {
+    if (process.env.XDG_DATA_HOME) {
+      dirs.push(path.join(process.env.XDG_DATA_HOME, BINARY_CRITIQUE));
+    }
+    dirs.push(path.join(os.homedir(), PATH_USER_DATA_CRITIQUE_DIR));
   }
-  return process.env.XDG_DATA_HOME
-    ? path.join(process.env.XDG_DATA_HOME, BINARY_CRITIQUE)
-    : path.join(os.homedir(), '.local', 'share', BINARY_CRITIQUE);
+  return dirs;
 }
 
 export class CliAiReviewerGateway implements AiReviewerPort {
@@ -204,36 +213,37 @@ export class CliAiReviewerGateway implements AiReviewerPort {
       }
     }
 
-    // 3. User data tool dir (LOCALAPPDATA/critique on Windows, ~/.local/share/critique on Linux/macOS)
-    try {
-      const userDataDir = resolveUserDataDir();
-      if (fs.existsSync(userDataDir)) {
-        const jsCandidate = path.join(userDataDir, PATH_BUNDLED_CRITIQUE_JS);
-        if (fs.existsSync(jsCandidate)) {
-          return {
-            source: RESOLVER_SOURCE_USER_DATA,
-            path: jsCandidate,
-            isAvailable: true
-          };
+    // 3. User data tool dir (LOCALAPPDATA on Windows, ~/Library/Application Support on macOS, ~/.local/share on Linux/macOS)
+    for (const userDataDir of resolveUserDataDir()) {
+      try {
+        if (fs.existsSync(userDataDir)) {
+          const jsCandidate = path.join(userDataDir, PATH_BUNDLED_CRITIQUE_JS);
+          if (fs.existsSync(jsCandidate)) {
+            return {
+              source: RESOLVER_SOURCE_USER_DATA,
+              path: jsCandidate,
+              isAvailable: true
+            };
+          }
+          const binCandidate = path.join(userDataDir, PATH_BUNDLED_CRITIQUE);
+          if (fs.existsSync(binCandidate)) {
+            return {
+              source: RESOLVER_SOURCE_USER_DATA,
+              path: binCandidate,
+              isAvailable: true
+            };
+          }
+          if (isCritiqueSourceDir(userDataDir)) {
+            return {
+              source: RESOLVER_SOURCE_USER_DATA,
+              path: jsCandidate,
+              isAvailable: true
+            };
+          }
         }
-        const binCandidate = path.join(userDataDir, PATH_BUNDLED_CRITIQUE);
-        if (fs.existsSync(binCandidate)) {
-          return {
-            source: RESOLVER_SOURCE_USER_DATA,
-            path: binCandidate,
-            isAvailable: true
-          };
-        }
-        if (isCritiqueSourceDir(userDataDir)) {
-          return {
-            source: RESOLVER_SOURCE_USER_DATA,
-            path: jsCandidate,
-            isAvailable: true
-          };
-        }
+      } catch {
+        // Continue searching
       }
-    } catch {
-      // Continue searching
     }
 
     // 4. User-local: ~/.local/bin/critique (or .cmd/.bat/.exe on Windows)
@@ -266,59 +276,7 @@ export class CliAiReviewerGateway implements AiReviewerPort {
       };
     }
 
-    // 6. Fallback: ai-reviewer (bin/ai-reviewer.js, ~/.local/bin/ai-reviewer, $PATH ai-reviewer)
-    // 6a. Bundled in cwd or repo root
-    const cwdAiCandidate = path.resolve(cwd, PATH_BUNDLED_REVIEWER_JS);
-    if (fs.existsSync(cwdAiCandidate)) {
-      return {
-        source: RESOLVER_SOURCE_BUNDLED,
-        path: cwdAiCandidate,
-        isAvailable: true
-      };
-    }
-
-    if (path.resolve(cwd) === repoRoot) {
-      const repoAiCandidate = path.resolve(repoRoot, PATH_BUNDLED_REVIEWER_JS);
-      if (fs.existsSync(repoAiCandidate)) {
-        return {
-          source: RESOLVER_SOURCE_BUNDLED,
-          path: repoAiCandidate,
-          isAvailable: true
-        };
-      }
-    }
-
-    // 6b. User-local ~/.local/bin/ai-reviewer
-    try {
-      const userLocalAiBase = path.join(os.homedir(), PATH_USER_LOCAL_REVIEWER);
-      const userLocalAiCandidates = process.platform === 'win32'
-        ? [userLocalAiBase, `${userLocalAiBase}.cmd`, `${userLocalAiBase}.bat`, `${userLocalAiBase}.exe`]
-        : [userLocalAiBase];
-
-      for (const cand of userLocalAiCandidates) {
-        if (fs.existsSync(cand) && fs.statSync(cand).isFile()) {
-          return {
-            source: RESOLVER_SOURCE_USER_LOCAL,
-            path: cand,
-            isAvailable: true
-          };
-        }
-      }
-    } catch {
-      // Continue searching
-    }
-
-    // 6c. System $PATH ai-reviewer
-    const aiPath = findInSystemPath(BINARY_AI_REVIEWER);
-    if (aiPath) {
-      return {
-        source: RESOLVER_SOURCE_SYSTEM_PATH,
-        path: aiPath,
-        isAvailable: true
-      };
-    }
-
-    // 7. None found
+    // 6. None found
     return {
       source: RESOLVER_SOURCE_NONE,
       path: null,
@@ -334,15 +292,8 @@ export class CliAiReviewerGateway implements AiReviewerPort {
     const cwd = options.cwd || process.cwd();
     const resolution = this.resolveReviewer(cwd);
 
-    // If none found or legacy bundled ai-reviewer.js, invoke internal TypeScript engine directly
-    if (
-      resolution.source === RESOLVER_SOURCE_NONE ||
-      !resolution.path ||
-      (resolution.source === RESOLVER_SOURCE_BUNDLED && resolution.path.endsWith(PATH_BUNDLED_REVIEWER_JS))
-    ) {
-      return runAiReviewEngine(options, {
-        commandExecutor: this.commandExecutor
-      });
+    if (resolution.source === RESOLVER_SOURCE_NONE || !resolution.path) {
+      return AiReviewReport.bypassed(MSG_CRITIQUE_NOT_FOUND);
     }
 
     let execPath = resolution.path;
@@ -358,7 +309,7 @@ export class CliAiReviewerGateway implements AiReviewerPort {
       try {
         await this.commandExecutor.execute(CRITIQUE_BUILD_COMMAND, { cwd: potentialDir });
       } catch {
-        // Fallback or continue execution if build fails
+        // Continue execution if build fails
       }
       const builtJs = path.join(potentialDir, PATH_BUNDLED_CRITIQUE_JS);
       if (fs.existsSync(builtJs)) {
@@ -385,15 +336,18 @@ export class CliAiReviewerGateway implements AiReviewerPort {
         try {
           return AiReviewReport.parse(result.stdout);
         } catch {
-          // Fallback to internal engine on parse failure
+          return AiReviewReport.bypassed(`Critique CLI returned unparseable output: ${result.stdout.trim().substring(0, 300)}`);
         }
       }
-    } catch {
-      // Fallback to internal engine on command failure
-    }
 
-    return runAiReviewEngine(options, {
-      commandExecutor: this.commandExecutor
-    });
+      if (result.exitCode !== 0) {
+        const errorDetail = result.stderr || result.stdout || `Process exited with code ${result.exitCode}`;
+        return AiReviewReport.bypassed(`Critique CLI execution failed: ${errorDetail.trim()}`);
+      }
+
+      return AiReviewReport.empty();
+    } catch (err) {
+      return AiReviewReport.bypassed(`Critique execution error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
