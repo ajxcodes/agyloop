@@ -17,6 +17,7 @@ import {
   ERR_GATE_EXECUTION,
   ERR_BUILD_DETECTION,
   ERR_GATE_SUMMARY_PARSE,
+  ERR_CRITIQUE,
   ERR_AI_REVIEWER,
   ERR_REVIEWER_SUBAGENT,
   ERR_COMMIT_EXECUTION
@@ -181,14 +182,14 @@ export class QualityGateSummaryParseError extends AgyLoopError {
   }
 }
 
-export class AiReviewerError extends AgyLoopError {
-  public readonly code = ERR_AI_REVIEWER;
+export class CritiqueError extends AgyLoopError {
+  public readonly code = ERR_CRITIQUE;
   public readonly operation: string;
   public readonly reason: string;
 
   constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
     const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
-    super(`AI Reviewer error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    super(`Critique error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
     this.operation = operation;
     this.reason = reason;
     if (cause) {
@@ -196,6 +197,9 @@ export class AiReviewerError extends AgyLoopError {
     }
   }
 }
+
+export const AiReviewerError = CritiqueError;
+export type AiReviewerError = CritiqueError;
 
 export class ReviewerSubagentError extends AgyLoopError {
   public readonly code = ERR_REVIEWER_SUBAGENT;

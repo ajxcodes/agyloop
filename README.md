@@ -68,7 +68,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
                          ▼
 ┌────────────────────────────────────────────────────────┐
 │ 5. Two-Tier Reviewer Subagent                          │
-│    • Executes CLI diagnostics: `ai-reviewer`           │
+│    • Executes CLI diagnostics: `critique`              │
 │    • Cross-references diff against criteria & rules    │
 │    • Structured verdict: `REVIEW_STATUS: APPROVED`     │
 └────────────────────────┬───────────────────────────────┘

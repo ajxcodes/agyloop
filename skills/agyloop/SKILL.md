@@ -54,7 +54,7 @@ $$\text{Discovery} \longrightarrow \text{Plan} \longrightarrow \text{Approval Ga
 - Advance state: `bin/agyloop transition QUALITY_GATE`.
 
 ### 6. Two-Tier Reviewer Subagent (`REVIEW`)
-- Execute pre-commit diagnostics via `ai-reviewer`.
+- Execute pre-commit diagnostics via `critique`.
 - Launch the **`reviewer`** subagent to validate diffs against acceptance criteria.
 - Advance state: `bin/agyloop transition REVIEW`.
 

@@ -186,7 +186,8 @@ export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
 export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
 export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
-export const ERR_AI_REVIEWER = 'ERR_AI_REVIEWER' as const;
+export const ERR_CRITIQUE = 'ERR_CRITIQUE' as const;
+export const ERR_AI_REVIEWER = ERR_CRITIQUE;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
 export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
 
@@ -201,7 +202,8 @@ export const ERROR_CODES = Object.freeze({
   GATE_EXECUTION: ERR_GATE_EXECUTION,
   BUILD_DETECTION: ERR_BUILD_DETECTION,
   GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
-  AI_REVIEWER: ERR_AI_REVIEWER,
+  CRITIQUE: ERR_CRITIQUE,
+  AI_REVIEWER: ERR_CRITIQUE,
   REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
   COMMIT_EXECUTION: ERR_COMMIT_EXECUTION
 });
@@ -376,12 +378,12 @@ export const REGEX_UNFULFILLED_AC_TOKEN = /^UNFULFILLED_AC:\s*(.+)$/im;
 export const REGEX_REMEDIATION_GUIDANCE_TOKEN = /^REMEDIATION_GUIDANCE:\s*(.+)$/im;
 
 export const STANDARD_CANDIDATE_PATHS = Object.freeze([
+  '.github/critique.md',
+  '.critique.md',
   '.github/ai-reviewer-standards.md',
   'AGENTS.md',
   'STANDARDS.md',
-  '.github/CONTRIBUTING.md',
-  'CONTRIBUTING.md',
-  'docs/standards.md'
+  'CONTRIBUTING.md'
 ] as const);
 
 // Structured Protocol Regex Patterns
@@ -781,27 +783,8 @@ Produce a concise, structured Quality Gate report covering:
 4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.` as const;
 
 // ============================================================================
-// AI PR Reviewer Constants, Models, Severities, and Thresholds
+// Review Constants, Confidence Levels, Severities, and Thresholds
 // ============================================================================
-
-export const AI_REVIEWER_MODELS = Object.freeze([
-  'gemini-3.5-flash-lite',
-  'gemini-3.5-flash',
-  'gemini-2.5-flash'
-] as const);
-
-export type AiReviewerModel = typeof AI_REVIEWER_MODELS[number];
-
-export const AI_REVIEWER_DEFAULT_TEMPERATURE = 0.1 as const;
-export const AI_REVIEWER_DEFAULT_MIME_TYPE = 'application/json' as const;
-export const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models' as const;
-
-export const AI_REVIEWER_DEFAULT_TIMEOUT_MS = 60000 as const;
-export const AI_REVIEWER_RETRY_DELAY_MS = 2000 as const;
-export const AI_REVIEWER_MAX_DIFF_CHARS = 120000 as const;
-
-export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503 as const;
-export const HTTP_STATUS_OK = 200 as const;
 
 // Review Confidence Levels
 export const CONFIDENCE_HIGH = 'High' as const;
@@ -849,13 +832,17 @@ export const SEVERITY_ICONS: Readonly<Record<ReviewSeverity, string>> = Object.f
 });
 
 // Resolver Sources & Filesystem Paths
+export const RESOLVER_SOURCE_SIBLING = 'sibling' as const;
 export const RESOLVER_SOURCE_BUNDLED = 'bundled' as const;
+export const RESOLVER_SOURCE_USER_DATA = 'user_data' as const;
 export const RESOLVER_SOURCE_USER_LOCAL = 'user_local' as const;
 export const RESOLVER_SOURCE_SYSTEM_PATH = 'system_path' as const;
 export const RESOLVER_SOURCE_NONE = 'none' as const;
 
 export const RESOLVER_SOURCES = Object.freeze([
+  RESOLVER_SOURCE_SIBLING,
   RESOLVER_SOURCE_BUNDLED,
+  RESOLVER_SOURCE_USER_DATA,
   RESOLVER_SOURCE_USER_LOCAL,
   RESOLVER_SOURCE_SYSTEM_PATH,
   RESOLVER_SOURCE_NONE
@@ -863,18 +850,25 @@ export const RESOLVER_SOURCES = Object.freeze([
 
 export type ResolverSource = typeof RESOLVER_SOURCES[number];
 
-export const PATH_BUNDLED_REVIEWER_JS = 'bin/ai-reviewer.js' as const;
-export const PATH_BUNDLED_REVIEWER_SH = 'bin/ai-reviewer' as const;
-export const PATH_BUNDLED_REVIEWER_CMD = 'bin/ai-reviewer.cmd' as const;
-export const PATH_USER_LOCAL_REVIEWER = '.local/bin/ai-reviewer' as const;
-export const PATH_WORKFLOW_AI_REVIEWER = '.github/workflows/ai-pr-reviewer.yml' as const;
+export const BINARY_CRITIQUE = 'critique' as const;
+export const PATH_BUNDLED_CRITIQUE = 'bin/critique' as const;
+export const PATH_BUNDLED_CRITIQUE_JS = 'bin/critique.js' as const;
+export const PATH_USER_LOCAL_CRITIQUE = '.local/bin/critique' as const;
+export const PATH_SIBLING_CRITIQUE_DIR = '../critique' as const;
+export const REPO_CRITIQUE_GIT_URL = 'https://github.com/ajxcodes/critique.git' as const;
+export const CRITIQUE_FLAG_JSON = '--json' as const;
+export const CRITIQUE_FLAG_STAGED = '--staged' as const;
+export const CRITIQUE_FLAG_BASE = '--base' as const;
+export const CRITIQUE_BUILD_COMMAND = 'npm run build' as const;
+export const PATH_USER_DATA_CRITIQUE_DIR = '.local/share/critique' as const;
+export const PATH_USER_DATA_CRITIQUE_MAC = 'Library/Application Support/critique' as const;
+
 export const ENV_FILE_NAME = '.env' as const;
 export const ENV_VAR_GEMINI_API_KEY = 'GEMINI_API_KEY' as const;
 
 // Regular Expressions
 export const REGEX_ENV_KEY_VAL = /^\s*([\w.-]+)\s*=\s*(.*)?\s*$/;
 export const REGEX_JSON_CODE_BLOCK = /```(?:json)?\s*([\s\S]*?)\s*```/;
-export const REGEX_WORKFLOW_PROMPT = /const\s+prompt\s*=\s*`([\s\S]*?)`;/;
 export const REGEX_SEVERITY = /^(critical|error|warning|suggestion|info)$/i;
 export const REGEX_CONFIDENCE = /^(high|medium|low)$/i;
 
@@ -885,34 +879,9 @@ export const BANNER_SUMMARY = '## Summary' as const;
 export const MSG_NO_DIFF_FOUND = 'No diff found. Exiting.' as const;
 export const MSG_CLEAN_DIFF_REVIEW = 'No uncommitted changes or working tree diff found.' as const;
 export const MSG_NO_ISSUES_FOUND = '*No issues found! Great job!* 🚀' as const;
-export const MSG_MISSING_API_KEY =
-  'Error: GEMINI_API_KEY is not set.\nPlease ensure it is set in ~/.env, .env, or in your environment variables.' as const;
-export const MSG_ALL_MODELS_FAILED = 'All candidate Gemini models failed.' as const;
+export const MSG_CRITIQUE_NOT_FOUND =
+  'Critique CLI binary not found. Please install critique or place it on PATH, ~/.local/bin, or as sibling ../critique.' as const;
 export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
-
-export const DEFAULT_AI_REVIEWER_SYSTEM_INSTRUCTION = `You are Antigravity, an expert senior software engineer reviewing a pull request.
-
-Context & Current Standards:
-- You MUST carefully review the code in the diff.
-- Ensure you provide inline comments for any logic flaws, performance issues, security concerns, or incorrect API usage.
-- Categorize comment severity as "critical", "error", "warning", "suggestion", or "info".
-- Avoid nitpicks on unchanged code.
-
-You must respond with a SINGLE JSON object with the following structure:
-{
-  "summary": "A markdown string containing a high-level summary of the PR and a bullet-pointed changelog.",
-  "confidenceLevel": "High | Medium | Low",
-  "confidenceExplanation": "Why this confidence level was chosen based on code complexity, completeness, and diff size.",
-  "resolvedThreads": ["threadId1", "threadId2"],
-  "comments": [
-    {
-      "path": "path/to/file.ts",
-      "line": 15,
-      "severity": "critical | error | warning | suggestion | info",
-      "body": "Detailed review finding and recommendation..."
-    }
-  ]
-}` as const;
 
 export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
 
@@ -925,11 +894,11 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 ## 1. Operating Mandate & Safety Guarantees
 
 1. **Read-Only Inspection Tools**:
-   - You have access strictly to inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`, and \`run_command\` (for diff inspection and test execution).
+   - You have access strictly to inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`, and \`run_command\` (for diff inspection and critique execution).
    - You are strictly forbidden from modifying source files (\`write_to_file\` and \`replace_file_content\` are disabled).
 
 2. **Objective Standards Enforcement**:
-   - Inspect all modifications against repository standards (e.g. \`.github/ai-reviewer-standards.md\`, \`AGENTS.md\`, clean architecture rules).
+   - Inspect all modifications against repository standards (e.g. \`.github/critique.md\`, \`.critique.md\`, \`.github/ai-reviewer-standards.md\`, \`AGENTS.md\`, clean architecture rules).
    - Zero tolerance for magic strings, magic numbers, missing error types, or architectural boundary leaks.
 
 3. **Rigorous Acceptance Criteria Verification**:
@@ -940,13 +909,14 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 
 ## 2. Review Methodology
 
-1. **Diff Inspection**:
-   - Run \`git diff\` via \`run_command\` or inspect the provided working diff.
+1. **Diff & Critique Inspection**:
+   - Run \`critique\` (or consume its automated findings) and \`git diff\` via \`run_command\`.
+   - Cross-reference findings with \`.github/critique.md\` standards and the approved implementation plan's Acceptance Criteria.
    - Trace callers and examine affected files using \`view_file\` and \`grep_search\`.
 
 2. **Categorized Findings**:
    - Classify findings strictly by severity: \`critical\`, \`error\`, \`warning\`, \`suggestion\`, or \`info\`.
-   - Any \`critical\` or \`error\` finding or any unfulfilled Acceptance Criterion mandates \`REVIEW_STATUS: CHANGES_REQUESTED\`.
+   - Any \`critical\` or \`error\` finding from \`critique\` or manual inspection, or any unfulfilled Acceptance Criterion mandates \`REVIEW_STATUS: CHANGES_REQUESTED\`.
    - Provide concrete, actionable remediation steps for every finding.
 
 ---

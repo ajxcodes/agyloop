@@ -244,11 +244,11 @@ class MockStandardsRepository {
   }
 
   public findStandardsPath(): string {
-    return '/mock/workspace/.github/ai-reviewer-standards.md';
+    return '/mock/workspace/.github/critique.md';
   }
 }
 
-class MockAiReviewer {
+class MockCritique {
   public reviewResult: any = AiReviewReport.parse(
     JSON.stringify({
       summary: 'All code meets requirements and standards.',
@@ -282,7 +282,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   let commandExecutor: MockCommandExecutor;
   let buildDetector: MockBuildDetector;
   let standardsRepo: MockStandardsRepository;
-  let aiReviewer: MockAiReviewer;
+  let critique: MockCritique;
   let confirmationPrompt: MockConfirmationPrompt;
   let lifecycleUseCase: any;
 
@@ -294,7 +294,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     commandExecutor = new MockCommandExecutor();
     buildDetector = new MockBuildDetector();
     standardsRepo = new MockStandardsRepository();
-    aiReviewer = new MockAiReviewer();
+    critique = new MockCritique();
     confirmationPrompt = new MockConfirmationPrompt();
 
     lifecycleUseCase = new RunLifecycleUseCase({
@@ -305,7 +305,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       commandExecutor,
       buildDetector,
       standardsRepo,
-      aiReviewer,
+      critique,
       confirmationPrompt
     });
   });
@@ -567,7 +567,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('reverts from REVIEW to IMPLEMENT on AI review CHANGES_REQUESTED', async () => {
-      aiReviewer.reviewResult = AiReviewReport.parse(
+      critique.reviewResult = AiReviewReport.parse(
         JSON.stringify({
           summary: 'Acceptance criteria not met: missing boundary check',
           confidenceLevel: 'High',
