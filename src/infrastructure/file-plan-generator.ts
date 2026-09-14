@@ -440,6 +440,22 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         }
       }
 
+      if (updateData.commitHash || updateData.commitMessage) {
+        const hashStr = updateData.commitHash ? `- **Commit Hash:** \`${updateData.commitHash}\`\n` : '';
+        const msgStr = updateData.commitMessage ? `- **Commit Message:** \`${updateData.commitMessage}\`\n` : '';
+        const timeStr = updateData.commitTimestamp ? `- **Timestamp:** ${updateData.commitTimestamp}\n` : '';
+        const commitSection = `## Commit & Release Details\n${hashStr}${msgStr}${timeStr}`.trimEnd();
+
+        if (content.includes('## Commit & Release Details')) {
+          content = content.replace(
+            /## Commit & Release Details([\s\S]*?)(?=\n##|$)/,
+            commitSection
+          );
+        } else {
+          content = content.trimEnd() + '\n\n' + commitSection + '\n';
+        }
+      }
+
       fs.writeFileSync(summaryFilePath, content, 'utf8');
       return true;
     } catch {

@@ -186,6 +186,7 @@ export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
 export const ERR_AI_REVIEWER = 'ERR_AI_REVIEWER' as const;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
+export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -199,7 +200,8 @@ export const ERROR_CODES = Object.freeze({
   BUILD_DETECTION: ERR_BUILD_DETECTION,
   GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
   AI_REVIEWER: ERR_AI_REVIEWER,
-  REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT
+  REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
+  COMMIT_EXECUTION: ERR_COMMIT_EXECUTION
 });
 
 
@@ -961,6 +963,59 @@ REMEDIATION_GUIDANCE:
 \`\`\`
 
 If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set \`REVIEW_STATUS: APPROVED\`. Otherwise, set \`REVIEW_STATUS: CHANGES_REQUESTED\`.` as const;
+
+// ============================================================================
+// Conventional Commit Types, Regexes, Tokens & Approval Gate Constants
+// ============================================================================
+
+export const COMMIT_TYPE_FEAT = 'feat' as const;
+export const COMMIT_TYPE_FIX = 'fix' as const;
+export const COMMIT_TYPE_REFACTOR = 'refactor' as const;
+export const COMMIT_TYPE_TEST = 'test' as const;
+export const COMMIT_TYPE_CHORE = 'chore' as const;
+export const COMMIT_TYPE_PERF = 'perf' as const;
+export const COMMIT_TYPE_DOCS = 'docs' as const;
+export const COMMIT_TYPE_STYLE = 'style' as const;
+export const COMMIT_TYPE_BUILD = 'build' as const;
+export const COMMIT_TYPE_CI = 'ci' as const;
+
+export const CONVENTIONAL_COMMIT_TYPES = Object.freeze([
+  COMMIT_TYPE_FEAT,
+  COMMIT_TYPE_FIX,
+  COMMIT_TYPE_REFACTOR,
+  COMMIT_TYPE_TEST,
+  COMMIT_TYPE_CHORE,
+  COMMIT_TYPE_PERF,
+  COMMIT_TYPE_DOCS,
+  COMMIT_TYPE_STYLE,
+  COMMIT_TYPE_BUILD,
+  COMMIT_TYPE_CI
+] as const);
+
+export type ConventionalCommitType = typeof CONVENTIONAL_COMMIT_TYPES[number];
+
+export const REGEX_CONVENTIONAL_HEADER =
+  /^(?<type>[a-z]+)(?:\((?<scope>[a-z0-9_.\-\/]+)\))?(?<breaking>!)?:\s*(?<description>.+)$/i;
+export const REGEX_BREAKING_CHANGE_FOOTER =
+  /^BREAKING[ -]CHANGE:\s*(.+)$/im;
+export const REGEX_DIFF_FILE_HEADER =
+  /^diff --git\/(.+?) b\/(.+?)$/gm;
+export const REGEX_ISSUE_NUMBER_REF = /#(\d+)/;
+export const REGEX_LEADING_CONVENTIONAL_PREFIX =
+  /^(?:\[(?:task|feat|feature|fix|bug|refactor|chore|perf|docs)\]\s*(?:phase\s*\d+:?\s*)?|feat|fix|refactor|chore|test|perf|docs|style):\s*/i;
+
+export const TOKEN_BREAKING_CHANGE = 'BREAKING CHANGE:' as const;
+export const TOKEN_BREAKING_EXCLAMATION = '!' as const;
+
+export const PROMPT_CONFIRM_COMMIT = 'Commit staged changes with message? (y/N): ' as const;
+export const CONFIRMATION_AFFIRMATIVE_RESPONSES = Object.freeze(['y', 'yes'] as const);
+export const NOTE_COMMIT_CONFIRMED = 'Commit confirmed and executed' as const;
+export const NOTE_COMMIT_SKIPPED = 'Commit skipped by user' as const;
+export const NOTE_COMMIT_AUTO_APPROVED = 'Commit auto-approved' as const;
+export const NOTE_COMMIT_REJECTED = 'Commit rejected by user' as const;
+
+export const HEADER_COMMIT_DRAFT_REPORT = '=== AgyLoop: Conventional Commit Draft ===' as const;
+export const SECTION_COMMIT_DETAILS_TITLE = '## Commit & Release Details' as const;
 
 
 

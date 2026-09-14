@@ -18,5 +18,8 @@ export * from './value-objects/review-confidence';
 export * from './value-objects/ai-review-finding';
 export * from './value-objects/ai-review-report';
 export * from './value-objects/review-verdict';
+export * from './value-objects/commit-message';
+export * from './value-objects/diff-analyzer';
 export * from './entities/state-machine';
+
 
