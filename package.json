@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "agyloop": "./bin/agyloop.js"
+    "agyloop": "./bin/agyloop.js",
+    "ai-reviewer": "./bin/ai-reviewer.js"
   },
   "scripts": {
     "build": "tsc",

@@ -16,7 +16,8 @@ import {
   ERR_GATE_TIMEOUT,
   ERR_GATE_EXECUTION,
   ERR_BUILD_DETECTION,
-  ERR_GATE_SUMMARY_PARSE
+  ERR_GATE_SUMMARY_PARSE,
+  ERR_AI_REVIEWER
 } from './constants';
 
 
@@ -175,6 +176,22 @@ export class QualityGateSummaryParseError extends AgyLoopError {
     super(`Failed to parse Quality Gate summary protocol: ${reason}`, { rawContent, reason, ...details });
     this.rawContent = rawContent;
     this.reason = reason;
+  }
+}
+
+export class AiReviewerError extends AgyLoopError {
+  public readonly code = ERR_AI_REVIEWER;
+  public readonly operation: string;
+  public readonly reason: string;
+
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`AI Reviewer error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    this.operation = operation;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
   }
 }
 

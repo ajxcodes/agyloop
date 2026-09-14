@@ -84,6 +84,8 @@ export const ROLE_DESC_IMPLEMENTER =
   'Precise code implementation, refactoring, test authoring, and build verification subagent' as const;
 export const ROLE_DESC_GATE =
   'Automated build, test suite, typecheck, and lint verification subagent executing in isolated shell execution' as const;
+export const ROLE_DESC_REVIEWER =
+  'Standards compliance, code quality, and acceptance criteria review subagent' as const;
 
 
 export const TIER_INHERIT = 'inherit' as const;
@@ -174,6 +176,7 @@ export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
 export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
 export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
+export const ERR_AI_REVIEWER = 'ERR_AI_REVIEWER' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -185,7 +188,8 @@ export const ERROR_CODES = Object.freeze({
   GATE_TIMEOUT: ERR_GATE_TIMEOUT,
   GATE_EXECUTION: ERR_GATE_EXECUTION,
   BUILD_DETECTION: ERR_BUILD_DETECTION,
-  GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE
+  GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
+  AI_REVIEWER: ERR_AI_REVIEWER
 });
 
 
@@ -719,5 +723,163 @@ Produce a concise, structured Quality Gate report covering:
 2. **Execution Matrix**: Table of command label, exit code, duration, and status.
 3. **Test Metrics**: Total tests executed, passed, failed, skipped.
 4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.` as const;
+
+// ============================================================================
+// AI PR Reviewer Constants, Models, Severities, and Thresholds
+// ============================================================================
+
+export const AI_REVIEWER_MODELS = Object.freeze([
+  'gemini-3.5-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-2.5-flash'
+] as const);
+
+export type AiReviewerModel = typeof AI_REVIEWER_MODELS[number];
+
+export const AI_REVIEWER_DEFAULT_TEMPERATURE = 0.1 as const;
+export const AI_REVIEWER_DEFAULT_MIME_TYPE = 'application/json' as const;
+export const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models' as const;
+
+export const AI_REVIEWER_DEFAULT_TIMEOUT_MS = 60000 as const;
+export const AI_REVIEWER_RETRY_DELAY_MS = 2000 as const;
+export const AI_REVIEWER_MAX_DIFF_CHARS = 120000 as const;
+
+export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503 as const;
+export const HTTP_STATUS_OK = 200 as const;
+
+// Review Confidence Levels
+export const CONFIDENCE_HIGH = 'High' as const;
+export const CONFIDENCE_MEDIUM = 'Medium' as const;
+export const CONFIDENCE_LOW = 'Low' as const;
+
+export const REVIEW_CONFIDENCE_LEVELS = Object.freeze([
+  CONFIDENCE_HIGH,
+  CONFIDENCE_MEDIUM,
+  CONFIDENCE_LOW
+] as const);
+
+export type ReviewConfidenceLevel = typeof REVIEW_CONFIDENCE_LEVELS[number];
+
+// Review Finding Severities
+export const SEVERITY_CRITICAL = 'critical' as const;
+export const SEVERITY_ERROR = 'error' as const;
+export const SEVERITY_WARNING = 'warning' as const;
+export const SEVERITY_SUGGESTION = 'suggestion' as const;
+export const SEVERITY_INFO = 'info' as const;
+
+export const REVIEW_SEVERITIES = Object.freeze([
+  SEVERITY_CRITICAL,
+  SEVERITY_ERROR,
+  SEVERITY_WARNING,
+  SEVERITY_SUGGESTION,
+  SEVERITY_INFO
+] as const);
+
+export type ReviewSeverity = typeof REVIEW_SEVERITIES[number];
+
+// Severity Icons
+export const SEVERITY_ICON_CRITICAL = '🔴' as const;
+export const SEVERITY_ICON_ERROR = '🔴' as const;
+export const SEVERITY_ICON_WARNING = '⚠️' as const;
+export const SEVERITY_ICON_SUGGESTION = '💡' as const;
+export const SEVERITY_ICON_INFO = 'ℹ️' as const;
+
+export const SEVERITY_ICONS: Readonly<Record<ReviewSeverity, string>> = Object.freeze({
+  [SEVERITY_CRITICAL]: SEVERITY_ICON_CRITICAL,
+  [SEVERITY_ERROR]: SEVERITY_ICON_ERROR,
+  [SEVERITY_WARNING]: SEVERITY_ICON_WARNING,
+  [SEVERITY_SUGGESTION]: SEVERITY_ICON_SUGGESTION,
+  [SEVERITY_INFO]: SEVERITY_ICON_INFO
+});
+
+// Resolver Sources & Filesystem Paths
+export const RESOLVER_SOURCE_BUNDLED = 'bundled' as const;
+export const RESOLVER_SOURCE_USER_LOCAL = 'user_local' as const;
+export const RESOLVER_SOURCE_SYSTEM_PATH = 'system_path' as const;
+export const RESOLVER_SOURCE_NONE = 'none' as const;
+
+export const RESOLVER_SOURCES = Object.freeze([
+  RESOLVER_SOURCE_BUNDLED,
+  RESOLVER_SOURCE_USER_LOCAL,
+  RESOLVER_SOURCE_SYSTEM_PATH,
+  RESOLVER_SOURCE_NONE
+] as const);
+
+export type ResolverSource = typeof RESOLVER_SOURCES[number];
+
+export const PATH_BUNDLED_REVIEWER_JS = 'bin/ai-reviewer.js' as const;
+export const PATH_BUNDLED_REVIEWER_SH = 'bin/ai-reviewer' as const;
+export const PATH_BUNDLED_REVIEWER_CMD = 'bin/ai-reviewer.cmd' as const;
+export const PATH_USER_LOCAL_REVIEWER = '.local/bin/ai-reviewer' as const;
+export const PATH_WORKFLOW_AI_REVIEWER = '.github/workflows/ai-pr-reviewer.yml' as const;
+export const ENV_FILE_NAME = '.env' as const;
+export const ENV_VAR_GEMINI_API_KEY = 'GEMINI_API_KEY' as const;
+
+// Regular Expressions
+export const REGEX_ENV_KEY_VAL = /^\s*([\w.-]+)\s*=\s*(.*)?\s*$/;
+export const REGEX_JSON_CODE_BLOCK = /```(?:json)?\s*([\s\S]*?)\s*```/;
+export const REGEX_WORKFLOW_PROMPT = /const\s+prompt\s*=\s*`([\s\S]*?)`;/;
+export const REGEX_SEVERITY = /^(critical|error|warning|suggestion|info)$/i;
+export const REGEX_CONFIDENCE = /^(high|medium|low)$/i;
+
+// Messages & Headings
+export const BANNER_REVIEW_TITLE = '# 🤖 Independent AI PR Review' as const;
+export const BANNER_CODE_COMMENTS = '## 📝 Code Comments' as const;
+export const BANNER_SUMMARY = '## Summary' as const;
+export const MSG_NO_DIFF_FOUND = 'No diff found. Exiting.' as const;
+export const MSG_CLEAN_DIFF_REVIEW = 'No uncommitted changes or working tree diff found.' as const;
+export const MSG_NO_ISSUES_FOUND = '*No issues found! Great job!* 🚀' as const;
+export const MSG_MISSING_API_KEY =
+  'Error: GEMINI_API_KEY is not set.\nPlease ensure it is set in ~/.env, .env, or in your environment variables.' as const;
+export const MSG_ALL_MODELS_FAILED = 'All candidate Gemini models failed.' as const;
+export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
+
+export const DEFAULT_AI_REVIEWER_SYSTEM_INSTRUCTION = `You are Antigravity, an expert senior software engineer reviewing a pull request.
+
+Context & Current Standards:
+- You MUST carefully review the code in the diff.
+- Ensure you provide inline comments for any logic flaws, performance issues, security concerns, or incorrect API usage.
+- Categorize comment severity as "critical", "error", "warning", "suggestion", or "info".
+- Avoid nitpicks on unchanged code.
+
+You must respond with a SINGLE JSON object with the following structure:
+{
+  "summary": "A markdown string containing a high-level summary of the PR and a bullet-pointed changelog.",
+  "confidenceLevel": "High | Medium | Low",
+  "confidenceExplanation": "Why this confidence level was chosen based on code complexity, completeness, and diff size.",
+  "resolvedThreads": ["threadId1", "threadId2"],
+  "comments": [
+    {
+      "path": "path/to/file.ts",
+      "line": 15,
+      "severity": "critical | error | warning | suggestion | info",
+      "body": "Detailed review finding and recommendation..."
+    }
+  ]
+}` as const;
+
+export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
+
+You are the **AgyLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.
+
+Your primary purpose is to perform independent, comprehensive pre-commit and PR code reviews against working diffs, validating correctness, design integrity, security, and acceptance criteria.
+
+---
+
+## 1. Operating Mandate & Standards
+
+1. **Thorough Diff Inspection**:
+   - Inspect all modifications in the diff carefully.
+   - Cross-reference with the active task specification, plan, and requirements.
+   - Detect subtle regression bugs, concurrency flaws, memory leaks, unhandled exceptions, and contract deviations.
+
+2. **Categorized Findings**:
+   - Classify findings strictly by severity: \`critical\`, \`error\`, \`warning\`, \`suggestion\`, or \`info\`.
+   - Provide concrete, actionable remediation steps for every comment.
+   - Ground line numbers and file paths accurately.
+
+3. **High Confidence Threshold**:
+   - Rate review confidence as \`High\`, \`Medium\`, or \`Low\` with clear justification.
+   - \`High\` confidence requires complete diff coverage, passing quality gates, and zero unresolved blocking issues.` as const;
 
 
