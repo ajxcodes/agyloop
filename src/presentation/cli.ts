@@ -12,15 +12,22 @@ import {
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
+  STAGE_COMPLETED,
   STAGE_INITIALIZED,
   STAGE_DISCOVERY,
   STAGE_PLAN,
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
+  MODE_IMPLEMENT,
+  MODE_GATES,
+  MODE_COMMIT,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
+  ROLE_REVIEWER,
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE
@@ -34,9 +41,12 @@ import {
   FilePromptRepository,
   ProcessCommandExecutor,
   FileBuildDetector,
-  ReadlineConfirmationPrompt
+  ReadlineConfirmationPrompt,
+  CliAiReviewerGateway,
+  FileStandardsRepository
 } from '../infrastructure';
 import {
+  RunLifecycleUseCase,
   StartPlanningUseCase,
   TransitionStageUseCase,
   GetPipelineStatusUseCase,
@@ -45,14 +55,14 @@ import {
   ResolveSubagentUseCase,
   StartImplementationUseCase,
   RunQualityGateUseCase,
+  RunReviewUseCase,
   DraftCommitUseCase,
   ExecuteCommitUseCase
 } from '../application';
 
-
-
 export interface CliOptions {
   commitAfter: boolean;
+  yolo: boolean;
   dryRun: boolean;
   issue: string | null;
   title: string | null;
@@ -80,33 +90,48 @@ agyloop v${CLI_VERSION} - Antigravity Development Lifecycle Orchestrator
 Usage:
   agyloop [command] [options]
 
-Commands:
-  (default)          Run full lifecycle (Context -> Plan -> Approve -> Implement -> Gate -> Review -> Commit)
-  plan               Run planning subagent and stop at approval gate
-  implement          Resume implementation directly from approved plan
-  gates              Run quality and AI review gates on current working diff
-  commit             Draft Conventional Commit and execute human approval gate
-  yolo               Unattended fast-path mode (auto-approves plan gate)
+Operational Modes:
+  (default)          Run continuous lifecycle (Discovery -> Plan -> [Approval] -> Implement -> Gates -> Review -> [Commit])
+  yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
+  plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate
+  implement          Resume implementation directly from approved plan specification
+  gates              Run standalone quality gates and AI PR review on working diff
+  commit             Draft Conventional Commit and prompt for interactive human approval
+
+Pipeline Management:
   status             Display current pipeline stage and checkpoint history
   config             Display active configuration and model routing table
   models             List available Gemini models and mapped Antigravity tiers
-  prompt [role]      Inspect subagent definition, whitelist, and system prompt
+  prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
   reset              Reset .agyloop/state.json checkpoint
   transition <STAGE> Advance state machine to target stage
 
-Options:
-  --commit-after     Opt-in flag to automatically commit if all gates pass
+Operational Flags:
+      --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
+      --commit-after Automatically draft and commit changes if quality gates and AI review pass
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
-  -m, --message <msg> Explicit commit message override
-  -s, --staged       Commit staged changes only
-  --issue <number>   Specify GitHub issue number
-  --title <text>     Specify plan title (for scaffolding)
-  --type <type>      Specify plan type (discovery | implementation)
-  --config <path>    Path to custom configuration file
-  --refresh          Force refresh of discovered Gemini models from API
-  --dry-run          Simulate execution without modifying state on disk
-  -h, --help         Show help
-  -v, --version      Show version
+  -m, --message <msg> Explicit conventional commit message override
+  -s, --staged       Inspect / commit staged changes only (git diff --cached)
+      --issue <num>  Associate execution with GitHub issue number
+      --title <text> Specify plan title for persistent artifact scaffolding
+      --type <type>  Specify plan type (discovery | implementation | auto)
+      --config <path> Path to custom configuration file (.agyloop.json)
+      --refresh      Force refresh of discovered Gemini models from API
+      --dry-run      Simulate execution without modifying state or files on disk
+  -h, --help         Show this help message and exit
+  -v, --version      Show version information and exit
+
+Examples:
+  agyloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
+  agyloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
+  agyloop implement                    Resume implementation from approved plan in artifacts/plans/
+  agyloop gates                         Run quality gates and AI PR review on working diff
+  agyloop gates --commit-after          Run gates and review, auto-committing if all pass
+  agyloop commit                        Draft Conventional Commit and prompt for human approval
+  agyloop commit -y                     Draft Conventional Commit and commit immediately
+  agyloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
+  agyloop yolo --commit-after           100% end-to-end hands-off loop: plan -> implement -> gates -> review -> commit
+  agyloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
 `);
 }
 
@@ -114,6 +139,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
   let command: string | null = null;
   const options: CliOptions = {
     commitAfter: false,
+    yolo: false,
     dryRun: false,
     issue: null,
     title: null,
@@ -140,6 +166,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.version = true;
     } else if (arg === '--commit-after') {
       options.commitAfter = true;
+    } else if (arg === '--yolo') {
+      options.yolo = true;
     } else if (arg === '--yes' || arg === '-y') {
       options.yes = true;
     } else if (arg === '--staged' || arg === '-s') {
@@ -243,11 +271,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const promptRepo = new FilePromptRepository();
   const commandExecutor = new ProcessCommandExecutor();
   const buildDetector = new FileBuildDetector();
+  const standardsRepo = new FileStandardsRepository();
+  const aiReviewer = new CliAiReviewerGateway();
+  const confirmationPrompt = new ReadlineConfirmationPrompt();
 
   const config = configRepo.loadConfig({ customPath: options.configPath });
 
+  const lifecycleUseCase = new RunLifecycleUseCase({
+    stateRepo,
+    configRepo,
+    planGenerator,
+    githubGateway,
+    commandExecutor,
+    buildDetector,
+    standardsRepo,
+    aiReviewer,
+    confirmationPrompt
+  });
 
-  switch (command) {
+  // Treat 'yolo' subcommand or --yolo flag as YOLO execution
+  const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
+
+  switch (effectiveCommand) {
     case 'status': {
       const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
       const result = await getStatusUseCase.execute();
@@ -334,8 +379,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'prompt': {
       const role = options.roleArg || ROLE_PLANNER;
-      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE) {
-        console.error(`Currently, detailed prompts are defined for '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', and '${ROLE_GATE}'. Received: '${role}'.`);
+      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE && role !== ROLE_REVIEWER) {
+        console.error(`Valid prompt roles: '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', '${ROLE_GATE}', '${ROLE_REVIEWER}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
 
@@ -362,81 +407,75 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'plan': {
       console.log(`\n🚀 Starting AgyLoop [PLAN-ONLY] Mode`);
-      const startPlanningUseCase = new StartPlanningUseCase(
-        stateRepo,
-        githubGateway,
-        configRepo,
-        planGenerator
-      );
+      try {
+        const result = await lifecycleUseCase.execute({
+          mode: MODE_PLAN,
+          issue: options.issue,
+          title: options.title,
+          type: options.type,
+          dryRun: options.dryRun,
+          configPath: options.configPath
+        });
 
-      const result = await startPlanningUseCase.execute({
-        issue: options.issue,
-        title: options.title,
-        type: options.type,
-        dryRun: options.dryRun,
-        configPath: options.configPath
-      });
-
-      if (options.dryRun) {
-        console.log(
-          `\n[DRY RUN] Would scaffold artifacts/plans/ for: "${result.planTitle}" (type: ${result.planType})`
-        );
-      } else if (result.scaffoldInfo) {
-        console.log(`\n📁 Initialized plan directory: artifacts/plans/${result.scaffoldInfo.folderName}/`);
-        console.log(`  ✓ Specification (${result.scaffoldInfo.type}): ${path.basename(result.scaffoldInfo.planPath)}`);
-        if (result.scaffoldInfo.mirrorPath) {
-          console.log(`  ✓ Canonical Mirror  : ${path.basename(result.scaffoldInfo.mirrorPath)}`);
+        if (options.dryRun) {
+          console.log(
+            `\n[DRY RUN] Would scaffold artifacts/plans/ for: "${result.planResult?.planTitle}" (type: ${result.planResult?.planType})`
+          );
+        } else if (result.planResult?.scaffoldInfo) {
+          const info = result.planResult.scaffoldInfo;
+          console.log(`\n📁 Initialized plan directory: artifacts/plans/${info.folderName}/`);
+          console.log(`  ✓ Specification (${info.type}): ${path.basename(info.planPath)}`);
+          if (info.mirrorPath) {
+            console.log(`  ✓ Canonical Mirror  : ${path.basename(info.mirrorPath)}`);
+          }
+          console.log(`  ✓ Execution Log     : ${path.basename(info.summaryPath)}`);
         }
-        console.log(`  ✓ Execution Log     : ${path.basename(result.scaffoldInfo.summaryPath)}`);
+
+        if (result.planResult?.plannerDef) {
+          const p = result.planResult.plannerDef;
+          console.log(`\nSubagent     : ${p.name} (${p.role})`);
+          console.log(`Model Tier   : ${p.model}`);
+          console.log(`Whitelisted  : ${p.tools.join(', ')}`);
+          console.log(
+            `Safety Guard : Physical write suppression enabled (write_tools=false, mcp_tools=${p.capabilities.enable_mcp_tools})\n`
+          );
+        }
+
+        console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
+        console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
       }
-
-      console.log(`\nSubagent     : ${result.plannerDef.name} (${result.plannerDef.role})`);
-      console.log(`Model Tier   : ${result.plannerDef.model}`);
-      console.log(`Whitelisted  : ${result.plannerDef.tools.join(', ')}`);
-      console.log(
-        `Safety Guard : Physical write suppression enabled (write_tools=false, mcp_tools=${result.plannerDef.capabilities.enable_mcp_tools})\n`
-      );
-
-      console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
-      console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
-      return EXIT_CODE_SUCCESS;
     }
 
     case 'implement': {
       console.log(`\n🚀 Resuming AgyLoop Implementation`);
       try {
-        const resolveSubagentUseCase = new ResolveSubagentUseCase(
-          configRepo,
-          githubGateway,
-          promptRepo
-        );
-        const startImplementationUseCase = new StartImplementationUseCase(
-          stateRepo,
-          configRepo,
-          planGenerator,
-          githubGateway,
-          resolveSubagentUseCase
-        );
-
-        const result = await startImplementationUseCase.execute({
+        const result = await lifecycleUseCase.execute({
+          mode: MODE_IMPLEMENT,
           issue: options.issue,
           configPath: options.configPath,
           dryRun: options.dryRun
         });
 
-        if (result.resumed) {
+        const impl = result.implementationResult;
+        if (impl?.resumed) {
           console.log(`Already at ${formatStageBadge(STAGE_IMPLEMENT)}. Resuming code modifications.\n`);
         } else {
           console.log(`✓ Advanced to ${formatStageBadge(STAGE_IMPLEMENT)}. Ready for code modifications.\n`);
         }
 
-        if (result.planPath) {
-          console.log(`📁 Loaded Approved Plan: ${result.planPath}`);
+        if (impl?.planPath) {
+          console.log(`📁 Loaded Approved Plan: ${impl.planPath}`);
         }
-        console.log(`Subagent     : ${result.implementerDef.name} (${result.implementerDef.role})`);
-        console.log(`Model Tier   : ${result.implementerDef.model}`);
-        console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
-        console.log(`Whitelisted  : ${result.implementerDef.tools.join(', ')}\n`);
+        if (impl?.implementerDef) {
+          console.log(`Subagent     : ${impl.implementerDef.name} (${impl.implementerDef.role})`);
+          console.log(`Model Tier   : ${impl.implementerDef.model}`);
+          console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
+          console.log(`Whitelisted  : ${impl.implementerDef.tools.join(', ')}\n`);
+        }
         console.log(`Next Step    : Execute checklist items and run 'agyloop gates' when complete.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
@@ -446,39 +485,65 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'gates': {
-      console.log(`\n🧪 Executing AgyLoop Quality Gates`);
+      console.log(`\n🧪 Executing AgyLoop Quality Gates & AI PR Review`);
       try {
-        const resolveSubagentUseCase = new ResolveSubagentUseCase(
-          configRepo,
-          githubGateway,
-          promptRepo
-        );
-        const runQualityGateUseCase = new RunQualityGateUseCase(
-          stateRepo,
-          configRepo,
-          planGenerator,
-          commandExecutor,
-          buildDetector,
-          resolveSubagentUseCase
-        );
-
-        const result = await runQualityGateUseCase.execute({
+        const result = await lifecycleUseCase.execute({
+          mode: MODE_GATES,
           issue: options.issue,
+          commitAfter: options.commitAfter,
+          staged: options.staged,
+          message: options.message,
           configPath: options.configPath,
           dryRun: options.dryRun
         });
 
-        console.log('\n' + result.summaryReport + '\n');
-
-        if (result.passed) {
-          console.log(`✓ Quality gates passed. Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
-          console.log(`Next Step: Run AI PR review before committing and creating PR.\n`);
+        if (options.dryRun) {
+          console.log(`\n[DRY RUN] ${result.message || 'Simulated gates execution completed.'}\n`);
           return EXIT_CODE_SUCCESS;
-        } else {
+        }
+
+        if (result.qualityGateResult?.summaryReport) {
+          console.log('\n' + result.qualityGateResult.summaryReport + '\n');
+        }
+
+        if (result.qualityGateResult && !result.qualityGateResult.passed) {
           console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
           console.error(`Resolve failures and re-run 'agyloop gates'.\n`);
           return EXIT_CODE_FAILURE;
         }
+
+        console.log(`✓ Quality gates passed.`);
+
+        if (result.reviewResult) {
+          console.log(`\n=== AgyLoop: AI PR Review ===`);
+          console.log(`Verdict: ${result.reviewResult.verdict.status}`);
+          console.log(`Summary: ${result.reviewResult.verdict.summary}\n`);
+
+          if (!result.reviewResult.passed) {
+            console.error(`✗ AI Review requested changes. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
+            if (result.reviewResult.verdict.unfulfilledCriteria.length > 0) {
+              console.error('Unfulfilled Criteria:');
+              result.reviewResult.verdict.unfulfilledCriteria.forEach((c) => console.error(`  - ${c}`));
+            }
+            if (result.reviewResult.verdict.remediationGuidance.length > 0) {
+              console.error('Remediation Guidance:');
+              result.reviewResult.verdict.remediationGuidance.forEach((r) => console.error(`  - ${r}`));
+            }
+            console.error(`\nResolve review findings and re-run 'agyloop gates'.\n`);
+            return EXIT_CODE_FAILURE;
+          }
+
+          console.log(`✓ AI Review approved. Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+        }
+
+        if (result.executeCommitResult && result.executeCommitResult.success) {
+          console.log(`\n✓ Successfully committed via --commit-after: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
+          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.\n`);
+        } else if (result.currentStage === STAGE_COMMIT) {
+          console.log(`Next Step: Run 'agyloop commit' to draft and approve conventional commit.\n`);
+        }
+
+        return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
@@ -488,7 +553,6 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'commit': {
       console.log(`\n📦 AgyLoop: Semantic Conventional Commit Gate`);
       try {
-        const confirmationPrompt = new ReadlineConfirmationPrompt();
         const draftCommitUseCase = new DraftCommitUseCase(
           stateRepo,
           commandExecutor,
@@ -548,40 +612,136 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
     }
 
-
-
     case 'yolo': {
-      console.log(`\n⚡ Starting AgyLoop [YOLO] Mode (Auto-Approval Gate)`);
-      const transitionUseCase = new TransitionStageUseCase(stateRepo);
-      let sm = await transitionUseCase.execute({
-        targetStage: STAGE_DISCOVERY,
-        mode: MODE_YOLO
-      });
-      sm = await transitionUseCase.execute({
-        targetStage: STAGE_PLAN,
-        mode: MODE_YOLO
-      });
-      sm = await transitionUseCase.execute({
-        targetStage: STAGE_IMPLEMENT,
-        mode: MODE_YOLO,
-        metadata: { note: 'Auto-approved in YOLO mode' }
-      });
-      console.log(`Active Stage: ${formatStageBadge(sm.currentStage)}`);
-      return EXIT_CODE_SUCCESS;
+      console.log(`\n⚡ Starting AgyLoop [YOLO] Fast-Path Mode`);
+      try {
+        const result = await lifecycleUseCase.execute({
+          mode: MODE_YOLO,
+          issue: options.issue,
+          title: options.title,
+          type: options.type,
+          commitAfter: options.commitAfter,
+          staged: options.staged,
+          message: options.message,
+          dryRun: options.dryRun,
+          configPath: options.configPath
+        });
+
+        if (options.dryRun) {
+          console.log(`\n[DRY RUN] ${result.message || 'Simulated execution completed.'}\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.planResult?.scaffoldInfo) {
+          const info = result.planResult.scaffoldInfo;
+          console.log(`📁 Initialized plan directory: artifacts/plans/${info.folderName}/`);
+          console.log(`⚡ Auto-approved plan gate -> streaming into implementation.`);
+        }
+
+        if (result.qualityGateResult?.summaryReport) {
+          console.log('\n' + result.qualityGateResult.summaryReport + '\n');
+        }
+
+        if (result.qualityGateResult && !result.qualityGateResult.passed) {
+          console.error(`✗ Quality gates failed in YOLO mode. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
+          return EXIT_CODE_FAILURE;
+        }
+
+        if (result.reviewResult) {
+          console.log(`✓ AI PR Review: ${result.reviewResult.verdict.status}`);
+          if (!result.reviewResult.passed) {
+            console.error(`✗ AI Review requested changes in YOLO mode. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
+        if (result.executeCommitResult && result.executeCommitResult.success) {
+          console.log(`\n✓ 100% Unattended Loop Finished: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
+          console.log(`✓ Pipeline Stage: ${formatStageBadge(result.currentStage)}\n`);
+        } else {
+          console.log(`\n✓ Quality gates and AI review passed in YOLO mode.`);
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
+        }
+
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
 
     default: {
-      const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
-      const result = await getStatusUseCase.execute();
-      console.log(`\n🔄 AgyLoop Development Lifecycle Coordinator`);
-      console.log(`Current Stage: ${formatStageBadge(result.status.currentStage)}`);
-      console.log(`To inspect configuration: agyloop config`);
-      console.log(`To discover models:       agyloop models`);
-      console.log(`To view pipeline status:  agyloop status`);
-      console.log(`To run planning mode:     agyloop plan`);
-      console.log(`To run quality gates:     agyloop gates`);
-      console.log(`To see all options:       agyloop --help\n`);
-      return EXIT_CODE_SUCCESS;
+      if (command !== null) {
+        console.error(`Error: Unknown command "${command}". Run "agyloop --help" for available commands.\n`);
+        return EXIT_CODE_FAILURE;
+      }
+
+      // Default execution: Continuous Lifecycle Orchestration
+      console.log(`\n🔄 AgyLoop Continuous Development Lifecycle`);
+      try {
+        const result = await lifecycleUseCase.execute({
+          mode: MODE_STANDARD,
+          issue: options.issue,
+          title: options.title,
+          type: options.type,
+          commitAfter: options.commitAfter,
+          yes: options.yes,
+          staged: options.staged,
+          message: options.message,
+          interactiveCommit: true,
+          dryRun: options.dryRun,
+          configPath: options.configPath
+        });
+
+        if (result.pausedAtGate === 'APPROVAL') {
+          if (result.planResult?.scaffoldInfo) {
+            const info = result.planResult.scaffoldInfo;
+            console.log(`📁 Scaffolded Plan: artifacts/plans/${info.folderName}/`);
+          }
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
+          console.log(`Review artifacts and run 'agyloop implement' (or 'agyloop') to continue.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.qualityGateResult?.summaryReport) {
+          console.log('\n' + result.qualityGateResult.summaryReport + '\n');
+        }
+
+        if (result.qualityGateResult && !result.qualityGateResult.passed) {
+          console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
+          return EXIT_CODE_FAILURE;
+        }
+
+        if (result.reviewResult) {
+          console.log(`AI PR Review: ${result.reviewResult.verdict.status}`);
+          if (!result.reviewResult.passed) {
+            console.error(`✗ AI Review requested changes. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
+        if (result.executeCommitResult && result.executeCommitResult.success) {
+          console.log(`\n✓ Successfully committed: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
+          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.pausedAtGate === 'COMMIT') {
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' to execute.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.currentStage === STAGE_COMPLETED) {
+          console.log(`✓ Pipeline is in ${formatStageBadge(STAGE_COMPLETED)} stage.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        console.log(`Pipeline at stage: ${formatStageBadge(result.currentStage)}\n`);
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
   }
 }
