@@ -14,5 +14,8 @@ export * from './value-objects/verification-command-set';
 export * from './value-objects/test-metrics';
 export * from './value-objects/diagnostic-snippet';
 export * from './value-objects/gate-summary-report';
+export * from './value-objects/review-confidence';
+export * from './value-objects/ai-review-finding';
+export * from './value-objects/ai-review-report';
 export * from './entities/state-machine';
 

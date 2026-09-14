@@ -10,5 +10,7 @@ export * from './file-plan-generator';
 export * from './file-prompt-repository';
 export * from './process-command-executor';
 export * from './file-build-detector';
+export * from './cli-ai-reviewer-gateway';
+export * from './ai-reviewer/ai-reviewer-engine';
 
 

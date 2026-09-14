@@ -310,6 +310,12 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         className: 'FileBuildDetector',
         portName: 'BuildDetectorPort',
         requiredMethods: ['detect', 'resolveCommands']
+      },
+      {
+        adapterFile: 'cli-ai-reviewer-gateway.ts',
+        className: 'CliAiReviewerGateway',
+        portName: 'AiReviewerPort',
+        requiredMethods: ['resolveReviewer', 'review']
       }
     ];
 
