@@ -30,7 +30,44 @@ describe('FileStandardsRepository (Infrastructure Layer)', () => {
     assert.strictEqual(repo.findStandardsPath({ cwd: tempDir }), null);
   });
 
-  test('discovers .github/ai-reviewer-standards.md as top priority candidate', () => {
+  test('discovers .github/critique.md as top priority candidate', () => {
+    const githubDir = path.join(tempDir, '.github');
+    fs.mkdirSync(githubDir, { recursive: true });
+    const critiqueFile = path.join(githubDir, 'critique.md');
+    fs.writeFileSync(critiqueFile, '# Critique Standards\nRule 1: Strict review.', 'utf8');
+
+    // Also write .critique.md, .github/ai-reviewer-standards.md, and AGENTS.md to verify priority
+    fs.writeFileSync(path.join(tempDir, '.critique.md'), '# Dot Critique\nLower priority.', 'utf8');
+    fs.writeFileSync(path.join(githubDir, 'ai-reviewer-standards.md'), '# AI Reviewer Standards\nLower priority.', 'utf8');
+    fs.writeFileSync(path.join(tempDir, 'AGENTS.md'), '# Agents\nLowest priority.', 'utf8');
+
+    const repo = new FileStandardsRepository();
+    const detectedPath = repo.findStandardsPath({ cwd: tempDir });
+    assert.strictEqual(detectedPath, critiqueFile);
+
+    const content = repo.loadStandards({ cwd: tempDir });
+    assert.ok(content !== null);
+    assert.ok(content && content.includes('Rule 1: Strict review.'));
+  });
+
+  test('discovers .critique.md when .github/critique.md does not exist', () => {
+    const dotCritique = path.join(tempDir, '.critique.md');
+    fs.writeFileSync(dotCritique, '# Dot Critique Rules\nReview every change.', 'utf8');
+
+    const githubDir = path.join(tempDir, '.github');
+    fs.mkdirSync(githubDir, { recursive: true });
+    fs.writeFileSync(path.join(githubDir, 'ai-reviewer-standards.md'), '# AI Reviewer Standards\nLower priority.', 'utf8');
+
+    const repo = new FileStandardsRepository();
+    const detectedPath = repo.findStandardsPath({ cwd: tempDir });
+    assert.strictEqual(detectedPath, dotCritique);
+
+    const content = repo.loadStandards({ cwd: tempDir });
+    assert.ok(content !== null);
+    assert.ok(content && content.includes('Review every change.'));
+  });
+
+  test('discovers .github/ai-reviewer-standards.md when critique files do not exist', () => {
     const githubDir = path.join(tempDir, '.github');
     fs.mkdirSync(githubDir, { recursive: true });
     const standardsFile = path.join(githubDir, 'ai-reviewer-standards.md');

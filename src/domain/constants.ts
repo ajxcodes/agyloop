@@ -376,12 +376,12 @@ export const REGEX_UNFULFILLED_AC_TOKEN = /^UNFULFILLED_AC:\s*(.+)$/im;
 export const REGEX_REMEDIATION_GUIDANCE_TOKEN = /^REMEDIATION_GUIDANCE:\s*(.+)$/im;
 
 export const STANDARD_CANDIDATE_PATHS = Object.freeze([
+  '.github/critique.md',
+  '.critique.md',
   '.github/ai-reviewer-standards.md',
   'AGENTS.md',
   'STANDARDS.md',
-  '.github/CONTRIBUTING.md',
-  'CONTRIBUTING.md',
-  'docs/standards.md'
+  'CONTRIBUTING.md'
 ] as const);
 
 // Structured Protocol Regex Patterns
@@ -849,19 +849,36 @@ export const SEVERITY_ICONS: Readonly<Record<ReviewSeverity, string>> = Object.f
 });
 
 // Resolver Sources & Filesystem Paths
+export const RESOLVER_SOURCE_SIBLING = 'sibling' as const;
 export const RESOLVER_SOURCE_BUNDLED = 'bundled' as const;
+export const RESOLVER_SOURCE_USER_DATA = 'user_data' as const;
 export const RESOLVER_SOURCE_USER_LOCAL = 'user_local' as const;
 export const RESOLVER_SOURCE_SYSTEM_PATH = 'system_path' as const;
 export const RESOLVER_SOURCE_NONE = 'none' as const;
 
 export const RESOLVER_SOURCES = Object.freeze([
+  RESOLVER_SOURCE_SIBLING,
   RESOLVER_SOURCE_BUNDLED,
+  RESOLVER_SOURCE_USER_DATA,
   RESOLVER_SOURCE_USER_LOCAL,
   RESOLVER_SOURCE_SYSTEM_PATH,
   RESOLVER_SOURCE_NONE
 ] as const);
 
 export type ResolverSource = typeof RESOLVER_SOURCES[number];
+
+export const BINARY_CRITIQUE = 'critique' as const;
+export const BINARY_AI_REVIEWER = 'ai-reviewer' as const;
+export const PATH_BUNDLED_CRITIQUE = 'bin/critique' as const;
+export const PATH_BUNDLED_CRITIQUE_JS = 'bin/critique.js' as const;
+export const PATH_USER_LOCAL_CRITIQUE = '.local/bin/critique' as const;
+export const PATH_SIBLING_CRITIQUE_DIR = '../critique' as const;
+export const REPO_CRITIQUE_GIT_URL = 'https://github.com/ajxcodes/critique.git' as const;
+export const CRITIQUE_FLAG_JSON = '--json' as const;
+export const CRITIQUE_FLAG_STAGED = '--staged' as const;
+export const CRITIQUE_FLAG_BASE = '--base' as const;
+export const CRITIQUE_BUILD_COMMAND = 'npm run build' as const;
+export const PATH_USER_DATA_CRITIQUE_DIR = '.local/share/critique' as const;
 
 export const PATH_BUNDLED_REVIEWER_JS = 'bin/ai-reviewer.js' as const;
 export const PATH_BUNDLED_REVIEWER_SH = 'bin/ai-reviewer' as const;
@@ -925,11 +942,11 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 ## 1. Operating Mandate & Safety Guarantees
 
 1. **Read-Only Inspection Tools**:
-   - You have access strictly to inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`, and \`run_command\` (for diff inspection and test execution).
+   - You have access strictly to inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`, and \`run_command\` (for diff inspection and critique execution).
    - You are strictly forbidden from modifying source files (\`write_to_file\` and \`replace_file_content\` are disabled).
 
 2. **Objective Standards Enforcement**:
-   - Inspect all modifications against repository standards (e.g. \`.github/ai-reviewer-standards.md\`, \`AGENTS.md\`, clean architecture rules).
+   - Inspect all modifications against repository standards (e.g. \`.github/critique.md\`, \`.critique.md\`, \`.github/ai-reviewer-standards.md\`, \`AGENTS.md\`, clean architecture rules).
    - Zero tolerance for magic strings, magic numbers, missing error types, or architectural boundary leaks.
 
 3. **Rigorous Acceptance Criteria Verification**:
@@ -940,13 +957,14 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 
 ## 2. Review Methodology
 
-1. **Diff Inspection**:
-   - Run \`git diff\` via \`run_command\` or inspect the provided working diff.
+1. **Diff & Critique Inspection**:
+   - Run \`critique\` (or consume its automated findings) and \`git diff\` via \`run_command\`.
+   - Cross-reference findings with \`.github/critique.md\` standards and the approved implementation plan's Acceptance Criteria.
    - Trace callers and examine affected files using \`view_file\` and \`grep_search\`.
 
 2. **Categorized Findings**:
    - Classify findings strictly by severity: \`critical\`, \`error\`, \`warning\`, \`suggestion\`, or \`info\`.
-   - Any \`critical\` or \`error\` finding or any unfulfilled Acceptance Criterion mandates \`REVIEW_STATUS: CHANGES_REQUESTED\`.
+   - Any \`critical\` or \`error\` finding from \`critique\` or manual inspection, or any unfulfilled Acceptance Criterion mandates \`REVIEW_STATUS: CHANGES_REQUESTED\`.
    - Provide concrete, actionable remediation steps for every finding.
 
 ---

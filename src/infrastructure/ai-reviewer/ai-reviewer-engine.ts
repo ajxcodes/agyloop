@@ -1,6 +1,8 @@
 /**
  * agyloop - AiReviewerEngine (Infrastructure Layer)
  *
+ * @deprecated Legacy internal AI reviewer engine. Superseded by standalone critique CLI binary.
+ *
  * Idiomatic TypeScript implementation of the AI PR Reviewer core engine.
  * Handles environment discovery, diff extraction, prompt assembly, and Gemini API querying.
  * Zero magic strings/numbers; all thresholds and constants referenced from domain/constants.ts.
@@ -233,6 +235,9 @@ export async function queryGeminiReview(
   throw new AiReviewerError('queryGeminiReview', MSG_ALL_MODELS_FAILED);
 }
 
+/**
+ * @deprecated Legacy internal AI PR review engine. Superseded by standalone critique CLI binary invocation.
+ */
 export async function runAiReviewEngine(
   options: AiReviewOptions = {},
   dependencies: AiReviewEngineDependencies = {}
