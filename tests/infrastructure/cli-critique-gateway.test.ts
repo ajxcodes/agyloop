@@ -53,11 +53,22 @@ class MockCommandExecutor {
 
 describe('CliCritiqueGateway Resolution Hierarchy', () => {
   test('prioritizes critique resolution when present in repository workspace', () => {
-    const gateway = new CliCritiqueGateway(new MockCommandExecutor());
-    const resolution = gateway.resolveReviewer();
+    const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-res-ws-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const critiqueJs = path.join(binDir, 'critique.js');
+      fs.writeFileSync(critiqueJs, '// critique in workspace');
 
-    assert.strictEqual(resolution.isAvailable, true);
-    assert.ok(resolution.path && resolution.path.includes('critique'));
+      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const resolution = gateway.resolveReviewer(tempDir);
+
+      assert.strictEqual(resolution.isAvailable, true);
+      assert.strictEqual(resolution.source, RESOLVER_SOURCE_BUNDLED);
+      assert.strictEqual(resolution.path, critiqueJs);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('resolves sibling ../critique when present', () => {
