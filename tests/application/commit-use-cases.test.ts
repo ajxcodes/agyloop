@@ -310,5 +310,26 @@ new file mode 100644
       assert.strictEqual(executor.executedCommands.length, 0); // No git commands run
       assert.strictEqual(stateRepo.saveCallCount, 0); // No state saved in dryRun
     });
+
+    test('handles dryRun mode without explicit confirmation or prompting', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      const prompter = new MockConfirmationPrompt(false);
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, undefined, prompter);
+
+      const commitMsg = CommitMessage.create({ type: 'fix', description: 'dry run without confirm' });
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        dryRun: true
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.confirmed, true);
+      assert.strictEqual(result.commitHash, 'dry-run-simulated-commit-hash');
+      assert.strictEqual(prompter.lastPrompt, null); // Prompt never called
+      assert.strictEqual(executor.executedCommands.length, 0);
+      assert.strictEqual(stateRepo.saveCallCount, 0);
+    });
   });
 });

@@ -22,6 +22,7 @@ import {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_IMPLEMENT,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   ROLE_REVIEWER,
   SUMMARY_STAGE_AI_REVIEW,
@@ -188,12 +189,14 @@ export class RunReviewUseCase {
       sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
     } else if (sm.currentStage === STAGE_REVIEW) {
       // Re-running review in REVIEW stage
+    } else if (sm.currentStage === STAGE_COMPLETED) {
+      sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
     } else {
       throw new InvalidTransitionError(
         sm.currentStage,
         STAGE_REVIEW,
         sm.mode,
-        `Cannot run review from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_QUALITY_GATE}' (or re-running in '${STAGE_REVIEW}').`
+        `Cannot run review from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_QUALITY_GATE}', '${STAGE_COMPLETED}' (or re-running in '${STAGE_REVIEW}').`
       );
     }
 

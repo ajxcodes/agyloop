@@ -15,6 +15,7 @@ import {
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_APPROVAL,
+  STAGE_COMPLETED,
   MODE_PLAN,
   IssueNumber
 } from '../domain';
@@ -72,15 +73,26 @@ export class StartPlanningUseCase {
     // 1. Rehydrate or initialize StateMachine
     const snapshot = await this.stateRepo.load();
     let sm: StateMachine;
+    const isNewIssue =
+      params.issue !== undefined &&
+      params.issue !== null &&
+      snapshot !== null &&
+      snapshot.issue !== null &&
+      String(params.issue) !== String(snapshot.issue);
+
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
-      sm.setMode(MODE_PLAN);
+      if (sm.currentStage === STAGE_COMPLETED || isNewIssue) {
+        sm.reset(MODE_PLAN, params.issue ?? sm.issue);
+      } else {
+        sm.setMode(MODE_PLAN);
+      }
     } else {
       sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: params.issue });
     }
 
     const activeIssue = params.issue || sm.issue;
-    if (activeIssue) {
+    if (activeIssue && !isNewIssue && sm.issue !== Number(activeIssue)) {
       sm.setIssue(activeIssue);
     }
 

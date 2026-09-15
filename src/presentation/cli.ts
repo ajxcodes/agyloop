@@ -578,6 +578,16 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(`\nFiles to commit (${draftResult.plan.modifiedFiles.length}):`);
         draftResult.plan.modifiedFiles.forEach((f) => console.log(`  - ${f}`));
 
+        if (options.dryRun) {
+          console.log(`\n[DRY RUN] Simulated commit. No changes were committed.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (!options.yes && !process.stdin.isTTY) {
+          console.error(`\nError: Interactive confirmation required. Pass -y/--yes in non-interactive environments.\n`);
+          return EXIT_CODE_FAILURE;
+        }
+
         const executeCommitUseCase = new ExecuteCommitUseCase(
           stateRepo,
           commandExecutor,

@@ -107,6 +107,19 @@ export class ExecuteCommitUseCase {
       );
     }
 
+    // Dry-run mode: return simulated execution result immediately without prompting
+    if (params.dryRun) {
+      return {
+        success: true,
+        confirmed: true,
+        commitHash: 'dry-run-simulated-commit-hash',
+        commitMessage,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        summaryUpdated: false
+      };
+    }
+
     // Human Confirmation Gate Evaluation
     const isYolo = sm.mode === MODE_YOLO;
     const isExplicitlyConfirmed = params.confirmed === true;
@@ -136,19 +149,6 @@ export class ExecuteCommitUseCase {
         'ExecuteCommit',
         'Human confirmation gate requires explicit approval before committing. Pass confirmed: true, bypassConfirmation: true, or supply ConfirmationPromptPort.'
       );
-    }
-
-    // Dry-run mode
-    if (params.dryRun) {
-      return {
-        success: true,
-        confirmed: true,
-        commitHash: 'dry-run-simulated-commit-hash',
-        commitMessage,
-        currentStage: sm.currentStage,
-        stateMachine: sm,
-        summaryUpdated: false
-      };
     }
 
     // Check git status / uncommitted changes

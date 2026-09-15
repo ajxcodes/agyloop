@@ -4,11 +4,15 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 const {
   parseArguments,
   printHelp,
-  formatStageBadge
+  formatStageBadge,
+  runCli
 } = require('../../dist/presentation');
 const {
   STAGE_INITIALIZED,
@@ -131,6 +135,101 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
       const completedBadge = formatStageBadge(STAGE_COMPLETED);
       assert.ok(completedBadge.includes('[COMPLETED]'));
+    });
+  });
+
+  describe('CLI Dispatcher Execution', () => {
+    test('runCli prints version 0.1.1 and returns success code', async () => {
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        const exitCode = await runCli(['--version']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(output.includes('agyloop v0.1.1'));
+      } finally {
+        console.log = originalLog;
+      }
+    });
+
+    test('runCli commit --dry-run outputs preview and exits 0 without prompting', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-commit-test-'));
+      const stateDir = path.join(tempDir, '.agyloop');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'state.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'COMMIT',
+          mode: 'standard',
+          issue: 99,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          history: [{ stage: 'COMMIT', timestamp: new Date().toISOString() }]
+        })
+      );
+
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['commit', '--dry-run']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(output.includes('[DRY RUN] Simulated commit. No changes were committed.'));
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli commit without -y in non-interactive environment exits 1 with helpful message', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-noninteractive-test-'));
+      const stateDir = path.join(tempDir, '.agyloop');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'state.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'COMMIT',
+          mode: 'standard',
+          issue: 99,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          history: [{ stage: 'COMMIT', timestamp: new Date().toISOString() }]
+        })
+      );
+
+      let errorOutput = '';
+      const originalError = console.error;
+      console.error = (msg) => {
+        errorOutput += msg + '\n';
+      };
+
+      const originalIsTTY = process.stdin.isTTY;
+      try {
+        process.chdir(tempDir);
+        // Simulate non-interactive subagent environment
+        (process.stdin as any).isTTY = false;
+
+        const exitCode = await runCli(['commit']);
+        assert.strictEqual(exitCode, 1);
+        assert.ok(errorOutput.includes('Error: Interactive confirmation required. Pass -y/--yes in non-interactive environments.'));
+      } finally {
+        process.chdir(prevCwd);
+        (process.stdin as any).isTTY = originalIsTTY;
+        console.error = originalError;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 });

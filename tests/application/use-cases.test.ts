@@ -13,6 +13,7 @@ const {
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   DEFAULT_GATE_TIMEOUT_SECONDS
 } = require('../../dist/domain');
@@ -189,6 +190,64 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
     assert.strictEqual(planGen.lastScaffoldParams?.issue, 42);
     assert.strictEqual(planGen.summaryUpdates.length, 2);
+  });
+
+  test('StartPlanningUseCase resets state and transitions to APPROVAL when previous stage was COMPLETED', async () => {
+    const stateRepo = new MockStateRepository();
+    const github = new MockGitHubGateway();
+    const config = new MockConfigRepository();
+    const planGen = new MockPlanGenerator();
+
+    // Previous run was completed
+    stateRepo.snapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_COMPLETED,
+      mode: 'plan',
+      issue: 42,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_COMPLETED, timestamp: new Date().toISOString() }]
+    };
+
+    const useCase = new StartPlanningUseCase(stateRepo, github, config, planGen);
+    const result = await useCase.execute({
+      issue: 43,
+      title: 'New Task After Completed'
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.issue, 43);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.issue, 43);
+  });
+
+  test('StartPlanningUseCase resets state when initiated with a new issue ID even if previous was in another stage', async () => {
+    const stateRepo = new MockStateRepository();
+    const github = new MockGitHubGateway();
+    const config = new MockConfigRepository();
+    const planGen = new MockPlanGenerator();
+
+    // Previous run was left in IMPLEMENT for issue 10
+    stateRepo.snapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: 'plan',
+      issue: 10,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    const useCase = new StartPlanningUseCase(stateRepo, github, config, planGen);
+    const result = await useCase.execute({
+      issue: 20,
+      title: 'Different Task'
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.issue, 20);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.issue, 20);
   });
 
   test('TransitionStageUseCase advances stage and persists snapshot', async () => {

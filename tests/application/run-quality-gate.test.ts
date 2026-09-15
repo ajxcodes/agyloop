@@ -5,6 +5,8 @@ const {
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
   STAGE_REVIEW,
+  STAGE_COMMIT,
+  STAGE_COMPLETED,
   STAGE_PLAN,
   MODE_STANDARD,
   STATUS_PASSED,
@@ -398,6 +400,62 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_QUALITY_GATE, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor();
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+  });
+
+  test('supports running quality gates from COMMIT stage', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_COMMIT,
+      mode: MODE_STANDARD,
+      issue: 20,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_COMMIT, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor();
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+  });
+
+  test('supports running quality gates from COMPLETED stage', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_COMPLETED,
+      mode: MODE_STANDARD,
+      issue: 20,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_COMPLETED, timestamp: new Date().toISOString() }]
     };
 
     const stateRepo = new MockStateRepository(initialSnapshot);

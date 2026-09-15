@@ -14,6 +14,7 @@ const {
   STAGE_COMMIT,
   STAGE_IMPLEMENT,
   STAGE_PLAN,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
@@ -297,6 +298,35 @@ REMEDIATION_GUIDANCE:
     // Verify checkpoint persisted
     const saved = await stateRepo.load();
     assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+  });
+
+  test('supports running review from COMPLETED stage', async () => {
+    const sm = new StateMachine({
+      stage: new Stage(STAGE_COMPLETED),
+      issue: new IssueNumber(28)
+    });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const reviewOutput = `
+REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: Post-completion review approved.
+UNFULFILLED_AC:
+- None
+REMEDIATION_GUIDANCE:
+- None
+`;
+
+    const result = await useCase.execute({ reviewOutput });
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
   });
 
   test('transitions QUALITY_GATE -> REVIEW -> IMPLEMENT when review requests changes', async () => {

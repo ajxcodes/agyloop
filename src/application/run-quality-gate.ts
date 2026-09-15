@@ -20,6 +20,8 @@ import {
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
   STAGE_REVIEW,
+  STAGE_COMMIT,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   ROLE_GATE,
   SUMMARY_STAGE_QUALITY_GATES,
@@ -33,6 +35,7 @@ import {
   NOTE_EXECUTING_GATES,
   NOTE_GATES_PASSED,
   NOTE_GATES_FAILED,
+  NOTE_RERUN_GATES_COMPLETED,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   DEFAULT_GATE_COMMANDS,
   GateCommandDefinition,
@@ -158,12 +161,16 @@ export class RunQualityGateUseCase {
       sm.transition(STAGE_QUALITY_GATE, { note: NOTE_EXECUTING_GATES });
     } else if (sm.currentStage === STAGE_QUALITY_GATE) {
       // Already at quality gate, re-executing
+    } else if (sm.currentStage === STAGE_COMMIT) {
+      sm.transition(STAGE_QUALITY_GATE, { note: NOTE_EXECUTING_GATES });
+    } else if (sm.currentStage === STAGE_COMPLETED) {
+      sm.transition(STAGE_QUALITY_GATE, { note: NOTE_RERUN_GATES_COMPLETED });
     } else {
       throw new InvalidTransitionError(
         sm.currentStage,
         STAGE_QUALITY_GATE,
         sm.mode,
-        `Cannot run quality gates from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_IMPLEMENT}' (or re-running in '${STAGE_QUALITY_GATE}').`
+        `Cannot run quality gates from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_IMPLEMENT}', '${STAGE_COMMIT}', '${STAGE_COMPLETED}' (or re-running in '${STAGE_QUALITY_GATE}').`
       );
     }
 
