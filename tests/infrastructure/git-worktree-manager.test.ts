@@ -8,17 +8,32 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { GitWorktreeManager } = require('../../dist/infrastructure');
-const { WorktreeCreationError, WorktreeCleanupError } = require('../../dist/domain');
+const { WorktreeCreationError } = require('../../dist/domain');
+
+import type { CommandExecutorPort, CommandExecutionResult } from '../../src/ports';
+
+function makeResult(cmd: string, partial: Partial<CommandExecutionResult> = {}): CommandExecutionResult {
+  return {
+    command: cmd,
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+    durationMs: 5,
+    combinedOutput: '',
+    ...partial
+  };
+}
 
 describe('GitWorktreeManager (Infrastructure Layer)', () => {
-  let tmpDir;
+  let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt-'));
   });
 
   afterEach(() => {
-    if (fs.existsSync(tmpDir)) {
+    if (tmpDir && fs.existsSync(tmpDir)) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -60,18 +75,18 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
     const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
     const matches = content.match(/\.worktrees/g);
-    assert.strictEqual(matches.length, 1);
+    assert.strictEqual(matches?.length, 1);
   });
 
   test('resolveBaseBranch parses current branch and falls back to main', async () => {
-    const executedCommands = [];
-    const mockExecutor = {
-      execute: async (cmd) => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
         executedCommands.push(cmd);
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
-          return { exitCode: 0, stdout: 'feature/mirai\n', stderr: '', timedOut: false, durationMs: 5, combinedOutput: 'feature/mirai' };
+          return makeResult(cmd, { stdout: 'feature/mirai\n', combinedOutput: 'feature/mirai' });
         }
-        return { exitCode: 1, stdout: '', stderr: 'error', timedOut: false, durationMs: 5, combinedOutput: 'error' };
+        return makeResult(cmd, { exitCode: 1, stderr: 'error', combinedOutput: 'error' });
       }
     };
 
@@ -82,17 +97,17 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   });
 
   test('createWorktree executes git worktree add and auto-adds .gitignore', async () => {
-    const executedCommands = [];
-    const mockExecutor = {
-      execute: async (cmd) => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
         executedCommands.push(cmd);
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
-          return { exitCode: 0, stdout: 'main\n', stderr: '', timedOut: false, durationMs: 5, combinedOutput: 'main' };
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
         if (cmd.includes('git worktree add')) {
-          return { exitCode: 0, stdout: 'Preparing worktree\n', stderr: '', timedOut: false, durationMs: 10, combinedOutput: 'Preparing worktree' };
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
         }
-        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
+        return makeResult(cmd);
       }
     };
 
@@ -117,20 +132,20 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   });
 
   test('createWorktree handles existing branch by reusing existing branch without -b flag', async () => {
-    const executedCommands = [];
-    const mockExecutor = {
-      execute: async (cmd) => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
         executedCommands.push(cmd);
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
-          return { exitCode: 0, stdout: 'main\n', stderr: '', timedOut: false, durationMs: 5, combinedOutput: 'main' };
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
         if (cmd.includes('git worktree add -b')) {
-          return { exitCode: 128, stdout: '', stderr: "fatal: a branch named 'task/87' already exists", timedOut: false, durationMs: 10, combinedOutput: 'fatal' };
+          return makeResult(cmd, { exitCode: 128, stderr: "fatal: a branch named 'task/87' already exists", combinedOutput: 'fatal' });
         }
         if (cmd.includes('git worktree add "')) {
-          return { exitCode: 0, stdout: 'Preparing worktree\n', stderr: '', timedOut: false, durationMs: 10, combinedOutput: 'Preparing worktree' };
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
         }
-        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
+        return makeResult(cmd);
       }
     };
 
@@ -146,10 +161,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   });
 
   test('createWorktree throws WorktreeCreationError on unrecoverable failure', async () => {
-    const mockExecutor = {
-      execute: async (cmd) => {
-        if (cmd.includes('rev-parse')) return { exitCode: 0, stdout: 'main\n', stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
-        return { exitCode: 1, stdout: '', stderr: 'fatal: permission denied', timedOut: false, durationMs: 5, combinedOutput: 'fatal' };
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse')) return makeResult(cmd, { stdout: 'main\n' });
+        return makeResult(cmd, { exitCode: 1, stderr: 'fatal: permission denied', combinedOutput: 'fatal' });
       }
     };
 
@@ -163,11 +178,11 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   });
 
   test('removeWorktree executes git worktree remove --force and git worktree prune', async () => {
-    const executedCommands = [];
-    const mockExecutor = {
-      execute: async (cmd) => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
         executedCommands.push(cmd);
-        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
+        return makeResult(cmd);
       }
     };
 
@@ -202,12 +217,12 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       ''
     ].join('\n');
 
-    const mockExecutor = {
-      execute: async (cmd) => {
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
         if (cmd === 'git worktree list --porcelain') {
-          return { exitCode: 0, stdout: porcelainOutput, stderr: '', timedOut: false, durationMs: 5, combinedOutput: porcelainOutput };
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
         }
-        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
+        return makeResult(cmd);
       }
     };
 
@@ -222,15 +237,15 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   });
 
   test('cleanOrphanedWorktrees deletes untracked directory and calls git worktree prune', async () => {
-    const executedCommands = [];
-    const mockExecutor = {
-      execute: async (cmd) => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
         executedCommands.push(cmd);
         if (cmd === 'git worktree list --porcelain') {
           // Only root workspace returned
-          return { exitCode: 0, stdout: `worktree ${tmpDir}\nHEAD abc\nbranch refs/heads/main\n\n`, stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
+          return makeResult(cmd, { stdout: `worktree ${tmpDir}\nHEAD abc\nbranch refs/heads/main\n\n` });
         }
-        return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 5, combinedOutput: '' };
+        return makeResult(cmd);
       }
     };
 

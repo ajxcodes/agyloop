@@ -17,45 +17,46 @@ import type {
   WorktreeManagerPort,
   CreateWorktreeOptions,
   RemoveWorktreeOptions,
-  PruneWorktreeOptions,
+  PruneWorktreesOptions,
   ListWorktreesOptions,
-  CleanWorktreesOptions
+  EnsureGitIgnoreOptions,
+  CleanOrphanedOptions
 } from '../../src/ports';
 
 class MockWorktreeManager implements WorktreeManagerPort {
   public createWorktreeCalls: CreateWorktreeOptions[] = [];
   public removeWorktreeCalls: RemoveWorktreeOptions[] = [];
-  public pruneWorktreesCalls: PruneWorktreeOptions[] = [];
+  public pruneWorktreesCalls: PruneWorktreesOptions[] = [];
   public listWorktreesCalls: ListWorktreesOptions[] = [];
-  public cleanOrphanedCalls: CleanWorktreesOptions[] = [];
+  public cleanOrphanedCalls: CleanOrphanedOptions[] = [];
 
-  public mockDescriptor = new WorktreeDescriptor({
+  public mockDescriptor: any = new WorktreeDescriptor({
     taskId: '87',
     branch: 'task/87-worktree-isolation',
     worktreePath: '/repo/.worktrees/87',
     baseBranch: 'main'
   });
 
-  public mockWorktrees: WorktreeDescriptor[] = [];
+  public mockWorktrees: any[] = [];
   public cleanCount = 3;
 
-  public resolveTaskWorktreePath(taskId: string | number, worktreesDir?: string, workspaceDir?: string): string {
-    return `${workspaceDir || '/repo'}/${worktreesDir || '.worktrees'}/${taskId}`;
+  public resolveTaskWorktreePath(workspaceDir: string, taskId: string | number, worktreesDir?: string): string {
+    return `${workspaceDir}/${worktreesDir || '.worktrees'}/${taskId}`;
   }
 
-  public resolveTaskBranchName(taskId: string | number, title?: string | null, slug?: string | null, prefix?: string): string {
+  public resolveTaskBranchName(taskId: string | number, slug?: string | null, prefix?: string): string {
     return `${prefix || 'task/'}${taskId}-${slug || 'task'}`;
   }
 
-  public async ensureGitIgnore(worktreesDir?: string, workspaceDir?: string): Promise<boolean> {
+  public async ensureGitIgnore(_options?: EnsureGitIgnoreOptions): Promise<boolean> {
     return true;
   }
 
-  public async resolveBaseBranch(workspaceDir?: string): Promise<string> {
+  public async resolveBaseBranch(_workspaceDir?: string): Promise<string> {
     return 'main';
   }
 
-  public async createWorktree(options: CreateWorktreeOptions): Promise<WorktreeDescriptor> {
+  public async createWorktree(options: CreateWorktreeOptions): Promise<any> {
     this.createWorktreeCalls.push(options);
     return this.mockDescriptor;
   }
@@ -64,16 +65,16 @@ class MockWorktreeManager implements WorktreeManagerPort {
     this.removeWorktreeCalls.push(options);
   }
 
-  public async pruneWorktrees(options?: PruneWorktreeOptions): Promise<void> {
+  public async pruneWorktrees(options?: PruneWorktreesOptions): Promise<void> {
     this.pruneWorktreesCalls.push(options || {});
   }
 
-  public async listWorktrees(options?: ListWorktreesOptions): Promise<readonly WorktreeDescriptor[]> {
+  public async listWorktrees(options?: ListWorktreesOptions): Promise<any> {
     this.listWorktreesCalls.push(options || {});
     return this.mockWorktrees;
   }
 
-  public async cleanOrphanedWorktrees(options?: CleanWorktreesOptions): Promise<number> {
+  public async cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number> {
     this.cleanOrphanedCalls.push(options || {});
     return this.cleanCount;
   }
