@@ -15,5 +15,9 @@ export * from './draft-commit';
 export * from './execute-commit';
 export * from './run-lifecycle';
 export * from './manage-worktree';
+export * from './run-preflight-check';
+export * from './infer-base-branch';
+export * from './milestone-release';
+export * from './manage-issue-migration';
 
 

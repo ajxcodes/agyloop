@@ -18,6 +18,7 @@ import {
   CommitMessage,
   DiffAnalyzer,
   DraftCommitPlan,
+  PublicSanitizer,
   InvalidTransitionError
 } from '../domain';
 import {
@@ -143,6 +144,20 @@ export class DraftCommitUseCase {
         });
       }
     }
+
+    const sanitizedDesc = PublicSanitizer.sanitizeCommitMessage(finalCommitMessage.description);
+    const sanitizedBody = finalCommitMessage.body
+      ? PublicSanitizer.sanitizeCommitMessage(finalCommitMessage.body)
+      : null;
+
+    finalCommitMessage = CommitMessage.create({
+      type: finalCommitMessage.type,
+      scope: finalCommitMessage.scope,
+      description: sanitizedDesc,
+      body: sanitizedBody,
+      isBreaking: finalCommitMessage.isBreaking,
+      issueNumber: finalCommitMessage.issueNumber
+    });
 
     return {
       plan,

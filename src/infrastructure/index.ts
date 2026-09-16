@@ -14,6 +14,7 @@ export * from './cli-critique-gateway';
 export * from './file-standards-repository';
 export * from './readline-confirmation-prompt';
 export * from './git-worktree-manager';
+export * from './file-version-anchor';
 
 
 

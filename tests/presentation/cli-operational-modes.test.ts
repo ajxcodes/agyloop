@@ -177,7 +177,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
   });
 
   describe('CLI Dispatcher Execution', () => {
-    test('runCli prints version 0.2.0 and returns success code', async () => {
+    test('runCli prints version 0.3.0 and returns success code', async () => {
       let output = '';
       const originalLog = console.log;
       console.log = (msg) => {

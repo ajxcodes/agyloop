@@ -15,14 +15,42 @@ export interface GitHubIssueData {
   readonly number: number;
   readonly title: string;
   readonly body: string;
+  readonly state?: string; // 'OPEN' | 'CLOSED'
   readonly labels: readonly string[];
   readonly comments: readonly GitHubComment[];
   readonly error?: string;
 }
 
+export interface GitHubPullRequestData {
+  readonly number: number;
+  readonly title: string;
+  readonly state: string; // 'OPEN' | 'MERGED' | 'CLOSED'
+  readonly baseRefName: string;
+  readonly headRefName: string;
+  readonly url: string;
+  readonly merged: boolean;
+  readonly labels: readonly string[];
+}
+
 export interface GitHubGatewayOptions {
   readonly repo?: string;
   readonly cwd?: string;
+}
+
+export interface FindPullRequestOptions extends GitHubGatewayOptions {
+  readonly issueNumber?: number | string;
+  readonly headBranch?: string;
+  readonly baseBranch?: string;
+  readonly state?: string;
+}
+
+export interface CreatePullRequestOptions extends GitHubGatewayOptions {
+  readonly title: string;
+  readonly body: string;
+  readonly baseBranch: string;
+  readonly headBranch: string;
+  readonly labels?: readonly string[];
+  readonly draft?: boolean;
 }
 
 export interface GitHubGateway {
@@ -38,6 +66,46 @@ export interface GitHubGateway {
     issueNumber: number,
     options?: GitHubGatewayOptions
   ): Promise<GitHubIssueData | null> | GitHubIssueData | null;
+
+  /**
+   * Searches for a pull request by head branch or associated issue number.
+   */
+  findPullRequest?(
+    options: FindPullRequestOptions
+  ): Promise<GitHubPullRequestData | null> | GitHubPullRequestData | null;
+
+  /**
+   * Opens a pull request on GitHub via gh CLI.
+   */
+  createPullRequest?(
+    options: CreatePullRequestOptions
+  ): Promise<GitHubPullRequestData> | GitHubPullRequestData;
+
+  /**
+   * Applies labels to an issue or pull request.
+   */
+  applyLabels?(
+    targetNumber: number,
+    labels: readonly string[],
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
+
+  /**
+   * Posts a comment on an issue or pull request.
+   */
+  commentOnIssue?(
+    issueNumber: number,
+    comment: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
+
+  /**
+   * Closes an issue on GitHub.
+   */
+  closeIssue?(
+    issueNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
 }
 
 /**

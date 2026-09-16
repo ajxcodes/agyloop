@@ -32,8 +32,12 @@ import {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
   COMMAND_WORKTREE,
+  COMMAND_RELEASE,
   FLAG_WORKTREE,
-  FLAG_NO_WORKTREE
+  FLAG_NO_WORKTREE,
+  PreFlightHaltError,
+  MilestoneReleaseError,
+  MilestoneSealedError
 } from '../domain';
 import {
   FileStateRepository,
@@ -62,7 +66,8 @@ import {
   RunReviewUseCase,
   DraftCommitUseCase,
   ExecuteCommitUseCase,
-  ManageWorktreeUseCase
+  ManageWorktreeUseCase,
+  MilestoneReleaseUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -84,6 +89,7 @@ export interface CliOptions {
   worktree: boolean;
   noWorktree: boolean;
   baseBranch: string | null;
+  phaseBranch: string | null;
   worktreeSubcommand: string | null;
   worktreeTarget: string | null;
 }
@@ -107,6 +113,7 @@ Operational Modes:
   implement          Resume implementation directly from approved plan specification
   gates              Run standalone quality gates and AI PR review on working diff
   commit             Draft Conventional Commit and prompt for interactive human approval
+  release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
 
 Pipeline Management:
   status             Display current pipeline stage and checkpoint history
@@ -128,8 +135,8 @@ Operational Flags:
       --type <type>  Specify plan type (discovery | implementation | auto)
       --config <path> Path to custom configuration file (.agyloop.json)
       --worktree     Enable git worktree isolation for task execution (default: true)
-      --no-worktree  Disable git worktree isolation (execute directly in root workspace)
-      --refresh      Force refresh of discovered Gemini models from API
+      --base-branch <branch> Override base branch for worktree or milestone release
+      --refresh      Force refresh of discovered Gemini models or milestone release PR
       --dry-run      Simulate execution without modifying state or files on disk
   -h, --help         Show this help message and exit
   -v, --version      Show version information and exit
@@ -142,6 +149,8 @@ Examples:
   agyloop gates --commit-after          Run gates and review, auto-committing if all pass
   agyloop commit                        Draft Conventional Commit and prompt for human approval
   agyloop commit -y                     Draft Conventional Commit and commit immediately
+  agyloop release phase/1-bridge-arch   Generate milestone release PR to main with SemVer label
+  agyloop release --dry-run             Preview calculated SemVer bump and compiled changelog
   agyloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
   agyloop yolo --commit-after           100% end-to-end hands-off loop: plan -> implement -> gates -> review -> commit
   agyloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
@@ -171,6 +180,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     worktree: true,
     noWorktree: false,
     baseBranch: null,
+    phaseBranch: null,
     worktreeSubcommand: null,
     worktreeTarget: null
   };
@@ -264,6 +274,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     } else if (command === 'worktree') {
       options.worktreeSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'list';
       options.worktreeTarget = positional.length > 2 ? positional[2] : null;
+    } else if (command === 'release') {
+      options.phaseBranch = positional.length > 1 ? positional[1] : null;
     }
   }
 
@@ -500,6 +512,58 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       return EXIT_CODE_SUCCESS;
     }
 
+    case 'release': {
+      console.log('\n🚀 AgyLoop: Milestone Release PR Orchestrator');
+      try {
+        const milestoneReleaseUseCase = new MilestoneReleaseUseCase(
+          worktreeManager,
+          githubGateway,
+          configRepo,
+          commandExecutor
+        );
+
+        const result = await milestoneReleaseUseCase.execute({
+          phaseBranch: options.phaseBranch || undefined,
+          baseBranch: options.baseBranch || undefined,
+          dryRun: options.dryRun,
+          refresh: options.refresh,
+          configPath: options.configPath,
+          workspaceDir: process.cwd()
+        });
+
+        console.log(`\nCollector Branch : \x1b[35m${result.phaseBranch}\x1b[0m`);
+        console.log(`Target Base      : \x1b[32m${result.baseBranch}\x1b[0m`);
+        console.log(`Predicted SemVer : \x1b[1m${result.evaluation.bump.toUpperCase()}\x1b[0m (Label: \x1b[36m${result.evaluation.releaseLabel}\x1b[0m)`);
+        console.log(`Commit Metrics   : ${result.evaluation.totalCommits} commits (${result.evaluation.featuresCount} feats, ${result.evaluation.fixesCount} fixes, ${result.evaluation.breakingCount} breaking)`);
+
+        if (result.openInFlightPrsCount > 0) {
+          console.log(`\n⚠️  Warning: In-flight PRs detected targeting '${result.phaseBranch}'. Ensure all tasks are merged before final release.`);
+        }
+
+        if (result.dryRun) {
+          console.log(`\n[DRY RUN] Generated Changelog Preview:\n`);
+          console.log(result.evaluation.changelog);
+          console.log(`\n[DRY RUN] Would create Milestone PR targeting '${result.baseBranch}' with label '${result.evaluation.releaseLabel}'.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.pullRequest) {
+          console.log(`\n✓ Milestone Pull Request: \x1b[1m${result.pullRequest.url || '#' + result.pullRequest.number}\x1b[0m`);
+          console.log(`✓ Release Label Applied : \x1b[36m${result.evaluation.releaseLabel}\x1b[0m (Triggers ajxcodes/auto-tag@v1 upon merge)`);
+        }
+
+        console.log(`\n✓ ${result.message}\n`);
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        if (err instanceof MilestoneReleaseError) {
+          console.error(`\n✗ ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
     case 'plan': {
       console.log(`\n🚀 Starting AgyLoop [PLAN-ONLY] Mode`);
       try {
@@ -540,6 +604,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        if (err instanceof PreFlightHaltError) {
+          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+        if (err instanceof MilestoneSealedError) {
+          console.error(`\n🛑 ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
@@ -580,6 +652,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(`Next Step    : Execute checklist items and run 'agyloop gates' when complete.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        if (err instanceof PreFlightHaltError) {
+          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+        if (err instanceof MilestoneSealedError) {
+          console.error(`\n🛑 ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
@@ -648,6 +728,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        if (err instanceof PreFlightHaltError) {
+          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+        if (err instanceof MilestoneSealedError) {
+          console.error(`\n🛑 ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
@@ -784,6 +872,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        if (err instanceof PreFlightHaltError) {
+          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+        if (err instanceof MilestoneSealedError) {
+          console.error(`\n🛑 ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
@@ -864,6 +960,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(`Pipeline at stage: ${formatStageBadge(result.currentStage)}\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        if (err instanceof PreFlightHaltError) {
+          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+        if (err instanceof MilestoneSealedError) {
+          console.error(`\n🛑 ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }

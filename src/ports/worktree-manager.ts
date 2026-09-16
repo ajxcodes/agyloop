@@ -45,6 +45,29 @@ export interface CleanOrphanedOptions {
   readonly workspaceDir?: string;
 }
 
+export interface ListBranchesOptions {
+  readonly workspaceDir?: string;
+  readonly remote?: boolean;
+}
+
+export interface CreateBranchOptions {
+  readonly branchName: string;
+  readonly startPoint: string;
+  readonly workspaceDir?: string;
+}
+
+export interface GetCommitsOptions {
+  readonly baseBranch: string;
+  readonly headBranch: string;
+  readonly workspaceDir?: string;
+}
+
+export interface IsAncestorOptions {
+  readonly ancestorBranch: string;
+  readonly descendantBranch: string;
+  readonly workspaceDir?: string;
+}
+
 export interface WorktreeManagerPort {
   /**
    * Resolves the relative or absolute worktree path for a given task ID.
@@ -100,4 +123,24 @@ export interface WorktreeManagerPort {
    * Cleans orphaned or stale worktrees/locks and returns count pruned.
    */
   cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number>;
+
+  /**
+   * Lists local and optionally remote branches in the repository.
+   */
+  listBranches?(options?: ListBranchesOptions): Promise<readonly string[]>;
+
+  /**
+   * Creates a branch from a specified start point.
+   */
+  createBranch?(options: CreateBranchOptions): Promise<void>;
+
+  /**
+   * Returns commit messages between two branches (baseBranch..headBranch).
+   */
+  getCommitsBetween?(options: GetCommitsOptions): Promise<readonly string[]>;
+
+  /**
+   * Checks whether ancestorBranch has been merged into descendantBranch.
+   */
+  isAncestor?(options: IsAncestorOptions): Promise<boolean>;
 }
