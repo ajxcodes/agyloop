@@ -97,6 +97,44 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.staged, true);
       assert.strictEqual(parsed.options.dryRun, true);
     });
+
+    test('parses --worktree and --no-worktree flags', () => {
+      const parsedDefault = parseArguments(['yolo']);
+      assert.strictEqual(parsedDefault.options.worktree, true);
+
+      const parsedWorktree = parseArguments(['implement', '--worktree']);
+      assert.strictEqual(parsedWorktree.options.worktree, true);
+
+      const parsedNoWorktree = parseArguments(['yolo', '--no-worktree']);
+      assert.strictEqual(parsedNoWorktree.options.worktree, false);
+    });
+
+    test('parses --base-branch option', () => {
+      const parsed = parseArguments(['implement', '--base-branch', 'develop']);
+      assert.strictEqual(parsed.options.baseBranch, 'develop');
+
+      const parsedEq = parseArguments(['yolo', '--base-branch=feature/base']);
+      assert.strictEqual(parsedEq.options.baseBranch, 'feature/base');
+    });
+
+    test('parses worktree subcommands', () => {
+      const parsedList = parseArguments(['worktree', 'list']);
+      assert.strictEqual(parsedList.command, 'worktree');
+      assert.strictEqual(parsedList.options.worktreeSubcommand, 'list');
+
+      const parsedPrune = parseArguments(['worktree', 'prune']);
+      assert.strictEqual(parsedPrune.command, 'worktree');
+      assert.strictEqual(parsedPrune.options.worktreeSubcommand, 'prune');
+
+      const parsedClean = parseArguments(['worktree', 'clean']);
+      assert.strictEqual(parsedClean.command, 'worktree');
+      assert.strictEqual(parsedClean.options.worktreeSubcommand, 'clean');
+
+      const parsedRemove = parseArguments(['worktree', 'remove', '87']);
+      assert.strictEqual(parsedRemove.command, 'worktree');
+      assert.strictEqual(parsedRemove.options.worktreeSubcommand, 'remove');
+      assert.strictEqual(parsedRemove.options.worktreeTarget, '87');
+    });
   });
 
   describe('Help Output & Stage Badges', () => {
@@ -139,7 +177,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
   });
 
   describe('CLI Dispatcher Execution', () => {
-    test('runCli prints version 0.1.1 and returns success code', async () => {
+    test('runCli prints version 0.2.0 and returns success code', async () => {
       let output = '';
       const originalLog = console.log;
       console.log = (msg) => {
@@ -149,7 +187,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       try {
         const exitCode = await runCli(['--version']);
         assert.strictEqual(exitCode, 0);
-        assert.ok(output.includes('agyloop v0.1.1'));
+        assert.ok(output.includes(`agyloop v${CLI_VERSION}`));
       } finally {
         console.log = originalLog;
       }

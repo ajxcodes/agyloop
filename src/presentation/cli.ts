@@ -30,7 +30,10 @@ import {
   ROLE_REVIEWER,
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
-  EXIT_CODE_FAILURE
+  EXIT_CODE_FAILURE,
+  COMMAND_WORKTREE,
+  FLAG_WORKTREE,
+  FLAG_NO_WORKTREE
 } from '../domain';
 import {
   FileStateRepository,
@@ -43,7 +46,8 @@ import {
   FileBuildDetector,
   ReadlineConfirmationPrompt,
   CliCritiqueGateway,
-  FileStandardsRepository
+  FileStandardsRepository,
+  GitWorktreeManager
 } from '../infrastructure';
 import {
   RunLifecycleUseCase,
@@ -57,7 +61,8 @@ import {
   RunQualityGateUseCase,
   RunReviewUseCase,
   DraftCommitUseCase,
-  ExecuteCommitUseCase
+  ExecuteCommitUseCase,
+  ManageWorktreeUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -76,6 +81,11 @@ export interface CliOptions {
   yes: boolean;
   message: string | null;
   staged: boolean;
+  worktree: boolean;
+  noWorktree: boolean;
+  baseBranch: string | null;
+  worktreeSubcommand: string | null;
+  worktreeTarget: string | null;
 }
 
 export interface ParsedCliArgs {
@@ -105,6 +115,7 @@ Pipeline Management:
   prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
   reset              Reset .agyloop/state.json checkpoint
   transition <STAGE> Advance state machine to target stage
+  worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
@@ -116,6 +127,8 @@ Operational Flags:
       --title <text> Specify plan title for persistent artifact scaffolding
       --type <type>  Specify plan type (discovery | implementation | auto)
       --config <path> Path to custom configuration file (.agyloop.json)
+      --worktree     Enable git worktree isolation for task execution (default: true)
+      --no-worktree  Disable git worktree isolation (execute directly in root workspace)
       --refresh      Force refresh of discovered Gemini models from API
       --dry-run      Simulate execution without modifying state or files on disk
   -h, --help         Show this help message and exit
@@ -132,6 +145,8 @@ Examples:
   agyloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
   agyloop yolo --commit-after           100% end-to-end hands-off loop: plan -> implement -> gates -> review -> commit
   agyloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
+  agyloop worktree list                 List all active isolated git worktrees
+  agyloop worktree prune                Prune dangling worktrees and lock metadata
 `);
 }
 
@@ -152,7 +167,12 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     roleArg: null,
     yes: false,
     message: null,
-    staged: false
+    staged: false,
+    worktree: true,
+    noWorktree: false,
+    baseBranch: null,
+    worktreeSubcommand: null,
+    worktreeTarget: null
   };
 
   const positional: string[] = [];
@@ -172,6 +192,20 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.yes = true;
     } else if (arg === '--staged' || arg === '-s') {
       options.staged = true;
+    } else if (arg === '--worktree') {
+      options.worktree = true;
+      options.noWorktree = false;
+    } else if (arg === '--no-worktree') {
+      options.worktree = false;
+      options.noWorktree = true;
+    } else if (arg === '--base-branch') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.baseBranch = args[++i];
+      } else {
+        options.baseBranch = null;
+      }
+    } else if (arg.startsWith('--base-branch=')) {
+      options.baseBranch = arg.split('=')[1] || null;
     } else if (arg === '--message' || arg === '-m') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.message = args[++i];
@@ -227,6 +261,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.stageArg = positional[1].toUpperCase();
     } else if (command === 'prompt' && positional.length > 1) {
       options.roleArg = positional[1].toLowerCase();
+    } else if (command === 'worktree') {
+      options.worktreeSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'list';
+      options.worktreeTarget = positional.length > 2 ? positional[2] : null;
     }
   }
 
@@ -274,6 +311,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const standardsRepo = new FileStandardsRepository();
   const critique = new CliCritiqueGateway();
   const confirmationPrompt = new ReadlineConfirmationPrompt();
+  const worktreeManager = new GitWorktreeManager(commandExecutor);
 
   const config = configRepo.loadConfig({ customPath: options.configPath });
 
@@ -286,7 +324,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     buildDetector,
     standardsRepo,
     critique,
-    confirmationPrompt
+    confirmationPrompt,
+    worktreeManager
   });
 
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
@@ -302,6 +341,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
       console.log(`Updated At    : ${result.status.updatedAt}`);
       console.log(`Checkpoint    : ${result.stateFilePath}`);
+
+      const worktrees = await worktreeManager.listWorktrees();
+      if (worktrees.length > 0) {
+        console.log(`\nIsolated Git Worktrees (${worktrees.length}):`);
+        for (const wt of worktrees) {
+          console.log(`  - Task ${wt.taskId}: ${wt.worktreePath} (branch: ${wt.branch})`);
+        }
+      }
+
       console.log('\nTransition History:');
       result.history.forEach((entry, idx) => {
         console.log(`  ${idx + 1}. ${formatStageBadge(entry.stage)} at ${entry.timestamp}`);
@@ -375,6 +423,53 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
+    }
+
+    case 'worktree': {
+      const manageWorktreeUseCase = new ManageWorktreeUseCase(worktreeManager);
+      const sub = options.worktreeSubcommand || 'list';
+
+      if (sub === 'list') {
+        const res = await manageWorktreeUseCase.list();
+        const list = res.data || [];
+        console.log('\n=== AgyLoop: Active Isolated Git Worktrees ===');
+        if (list.length === 0) {
+          console.log('No isolated worktrees found.\n');
+        } else {
+          console.log('--------------------------------------------------------------------------------');
+          console.log('Task ID      Branch                         Worktree Directory');
+          console.log('--------------------------------------------------------------------------------');
+          for (const wt of list) {
+            const idPad = wt.taskId.padEnd(12);
+            const bPad = wt.branch.padEnd(30);
+            console.log(`${idPad} ${bPad} ${wt.worktreePath}`);
+          }
+          console.log('--------------------------------------------------------------------------------\n');
+        }
+        return EXIT_CODE_SUCCESS;
+      }
+
+      if (sub === 'clean' || sub === 'prune') {
+        console.log('Pruning orphaned git worktrees and locks...');
+        const res = await manageWorktreeUseCase.clean();
+        console.log(`✓ ${res.message}\n`);
+        return EXIT_CODE_SUCCESS;
+      }
+
+      if (sub === 'remove' || sub === 'rm') {
+        if (!options.worktreeTarget) {
+          console.error('Error: Please specify task ID or worktree path to remove. Example: agyloop worktree remove 87');
+          return EXIT_CODE_FAILURE;
+        }
+        const targetPath = worktreeManager.resolveTaskWorktreePath(process.cwd(), options.worktreeTarget);
+        console.log(`Removing worktree at ${targetPath}...`);
+        const res = await manageWorktreeUseCase.teardown({ worktreePath: targetPath });
+        console.log(`✓ ${res.message}\n`);
+        return EXIT_CODE_SUCCESS;
+      }
+
+      console.error(`Unknown worktree subcommand: '${sub}'. Valid subcommands: list, clean, prune, remove <task-id>\n`);
+      return EXIT_CODE_FAILURE;
     }
 
     case 'prompt': {
@@ -457,7 +552,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           mode: MODE_IMPLEMENT,
           issue: options.issue,
           configPath: options.configPath,
-          dryRun: options.dryRun
+          dryRun: options.dryRun,
+          worktree: options.noWorktree ? false : true,
+          baseBranch: options.baseBranch || undefined
         });
 
         const impl = result.implementationResult;
@@ -465,6 +562,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Already at ${formatStageBadge(STAGE_IMPLEMENT)}. Resuming code modifications.\n`);
         } else {
           console.log(`✓ Advanced to ${formatStageBadge(STAGE_IMPLEMENT)}. Ready for code modifications.\n`);
+        }
+
+        if (result.worktree) {
+          console.log(`🌲 Isolated Worktree: ${result.worktree.worktreePath} (branch: ${result.worktree.branch})`);
         }
 
         if (impl?.planPath) {
@@ -494,7 +595,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           staged: options.staged,
           message: options.message,
           configPath: options.configPath,
-          dryRun: options.dryRun
+          dryRun: options.dryRun,
+          worktree: options.noWorktree ? false : true,
+          baseBranch: options.baseBranch || undefined
         });
 
         if (options.dryRun) {
@@ -634,7 +737,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           staged: options.staged,
           message: options.message,
           dryRun: options.dryRun,
-          configPath: options.configPath
+          configPath: options.configPath,
+          worktree: options.noWorktree ? false : true,
+          baseBranch: options.baseBranch || undefined
         });
 
         if (options.dryRun) {
@@ -646,6 +751,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           const info = result.planResult.scaffoldInfo;
           console.log(`📁 Initialized plan directory: artifacts/plans/${info.folderName}/`);
           console.log(`⚡ Auto-approved plan gate -> streaming into implementation.`);
+        }
+
+        if (result.worktree) {
+          console.log(`🌲 Isolated Worktree: ${result.worktree.worktreePath} (branch: ${result.worktree.branch})`);
         }
 
         if (result.qualityGateResult?.summaryReport) {
@@ -700,7 +809,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           message: options.message,
           interactiveCommit: true,
           dryRun: options.dryRun,
-          configPath: options.configPath
+          configPath: options.configPath,
+          worktree: options.noWorktree ? false : true,
+          baseBranch: options.baseBranch || undefined
         });
 
         if (result.pausedAtGate === 'APPROVAL') {
@@ -711,6 +822,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
           console.log(`Review artifacts and run 'agyloop implement' (or 'agyloop') to continue.\n`);
           return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.worktree) {
+          console.log(`🌲 Isolated Worktree: ${result.worktree.worktreePath} (branch: ${result.worktree.branch})`);
         }
 
         if (result.qualityGateResult?.summaryReport) {

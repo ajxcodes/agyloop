@@ -13,6 +13,7 @@ export * from './build-detector';
 export * from './critique';
 export * from './standards-repository';
 export * from './confirmation-prompt';
+export * from './worktree-manager';
 
 
 
