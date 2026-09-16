@@ -26,6 +26,7 @@ import {
   CreateBranchOptions,
   GetCommitsOptions,
   IsAncestorOptions,
+  PushBranchOptions,
   CommandExecutorPort
 } from '../ports';
 import { ProcessCommandExecutor } from './process-command-executor';
@@ -80,8 +81,8 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
 
       const content = fs.readFileSync(gitignorePath, 'utf8');
-      // Matches .worktrees, .worktrees/, or variants as isolated line or comment-safe
-      const regex = /(?:^|\r?\n)\s*\.worktrees\/?\s*(?:$|\r?\n)/;
+      const escaped = targetEntry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\//g, '\\/?');
+      const regex = new RegExp(`(?:^|\\r?\\n)\\s*${escaped}\\s*(?:$|\\r?\\n)`);
       if (regex.test(content)) {
         return false;
       }
@@ -155,8 +156,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     const branch = this.resolveTaskBranchName(taskId, slug, options.branchPrefix);
     const worktreePath = this.resolveTaskWorktreePath(workspace, taskId, options.worktreesDir);
 
-    // 1. Ensure .worktrees/ is ignored in root repo
-    await this.ensureGitIgnore({ workspaceDir: workspace });
+    // 1. Ensure .worktrees/ and .agyloop/ are ignored in root repo
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees/' });
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.agyloop/' });
 
     // 2. Resolve base branch
     const baseBranch = options.baseBranch || (await this.resolveBaseBranch(workspace));
@@ -458,6 +460,25 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     );
 
     return res.exitCode === 0;
+  }
+
+  /**
+   * Pushes a local branch to the remote repository.
+   * Best-effort execution: returns true on success, false if offline or without push permissions.
+   */
+  public async pushBranch(options: PushBranchOptions): Promise<boolean> {
+    const workspace = options.workspaceDir || process.cwd();
+    const remote = options.remote || 'origin';
+    const setUpstream = options.setUpstream !== false ? '-u ' : '';
+    try {
+      const res = await this.commandExecutor.execute(
+        `git push ${setUpstream}${remote} "${options.branchName}"`,
+        { cwd: workspace }
+      );
+      return res.exitCode === 0;
+    } catch {
+      return false;
+    }
   }
 
   private linkNodeModulesIfPresent(

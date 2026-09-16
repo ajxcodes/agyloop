@@ -221,7 +221,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
 // Numeric Constants & Default Invariants
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
-export const CLI_VERSION = '0.3.0' as const;
+export const CLI_VERSION = '0.4.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
@@ -1042,6 +1042,8 @@ export const COMMAND_RESET = 'reset' as const;
 export const COMMAND_TRANSITION = 'transition' as const;
 export const COMMAND_WORKTREE = 'worktree' as const;
 export const COMMAND_RELEASE = 'release' as const;
+export const COMMAND_NEXT = 'next' as const;
+export const COMMAND_BRANCH_INFO = 'branch-info' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1056,7 +1058,9 @@ export const CLI_COMMANDS = Object.freeze({
   RESET: COMMAND_RESET,
   TRANSITION: COMMAND_TRANSITION,
   WORKTREE: COMMAND_WORKTREE,
-  RELEASE: COMMAND_RELEASE
+  RELEASE: COMMAND_RELEASE,
+  NEXT: COMMAND_NEXT,
+  BRANCH_INFO: COMMAND_BRANCH_INFO
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
@@ -1144,6 +1148,8 @@ export const FLAG_HELP = '--help' as const;
 export const FLAG_HELP_SHORT = '-h' as const;
 export const FLAG_VERSION = '--version' as const;
 export const FLAG_VERSION_SHORT = '-v' as const;
+export const FLAG_KEEP_WORKTREE = '--keep-worktree' as const;
+export const FLAG_JSON = '--json' as const;
 
 export const CLI_FLAGS = Object.freeze({
   YOLO: FLAG_YOLO,
@@ -1162,6 +1168,8 @@ export const CLI_FLAGS = Object.freeze({
   REFRESH: FLAG_REFRESH,
   WORKTREE: FLAG_WORKTREE,
   NO_WORKTREE: FLAG_NO_WORKTREE,
+  KEEP_WORKTREE: FLAG_KEEP_WORKTREE,
+  JSON: FLAG_JSON,
   HELP: FLAG_HELP,
   HELP_SHORT: FLAG_HELP_SHORT,
   VERSION: FLAG_VERSION,

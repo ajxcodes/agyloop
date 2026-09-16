@@ -30,16 +30,19 @@ import {
   VALIDATION_FIELD_PLAN_PATH,
   IssueNumber,
   InvalidTransitionError,
-  ValidationError
+  ValidationError,
+  WorktreeCreationError
 } from '../domain';
 import {
   StateRepository,
   ConfigRepository,
   PlanGeneratorPort,
   GitHubGateway,
-  GitHubIssueData
+  GitHubIssueData,
+  WorktreeManagerPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
+import { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface StartImplementationParams {
   readonly issue?: number | string | null;
@@ -51,6 +54,8 @@ export interface StartImplementationParams {
   readonly workspaceDir?: string;
   readonly failureDiagnostics?: string | null;
   readonly selfCorrectionPayload?: string | null;
+  readonly noWorktree?: boolean;
+  readonly baseBranch?: string | null;
 }
 
 export interface StartImplementationResult {
@@ -71,13 +76,17 @@ export class StartImplementationUseCase {
   private readonly planGenerator: PlanGeneratorPort;
   private readonly githubGateway?: GitHubGateway;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  private readonly worktreeManager?: WorktreeManagerPort;
+  private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
 
   constructor(
     stateRepo: StateRepository,
     configRepo: ConfigRepository,
     planGenerator: PlanGeneratorPort,
     githubGateway?: GitHubGateway,
-    resolveSubagentUseCase?: ResolveSubagentUseCase
+    resolveSubagentUseCase?: ResolveSubagentUseCase,
+    worktreeManager?: WorktreeManagerPort,
+    inferBaseBranchUseCase?: InferBaseBranchUseCase
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -85,6 +94,8 @@ export class StartImplementationUseCase {
     this.githubGateway = githubGateway;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
+    this.worktreeManager = worktreeManager;
+    this.inferBaseBranchUseCase = inferBaseBranchUseCase;
   }
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
@@ -124,6 +135,54 @@ export class StartImplementationUseCase {
         sm.mode,
         `Cannot start implementation from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_APPROVAL}', '${STAGE_COMPLETED}' (or in '${STAGE_PLAN}' with YOLO mode).`
       );
+    }
+
+    // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT
+    const skipWorktree = params.noWorktree === true;
+    if (!skipWorktree && this.worktreeManager) {
+      if (!sm.worktree) {
+        const taskId = activeIssue || 'adhoc';
+        let baseBranch = params.baseBranch || sm.baseBranch || undefined;
+        let branchPrefix: string | undefined = undefined;
+
+        if (this.inferBaseBranchUseCase) {
+          try {
+            const inference = await this.inferBaseBranchUseCase.execute({
+              issueNumber: activeIssue,
+              explicitBaseBranch: baseBranch,
+              workspaceDir: workspace
+            });
+            baseBranch = inference.baseBranch;
+            branchPrefix = inference.taskBranchPrefix;
+          } catch {
+            // Non-fatal fallback
+          }
+        }
+
+        try {
+          const descriptor = await this.worktreeManager.createWorktree({
+            taskId,
+            baseBranch,
+            branchPrefix,
+            workspaceDir: workspace
+          });
+          sm.setWorktree(descriptor);
+          if (baseBranch) sm.setBaseBranch(baseBranch);
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          throw new WorktreeCreationError(
+            'createWorktree',
+            `Failed to auto-provision worktree for IMPLEMENT stage: ${errMsg}`
+          );
+        }
+      }
+
+      if (!sm.worktree) {
+        throw new WorktreeCreationError(
+          'startImplementation',
+          'Cannot start implementation without an active worktree descriptor. An isolated worktree must be provisioned (pass --no-worktree to bypass).'
+        );
+      }
     }
 
     // 3. Resolve plan directory & plan file via PlanGeneratorPort
@@ -193,7 +252,7 @@ export class StartImplementationUseCase {
       issueTitle: issueData && !issueData.error ? issueData.title : undefined,
       issueBody: issueData && !issueData.error ? issueData.body : undefined,
       userInstructions: params.userInstructions,
-      workspaceDir: workspace,
+      workspaceDir: sm.worktree?.worktreePath || workspace,
       config,
       failureDiagnostics,
       selfCorrectionPayload

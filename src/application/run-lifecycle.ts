@@ -189,7 +189,9 @@ export class RunLifecycleUseCase {
         this.configRepo,
         this.planGenerator,
         this.githubGateway,
-        resolveSubagentUseCase
+        resolveSubagentUseCase,
+        this.worktreeManager,
+        this.inferBaseBranchUseCase
       );
 
     this.runQualityGateUseCase =
@@ -230,7 +232,8 @@ export class RunLifecycleUseCase {
         this.stateRepo,
         this.commandExecutor,
         this.planGenerator,
-        this.confirmationPrompt
+        this.confirmationPrompt,
+        this.worktreeManager
       );
 
     this.runPreFlightCheckUseCase =
@@ -239,7 +242,7 @@ export class RunLifecycleUseCase {
 
     this.inferBaseBranchUseCase =
       deps.inferBaseBranchUseCase ??
-      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway) : undefined);
+      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
   }
 
   public async execute(params: RunLifecycleParams = {}): Promise<RunLifecycleResult> {
@@ -400,13 +403,19 @@ export class RunLifecycleUseCase {
         }
       }
 
-      return await this.worktreeManager.createWorktree({
+      const descriptor = await this.worktreeManager.createWorktree({
         taskId,
         baseBranch,
         branchPrefix,
         title: params.title,
         workspaceDir: rootWorkspace
       });
+
+      sm.setWorktree(descriptor);
+      if (baseBranch) {
+        sm.setBaseBranch(baseBranch);
+      }
+      return descriptor;
     } catch {
       return null;
     }

@@ -16,9 +16,10 @@ import {
   BranchInferenceResult,
   MilestoneSealedError,
   WorktreeCreationError,
-  WorktreeDescriptor
+  WorktreeDescriptor,
+  StateMachine
 } from '../domain';
-import { WorktreeManagerPort, GitHubGateway } from '../ports';
+import { WorktreeManagerPort, GitHubGateway, StateRepository } from '../ports';
 
 export interface InferBaseBranchParams {
   readonly issueNumber?: number | string | null;
@@ -32,10 +33,16 @@ export interface InferBaseBranchParams {
 export class InferBaseBranchUseCase {
   private readonly worktreeManager: WorktreeManagerPort;
   private readonly githubGateway?: GitHubGateway;
+  private readonly stateRepo?: StateRepository;
 
-  constructor(worktreeManager: WorktreeManagerPort, githubGateway?: GitHubGateway) {
+  constructor(
+    worktreeManager: WorktreeManagerPort,
+    githubGateway?: GitHubGateway,
+    stateRepo?: StateRepository
+  ) {
     this.worktreeManager = worktreeManager;
     this.githubGateway = githubGateway;
+    this.stateRepo = stateRepo;
   }
 
   public async execute(params: InferBaseBranchParams = {}): Promise<BranchInferenceResult> {
@@ -50,7 +57,7 @@ export class InferBaseBranchUseCase {
       const issuePart = params.issueNumber ? `${params.issueNumber}-` : '';
       const slug = WorktreeDescriptor.slugify(params.title || 'task');
       const suggested = `${prefix}${issuePart}${slug}`;
-      return {
+      const result: BranchInferenceResult = {
         baseBranch: explicit,
         taskBranchPrefix: prefix,
         branchType: isBug ? 'fix' : 'task',
@@ -66,6 +73,22 @@ export class InferBaseBranchUseCase {
         phaseIdentifier: null,
         rationale: `Using explicit base branch '${explicit}'.`
       };
+
+      if (this.stateRepo) {
+        try {
+          const snapshot = await this.stateRepo.load();
+          if (snapshot) {
+            const sm = StateMachine.fromSnapshot(snapshot);
+            sm.setBaseBranch(explicit);
+            if (params.issueNumber) sm.setIssue(params.issueNumber);
+            await this.stateRepo.save(sm.toSnapshot());
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      return result;
     }
 
     const defaultBranch = await this.worktreeManager.resolveBaseBranch(cwd);
@@ -150,6 +173,19 @@ export class InferBaseBranchUseCase {
           startPoint: inference.autoCreateFrom,
           workspaceDir: cwd
         });
+
+        // Best-effort remote push for newly auto-created collector branch
+        if (this.worktreeManager.pushBranch) {
+          try {
+            await this.worktreeManager.pushBranch({
+              branchName: inference.baseBranch,
+              remote: 'origin',
+              workspaceDir: cwd
+            });
+          } catch {
+            // Non-fatal if remote is not reachable or offline
+          }
+        }
       } catch (err: unknown) {
         // If branch already exists (e.g. concurrent creation race condition), proceed safely.
         // For fatal creation errors (e.g. invalid permissions or ref name), bubble up cleanly.
@@ -165,6 +201,23 @@ export class InferBaseBranchUseCase {
             startPoint: inference.autoCreateFrom
           });
         }
+      }
+    }
+
+    // 8. Persist inferred base branch in pipeline state checkpoint if stateRepo is available
+    if (this.stateRepo) {
+      try {
+        const snapshot = await this.stateRepo.load();
+        if (snapshot) {
+          const sm = StateMachine.fromSnapshot(snapshot);
+          sm.setBaseBranch(inference.baseBranch);
+          if (params.issueNumber) {
+            sm.setIssue(params.issueNumber);
+          }
+          await this.stateRepo.save(sm.toSnapshot());
+        }
+      } catch {
+        // Non-blocking for pure branch inference
       }
     }
 

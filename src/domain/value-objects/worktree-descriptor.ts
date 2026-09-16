@@ -59,6 +59,10 @@ export class WorktreeDescriptor {
     Object.freeze(this);
   }
 
+  public static create(props: WorktreeDescriptorProps): WorktreeDescriptor {
+    return new WorktreeDescriptor(props);
+  }
+
   /**
    * Generates a clean URL/branch-safe kebab-case slug from arbitrary title string.
    */
@@ -126,5 +130,19 @@ export class WorktreeDescriptor {
       slug: this.slug,
       isIsolated: this.isIsolated
     };
+  }
+
+  public static fromJSON(json: any): WorktreeDescriptor {
+    if (!json || typeof json !== 'object') {
+      throw new ValidationError('worktree', json, 'WorktreeDescriptor json must be an object.');
+    }
+    return new WorktreeDescriptor({
+      taskId: json.taskId,
+      worktreePath: json.worktreePath,
+      branch: json.branch,
+      baseBranch: json.baseBranch,
+      slug: json.slug,
+      isIsolated: json.isIsolated
+    });
   }
 }

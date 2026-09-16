@@ -68,6 +68,13 @@ export interface IsAncestorOptions {
   readonly workspaceDir?: string;
 }
 
+export interface PushBranchOptions {
+  readonly branchName: string;
+  readonly remote?: string;
+  readonly workspaceDir?: string;
+  readonly setUpstream?: boolean;
+}
+
 export interface WorktreeManagerPort {
   /**
    * Resolves the relative or absolute worktree path for a given task ID.
@@ -143,4 +150,9 @@ export interface WorktreeManagerPort {
    * Checks whether ancestorBranch has been merged into descendantBranch.
    */
   isAncestor?(options: IsAncestorOptions): Promise<boolean>;
+
+  /**
+   * Pushes a local branch to remote repository (typically best-effort for collector branches).
+   */
+  pushBranch?(options: PushBranchOptions): Promise<boolean>;
 }
