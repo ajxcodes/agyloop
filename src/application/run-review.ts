@@ -33,6 +33,7 @@ import {
   NOTE_REVIEW_CHANGES_REQUESTED,
   MS_PER_SECOND,
   ReviewVerdict,
+  PublicSanitizer,
   InvalidTransitionError
 } from '../domain';
 import {
@@ -70,6 +71,7 @@ export interface RunReviewResult {
   readonly standardsContent: string | null;
   readonly acceptanceCriteria: readonly string[];
   readonly durationMs: number;
+  readonly suggestedCommitMessage?: string;
 }
 
 function cleanBulletLine(rawLine: string): string {
@@ -254,13 +256,16 @@ export class RunReviewUseCase {
     // 7. Execute review inspection & parse ReviewVerdict
     let verdict: ReviewVerdict;
 
+    const reviewCwd = sm.worktree?.worktreePath || workspace;
+    const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
+
     if (params.reviewOutput) {
       verdict = ReviewVerdict.parse(params.reviewOutput);
     } else if (this.critique) {
       const aiReport = await this.critique.review({
-        cwd: workspace,
+        cwd: reviewCwd,
         staged: params.staged,
-        baseRef: params.baseRef
+        baseRef: targetBaseRef
       });
       verdict = ReviewVerdict.fromAiReviewReport(aiReport);
     } else {
@@ -276,12 +281,30 @@ export class RunReviewUseCase {
     const durationMs = Date.now() - startTime;
     const durationStr = `${(durationMs / MS_PER_SECOND).toFixed(1)}s`;
 
+    // Formulate auto-suggested conventional commit message if approved
+    let suggestedCommitMessage: string | undefined = undefined;
+    if (verdict.isApproved()) {
+      const issueNum = activeIssue || sm.issue;
+      const issueRef = issueNum ? ` (#${issueNum})` : '';
+      let desc = 'implement approved changes';
+      if (resolvedPlan?.planPath) {
+        const baseName = resolvedPlan.planPath.split('/').pop() || '';
+        const cleanName = baseName.replace(/\.md$/, '').replace(/^\[Implementation\]\s*-\s*/i, '');
+        if (cleanName.trim()) {
+          desc = cleanName.trim().toLowerCase().replace(/^(feat|fix|chore):?\s*/i, '');
+        }
+      }
+      const rawMsg = `feat: ${desc}${issueRef}`;
+      suggestedCommitMessage = PublicSanitizer.sanitizeCommitMessage(rawMsg);
+    }
+
     // 8. Enforce State Transitions based on ReviewVerdict
     if (verdict.isApproved()) {
       sm.transition(STAGE_COMMIT, {
         note: NOTE_REVIEW_APPROVED,
         reviewVerdict: VERDICT_APPROVED,
-        reviewTokens: verdict.formatStructuredTokens()
+        reviewTokens: verdict.formatStructuredTokens(),
+        suggestedCommitMessage
       });
     } else {
       sm.transition(STAGE_IMPLEMENT, {
@@ -297,15 +320,19 @@ export class RunReviewUseCase {
       await this.stateRepo.save(sm.toSnapshot());
 
       if (resolvedPlan && resolvedPlan.summaryPath) {
+        const noteDetails = verdict.isApproved()
+          ? `Review approved in ${durationStr}: ${verdict.summary}${
+              suggestedCommitMessage ? `\nSuggested Commit: \`${suggestedCommitMessage}\`` : ''
+            }`
+          : `Review requested changes: ${verdict.summary} Pipeline reverted to IMPLEMENT for self-correction.`;
+
         this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
           stage: SUMMARY_STAGE_AI_REVIEW,
           subagent: reviewerDef.name,
           model: reviewerDef.model,
           status: verdict.status,
           duration: durationStr,
-          reviewNote: verdict.isApproved()
-            ? `Review approved in ${durationStr}: ${verdict.summary}`
-            : `Review requested changes: ${verdict.summary} Pipeline reverted to IMPLEMENT for self-correction.`
+          reviewNote: noteDetails
         });
       }
     }
@@ -319,7 +346,8 @@ export class RunReviewUseCase {
       taskPrompt,
       standardsContent,
       acceptanceCriteria,
-      durationMs
+      durationMs,
+      suggestedCommitMessage
     };
   }
 }

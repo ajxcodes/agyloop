@@ -19,5 +19,6 @@ export * from './run-preflight-check';
 export * from './infer-base-branch';
 export * from './milestone-release';
 export * from './manage-issue-migration';
+export * from './get-next-action';
 
 

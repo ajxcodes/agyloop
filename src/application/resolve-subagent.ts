@@ -377,6 +377,10 @@ export class ResolveSubagentUseCase {
     prompt += `2. **Surgical Modifications**: Use \`replace_file_content\` for targeted edits on existing files. Use \`write_to_file\` only for new files.\n`;
     prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n\n`;
 
+    if (params.workspaceDir) {
+      prompt += `### Execution Workspace / Worktree:\n**Working Directory**: \`${params.workspaceDir}\`\n\n`;
+    }
+
     if (params.issueNumber) {
       prompt += `### Issue Context (#${params.issueNumber}):\n`;
       if (params.issueTitle) {

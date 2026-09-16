@@ -17,6 +17,7 @@ import {
 } from '../constants';
 import { Stage } from '../value-objects/stage';
 import { IssueNumber } from '../value-objects/issue-number';
+import { WorktreeDescriptor } from '../value-objects/worktree-descriptor';
 import { InvalidTransitionError, ValidationError } from '../errors';
 
 export interface StateHistoryEntry {
@@ -30,6 +31,8 @@ export interface StateMachineSnapshot {
   readonly currentStage: StageName;
   readonly mode: ExecutionMode;
   readonly issue: number | null;
+  readonly baseBranch?: string | null;
+  readonly worktree?: Record<string, unknown> | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -39,6 +42,8 @@ export interface StateStatusSummary {
   readonly currentStage: StageName;
   readonly mode: ExecutionMode;
   readonly issue: number | null;
+  readonly baseBranch?: string | null;
+  readonly worktree?: WorktreeDescriptor | null;
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -48,6 +53,8 @@ export class StateMachine {
   private _stage: Stage;
   private _mode: ExecutionMode;
   private _issue: IssueNumber | null;
+  private _baseBranch: string | null;
+  private _worktree: WorktreeDescriptor | null;
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
@@ -56,6 +63,8 @@ export class StateMachine {
     stage?: Stage;
     mode?: ExecutionMode;
     issue?: IssueNumber | null;
+    baseBranch?: string | null;
+    worktree?: WorktreeDescriptor | null;
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
@@ -63,6 +72,8 @@ export class StateMachine {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
     this._issue = options.issue || null;
+    this._baseBranch = options.baseBranch || null;
+    this._worktree = options.worktree || null;
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
@@ -100,6 +111,14 @@ export class StateMachine {
     return this._issue;
   }
 
+  public get baseBranch(): string | null {
+    return this._baseBranch;
+  }
+
+  public get worktree(): WorktreeDescriptor | null {
+    return this._worktree;
+  }
+
   public get createdAt(): string {
     return this._createdAt;
   }
@@ -114,6 +133,16 @@ export class StateMachine {
 
   public setIssue(issue: number | string | null | undefined): void {
     this._issue = IssueNumber.tryFrom(issue);
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public setBaseBranch(baseBranch: string | null | undefined): void {
+    this._baseBranch = baseBranch && baseBranch.trim() ? baseBranch.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public setWorktree(worktree: WorktreeDescriptor | null | undefined): void {
+    this._worktree = worktree || null;
     this._updatedAt = new Date().toISOString();
   }
 
@@ -158,6 +187,8 @@ export class StateMachine {
       this._mode = mode;
     }
     this._issue = IssueNumber.tryFrom(issue);
+    this._baseBranch = null;
+    this._worktree = null;
     this._updatedAt = now;
     this._history = [
       {
@@ -173,6 +204,8 @@ export class StateMachine {
       currentStage: this._stage.value,
       mode: this._mode,
       issue: this.issue,
+      baseBranch: this._baseBranch,
+      worktree: this._worktree,
       stepCount: this._history.length,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt
@@ -185,6 +218,8 @@ export class StateMachine {
       currentStage: this._stage.value,
       mode: this._mode,
       issue: this.issue,
+      baseBranch: this._baseBranch,
+      worktree: this._worktree ? this._worktree.toJSON() : null,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       history: Object.freeze([...this._history])
@@ -199,11 +234,15 @@ export class StateMachine {
     const stage = new Stage(snapshot.currentStage);
     const mode = snapshot.mode || MODE_STANDARD;
     const issue = IssueNumber.tryFrom(snapshot.issue);
+    const baseBranch = snapshot.baseBranch || null;
+    const worktree = snapshot.worktree ? WorktreeDescriptor.fromJSON(snapshot.worktree) : null;
 
     return new StateMachine({
       stage,
       mode,
       issue,
+      baseBranch,
+      worktree,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       history: snapshot.history || []
@@ -213,11 +252,15 @@ export class StateMachine {
   public static createInitial(options: {
     mode?: ExecutionMode;
     issue?: number | string | null;
+    baseBranch?: string | null;
+    worktree?: WorktreeDescriptor | null;
   } = {}): StateMachine {
     return new StateMachine({
       stage: new Stage(STAGE_INITIALIZED),
       mode: options.mode || MODE_STANDARD,
-      issue: IssueNumber.tryFrom(options.issue)
+      issue: IssueNumber.tryFrom(options.issue),
+      baseBranch: options.baseBranch,
+      worktree: options.worktree
     });
   }
 }

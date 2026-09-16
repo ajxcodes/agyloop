@@ -31,7 +31,8 @@ import {
   StateRepository,
   CommandExecutorPort,
   PlanGeneratorPort,
-  ConfirmationPromptPort
+  ConfirmationPromptPort,
+  WorktreeManagerPort
 } from '../ports';
 
 export interface ExecuteCommitParams {
@@ -40,8 +41,10 @@ export interface ExecuteCommitParams {
   readonly bypassConfirmation?: boolean;
   readonly staged?: boolean;
   readonly workspaceDir?: string;
+  readonly rootWorkspaceDir?: string;
   readonly dryRun?: boolean;
   readonly issue?: number | string | null;
+  readonly keepWorktree?: boolean;
 }
 
 export interface ExecuteCommitResult {
@@ -52,6 +55,9 @@ export interface ExecuteCommitResult {
   readonly currentStage: string;
   readonly stateMachine: StateMachine;
   readonly summaryUpdated: boolean;
+  readonly prBaseBranch?: string;
+  readonly prCommand?: string;
+  readonly worktreeTornDown?: boolean;
 }
 
 export class ExecuteCommitUseCase {
@@ -59,17 +65,20 @@ export class ExecuteCommitUseCase {
   private readonly commandExecutor: CommandExecutorPort;
   private readonly planGenerator?: PlanGeneratorPort;
   private readonly confirmationPrompt?: ConfirmationPromptPort;
+  private readonly worktreeManager?: WorktreeManagerPort;
 
   constructor(
     stateRepo: StateRepository,
     commandExecutor: CommandExecutorPort,
     planGenerator?: PlanGeneratorPort,
-    confirmationPrompt?: ConfirmationPromptPort
+    confirmationPrompt?: ConfirmationPromptPort,
+    worktreeManager?: WorktreeManagerPort
   ) {
     this.stateRepo = stateRepo;
     this.commandExecutor = commandExecutor;
     this.planGenerator = planGenerator;
     this.confirmationPrompt = confirmationPrompt;
+    this.worktreeManager = worktreeManager;
   }
 
   public async execute(params: ExecuteCommitParams = {}): Promise<ExecuteCommitResult> {
@@ -198,6 +207,48 @@ export class ExecuteCommitUseCase {
     // Checkpoint state
     await this.stateRepo.save(sm.toSnapshot());
 
+    // Resolve PR target base branch (inferred collector branch or main)
+    const prBaseBranch = sm.baseBranch || 'main';
+    const activeBranch = sm.worktree?.branch || '';
+    const prCommand = activeBranch
+      ? `gh pr create --base "${prBaseBranch}" --head "${activeBranch}"`
+      : `gh pr create --base "${prBaseBranch}"`;
+
+    // Automated Worktree Teardown
+    let worktreeTornDown = false;
+    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager);
+
+    if (shouldTeardown && this.worktreeManager && sm.worktree) {
+      const wtPath = sm.worktree.worktreePath;
+      const rootDir = params.rootWorkspaceDir || cwd;
+
+      let doTeardown = false;
+      if (isExplicitlyConfirmed || isBypassed) {
+        doTeardown = true;
+      } else if (this.confirmationPrompt) {
+        doTeardown = await this.confirmationPrompt.confirm(
+          `\nTeardown isolated git worktree at ${wtPath}?`,
+          true
+        );
+      }
+
+      if (doTeardown) {
+        try {
+          await this.worktreeManager.removeWorktree({
+            worktreePath: wtPath,
+            workspaceDir: rootDir,
+            force: true,
+            prune: true
+          });
+          sm.setWorktree(null);
+          await this.stateRepo.save(sm.toSnapshot());
+          worktreeTornDown = true;
+        } catch {
+          // Teardown failure non-fatal
+        }
+      }
+    }
+
     // Update Summary Log
     let summaryUpdated = false;
     if (this.planGenerator) {
@@ -225,7 +276,10 @@ export class ExecuteCommitUseCase {
       commitMessage,
       currentStage: sm.currentStage,
       stateMachine: sm,
-      summaryUpdated
+      summaryUpdated,
+      prBaseBranch,
+      prCommand,
+      worktreeTornDown
     };
   }
 }

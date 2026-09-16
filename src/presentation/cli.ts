@@ -67,7 +67,9 @@ import {
   DraftCommitUseCase,
   ExecuteCommitUseCase,
   ManageWorktreeUseCase,
-  MilestoneReleaseUseCase
+  MilestoneReleaseUseCase,
+  InferBaseBranchUseCase,
+  GetNextActionUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -88,6 +90,8 @@ export interface CliOptions {
   staged: boolean;
   worktree: boolean;
   noWorktree: boolean;
+  keepWorktree: boolean;
+  json: boolean;
   baseBranch: string | null;
   phaseBranch: string | null;
   worktreeSubcommand: string | null;
@@ -116,6 +120,8 @@ Operational Modes:
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
 
 Pipeline Management:
+  next               Inspect state and generate next invoke_subagent command/payload
+  branch-info        Display base collector branch, active task branch, and PR target
   status             Display current pipeline stage and checkpoint history
   config             Display active configuration and model routing table
   models             List available Gemini models and mapped Antigravity tiers
@@ -135,6 +141,9 @@ Operational Flags:
       --type <type>  Specify plan type (discovery | implementation | auto)
       --config <path> Path to custom configuration file (.agyloop.json)
       --worktree     Enable git worktree isolation for task execution (default: true)
+      --no-worktree  Disable worktree isolation and execute directly in root workspace
+      --keep-worktree Keep git worktree after commit completion (prevent auto-teardown)
+      --json         Output machine-readable JSON for scripting and piping
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
       --dry-run      Simulate execution without modifying state or files on disk
@@ -179,6 +188,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     staged: false,
     worktree: true,
     noWorktree: false,
+    keepWorktree: false,
+    json: false,
     baseBranch: null,
     phaseBranch: null,
     worktreeSubcommand: null,
@@ -208,6 +219,10 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     } else if (arg === '--no-worktree') {
       options.worktree = false;
       options.noWorktree = true;
+    } else if (arg === '--keep-worktree') {
+      options.keepWorktree = true;
+    } else if (arg === '--json') {
+      options.json = true;
     } else if (arg === '--base-branch') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.baseBranch = args[++i];
@@ -340,10 +355,100 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     worktreeManager
   });
 
+  const inferBaseBranchUseCase = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
+
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
 
   switch (effectiveCommand) {
+    case 'next': {
+      const getNextActionUseCase = new GetNextActionUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway
+      );
+      const res = await getNextActionUseCase.execute({
+        configPath: options.configPath
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return EXIT_CODE_SUCCESS;
+      }
+
+      console.log('\n=== AgyLoop: Next Subagent Directive ===');
+      console.log(`Current Stage : ${formatStageBadge(res.currentStage)}`);
+      console.log(`Next Action   : ${res.title}`);
+      if (res.baseBranch) {
+        console.log(`Base Branch   : ${res.baseBranch}`);
+      }
+      if (res.taskBranch) {
+        console.log(`Task Branch   : ${res.taskBranch}`);
+      }
+      if (res.worktreePath) {
+        console.log(`Target Cwd    : ${res.worktreePath}`);
+      }
+      console.log(`Description   : ${res.description}`);
+      console.log(`Summary       : ${res.humanSummary}\n`);
+
+      if (res.invocationPayload) {
+        console.log('--- invoke_subagent JSON Payload ---');
+        console.log(JSON.stringify(res.invocationPayload, null, 2));
+        console.log('\nPass this payload directly to invoke_subagent or copy into chat.\n');
+      }
+      return EXIT_CODE_SUCCESS;
+    }
+
+    case 'branch-info': {
+      const snapshot = await stateRepo.load();
+      const currentBranch = await worktreeManager.resolveBaseBranch();
+      const defaultBranch = 'main';
+
+      let baseBranch = snapshot?.baseBranch || null;
+      if (!baseBranch && snapshot?.issue) {
+        try {
+          const infer = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
+          const res = await infer.execute({ issueNumber: snapshot.issue });
+          baseBranch = res.baseBranch;
+        } catch {
+          baseBranch = null;
+        }
+      }
+
+      const activeTaskBranch = snapshot?.worktree?.branch || (currentBranch.startsWith('task/') || currentBranch.startsWith('fix/') ? currentBranch : null);
+      const collectorBranch = baseBranch || (currentBranch.startsWith('phase/') || currentBranch.startsWith('feature/') ? currentBranch : null);
+      const prTarget = collectorBranch || defaultBranch;
+
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              baseBranch: collectorBranch,
+              taskBranch: activeTaskBranch,
+              worktreePath: snapshot?.worktree?.worktreePath || null,
+              prBaseTarget: prTarget,
+              milestoneTarget: defaultBranch
+            },
+            null,
+            2
+          )
+        );
+        return EXIT_CODE_SUCCESS;
+      }
+
+      console.log('\n=== AgyLoop: Branch Lifecycle & Target Diagnostics ===');
+      console.log(`Base Collector Branch : ${collectorBranch ? collectorBranch : '(none - direct from ' + defaultBranch + ')'}`);
+      console.log(`Active Task Branch    : ${activeTaskBranch ? activeTaskBranch : '(none - worktree not active)'}`);
+      console.log(`Milestone Target      : ${defaultBranch}`);
+      console.log(`PR Creation Target    : ${prTarget}`);
+      if (snapshot?.worktree?.worktreePath) {
+        console.log(`Isolated Worktree     : ${snapshot.worktree.worktreePath}`);
+      }
+      console.log('');
+      return EXIT_CODE_SUCCESS;
+    }
+
     case 'status': {
       const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
       const result = await getStatusUseCase.execute();
@@ -424,10 +529,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
       try {
-        const transitionUseCase = new TransitionStageUseCase(stateRepo);
+        const transitionUseCase = new TransitionStageUseCase(
+          stateRepo,
+          worktreeManager,
+          inferBaseBranchUseCase
+        );
         await transitionUseCase.execute({
           targetStage: options.stageArg as StageName,
-          metadata: { note: 'Manual CLI transition' }
+          metadata: { note: 'Manual CLI transition' },
+          noWorktree: options.noWorktree,
+          baseBranch: options.baseBranch,
+          issue: options.issue
         });
         console.log(`✓ Transitioned to ${formatStageBadge(options.stageArg)}`);
         return EXIT_CODE_SUCCESS;
@@ -783,7 +895,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           stateRepo,
           commandExecutor,
           planGenerator,
-          confirmationPrompt
+          confirmationPrompt,
+          worktreeManager
         );
 
         const execResult = await executeCommitUseCase.execute({
@@ -793,12 +906,19 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           staged: options.staged,
           dryRun: options.dryRun,
           issue: options.issue,
+          keepWorktree: options.keepWorktree,
           workspaceDir: process.cwd()
         });
 
         if (execResult.confirmed && execResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
           console.log(`✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.`);
+          if (execResult.worktreeTornDown) {
+            console.log(`✓ Isolated git worktree torn down and pruned.`);
+          }
+          if (execResult.prCommand) {
+            console.log(`\nNext Step (Create PR):\n  ${execResult.prCommand}`);
+          }
           if (execResult.summaryUpdated) {
             console.log(`✓ AgyLoop Summary.md updated with commit hash and timestamp.\n`);
           }
