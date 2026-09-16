@@ -14,6 +14,7 @@ const {
   STAGE_PLAN,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   MODE_YOLO,
   InvalidTransitionError,
@@ -326,6 +327,30 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
 
     assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
     assert.strictEqual(result.resumed, false);
+  });
+
+  test('allows reopening implementation when pipeline is at COMPLETED stage', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_COMPLETED,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_COMPLETED, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir);
+
+    const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.resumed, false);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_IMPLEMENT);
   });
 
   test('throws InvalidTransitionError when attempting implementation from PLAN in standard mode', async () => {

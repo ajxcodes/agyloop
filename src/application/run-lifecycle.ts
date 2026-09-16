@@ -235,17 +235,33 @@ export class RunLifecycleUseCase {
     const snapshot = await this.stateRepo.load();
     let sm: StateMachine;
     let activeMode: ExecutionMode = params.mode || MODE_STANDARD;
+    const isNewIssue =
+      params.issue !== undefined &&
+      params.issue !== null &&
+      snapshot !== null &&
+      snapshot.issue !== null &&
+      String(params.issue) !== String(snapshot.issue);
 
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
-      if (params.mode) {
-        activeMode = params.mode;
-        sm.setMode(activeMode);
+      if (
+        (activeMode === MODE_PLAN && (sm.currentStage === STAGE_COMPLETED || isNewIssue)) ||
+        (isNewIssue && (activeMode === MODE_STANDARD || activeMode === MODE_YOLO))
+      ) {
+        sm.reset(activeMode, params.issue ?? sm.issue);
         if (!params.dryRun) {
           await this.stateRepo.save(sm.toSnapshot());
         }
       } else {
-        activeMode = sm.mode || MODE_STANDARD;
+        if (params.mode) {
+          activeMode = params.mode;
+          sm.setMode(activeMode);
+          if (!params.dryRun) {
+            await this.stateRepo.save(sm.toSnapshot());
+          }
+        } else {
+          activeMode = sm.mode || MODE_STANDARD;
+        }
       }
     } else {
       activeMode = params.mode || MODE_STANDARD;
@@ -258,7 +274,7 @@ export class RunLifecycleUseCase {
       }
     }
 
-    if (params.issue) {
+    if (params.issue && !isNewIssue && sm.issue !== Number(params.issue)) {
       sm.setIssue(params.issue);
       if (!params.dryRun) {
         await this.stateRepo.save(sm.toSnapshot());

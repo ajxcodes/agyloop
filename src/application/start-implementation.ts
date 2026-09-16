@@ -16,6 +16,7 @@ import {
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_PLAN,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   MODE_YOLO,
   ROLE_IMPLEMENTER,
@@ -25,6 +26,7 @@ import {
   SUMMARY_STATUS_IN_PROGRESS,
   NOTE_DEVELOPER_APPROVED,
   NOTE_AUTO_APPROVED_YOLO,
+  NOTE_REOPEN_IMPLEMENTATION_COMPLETED,
   VALIDATION_FIELD_PLAN_PATH,
   IssueNumber,
   InvalidTransitionError,
@@ -113,12 +115,14 @@ export class StartImplementationUseCase {
       sm.transition(STAGE_IMPLEMENT, { note: NOTE_AUTO_APPROVED_YOLO });
     } else if (sm.currentStage === STAGE_IMPLEMENT) {
       resumed = true;
+    } else if (sm.currentStage === STAGE_COMPLETED) {
+      sm.transition(STAGE_IMPLEMENT, { note: NOTE_REOPEN_IMPLEMENTATION_COMPLETED });
     } else {
       throw new InvalidTransitionError(
         sm.currentStage,
         STAGE_IMPLEMENT,
         sm.mode,
-        `Cannot start implementation from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_APPROVAL}' (or in '${STAGE_PLAN}' with YOLO mode).`
+        `Cannot start implementation from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_APPROVAL}', '${STAGE_COMPLETED}' (or in '${STAGE_PLAN}' with YOLO mode).`
       );
     }
 

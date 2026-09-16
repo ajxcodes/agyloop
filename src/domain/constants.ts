@@ -39,8 +39,8 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
   [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE]),
   [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT]), // IMPLEMENT allowed if gates fail
   [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT]), // IMPLEMENT allowed if review changes required
-  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED]),
-  [STAGE_COMPLETED]: Object.freeze([STAGE_INITIALIZED]) // Can start next task
+  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT]),
+  [STAGE_COMPLETED]: Object.freeze([STAGE_INITIALIZED, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW]) // Can start next task or reopen for fixes/review
 });
 
 export const MODE_STANDARD = 'standard' as const;
@@ -213,7 +213,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
 // Numeric Constants & Default Invariants
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
-export const CLI_VERSION = '0.1.0' as const;
+export const CLI_VERSION = '0.1.1' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
@@ -283,6 +283,8 @@ export const NOTE_GATES_FAILED = 'Quality gates failed' as const;
 export const NOTE_EXECUTING_REVIEW = 'Executing AI review' as const;
 export const NOTE_REVIEW_APPROVED = 'AI review approved: Code changes verified' as const;
 export const NOTE_REVIEW_CHANGES_REQUESTED = 'AI review requested changes: Reverting to IMPLEMENT' as const;
+export const NOTE_REOPEN_IMPLEMENTATION_COMPLETED = 'Reopening implementation from completed stage to address review findings' as const;
+export const NOTE_RERUN_GATES_COMPLETED = 'Re-executing quality gates from completed stage' as const;
 
 // Status Identifiers
 export const STATUS_PASSED = 'PASSED' as const;

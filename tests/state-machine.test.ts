@@ -104,6 +104,46 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
   });
 
+  test('allows transition from STAGE_COMMIT to STAGE_QUALITY_GATE and STAGE_IMPLEMENT', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+
+    assert.strictEqual(sm.canTransition(STAGE_QUALITY_GATE), true);
+    assert.strictEqual(sm.canTransition(STAGE_IMPLEMENT), true);
+    assert.strictEqual(sm.canTransition(STAGE_COMPLETED), true);
+
+    // Transition COMMIT -> QUALITY_GATE
+    sm.transition(STAGE_QUALITY_GATE);
+    assert.strictEqual(sm.currentStage, STAGE_QUALITY_GATE);
+  });
+
+  test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, and STAGE_REVIEW', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+    sm.transition(STAGE_COMPLETED);
+
+    assert.strictEqual(sm.canTransition(STAGE_INITIALIZED), true);
+    assert.strictEqual(sm.canTransition(STAGE_IMPLEMENT), true);
+    assert.strictEqual(sm.canTransition(STAGE_QUALITY_GATE), true);
+    assert.strictEqual(sm.canTransition(STAGE_REVIEW), true);
+
+    // Reopen implementation from completed
+    sm.transition(STAGE_IMPLEMENT);
+    assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
+  });
+
   test('persists checkpoint to state.json and reloads state cleanly', () => {
     const sm = StateMachine.createInitial({ mode: 'standard', issue: 42 });
     sm.transition(STAGE_DISCOVERY);
