@@ -20,7 +20,8 @@ import {
   ERR_CRITIQUE,
   ERR_AI_REVIEWER,
   ERR_REVIEWER_SUBAGENT,
-  ERR_COMMIT_EXECUTION
+  ERR_COMMIT_EXECUTION,
+  ERR_WORKTREE
 } from './constants';
 
 
@@ -230,6 +231,34 @@ export class CommitExecutionError extends AgyLoopError {
     if (cause) {
       this.cause = cause;
     }
+  }
+}
+
+export class WorktreeError extends AgyLoopError {
+  public readonly code = ERR_WORKTREE;
+  public readonly operation: string;
+  public readonly reason: string;
+
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Worktree error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    this.operation = operation;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
+export class WorktreeCreationError extends WorktreeError {
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    super(operation, reason, details, cause);
+  }
+}
+
+export class WorktreeCleanupError extends WorktreeError {
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    super(operation, reason, details, cause);
   }
 }
 

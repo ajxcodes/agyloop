@@ -190,6 +190,7 @@ export const ERR_CRITIQUE = 'ERR_CRITIQUE' as const;
 export const ERR_AI_REVIEWER = ERR_CRITIQUE;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
 export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
+export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -205,7 +206,8 @@ export const ERROR_CODES = Object.freeze({
   CRITIQUE: ERR_CRITIQUE,
   AI_REVIEWER: ERR_CRITIQUE,
   REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
-  COMMIT_EXECUTION: ERR_COMMIT_EXECUTION
+  COMMIT_EXECUTION: ERR_COMMIT_EXECUTION,
+  WORKTREE: ERR_WORKTREE
 });
 
 
@@ -213,7 +215,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
 // Numeric Constants & Default Invariants
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
-export const CLI_VERSION = '0.1.1' as const;
+export const CLI_VERSION = '0.2.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
@@ -226,6 +228,8 @@ export const DEFAULT_STATE_FILE = 'state.json' as const;
 export const DEFAULT_PLANS_DIR = 'artifacts/plans' as const;
 export const DEFAULT_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
 export const DEFAULT_TEMPLATES_DIRNAME = 'templates' as const;
+export const DEFAULT_WORKTREES_DIR = '.worktrees' as const;
+export const DEFAULT_TASK_BRANCH_PREFIX = 'task/' as const;
 
 // Plan Template Names
 export const TEMPLATE_DISCOVERY = 'discovery-plan.md' as const;
@@ -1012,6 +1016,9 @@ export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as c
 export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
 export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;
 export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
+export const NOTE_WORKTREE_CREATED = 'Isolated git worktree provisioned' as const;
+export const NOTE_WORKTREE_REMOVED = 'Isolated git worktree detached and cleaned' as const;
+export const NOTE_WORKTREE_PRUNED = 'Dangling git worktrees pruned' as const;
 
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;
@@ -1024,6 +1031,7 @@ export const COMMAND_MODELS = 'models' as const;
 export const COMMAND_PROMPT = 'prompt' as const;
 export const COMMAND_RESET = 'reset' as const;
 export const COMMAND_TRANSITION = 'transition' as const;
+export const COMMAND_WORKTREE = 'worktree' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1036,7 +1044,8 @@ export const CLI_COMMANDS = Object.freeze({
   MODELS: COMMAND_MODELS,
   PROMPT: COMMAND_PROMPT,
   RESET: COMMAND_RESET,
-  TRANSITION: COMMAND_TRANSITION
+  TRANSITION: COMMAND_TRANSITION,
+  WORKTREE: COMMAND_WORKTREE
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
@@ -1055,6 +1064,8 @@ export const FLAG_TYPE = '--type' as const;
 export const FLAG_CONFIG = '--config' as const;
 export const FLAG_DRY_RUN = '--dry-run' as const;
 export const FLAG_REFRESH = '--refresh' as const;
+export const FLAG_WORKTREE = '--worktree' as const;
+export const FLAG_NO_WORKTREE = '--no-worktree' as const;
 export const FLAG_HELP = '--help' as const;
 export const FLAG_HELP_SHORT = '-h' as const;
 export const FLAG_VERSION = '--version' as const;
@@ -1075,6 +1086,8 @@ export const CLI_FLAGS = Object.freeze({
   CONFIG: FLAG_CONFIG,
   DRY_RUN: FLAG_DRY_RUN,
   REFRESH: FLAG_REFRESH,
+  WORKTREE: FLAG_WORKTREE,
+  NO_WORKTREE: FLAG_NO_WORKTREE,
   HELP: FLAG_HELP,
   HELP_SHORT: FLAG_HELP_SHORT,
   VERSION: FLAG_VERSION,

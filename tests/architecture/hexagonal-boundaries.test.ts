@@ -328,6 +328,22 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         className: 'ReadlineConfirmationPrompt',
         portName: 'ConfirmationPromptPort',
         requiredMethods: ['confirm']
+      },
+      {
+        adapterFile: 'git-worktree-manager.ts',
+        className: 'GitWorktreeManager',
+        portName: 'WorktreeManagerPort',
+        requiredMethods: [
+          'resolveTaskWorktreePath',
+          'resolveTaskBranchName',
+          'ensureGitIgnore',
+          'resolveBaseBranch',
+          'createWorktree',
+          'removeWorktree',
+          'pruneWorktrees',
+          'listWorktrees',
+          'cleanOrphanedWorktrees'
+        ]
       }
     ];
 

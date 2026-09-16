@@ -1,6 +1,7 @@
 # Antigravity Persistent Plans & Local State
 artifacts/plans/
 .agyloop/
+.worktrees/
 config.json
 
 # Environment & Secrets

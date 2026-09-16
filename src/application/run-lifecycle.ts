@@ -47,7 +47,8 @@ import {
   NOTE_AUTO_APPROVED_PLAN,
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
-  GateCommandDefinition
+  GateCommandDefinition,
+  WorktreeDescriptor
 } from '../domain';
 import {
   StateRepository,
@@ -58,7 +59,8 @@ import {
   BuildDetectorPort,
   StandardsRepository,
   CritiquePort,
-  ConfirmationPromptPort
+  ConfirmationPromptPort,
+  WorktreeManagerPort
 } from '../ports';
 import { StartPlanningUseCase, StartPlanningResult } from './start-planning';
 import { StartImplementationUseCase, StartImplementationResult } from './start-implementation';
@@ -84,11 +86,13 @@ export interface RunLifecycleParams {
   readonly commands?: readonly string[] | readonly GateCommandDefinition[];
   readonly timeoutSeconds?: number;
   readonly baseRef?: string;
+  readonly baseBranch?: string;
   readonly standardsPath?: string | null;
   readonly planPath?: string | null;
   readonly planDir?: string | null;
   readonly userInstructions?: string | null;
   readonly interactiveCommit?: boolean;
+  readonly worktree?: boolean;
 }
 
 export interface RunLifecycleResult {
@@ -103,6 +107,7 @@ export interface RunLifecycleResult {
   readonly reviewResult?: RunReviewResult;
   readonly draftCommitResult?: DraftCommitResult;
   readonly executeCommitResult?: ExecuteCommitResult;
+  readonly worktree?: WorktreeDescriptor | null;
   readonly message?: string;
 }
 
@@ -123,6 +128,7 @@ export interface RunLifecycleDependencies {
   readonly runReviewUseCase?: RunReviewUseCase;
   readonly draftCommitUseCase?: DraftCommitUseCase;
   readonly executeCommitUseCase?: ExecuteCommitUseCase;
+  readonly worktreeManager?: WorktreeManagerPort;
 }
 
 export class RunLifecycleUseCase {
@@ -135,6 +141,7 @@ export class RunLifecycleUseCase {
   private readonly standardsRepo?: StandardsRepository;
   private readonly critique?: CritiquePort;
   private readonly confirmationPrompt?: ConfirmationPromptPort;
+  private readonly worktreeManager?: WorktreeManagerPort;
 
   private readonly startPlanningUseCase: StartPlanningUseCase;
   private readonly startImplementationUseCase: StartImplementationUseCase;
@@ -153,6 +160,7 @@ export class RunLifecycleUseCase {
     this.standardsRepo = deps.standardsRepo;
     this.critique = deps.critique ?? deps.aiReviewer;
     this.confirmationPrompt = deps.confirmationPrompt;
+    this.worktreeManager = deps.worktreeManager;
 
     const resolveSubagentUseCase = new ResolveSubagentUseCase(
       this.configRepo,
@@ -333,6 +341,58 @@ export class RunLifecycleUseCase {
   }
 
   /**
+   * Helper: resolves an isolated git worktree if enabled for the active task.
+   */
+  private async resolveWorktree(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    rootWorkspace: string
+  ): Promise<WorktreeDescriptor | null> {
+    if (params.dryRun || !this.worktreeManager || params.worktree === false) {
+      return null;
+    }
+
+    const taskId = sm.issue || params.issue;
+    if (taskId === null || taskId === undefined) {
+      return null;
+    }
+
+    try {
+      return await this.worktreeManager.createWorktree({
+        taskId,
+        baseBranch: params.baseRef || params.baseBranch,
+        title: params.title,
+        workspaceDir: rootWorkspace
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Helper: detaches and removes an isolated worktree upon task completion.
+   */
+  private async teardownWorktree(
+    worktree: WorktreeDescriptor | null | undefined,
+    rootWorkspace: string
+  ): Promise<void> {
+    if (!worktree || !this.worktreeManager) {
+      return;
+    }
+
+    try {
+      await this.worktreeManager.removeWorktree({
+        worktreePath: worktree.worktreePath,
+        workspaceDir: rootWorkspace,
+        force: true,
+        prune: true
+      });
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  /**
    * Implement mode: resumes execution directly from approved plan specification.
    */
   private async executeImplementMode(
@@ -340,6 +400,9 @@ export class RunLifecycleUseCase {
     params: RunLifecycleParams,
     workspace: string
   ): Promise<RunLifecycleResult> {
+    const worktree = await this.resolveWorktree(sm, params, workspace);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+
     const implResult = await this.startImplementationUseCase.execute({
       issue: sm.issue,
       planPath: params.planPath,
@@ -347,7 +410,7 @@ export class RunLifecycleUseCase {
       userInstructions: params.userInstructions,
       configPath: params.configPath,
       dryRun: params.dryRun,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
 
     return {
@@ -356,7 +419,10 @@ export class RunLifecycleUseCase {
       currentStage: implResult.stateMachine.currentStage,
       stateMachine: implResult.stateMachine,
       implementationResult: implResult,
-      message: 'Implementation ready for code modifications.'
+      worktree,
+      message: worktree
+        ? `Implementation isolated in worktree: ${worktree.worktreePath}`
+        : 'Implementation ready for code modifications.'
     };
   }
 
@@ -370,6 +436,9 @@ export class RunLifecycleUseCase {
     commitAfter: boolean,
     workspace: string
   ): Promise<RunLifecycleResult> {
+    const worktree = await this.resolveWorktree(sm, params, workspace);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+
     // If starting from an earlier stage, advance through valid transitions to IMPLEMENT
     if (sm.currentStage === STAGE_INITIALIZED) {
       sm.transition(STAGE_DISCOVERY, { note: 'Direct gates mode initialization' });
@@ -391,6 +460,7 @@ export class RunLifecycleUseCase {
         mode: MODE_GATES,
         currentStage: commitAfter ? STAGE_COMPLETED : STAGE_COMMIT,
         stateMachine: sm,
+        worktree,
         message: `Simulated quality gates and AI PR review${commitAfter ? ' with --commit-after' : ''}.`
       };
     }
@@ -406,7 +476,7 @@ export class RunLifecycleUseCase {
       timeoutSeconds: params.timeoutSeconds,
       dryRun: params.dryRun,
       configPath: params.configPath,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
 
     sm = qgResult.stateMachine;
@@ -418,6 +488,7 @@ export class RunLifecycleUseCase {
         currentStage: sm.currentStage,
         stateMachine: sm,
         qualityGateResult: qgResult,
+        worktree,
         message: 'Quality gates failed. Pipeline reverted to IMPLEMENT.'
       };
     }
@@ -434,7 +505,7 @@ export class RunLifecycleUseCase {
       baseRef: params.baseRef,
       dryRun: params.dryRun,
       configPath: params.configPath,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
 
     sm = reviewResult.stateMachine;
@@ -447,6 +518,7 @@ export class RunLifecycleUseCase {
         stateMachine: sm,
         qualityGateResult: qgResult,
         reviewResult,
+        worktree,
         message: 'AI review requested changes. Pipeline reverted to IMPLEMENT.'
       };
     }
@@ -459,7 +531,7 @@ export class RunLifecycleUseCase {
         userMessage: params.message,
         workingDiff: params.workingDiff,
         baseRef: params.baseRef,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       const execResult = await this.executeCommitUseCase.execute({
@@ -469,8 +541,12 @@ export class RunLifecycleUseCase {
         staged: params.staged,
         dryRun: params.dryRun,
         issue: sm.issue,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
+
+      if (execResult.success) {
+        await this.teardownWorktree(worktree, workspace);
+      }
 
       return {
         success: execResult.success,
@@ -481,6 +557,7 @@ export class RunLifecycleUseCase {
         reviewResult,
         draftCommitResult: draftResult,
         executeCommitResult: execResult,
+        worktree: execResult.success ? null : worktree,
         message: NOTE_COMMIT_AFTER_EXECUTED
       };
     }
@@ -492,6 +569,7 @@ export class RunLifecycleUseCase {
       stateMachine: sm,
       qualityGateResult: qgResult,
       reviewResult,
+      worktree,
       message: 'Quality gates and AI review passed. Pipeline ready at COMMIT gate.'
     };
   }
@@ -504,13 +582,16 @@ export class RunLifecycleUseCase {
     params: RunLifecycleParams,
     workspace: string
   ): Promise<RunLifecycleResult> {
+    const worktree = await this.resolveWorktree(sm, params, workspace);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+
     const draftResult = await this.draftCommitUseCase.execute({
       issue: sm.issue,
       staged: params.staged,
       userMessage: params.message,
       workingDiff: params.workingDiff,
       baseRef: params.baseRef,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
 
     const bypass = params.yes ?? false;
@@ -521,8 +602,12 @@ export class RunLifecycleUseCase {
       staged: params.staged,
       dryRun: params.dryRun,
       issue: sm.issue,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
+
+    if (execResult.success) {
+      await this.teardownWorktree(worktree, workspace);
+    }
 
     return {
       success: execResult.success,
@@ -531,6 +616,7 @@ export class RunLifecycleUseCase {
       stateMachine: execResult.stateMachine,
       draftCommitResult: draftResult,
       executeCommitResult: execResult,
+      worktree: execResult.success ? null : worktree,
       message: execResult.success ? NOTE_LIFECYCLE_COMPLETED : 'Commit not executed.'
     };
   }
@@ -595,6 +681,10 @@ export class RunLifecycleUseCase {
       }
     }
 
+    // Resolve isolated worktree for implementation and verification
+    const worktree = await this.resolveWorktree(sm, params, workspace);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+
     if (sm.currentStage === STAGE_PLAN || sm.currentStage === STAGE_APPROVAL) {
       implResult = await this.startImplementationUseCase.execute({
         issue: sm.issue,
@@ -602,7 +692,7 @@ export class RunLifecycleUseCase {
         planDir: params.planDir,
         configPath: params.configPath,
         dryRun: params.dryRun,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       sm = implResult.stateMachine;
@@ -617,7 +707,7 @@ export class RunLifecycleUseCase {
       timeoutSeconds: params.timeoutSeconds,
       dryRun: params.dryRun,
       configPath: params.configPath,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
 
     sm = qgResult.stateMachine;
@@ -631,6 +721,7 @@ export class RunLifecycleUseCase {
         planResult,
         implementationResult: implResult,
         qualityGateResult: qgResult,
+        worktree,
         message: 'Quality gates failed in YOLO mode. Reverted to IMPLEMENT.'
       };
     }
@@ -647,7 +738,7 @@ export class RunLifecycleUseCase {
       baseRef: params.baseRef,
       dryRun: params.dryRun,
       configPath: params.configPath,
-      workspaceDir: workspace
+      workspaceDir: activeWorkspace
     });
 
     sm = reviewResult.stateMachine;
@@ -662,6 +753,7 @@ export class RunLifecycleUseCase {
         implementationResult: implResult,
         qualityGateResult: qgResult,
         reviewResult,
+        worktree,
         message: 'AI review requested changes in YOLO mode. Reverted to IMPLEMENT.'
       };
     }
@@ -674,7 +766,7 @@ export class RunLifecycleUseCase {
         userMessage: params.message,
         workingDiff: params.workingDiff,
         baseRef: params.baseRef,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       const execResult = await this.executeCommitUseCase.execute({
@@ -684,8 +776,12 @@ export class RunLifecycleUseCase {
         staged: params.staged,
         dryRun: params.dryRun,
         issue: sm.issue,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
+
+      if (execResult.success) {
+        await this.teardownWorktree(worktree, workspace);
+      }
 
       return {
         success: execResult.success,
@@ -698,6 +794,7 @@ export class RunLifecycleUseCase {
         reviewResult,
         draftCommitResult: draftResult,
         executeCommitResult: execResult,
+        worktree: execResult.success ? null : worktree,
         message: 'YOLO pipeline completed 100% end-to-end with automated commit.'
       };
     }
@@ -712,6 +809,7 @@ export class RunLifecycleUseCase {
       implementationResult: implResult,
       qualityGateResult: qgResult,
       reviewResult,
+      worktree,
       message: 'YOLO pipeline passed gates and review. Paused at COMMIT gate.'
     };
   }
@@ -747,6 +845,10 @@ export class RunLifecycleUseCase {
       };
     }
 
+    // Resolve isolated worktree for implementation, verification, and commit
+    const worktree = await this.resolveWorktree(sm, params, workspace);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+
     // 2. If at APPROVAL: human review has occurred, start implementation
     let implResult: StartImplementationResult | undefined;
     if (sm.currentStage === STAGE_APPROVAL) {
@@ -757,7 +859,7 @@ export class RunLifecycleUseCase {
         userInstructions: params.userInstructions,
         configPath: params.configPath,
         dryRun: params.dryRun,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       sm = implResult.stateMachine;
@@ -774,7 +876,7 @@ export class RunLifecycleUseCase {
         timeoutSeconds: params.timeoutSeconds,
         dryRun: params.dryRun,
         configPath: params.configPath,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       sm = qgResult.stateMachine;
@@ -787,6 +889,7 @@ export class RunLifecycleUseCase {
           stateMachine: sm,
           implementationResult: implResult,
           qualityGateResult: qgResult,
+          worktree,
           message: 'Quality gates failed. Pipeline reverted to IMPLEMENT.'
         };
       }
@@ -806,7 +909,7 @@ export class RunLifecycleUseCase {
         baseRef: params.baseRef,
         dryRun: params.dryRun,
         configPath: params.configPath,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       sm = reviewResult.stateMachine;
@@ -820,6 +923,7 @@ export class RunLifecycleUseCase {
           implementationResult: implResult,
           qualityGateResult: qgResult,
           reviewResult,
+          worktree,
           message: 'AI review requested changes. Pipeline reverted to IMPLEMENT.'
         };
       }
@@ -833,7 +937,7 @@ export class RunLifecycleUseCase {
         userMessage: params.message,
         workingDiff: params.workingDiff,
         baseRef: params.baseRef,
-        workspaceDir: workspace
+        workspaceDir: activeWorkspace
       });
 
       if (commitAfter || params.yes) {
@@ -844,8 +948,12 @@ export class RunLifecycleUseCase {
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
-          workspaceDir: workspace
+          workspaceDir: activeWorkspace
         });
+
+        if (execResult.success) {
+          await this.teardownWorktree(worktree, workspace);
+        }
 
         return {
           success: execResult.success,
@@ -857,6 +965,7 @@ export class RunLifecycleUseCase {
           reviewResult,
           draftCommitResult: draftResult,
           executeCommitResult: execResult,
+          worktree: execResult.success ? null : worktree,
           message: NOTE_LIFECYCLE_COMPLETED
         };
       }
@@ -869,8 +978,12 @@ export class RunLifecycleUseCase {
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
-          workspaceDir: workspace
+          workspaceDir: activeWorkspace
         });
+
+        if (execResult.success) {
+          await this.teardownWorktree(worktree, workspace);
+        }
 
         return {
           success: execResult.success,
@@ -882,6 +995,7 @@ export class RunLifecycleUseCase {
           reviewResult,
           draftCommitResult: draftResult,
           executeCommitResult: execResult,
+          worktree: execResult.success ? null : worktree,
           message: execResult.success ? NOTE_LIFECYCLE_COMPLETED : NOTE_PAUSED_COMMIT_GATE
         };
       }
@@ -896,6 +1010,7 @@ export class RunLifecycleUseCase {
         qualityGateResult: qgResult,
         reviewResult,
         draftCommitResult: draftResult,
+        worktree,
         message: NOTE_PAUSED_COMMIT_GATE
       };
     }
@@ -906,6 +1021,7 @@ export class RunLifecycleUseCase {
         mode: MODE_STANDARD,
         currentStage: STAGE_COMPLETED,
         stateMachine: sm,
+        worktree: null,
         message: NOTE_ALREADY_COMPLETED
       };
     }
