@@ -221,7 +221,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
 // Numeric Constants & Default Invariants
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
-export const CLI_VERSION = '0.2.0' as const;
+export const CLI_VERSION = '0.3.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
