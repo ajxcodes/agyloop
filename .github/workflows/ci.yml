@@ -60,9 +60,22 @@ jobs:
           node-version: 24
           cache: 'npm'
       - name: Run Auto-Tag
-        uses: ajxcodes/auto-tag@v1
+        id: auto-tag
+        uses: ajxcodes/auto-tag@latest
         with:
           github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           default-bump: patch
           package-json: 'true'
           create-release: 'true'
+
+      - name: Update Floating Tags
+        if: steps.auto-tag.outputs.bumped == 'true'
+        run: |
+          NEW_TAG="${{ steps.auto-tag.outputs.new-tag }}"
+          MAJOR_TAG=$(echo "$NEW_TAG" | cut -d. -f1)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$MAJOR_TAG" "$NEW_TAG"
+          git tag -f "${MAJOR_TAG}.x" "$NEW_TAG"
+          git tag -f "latest" "$NEW_TAG"
+          git push -f origin "$MAJOR_TAG" "${MAJOR_TAG}.x" "latest"
