@@ -186,9 +186,15 @@ export class MilestoneReleaseUseCase {
       this.commandExecutor
     ) {
       try {
-        await this.commandExecutor.execute(config.migration.hookCommand, { cwd });
-      } catch {
-        // Non-fatal hook execution
+        const hookResult = await this.commandExecutor.execute(config.migration.hookCommand, { cwd });
+        if (hookResult.exitCode !== 0) {
+          console.warn(
+            `[agyloop] Warning: Migration hook '${config.migration.hookCommand}' exited with code ${hookResult.exitCode}: ${hookResult.stderr || hookResult.stdout || 'Unknown hook error'}`
+          );
+        }
+      } catch (hookErr: unknown) {
+        const hookMsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+        console.warn(`[agyloop] Warning: Failed to execute migration hook '${config.migration.hookCommand}': ${hookMsg}`);
       }
     }
 

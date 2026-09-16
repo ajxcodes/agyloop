@@ -187,7 +187,19 @@ export class CliGitHubGateway implements GitHubGateway {
         merged: isMerged,
         labels: prLabels
       };
-    } catch {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const lower = msg.toLowerCase();
+      // Distinguish critical auth, credential, and network/repo failures from simply "no pull requests found"
+      if (
+        lower.includes('authentication') ||
+        lower.includes('bad credentials') ||
+        lower.includes('could not resolve to a repository') ||
+        lower.includes('permission to') ||
+        (lower.includes('graphql') && !lower.includes('deprecated'))
+      ) {
+        throw new GitHubContextError(`GitHub CLI failure in findPullRequest: ${msg}`);
+      }
       return null;
     }
   }

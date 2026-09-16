@@ -15,6 +15,7 @@ import {
   BranchInferenceEngine,
   BranchInferenceResult,
   MilestoneSealedError,
+  WorktreeCreationError,
   WorktreeDescriptor
 } from '../domain';
 import { WorktreeManagerPort, GitHubGateway } from '../ports';
@@ -150,7 +151,20 @@ export class InferBaseBranchUseCase {
           workspaceDir: cwd
         });
       } catch (err: unknown) {
-        // If branch creation fails (e.g. race condition or already created), proceed safely
+        // If branch already exists (e.g. concurrent creation race condition), proceed safely.
+        // For fatal creation errors (e.g. invalid permissions or ref name), bubble up cleanly.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const lower = errMsg.toLowerCase();
+        const isAlreadyExists =
+          lower.includes('already exists') ||
+          lower.includes('fatal: a branch named') ||
+          lower.includes('already exists in');
+        if (!isAlreadyExists) {
+          throw new WorktreeCreationError('autoCreateCollectorBranch', errMsg, {
+            branchName: inference.baseBranch,
+            startPoint: inference.autoCreateFrom
+          });
+        }
       }
     }
 
