@@ -265,7 +265,15 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
         adapterFile: 'cli-github-gateway.ts',
         className: 'CliGitHubGateway',
         portName: 'GitHubGateway',
-        requiredMethods: ['getCurrentRepo', 'fetchIssue']
+        requiredMethods: [
+          'getCurrentRepo',
+          'fetchIssue',
+          'findPullRequest',
+          'createPullRequest',
+          'applyLabels',
+          'commentOnIssue',
+          'closeIssue'
+        ]
       },
       {
         adapterFile: 'file-config-repository.ts',
@@ -342,7 +350,11 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
           'removeWorktree',
           'pruneWorktrees',
           'listWorktrees',
-          'cleanOrphanedWorktrees'
+          'cleanOrphanedWorktrees',
+          'listBranches',
+          'createBranch',
+          'getCommitsBetween',
+          'isAncestor'
         ]
       }
     ];

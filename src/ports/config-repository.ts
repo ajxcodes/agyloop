@@ -24,9 +24,24 @@ export interface PipelineOptionsConfig {
 }
 
 
+export interface IssueMigrationConfig {
+  readonly mode?: 'per_task' | 'milestone_only' | string;
+  readonly trackerRepo?: string;
+  readonly hookCommand?: string;
+}
+
+export interface VersioningConfig {
+  readonly strategy?: 'package_json' | 'git_tag_only' | 'none' | string;
+  readonly file?: string;
+  readonly autoCreate?: boolean;
+  readonly initialVersion?: string;
+}
+
 export interface AgyLoopConfig {
   readonly models: ModelRoutingConfig;
   readonly options: PipelineOptionsConfig;
+  readonly migration?: IssueMigrationConfig;
+  readonly versioning?: VersioningConfig;
 }
 
 export interface ConfigLoadOptions {

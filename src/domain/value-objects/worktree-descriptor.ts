@@ -99,7 +99,7 @@ export class WorktreeDescriptor {
   }
 
   private static extractSlugFromBranch(branch: string, taskId: string): string {
-    const cleanBranch = branch.replace(/^.*task\//, '');
+    const cleanBranch = branch.replace(/^.*(?:task|fix)\//, '');
     const prefix = `${taskId}-`;
     if (cleanBranch.startsWith(prefix)) {
       return cleanBranch.substring(prefix.length);

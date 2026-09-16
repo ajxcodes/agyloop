@@ -191,6 +191,9 @@ export const ERR_AI_REVIEWER = ERR_CRITIQUE;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
 export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
 export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
+export const ERR_PREFLIGHT_HALT = 'ERR_PREFLIGHT_HALT' as const;
+export const ERR_MILESTONE_RELEASE = 'ERR_MILESTONE_RELEASE' as const;
+export const ERR_MILESTONE_SEALED = 'ERR_MILESTONE_SEALED' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -207,7 +210,10 @@ export const ERROR_CODES = Object.freeze({
   AI_REVIEWER: ERR_CRITIQUE,
   REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
   COMMIT_EXECUTION: ERR_COMMIT_EXECUTION,
-  WORKTREE: ERR_WORKTREE
+  WORKTREE: ERR_WORKTREE,
+  PREFLIGHT_HALT: ERR_PREFLIGHT_HALT,
+  MILESTONE_RELEASE: ERR_MILESTONE_RELEASE,
+  MILESTONE_SEALED: ERR_MILESTONE_SEALED
 });
 
 
@@ -230,6 +236,9 @@ export const DEFAULT_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
 export const DEFAULT_TEMPLATES_DIRNAME = 'templates' as const;
 export const DEFAULT_WORKTREES_DIR = '.worktrees' as const;
 export const DEFAULT_TASK_BRANCH_PREFIX = 'task/' as const;
+export const DEFAULT_FIX_BRANCH_PREFIX = 'fix/' as const;
+export const DEFAULT_PHASE_BRANCH_PREFIX = 'phase/' as const;
+export const DEFAULT_FEATURE_BRANCH_PREFIX = 'feature/' as const;
 
 // Plan Template Names
 export const TEMPLATE_DISCOVERY = 'discovery-plan.md' as const;
@@ -1032,6 +1041,7 @@ export const COMMAND_PROMPT = 'prompt' as const;
 export const COMMAND_RESET = 'reset' as const;
 export const COMMAND_TRANSITION = 'transition' as const;
 export const COMMAND_WORKTREE = 'worktree' as const;
+export const COMMAND_RELEASE = 'release' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1045,10 +1055,74 @@ export const CLI_COMMANDS = Object.freeze({
   PROMPT: COMMAND_PROMPT,
   RESET: COMMAND_RESET,
   TRANSITION: COMMAND_TRANSITION,
-  WORKTREE: COMMAND_WORKTREE
+  WORKTREE: COMMAND_WORKTREE,
+  RELEASE: COMMAND_RELEASE
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
+
+// SemVer Release Bumps & GitHub Release Labels
+export const RELEASE_BUMP_MAJOR = 'major' as const;
+export const RELEASE_BUMP_MINOR = 'minor' as const;
+export const RELEASE_BUMP_PATCH = 'patch' as const;
+
+export const RELEASE_BUMPS = Object.freeze({
+  MAJOR: RELEASE_BUMP_MAJOR,
+  MINOR: RELEASE_BUMP_MINOR,
+  PATCH: RELEASE_BUMP_PATCH
+});
+export type ReleaseBumpType = typeof RELEASE_BUMPS[keyof typeof RELEASE_BUMPS];
+
+export const RELEASE_LABEL_MAJOR = 'release:major' as const;
+export const RELEASE_LABEL_MINOR = 'release:minor' as const;
+export const RELEASE_LABEL_PATCH = 'release:patch' as const;
+
+export const RELEASE_LABELS = Object.freeze({
+  MAJOR: RELEASE_LABEL_MAJOR,
+  MINOR: RELEASE_LABEL_MINOR,
+  PATCH: RELEASE_LABEL_PATCH
+});
+export type ReleaseLabelName = typeof RELEASE_LABELS[keyof typeof RELEASE_LABELS];
+
+// Pre-Flight Check Actions
+export const PREFLIGHT_ACTION_PROCEED = 'PROCEED' as const;
+export const PREFLIGHT_ACTION_RESUME = 'RESUME' as const;
+export const PREFLIGHT_ACTION_HALT = 'HALT' as const;
+export const PREFLIGHT_ACTION_HALT_CLOSED = 'HALT_CLOSED' as const;
+export const PREFLIGHT_ACTION_HALT_PR_MERGED = 'HALT_PR_MERGED' as const;
+
+export const PREFLIGHT_ACTIONS = Object.freeze({
+  PROCEED: PREFLIGHT_ACTION_PROCEED,
+  RESUME: PREFLIGHT_ACTION_RESUME,
+  HALT: PREFLIGHT_ACTION_HALT,
+  HALT_CLOSED: PREFLIGHT_ACTION_HALT_CLOSED,
+  HALT_PR_MERGED: PREFLIGHT_ACTION_HALT_PR_MERGED
+});
+export type PreFlightActionType = typeof PREFLIGHT_ACTIONS[keyof typeof PREFLIGHT_ACTIONS];
+
+// Issue Migration Modes
+export const MIGRATION_MODE_PER_TASK = 'per_task' as const;
+export const MIGRATION_MODE_MILESTONE_ONLY = 'milestone_only' as const;
+
+export const MIGRATION_MODES = Object.freeze({
+  PER_TASK: MIGRATION_MODE_PER_TASK,
+  MILESTONE_ONLY: MIGRATION_MODE_MILESTONE_ONLY
+});
+export type MigrationModeType = typeof MIGRATION_MODES[keyof typeof MIGRATION_MODES];
+
+export const DEFAULT_TRACKER_REPO = 'ajxcodes/projects' as const;
+
+// Versioning Strategies
+export const VERSIONING_STRATEGY_PACKAGE_JSON = 'package_json' as const;
+export const VERSIONING_STRATEGY_GIT_TAG_ONLY = 'git_tag_only' as const;
+export const VERSIONING_STRATEGY_NONE = 'none' as const;
+
+export const VERSIONING_STRATEGIES = Object.freeze({
+  PACKAGE_JSON: VERSIONING_STRATEGY_PACKAGE_JSON,
+  GIT_TAG_ONLY: VERSIONING_STRATEGY_GIT_TAG_ONLY,
+  NONE: VERSIONING_STRATEGY_NONE
+});
+export type VersioningStrategyType = typeof VERSIONING_STRATEGIES[keyof typeof VERSIONING_STRATEGIES];
 
 export const FLAG_YOLO = '--yolo' as const;
 export const FLAG_COMMIT_AFTER = '--commit-after' as const;

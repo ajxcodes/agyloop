@@ -17,7 +17,8 @@ import {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   MODE_PLAN,
-  IssueNumber
+  IssueNumber,
+  PreFlightHaltError
 } from '../domain';
 import {
   StateRepository,
@@ -101,6 +102,11 @@ export class StartPlanningUseCase {
     const issueVo = IssueNumber.tryFrom(activeIssue);
     if (issueVo) {
       issueData = await this.githubGateway.fetchIssue(issueVo.value, { cwd: workspace });
+      if (issueData && issueData.state === 'CLOSED') {
+        throw new PreFlightHaltError(`Task #${issueVo.value} is already closed.`, 'CLOSED', {
+          issueNumber: issueVo.value
+        });
+      }
     }
 
     const planTitle =

@@ -69,6 +69,8 @@ import { RunReviewUseCase, RunReviewResult } from './run-review';
 import { DraftCommitUseCase, DraftCommitResult } from './draft-commit';
 import { ExecuteCommitUseCase, ExecuteCommitResult } from './execute-commit';
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import { RunPreFlightCheckUseCase } from './run-preflight-check';
+import { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface RunLifecycleParams {
   readonly mode?: ExecutionMode;
@@ -129,6 +131,8 @@ export interface RunLifecycleDependencies {
   readonly draftCommitUseCase?: DraftCommitUseCase;
   readonly executeCommitUseCase?: ExecuteCommitUseCase;
   readonly worktreeManager?: WorktreeManagerPort;
+  readonly runPreFlightCheckUseCase?: RunPreFlightCheckUseCase;
+  readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
 }
 
 export class RunLifecycleUseCase {
@@ -149,6 +153,8 @@ export class RunLifecycleUseCase {
   private readonly runReviewUseCase: RunReviewUseCase;
   private readonly draftCommitUseCase: DraftCommitUseCase;
   private readonly executeCommitUseCase: ExecuteCommitUseCase;
+  private readonly runPreFlightCheckUseCase: RunPreFlightCheckUseCase;
+  private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
 
   constructor(deps: RunLifecycleDependencies) {
     this.stateRepo = deps.stateRepo;
@@ -226,6 +232,14 @@ export class RunLifecycleUseCase {
         this.planGenerator,
         this.confirmationPrompt
       );
+
+    this.runPreFlightCheckUseCase =
+      deps.runPreFlightCheckUseCase ??
+      new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager);
+
+    this.inferBaseBranchUseCase =
+      deps.inferBaseBranchUseCase ??
+      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway) : undefined);
   }
 
   public async execute(params: RunLifecycleParams = {}): Promise<RunLifecycleResult> {
@@ -238,6 +252,16 @@ export class RunLifecycleUseCase {
     });
 
     const commitAfter = params.commitAfter ?? config.options.commitAfter ?? false;
+
+    // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
+    const activeIssueToCheck = params.issue;
+    if (activeIssueToCheck && !params.dryRun) {
+      await this.runPreFlightCheckUseCase.execute({
+        issueNumber: activeIssueToCheck,
+        workspaceDir: workspace,
+        trackerRepo: config.migration?.trackerRepo
+      });
+    }
 
     // 2. Load state checkpoint and determine execution mode
     const snapshot = await this.stateRepo.load();
@@ -358,9 +382,28 @@ export class RunLifecycleUseCase {
     }
 
     try {
+      let baseBranch = params.baseRef || params.baseBranch;
+      let branchPrefix: string | undefined = undefined;
+
+      if (this.inferBaseBranchUseCase) {
+        try {
+          const inference = await this.inferBaseBranchUseCase.execute({
+            issueNumber: taskId,
+            title: params.title,
+            explicitBaseBranch: baseBranch,
+            workspaceDir: rootWorkspace
+          });
+          baseBranch = inference.baseBranch;
+          branchPrefix = inference.taskBranchPrefix;
+        } catch {
+          // Fallback if inference fails
+        }
+      }
+
       return await this.worktreeManager.createWorktree({
         taskId,
-        baseBranch: params.baseRef || params.baseBranch,
+        baseBranch,
+        branchPrefix,
         title: params.title,
         workspaceDir: rootWorkspace
       });

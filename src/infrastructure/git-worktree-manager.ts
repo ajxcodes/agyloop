@@ -22,6 +22,10 @@ import {
   ListWorktreesOptions,
   EnsureGitIgnoreOptions,
   CleanOrphanedOptions,
+  ListBranchesOptions,
+  CreateBranchOptions,
+  GetCommitsOptions,
+  IsAncestorOptions,
   CommandExecutorPort
 } from '../ports';
 import { ProcessCommandExecutor } from './process-command-executor';
@@ -368,6 +372,92 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     const finalList = await this.listWorktrees({ workspaceDir: workspace });
     const diff = Math.max(0, initialList.length - finalList.length);
     return Math.max(cleaned, diff);
+  }
+
+  /**
+   * Lists local and remote branches in the repository.
+   */
+  public async listBranches(options?: ListBranchesOptions): Promise<readonly string[]> {
+    const workspace = options?.workspaceDir || process.cwd();
+    const flag = options?.remote !== false ? '-a' : '';
+    const res = await this.commandExecutor.execute(`git branch ${flag} --format="%(refname:short)"`, {
+      cwd: workspace
+    });
+
+    if (res.exitCode !== 0) {
+      return [];
+    }
+
+    const lines = (res.stdout || '')
+      .split('\n')
+      .map((l) => l.trim().replace(/^origin\//, '').replace(/^remotes\/origin\//, ''))
+      .filter((l) => l.length > 0 && l !== 'HEAD' && !l.includes('->'));
+
+    // Deduplicate branches
+    return Array.from(new Set(lines));
+  }
+
+  /**
+   * Creates a branch from a specified start point.
+   */
+  public async createBranch(options: CreateBranchOptions): Promise<void> {
+    const workspace = options.workspaceDir || process.cwd();
+    const startPoint = options.startPoint || 'HEAD';
+    const res = await this.commandExecutor.execute(
+      `git branch "${options.branchName}" "${startPoint}"`,
+      { cwd: workspace }
+    );
+
+    if (res.exitCode !== 0) {
+      throw new WorktreeCreationError(
+        'createBranch',
+        res.stderr || res.stdout || `Failed to create branch '${options.branchName}' from '${startPoint}'`
+      );
+    }
+  }
+
+  /**
+   * Returns commit messages between two branches (baseBranch..headBranch).
+   */
+  public async getCommitsBetween(options: GetCommitsOptions): Promise<readonly string[]> {
+    const workspace = options.workspaceDir || process.cwd();
+    const res = await this.commandExecutor.execute(
+      `git log "${options.baseBranch}..${options.headBranch}" --format="%s%x1f%b%x1e"`,
+      { cwd: workspace }
+    );
+
+    if (res.exitCode !== 0 || !res.stdout.trim()) {
+      return [];
+    }
+
+    const rawRecords = res.stdout.split('\x1e');
+    const commits: string[] = [];
+
+    for (const rec of rawRecords) {
+      const clean = rec.trim();
+      if (!clean) continue;
+      const parts = clean.split('\x1f');
+      const header = parts[0]?.trim() || '';
+      const body = parts[1]?.trim() || '';
+      if (header) {
+        commits.push(body ? `${header}\n${body}` : header);
+      }
+    }
+
+    return commits;
+  }
+
+  /**
+   * Checks whether ancestorBranch has been merged into descendantBranch.
+   */
+  public async isAncestor(options: IsAncestorOptions): Promise<boolean> {
+    const workspace = options.workspaceDir || process.cwd();
+    const res = await this.commandExecutor.execute(
+      `git merge-base --is-ancestor "${options.ancestorBranch}" "${options.descendantBranch}"`,
+      { cwd: workspace }
+    );
+
+    return res.exitCode === 0;
   }
 
   private linkNodeModulesIfPresent(

@@ -21,7 +21,10 @@ import {
   ERR_AI_REVIEWER,
   ERR_REVIEWER_SUBAGENT,
   ERR_COMMIT_EXECUTION,
-  ERR_WORKTREE
+  ERR_WORKTREE,
+  ERR_PREFLIGHT_HALT,
+  ERR_MILESTONE_RELEASE,
+  ERR_MILESTONE_SEALED
 } from './constants';
 
 
@@ -259,6 +262,45 @@ export class WorktreeCreationError extends WorktreeError {
 export class WorktreeCleanupError extends WorktreeError {
   constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
     super(operation, reason, details, cause);
+  }
+}
+
+export class PreFlightHaltError extends AgyLoopError {
+  public readonly code = ERR_PREFLIGHT_HALT;
+  public readonly reason: string;
+  public readonly haltType: 'CLOSED' | 'MERGED' | string;
+
+  constructor(reason: string, haltType: 'CLOSED' | 'MERGED' | string = 'GENERAL', details?: Record<string, unknown>) {
+    super(reason, { haltType, ...details });
+    this.reason = reason;
+    this.haltType = haltType;
+  }
+}
+
+export class MilestoneReleaseError extends AgyLoopError {
+  public readonly code = ERR_MILESTONE_RELEASE;
+  public readonly reason: string;
+
+  constructor(reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Milestone release error: ${reason}${causeMsg}`, details);
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
+export class MilestoneSealedError extends AgyLoopError {
+  public readonly code = ERR_MILESTONE_SEALED;
+  public readonly phaseBranch: string;
+
+  constructor(phaseBranch: string, customMessage?: string) {
+    const msg =
+      customMessage ||
+      `Milestone sealed: Collector branch '${phaseBranch}' is already merged into 'main'. Cannot add new task work to a completed milestone.`;
+    super(msg, { phaseBranch });
+    this.phaseBranch = phaseBranch;
   }
 }
 

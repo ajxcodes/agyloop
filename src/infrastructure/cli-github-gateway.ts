@@ -13,6 +13,9 @@ import {
   GitHubGatewayOptions,
   GitHubIssueData,
   GitHubComment,
+  GitHubPullRequestData,
+  FindPullRequestOptions,
+  CreatePullRequestOptions,
   formatIssueForPrompt
 } from '../ports';
 import { GitHubContextError } from '../domain';
@@ -94,7 +97,7 @@ export class CliGitHubGateway implements GitHubGateway {
 
     try {
       const rawJson = this.runGh(
-        `issue view ${issueNumber} ${repoFlag} --json number,title,body,labels,comments`,
+        `issue view ${issueNumber} ${repoFlag} --json number,title,body,labels,state,comments`,
         { cwd: options.cwd }
       );
 
@@ -102,6 +105,7 @@ export class CliGitHubGateway implements GitHubGateway {
         number?: number;
         title?: string;
         body?: string;
+        state?: string;
         labels?: Array<{ name?: string } | string>;
         comments?: Array<{ author?: { login?: string }; body?: string; createdAt?: string }>;
       }
@@ -119,6 +123,7 @@ export class CliGitHubGateway implements GitHubGateway {
         number: parsed.number || issueNumber,
         title: parsed.title || '',
         body: parsed.body || '',
+        state: (parsed.state || 'OPEN').toUpperCase(),
         labels,
         comments
       };
@@ -128,11 +133,134 @@ export class CliGitHubGateway implements GitHubGateway {
         number: issueNumber,
         title: '',
         body: '',
+        state: 'UNKNOWN',
         labels: [],
         comments: [],
         error: err instanceof Error ? err.message : String(err)
       };
     }
+  }
+
+  public findPullRequest(options: FindPullRequestOptions): GitHubPullRequestData | null {
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const repoFlag = repo ? `--repo ${repo}` : '';
+    const state = options.state || 'all';
+
+    try {
+      let cmd: string;
+      if (options.headBranch) {
+        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 1`;
+      } else if (options.issueNumber) {
+        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 1`;
+      } else {
+        return null;
+      }
+
+      const raw = this.runGh(cmd, { cwd: options.cwd });
+      interface RawGhPr {
+        number?: number;
+        title?: string;
+        state?: string;
+        baseRefName?: string;
+        headRefName?: string;
+        url?: string;
+        mergedAt?: string | null;
+        labels?: Array<{ name?: string } | string>;
+      }
+
+      const parsed = JSON.parse(raw) as RawGhPr[];
+      if (!parsed || parsed.length === 0) {
+        return null;
+      }
+
+      const pr = parsed[0];
+      const prLabels = (pr.labels || []).map((l) => (typeof l === 'string' ? l : l.name || ''));
+      const isMerged = Boolean(pr.mergedAt || (pr.state || '').toUpperCase() === 'MERGED');
+
+      return {
+        number: pr.number || 0,
+        title: pr.title || '',
+        state: isMerged ? 'MERGED' : (pr.state || 'OPEN').toUpperCase(),
+        baseRefName: pr.baseRefName || '',
+        headRefName: pr.headRefName || '',
+        url: pr.url || '',
+        merged: isMerged,
+        labels: prLabels
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public createPullRequest(options: CreatePullRequestOptions): GitHubPullRequestData {
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const repoFlag = repo ? `--repo ${repo}` : '';
+    const draftFlag = options.draft ? '--draft' : '';
+    const labelsFlag =
+      options.labels && options.labels.length > 0
+        ? `--label "${options.labels.join(',')}"`
+        : '';
+
+    const titleEscaped = options.title.replace(/"/g, '\\"');
+    const bodyEscaped = options.body.replace(/"/g, '\\"');
+
+    const cmd = `pr create ${repoFlag} --base "${options.baseBranch}" --head "${options.headBranch}" --title "${titleEscaped}" --body "${bodyEscaped}" ${draftFlag} ${labelsFlag}`;
+
+    const url = this.runGh(cmd, { cwd: options.cwd });
+
+    // Parse PR number from created URL if available (e.g. .../pull/42)
+    const match = url.match(/\/pull\/(\d+)/);
+    const prNumber = match ? parseInt(match[1], 10) : 0;
+
+    return {
+      number: prNumber,
+      title: options.title,
+      state: 'OPEN',
+      baseRefName: options.baseBranch,
+      headRefName: options.headBranch,
+      url,
+      merged: false,
+      labels: options.labels || []
+    };
+  }
+
+  public applyLabels(
+    targetNumber: number,
+    labels: readonly string[],
+    options: GitHubGatewayOptions = {}
+  ): void {
+    if (!labels || labels.length === 0 || !targetNumber) return;
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const repoFlag = repo ? `--repo ${repo}` : '';
+    const labelArgs = labels.map((l) => `--add-label "${l}"`).join(' ');
+
+    this.runGh(`issue edit ${targetNumber} ${repoFlag} ${labelArgs}`, { cwd: options.cwd });
+  }
+
+  public commentOnIssue(
+    issueNumber: number,
+    comment: string,
+    options: GitHubGatewayOptions = {}
+  ): void {
+    if (!issueNumber || !comment) return;
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const repoFlag = repo ? `--repo ${repo}` : '';
+    const commentEscaped = comment.replace(/"/g, '\\"');
+
+    this.runGh(`issue comment ${issueNumber} ${repoFlag} --body "${commentEscaped}"`, {
+      cwd: options.cwd
+    });
+  }
+
+  public closeIssue(
+    issueNumber: number,
+    options: GitHubGatewayOptions = {}
+  ): void {
+    if (!issueNumber) return;
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const repoFlag = repo ? `--repo ${repo}` : '';
+
+    this.runGh(`issue close ${issueNumber} ${repoFlag}`, { cwd: options.cwd });
   }
 
   public static formatIssueForPrompt(issueData: GitHubIssueData | null): string {

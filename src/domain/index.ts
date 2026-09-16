@@ -21,6 +21,11 @@ export * from './value-objects/review-verdict';
 export * from './value-objects/commit-message';
 export * from './value-objects/diff-analyzer';
 export * from './value-objects/worktree-descriptor';
+export * from './value-objects/branch-inference';
+export * from './value-objects/pre-flight-check';
+export * from './value-objects/public-sanitizer';
+export * from './value-objects/semver-calculator';
+export * from './value-objects/version-anchor';
 export * from './entities/state-machine';
 
 
