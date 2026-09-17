@@ -194,6 +194,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   test('createWorktree throws WorktreeCreationError on unrecoverable failure', async () => {
     const mockExecutor: CommandExecutorPort = {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --show-toplevel')) return makeResult(cmd, { stdout: `${tmpDir}\n` });
         if (cmd.includes('rev-parse')) return makeResult(cmd, { stdout: 'main\n' });
         return makeResult(cmd, { exitCode: 1, stderr: 'fatal: permission denied', combinedOutput: 'fatal' });
       }
