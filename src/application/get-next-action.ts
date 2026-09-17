@@ -180,10 +180,28 @@ export class GetNextActionUseCase {
       }
 
       case STAGE_APPROVAL: {
-        return this.buildImplementAction(sm, config, cwd);
+        if (sm.mode === MODE_YOLO) {
+          return this.buildImplementAction(sm, config, cwd);
+        }
+
+        return {
+          currentStage: STAGE_APPROVAL,
+          nextStage: STAGE_IMPLEMENT,
+          actionType: 'human_gate',
+          title: 'Human Approval Gate',
+          description: 'Review the technical plan in artifacts/plans/. Seek user confirmation before modifying source code.',
+          baseBranch,
+          taskBranch,
+          worktreePath,
+          humanSummary: 'Present the plan to the user and wait for approval. Once approved, run "agyloop implement" or "agyloop transition IMPLEMENT".'
+        };
       }
 
       case STAGE_IMPLEMENT: {
+        return this.buildImplementAction(sm, config, cwd);
+      }
+
+      case STAGE_QUALITY_GATE: {
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_GATE,
           customConfig: config,
@@ -209,8 +227,8 @@ export class GetNextActionUseCase {
         };
 
         return {
-          currentStage: STAGE_IMPLEMENT,
-          nextStage: STAGE_QUALITY_GATE,
+          currentStage: STAGE_QUALITY_GATE,
+          nextStage: STAGE_REVIEW,
           actionType: 'subagent',
           role: ROLE_GATE,
           title: 'Invoke Quality Gate Verifier Subagent',
@@ -223,7 +241,7 @@ export class GetNextActionUseCase {
         };
       }
 
-      case STAGE_QUALITY_GATE: {
+      case STAGE_REVIEW: {
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_REVIEWER,
           customConfig: config,
@@ -249,8 +267,8 @@ export class GetNextActionUseCase {
         };
 
         return {
-          currentStage: STAGE_QUALITY_GATE,
-          nextStage: STAGE_REVIEW,
+          currentStage: STAGE_REVIEW,
+          nextStage: STAGE_COMMIT,
           actionType: 'subagent',
           role: ROLE_REVIEWER,
           title: 'Invoke AI Reviewer Subagent',
@@ -263,10 +281,10 @@ export class GetNextActionUseCase {
         };
       }
 
-      case STAGE_REVIEW: {
+      case STAGE_COMMIT: {
         return {
-          currentStage: STAGE_REVIEW,
-          nextStage: STAGE_COMMIT,
+          currentStage: STAGE_COMMIT,
+          nextStage: STAGE_COMPLETED,
           actionType: 'human_gate',
           title: 'Conventional Commit & Teardown Gate',
           description: 'Review passed. Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.',
@@ -274,20 +292,6 @@ export class GetNextActionUseCase {
           taskBranch,
           worktreePath,
           humanSummary: `Execute commit: run "agyloop commit" (targets base branch '${baseBranch}').`
-        };
-      }
-
-      case STAGE_COMMIT: {
-        return {
-          currentStage: STAGE_COMMIT,
-          nextStage: STAGE_COMPLETED,
-          actionType: 'completed',
-          title: 'Lifecycle Completed',
-          description: 'Conventional commit executed, worktree torn down, and pipeline state finalized.',
-          baseBranch,
-          taskBranch,
-          worktreePath,
-          humanSummary: 'Pipeline completed successfully. All changes committed and worktree cleaned up.'
         };
       }
 
@@ -357,9 +361,11 @@ export class GetNextActionUseCase {
       ]
     };
 
+    const nextStage = sm.currentStage === STAGE_IMPLEMENT ? STAGE_QUALITY_GATE : STAGE_IMPLEMENT;
+
     return {
       currentStage: sm.currentStage,
-      nextStage: STAGE_IMPLEMENT,
+      nextStage,
       actionType: 'subagent',
       role: ROLE_IMPLEMENTER,
       title: 'Invoke Code Implementer Subagent',
