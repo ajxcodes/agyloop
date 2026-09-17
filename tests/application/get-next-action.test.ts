@@ -167,8 +167,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.Model, 'inherit');
   });
 
-  test('returns implementer subagent payload for STAGE_APPROVAL', async () => {
-    const sm = StateMachine.createInitial({ issue: 41 });
+  test('returns human approval gate for STAGE_APPROVAL in standard mode', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, mode: MODE_STANDARD });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
@@ -188,16 +188,11 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_APPROVAL);
     assert.strictEqual(result.nextStage, STAGE_IMPLEMENT);
-    assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'implementer');
-    assert.ok(result.invocationPayload);
-
-    const sub = result.invocationPayload.Subagents[0];
-    assert.strictEqual(sub.TypeName, 'self');
-    assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(result.humanSummary.includes('wait for approval'));
   });
 
-  test('returns gate subagent payload for STAGE_IMPLEMENT', async () => {
+  test('returns implementer subagent payload for STAGE_IMPLEMENT', async () => {
     const sm = StateMachine.createInitial({ issue: 41 });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -220,17 +215,16 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
     assert.strictEqual(result.nextStage, STAGE_QUALITY_GATE);
     assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'gate');
+    assert.strictEqual(result.role, 'implementer');
     assert.ok(result.invocationPayload);
 
     const sub = result.invocationPayload.Subagents[0];
     assert.strictEqual(sub.TypeName, 'self');
-    assert.strictEqual(sub.Role, ROLE_TITLE_GATE);
-    assert.strictEqual(sub.Model, 'flash_lite');
+    assert.strictEqual(sub.Role, ROLE_TITLE_IMPLEMENTER);
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
   });
 
-  test('returns reviewer subagent payload for STAGE_QUALITY_GATE', async () => {
+  test('returns gate subagent payload for STAGE_QUALITY_GATE', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -254,6 +248,41 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_QUALITY_GATE);
     assert.strictEqual(result.nextStage, STAGE_REVIEW);
     assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'gate');
+    assert.ok(result.invocationPayload);
+
+    const sub = result.invocationPayload.Subagents[0];
+    assert.strictEqual(sub.TypeName, 'self');
+    assert.strictEqual(sub.Role, ROLE_TITLE_GATE);
+    assert.strictEqual(sub.Model, 'flash_lite');
+    assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+  });
+
+  test('returns reviewer subagent payload for STAGE_REVIEW', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(result.nextStage, STAGE_COMMIT);
+    assert.strictEqual(result.actionType, 'subagent');
     assert.strictEqual(result.role, 'reviewer');
     assert.ok(result.invocationPayload);
 
@@ -265,27 +294,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
   });
 
-  test('returns human commit gate for STAGE_REVIEW', async () => {
+  test('returns commit human gate for STAGE_COMMIT', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
-    sm.transition(STAGE_DISCOVERY);
-    sm.transition(STAGE_PLAN);
-    sm.transition(STAGE_APPROVAL);
-    sm.transition(STAGE_IMPLEMENT);
-    sm.transition(STAGE_QUALITY_GATE);
-    sm.transition(STAGE_REVIEW);
-
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
-
-    const result = await useCase.execute({ workspaceDir: '/repo' });
-    assert.strictEqual(result.currentStage, STAGE_REVIEW);
-    assert.strictEqual(result.nextStage, STAGE_COMMIT);
-    assert.strictEqual(result.actionType, 'human_gate');
-    assert.ok(result.humanSummary.includes('agyloop commit'));
-  });
-
-  test('returns completed action for STAGE_COMMIT and STAGE_COMPLETED', async () => {
-    const sm = StateMachine.createInitial({ issue: 41 });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
@@ -300,10 +310,27 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
     assert.strictEqual(result.nextStage, STAGE_COMPLETED);
-    assert.strictEqual(result.actionType, 'completed');
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(result.humanSummary.includes('agyloop commit'));
+  });
 
+  test('returns completed action for STAGE_COMPLETED', async () => {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
     sm.transition(STAGE_COMPLETED);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
     const completedResult = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(completedResult.currentStage, STAGE_COMPLETED);
+    assert.strictEqual(completedResult.nextStage, STAGE_INITIALIZED);
     assert.strictEqual(completedResult.actionType, 'completed');
   });
 });
