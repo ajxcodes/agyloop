@@ -63,7 +63,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     try {
       const res = await this.commandExecutor.execute('git rev-parse --show-toplevel', { cwd });
       if (res.exitCode === 0 && res.stdout && res.stdout.trim()) {
-        return path.resolve(res.stdout.trim());
+        const topLevel = res.stdout.trim();
+        if (path.isAbsolute(topLevel)) {
+          return path.resolve(topLevel);
+        }
       }
     } catch {
       // Fallback below
