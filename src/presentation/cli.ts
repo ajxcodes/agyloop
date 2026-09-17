@@ -40,7 +40,8 @@ import {
   FLAG_FORCE_SHORT,
   PreFlightHaltError,
   MilestoneReleaseError,
-  MilestoneSealedError
+  MilestoneSealedError,
+  StateMachine
 } from '../domain';
 import {
   FileStateRepository,
@@ -78,6 +79,7 @@ import {
 } from '../application';
 
 export interface CliOptions {
+  workspaceDir?: string;
   commitAfter: boolean;
   yolo: boolean;
   dryRun: boolean;
@@ -944,6 +946,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'commit': {
       console.log(`\n📦 AgyLoop: Semantic Conventional Commit Gate`);
       try {
+        const snapshot = await stateRepo.load();
+        const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : null;
+        const rootWorkspaceDir = options.workspaceDir || process.cwd();
+        const effectiveWorkspaceDir = sm?.worktree?.worktreePath || rootWorkspaceDir;
+
         const draftCommitUseCase = new DraftCommitUseCase(
           stateRepo,
           commandExecutor,
@@ -955,7 +962,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           issue: options.issue,
           staged: options.staged,
           userMessage: options.message,
-          workspaceDir: process.cwd()
+          workspaceDir: effectiveWorkspaceDir
         });
 
         console.log(`\nProposed Conventional Commit:`);
@@ -995,7 +1002,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,
           issue: options.issue,
           keepWorktree: options.keepWorktree,
-          workspaceDir: process.cwd()
+          workspaceDir: effectiveWorkspaceDir,
+          rootWorkspaceDir: rootWorkspaceDir
         });
 
         if (execResult.confirmed && execResult.success) {

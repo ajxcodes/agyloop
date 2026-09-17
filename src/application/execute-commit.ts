@@ -89,9 +89,11 @@ export class ExecuteCommitUseCase {
   }
 
   public async execute(params: ExecuteCommitParams = {}): Promise<ExecuteCommitResult> {
-    const cwd = params.workspaceDir || process.cwd();
+    const initialDir = params.workspaceDir || process.cwd();
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
+    const cwd = sm.worktree?.worktreePath || initialDir;
+    const rootDir = params.rootWorkspaceDir || initialDir;
 
     if (sm.currentStage !== STAGE_COMMIT) {
       throw new InvalidTransitionError(
@@ -278,7 +280,6 @@ export class ExecuteCommitUseCase {
 
     if (shouldTeardown && this.worktreeManager && sm.worktree) {
       const wtPath = sm.worktree.worktreePath;
-      const rootDir = params.rootWorkspaceDir || cwd;
 
       let doTeardown = false;
       if (isExplicitlyConfirmed || isBypassed) {
@@ -312,7 +313,7 @@ export class ExecuteCommitUseCase {
     if (this.planGenerator) {
       const issue = sm.issue || params.issue;
       const planLoc = this.planGenerator.resolvePlanFile({
-        projectRoot: cwd,
+        projectRoot: rootDir,
         issue
       });
       const summaryPath = planLoc?.summaryPath;

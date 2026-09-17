@@ -597,7 +597,8 @@ export class RunLifecycleUseCase {
         staged: params.staged,
         dryRun: params.dryRun,
         issue: sm.issue,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        rootWorkspaceDir: workspace
       });
 
       if (execResult.success) {
@@ -658,7 +659,8 @@ export class RunLifecycleUseCase {
       staged: params.staged,
       dryRun: params.dryRun,
       issue: sm.issue,
-      workspaceDir: activeWorkspace
+      workspaceDir: activeWorkspace,
+      rootWorkspaceDir: workspace
     });
 
     if (execResult.success) {
@@ -832,7 +834,8 @@ export class RunLifecycleUseCase {
         staged: params.staged,
         dryRun: params.dryRun,
         issue: sm.issue,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        rootWorkspaceDir: workspace
       });
 
       if (execResult.success) {
@@ -1004,7 +1007,8 @@ export class RunLifecycleUseCase {
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
-          workspaceDir: activeWorkspace
+          workspaceDir: activeWorkspace,
+          rootWorkspaceDir: workspace
         });
 
         if (execResult.success) {
@@ -1033,7 +1037,8 @@ export class RunLifecycleUseCase {
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
-          workspaceDir: activeWorkspace
+          workspaceDir: activeWorkspace,
+          rootWorkspaceDir: workspace
         });
 
         if (execResult.success) {
