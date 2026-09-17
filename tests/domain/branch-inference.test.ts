@@ -130,4 +130,45 @@ describe('BranchInferenceEngine Value Object', () => {
     assert.strictEqual(result.branchType, 'fix');
     assert.strictEqual(result.suggestedTaskBranch, 'fix/11-null-pointer-exception-on-startup');
   });
+
+  test('infers phase collector branch from milestoneTitle when issueLabels and issueTitle lack phase', () => {
+    const result = BranchInferenceEngine.infer({
+      issueNumber: 56,
+      issueTitle: 'Comprehensive base branch inference hardening',
+      issueLabels: ['bug'],
+      milestoneTitle: 'Phase 5: Orchestrator & Worktree Lifecycle Hardening',
+      availableBranches: ['main', 'phase/5-orchestrator-worktree']
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/5-orchestrator-worktree');
+    assert.strictEqual(result.isCollectorBranch, true);
+    assert.strictEqual(result.branchType, 'fix');
+    assert.strictEqual(result.suggestedBranch, 'fix/56-comprehensive-base-branch-inference-hardening');
+  });
+
+  test('milestoneTitle takes precedence over issueTitle when both specify phases', () => {
+    const result = BranchInferenceEngine.infer({
+      issueNumber: 57,
+      issueTitle: '[Phase 1] Legacy Bridge task',
+      issueLabels: [],
+      milestoneTitle: 'Phase 5: Orchestrator Hardening',
+      availableBranches: ['main', 'phase/1-legacy-bridge', 'phase/5-orchestrator-hardening']
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/5-orchestrator-hardening');
+    assert.strictEqual(result.phaseIdentifier, '5');
+  });
+
+  test('issueLabels take precedence over milestoneTitle', () => {
+    const result = BranchInferenceEngine.infer({
+      issueNumber: 58,
+      issueTitle: 'Cross-cutting chore',
+      issueLabels: ['phase:2'],
+      milestoneTitle: 'Phase 5: Orchestrator Hardening',
+      availableBranches: ['main', 'phase/2-realtime', 'phase/5-orchestrator-hardening']
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/2-realtime');
+    assert.strictEqual(result.phaseIdentifier, '2');
+  });
 });

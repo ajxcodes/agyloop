@@ -19,7 +19,7 @@ import {
   WorktreeDescriptor,
   StateMachine
 } from '../domain';
-import { WorktreeManagerPort, GitHubGateway, StateRepository } from '../ports';
+import { WorktreeManagerPort, GitHubGateway, GitHubIssueData, StateRepository } from '../ports';
 
 export interface InferBaseBranchParams {
   readonly issueNumber?: number | string | null;
@@ -28,6 +28,7 @@ export interface InferBaseBranchParams {
   readonly explicitBaseBranch?: string | null;
   readonly workspaceDir?: string;
   readonly trackerRepo?: string;
+  readonly milestoneTitle?: string | null;
 }
 
 export class InferBaseBranchUseCase {
@@ -106,12 +107,13 @@ export class InferBaseBranchUseCase {
     // 3. Gather issue metadata (labels, title) from GitHub if issue number is present
     let labels: string[] = params.labels ? [...params.labels] : [];
     let title: string = params.title || '';
+    let issueData: GitHubIssueData | null = null;
 
     if (params.issueNumber && this.githubGateway) {
       const parsedNum = Number(params.issueNumber);
       if (Number.isInteger(parsedNum) && parsedNum > 0) {
         try {
-          const issueData = await this.githubGateway.fetchIssue(parsedNum, {
+          issueData = await this.githubGateway.fetchIssue(parsedNum, {
             cwd,
             repo: params.trackerRepo
           });
@@ -155,6 +157,7 @@ export class InferBaseBranchUseCase {
       issueNumber: params.issueNumber,
       issueTitle: title,
       issueLabels: labels,
+      milestoneTitle: params.milestoneTitle || issueData?.milestone?.title,
       availableBranches,
       mergedBranches,
       defaultBranch

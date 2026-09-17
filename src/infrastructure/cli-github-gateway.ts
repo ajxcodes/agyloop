@@ -98,7 +98,7 @@ export class CliGitHubGateway implements GitHubGateway {
 
     try {
       const rawJson = this.runGh(
-        `issue view ${issueNumber} ${repoFlag} --json number,title,body,labels,state,comments`,
+        `issue view ${issueNumber} ${repoFlag} --json number,title,body,labels,state,comments,milestone`,
         { cwd: options.cwd }
       );
 
@@ -109,6 +109,7 @@ export class CliGitHubGateway implements GitHubGateway {
         state?: string;
         labels?: Array<{ name?: string } | string>;
         comments?: Array<{ author?: { login?: string }; body?: string; createdAt?: string }>;
+        milestone?: { title?: string } | null;
       }
 
       const parsed = JSON.parse(rawJson) as RawGhIssue;
@@ -126,7 +127,8 @@ export class CliGitHubGateway implements GitHubGateway {
         body: parsed.body || '',
         state: (parsed.state || 'OPEN').toUpperCase(),
         labels,
-        comments
+        comments,
+        milestone: parsed.milestone?.title ? { title: parsed.milestone.title } : undefined
       };
     } catch (err: unknown) {
       return {

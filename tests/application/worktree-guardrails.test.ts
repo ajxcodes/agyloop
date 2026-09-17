@@ -299,6 +299,98 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       assert.strictEqual(result.stateMachine.worktree.worktreePath, '/repo/.worktrees/41');
       assert.ok(result.taskPrompt.includes('/repo/.worktrees/41'));
     });
+
+    test('does not pass sm.baseBranch default to inferBaseBranchUseCase when params.baseBranch is omitted', async () => {
+      const sm = StateMachine.createInitial({ issue: 56, baseBranch: 'main' });
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition('APPROVAL');
+
+      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const mockWorktree = makeMockWorktree();
+      let capturedParams: any = null;
+
+      const mockInferUseCase = {
+        execute: async (params: any) => {
+          capturedParams = params;
+          return {
+            baseBranch: 'phase/5-orch',
+            taskBranchPrefix: 'fix/',
+            branchType: 'fix',
+            suggestedBranch: 'fix/56-test',
+            isPhaseCollector: true,
+            isCollectorBranch: true,
+            isBug: true,
+            isHotfix: false,
+            isMilestoneSealed: false,
+            needsCreation: false,
+            autoCreatedBaseBranch: false,
+            autoCreateFrom: 'main',
+            phaseIdentifier: '5',
+            rationale: 'Inferred'
+          };
+        }
+      } as any;
+
+      const useCase = new StartImplementationUseCase(
+        stateRepo,
+        makeMockConfig(),
+        makeMockPlanGenerator(),
+        undefined,
+        undefined,
+        mockWorktree,
+        mockInferUseCase
+      );
+
+      await useCase.execute({ workspaceDir: '/repo' });
+      assert.strictEqual(capturedParams.explicitBaseBranch, undefined);
+    });
+
+    test('passes params.baseBranch as explicit override to inferBaseBranchUseCase when provided', async () => {
+      const sm = StateMachine.createInitial({ issue: 56, baseBranch: 'main' });
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition('APPROVAL');
+
+      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const mockWorktree = makeMockWorktree();
+      let capturedParams: any = null;
+
+      const mockInferUseCase = {
+        execute: async (params: any) => {
+          capturedParams = params;
+          return {
+            baseBranch: params.explicitBaseBranch,
+            taskBranchPrefix: 'task/',
+            branchType: 'task',
+            suggestedBranch: 'task/56-test',
+            isPhaseCollector: false,
+            isCollectorBranch: false,
+            isBug: false,
+            isHotfix: false,
+            isMilestoneSealed: false,
+            needsCreation: false,
+            autoCreatedBaseBranch: false,
+            autoCreateFrom: 'main',
+            phaseIdentifier: null,
+            rationale: 'Explicit'
+          };
+        }
+      } as any;
+
+      const useCase = new StartImplementationUseCase(
+        stateRepo,
+        makeMockConfig(),
+        makeMockPlanGenerator(),
+        undefined,
+        undefined,
+        mockWorktree,
+        mockInferUseCase
+      );
+
+      await useCase.execute({ workspaceDir: '/repo', baseBranch: 'custom/override-branch' });
+      assert.strictEqual(capturedParams.explicitBaseBranch, 'custom/override-branch');
+    });
   });
 
   describe('ExecuteCommitUseCase Automated Teardown & PR Target', () => {

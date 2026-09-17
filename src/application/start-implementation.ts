@@ -149,7 +149,7 @@ export class StartImplementationUseCase {
           try {
             const inference = await this.inferBaseBranchUseCase.execute({
               issueNumber: activeIssue,
-              explicitBaseBranch: baseBranch,
+              explicitBaseBranch: params.baseBranch || undefined,
               workspaceDir: workspace
             });
             baseBranch = inference.baseBranch;
