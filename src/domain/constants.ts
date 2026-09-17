@@ -188,6 +188,8 @@ export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
 export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
 export const ERR_CRITIQUE = 'ERR_CRITIQUE' as const;
 export const ERR_AI_REVIEWER = ERR_CRITIQUE;
+export const ERR_CRITIQUE_INSTALL = 'ERR_CRITIQUE_INSTALL' as const;
+export const ERR_CRITIQUE_UPDATE = 'ERR_CRITIQUE_UPDATE' as const;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
 export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
 export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
@@ -208,6 +210,8 @@ export const ERROR_CODES = Object.freeze({
   GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
   CRITIQUE: ERR_CRITIQUE,
   AI_REVIEWER: ERR_CRITIQUE,
+  CRITIQUE_INSTALL: ERR_CRITIQUE_INSTALL,
+  CRITIQUE_UPDATE: ERR_CRITIQUE_UPDATE,
   REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
   COMMIT_EXECUTION: ERR_COMMIT_EXECUTION,
   WORKTREE: ERR_WORKTREE,
@@ -221,7 +225,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
 // Numeric Constants & Default Invariants
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
-export const CLI_VERSION = '0.4.0' as const;
+export const CLI_VERSION = '0.5.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
@@ -880,6 +884,28 @@ export const CRITIQUE_BUILD_COMMAND = 'npm run build' as const;
 export const PATH_USER_DATA_CRITIQUE_DIR = '.local/share/critique' as const;
 export const PATH_USER_DATA_CRITIQUE_MAC = 'Library/Application Support/critique' as const;
 
+export const CRITIQUE_GITHUB_OWNER = 'ajxcodes' as const;
+export const CRITIQUE_GITHUB_REPO = 'critique' as const;
+export const CRITIQUE_GITHUB_LATEST_RELEASE_API = 'https://api.github.com/repos/ajxcodes/critique/releases/latest' as const;
+export const CRITIQUE_UPDATE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
+export const CRITIQUE_CACHE_FILENAME = 'critique-update-cache.json' as const;
+export const DEFAULT_CRITIQUE_CHECK_TIMEOUT_MS = 3000 as const;
+export const DEFAULT_CRITIQUE_DOWNLOAD_TIMEOUT_MS = 15000 as const;
+export const CRITIQUE_EXECUTABLE_PERMISSIONS = 0o755;
+
+export const COMMAND_CRITIQUE = 'critique' as const;
+export const CRITIQUE_SUBCOMMAND_STATUS = 'status' as const;
+export const CRITIQUE_SUBCOMMAND_INSTALL = 'install' as const;
+export const CRITIQUE_SUBCOMMAND_UPDATE = 'update' as const;
+
+export const CRITIQUE_SUBCOMMANDS = Object.freeze([
+  CRITIQUE_SUBCOMMAND_STATUS,
+  CRITIQUE_SUBCOMMAND_INSTALL,
+  CRITIQUE_SUBCOMMAND_UPDATE
+] as const);
+
+export type CritiqueSubcommand = typeof CRITIQUE_SUBCOMMANDS[number];
+
 export const ENV_FILE_NAME = '.env' as const;
 export const ENV_VAR_GEMINI_API_KEY = 'GEMINI_API_KEY' as const;
 
@@ -1062,7 +1088,8 @@ export const CLI_COMMANDS = Object.freeze({
   WORKTREE: COMMAND_WORKTREE,
   RELEASE: COMMAND_RELEASE,
   NEXT: COMMAND_NEXT,
-  BRANCH_INFO: COMMAND_BRANCH_INFO
+  BRANCH_INFO: COMMAND_BRANCH_INFO,
+  CRITIQUE: COMMAND_CRITIQUE
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
@@ -1152,6 +1179,8 @@ export const FLAG_VERSION = '--version' as const;
 export const FLAG_VERSION_SHORT = '-v' as const;
 export const FLAG_KEEP_WORKTREE = '--keep-worktree' as const;
 export const FLAG_JSON = '--json' as const;
+export const FLAG_FORCE = '--force' as const;
+export const FLAG_FORCE_SHORT = '-f' as const;
 
 export const CLI_FLAGS = Object.freeze({
   YOLO: FLAG_YOLO,
@@ -1172,6 +1201,8 @@ export const CLI_FLAGS = Object.freeze({
   NO_WORKTREE: FLAG_NO_WORKTREE,
   KEEP_WORKTREE: FLAG_KEEP_WORKTREE,
   JSON: FLAG_JSON,
+  FORCE: FLAG_FORCE,
+  FORCE_SHORT: FLAG_FORCE_SHORT,
   HELP: FLAG_HELP,
   HELP_SHORT: FLAG_HELP_SHORT,
   VERSION: FLAG_VERSION,

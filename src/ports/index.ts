@@ -11,6 +11,7 @@ export * from './prompt-repository';
 export * from './command-executor';
 export * from './build-detector';
 export * from './critique';
+export * from './critique-installer';
 export * from './standards-repository';
 export * from './confirmation-prompt';
 export * from './worktree-manager';

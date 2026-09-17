@@ -33,8 +33,11 @@ import {
   EXIT_CODE_FAILURE,
   COMMAND_WORKTREE,
   COMMAND_RELEASE,
+  COMMAND_CRITIQUE,
   FLAG_WORKTREE,
   FLAG_NO_WORKTREE,
+  FLAG_FORCE,
+  FLAG_FORCE_SHORT,
   PreFlightHaltError,
   MilestoneReleaseError,
   MilestoneSealedError
@@ -50,6 +53,7 @@ import {
   FileBuildDetector,
   ReadlineConfirmationPrompt,
   CliCritiqueGateway,
+  GithubCritiqueInstallerGateway,
   FileStandardsRepository,
   GitWorktreeManager
 } from '../infrastructure';
@@ -64,6 +68,7 @@ import {
   StartImplementationUseCase,
   RunQualityGateUseCase,
   RunReviewUseCase,
+  ManageCritiqueUseCase,
   DraftCommitUseCase,
   ExecuteCommitUseCase,
   ManageWorktreeUseCase,
@@ -96,6 +101,8 @@ export interface CliOptions {
   phaseBranch: string | null;
   worktreeSubcommand: string | null;
   worktreeTarget: string | null;
+  critiqueSubcommand: string | null;
+  force: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -129,6 +136,7 @@ Pipeline Management:
   reset              Reset .agyloop/state.json checkpoint
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
+  critique [cmd]     Manage Critique CLI installation (status | install | update)
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
@@ -136,6 +144,7 @@ Operational Flags:
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
+  -f, --force        Force operation (force fresh version check or reinstallation)
       --issue <num>  Associate execution with GitHub issue number
       --title <text> Specify plan title for persistent artifact scaffolding
       --type <type>  Specify plan type (discovery | implementation | auto)
@@ -158,6 +167,9 @@ Examples:
   agyloop gates --commit-after          Run gates and review, auto-committing if all pass
   agyloop commit                        Draft Conventional Commit and prompt for human approval
   agyloop commit -y                     Draft Conventional Commit and commit immediately
+  agyloop critique status               Inspect critique resolution, installed version, and update status
+  agyloop critique install              Install latest critique CLI into user data directory
+  agyloop critique update               Update critique CLI to latest release
   agyloop release phase/1-bridge-arch   Generate milestone release PR to main with SemVer label
   agyloop release --dry-run             Preview calculated SemVer bump and compiled changelog
   agyloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
@@ -193,7 +205,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     baseBranch: null,
     phaseBranch: null,
     worktreeSubcommand: null,
-    worktreeTarget: null
+    worktreeTarget: null,
+    critiqueSubcommand: null,
+    force: false
   };
 
   const positional: string[] = [];
@@ -223,6 +237,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.keepWorktree = true;
     } else if (arg === '--json') {
       options.json = true;
+    } else if (arg === '--force' || arg === '-f') {
+      options.force = true;
     } else if (arg === '--base-branch') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.baseBranch = args[++i];
@@ -291,6 +307,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.worktreeTarget = positional.length > 2 ? positional[2] : null;
     } else if (command === 'release') {
       options.phaseBranch = positional.length > 1 ? positional[1] : null;
+    } else if (command === 'critique') {
+      options.critiqueSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'status';
     }
   }
 
@@ -337,6 +355,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const buildDetector = new FileBuildDetector();
   const standardsRepo = new FileStandardsRepository();
   const critique = new CliCritiqueGateway();
+  const critiqueInstaller = new GithubCritiqueInstallerGateway();
   const confirmationPrompt = new ReadlineConfirmationPrompt();
   const worktreeManager = new GitWorktreeManager(commandExecutor);
 
@@ -351,9 +370,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     buildDetector,
     standardsRepo,
     critique,
+    critiqueInstaller,
     confirmationPrompt,
     worktreeManager
   });
+
+  const manageCritiqueUseCase = new ManageCritiqueUseCase(critique, critiqueInstaller);
 
   const inferBaseBranchUseCase = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
 
@@ -595,6 +617,71 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       console.error(`Unknown worktree subcommand: '${sub}'. Valid subcommands: list, clean, prune, remove <task-id>\n`);
       return EXIT_CODE_FAILURE;
+    }
+
+    case 'critique': {
+      const sub = options.critiqueSubcommand || 'status';
+      switch (sub) {
+        case 'status': {
+          const status = await manageCritiqueUseCase.getStatus(process.cwd());
+          if (options.json) {
+            console.log(JSON.stringify(status, null, 2));
+            return EXIT_CODE_SUCCESS;
+          }
+
+          console.log('\n=== AgyLoop: Critique CLI Status ===');
+          console.log(`Resolution Source : ${status.resolution.source}`);
+          console.log(`Resolved Path     : ${status.resolution.path || 'Not found'}`);
+          console.log(`Installed Version : ${status.versionInfo.currentVersion ? `v${status.versionInfo.currentVersion}` : 'Not installed'}`);
+          console.log(`Latest Version    : ${status.versionInfo.latestVersion ? `v${status.versionInfo.latestVersion}` : 'Unknown (offline or pending)'}`);
+          if (status.versionInfo.lastCheckedAt) {
+            console.log(`Last Checked At   : ${new Date(status.versionInfo.lastCheckedAt).toLocaleString()}`);
+          }
+          console.log(`Update Available  : ${status.versionInfo.isOutdated ? 'YES ⚠️' : 'NO ✓'}`);
+
+          if (status.versionInfo.isOutdated) {
+            console.log(`\n💡 A new version of critique is available (v${status.versionInfo.currentVersion} -> v${status.versionInfo.latestVersion}).`);
+            console.log('   Run `agyloop critique update` to upgrade.\n');
+          } else if (!status.resolution.isAvailable) {
+            console.log('\n⚠️  Critique CLI is not installed.');
+            console.log('   Run `agyloop critique install` to install it automatically.\n');
+          } else {
+            console.log('\n✓ Critique CLI is installed and up to date.\n');
+          }
+          return EXIT_CODE_SUCCESS;
+        }
+
+        case 'install': {
+          console.log('\n📥 Installing Critique CLI...');
+          const result = await manageCritiqueUseCase.install({ force: options.force });
+          if (result.success) {
+            console.log(`✓ Successfully installed critique v${result.version} to:`);
+            console.log(`  ${result.targetPath}\n`);
+            return EXIT_CODE_SUCCESS;
+          } else {
+            console.error(`✗ Installation failed: ${result.error || 'Unknown error'}\n`);
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
+        case 'update': {
+          console.log('\n🔄 Updating Critique CLI...');
+          const result = await manageCritiqueUseCase.update();
+          if (result.success) {
+            console.log(`✓ Successfully updated critique to v${result.version} at:`);
+            console.log(`  ${result.targetPath}\n`);
+            return EXIT_CODE_SUCCESS;
+          } else {
+            console.error(`✗ Update failed: ${result.error || 'Unknown error'}\n`);
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
+        default: {
+          console.error(`Error: Unknown critique subcommand "${sub}". Available: status, install, update.\n`);
+          return EXIT_CODE_FAILURE;
+        }
+      }
     }
 
     case 'prompt': {

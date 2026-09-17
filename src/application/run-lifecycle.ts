@@ -59,6 +59,7 @@ import {
   BuildDetectorPort,
   StandardsRepository,
   CritiquePort,
+  CritiqueInstallerPort,
   ConfirmationPromptPort,
   WorktreeManagerPort
 } from '../ports';
@@ -123,6 +124,7 @@ export interface RunLifecycleDependencies {
   readonly standardsRepo?: StandardsRepository;
   readonly critique?: CritiquePort;
   readonly aiReviewer?: CritiquePort;
+  readonly critiqueInstaller?: CritiqueInstallerPort;
   readonly confirmationPrompt?: ConfirmationPromptPort;
   readonly startPlanningUseCase?: StartPlanningUseCase;
   readonly startImplementationUseCase?: StartImplementationUseCase;
@@ -214,7 +216,9 @@ export class RunLifecycleUseCase {
         this.standardsRepo,
         this.critique,
         this.commandExecutor,
-        resolveSubagentUseCase
+        resolveSubagentUseCase,
+        deps.critiqueInstaller,
+        this.confirmationPrompt
       );
 
     this.draftCommitUseCase =

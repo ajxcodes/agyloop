@@ -11,6 +11,7 @@ export * from './file-prompt-repository';
 export * from './process-command-executor';
 export * from './file-build-detector';
 export * from './cli-critique-gateway';
+export * from './github-critique-installer-gateway';
 export * from './file-standards-repository';
 export * from './readline-confirmation-prompt';
 export * from './git-worktree-manager';

@@ -44,6 +44,8 @@ import {
   PlanGeneratorPort,
   StandardsRepository,
   CritiquePort,
+  CritiqueInstallerPort,
+  ConfirmationPromptPort,
   CommandExecutorPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
@@ -62,6 +64,8 @@ export interface RunReviewParams {
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
   readonly workspaceDir?: string;
+  readonly confirmationPrompt?: ConfirmationPromptPort;
+  readonly critiqueInstaller?: CritiqueInstallerPort;
 }
 
 export interface RunReviewResult {
@@ -76,6 +80,8 @@ export interface RunReviewResult {
   readonly durationMs: number;
   readonly suggestedCommitMessage?: string;
   readonly critiqueReport?: string | null;
+  readonly updateNotification?: string | null;
+  readonly autoInstalled?: boolean;
 }
 
 function cleanBulletLine(rawLine: string): string {
@@ -149,6 +155,8 @@ export class RunReviewUseCase {
   private readonly critique?: CritiquePort;
   private readonly commandExecutor?: CommandExecutorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  private readonly critiqueInstaller?: CritiqueInstallerPort;
+  private readonly confirmationPrompt?: ConfirmationPromptPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -157,7 +165,9 @@ export class RunReviewUseCase {
     standardsRepo?: StandardsRepository,
     critique?: CritiquePort,
     commandExecutor?: CommandExecutorPort,
-    resolveSubagentUseCase?: ResolveSubagentUseCase
+    resolveSubagentUseCase?: ResolveSubagentUseCase,
+    critiqueInstaller?: CritiqueInstallerPort,
+    confirmationPrompt?: ConfirmationPromptPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -167,6 +177,8 @@ export class RunReviewUseCase {
     this.commandExecutor = commandExecutor;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo);
+    this.critiqueInstaller = critiqueInstaller;
+    this.confirmationPrompt = confirmationPrompt;
   }
 
   public async execute(params: RunReviewParams = {}): Promise<RunReviewResult> {
@@ -249,11 +261,55 @@ export class RunReviewUseCase {
     const reviewCwd = sm.worktree?.worktreePath || workspace;
     const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
 
+    let updateNotification: string | null = null;
+    let autoInstalled = false;
+
     // Tier 1: Execute Automated Critique Diagnostics (if CritiquePort available)
     let aiReport: AiReviewReport | null = null;
     let critiqueReportText: string | null = params.critiqueReport || null;
 
     if (this.critique) {
+      const prompt = params.confirmationPrompt ?? this.confirmationPrompt;
+      const installer = params.critiqueInstaller ?? this.critiqueInstaller;
+
+      let resolution = typeof this.critique.resolveReviewer === 'function'
+        ? await Promise.resolve(this.critique.resolveReviewer(reviewCwd))
+        : { source: 'system_path' as const, path: 'critique', isAvailable: true };
+
+      // Auto-install fallback prompt if critique CLI is absent and confirmation prompt is available
+      if (!resolution.isAvailable && prompt && installer) {
+        const confirmed = await prompt.confirm(
+          'Critique CLI is not installed. Would you like to install it automatically? [Y/n]',
+          true
+        );
+        if (confirmed) {
+          const installResult = await installer.install();
+          if (installResult.success) {
+            autoInstalled = true;
+            if (typeof this.critique.resolveReviewer === 'function') {
+              resolution = await Promise.resolve(this.critique.resolveReviewer(reviewCwd));
+            }
+          }
+        }
+      }
+
+      // Non-blocking version update check with 24-hour cache TTL
+      if (resolution.isAvailable && resolution.path && installer && typeof this.critique.getVersion === 'function') {
+        try {
+          const currentVer = await this.critique.getVersion(resolution.path);
+          const versionInfo = await installer.checkUpdateAvailable(currentVer, {
+            resolvedPath: resolution.path,
+            timeoutMs: 3000
+          });
+          if (versionInfo.isOutdated && versionInfo.currentVersion && versionInfo.latestVersion) {
+            updateNotification = `💡 A new version of critique is available (v${versionInfo.currentVersion} -> v${versionInfo.latestVersion}).\n   Run \`agyloop critique update\` to upgrade.`;
+            console.log(`\n${updateNotification}\n`);
+          }
+        } catch {
+          // Non-blocking, ignore errors
+        }
+      }
+
       try {
         aiReport = await this.critique.review({
           cwd: reviewCwd,
@@ -398,7 +454,9 @@ export class RunReviewUseCase {
       acceptanceCriteria,
       durationMs,
       suggestedCommitMessage,
-      critiqueReport: critiqueReportText
+      critiqueReport: critiqueReportText,
+      updateNotification,
+      autoInstalled
     };
   }
 }

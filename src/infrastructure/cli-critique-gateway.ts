@@ -37,6 +37,7 @@ import {
   MSG_CRITIQUE_NOT_FOUND
 } from '../domain/constants';
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
+import { cleanVersion } from '../domain/value-objects/critique-version';
 import {
   CritiquePort,
   CritiqueOptions,
@@ -353,6 +354,24 @@ export class CliCritiqueGateway implements CritiquePort {
       return AiReviewReport.empty();
     } catch (err) {
       return AiReviewReport.bypassed(`Critique execution error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  public async getVersion(resolvedPath: string): Promise<string | null> {
+    if (!resolvedPath) {
+      return null;
+    }
+    try {
+      if (!fs.existsSync(resolvedPath)) {
+        return null;
+      }
+      const isJs = resolvedPath.endsWith('.js');
+      const command = isJs ? `node "${resolvedPath}" --version` : `"${resolvedPath}" --version`;
+      const result = await this.commandExecutor.execute(command, { timeoutMs: 3000 });
+      const raw = (result.stdout || result.stderr || '').trim();
+      return cleanVersion(raw);
+    } catch {
+      return null;
     }
   }
 }

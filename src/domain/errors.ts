@@ -19,6 +19,8 @@ import {
   ERR_GATE_SUMMARY_PARSE,
   ERR_CRITIQUE,
   ERR_AI_REVIEWER,
+  ERR_CRITIQUE_INSTALL,
+  ERR_CRITIQUE_UPDATE,
   ERR_REVIEWER_SUBAGENT,
   ERR_COMMIT_EXECUTION,
   ERR_WORKTREE,
@@ -204,6 +206,38 @@ export class CritiqueError extends AgyLoopError {
 
 export const AiReviewerError = CritiqueError;
 export type AiReviewerError = CritiqueError;
+
+export class CritiqueInstallError extends AgyLoopError {
+  public readonly code = ERR_CRITIQUE_INSTALL;
+  public readonly operation: string;
+  public readonly reason: string;
+
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Critique install error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    this.operation = operation;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
+export class CritiqueUpdateError extends AgyLoopError {
+  public readonly code = ERR_CRITIQUE_UPDATE;
+  public readonly operation: string;
+  public readonly reason: string;
+
+  constructor(operation: string, reason: string, details?: Record<string, unknown>, cause?: unknown) {
+    const causeMsg = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`Critique update error during '${operation}': ${reason}${causeMsg}`, { operation, reason, ...details });
+    this.operation = operation;
+    this.reason = reason;
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
 
 export class ReviewerSubagentError extends AgyLoopError {
   public readonly code = ERR_REVIEWER_SUBAGENT;
