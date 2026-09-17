@@ -16,7 +16,8 @@ const {
   MODE_YOLO,
   CommitMessage,
   InvalidTransitionError,
-  CommitExecutionError
+  CommitExecutionError,
+  WorktreeDescriptor
 } = require('../../dist/domain');
 const {
   DraftCommitUseCase,
@@ -31,7 +32,8 @@ import type {
   GitHubIssueData,
   PlanGeneratorPort,
   ConfirmationPromptPort,
-  ResolvedPlanLocation
+  ResolvedPlanLocation,
+  WorktreeManagerPort
 } from '../../src/ports';
 
 class MockStateRepository implements StateRepository {
@@ -62,10 +64,12 @@ class MockStateRepository implements StateRepository {
 
 class MockCommandExecutor implements CommandExecutorPort {
   public executedCommands: string[] = [];
+  public executedOptions: Array<any> = [];
   public responses: Record<string, Partial<CommandExecutionResult>> = {};
 
-  public async execute(command: string): Promise<CommandExecutionResult> {
+  public async execute(command: string, options?: any): Promise<CommandExecutionResult> {
     this.executedCommands.push(command);
+    this.executedOptions.push(options);
     const mock = this.responses[command] || {};
     return {
       command,
@@ -76,6 +80,14 @@ class MockCommandExecutor implements CommandExecutorPort {
       durationMs: 10,
       timedOut: false
     };
+  }
+}
+
+class MockWorktreeManager implements Partial<WorktreeManagerPort> {
+  public removedWorktreeOptions: any = null;
+
+  public async removeWorktree(options: any): Promise<void> {
+    this.removedWorktreeOptions = options;
   }
 }
 
@@ -187,6 +199,29 @@ new file mode 100644
       assert.strictEqual(result.commitMessage.type, 'refactor');
       assert.strictEqual(result.commitMessage.scope, 'core');
       assert.strictEqual(result.commitMessage.toSingleLine(), 'refactor(core): overhaul lifecycle transitions (#30)');
+    });
+
+    test('evaluates git commands in worktree directory when sm.worktree is configured', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 48,
+        worktreePath: '/mock/repo/.worktrees/48',
+        branch: 'fix/48',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(48);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git diff HEAD'] = {
+        stdout: `diff --git a/file.ts b/file.ts\n+++ b/file.ts\n@@ -0,0 +1 @@\n+test`
+      };
+      const gateway = new MockGitHubGateway();
+      const useCase = new DraftCommitUseCase(stateRepo, executor, gateway);
+
+      await useCase.execute({ workspaceDir: '/mock/repo' });
+
+      assert.ok(executor.executedCommands.includes('git diff HEAD'));
+      assert.strictEqual(executor.executedOptions[0]?.cwd, '/mock/repo/.worktrees/48');
     });
   });
 
@@ -404,6 +439,62 @@ new file mode 100644
       assert.ok(planGen.updatedSummary);
       assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.targetStage, STAGE_PLAN);
       assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.reason, 'Architecture requires redesign');
+    });
+
+    test('evaluates git commands in worktree directory and worktree removal in rootWorkspaceDir when sm.worktree is configured', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 48,
+        worktreePath: '/mock/repo/.worktrees/48',
+        branch: 'fix/48',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(48);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix(worktree): test commit (#48)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'feedbeef1234\n' };
+
+      const worktreeManager = new MockWorktreeManager();
+      const planGen = new MockPlanGenerator();
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        planGen as unknown as PlanGeneratorPort,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        scope: 'worktree',
+        description: 'test commit',
+        issueNumber: 48
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+
+      // Verify all git commands ran inside the worktree directory
+      assert.ok(executor.executedOptions.length > 0);
+      for (const opt of executor.executedOptions) {
+        assert.strictEqual(opt?.cwd, '/mock/repo/.worktrees/48');
+      }
+
+      // Verify worktree removal was performed using rootWorkspaceDir
+      assert.ok(worktreeManager.removedWorktreeOptions);
+      assert.strictEqual(worktreeManager.removedWorktreeOptions.workspaceDir, '/mock/repo');
+      assert.strictEqual(worktreeManager.removedWorktreeOptions.worktreePath, '/mock/repo/.worktrees/48');
     });
   });
 });
