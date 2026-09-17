@@ -196,4 +196,34 @@ describe('Dual-Branch Lifecycle & Remote Push Inference', () => {
     assert.strictEqual(result.branchType, 'fix');
     assert.strictEqual(result.suggestedBranch, 'fix/12-socket-disconnect-bug');
   });
+
+  test('infers collector branch from GitHub issue milestone title when issue has no phase label', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'ajxcodes/agydeck',
+        number: num,
+        title: 'Fix worktree provisioning race',
+        body: 'Details',
+        labels: ['bug'],
+        milestone: { title: 'Phase 5: Orchestrator & Worktree Lifecycle Hardening' },
+        comments: [],
+        state: 'OPEN'
+      })
+    });
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/5-orchestrator-hardening'],
+      isAncestor: async () => false
+    });
+
+    const useCase = new InferBaseBranchUseCase(mockWorktree, mockGithub);
+    const result = await useCase.execute({
+      issueNumber: '56'
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/5-orchestrator-hardening');
+    assert.strictEqual(result.isCollectorBranch, true);
+    assert.strictEqual(result.branchType, 'fix');
+    assert.strictEqual(result.suggestedBranch, 'fix/56-fix-worktree-provisioning-race');
+  });
 });

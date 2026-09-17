@@ -19,6 +19,10 @@ export interface PullRequestReviewComment {
   readonly createdAt?: string;
 }
 
+export interface GitHubIssueMilestone {
+  readonly title: string;
+}
+
 export interface GitHubIssueData {
   readonly repo: string;
   readonly number: number;
@@ -27,6 +31,7 @@ export interface GitHubIssueData {
   readonly state?: string; // 'OPEN' | 'CLOSED'
   readonly labels: readonly string[];
   readonly comments: readonly GitHubComment[];
+  readonly milestone?: GitHubIssueMilestone;
   readonly error?: string;
 }
 

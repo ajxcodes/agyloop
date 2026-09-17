@@ -486,12 +486,29 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    */
   public async isAncestor(options: IsAncestorOptions): Promise<boolean> {
     const workspace = options.workspaceDir || process.cwd();
+    const ancestorBranch = options.ancestorBranch || (options as any).ancestor || '';
+    const descendantBranch = options.descendantBranch || (options as any).descendant || '';
+
+    const ancestorSha = await this.getCommitHash(ancestorBranch, workspace);
+    const descendantSha = await this.getCommitHash(descendantBranch, workspace);
+
+    if (ancestorSha && descendantSha && ancestorSha === descendantSha) {
+      return false;
+    }
+
     const res = await this.commandExecutor.execute(
-      `git merge-base --is-ancestor "${options.ancestorBranch}" "${options.descendantBranch}"`,
+      `git merge-base --is-ancestor "${ancestorBranch}" "${descendantBranch}"`,
       { cwd: workspace }
     );
 
     return res.exitCode === 0;
+  }
+
+  private async getCommitHash(branch: string, workspace: string): Promise<string> {
+    const res = await this.commandExecutor.execute(`git rev-parse "${branch}^{commit}"`, {
+      cwd: workspace
+    });
+    return (res.stdout || '').trim();
   }
 
   /**
