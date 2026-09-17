@@ -83,7 +83,7 @@ export interface WorktreeManagerPort {
     workspaceDir: string,
     taskId: string | number,
     worktreesDir?: string
-  ): string;
+  ): Promise<string>;
 
   /**
    * Resolves the deterministic branch name for a given task ID and slug/title.

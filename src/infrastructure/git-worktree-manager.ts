@@ -39,16 +39,52 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
+   * Resolves the primary repository root.
+   * When inside a linked git worktree or nested subdirectory, git rev-parse --show-toplevel
+   * returns the worktree path itself, not the primary repo root.
+   * git worktree list --porcelain outputs all worktrees, and the very first worktree listed
+   * is always the main repository root.
+   */
+  private async getRepoRoot(workspaceDir?: string): Promise<string> {
+    const cwd = workspaceDir || process.cwd();
+    try {
+      const res = await this.commandExecutor.execute('git worktree list --porcelain', { cwd });
+      if (res.exitCode === 0 && res.stdout) {
+        const firstLine = res.stdout.trim().split('\n')[0] || '';
+        const match = firstLine.match(/^worktree (.+)$/);
+        if (match && match[1]) {
+          return path.resolve(match[1].trim());
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+
+    try {
+      const res = await this.commandExecutor.execute('git rev-parse --show-toplevel', { cwd });
+      if (res.exitCode === 0 && res.stdout && res.stdout.trim()) {
+        return path.resolve(res.stdout.trim());
+      }
+    } catch {
+      // Fallback below
+    }
+
+    return path.resolve(cwd);
+  }
+
+  /**
    * Resolves absolute or relative worktree path for a given task ID.
    */
-  public resolveTaskWorktreePath(
+  public async resolveTaskWorktreePath(
     workspaceDir: string,
     taskId: string | number,
-    worktreesDir: string = DEFAULT_WORKTREES_DIR
-  ): string {
-    const cleanWorkspace = workspaceDir || process.cwd();
-    const cleanId = String(taskId).trim();
-    return path.resolve(cleanWorkspace, worktreesDir, cleanId);
+    worktreesDir?: string
+  ): Promise<string> {
+    const root = await this.getRepoRoot(workspaceDir);
+    const targetWorktreesDir = worktreesDir || DEFAULT_WORKTREES_DIR;
+    return path.isAbsolute(targetWorktreesDir)
+      ? path.resolve(targetWorktreesDir, String(taskId).trim())
+      : path.resolve(root, targetWorktreesDir, String(taskId).trim());
   }
 
   /**
@@ -66,7 +102,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Automatically adds .worktrees/ to .gitignore if not already present.
    */
   public async ensureGitIgnore(options?: EnsureGitIgnoreOptions): Promise<boolean> {
-    const workspace = options?.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
     const targetEntry = options?.entry || '.worktrees/';
     const gitignorePath = path.join(workspace, '.gitignore');
 
@@ -140,7 +176,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Provisions an isolated git worktree under .worktrees/<task-id> on branch task/<task-id>-<slug>.
    */
   public async createWorktree(options: CreateWorktreeOptions): Promise<WorktreeDescriptor> {
-    const workspace = options.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options.workspaceDir);
     const taskId = String(options.taskId).trim();
     if (!taskId) {
       throw new WorktreeCreationError('createWorktree', 'Task ID is required to create a worktree.');
@@ -154,7 +190,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         : '';
 
     const branch = this.resolveTaskBranchName(taskId, slug, options.branchPrefix);
-    const worktreePath = this.resolveTaskWorktreePath(workspace, taskId, options.worktreesDir);
+    const worktreePath = await this.resolveTaskWorktreePath(workspace, taskId, options.worktreesDir);
 
     // 1. Ensure .worktrees/ and .agyloop/ are ignored in root repo
     await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees/' });
@@ -263,7 +299,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Detaches and removes worktree directory and cleans up metadata.
    */
   public async removeWorktree(options: RemoveWorktreeOptions): Promise<void> {
-    const workspace = options.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options.workspaceDir);
     const worktreePath = options.worktreePath;
 
     if (!worktreePath) return;
@@ -305,7 +341,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Prunes dangling worktrees via git worktree prune.
    */
   public async pruneWorktrees(options?: PruneWorktreesOptions): Promise<void> {
-    const workspace = options?.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
     const cmd = options?.expire
       ? `git worktree prune --expire "${options.expire}"`
       : 'git worktree prune';
@@ -317,7 +353,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Lists active worktrees registered in the git repository.
    */
   public async listWorktrees(options?: ListWorktreesOptions): Promise<readonly WorktreeDescriptor[]> {
-    const workspace = options?.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
     const res = await this.commandExecutor.execute('git worktree list --porcelain', {
       cwd: workspace
     });
@@ -375,7 +411,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Cleans orphaned or stale worktrees/locks and returns count pruned.
    */
   public async cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number> {
-    const workspace = options?.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
     const initialList = await this.listWorktrees({ workspaceDir: workspace });
     await this.pruneWorktrees({ workspaceDir: workspace });
 

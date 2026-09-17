@@ -41,7 +41,7 @@ function makeMockGithub(overrides: Partial<GitHubGateway> = {}): GitHubGateway {
 
 function makeMockWorktree(overrides: Partial<WorktreeManagerPort> = {}): WorktreeManagerPort {
   return {
-    resolveTaskWorktreePath: (_dir: string, taskId: string | number) => `/repo/.worktrees/${taskId}`,
+    resolveTaskWorktreePath: async (_dir: string, taskId: string | number) => `/repo/.worktrees/${taskId}`,
     resolveTaskBranchName: (taskId: string | number, slug?: string | null, prefix?: string) =>
       `${prefix || 'task'}/${taskId}-${slug ? slug.toLowerCase().replace(/[^a-z0-9]+/g, '-') : 'work'}`,
     ensureGitIgnore: async () => false,
