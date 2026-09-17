@@ -39,6 +39,12 @@ export interface SummaryUpdateData {
   readonly commitHash?: string;
   readonly commitMessage?: string;
   readonly commitTimestamp?: string;
+  readonly planRevisionCount?: number;
+  readonly prComments?: readonly string[] | string;
+  readonly commitRejection?: {
+    readonly targetStage?: string;
+    readonly reason?: string;
+  } | string;
 }
 
 export interface GeneratePlanOptions {

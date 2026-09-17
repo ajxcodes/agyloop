@@ -195,9 +195,25 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     );
 
     if (addRes.exitCode !== 0) {
-      const stderr = addRes.stderr || addRes.stdout || '';
+      const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
+      // If branch is already checked out at a worktree, return existing worktree descriptor idempotently
+      if (output.includes('already checked out at')) {
+        const match = output.match(/already checked out at '([^']+)'/);
+        const existingPath = match ? match[1] : worktreePath;
+        this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
+        this.linkArtifactsIfPresent(workspace, existingPath);
+        return new WorktreeDescriptor({
+          taskId,
+          worktreePath: existingPath,
+          branch,
+          baseBranch,
+          slug,
+          isIsolated: true
+        });
+      }
+
       // If branch already exists, reuse the existing branch
-      if (stderr.includes('already exists')) {
+      if (output.includes('already exists')) {
         addRes = await this.commandExecutor.execute(
           `git worktree add "${worktreePath}" "${branch}"`,
           { cwd: workspace }
@@ -206,6 +222,22 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     }
 
     if (addRes.exitCode !== 0) {
+      const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
+      if (output.includes('already checked out at')) {
+        const match = output.match(/already checked out at '([^']+)'/);
+        const existingPath = match ? match[1] : worktreePath;
+        this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
+        this.linkArtifactsIfPresent(workspace, existingPath);
+        return new WorktreeDescriptor({
+          taskId,
+          worktreePath: existingPath,
+          branch,
+          baseBranch,
+          slug,
+          isIsolated: true
+        });
+      }
+
       throw new WorktreeCreationError(
         'createWorktree',
         addRes.stderr || addRes.stdout || `Failed to create git worktree at ${worktreePath}`,

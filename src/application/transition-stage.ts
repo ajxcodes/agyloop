@@ -9,10 +9,27 @@ import {
   StageName,
   ExecutionMode,
   MODE_STANDARD,
+  STAGE_INITIALIZED,
+  STAGE_DISCOVERY,
+  STAGE_PLAN,
+  STAGE_APPROVAL,
   STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
+  STAGE_COMPLETED,
+  SUMMARY_STAGE_DISCOVERY,
+  SUMMARY_STAGE_PLAN_REVIEW,
+  SUMMARY_STAGE_IMPLEMENTATION,
+  SUMMARY_STAGE_QUALITY_GATES,
+  SUMMARY_STAGE_AI_REVIEW,
+  SUMMARY_STAGE_COMMIT_PR,
+  SUMMARY_STATUS_PENDING,
+  SUMMARY_STATUS_IN_PROGRESS,
+  SUMMARY_STATUS_COMPLETED,
   WorktreeCreationError
 } from '../domain';
-import { StateRepository, WorktreeManagerPort } from '../ports';
+import { StateRepository, WorktreeManagerPort, PlanGeneratorPort } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface TransitionParams {
@@ -31,15 +48,18 @@ export class TransitionStageUseCase {
   private readonly stateRepo: StateRepository;
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  private readonly planGenerator?: PlanGeneratorPort;
 
   constructor(
     stateRepo: StateRepository,
     worktreeManager?: WorktreeManagerPort,
-    inferBaseBranchUseCase?: InferBaseBranchUseCase
+    inferBaseBranchUseCase?: InferBaseBranchUseCase,
+    planGenerator?: PlanGeneratorPort
   ) {
     this.stateRepo = stateRepo;
     this.worktreeManager = worktreeManager;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
+    this.planGenerator = planGenerator;
   }
 
   public async execute(params: TransitionParams): Promise<StateMachine> {
@@ -49,8 +69,12 @@ export class TransitionStageUseCase {
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
       if (params.mode) sm.setMode(params.mode);
-      if (params.issue !== undefined) sm.setIssue(params.issue);
-      if (params.baseBranch) sm.setBaseBranch(params.baseBranch);
+      if (params.issue !== undefined && params.issue !== null && params.issue !== '') {
+        sm.setIssue(params.issue);
+      }
+      if (params.baseBranch !== undefined && params.baseBranch !== null && params.baseBranch.trim() !== '') {
+        sm.setBaseBranch(params.baseBranch);
+      }
     } else {
       sm = StateMachine.createInitial({
         mode: params.mode || MODE_STANDARD,
@@ -124,10 +148,52 @@ export class TransitionStageUseCase {
       }
     }
 
+    if (sm.pausedAtGate) {
+      sm.resumeFromGate();
+    }
+
     sm.transition(params.targetStage, params.metadata || {});
+
+    if (targetStageStr === STAGE_APPROVAL || targetStageStr === STAGE_COMMIT) {
+      sm.pauseAtGate(targetStageStr);
+    }
 
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
+
+      if (this.planGenerator) {
+        const workspace = params.workspaceDir || process.cwd();
+        const activeIssue = sm.issue || params.issue;
+        const resolvedPlan = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: activeIssue
+        });
+        if (resolvedPlan && resolvedPlan.summaryPath) {
+          const stageMap: Record<string, string> = {
+            [STAGE_DISCOVERY]: SUMMARY_STAGE_DISCOVERY,
+            [STAGE_PLAN]: SUMMARY_STAGE_PLAN_REVIEW,
+            [STAGE_APPROVAL]: SUMMARY_STAGE_PLAN_REVIEW,
+            [STAGE_IMPLEMENT]: SUMMARY_STAGE_IMPLEMENTATION,
+            [STAGE_QUALITY_GATE]: SUMMARY_STAGE_QUALITY_GATES,
+            [STAGE_REVIEW]: SUMMARY_STAGE_AI_REVIEW,
+            [STAGE_COMMIT]: SUMMARY_STAGE_COMMIT_PR,
+            [STAGE_COMPLETED]: SUMMARY_STAGE_COMMIT_PR
+          };
+          const mappedStage = stageMap[targetStageStr];
+          if (mappedStage) {
+            const statusMap: Record<string, string> = {
+              [STAGE_APPROVAL]: SUMMARY_STATUS_PENDING,
+              [STAGE_IMPLEMENT]: SUMMARY_STATUS_IN_PROGRESS,
+              [STAGE_COMPLETED]: SUMMARY_STATUS_COMPLETED
+            };
+            this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
+              stage: mappedStage,
+              status: statusMap[targetStageStr] || SUMMARY_STATUS_IN_PROGRESS,
+              notes: (params.metadata?.note as string) || undefined
+            });
+          }
+        }
+      }
     }
 
     return sm;

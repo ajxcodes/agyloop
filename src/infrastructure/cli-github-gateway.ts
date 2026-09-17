@@ -13,6 +13,7 @@ import {
   GitHubGatewayOptions,
   GitHubIssueData,
   GitHubComment,
+  PullRequestReviewComment,
   GitHubPullRequestData,
   FindPullRequestOptions,
   CreatePullRequestOptions,
@@ -151,7 +152,7 @@ export class CliGitHubGateway implements GitHubGateway {
       if (options.headBranch) {
         cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 1`;
       } else if (options.issueNumber) {
-        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 1`;
+        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 10`;
       } else {
         return null;
       }
@@ -173,7 +174,26 @@ export class CliGitHubGateway implements GitHubGateway {
         return null;
       }
 
-      const pr = parsed[0];
+      let pr: RawGhPr | undefined;
+      if (options.issueNumber) {
+        const numStr = String(options.issueNumber);
+        // Find exact match avoiding substring collisions (e.g. issue 4 shouldn't match PR 42)
+        pr = parsed.find((p) => {
+          const head = p.headRefName || '';
+          const title = p.title || '';
+          const branchPattern = new RegExp(`^(task|fix|feature|issue|bugfix)?/?${numStr}([-_/]|$)`, 'i');
+          if (branchPattern.test(head)) return true;
+          const titlePattern = new RegExp(`(^|\\s|[\\[(])#${numStr}([\\])\\s,.:;]|$)`, 'i');
+          if (titlePattern.test(title)) return true;
+          return false;
+        });
+        if (!pr) {
+          return null;
+        }
+      } else {
+        pr = parsed[0];
+      }
+
       const prLabels = (pr.labels || []).map((l) => (typeof l === 'string' ? l : l.name || ''));
       const isMerged = Boolean(pr.mergedAt || (pr.state || '').toUpperCase() === 'MERGED');
 
@@ -201,6 +221,97 @@ export class CliGitHubGateway implements GitHubGateway {
         throw new GitHubContextError(`GitHub CLI failure in findPullRequest: ${msg}`);
       }
       return null;
+    }
+  }
+
+  public fetchPullRequestComments(
+    prNumber: number,
+    options: GitHubGatewayOptions = {}
+  ): PullRequestReviewComment[] {
+    if (!prNumber || prNumber <= 0) {
+      return [];
+    }
+
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const repoFlag = repo ? `--repo ${repo}` : '';
+
+    try {
+      const rawJson = this.runGh(
+        `pr view ${prNumber} ${repoFlag} --json comments,reviews`,
+        { cwd: options.cwd }
+      );
+
+      interface RawReviewComment {
+        author?: { login?: string };
+        body?: string;
+        path?: string;
+        line?: number;
+        createdAt?: string;
+      }
+
+      interface RawReview {
+        author?: { login?: string };
+        body?: string;
+        state?: string;
+        submittedAt?: string;
+        createdAt?: string;
+        comments?: RawReviewComment[];
+      }
+
+      interface RawGhPrView {
+        comments?: Array<{
+          author?: { login?: string };
+          body?: string;
+          createdAt?: string;
+        }>;
+        reviews?: RawReview[];
+      }
+
+      const parsed = JSON.parse(rawJson) as RawGhPrView;
+      const results: PullRequestReviewComment[] = [];
+
+      if (parsed.comments) {
+        for (const c of parsed.comments) {
+          if (c.body && c.body.trim()) {
+            results.push({
+              author: (c.author && c.author.login) || 'unknown',
+              body: c.body,
+              createdAt: c.createdAt
+            });
+          }
+        }
+      }
+
+      if (parsed.reviews) {
+        for (const r of parsed.reviews) {
+          if (r.body && r.body.trim()) {
+            results.push({
+              author: (r.author && r.author.login) || 'unknown',
+              body: r.body,
+              state: r.state,
+              createdAt: r.submittedAt || r.createdAt
+            });
+          }
+          if (r.comments) {
+            for (const rc of r.comments) {
+              if (rc.body && rc.body.trim()) {
+                results.push({
+                  author: (rc.author && rc.author.login) || 'unknown',
+                  body: rc.body,
+                  path: rc.path,
+                  line: rc.line,
+                  state: r.state,
+                  createdAt: rc.createdAt
+                });
+              }
+            }
+          }
+        }
+      }
+
+      return results;
+    } catch {
+      return [];
     }
   }
 

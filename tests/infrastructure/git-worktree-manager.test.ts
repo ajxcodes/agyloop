@@ -160,6 +160,37 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.ok(executedCommands.some((c) => c.includes('git worktree add "') && !c.includes('-b')));
   });
 
+  test('createWorktree idempotently returns existing descriptor when branch is already checked out', async () => {
+    const executedCommands: string[] = [];
+    const existingWorktreePath = path.resolve(tmpDir, '.worktrees', '87');
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git worktree add -b')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `fatal: 'task/87' is already checked out at '${existingWorktreePath}'`,
+            combinedOutput: `fatal: 'task/87' is already checked out at '${existingWorktreePath}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: tmpDir
+    });
+
+    assert.strictEqual(descriptor.taskId, '87');
+    assert.strictEqual(descriptor.worktreePath, existingWorktreePath);
+    assert.strictEqual(descriptor.branch, 'task/87');
+  });
+
   test('createWorktree throws WorktreeCreationError on unrecoverable failure', async () => {
     const mockExecutor: CommandExecutorPort = {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {

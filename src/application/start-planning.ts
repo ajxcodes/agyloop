@@ -17,6 +17,14 @@ import {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   MODE_PLAN,
+  NOTE_INITIATED_DISCOVERY_RCA,
+  NOTE_GENERATING_SPECS,
+  NOTE_AWAITING_REVIEW,
+  SUMMARY_STAGE_DISCOVERY,
+  SUMMARY_STAGE_PLAN_REVIEW,
+  SUMMARY_STATUS_IN_PROGRESS,
+  SUMMARY_STATUS_COMPLETED,
+  SUMMARY_STATUS_PENDING,
   IssueNumber,
   PreFlightHaltError
 } from '../domain';
@@ -37,6 +45,9 @@ export interface StartPlanningParams {
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
   readonly workspaceDir?: string;
+  readonly userFeedback?: string | null;
+  readonly previousPlanContent?: string | null;
+  readonly skipDiscovery?: boolean;
 }
 
 export interface StartPlanningResult {
@@ -136,32 +147,87 @@ export class StartPlanningUseCase {
       workspaceDir: workspace
     });
 
-    // 5. Advance StateMachine transitions to APPROVAL gate
-    if (sm.currentStage === STAGE_INITIALIZED) {
-      sm.transition(STAGE_DISCOVERY, { note: 'Initiated planning mode' });
-    }
-    if (sm.currentStage === STAGE_DISCOVERY) {
-      sm.transition(STAGE_PLAN, { note: 'Generating plan specifications' });
-    }
-    if (sm.currentStage === STAGE_PLAN) {
-      sm.transition(STAGE_APPROVAL, { note: 'Awaiting human review' });
+    // Detect if task is a bug/defect requiring deep discovery RCA
+    const bugKeywords = ['bug', 'defect', 'fix', 'rca', 'root-cause', 'regression', 'crash', 'error'];
+    const isBugFromParams = params.type === 'discovery';
+    const isBugFromLabels = planLabels.some((l) =>
+      bugKeywords.some((kw) => String(l).toLowerCase().includes(kw))
+    );
+    const titleLower = String(planTitle).toLowerCase();
+    const isBugFromTitle = bugKeywords.some((kw) =>
+      titleLower.includes(`[${kw}]`) || titleLower.includes(`${kw}:`) || titleLower.includes(`${kw}/`)
+    );
+    const isBugFromState =
+      sm.currentStage === STAGE_DISCOVERY || sm.history.some((h) => h.stage === STAGE_DISCOVERY);
+    const isBug =
+      isBugFromParams ||
+      isBugFromLabels ||
+      isBugFromTitle ||
+      isBugFromState ||
+      scaffoldInfo?.type === 'discovery';
+
+    // 5. State Machine Transitions
+    if (sm.currentStage === STAGE_APPROVAL && params.userFeedback) {
+      // Iterative plan redirection loop: developer requested re-planning
+      sm.transition(STAGE_PLAN, {
+        note: 'Plan revision requested based on developer feedback',
+        userFeedback: params.userFeedback,
+        previousPlanContent: params.previousPlanContent
+      });
+    } else if (sm.currentStage === STAGE_INITIALIZED) {
+      if (params.skipDiscovery) {
+        sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+        sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
+      } else {
+        sm.transition(STAGE_DISCOVERY, {
+          note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
+        });
+        if (!isBug) {
+          sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+          sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
+        }
+      }
+    } else if (sm.currentStage === STAGE_DISCOVERY) {
+      sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
+    } else if (sm.currentStage === STAGE_PLAN) {
+      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
     }
 
-    // 6. Checkpoint state
+    // 6. Checkpoint state and update summary log
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
 
       if (scaffoldInfo && scaffoldInfo.summaryPath) {
-        this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
-          stage: 'Discovery',
-          subagent: plannerDef.name,
-          model: plannerDef.model,
-          status: 'COMPLETED'
-        });
-        this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
-          stage: 'Plan Review',
-          status: 'PENDING'
-        });
+        if (sm.currentStage === STAGE_DISCOVERY) {
+          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+            stage: SUMMARY_STAGE_DISCOVERY,
+            subagent: plannerDef.name,
+            model: plannerDef.model,
+            status: SUMMARY_STATUS_IN_PROGRESS
+          });
+        } else if (sm.currentStage === STAGE_PLAN) {
+          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+            stage: SUMMARY_STAGE_PLAN_REVIEW,
+            subagent: plannerDef.name,
+            model: plannerDef.model,
+            status: SUMMARY_STATUS_IN_PROGRESS,
+            planRevisionCount: sm.planRevisionCount
+          });
+        } else {
+          if (!params.skipDiscovery) {
+            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+              stage: SUMMARY_STAGE_DISCOVERY,
+              subagent: plannerDef.name,
+              model: plannerDef.model,
+              status: SUMMARY_STATUS_COMPLETED
+            });
+          }
+          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+            stage: SUMMARY_STAGE_PLAN_REVIEW,
+            status: SUMMARY_STATUS_PENDING
+          });
+        }
       }
     }
 

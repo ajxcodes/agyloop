@@ -104,7 +104,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
   });
 
-  test('allows transition from STAGE_COMMIT to STAGE_QUALITY_GATE and STAGE_IMPLEMENT', () => {
+  test('allows transition from STAGE_COMMIT to STAGE_QUALITY_GATE, STAGE_IMPLEMENT, and STAGE_PLAN', () => {
     const sm = StateMachine.createInitial({ mode: 'standard' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -116,11 +116,49 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
 
     assert.strictEqual(sm.canTransition(STAGE_QUALITY_GATE), true);
     assert.strictEqual(sm.canTransition(STAGE_IMPLEMENT), true);
+    assert.strictEqual(sm.canTransition(STAGE_PLAN), true);
     assert.strictEqual(sm.canTransition(STAGE_COMPLETED), true);
 
-    // Transition COMMIT -> QUALITY_GATE
-    sm.transition(STAGE_QUALITY_GATE);
-    assert.strictEqual(sm.currentStage, STAGE_QUALITY_GATE);
+    // Transition COMMIT -> PLAN (redesign loop)
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.currentStage, STAGE_PLAN);
+  });
+
+  test('allows direct transition from INITIALIZED to PLAN (bypassing DISCOVERY for features)', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    assert.strictEqual(sm.canTransition(STAGE_PLAN), true);
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.currentStage, STAGE_PLAN);
+  });
+
+  test('tracks planRevisionCount when transitioning APPROVAL -> PLAN', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    assert.strictEqual(sm.planRevisionCount, 0);
+
+    // Human feedback loop: APPROVAL -> PLAN
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.planRevisionCount, 1);
+
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.planRevisionCount, 2);
+  });
+
+  test('tracks gate pause and resume duration cleanly', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    assert.strictEqual(sm.totalHumanWaitMs, 0);
+
+    sm.pauseAtGate();
+    // Simulating paused state
+    sm.resumeFromGate();
+    assert.strictEqual(typeof sm.totalHumanWaitMs, 'number');
+    assert.ok(sm.totalHumanWaitMs >= 0);
+
+    const activeDuration = sm.activeExecutionDurationMs();
+    assert.strictEqual(typeof activeDuration, 'number');
+    assert.ok(activeDuration >= 0);
   });
 
   test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, and STAGE_REVIEW', () => {

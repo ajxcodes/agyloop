@@ -39,6 +39,15 @@ export interface PreFlightCheckContext {
   readonly existingBranch?: string | null;
   readonly existingBranches?: readonly string[];
   readonly existingWorktreePath?: string | null;
+  readonly prReviewComments?: readonly {
+    readonly author: string;
+    readonly body: string;
+    readonly path?: string;
+    readonly line?: number;
+    readonly state?: string;
+    readonly createdAt?: string;
+  }[];
+  readonly prHasChangesRequested?: boolean;
 }
 
 export interface PreFlightCheckResult {
@@ -52,6 +61,15 @@ export interface PreFlightCheckResult {
   readonly existingBranch?: string | null;
   readonly resumePrNumber?: number;
   readonly baseBranch?: string;
+  readonly prReviewComments?: readonly {
+    readonly author: string;
+    readonly body: string;
+    readonly path?: string;
+    readonly line?: number;
+    readonly state?: string;
+    readonly createdAt?: string;
+  }[];
+  readonly prHasChangesRequested?: boolean;
 }
 
 export class PreFlightCheckEngine {
@@ -135,7 +153,9 @@ export class PreFlightCheckEngine {
         resumeBranch: branchName,
         existingBranch: branchName,
         resumePrNumber: prNumber || undefined,
-        baseBranch: prBaseBranch || undefined
+        baseBranch: prBaseBranch || undefined,
+        prReviewComments: context.prReviewComments,
+        prHasChangesRequested: context.prHasChangesRequested
       };
     }
 
@@ -146,7 +166,9 @@ export class PreFlightCheckEngine {
       canProceed: true,
       isHalt: false,
       isResume: false,
-      existingBranch: null
+      existingBranch: null,
+      prReviewComments: context.prReviewComments,
+      prHasChangesRequested: context.prHasChangesRequested
     };
   }
 }

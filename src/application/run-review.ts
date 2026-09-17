@@ -34,7 +34,9 @@ import {
   MS_PER_SECOND,
   ReviewVerdict,
   PublicSanitizer,
-  InvalidTransitionError
+  InvalidTransitionError,
+  AiReviewReport,
+  AiReviewFinding
 } from '../domain';
 import {
   StateRepository,
@@ -54,6 +56,7 @@ export interface RunReviewParams {
   readonly userInstructions?: string | null;
   readonly workingDiff?: string | null;
   readonly reviewOutput?: string | null;
+  readonly critiqueReport?: string | null;
   readonly staged?: boolean;
   readonly baseRef?: string;
   readonly dryRun?: boolean;
@@ -72,6 +75,7 @@ export interface RunReviewResult {
   readonly acceptanceCriteria: readonly string[];
   readonly durationMs: number;
   readonly suggestedCommitMessage?: string;
+  readonly critiqueReport?: string | null;
 }
 
 function cleanBulletLine(rawLine: string): string {
@@ -242,31 +246,46 @@ export class RunReviewUseCase {
       }
     }
 
-    // 6. Assemble focused review task prompt
+    const reviewCwd = sm.worktree?.worktreePath || workspace;
+    const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
+
+    // Tier 1: Execute Automated Critique Diagnostics (if CritiquePort available)
+    let aiReport: AiReviewReport | null = null;
+    let critiqueReportText: string | null = params.critiqueReport || null;
+
+    if (this.critique) {
+      try {
+        aiReport = await this.critique.review({
+          cwd: reviewCwd,
+          staged: params.staged,
+          baseRef: targetBaseRef
+        });
+        if (aiReport) {
+          critiqueReportText = aiReport.formatMarkdownReport();
+        }
+      } catch {
+        // Non-fatal if critique execution fails
+      }
+    }
+
+    // Tier 2: Assemble focused review task prompt for Reviewer subagent
     const taskPrompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
       issueNumber: activeIssue,
       acceptanceCriteria,
       standardsContent,
       workingDiff: params.workingDiff,
+      critiqueReport: critiqueReportText,
       userInstructions: params.userInstructions,
       workspaceDir: workspace,
       config
     });
 
-    // 7. Execute review inspection & parse ReviewVerdict
+    // Evaluate ReviewVerdict
     let verdict: ReviewVerdict;
-
-    const reviewCwd = sm.worktree?.worktreePath || workspace;
-    const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
 
     if (params.reviewOutput) {
       verdict = ReviewVerdict.parse(params.reviewOutput);
-    } else if (this.critique) {
-      const aiReport = await this.critique.review({
-        cwd: reviewCwd,
-        staged: params.staged,
-        baseRef: targetBaseRef
-      });
+    } else if (aiReport) {
       verdict = ReviewVerdict.fromAiReviewReport(aiReport);
     } else {
       // Default inspection verdict when neither raw subagent output nor critique gateway provided
@@ -275,6 +294,37 @@ export class RunReviewUseCase {
         summary: 'Review passed: All acceptance criteria and code standards verified.',
         unfulfilledCriteria: [],
         remediationGuidance: []
+      });
+    }
+
+    // Two-Tier Invariant Enforcement:
+    // Any critical or error violations from critique or unfulfilled ACs mandate CHANGES_REQUESTED
+    if (aiReport && (aiReport.hasBlockingIssues() || aiReport.errorCount() > 0)) {
+      const critiqueCriteria: string[] = [];
+      const critiqueRemediation: string[] = [];
+      for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking() || f.isError())) {
+        critiqueCriteria.push(`[Critique ${finding.severity.toUpperCase()}] ${finding.path}:${finding.line} - ${finding.body}`);
+        critiqueRemediation.push(`Fix ${finding.severity} in ${finding.path}:${finding.line}: ${finding.body}`);
+      }
+      verdict = new ReviewVerdict({
+        status: VERDICT_CHANGES_REQUESTED,
+        summary: `Review failed: Automated critique detected ${aiReport.errorCount() + (aiReport.hasBlockingIssues() ? 1 : 0)} blocking/error violation(s). ${verdict.summary}`,
+        unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...critiqueCriteria],
+        remediationGuidance: [...verdict.remediationGuidance, ...critiqueRemediation],
+        confidenceLevel: aiReport.confidence.level,
+        findings: [...verdict.findings, ...aiReport.findings]
+      });
+    } else if (verdict.unfulfilledCriteria.length > 0 && verdict.isApproved()) {
+      verdict = new ReviewVerdict({
+        status: VERDICT_CHANGES_REQUESTED,
+        summary: `Review requested changes: Unfulfilled Acceptance Criteria detected. ${verdict.summary}`,
+        unfulfilledCriteria: verdict.unfulfilledCriteria,
+        remediationGuidance:
+          verdict.remediationGuidance.length > 0
+            ? verdict.remediationGuidance
+            : verdict.unfulfilledCriteria.map((ac) => `Fulfill acceptance criterion: ${ac}`),
+        confidenceLevel: verdict.confidenceLevel,
+        findings: verdict.findings
       });
     }
 
@@ -298,7 +348,7 @@ export class RunReviewUseCase {
       suggestedCommitMessage = PublicSanitizer.sanitizeCommitMessage(rawMsg);
     }
 
-    // 8. Enforce State Transitions based on ReviewVerdict
+    // Enforce State Transitions based on ReviewVerdict
     if (verdict.isApproved()) {
       sm.transition(STAGE_COMMIT, {
         note: NOTE_REVIEW_APPROVED,
@@ -347,7 +397,8 @@ export class RunReviewUseCase {
       standardsContent,
       acceptanceCriteria,
       durationMs,
-      suggestedCommitMessage
+      suggestedCommitMessage,
+      critiqueReport: critiqueReportText
     };
   }
 }

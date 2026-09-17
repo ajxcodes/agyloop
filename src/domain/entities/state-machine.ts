@@ -11,6 +11,8 @@ import {
   StageName,
   ExecutionMode,
   STAGE_INITIALIZED,
+  STAGE_APPROVAL,
+  STAGE_PLAN,
   MODE_STANDARD,
   STATE_SCHEMA_VERSION,
   EXECUTION_MODES
@@ -36,6 +38,10 @@ export interface StateMachineSnapshot {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
+  readonly pausedAtGate?: string | null;
+  readonly pausedAtTimestamp?: string | null;
+  readonly totalHumanWaitMs?: number;
+  readonly planRevisionCount?: number;
 }
 
 export interface StateStatusSummary {
@@ -47,6 +53,10 @@ export interface StateStatusSummary {
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly pausedAtGate?: string | null;
+  readonly totalHumanWaitMs: number;
+  readonly activeExecutionDurationMs: number;
+  readonly planRevisionCount: number;
 }
 
 export class StateMachine {
@@ -58,6 +68,10 @@ export class StateMachine {
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
+  private _pausedAtGate: string | null;
+  private _pausedAtTimestamp: string | null;
+  private _totalHumanWaitMs: number;
+  private _planRevisionCount: number;
 
   constructor(options: {
     stage?: Stage;
@@ -68,6 +82,10 @@ export class StateMachine {
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
+    pausedAtGate?: string | null;
+    pausedAtTimestamp?: string | null;
+    totalHumanWaitMs?: number;
+    planRevisionCount?: number;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -77,6 +95,10 @@ export class StateMachine {
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
+    this._pausedAtGate = options.pausedAtGate || null;
+    this._pausedAtTimestamp = options.pausedAtTimestamp || null;
+    this._totalHumanWaitMs = typeof options.totalHumanWaitMs === 'number' ? options.totalHumanWaitMs : 0;
+    this._planRevisionCount = typeof options.planRevisionCount === 'number' ? options.planRevisionCount : 0;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -131,6 +153,57 @@ export class StateMachine {
     return Object.freeze([...this._history]);
   }
 
+  public get pausedAtGate(): string | null {
+    return this._pausedAtGate;
+  }
+
+  public get pausedAtTimestamp(): string | null {
+    return this._pausedAtTimestamp;
+  }
+
+  public get totalHumanWaitMs(): number {
+    return this._totalHumanWaitMs;
+  }
+
+  public get planRevisionCount(): number {
+    return this._planRevisionCount;
+  }
+
+  public pauseAtGate(gateName: string): void {
+    if (!this._pausedAtTimestamp) {
+      this._pausedAtGate = gateName;
+      this._pausedAtTimestamp = new Date().toISOString();
+      this._updatedAt = this._pausedAtTimestamp;
+    }
+  }
+
+  public resumeFromGate(): void {
+    if (this._pausedAtTimestamp) {
+      const elapsed = Date.now() - new Date(this._pausedAtTimestamp).getTime();
+      if (elapsed > 0) {
+        this._totalHumanWaitMs += elapsed;
+      }
+      this._pausedAtGate = null;
+      this._pausedAtTimestamp = null;
+      this._updatedAt = new Date().toISOString();
+    }
+  }
+
+  public activeExecutionDurationMs(referenceTime?: number | Date | string): number {
+    const endMs =
+      referenceTime !== undefined && referenceTime !== null
+        ? new Date(referenceTime).getTime()
+        : Date.now();
+    const startMs = new Date(this._createdAt).getTime();
+    const totalElapsed = Math.max(0, endMs - startMs);
+    let currentPause = 0;
+    if (this._pausedAtTimestamp) {
+      const pauseStart = new Date(this._pausedAtTimestamp).getTime();
+      currentPause = Math.max(0, endMs - pauseStart);
+    }
+    return Math.max(0, totalElapsed - this._totalHumanWaitMs - currentPause);
+  }
+
   public setIssue(issue: number | string | null | undefined): void {
     this._issue = IssueNumber.tryFrom(issue);
     this._updatedAt = new Date().toISOString();
@@ -170,6 +243,10 @@ export class StateMachine {
       throw new InvalidTransitionError(this._stage.value, target.value, this._mode);
     }
 
+    if (this._stage.value === STAGE_APPROVAL && target.value === STAGE_PLAN) {
+      this._planRevisionCount++;
+    }
+
     const now = new Date().toISOString();
     this._stage = target;
     this._updatedAt = now;
@@ -189,6 +266,10 @@ export class StateMachine {
     this._issue = IssueNumber.tryFrom(issue);
     this._baseBranch = null;
     this._worktree = null;
+    this._pausedAtGate = null;
+    this._pausedAtTimestamp = null;
+    this._totalHumanWaitMs = 0;
+    this._planRevisionCount = 0;
     this._updatedAt = now;
     this._history = [
       {
@@ -208,7 +289,11 @@ export class StateMachine {
       worktree: this._worktree,
       stepCount: this._history.length,
       createdAt: this._createdAt,
-      updatedAt: this._updatedAt
+      updatedAt: this._updatedAt,
+      pausedAtGate: this._pausedAtGate,
+      totalHumanWaitMs: this._totalHumanWaitMs,
+      activeExecutionDurationMs: this.activeExecutionDurationMs(),
+      planRevisionCount: this._planRevisionCount
     };
   }
 
@@ -222,7 +307,11 @@ export class StateMachine {
       worktree: this._worktree ? this._worktree.toJSON() : null,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
-      history: Object.freeze([...this._history])
+      history: Object.freeze([...this._history]),
+      pausedAtGate: this._pausedAtGate,
+      pausedAtTimestamp: this._pausedAtTimestamp,
+      totalHumanWaitMs: this._totalHumanWaitMs,
+      planRevisionCount: this._planRevisionCount
     };
   }
 
@@ -245,7 +334,11 @@ export class StateMachine {
       worktree,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
-      history: snapshot.history || []
+      history: snapshot.history || [],
+      pausedAtGate: snapshot.pausedAtGate || null,
+      pausedAtTimestamp: snapshot.pausedAtTimestamp || null,
+      totalHumanWaitMs: typeof snapshot.totalHumanWaitMs === 'number' ? snapshot.totalHumanWaitMs : 0,
+      planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0
     });
   }
 

@@ -532,7 +532,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const transitionUseCase = new TransitionStageUseCase(
           stateRepo,
           worktreeManager,
-          inferBaseBranchUseCase
+          inferBaseBranchUseCase,
+          planGenerator
         );
         await transitionUseCase.execute({
           targetStage: options.stageArg as StageName,

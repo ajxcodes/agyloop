@@ -129,6 +129,9 @@ export interface PlanningTaskPromptParams {
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+  readonly userFeedback?: string | null;
+  readonly previousPlanContent?: string | null;
+  readonly iterationCount?: number | null;
 }
 
 export interface ImplementationTaskPromptParams {
@@ -143,6 +146,8 @@ export interface ImplementationTaskPromptParams {
   readonly config?: AgyLoopConfig;
   readonly failureDiagnostics?: string | DiagnosticSnippet | null;
   readonly selfCorrectionPayload?: string | null;
+  readonly critiqueFailureSnippet?: string | null;
+  readonly prReviewComments?: readonly string[] | string | null;
 }
 
 export interface GateTaskPromptParams {
@@ -160,6 +165,7 @@ export interface ReviewerTaskPromptParams {
   readonly acceptanceCriteria?: readonly string[];
   readonly standardsContent?: string | null;
   readonly workingDiff?: string | null;
+  readonly critiqueReport?: string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
@@ -354,6 +360,18 @@ export class ResolveSubagentUseCase {
       prompt += `----------------------------------------------------------------------\n\n`;
     }
 
+    if (params.iterationCount && params.iterationCount > 0) {
+      prompt += `### Plan Revision / Redirection Cycle: Iteration #${params.iterationCount}\n\n`;
+    }
+
+    if (params.userFeedback && params.userFeedback.trim()) {
+      prompt += `### User Redirection Feedback:\n${params.userFeedback.trim()}\n\n`;
+    }
+
+    if (params.previousPlanContent && params.previousPlanContent.trim()) {
+      prompt += `### Previous Plan Draft:\n\`\`\`markdown\n${params.previousPlanContent.trim()}\n\`\`\`\n\n`;
+    }
+
     if (params.userInstructions) {
       prompt += `### User / Developer Directives:\n${params.userInstructions}\n\n`;
     }
@@ -416,6 +434,20 @@ export class ResolveSubagentUseCase {
         prompt += `${SECTION_SELF_CORRECTION_TITLE}\n`;
         prompt += `The previous Quality Gate verification failed. Address these errors before proceeding:\n\n`;
         prompt += `${diagStr}\n\n`;
+      }
+    }
+
+    if (params.critiqueFailureSnippet && params.critiqueFailureSnippet.trim()) {
+      prompt += `### Automated Critique Diagnostics (Violations to Remediate):\n`;
+      prompt += `The previous review detected standards or architectural violations:\n\`\`\`\n${params.critiqueFailureSnippet.trim()}\n\`\`\`\n\n`;
+    }
+
+    if (params.prReviewComments) {
+      const formattedComments = Array.isArray(params.prReviewComments)
+        ? params.prReviewComments.map((c: string) => `- ${c}`).join('\n')
+        : String(params.prReviewComments).trim();
+      if (formattedComments) {
+        prompt += `### Pull Request Review Comments to Address:\n${formattedComments}\n\n`;
       }
     }
 
@@ -494,6 +526,11 @@ export class ResolveSubagentUseCase {
     if (params.standardsContent && params.standardsContent.trim()) {
       prompt += `### Repository Standards & Guidelines:\n`;
       prompt += `${params.standardsContent.trim()}\n\n`;
+    }
+
+    if (params.critiqueReport && params.critiqueReport.trim()) {
+      prompt += `### Automated Code Critique Report\n\`\`\`\n${params.critiqueReport.trim()}\n\`\`\`\n\n`;
+      prompt += `**Note**: Any \`critical\` or \`error\` findings from critique mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n\n`;
     }
 
     if (params.workingDiff && params.workingDiff.trim()) {

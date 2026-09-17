@@ -117,62 +117,89 @@ Run `bin/agyloop next --json` at any stage to inspect the next step and obtain t
 
 ---
 
-## Lifecycle Stages
+## Lifecycle Stages & Closed-Loop Architecture
 
-$$\text{Discovery} \longrightarrow \text{Plan} \longrightarrow \text{Approval Gate} \longrightarrow \text{Implement} \longrightarrow \text{Quality Gate} \longrightarrow \text{AI Review} \longrightarrow \text{Commit}$$
+$$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow \text{Approval Gate} \longrightarrow \text{Implement} \longleftrightarrow \text{Quality Gate} \longleftrightarrow \text{Two-Tier Review} \longrightarrow \text{Commit Gate} \longrightarrow \text{Completed}$$
 
-### 1. Discovery & Smart Pre-Flight Checks (`DISCOVERY`)
-- Read issue context, criteria, and repository standards.
-- Run smart pre-flight checks:
-  - If issue is `CLOSED` on GitHub -> cleanly halts (`Task #<id> is already closed.`).
-  - If associated PR is already `MERGED` into base branch -> cleanly halts (`PR for task #<id> is already merged into <base_branch>.`).
-  - If associated branch or PR is already `OPEN` -> enters Resume Mode without creating duplicate branches.
-- Dynamic Base Branch Inference:
+### 1. Conditional Discovery & Smart Pre-Flight Checks (`DISCOVERY`)
+- **Conditional Discovery Execution**:
+  - **Bug / Defect Tasks**: Run deep Root Cause Analysis (RCA) and generate `[Discovery] - {Title}.md` detailing symptoms, failure mode, and reproduction steps.
+  - **Feature / Chore Tasks**: Automatically bypass the RCA investigation stage and transition directly to `PLAN`.
+  - **Ambiguous Tasks**: Orchestrator clarifies context with the user before proceeding.
+- **Smart Pre-Flight Invariants**:
+  - If issue is `CLOSED` on GitHub $\rightarrow$ cleanly halts (`Task #<id> is already closed.`).
+  - If associated PR is already `MERGED` into base branch $\rightarrow$ cleanly halts (`PR for task #<id> is already merged.`).
+  - If associated branch or PR is already `OPEN` $\rightarrow$ enters **Resume Mode** without creating duplicate branches.
+  - **PR Review Comments Ingestion**: In Resume Mode on an open PR, ingests review comments and `CHANGES_REQUESTED` threads via `gh pr view --json comments,reviews`, formatting them into a targeted `selfCorrectionPayload` for a fresh Implementer subagent.
+- **Dynamic Base Branch Inference**:
   - Discovers collector branch (`phase/*` or `feature/*`).
   - Auto-creates collector branch from `main` if not yet existing and pushes to remote (best-effort).
-  - Routes task branch: `task/<id>-<slug>` rooted on collector branch.
-  - Routes bugs to `fix/<id>-<slug>` based on phase status.
-- Private vs. Public Sanitization:
+  - Routes task branch: `task/<id>-<slug>` rooted on collector branch (or `fix/<id>-<slug>` for bugs).
+- **Private vs. Public Sanitization**:
   - Automatically strips private tracking URLs (e.g. `ajxcodes/projects#...`) from public commits and PR markdown.
-- Run `bin/agyloop transition DISCOVERY`.
 
 ### 2. Planning Subagent (`PLAN`)
 - Launch the read-only **`planner`** subagent via `invoke_subagent`.
+- Support iterative plan revisions: accepts `userFeedback`, `previousPlanContent`, and tracks `iterationCount`.
 - Produce technical specifications in `artifacts/plans/`:
   - `[Discovery] - {Title}.md` (for defects)
   - `[Implementation] - {Title}.md` (technical plan)
   - `AgyLoop Summary.md` (cumulative run log)
 - Advance state: `bin/agyloop transition PLAN`.
 
-### 3. Human Approval Gate (`APPROVAL`)
+### 3. Human Approval Gate (`APPROVAL`) & Plan Redirection Loops
 - Pause and present plan to the user.
-- Advance state: `bin/agyloop transition APPROVAL`.
-- *(Skipped automatically in `yolo` mode).*
+- Human timer pause: autonomous execution timers pause while awaiting developer feedback (`pauseAtGate('APPROVAL')`).
+- **Iterative Plan Redirection Loop (`APPROVAL <-> PLAN`)**:
+  - Developer can approve or redirect the plan indefinitely.
+  - Redirections transition back to `PLAN` with the previous draft and feedback, spawning a fresh, clean Planner subagent.
+- Advance state: `bin/agyloop transition APPROVAL` (skipped automatically in `yolo` mode).
 
 ### 4. Implementation Subagent (`IMPLEMENT`)
-- Verify or auto-provision worktree: `.worktrees/<task-id>` on task branch.
+- Verify or auto-provision worktree: `.worktrees/<task-id>` on task branch (idempotent; reuses existing worktree cleanly).
 - Launch the **`implementer`** subagent via `invoke_subagent` targeting `Cwd: .worktrees/<task-id>`.
-- Root agent monitors progress via `manage_task` or messages without modifying files.
+- Restrict Implementer `run_command` strictly to syntax validation (`npx tsc --noEmit`). Prohibit full test suites or linters.
+- Implementer signals `IMPLEMENTATION_DONE` upon completing checklist with clean syntax.
 - Advance state: `bin/agyloop transition IMPLEMENT` (or run `bin/agyloop implement`).
 
 ### 5. Quality Gate Subagent (`QUALITY_GATE`)
 - Launch the isolated **`gate`** subagent inside `.worktrees/<task-id>` via `invoke_subagent`.
-- Execute builds, test suites, and linters inside the worktree directory.
+- Execute builds, typechecks, test suites, and linters inside the worktree directory.
 - Capture structured results: `GATE_STATUS: PASSED | FAILED`.
-- If failed, route back to `IMPLEMENT`.
+- **Quality Gate Failure Loop**: If failed, transitions back to `IMPLEMENT` with isolated diagnostics in `selfCorrectionPayload` for a fresh Implementer subagent.
 - Advance state: `bin/agyloop transition QUALITY_GATE`.
 
-### 6. Two-Tier Reviewer Subagent (`REVIEW`)
-- Execute pre-commit diagnostics via `critique` inside `.worktrees/<task-id>`.
-- Launch the **`reviewer`** subagent to validate diffs against acceptance criteria.
+### 6. Two-Tier Review Architecture (`REVIEW`)
+- **Tier 1 (Automated Critique Diagnostics)**:
+  - Executes `critique` CLI inside `.worktrees/<task-id>` against base branch (`main` or phase collector).
+  - Inspects code against repository standards (`.github/critique.md`, clean architecture boundaries, zero magic values).
+- **Tier 2 (AI Acceptance Criteria & Standards Audit)**:
+  - Spawns the read-only **`reviewer`** subagent with raw `critique` diagnostics, `git diff`, repo standards, and approved plan Acceptance Criteria.
+  - Reviewer verifies criteria fulfillment and emits structured verdict: `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`.
+- **Mandatory Critique & Review Failure Loop**:
+  - Any `critical` or `error` findings from `critique` or unfulfilled ACs mandate `CHANGES_REQUESTED`.
+  - Packages diagnostics and remediation actions into `selfCorrectionPayload`, reverting `REVIEW -> IMPLEMENT` for a fresh Implementer subagent.
 - Advance state: `bin/agyloop transition REVIEW`.
 
-### 7. Conventional Commit Gate (`COMMIT`)
+### 7. Conventional Commit Gate (`COMMIT`) & Rejection Loops
+- Human timer pause: autonomous execution timers pause while awaiting commit sign-off (`pauseAtGate('COMMIT')`).
 - Draft a semantic conventional commit message referencing the issue (`#<id>`).
 - Automatically sanitize private project tracker URLs.
-- Seek user confirmation, execute commit (`bin/agyloop commit`), and teardown worktree.
-- Push task branch and open PR targeting base collector branch: `gh pr create --base <collector>`.
+- **Commit Gate Rejection Loops**:
+  - Developer can reject the completed implementation at the commit gate.
+  - Rejection with code feedback routes `COMMIT -> IMPLEMENT` for code fixes.
+  - Rejection with design feedback routes `COMMIT -> PLAN` for architectural replanning.
+- Upon confirmation: execute commit (`bin/agyloop commit`), push task branch, teardown worktree, and open PR targeting base collector branch: `gh pr create --base <collector>`.
 - Advance state: `bin/agyloop transition COMMIT`, then `COMPLETED`.
+
+---
+
+## Ephemeral Subagent Lifecycle Protocol
+
+To prevent context rot, token degradation, and hallucination during multi-step development loops:
+1. **Single-Turn Micro-Agents**: Every subagent invocation (`planner`, `implementer`, `gate`, `reviewer`) is treated as a single-turn, disposable micro-agent.
+2. **Targeted State Handoff**: Subagents receive only the relevant task context and structured `selfCorrectionPayload` (compiler errors, failing test traces, critique violations, or PR review comments).
+3. **Fresh Execution Contexts**: Sequential correction cycles discard the previous subagent conversation and spawn a fresh subagent with the current working tree state and targeted remediation directives.
 
 ---
 

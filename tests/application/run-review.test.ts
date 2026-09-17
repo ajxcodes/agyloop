@@ -430,4 +430,74 @@ REMEDIATION_GUIDANCE:
 
     assert.strictEqual(planGenerator.summaryUpdates.length, 0);
   });
+
+  test('injects critique markdown report into reviewer prompt', async () => {
+    critique.reportToReturn = new AiReviewReport({
+      summary: 'Automated critique found 1 styling issue',
+      confidence: ReviewConfidence.medium('Linter check'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/domain.ts',
+          line: 12,
+          rule: 'no-console',
+          message: 'Unexpected console statement',
+          severity: 'warning'
+        })
+      ]
+    });
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.ok(result.critiqueReport);
+    assert.ok(result.critiqueReport.includes('Automated critique found 1 styling issue'));
+    assert.ok(result.taskPrompt.includes('### Automated Code Critique Report'));
+    assert.ok(result.taskPrompt.includes('Unexpected console statement'));
+  });
+
+  test('enforces CHANGES_REQUESTED when critique reports critical/error findings even if reviewer LLM outputs APPROVED', async () => {
+    critique.reportToReturn = new AiReviewReport({
+      summary: 'Automated critique found critical flaw',
+      confidence: ReviewConfidence.high('Security scan'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/security.ts',
+          line: 45,
+          rule: 'injection-flaw',
+          message: 'Potential shell injection detected',
+          severity: 'error'
+        })
+      ]
+    });
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const reviewOutput = `
+REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: LLM thinks everything is fine.
+UNFULFILLED_AC:
+- None
+REMEDIATION_GUIDANCE:
+- None
+`;
+
+    const result = await useCase.execute({ reviewOutput });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.verdict.isChangesRequested(), true);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+  });
 });

@@ -15,8 +15,11 @@
 
 import {
   StateMachine,
+  StageName,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  STAGE_IMPLEMENT,
+  STAGE_PLAN,
   MODE_YOLO,
   NOTE_COMMIT_CONFIRMED,
   NOTE_COMMIT_AUTO_APPROVED,
@@ -45,6 +48,10 @@ export interface ExecuteCommitParams {
   readonly dryRun?: boolean;
   readonly issue?: number | string | null;
   readonly keepWorktree?: boolean;
+  readonly rejectionTarget?: 'IMPLEMENT' | 'PLAN' | StageName | null;
+  readonly rejectionDirective?: 'replan' | 'implement' | string | null;
+  readonly rejectionFeedback?: string | null;
+  readonly rejectionReason?: string | null;
 }
 
 export interface ExecuteCommitResult {
@@ -136,12 +143,59 @@ export class ExecuteCommitUseCase {
 
     let userConfirmed = false;
 
-    if (isExplicitlyConfirmed || isBypassed) {
+    if (params.confirmed === false) {
+      userConfirmed = false;
+    } else if (isExplicitlyConfirmed || isBypassed) {
       userConfirmed = true;
     } else if (this.confirmationPrompt) {
       const promptQuery = `\nProposed Conventional Commit:\n  ${commitMessage.toSingleLine()}\n\nFull Message:\n${commitMessage.toFullMessage()}\n\n${PROMPT_CONFIRM_COMMIT}`;
       userConfirmed = await this.confirmationPrompt.confirm(promptQuery, false);
-      if (!userConfirmed) {
+    } else {
+      // Hard invariant: Never commit silently without explicit confirmation
+      throw new CommitExecutionError(
+        'ExecuteCommit',
+        'Human confirmation gate requires explicit approval before committing. Pass confirmed: true, bypassConfirmation: true, or supply ConfirmationPromptPort.'
+      );
+    }
+
+    if (!userConfirmed) {
+      const hasDirective =
+        params.rejectionDirective !== undefined && params.rejectionDirective !== null ||
+        params.rejectionTarget !== undefined && params.rejectionTarget !== null ||
+        params.rejectionReason !== undefined && params.rejectionReason !== null ||
+        params.rejectionFeedback !== undefined && params.rejectionFeedback !== null;
+
+      if (hasDirective) {
+        const rawDirective = String(params.rejectionDirective || '').toLowerCase();
+        const rawTarget = String(params.rejectionTarget || '').toUpperCase();
+        const target = (rawDirective === 'replan' || rawTarget === 'PLAN') ? STAGE_PLAN : STAGE_IMPLEMENT;
+        const reason = params.rejectionReason || params.rejectionFeedback || `Commit rejected: routed to ${target}`;
+
+        sm.transition(target, {
+          note: `Commit rejected by developer: Routed to ${target}`,
+          rejectionFeedback: reason
+        });
+        await this.stateRepo.save(sm.toSnapshot());
+
+        let summaryUpdated = false;
+        if (this.planGenerator) {
+          const issue = sm.issue || params.issue;
+          const planLoc = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue
+          });
+          if (planLoc?.summaryPath) {
+            summaryUpdated = this.planGenerator.updateSummaryLog(planLoc.summaryPath, {
+              stage: SUMMARY_STAGE_COMMIT_PR,
+              status: 'REJECTED',
+              commitRejection: {
+                targetStage: target,
+                reason
+              }
+            });
+          }
+        }
+
         return {
           success: false,
           confirmed: false,
@@ -149,15 +203,19 @@ export class ExecuteCommitUseCase {
           commitMessage,
           currentStage: sm.currentStage,
           stateMachine: sm,
-          summaryUpdated: false
+          summaryUpdated
         };
       }
-    } else {
-      // Hard invariant: Never commit silently without explicit confirmation
-      throw new CommitExecutionError(
-        'ExecuteCommit',
-        'Human confirmation gate requires explicit approval before committing. Pass confirmed: true, bypassConfirmation: true, or supply ConfirmationPromptPort.'
-      );
+
+      return {
+        success: false,
+        confirmed: false,
+        commitHash: null,
+        commitMessage,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        summaryUpdated: false
+      };
     }
 
     // Check git status / uncommitted changes

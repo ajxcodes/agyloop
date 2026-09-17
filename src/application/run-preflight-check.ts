@@ -106,13 +106,33 @@ export class RunPreFlightCheckUseCase {
           }
 
           if (pr.state === 'OPEN') {
+            let prReviewComments: any[] = [];
+            let prHasChangesRequested = false;
+
+            if (this.githubGateway.fetchPullRequestComments && pr.number) {
+              try {
+                const comments = await this.githubGateway.fetchPullRequestComments(pr.number, {
+                  cwd,
+                  repo: params.trackerRepo
+                });
+                prReviewComments = comments || [];
+                prHasChangesRequested = prReviewComments.some(
+                  (c) => (c.state || '').toUpperCase() === 'CHANGES_REQUESTED'
+                );
+              } catch {
+                // Non-fatal
+              }
+            }
+
             return PreFlightCheckEngine.evaluate({
               issueNumber: issueId,
               issueState,
               prState: 'OPEN',
               prNumber: pr.number,
               prBaseBranch: pr.baseRefName,
-              prHeadBranch: pr.headRefName
+              prHeadBranch: pr.headRefName,
+              prReviewComments,
+              prHasChangesRequested
             });
           }
         }

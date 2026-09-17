@@ -1,4 +1,5 @@
 # Antigravity Persistent Plans & Local State
+artifacts
 artifacts/plans/
 .agyloop/
 .worktrees/
@@ -24,6 +25,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 node_modules/
+node_modules
 dist/
 build/
 .cache/
