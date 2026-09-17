@@ -38,9 +38,9 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     }
   });
 
-  test('resolveTaskWorktreePath and resolveTaskBranchName format paths and branches deterministically', () => {
+  test('resolveTaskWorktreePath and resolveTaskBranchName format paths and branches deterministically', async () => {
     const manager = new GitWorktreeManager();
-    const wtPath = manager.resolveTaskWorktreePath(tmpDir, '87');
+    const wtPath = await manager.resolveTaskWorktreePath(tmpDir, '87');
     assert.strictEqual(wtPath, path.resolve(tmpDir, '.worktrees', '87'));
 
     const branch = manager.resolveTaskBranchName(87, 'Git Worktree Isolation');
@@ -288,5 +288,55 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.strictEqual(cleaned, 1);
     assert.strictEqual(fs.existsSync(orphanedDir), false);
     assert.ok(executedCommands.includes('git worktree prune'));
+  });
+
+  test('anchors resolveTaskWorktreePath and createWorktree to primary root when executed inside linked worktree', async () => {
+    const mainRepoRoot = path.join(tmpDir, 'main-repo');
+    const nestedWorktreeDir = path.join(mainRepoRoot, '.worktrees', '58');
+    fs.mkdirSync(nestedWorktreeDir, { recursive: true });
+
+    const porcelainOutput = [
+      `worktree ${mainRepoRoot}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${nestedWorktreeDir}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/58',
+      ''
+    ].join('\n');
+
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+
+    // Call from within nested worktree dir
+    const resolvedPath = await manager.resolveTaskWorktreePath(nestedWorktreeDir, '87');
+    assert.strictEqual(resolvedPath, path.join(mainRepoRoot, '.worktrees', '87'));
+
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: nestedWorktreeDir,
+      baseBranch: 'main'
+    });
+
+    assert.strictEqual(descriptor.worktreePath, path.join(mainRepoRoot, '.worktrees', '87'));
+    // Ensure the add command targeted the primary root path
+    assert.ok(
+      executedCommands.some(
+        (c) =>
+          c.includes('git worktree add') &&
+          c.includes(path.join(mainRepoRoot, '.worktrees', '87'))
+      )
+    );
   });
 });

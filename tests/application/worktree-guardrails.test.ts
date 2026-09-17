@@ -62,7 +62,7 @@ class MockStateRepo implements StateRepository {
 
 function makeMockWorktree(overrides: Partial<WorktreeManagerPort> = {}): WorktreeManagerPort {
   return {
-    resolveTaskWorktreePath: (_dir: string, taskId: string | number) => `/repo/.worktrees/${taskId}`,
+    resolveTaskWorktreePath: async (_dir: string, taskId: string | number) => `/repo/.worktrees/${taskId}`,
     resolveTaskBranchName: (taskId: string | number) => `task/${taskId}-worktree-guardrails`,
     ensureGitIgnore: async () => false,
     resolveBaseBranch: async () => 'phase/1-bridge',

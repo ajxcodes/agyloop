@@ -40,7 +40,7 @@ class MockWorktreeManager implements WorktreeManagerPort {
   public mockWorktrees: any[] = [];
   public cleanCount = 3;
 
-  public resolveTaskWorktreePath(workspaceDir: string, taskId: string | number, worktreesDir?: string): string {
+  public async resolveTaskWorktreePath(workspaceDir: string, taskId: string | number, worktreesDir?: string): Promise<string> {
     return `${workspaceDir}/${worktreesDir || '.worktrees'}/${taskId}`;
   }
 

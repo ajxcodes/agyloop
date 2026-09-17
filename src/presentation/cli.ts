@@ -610,7 +610,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.error('Error: Please specify task ID or worktree path to remove. Example: agyloop worktree remove 87');
           return EXIT_CODE_FAILURE;
         }
-        const targetPath = worktreeManager.resolveTaskWorktreePath(process.cwd(), options.worktreeTarget);
+        const targetPath = await worktreeManager.resolveTaskWorktreePath(process.cwd(), options.worktreeTarget);
         console.log(`Removing worktree at ${targetPath}...`);
         const res = await manageWorktreeUseCase.teardown({ worktreePath: targetPath });
         console.log(`✓ ${res.message}\n`);
