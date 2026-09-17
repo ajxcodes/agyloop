@@ -168,6 +168,45 @@ describe('RunPreFlightCheckUseCase', () => {
     assert.strictEqual(result.resumeBranch, 'task/60-open-feature');
   });
 
+  test('fetches PR comments and sets prHasChangesRequested when PR has CHANGES_REQUESTED review', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Open Task with Review Comments',
+        body: '',
+        labels: [],
+        comments: [],
+        state: 'OPEN'
+      }),
+      findPullRequest: async (): Promise<GitHubPullRequestData> => ({
+        number: 202,
+        title: 'Task 61 PR',
+        state: 'OPEN',
+        url: '',
+        headRefName: 'task/61-open-feature',
+        baseRefName: 'main',
+        merged: false,
+        labels: []
+      }),
+      fetchPullRequestComments: () => [
+        {
+          author: 'reviewer',
+          body: 'Please address memory leak',
+          state: 'CHANGES_REQUESTED'
+        }
+      ]
+    });
+
+    const useCase = new RunPreFlightCheckUseCase(mockGithub, makeMockWorktree());
+    const result = await useCase.execute({ issueNumber: 61 });
+
+    assert.strictEqual(result.isResume, true);
+    assert.strictEqual(result.prHasChangesRequested, true);
+    assert.strictEqual(result.prReviewComments?.length, 1);
+    assert.strictEqual(result.prReviewComments?.[0].author, 'reviewer');
+  });
+
   test('returns PROCEED for fresh open issue with no active branches or PRs', async () => {
     const useCase = new RunPreFlightCheckUseCase(makeMockGithub(), makeMockWorktree());
     const result = await useCase.execute({ issueNumber: 77 });

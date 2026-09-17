@@ -11,6 +11,7 @@ const {
   STAGE_COMPLETED,
   STAGE_REVIEW,
   STAGE_IMPLEMENT,
+  STAGE_PLAN,
   MODE_STANDARD,
   MODE_YOLO,
   CommitMessage,
@@ -330,6 +331,79 @@ new file mode 100644
       assert.strictEqual(prompter.lastPrompt, null); // Prompt never called
       assert.strictEqual(executor.executedCommands.length, 0);
       assert.strictEqual(stateRepo.saveCallCount, 0);
+    });
+
+    test('handles human rejection by routing to IMPLEMENT and updating summary log', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      const planGen = new MockPlanGenerator();
+      const prompter = new MockConfirmationPrompt(false);
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        planGen as unknown as PlanGeneratorPort,
+        prompter
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        description: 'rejected commit',
+        issueNumber: 30
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: false,
+        rejectionReason: 'Code needs more edge case handling'
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.confirmed, false);
+      assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_IMPLEMENT);
+
+      assert.ok(planGen.updatedSummary);
+      assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.targetStage, STAGE_IMPLEMENT);
+      assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.reason, 'Code needs more edge case handling');
+    });
+
+    test('handles human rejection by routing to PLAN when redesign is required', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      const planGen = new MockPlanGenerator();
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        planGen as unknown as PlanGeneratorPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        description: 'rejected commit for redesign',
+        issueNumber: 30
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: false,
+        rejectionTarget: 'PLAN',
+        rejectionReason: 'Architecture requires redesign'
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.confirmed, false);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
+
+      assert.ok(planGen.updatedSummary);
+      assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.targetStage, STAGE_PLAN);
+      assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.reason, 'Architecture requires redesign');
     });
   });
 });

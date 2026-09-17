@@ -456,6 +456,42 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         }
       }
 
+      if (updateData.planRevisionCount !== undefined && updateData.planRevisionCount > 0) {
+        const revSection = `## Plan Revisions\n- **Current Iteration:** #${updateData.planRevisionCount}`;
+        if (content.includes('## Plan Revisions')) {
+          content = content.replace(/## Plan Revisions([\s\S]*?)(?=\n##|$)/, revSection);
+        } else {
+          content = content.trimEnd() + '\n\n' + revSection + '\n';
+        }
+      }
+
+      if (updateData.prComments) {
+        const commentsFormatted = Array.isArray(updateData.prComments)
+          ? updateData.prComments.map((c) => `- ${c}`).join('\n')
+          : `- ${updateData.prComments}`;
+        const prCommentsSection = `## PR Review Comments Ingested\n${commentsFormatted}`;
+        if (content.includes('## PR Review Comments Ingested')) {
+          content = content.replace(/## PR Review Comments Ingested([\s\S]*?)(?=\n##|$)/, prCommentsSection);
+        } else {
+          content = content.trimEnd() + '\n\n' + prCommentsSection + '\n';
+        }
+      }
+
+      if (updateData.commitRejection) {
+        const rejectionText = typeof updateData.commitRejection === 'object'
+          ? `Routed to ${updateData.commitRejection.targetStage}: ${updateData.commitRejection.reason}`
+          : String(updateData.commitRejection);
+        const rejSection = `## Commit Rejections\n- ${rejectionText}`;
+        if (content.includes('## Commit Rejections')) {
+          content = content.replace(
+            /## Commit Rejections([\s\S]*?)(?=\n##|$)/,
+            (match) => `${match.trimEnd()}\n- ${rejectionText}\n`
+          );
+        } else {
+          content = content.trimEnd() + '\n\n' + rejSection + '\n';
+        }
+      }
+
       fs.writeFileSync(summaryFilePath, content, 'utf8');
       return true;
     } catch {

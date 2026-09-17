@@ -1,6 +1,7 @@
 # Antigravity Persistent Plans & Local State
 artifacts
 artifacts/
+artifacts/plans/
 .agyloop/
 .worktrees/
 config.json
@@ -26,6 +27,7 @@ __pycache__/
 *$py.class
 node_modules
 node_modules/
+node_modules
 dist/
 build/
 .cache/

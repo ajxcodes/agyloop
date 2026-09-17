@@ -1029,7 +1029,6 @@ export class RunLifecycleUseCase {
       if (params.interactiveCommit && this.confirmationPrompt) {
         const execResult = await this.executeCommitUseCase.execute({
           commitMessage: draftResult.commitMessage,
-          confirmed: false,
           bypassConfirmation: false,
           staged: params.staged,
           dryRun: params.dryRun,

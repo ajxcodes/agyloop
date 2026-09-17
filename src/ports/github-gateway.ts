@@ -10,6 +10,15 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
+export interface PullRequestReviewComment {
+  readonly author: string;
+  readonly body: string;
+  readonly path?: string;
+  readonly line?: number;
+  readonly state?: string;
+  readonly createdAt?: string;
+}
+
 export interface GitHubIssueData {
   readonly repo: string;
   readonly number: number;
@@ -106,6 +115,14 @@ export interface GitHubGateway {
     issueNumber: number,
     options?: GitHubGatewayOptions
   ): Promise<void> | void;
+
+  /**
+   * Fetches review comments and reviews for a pull request.
+   */
+  fetchPullRequestComments?(
+    prNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<PullRequestReviewComment[]> | PullRequestReviewComment[];
 }
 
 /**

@@ -32,14 +32,14 @@ export const STAGES = Object.freeze({
 export type StageName = typeof STAGES[keyof typeof STAGES];
 
 export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[]>> = Object.freeze({
-  [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY]),
+  [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN]),
   [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN]),
   [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT]), // IMPLEMENT allowed only in YOLO mode
   [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN]), // PLAN allowed if re-planning requested
   [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE]),
   [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT]), // IMPLEMENT allowed if gates fail
   [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT]), // IMPLEMENT allowed if review changes required
-  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT]),
+  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN]),
   [STAGE_COMPLETED]: Object.freeze([STAGE_INITIALIZED, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW]) // Can start next task or reopen for fixes/review
 });
 
@@ -291,6 +291,7 @@ export const NOTE_DEVELOPER_APPROVED = 'Approved by developer' as const;
 export const NOTE_AUTO_APPROVED_YOLO = 'Auto-approved in YOLO mode' as const;
 export const NOTE_MANUAL_TRANSITION = 'Manual CLI transition' as const;
 export const NOTE_INITIATED_PLANNING = 'Initiated planning mode' as const;
+export const NOTE_INITIATED_DISCOVERY_RCA = 'Initiated discovery mode for defect RCA' as const;
 export const NOTE_GENERATING_SPECS = 'Generating plan specifications' as const;
 export const NOTE_AWAITING_REVIEW = 'Awaiting human review' as const;
 export const NOTE_MANUAL_GATES_RUN = 'Manual gates run' as const;
@@ -725,11 +726,12 @@ Your primary purpose is to execute code changes, refactoring, test authoring, an
    - You must NOT deviate from the approved design or introduce scope creep.
    - Do not refactor unrelated code, reformat unaffected files, or introduce unrequested dependencies.
 
-2. **Full Modification Capability**:
-   - You are equipped with both inspection tools (\`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`) and modification tools (\`write_to_file\`, \`replace_file_content\`, \`run_command\`).
+2. **Surgical Modification Capability**:
+   - You are equipped with inspection tools (\`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`) and modification tools (\`write_to_file\`, \`replace_file_content\`, \`run_command\`).
    - Use \`replace_file_content\` for surgical modifications to existing files.
    - Use \`write_to_file\` exclusively when creating brand-new source or test files.
-   - Use \`run_command\` to execute tests, linters, and build commands to verify your changes.
+   - Restrict \`run_command\` strictly to lightweight syntax checks and type validation (e.g. \`npx tsc --noEmit\`).
+   - Prohibit running full test suites (\`npm test\`), linters, or heavy build pipelines; all automated verification is strictly reserved for the downstream Quality Gate (\`prompts/gate.md\`).
 
 ---
 
@@ -744,18 +746,18 @@ Your primary purpose is to execute code changes, refactoring, test authoring, an
 - Ensure all public APIs, types, interfaces, and value objects maintain strict backward compatibility unless explicitly deprecated in the approved plan.
 - Preserve existing documentation, comments, and project conventions.
 
-### Phase C: Empirical Verification
-- After each milestone, run automated tests using \`run_command\` (e.g. \`npm test\` or targeted test runner commands).
-- If tests fail or regressions occur, diagnose the failure immediately and rectify before advancing to subsequent checklist items.
-- Ensure typecheck and linting commands succeed with zero errors and zero warnings.
+### Phase C: Syntax & Type Validation
+- After code edits, validate compiler cleanliness using \`npx tsc --noEmit\` via \`run_command\`.
+- Do NOT execute test suites (\`npm test\`), linters, or \`critique\`.
+- Rectify any syntax or typing errors before concluding.
 
 ---
 
 ## 3. Communication & Handoff
 
 - Provide structured, concise status reports on completed checklist items.
-- Reference modified files and test verification results explicitly.
-- When all plan items are satisfied and tests pass, signal completion to the parent coordinator.` as const;
+- Reference modified files explicitly.
+- When all plan items are satisfied and syntax compiles cleanly, report \`IMPLEMENTATION_DONE\` to the parent coordinator.` as const;
 
 export const DEFAULT_GATE_SYSTEM_PROMPT = `# AgyLoop Quality Gate Subagent System Prompt
 
