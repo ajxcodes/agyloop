@@ -44,6 +44,14 @@ export interface CritiquePort {
    * @returns Structured AiReviewReport.
    */
   review(options?: CritiqueOptions): Promise<AiReviewReport>;
+
+  /**
+   * Discovers the version of the installed critique executable by invoking it with --version.
+   *
+   * @param resolvedPath - Path to the critique executable or script.
+   * @returns Cleaned version string or null if unresolvable.
+   */
+  getVersion?(resolvedPath: string): Promise<string | null>;
 }
 
 // Backwards compatibility aliases
