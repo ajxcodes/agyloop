@@ -11,6 +11,7 @@ export * from './list-models';
 export * from './start-implementation';
 export * from './run-quality-gate';
 export * from './run-review';
+export * from './manage-critique';
 export * from './draft-commit';
 export * from './execute-commit';
 export * from './run-lifecycle';

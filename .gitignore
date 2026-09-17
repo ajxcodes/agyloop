@@ -1,5 +1,6 @@
 # Antigravity Persistent Plans & Local State
-artifacts/plans/
+artifacts
+artifacts/
 .agyloop/
 .worktrees/
 config.json
@@ -23,6 +24,7 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *$py.class
+node_modules
 node_modules/
 dist/
 build/

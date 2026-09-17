@@ -26,6 +26,7 @@ export * from './value-objects/pre-flight-check';
 export * from './value-objects/public-sanitizer';
 export * from './value-objects/semver-calculator';
 export * from './value-objects/version-anchor';
+export * from './value-objects/critique-version';
 export * from './entities/state-machine';
 
 
