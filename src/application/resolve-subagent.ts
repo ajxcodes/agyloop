@@ -135,7 +135,7 @@ export interface PlanningTaskPromptParams {
 }
 
 export interface ImplementationTaskPromptParams {
-  readonly planContent: string;
+  readonly planContent?: string | null;
   readonly planPath?: string | null;
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
@@ -162,6 +162,7 @@ export interface ReviewerTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
   readonly issueBody?: string | null;
+  readonly repo?: string | null;
   readonly acceptanceCriteria?: readonly string[];
   readonly standardsContent?: string | null;
   readonly workingDiff?: string | null;
@@ -400,14 +401,39 @@ export class ResolveSubagentUseCase {
     }
 
     if (params.issueNumber) {
-      prompt += `### Issue Context (#${params.issueNumber}):\n`;
-      if (params.issueTitle) {
-        prompt += `**Title**: ${params.issueTitle}\n`;
-      }
-      if (params.issueBody) {
-        prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+      if (params.issueTitle || params.issueBody) {
+        prompt += `### Issue Context (#${params.issueNumber}):\n`;
+        if (params.issueTitle) {
+          prompt += `**Title**: ${params.issueTitle}\n`;
+        }
+        if (params.issueBody) {
+          prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+        } else {
+          prompt += `\n`;
+        }
       } else {
-        prompt += `\n`;
+        let fetchedFormatted = '';
+        if (this.githubGateway) {
+          const issueVo = parseInt(String(params.issueNumber), 10);
+          if (!isNaN(issueVo)) {
+            const workspaceDir = params.workspaceDir || process.cwd();
+            const currentRepo = this.githubGateway.getCurrentRepo(workspaceDir);
+            const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+            const repo = params.repo || resolvedRepo;
+            const fetched = this.githubGateway.fetchIssue(issueVo, {
+              repo,
+              cwd: workspaceDir
+            });
+            if (fetched && !(fetched instanceof Promise)) {
+              fetchedFormatted = formatIssueForPrompt(fetched);
+            }
+          }
+        }
+        if (fetchedFormatted) {
+          prompt += `${fetchedFormatted}\n\n`;
+        } else {
+          prompt += `### Issue Context (#${params.issueNumber}):\n\n`;
+        }
       }
     }
 
@@ -415,11 +441,13 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    const planFileName = params.planPath
-      ? params.planPath.replace(/^.*[\\/]/, '')
-      : PLAN_DEFAULT_SPECIFICATION_TITLE;
-    prompt += `### Approved Technical Plan (${planFileName}):\n\n`;
-    prompt += `${params.planContent.trim()}\n\n`;
+    if (params.planContent && params.planContent.trim()) {
+      const planFileName = params.planPath
+        ? params.planPath.replace(/^.*[\\/]/, '')
+        : PLAN_DEFAULT_SPECIFICATION_TITLE;
+      prompt += `### Approved Technical Plan (${planFileName}):\n\n`;
+      prompt += `${params.planContent.trim()}\n\n`;
+    }
 
     if (params.selfCorrectionPayload && params.selfCorrectionPayload.trim()) {
       prompt += `${params.selfCorrectionPayload.trim()}\n\n`;
@@ -504,14 +532,39 @@ export class ResolveSubagentUseCase {
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
 
     if (params.issueNumber) {
-      prompt += `### Active Issue: #${params.issueNumber}\n`;
-      if (params.issueTitle) {
-        prompt += `**Title**: ${params.issueTitle}\n`;
-      }
-      if (params.issueBody) {
-        prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+      if (params.issueTitle || params.issueBody) {
+        prompt += `### Active Issue: #${params.issueNumber}\n`;
+        if (params.issueTitle) {
+          prompt += `**Title**: ${params.issueTitle}\n`;
+        }
+        if (params.issueBody) {
+          prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+        } else {
+          prompt += `\n`;
+        }
       } else {
-        prompt += `\n`;
+        let fetchedFormatted = '';
+        if (this.githubGateway) {
+          const issueVo = parseInt(String(params.issueNumber), 10);
+          if (!isNaN(issueVo)) {
+            const workspaceDir = params.workspaceDir || process.cwd();
+            const currentRepo = this.githubGateway.getCurrentRepo(workspaceDir);
+            const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+            const repo = params.repo || resolvedRepo;
+            const fetched = this.githubGateway.fetchIssue(issueVo, {
+              repo,
+              cwd: workspaceDir
+            });
+            if (fetched && !(fetched instanceof Promise)) {
+              fetchedFormatted = formatIssueForPrompt(fetched);
+            }
+          }
+        }
+        if (fetchedFormatted) {
+          prompt += `${fetchedFormatted}\n\n`;
+        } else {
+          prompt += `### Active Issue: #${params.issueNumber}\n\n`;
+        }
       }
     }
 

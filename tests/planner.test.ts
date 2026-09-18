@@ -261,5 +261,68 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('Zero magic numbers.'));
     assert.ok(prompt.includes('REVIEW_STATUS: APPROVED | CHANGES_REQUESTED'));
   });
+
+  test('buildImplementationTaskPrompt fetches and formats issue details from githubGateway when title/body are omitted', () => {
+    const mockGithub = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: 'Resolved Issue Title from Gateway',
+        body: 'Resolved issue description from GitHub gateway.',
+        labels: ['bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+    const useCaseWithGithub = new ResolveSubagentUseCase(configRepo, mockGithub as any);
+    const prompt = useCaseWithGithub.buildImplementationTaskPrompt({
+      planContent: '## Checklist\n- [ ] Step 1',
+      issueNumber: 85
+    });
+
+    assert.ok(prompt.includes('Active Issue: #85 - Resolved Issue Title from Gateway'));
+    assert.ok(prompt.includes('Resolved issue description from GitHub gateway.'));
+    assert.ok(prompt.includes('Approved Technical Plan'));
+  });
+
+  test('buildImplementationTaskPrompt omits the "Approved Technical Plan" section when planContent is empty', () => {
+    const promptWithoutPlan = resolveUseCase.buildImplementationTaskPrompt({
+      planContent: '',
+      issueNumber: 85,
+      issueTitle: 'Some Title'
+    });
+    assert.strictEqual(promptWithoutPlan.includes('Approved Technical Plan'), false);
+
+    const promptWithWhitespacePlan = resolveUseCase.buildImplementationTaskPrompt({
+      planContent: '   \n  \n  ',
+      issueNumber: 85,
+      issueTitle: 'Some Title'
+    });
+    assert.strictEqual(promptWithWhitespacePlan.includes('Approved Technical Plan'), false);
+  });
+
+  test('buildReviewerTaskPrompt fetches and formats issue details from githubGateway when title/body are omitted', () => {
+    const mockGithub = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: 'Review Issue Title from Gateway',
+        body: 'Review issue description from GitHub gateway.',
+        labels: ['enhancement'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+    const useCaseWithGithub = new ResolveSubagentUseCase(configRepo, mockGithub as any);
+    const prompt = useCaseWithGithub.buildReviewerTaskPrompt({
+      issueNumber: 85
+    });
+
+    assert.ok(prompt.includes('Active Issue: #85 - Review Issue Title from Gateway'));
+    assert.ok(prompt.includes('Review issue description from GitHub gateway.'));
+  });
 });
+
 
