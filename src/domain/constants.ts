@@ -933,6 +933,28 @@ export const MSG_CRITIQUE_NOT_FOUND =
   'Critique CLI binary not found. Please install critique or place it on PATH, ~/.local/bin, or as sibling ../critique.' as const;
 export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
 
+export const DIFF_EXCLUDED_PATHSPECS = Object.freeze([
+  ':!package-lock.json',
+  ':!pnpm-lock.yaml',
+  ':!yarn.lock',
+  ':!bun.lockb',
+  ':!dist/',
+  ':!build/'
+] as const);
+
+export const DIFF_EXCLUDED_PATTERNS = Object.freeze([
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb',
+  'dist/',
+  'build/'
+] as const);
+
+export const DIFF_EXCLUDE_ARGS = "':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock' ':!bun.lockb' ':!dist/' ':!build/'" as const;
+
+export const MAX_INLINE_DIFF_LINES = 1000 as const;
+
 export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
 
 You are the **AgyLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.

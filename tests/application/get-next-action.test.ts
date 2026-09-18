@@ -288,7 +288,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.ok(result.invocationPayload);
 
     const sub = result.invocationPayload.Subagents[0];
-    assert.strictEqual(sub.TypeName, 'research');
+    assert.strictEqual(sub.TypeName, 'self');
     assert.strictEqual(sub.Role, ROLE_TITLE_REVIEWER);
     assert.strictEqual(sub.Model, 'flash');
     assert.ok(sub.Prompt.includes('phase/1-bridge'));

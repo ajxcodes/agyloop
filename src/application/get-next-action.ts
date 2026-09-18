@@ -250,6 +250,7 @@ export class GetNextActionUseCase {
 
         const prompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
           issueNumber: activeIssue,
+          baseBranch,
           workspaceDir: worktreePath || cwd,
           config
         });
@@ -257,7 +258,7 @@ export class GetNextActionUseCase {
         const invocationPayload: SubagentInvocationPayload = {
           Subagents: [
             {
-              TypeName: 'research',
+              TypeName: 'self',
               Role: ROLE_TITLE_REVIEWER,
               Model: subagent.model,
               Workspace: 'share',

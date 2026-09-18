@@ -22,7 +22,8 @@ import {
   REGEX_BREAKING_CHANGE_FOOTER,
   REGEX_ISSUE_NUMBER_REF,
   REGEX_LEADING_CONVENTIONAL_PREFIX,
-  TOKEN_BREAKING_CHANGE
+  TOKEN_BREAKING_CHANGE,
+  DIFF_EXCLUDED_PATTERNS
 } from '../constants';
 import { CommitMessage } from './commit-message';
 
@@ -46,7 +47,129 @@ export interface DraftCommitPlan {
 }
 
 export class DiffAnalyzer {
-  public static extractModifiedFiles(diffText: string): string[] {
+  public static isExcludedDiffPath(
+    filePath: string,
+    excludedPatterns: readonly string[] = DIFF_EXCLUDED_PATTERNS
+  ): boolean {
+    if (!filePath || typeof filePath !== 'string') {
+      return false;
+    }
+    const cleanPath = filePath.trim();
+    for (const pattern of excludedPatterns) {
+      if (pattern.endsWith('/')) {
+        const dir = pattern.slice(0, -1);
+        if (
+          cleanPath.startsWith(pattern) ||
+          cleanPath.startsWith(`a/${pattern}`) ||
+          cleanPath.startsWith(`b/${pattern}`) ||
+          cleanPath.includes(`/${pattern}`) ||
+          cleanPath === dir
+        ) {
+          return true;
+        }
+      } else {
+        if (
+          cleanPath === pattern ||
+          cleanPath.endsWith(`/${pattern}`) ||
+          cleanPath === `a/${pattern}` ||
+          cleanPath === `b/${pattern}`
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  public static splitDiffIntoFiles(diffText: string): Array<{ file: string; content: string }> {
+    if (!diffText || typeof diffText !== 'string') {
+      return [];
+    }
+
+    const chunks: Array<{ file: string; content: string }> = [];
+    const rawChunks = diffText.split(/(?=^diff --git )/m);
+
+    for (const chunk of rawChunks) {
+      const trimmed = chunk.trim();
+      if (!trimmed) {
+        continue;
+      }
+      let file = '';
+      const match = trimmed.match(/diff --git a\/(.+?) b\/(.+?)(?:\r?\n|$)/);
+      if (match) {
+        file = match[2]?.trim() || match[1]?.trim() || '';
+      } else {
+        const plusMatch = trimmed.match(/^\+\+\+ b\/(.+?)(?:\r?\n|$)/m);
+        if (plusMatch && plusMatch[1] && plusMatch[1] !== '/dev/null') {
+          file = plusMatch[1].trim();
+        }
+      }
+      chunks.push({ file, content: chunk });
+    }
+
+    return chunks;
+  }
+
+  public static filterDiff(
+    diffText: string,
+    excludedPatterns: readonly string[] = DIFF_EXCLUDED_PATTERNS
+  ): string {
+    if (!diffText || typeof diffText !== 'string') {
+      return '';
+    }
+
+    const chunks = this.splitDiffIntoFiles(diffText);
+    if (chunks.length === 0) {
+      return diffText;
+    }
+
+    const retainedChunks: string[] = [];
+    for (const { file, content } of chunks) {
+      if (!file || !this.isExcludedDiffPath(file, excludedPatterns)) {
+        retainedChunks.push(content);
+      }
+    }
+
+    return retainedChunks.join('');
+  }
+
+  public static generateDiffStat(diffText: string): string {
+    if (!diffText || typeof diffText !== 'string') {
+      return '';
+    }
+    const chunks = this.splitDiffIntoFiles(diffText);
+    if (chunks.length === 0) {
+      const { additions, deletions } = this.calculateMetrics(diffText);
+      if (additions > 0 || deletions > 0) {
+        return ` working diff | ${additions + deletions} ${'+'.repeat(Math.min(additions, 20))}${'-'.repeat(Math.min(deletions, 20))}\n 1 file changed, ${additions} insertions(+), ${deletions} deletions(-)`;
+      }
+      return '';
+    }
+
+    const lines: string[] = [];
+    let totalAdditions = 0;
+    let totalDeletions = 0;
+
+    for (const { file, content } of chunks) {
+      const { additions, deletions } = this.calculateMetrics(content);
+      totalAdditions += additions;
+      totalDeletions += deletions;
+      const changes = additions + deletions;
+      const pluses = '+'.repeat(Math.min(additions, 20));
+      const minuses = '-'.repeat(Math.min(deletions, 20));
+      const displayFile = file || 'unknown';
+      lines.push(` ${displayFile.padEnd(40)} | ${String(changes).padStart(4)} ${pluses}${minuses}`);
+    }
+
+    const fileCount = chunks.length;
+    lines.push(
+      ` ${fileCount} file${fileCount === 1 ? '' : 's'} changed, ${totalAdditions} insertion${totalAdditions === 1 ? '' : 's'}(+), ${totalDeletions} deletion${totalDeletions === 1 ? '' : 's'}(-)`
+    );
+
+    return lines.join('\n');
+  }
+
+  public static extractModifiedFiles(diffText: string, filterExcluded = false): string[] {
     if (!diffText || typeof diffText !== 'string') {
       return [];
     }
@@ -54,10 +177,11 @@ export class DiffAnalyzer {
     const files = new Set<string>();
     const matches = diffText.matchAll(/diff --git a\/(.+?) b\/(.+?)(?:\r?\n|$)/g);
     for (const match of matches) {
-      if (match[2]) {
-        files.add(match[2].trim());
-      } else if (match[1]) {
-        files.add(match[1].trim());
+      const file = (match[2] || match[1] || '').trim();
+      if (file) {
+        if (!filterExcluded || !this.isExcludedDiffPath(file)) {
+          files.add(file);
+        }
       }
     }
 
@@ -65,7 +189,10 @@ export class DiffAnalyzer {
       const plusMatches = diffText.matchAll(/^\+\+\+ b\/(.+?)(?:\r?\n|$)/gm);
       for (const match of plusMatches) {
         if (match[1] && match[1] !== '/dev/null') {
-          files.add(match[1].trim());
+          const file = match[1].trim();
+          if (!filterExcluded || !this.isExcludedDiffPath(file)) {
+            files.add(file);
+          }
         }
       }
     }
