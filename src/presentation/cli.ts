@@ -38,6 +38,7 @@ import {
   FLAG_NO_WORKTREE,
   FLAG_FORCE,
   FLAG_FORCE_SHORT,
+  REGEX_POSITIONAL_ISSUE_ID,
   PreFlightHaltError,
   MilestoneReleaseError,
   MilestoneSealedError,
@@ -299,10 +300,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
   }
 
   if (positional.length > 0) {
-    const issueRegex = /^#?(\d+)$/;
     let cmdIndex = 0;
 
-    const match0 = positional[0].match(issueRegex);
+    const match0 = positional[0].match(REGEX_POSITIONAL_ISSUE_ID);
     if (match0) {
       options.issue = match0[1];
       cmdIndex = 1;
@@ -323,7 +323,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       } else if (command === 'critique') {
         options.critiqueSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'status';
       } else if (cmdIndex + 1 < positional.length) {
-        const matchNext = positional[cmdIndex + 1].match(issueRegex);
+        const matchNext = positional[cmdIndex + 1].match(REGEX_POSITIONAL_ISSUE_ID);
         if (matchNext) {
           options.issue = matchNext[1];
         }

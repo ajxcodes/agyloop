@@ -1016,6 +1016,7 @@ export const REGEX_BREAKING_CHANGE_FOOTER =
 export const REGEX_DIFF_FILE_HEADER =
   /^diff --git\/(.+?) b\/(.+?)$/gm;
 export const REGEX_ISSUE_NUMBER_REF = /#(\d+)/;
+export const REGEX_POSITIONAL_ISSUE_ID = /^#?(\d+)$/;
 export const REGEX_LEADING_CONVENTIONAL_PREFIX =
   /^(?:\[(?:task|feat|feature|fix|bug|refactor|chore|perf|docs)\]\s*(?:phase\s*\d+:?\s*)?|feat|fix|refactor|chore|test|perf|docs|style):\s*/i;
 
