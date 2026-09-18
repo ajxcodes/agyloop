@@ -96,16 +96,26 @@ export class RunPreFlightCheckUseCase {
 
         if (pr) {
           if (pr.merged || pr.state === 'MERGED') {
-            const base = pr.baseRefName || 'main';
-            const haltMsg = `PR for task #${issueId} is already merged into ${base}.`;
-            throw new PreFlightHaltError(haltMsg, 'MERGED', {
-              issueNumber: issueId,
-              baseBranch: base,
-              prNumber: pr.number
-            });
+            const taskBranchPattern = new RegExp(`^(?:task|fix)/${issueId}(?:[-_/]|$)`, 'i');
+            const isMatchingTaskBranch = taskBranchPattern.test(pr.headRefName || '');
+
+            if (isMatchingTaskBranch || issueState === 'CLOSED') {
+              const base = pr.baseRefName || 'main';
+              const haltMsg = `PR for task #${issueId} is already merged into ${base}.`;
+              throw new PreFlightHaltError(haltMsg, 'MERGED', {
+                issueNumber: issueId,
+                baseBranch: base,
+                prNumber: pr.number
+              });
+            } else {
+              console.warn(
+                `[agyloop] Warning: Disregarding merged PR #${pr.number} for open task #${issueId} because head branch '${pr.headRefName}' does not match task/${issueId} or fix/${issueId} convention.`
+              );
+              pr = null;
+            }
           }
 
-          if (pr.state === 'OPEN') {
+          if (pr && pr.state === 'OPEN') {
             let prReviewComments: any[] = [];
             let prHasChangesRequested = false;
 
