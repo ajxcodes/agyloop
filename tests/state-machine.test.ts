@@ -161,7 +161,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.ok(activeDuration >= 0);
   });
 
-  test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, and STAGE_REVIEW', () => {
+  test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW, STAGE_PLAN, and STAGE_DISCOVERY', () => {
     const sm = StateMachine.createInitial({ mode: 'standard' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -173,13 +173,15 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     sm.transition(STAGE_COMPLETED);
 
     assert.strictEqual(sm.canTransition(STAGE_INITIALIZED), true);
+    assert.strictEqual(sm.canTransition(STAGE_DISCOVERY), true);
+    assert.strictEqual(sm.canTransition(STAGE_PLAN), true);
     assert.strictEqual(sm.canTransition(STAGE_IMPLEMENT), true);
     assert.strictEqual(sm.canTransition(STAGE_QUALITY_GATE), true);
     assert.strictEqual(sm.canTransition(STAGE_REVIEW), true);
 
-    // Reopen implementation from completed
-    sm.transition(STAGE_IMPLEMENT);
-    assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
+    // Reopen planning from completed
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.currentStage, STAGE_PLAN);
   });
 
   test('persists checkpoint to state.json and reloads state cleanly', () => {

@@ -40,7 +40,14 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
   [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT]), // IMPLEMENT allowed if gates fail
   [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT]), // IMPLEMENT allowed if review changes required
   [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN]),
-  [STAGE_COMPLETED]: Object.freeze([STAGE_INITIALIZED, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW]) // Can start next task or reopen for fixes/review
+  [STAGE_COMPLETED]: Object.freeze([
+    STAGE_INITIALIZED,
+    STAGE_DISCOVERY,
+    STAGE_PLAN,
+    STAGE_IMPLEMENT,
+    STAGE_QUALITY_GATE,
+    STAGE_REVIEW
+  ]) // Can start next task or reopen for fixes/review/planning
 });
 
 export const MODE_STANDARD = 'standard' as const;
