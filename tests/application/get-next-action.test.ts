@@ -222,6 +222,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.TypeName, 'self');
     assert.strictEqual(sub.Role, ROLE_TITLE_IMPLEMENTER);
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+    assert.strictEqual(sub.Prompt.includes('Approved Technical Plan'), false);
   });
 
   test('returns gate subagent payload for STAGE_QUALITY_GATE', async () => {
@@ -332,5 +333,98 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(completedResult.currentStage, STAGE_COMPLETED);
     assert.strictEqual(completedResult.nextStage, STAGE_INITIALIZED);
     assert.strictEqual(completedResult.actionType, 'completed');
+  });
+
+  test('populates issue context and omits blank plan block for STAGE_IMPLEMENT when githubGateway is configured', async () => {
+    const sm = StateMachine.createInitial({ issue: 85 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 85,
+        worktreePath: '/repo/.worktrees/85',
+        branch: 'fix/85',
+        baseBranch: 'main',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: 'Fix prompt issue context and blank plan spec',
+        body: 'Detailed issue description for issue 85.',
+        labels: ['bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.ok(result.invocationPayload);
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Active Issue: #85 - Fix prompt issue context and blank plan spec'));
+    assert.ok(sub.Prompt.includes('Detailed issue description for issue 85.'));
+    assert.strictEqual(sub.Prompt.includes('Approved Technical Plan'), false);
+  });
+
+  test('populates issue context for STAGE_REVIEW when githubGateway is configured', async () => {
+    const sm = StateMachine.createInitial({ issue: 85, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 85,
+        worktreePath: '/repo/.worktrees/85',
+        branch: 'fix/85',
+        baseBranch: 'main',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: 'Fix prompt issue context and blank plan spec',
+        body: 'Detailed issue description for issue 85.',
+        labels: ['bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.ok(result.invocationPayload);
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Active Issue: #85 - Fix prompt issue context and blank plan spec'));
+    assert.ok(sub.Prompt.includes('Detailed issue description for issue 85.'));
   });
 });
