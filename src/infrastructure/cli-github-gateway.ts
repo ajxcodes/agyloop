@@ -179,16 +179,37 @@ export class CliGitHubGateway implements GitHubGateway {
       let pr: RawGhPr | undefined;
       if (options.issueNumber) {
         const numStr = String(options.issueNumber);
-        // Find exact match avoiding substring collisions (e.g. issue 4 shouldn't match PR 42)
-        pr = parsed.find((p) => {
-          const head = p.headRefName || '';
-          const title = p.title || '';
-          const branchPattern = new RegExp(`^(task|fix|feature|issue|bugfix)?/?${numStr}([-_/]|$)`, 'i');
-          if (branchPattern.test(head)) return true;
+        const branchPattern = new RegExp(
+          `^(?:task|fix|feature|issue|bugfix)?[-_/]?${numStr}(?:[-_/]|$)`,
+          'i'
+        );
+
+        // 1. Prefer head branch matching over title matching
+        pr = parsed.find((p) => branchPattern.test(p.headRefName || ''));
+
+        // 2. Fallback to title matching if no head branch match found
+        if (!pr) {
           const titlePattern = new RegExp(`(^|\\s|[\\[(])#${numStr}([\\])\\s,.:;]|$)`, 'i');
-          if (titlePattern.test(title)) return true;
-          return false;
-        });
+          const branchIssuePattern = /^(?:task|fix|feature|issue|bugfix)?[-_/]?(\d+)(?:[-_/]|$)/i;
+
+          pr = parsed.find((p) => {
+            const head = p.headRefName || '';
+            const title = p.title || '';
+
+            if (!titlePattern.test(title)) {
+              return false;
+            }
+
+            // Reject title matches if head branch explicitly points to a different issue number
+            const branchIssueMatch = head.match(branchIssuePattern);
+            if (branchIssueMatch && branchIssueMatch[1] !== numStr) {
+              return false;
+            }
+
+            return true;
+          });
+        }
+
         if (!pr) {
           return null;
         }

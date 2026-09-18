@@ -137,6 +137,72 @@ describe('RunPreFlightCheckUseCase', () => {
     );
   });
 
+  test('disregards merged PR and proceeds when issue is OPEN but merged PR head branch does not match task convention', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Open Task 75',
+        body: '',
+        labels: [],
+        comments: [],
+        state: 'OPEN'
+      }),
+      findPullRequest: async (): Promise<GitHubPullRequestData> => ({
+        number: 35,
+        title: 'Merged Historical PR (#75)',
+        state: 'MERGED',
+        url: '',
+        headRefName: '34-task-metrics',
+        baseRefName: 'main',
+        merged: true,
+        labels: []
+      })
+    });
+
+    const useCase = new RunPreFlightCheckUseCase(mockGithub, makeMockWorktree());
+    const result = await useCase.execute({ issueNumber: 75 });
+
+    assert.strictEqual(result.isHalt, false);
+    assert.strictEqual(result.isResume, false);
+    assert.strictEqual(result.action, PREFLIGHT_ACTION_PROCEED);
+  });
+
+  test('disregards merged PR and resumes existing branch when issue is OPEN but merged PR head branch does not match task convention', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Open Task 75',
+        body: '',
+        labels: [],
+        comments: [],
+        state: 'OPEN'
+      }),
+      findPullRequest: async (): Promise<GitHubPullRequestData> => ({
+        number: 35,
+        title: 'Merged Historical PR (#75)',
+        state: 'MERGED',
+        url: '',
+        headRefName: '34-task-metrics',
+        baseRefName: 'main',
+        merged: true,
+        labels: []
+      })
+    });
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'task/75-implement-feature']
+    });
+
+    const useCase = new RunPreFlightCheckUseCase(mockGithub, mockWorktree);
+    const result = await useCase.execute({ issueNumber: 75 });
+
+    assert.strictEqual(result.isHalt, false);
+    assert.strictEqual(result.isResume, true);
+    assert.strictEqual(result.existingBranch, 'task/75-implement-feature');
+  });
+
   test('returns RESUME evaluation when PR is OPEN', async () => {
     const mockGithub = makeMockGithub({
       fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
