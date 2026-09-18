@@ -105,7 +105,7 @@ Run `bin/agyloop next --json` at any stage to inspect the next step and obtain t
 {
   "Subagents": [
     {
-      "TypeName": "research",
+      "TypeName": "self",
       "Role": "AgyLoop Reviewer",
       "Model": "inherit",
       "Workspace": "share",

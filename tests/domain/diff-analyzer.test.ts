@@ -11,7 +11,11 @@ const {
   COMMIT_TYPE_TEST,
   COMMIT_TYPE_DOCS,
   COMMIT_TYPE_CI,
-  COMMIT_TYPE_BUILD
+  COMMIT_TYPE_BUILD,
+  DIFF_EXCLUDED_PATHSPECS,
+  DIFF_EXCLUDED_PATTERNS,
+  DIFF_EXCLUDE_ARGS,
+  MAX_INLINE_DIFF_LINES
 } = require('../../dist/domain');
 
 const SAMPLE_DIFF_SRC = `diff --git a/src/domain/value-objects/review-verdict.ts b/src/domain/value-objects/review-verdict.ts
@@ -148,5 +152,109 @@ describe('DiffAnalyzer Domain Service', () => {
       plan.commitMessage.toSingleLine(),
       'feat(reviewer): implement Interactive Conventional Commit Drafter & Human Approval Gate (#30)'
     );
+  });
+
+  describe('Context Shielding & Diff Filtering', () => {
+    test('defines required exclusion pathspecs and threshold constants', () => {
+      assert.deepStrictEqual(Array.from(DIFF_EXCLUDED_PATHSPECS), [
+        ':!package-lock.json',
+        ':!pnpm-lock.yaml',
+        ':!yarn.lock',
+        ':!bun.lockb',
+        ':!dist/',
+        ':!build/'
+      ]);
+      assert.strictEqual(
+        DIFF_EXCLUDE_ARGS,
+        "':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock' ':!bun.lockb' ':!dist/' ':!build/'"
+      );
+      assert.strictEqual(MAX_INLINE_DIFF_LINES, 1000);
+    });
+
+    test('isExcludedDiffPath accurately identifies lockfiles and build directories', () => {
+      // Direct matches
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('package-lock.json'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('pnpm-lock.yaml'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('yarn.lock'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('bun.lockb'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('dist/bundle.js'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('build/output.min.js'), true);
+
+      // Nested matches
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('packages/core/package-lock.json'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('apps/web/pnpm-lock.yaml'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('sub/yarn.lock'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('nested/bun.lockb'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('packages/ui/dist/index.js'), true);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('packages/api/build/server.js'), true);
+
+      // Allowed source files
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('package.json'), false);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('src/dist.ts'), false);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('src/build.ts'), false);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('src/distribution/index.ts'), false);
+      assert.strictEqual(DiffAnalyzer.isExcludedDiffPath('tests/domain/diff-analyzer.test.ts'), false);
+    });
+
+    test('filterDiff removes lockfiles and build artifacts while preserving code diffs', () => {
+      const mixedDiff = `diff --git a/package-lock.json b/package-lock.json
+index 1111111..2222222 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,5 +1,5 @@
+-old-lockfile-line
++new-lockfile-line
+diff --git a/src/index.ts b/src/index.ts
+index 3333333..4444444 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -10,3 +10,4 @@
++export const SHIELD = true;
+diff --git a/dist/bundle.js b/dist/bundle.js
+index 5555555..6666666 100644
+--- a/dist/bundle.js
++++ b/dist/bundle.js
+@@ -1,1 +1,1 @@
+-var min=1;
++var min=2;
+`;
+
+      const filtered = DiffAnalyzer.filterDiff(mixedDiff);
+      assert.ok(!filtered.includes('package-lock.json'));
+      assert.ok(!filtered.includes('dist/bundle.js'));
+      assert.ok(!filtered.includes('old-lockfile-line'));
+      assert.ok(!filtered.includes('var min'));
+      assert.ok(filtered.includes('src/index.ts'));
+      assert.ok(filtered.includes('export const SHIELD = true;'));
+    });
+
+    test('filterDiff returns empty string when diff consists entirely of lockfiles', () => {
+      const lockfileDiff = `diff --git a/package-lock.json b/package-lock.json
+index 1111111..2222222 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,3 +1,3 @@
+-old
++new
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 3333333..4444444 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1,2 +1,2 @@
+-v1
++v2
+`;
+      const filtered = DiffAnalyzer.filterDiff(lockfileDiff);
+      assert.strictEqual(filtered, '');
+    });
+
+    test('generateDiffStat produces formatted file metrics and change totals', () => {
+      const stat = DiffAnalyzer.generateDiffStat(SAMPLE_DIFF_SRC);
+      assert.ok(stat.includes('src/domain/value-objects/review-verdict.ts'));
+      assert.ok(stat.includes('src/application/run-review.ts'));
+      assert.ok(stat.includes('2 files changed'));
+      assert.ok(stat.includes('insertions(+)'));
+      assert.ok(stat.includes('deletions(-)'));
+    });
   });
 });

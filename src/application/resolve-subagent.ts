@@ -34,16 +34,30 @@ import {
   TIER_FLASH_LITE,
   TIER_FLASH,
   DiagnosticSnippet,
-  SECTION_SELF_CORRECTION_TITLE
+  SECTION_SELF_CORRECTION_TITLE,
+  DIFF_EXCLUDED_PATHSPECS,
+  DIFF_EXCLUDED_PATTERNS,
+  DIFF_EXCLUDE_ARGS,
+  MAX_INLINE_DIFF_LINES,
+  DiffAnalyzer
 } from '../domain';
+
+export {
+  DIFF_EXCLUDED_PATHSPECS,
+  DIFF_EXCLUDED_PATTERNS,
+  DIFF_EXCLUDE_ARGS,
+  MAX_INLINE_DIFF_LINES
+};
 import {
   ConfigRepository,
   AgyLoopConfig,
   GitHubGateway,
   GitHubIssueData,
   PromptRepository,
+  CritiquePort,
   formatIssueForPrompt
 } from '../ports';
+import { ManageCritiqueUseCase } from './manage-critique';
 
 export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
@@ -163,10 +177,12 @@ export interface ReviewerTaskPromptParams {
   readonly issueTitle?: string | null;
   readonly issueBody?: string | null;
   readonly repo?: string | null;
+  readonly baseBranch?: string | null;
   readonly acceptanceCriteria?: readonly string[];
   readonly standardsContent?: string | null;
   readonly workingDiff?: string | null;
   readonly critiqueReport?: string | null;
+  readonly critiquePath?: string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
@@ -176,15 +192,28 @@ export class ResolveSubagentUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly githubGateway?: GitHubGateway;
   private readonly promptRepo?: PromptRepository;
+  private readonly critiquePort?: CritiquePort;
+  private readonly manageCritiqueUseCase?: ManageCritiqueUseCase;
 
   constructor(
     configRepo: ConfigRepository,
     githubGateway?: GitHubGateway,
-    promptRepo?: PromptRepository
+    promptRepo?: PromptRepository,
+    critiquePortOrManageCritique?: CritiquePort | ManageCritiqueUseCase
   ) {
     this.configRepo = configRepo;
     this.githubGateway = githubGateway;
     this.promptRepo = promptRepo;
+    if (
+      critiquePortOrManageCritique instanceof ManageCritiqueUseCase ||
+      (critiquePortOrManageCritique &&
+        typeof (critiquePortOrManageCritique as any).getStatus === 'function' &&
+        typeof (critiquePortOrManageCritique as any).resolveCritiquePath === 'function')
+    ) {
+      this.manageCritiqueUseCase = critiquePortOrManageCritique as ManageCritiqueUseCase;
+    } else if (critiquePortOrManageCritique) {
+      this.critiquePort = critiquePortOrManageCritique as CritiquePort;
+    }
   }
 
   public getPlannerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
@@ -522,6 +551,13 @@ export class ResolveSubagentUseCase {
   }
 
   public buildReviewerTaskPrompt(params: ReviewerTaskPromptParams = {}): string {
+    const resolvedCritiquePath =
+      params.critiquePath ??
+      (this.manageCritiqueUseCase
+        ? this.manageCritiqueUseCase.resolveCritiquePath(params.workspaceDir)
+        : ManageCritiqueUseCase.resolveCritiquePath(this.critiquePort, params.workspaceDir));
+    const critiqueBinary = resolvedCritiquePath || '~/.local/bin/critique';
+
     let prompt = `# Task: Code Review & Standards Verification\n\n`;
     prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
@@ -530,6 +566,16 @@ export class ResolveSubagentUseCase {
     prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${REVIEWER_TOOLS.join(', ')}). Never attempt to write or edit files.\n`;
     prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
+
+    prompt += `### Two-Tier Review Methodology:\n`;
+    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using \`run_command\`:\n`;
+    prompt += `   \`\`\`bash\n`;
+    prompt += `   export PATH="$HOME/.local/bin:$PATH" && ${critiqueBinary} --json\n`;
+    prompt += `   \`\`\`\n`;
+    prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector) using the resolved path.\n`;
+    prompt += `   - Invariant: Any \`critical\` or \`error\` findings mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n`;
+    prompt += `2. **Tier 2 (Manual Diff & Standards Inspection)**: Independently inspect working diff against Acceptance Criteria and repository standards (\`.github/critique.md\`, zero magic numbers/strings, clean architecture).\n`;
+    prompt += `3. **Consolidated Verdict**: Cross-reference both tiers into the structured verdict block (\`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\`).\n\n`;
 
     if (params.issueNumber) {
       if (params.issueTitle || params.issueBody) {
@@ -586,11 +632,40 @@ export class ResolveSubagentUseCase {
       prompt += `**Note**: Any \`critical\` or \`error\` findings from critique mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n\n`;
     }
 
+    const baseBranch = params.baseBranch || '<baseBranch>';
+    const diffExcludeArgs = DIFF_EXCLUDE_ARGS;
+    const diffInspectionCmd = `git diff ${baseBranch} -- . ${diffExcludeArgs}`;
+
+    let filteredDiff: string | null = null;
     if (params.workingDiff && params.workingDiff.trim()) {
-      prompt += `### Working Code Diff:\n\`\`\`diff\n${params.workingDiff.trim()}\n\`\`\`\n\n`;
+      filteredDiff = DiffAnalyzer.filterDiff(params.workingDiff);
+    }
+
+    if (filteredDiff && filteredDiff.trim()) {
+      const diffLines = filteredDiff.trim().split('\n');
+      if (diffLines.length > MAX_INLINE_DIFF_LINES) {
+        const statSummary = DiffAnalyzer.generateDiffStat(filteredDiff);
+        prompt += `### Working Code Diff:\n`;
+        prompt += `> [!NOTE]\n`;
+        prompt += `> Working diff exceeds 1,000 lines (${diffLines.length.toLocaleString()} lines). Full diff omitted to protect subagent context and shield against token bloat.\n\n`;
+        if (statSummary) {
+          prompt += `#### Diff Stat:\n\`\`\`\n${statSummary}\n\`\`\`\n\n`;
+        }
+        prompt += `### Working Diff Inspection:\n`;
+        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using \`run_command\`:\n`;
+        prompt += `\`\`\`bash\n`;
+        prompt += `git diff --stat ${baseBranch} -- . ${diffExcludeArgs}\n`;
+        prompt += `git diff ${baseBranch} -- <file_path>\n`;
+        prompt += `\`\`\`\n\n`;
+      } else {
+        prompt += `### Working Code Diff:\n\`\`\`diff\n${filteredDiff.trim()}\n\`\`\`\n\n`;
+      }
     } else {
       prompt += `### Working Diff Inspection:\n`;
-      prompt += `Inspect the working diff using \`run_command\` with \`git diff\` (or \`git diff --staged\`).\n\n`;
+      prompt += `Inspect the working diff using \`run_command\` with \`${diffInspectionCmd}\`:\n`;
+      prompt += `\`\`\`bash\n`;
+      prompt += `${diffInspectionCmd}\n`;
+      prompt += `\`\`\`\n\n`;
     }
 
     if (params.userInstructions) {

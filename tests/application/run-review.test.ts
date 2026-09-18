@@ -500,4 +500,32 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual(result.verdict.isChangesRequested(), true);
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
   });
+
+  test('fails closed with CHANGES_REQUESTED when neither review output nor critique report was generated', async () => {
+    // RunReviewUseCase without CritiquePort and without reviewOutput
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      undefined // No CritiquePort
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.verdict.isChangesRequested(), true);
+    assert.strictEqual(
+      result.verdict.summary,
+      'Review failed: Neither Reviewer subagent output nor critique report was generated.'
+    );
+    assert.deepStrictEqual(result.verdict.unfulfilledCriteria, [
+      'Review inspection not performed: neither subagent output nor critique report was provided'
+    ]);
+    assert.deepStrictEqual(result.verdict.remediationGuidance, [
+      'Execute critique CLI or invoke Reviewer subagent to inspect diff against base branch and provide structured review output.'
+    ]);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+  });
 });
