@@ -92,6 +92,36 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.issue, '32');
     });
 
+    test('parses positional issue number: agyloop 77', () => {
+      const parsed = parseArguments(['77']);
+      assert.strictEqual(parsed.command, null);
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number with hash: agyloop #77', () => {
+      const parsed = parseArguments(['#77']);
+      assert.strictEqual(parsed.command, null);
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number after command: agyloop plan 77', () => {
+      const parsed = parseArguments(['plan', '77']);
+      assert.strictEqual(parsed.command, 'plan');
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number after command: agyloop yolo 77', () => {
+      const parsed = parseArguments(['yolo', '77']);
+      assert.strictEqual(parsed.command, 'yolo');
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number before command: agyloop 77 plan', () => {
+      const parsed = parseArguments(['77', 'plan']);
+      assert.strictEqual(parsed.command, 'plan');
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
     test('parses --dry-run and -s / --staged', () => {
       const parsed = parseArguments(['gates', '--staged', '--dry-run']);
       assert.strictEqual(parsed.options.staged, true);
