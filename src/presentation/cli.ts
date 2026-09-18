@@ -38,6 +38,7 @@ import {
   FLAG_NO_WORKTREE,
   FLAG_FORCE,
   FLAG_FORCE_SHORT,
+  REGEX_POSITIONAL_ISSUE_ID,
   PreFlightHaltError,
   MilestoneReleaseError,
   MilestoneSealedError,
@@ -299,18 +300,34 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
   }
 
   if (positional.length > 0) {
-    command = positional[0];
-    if (command === 'transition' && positional.length > 1) {
-      options.stageArg = positional[1].toUpperCase();
-    } else if (command === 'prompt' && positional.length > 1) {
-      options.roleArg = positional[1].toLowerCase();
-    } else if (command === 'worktree') {
-      options.worktreeSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'list';
-      options.worktreeTarget = positional.length > 2 ? positional[2] : null;
-    } else if (command === 'release') {
-      options.phaseBranch = positional.length > 1 ? positional[1] : null;
-    } else if (command === 'critique') {
-      options.critiqueSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'status';
+    let cmdIndex = 0;
+
+    const match0 = positional[0].match(REGEX_POSITIONAL_ISSUE_ID);
+    if (match0) {
+      options.issue = match0[1];
+      cmdIndex = 1;
+    }
+
+    if (cmdIndex < positional.length) {
+      command = positional[cmdIndex];
+
+      if (command === 'transition' && cmdIndex + 1 < positional.length) {
+        options.stageArg = positional[cmdIndex + 1].toUpperCase();
+      } else if (command === 'prompt' && cmdIndex + 1 < positional.length) {
+        options.roleArg = positional[cmdIndex + 1].toLowerCase();
+      } else if (command === 'worktree') {
+        options.worktreeSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'list';
+        options.worktreeTarget = cmdIndex + 2 < positional.length ? positional[cmdIndex + 2] : null;
+      } else if (command === 'release') {
+        options.phaseBranch = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1] : null;
+      } else if (command === 'critique') {
+        options.critiqueSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'status';
+      } else if (cmdIndex + 1 < positional.length) {
+        const matchNext = positional[cmdIndex + 1].match(REGEX_POSITIONAL_ISSUE_ID);
+        if (matchNext) {
+          options.issue = matchNext[1];
+        }
+      }
     }
   }
 
