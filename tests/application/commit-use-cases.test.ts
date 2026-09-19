@@ -496,5 +496,38 @@ new file mode 100644
       assert.strictEqual(worktreeManager.removedWorktreeOptions.workspaceDir, '/mock/repo');
       assert.strictEqual(worktreeManager.removedWorktreeOptions.worktreePath, '/mock/repo/.worktrees/48');
     });
+
+    test('executes defensive git rm --cached after git add -A to untrack symlinks', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git rm --cached -rf .agyloop node_modules artifacts || true'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat(scope): defensive untrack test (#30)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'deadbeef1234\n' };
+
+      const prompter = new MockConfirmationPrompt(true);
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, undefined, prompter);
+
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        scope: 'scope',
+        description: 'defensive untrack test',
+        issueNumber: 30
+      });
+
+      await useCase.execute({ commitMessage: commitMsg });
+
+      // Verify git add -A was called
+      assert.ok(executor.executedCommands.includes('git add -A'));
+
+      // Verify defensive git rm --cached ran after git add -A
+      const addIdx = executor.executedCommands.indexOf('git add -A');
+      const rmIdx = executor.executedCommands.indexOf('git rm --cached -rf .agyloop node_modules artifacts || true');
+      assert.ok(rmIdx !== -1, 'git rm --cached command should have been executed');
+      assert.ok(rmIdx > addIdx, 'git rm --cached should run after git add -A');
+    });
   });
 });

@@ -103,11 +103,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
-   * Automatically adds .worktrees/ to .gitignore if not already present.
+   * Automatically adds .worktrees to .gitignore if not already present.
    */
   public async ensureGitIgnore(options?: EnsureGitIgnoreOptions): Promise<boolean> {
     const workspace = await this.getRepoRoot(options?.workspaceDir);
-    const targetEntry = options?.entry || '.worktrees/';
+    const targetEntry = options?.entry || '.worktrees';
     const gitignorePath = path.join(workspace, '.gitignore');
 
     try {
@@ -196,9 +196,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     const branch = this.resolveTaskBranchName(taskId, slug, options.branchPrefix);
     const worktreePath = await this.resolveTaskWorktreePath(workspace, taskId, options.worktreesDir);
 
-    // 1. Ensure .worktrees/ and .agyloop/ are ignored in root repo
-    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees/' });
-    await this.ensureGitIgnore({ workspaceDir: workspace, entry: `${DEFAULT_STATE_DIR}/` });
+    // 1. Ensure .worktrees and .agyloop are ignored in root repo
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees' });
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: `${DEFAULT_STATE_DIR}` });
 
     // 2. Resolve base branch
     const baseBranch = options.baseBranch || (await this.resolveBaseBranch(workspace));
