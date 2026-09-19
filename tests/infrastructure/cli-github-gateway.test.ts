@@ -148,3 +148,33 @@ describe('CliGitHubGateway findPullRequest', () => {
     assert.strictEqual(pr, null);
   });
 });
+
+describe('CliGitHubGateway fetchIssue', () => {
+  test('invokes gh issue view requesting number,title,body,state,labels', () => {
+    const gateway = new CliGitHubGateway();
+    let capturedCmd = '';
+    gateway.runGh = (cmd: string) => {
+      capturedCmd = cmd;
+      return JSON.stringify({
+        number: 59,
+        title: 'Issue 59 title',
+        body: 'Issue 59 body',
+        state: 'OPEN',
+        labels: [{ name: 'bug' }]
+      });
+    };
+
+    const issue = gateway.fetchIssue(59, { repo: 'ajxcodes/agyloop' });
+    assert.strictEqual(
+      capturedCmd,
+      'issue view 59 --repo ajxcodes/agyloop --json number,title,body,state,labels'
+    );
+    assert.strictEqual(issue?.number, 59);
+    assert.strictEqual(issue?.title, 'Issue 59 title');
+    assert.strictEqual(issue?.body, 'Issue 59 body');
+    assert.strictEqual(issue?.state, 'OPEN');
+    assert.deepStrictEqual(issue?.labels, ['bug']);
+    assert.deepStrictEqual(issue?.comments, []);
+  });
+});
+

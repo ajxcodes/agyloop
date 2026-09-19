@@ -98,7 +98,7 @@ export class CliGitHubGateway implements GitHubGateway {
 
     try {
       const rawJson = this.runGh(
-        `issue view ${issueNumber} ${repoFlag} --json number,title,body,labels,state,comments,milestone`,
+        `issue view ${issueNumber} ${repoFlag} --json number,title,body,state,labels`,
         { cwd: options.cwd }
       );
 
