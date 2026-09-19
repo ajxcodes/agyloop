@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as child_process from 'child_process';
 import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE } from '../domain';
 import { StateRepository } from '../ports';
 
@@ -16,9 +17,50 @@ export class FileStateRepository implements StateRepository {
     if (options.stateFilePath) {
       this.stateFilePath = options.stateFilePath;
     } else {
-      const workspace = options.workspaceDir || process.cwd();
+      const workspace = options.workspaceDir
+        ? path.resolve(options.workspaceDir)
+        : this.discoverWorkspaceRoot(process.cwd());
       this.stateFilePath = path.join(workspace, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
     }
+  }
+
+  /**
+   * Resolves the primary git workspace root.
+   * When inside a linked git worktree or nested subdirectory, this ensures
+   * the canonical root repository is located rather than a localized worktree.
+   */
+  private discoverWorkspaceRoot(cwd: string): string {
+    try {
+      const stdout = child_process.execSync('git worktree list --porcelain', {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      if (stdout) {
+        const firstLine = stdout.trim().split('\n')[0] || '';
+        const match = firstLine.match(/^worktree (.+)$/);
+        if (match && match[1]) {
+          return path.resolve(match[1].trim());
+        }
+      }
+    } catch {
+      // Fall through to git rev-parse
+    }
+
+    try {
+      const stdout = child_process.execSync('git rev-parse --show-toplevel', {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      if (stdout && stdout.trim()) {
+        return path.resolve(stdout.trim());
+      }
+    } catch {
+      // Fall through to cwd
+    }
+
+    return path.resolve(cwd);
   }
 
   public getStateFilePath(): string {

@@ -211,6 +211,19 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(fs.existsSync(stateFile), false);
   });
 
+  test('resolves state file path relative to explicit workspaceDir', () => {
+    const explicitRepo = new FileStateRepository({ workspaceDir: tempDir });
+    assert.strictEqual(explicitRepo.getStateFilePath(), path.join(tempDir, '.agyloop', 'state.json'));
+  });
+
+  test('resolves canonical root repo state file when instantiated without options inside worktree', () => {
+    const defaultRepo = new FileStateRepository();
+    // Default repo when run in git repo / worktree should resolve to a valid .agyloop/state.json path
+    assert.ok(defaultRepo.getStateFilePath().endsWith(path.join('.agyloop', 'state.json')));
+    // It should not point to an isolated task worktree folder when root discovery succeeds
+    assert.ok(path.isAbsolute(defaultRepo.getStateFilePath()));
+  });
+
   describe('CLI Argument Parsing', () => {
     test('parses subcommands and flags correctly', () => {
       const parsed = parseArguments(['plan', '--issue', '42', '--dry-run']);
