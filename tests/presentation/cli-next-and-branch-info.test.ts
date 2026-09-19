@@ -213,5 +213,93 @@ describe('CLI Next & Branch-Info Subcommands', () => {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
+
+    test('runCli next --issue 51 overrides COMPLETED state and outputs DISCOVERY directive', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-override-'));
+      const stateDir = path.join(tempDir, '.agyloop');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'state.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'COMPLETED',
+          mode: 'standard',
+          issue: 40,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          history: []
+        })
+      );
+
+      const prevCwd = process.cwd();
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['next', '--issue', '51', '--json']);
+        assert.strictEqual(exitCode, 0);
+        const parsed = JSON.parse(output.trim());
+        assert.strictEqual(parsed.currentStage, 'DISCOVERY');
+        assert.strictEqual(parsed.nextStage, 'PLAN');
+        assert.strictEqual(parsed.actionType, 'subagent');
+        assert.ok(parsed.invocationPayload.Subagents[0].Prompt.includes('#51'));
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli branch-info auto-infers issue when state.issue is null', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-branch-infer-'));
+      const stateDir = path.join(tempDir, '.agyloop');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'state.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'IMPLEMENT',
+          mode: 'standard',
+          issue: null,
+          worktree: {
+            taskId: '51',
+            worktreePath: path.join(tempDir, '.worktrees', '51'),
+            branch: 'task/51-work',
+            baseBranch: 'main',
+            createdAt: new Date().toISOString()
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          history: []
+        })
+      );
+
+      const prevCwd = process.cwd();
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['branch-info', '--json']);
+        assert.strictEqual(exitCode, 0);
+        const parsed = JSON.parse(output.trim());
+        assert.strictEqual(parsed.taskBranch, 'task/51-work');
+
+        // Verify state.json was persisted with inferred issue 51
+        const rawState = JSON.parse(fs.readFileSync(path.join(stateDir, 'state.json'), 'utf8'));
+        assert.strictEqual(rawState.issue, 51);
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });

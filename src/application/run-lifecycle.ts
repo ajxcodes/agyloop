@@ -21,6 +21,7 @@
 
 import {
   StateMachine,
+  IssueNumber,
   StageName,
   ExecutionMode,
   STAGE_INITIALIZED,
@@ -242,7 +243,7 @@ export class RunLifecycleUseCase {
 
     this.runPreFlightCheckUseCase =
       deps.runPreFlightCheckUseCase ??
-      new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager);
+      new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager, this.stateRepo);
 
     this.inferBaseBranchUseCase =
       deps.inferBaseBranchUseCase ??
@@ -260,8 +261,29 @@ export class RunLifecycleUseCase {
 
     const commitAfter = params.commitAfter ?? config.options.commitAfter ?? false;
 
+    // Auto-infer issue context if not explicitly provided
+    let effectiveIssue =
+      params.issue !== undefined && params.issue !== null && String(params.issue).trim() !== ''
+        ? Number(params.issue)
+        : null;
+
+    if (!effectiveIssue) {
+      let inferred = IssueNumber.inferFromPath(workspace);
+      if (!inferred && this.worktreeManager && this.worktreeManager.resolveBaseBranch) {
+        try {
+          const curBranch = await this.worktreeManager.resolveBaseBranch(workspace);
+          inferred = IssueNumber.inferFromBranch(curBranch);
+        } catch {
+          // Non-fatal
+        }
+      }
+      if (inferred) {
+        effectiveIssue = inferred;
+      }
+    }
+
     // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
-    const activeIssueToCheck = params.issue;
+    const activeIssueToCheck = effectiveIssue;
     if (activeIssueToCheck && !params.dryRun) {
       await this.runPreFlightCheckUseCase.execute({
         issueNumber: activeIssueToCheck,
@@ -313,8 +335,9 @@ export class RunLifecycleUseCase {
       }
     }
 
-    if (params.issue && !isNewIssue && sm.issue !== Number(params.issue)) {
-      sm.setIssue(params.issue);
+    const finalIssue = params.issue ?? effectiveIssue;
+    if (finalIssue && !isNewIssue && sm.issue !== Number(finalIssue)) {
+      sm.setIssue(finalIssue);
       if (!params.dryRun) {
         await this.stateRepo.save(sm.toSnapshot());
       }

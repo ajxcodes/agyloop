@@ -42,7 +42,8 @@ import {
   PreFlightHaltError,
   MilestoneReleaseError,
   MilestoneSealedError,
-  StateMachine
+  StateMachine,
+  IssueNumber
 } from '../domain';
 import {
   FileStateRepository,
@@ -407,10 +408,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         stateRepo,
         configRepo,
         planGenerator,
-        githubGateway
+        githubGateway,
+        undefined,
+        worktreeManager
       );
       const res = await getNextActionUseCase.execute({
-        configPath: options.configPath
+        configPath: options.configPath,
+        issue: options.issue
       });
 
       if (options.json) {
@@ -446,11 +450,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const currentBranch = await worktreeManager.resolveBaseBranch();
       const defaultBranch = 'main';
 
+      let issue = options.issue ? Number(options.issue) : snapshot?.issue || null;
+      if (!issue) {
+        issue =
+          IssueNumber.inferFromPath(snapshot?.worktree?.worktreePath as string | undefined) ??
+          IssueNumber.inferFromPath(process.cwd()) ??
+          IssueNumber.inferFromBranch(currentBranch);
+        if (issue && snapshot && !snapshot.issue) {
+          try {
+            const sm = StateMachine.fromSnapshot(snapshot);
+            sm.setIssue(issue);
+            await stateRepo.save(sm.toSnapshot());
+          } catch {
+            // Non-fatal persistence
+          }
+        }
+      }
+
       let baseBranch = snapshot?.baseBranch || null;
-      if (!baseBranch && snapshot?.issue) {
+      if (!baseBranch && issue) {
         try {
           const infer = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
-          const res = await infer.execute({ issueNumber: snapshot.issue });
+          const res = await infer.execute({ issueNumber: issue });
           baseBranch = res.baseBranch;
         } catch {
           baseBranch = null;
