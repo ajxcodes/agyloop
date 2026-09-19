@@ -12,7 +12,8 @@ import {
   WorktreeCreationError,
   WorktreeCleanupError,
   DEFAULT_WORKTREES_DIR,
-  DEFAULT_TASK_BRANCH_PREFIX
+  DEFAULT_TASK_BRANCH_PREFIX,
+  DEFAULT_STATE_DIR
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -197,7 +198,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     // 1. Ensure .worktrees/ and .agyloop/ are ignored in root repo
     await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees/' });
-    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.agyloop/' });
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: `${DEFAULT_STATE_DIR}/` });
 
     // 2. Resolve base branch
     const baseBranch = options.baseBranch || (await this.resolveBaseBranch(workspace));
@@ -207,8 +208,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const existing = await this.listWorktrees({ workspaceDir: workspace });
       const found = existing.find((wt) => wt.worktreePath === worktreePath);
       if (found) {
-        // Already registered worktree, ensure node_modules and return
+        // Already registered worktree, ensure node_modules, artifacts, and .agyloop, then return
         this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
+        this.linkArtifactsIfPresent(workspace, worktreePath);
+        this.linkAgyloopStateIfPresent(workspace, worktreePath);
         return found;
       }
 
@@ -241,6 +244,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         const existingPath = match ? match[1] : worktreePath;
         this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
         this.linkArtifactsIfPresent(workspace, existingPath);
+        this.linkAgyloopStateIfPresent(workspace, existingPath);
         return new WorktreeDescriptor({
           taskId,
           worktreePath: existingPath,
@@ -267,6 +271,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         const existingPath = match ? match[1] : worktreePath;
         this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
         this.linkArtifactsIfPresent(workspace, existingPath);
+        this.linkAgyloopStateIfPresent(workspace, existingPath);
         return new WorktreeDescriptor({
           taskId,
           worktreePath: existingPath,
@@ -284,9 +289,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       );
     }
 
-    // 6. Build Cache Optimization & Artifacts Mirroring
+    // 6. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
     this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
     this.linkArtifactsIfPresent(workspace, worktreePath);
+    this.linkAgyloopStateIfPresent(workspace, worktreePath);
 
     return new WorktreeDescriptor({
       taskId,
@@ -310,6 +316,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     // Safely remove symlinks before git worktree remove
     this.unlinkSymlink(path.join(worktreePath, 'node_modules'));
     this.unlinkSymlink(path.join(worktreePath, 'artifacts'));
+    this.unlinkSymlink(path.join(worktreePath, DEFAULT_STATE_DIR));
 
     // Execute git worktree remove --force
     const removeRes = await this.commandExecutor.execute(
@@ -595,6 +602,19 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
       if (fs.existsSync(rootArtifacts) && !fs.existsSync(targetArtifacts)) {
         fs.symlinkSync(rootArtifacts, targetArtifacts, 'junction');
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  private linkAgyloopStateIfPresent(workspace: string, worktreePath: string): void {
+    try {
+      const rootAgyloop = path.join(workspace, DEFAULT_STATE_DIR);
+      const targetAgyloop = path.join(worktreePath, DEFAULT_STATE_DIR);
+
+      if (fs.existsSync(rootAgyloop) && !fs.existsSync(targetAgyloop)) {
+        fs.symlinkSync(rootAgyloop, targetAgyloop, 'junction');
       }
     } catch {
       // Non-fatal

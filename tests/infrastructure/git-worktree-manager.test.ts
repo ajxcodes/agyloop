@@ -131,6 +131,53 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.ok(executedCommands.some((c) => c.includes('git worktree add -b "task/87-git-worktree-isolation"')));
   });
 
+  test('createWorktree symlinks .agyloop and artifacts into worktree if present in workspace', async () => {
+    // Setup root .agyloop and artifacts
+    const agyloopDir = path.join(tmpDir, '.agyloop');
+    const artifactsDir = path.join(tmpDir, 'artifacts');
+    fs.mkdirSync(agyloopDir, { recursive: true });
+    fs.writeFileSync(path.join(agyloopDir, 'state.json'), '{"stage":"PLAN"}', 'utf8');
+    fs.mkdirSync(artifactsDir, { recursive: true });
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git worktree add')) {
+          // Simulate git worktree creating the folder
+          const wtPath = path.resolve(tmpDir, '.worktrees', '87');
+          fs.mkdirSync(wtPath, { recursive: true });
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: tmpDir
+    });
+
+    const targetAgyloop = path.join(descriptor.worktreePath, '.agyloop');
+    const targetArtifacts = path.join(descriptor.worktreePath, 'artifacts');
+
+    assert.ok(fs.existsSync(targetAgyloop));
+    assert.ok(fs.lstatSync(targetAgyloop).isSymbolicLink());
+    assert.ok(fs.existsSync(targetArtifacts));
+    assert.ok(fs.lstatSync(targetArtifacts).isSymbolicLink());
+
+    // Also verify removeWorktree unlinks .agyloop cleanly
+    await manager.removeWorktree({
+      worktreePath: descriptor.worktreePath,
+      workspaceDir: tmpDir
+    });
+    assert.strictEqual(fs.existsSync(targetAgyloop), false);
+    // Root .agyloop remains intact
+    assert.ok(fs.existsSync(agyloopDir));
+  });
+
   test('createWorktree handles existing branch by reusing existing branch without -b flag', async () => {
     const executedCommands: string[] = [];
     const mockExecutor: CommandExecutorPort = {
