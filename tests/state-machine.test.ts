@@ -224,6 +224,40 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.ok(path.isAbsolute(defaultRepo.getStateFilePath()));
   });
 
+  test('memoizes workspace root resolution avoiding duplicate child processes for identical cwd', () => {
+    const childProcess = require('child_process');
+    FileStateRepository.clearWorkspaceRootCache();
+
+    let execCallCount = 0;
+    const originalExecSync = childProcess.execSync;
+    childProcess.execSync = function (...args: any[]) {
+      execCallCount++;
+      return originalExecSync.apply(this, args);
+    };
+
+    try {
+      const repo1 = new FileStateRepository();
+      const initialExecCalls = execCallCount;
+      assert.ok(initialExecCalls > 0, 'First instantiation should invoke execSync');
+
+      // Second instantiation should reuse cached root without spawning child processes
+      const repo2 = new FileStateRepository();
+      assert.strictEqual(execCallCount, initialExecCalls, 'Second instantiation should reuse cached workspace root');
+      assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
+    } finally {
+      childProcess.execSync = originalExecSync;
+      FileStateRepository.clearWorkspaceRootCache();
+    }
+  });
+
+  test('clearWorkspaceRootCache invalidates cached workspace root', () => {
+    const repo1 = new FileStateRepository();
+    assert.ok(repo1.getStateFilePath());
+    FileStateRepository.clearWorkspaceRootCache();
+    const repo2 = new FileStateRepository();
+    assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
+  });
+
   describe('CLI Argument Parsing', () => {
     test('parses subcommands and flags correctly', () => {
       const parsed = parseArguments(['plan', '--issue', '42', '--dry-run']);

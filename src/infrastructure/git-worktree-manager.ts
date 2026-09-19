@@ -12,7 +12,8 @@ import {
   WorktreeCreationError,
   WorktreeCleanupError,
   DEFAULT_WORKTREES_DIR,
-  DEFAULT_TASK_BRANCH_PREFIX
+  DEFAULT_TASK_BRANCH_PREFIX,
+  DEFAULT_STATE_DIR
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -197,7 +198,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     // 1. Ensure .worktrees/ and .agyloop/ are ignored in root repo
     await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees/' });
-    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.agyloop/' });
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: `${DEFAULT_STATE_DIR}/` });
 
     // 2. Resolve base branch
     const baseBranch = options.baseBranch || (await this.resolveBaseBranch(workspace));
@@ -315,7 +316,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     // Safely remove symlinks before git worktree remove
     this.unlinkSymlink(path.join(worktreePath, 'node_modules'));
     this.unlinkSymlink(path.join(worktreePath, 'artifacts'));
-    this.unlinkSymlink(path.join(worktreePath, '.agyloop'));
+    this.unlinkSymlink(path.join(worktreePath, DEFAULT_STATE_DIR));
 
     // Execute git worktree remove --force
     const removeRes = await this.commandExecutor.execute(
@@ -609,8 +610,8 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
   private linkAgyloopStateIfPresent(workspace: string, worktreePath: string): void {
     try {
-      const rootAgyloop = path.join(workspace, '.agyloop');
-      const targetAgyloop = path.join(worktreePath, '.agyloop');
+      const rootAgyloop = path.join(workspace, DEFAULT_STATE_DIR);
+      const targetAgyloop = path.join(worktreePath, DEFAULT_STATE_DIR);
 
       if (fs.existsSync(rootAgyloop) && !fs.existsSync(targetAgyloop)) {
         fs.symlinkSync(rootAgyloop, targetAgyloop, 'junction');

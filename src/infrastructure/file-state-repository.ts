@@ -11,6 +11,7 @@ import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STA
 import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
+  private static readonly workspaceRootCache = new Map<string, string>();
   private readonly stateFilePath: string;
 
   constructor(options: { workspaceDir?: string; stateFilePath?: string } = {}) {
@@ -25,14 +26,22 @@ export class FileStateRepository implements StateRepository {
   }
 
   /**
-   * Resolves the primary git workspace root.
+   * Resolves the primary git workspace root with memoization by cwd.
    * When inside a linked git worktree or nested subdirectory, this ensures
    * the canonical root repository is located rather than a localized worktree.
    */
   private discoverWorkspaceRoot(cwd: string): string {
+    const resolvedCwd = path.resolve(cwd);
+    const cached = FileStateRepository.workspaceRootCache.get(resolvedCwd);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let discoveredRoot = resolvedCwd;
+
     try {
       const stdout = child_process.execSync('git worktree list --porcelain', {
-        cwd,
+        cwd: resolvedCwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore']
       });
@@ -40,7 +49,9 @@ export class FileStateRepository implements StateRepository {
         const firstLine = stdout.trim().split('\n')[0] || '';
         const match = firstLine.match(/^worktree (.+)$/);
         if (match && match[1]) {
-          return path.resolve(match[1].trim());
+          discoveredRoot = path.resolve(match[1].trim());
+          FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+          return discoveredRoot;
         }
       }
     } catch {
@@ -49,18 +60,28 @@ export class FileStateRepository implements StateRepository {
 
     try {
       const stdout = child_process.execSync('git rev-parse --show-toplevel', {
-        cwd,
+        cwd: resolvedCwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore']
       });
       if (stdout && stdout.trim()) {
-        return path.resolve(stdout.trim());
+        discoveredRoot = path.resolve(stdout.trim());
+        FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+        return discoveredRoot;
       }
     } catch {
       // Fall through to cwd
     }
 
-    return path.resolve(cwd);
+    FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+    return discoveredRoot;
+  }
+
+  /**
+   * Clears the static workspace root cache (useful for testing or cache invalidation).
+   */
+  public static clearWorkspaceRootCache(): void {
+    FileStateRepository.workspaceRootCache.clear();
   }
 
   public getStateFilePath(): string {
