@@ -15,9 +15,11 @@ import {
   PreFlightHaltError,
   PREFLIGHT_ACTION_HALT,
   PREFLIGHT_ACTION_RESUME,
-  PREFLIGHT_ACTION_PROCEED
+  PREFLIGHT_ACTION_PROCEED,
+  IssueNumber,
+  StateMachine
 } from '../domain';
-import { GitHubGateway, WorktreeManagerPort } from '../ports';
+import { GitHubGateway, WorktreeManagerPort, StateRepository } from '../ports';
 
 export interface RunPreFlightCheckParams {
   readonly issueNumber?: number | string | null;
@@ -28,14 +30,51 @@ export interface RunPreFlightCheckParams {
 export class RunPreFlightCheckUseCase {
   private readonly githubGateway?: GitHubGateway;
   private readonly worktreeManager?: WorktreeManagerPort;
+  private readonly stateRepo?: StateRepository;
 
-  constructor(githubGateway?: GitHubGateway, worktreeManager?: WorktreeManagerPort) {
+  constructor(
+    githubGateway?: GitHubGateway,
+    worktreeManager?: WorktreeManagerPort,
+    stateRepo?: StateRepository
+  ) {
     this.githubGateway = githubGateway;
     this.worktreeManager = worktreeManager;
+    this.stateRepo = stateRepo;
   }
 
   public async execute(params: RunPreFlightCheckParams = {}): Promise<PreFlightCheckResult> {
-    const rawIssue = params.issueNumber;
+    let rawIssue = params.issueNumber;
+    const cwd = params.workspaceDir || process.cwd();
+
+    // Context auto-inference if issue is null/undefined
+    if (rawIssue === null || rawIssue === undefined || String(rawIssue).trim() === '') {
+      let inferred = IssueNumber.inferFromPath(cwd);
+      if (!inferred && this.worktreeManager && this.worktreeManager.resolveBaseBranch) {
+        try {
+          const currentBranch = await this.worktreeManager.resolveBaseBranch(cwd);
+          inferred = IssueNumber.inferFromBranch(currentBranch);
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      if (inferred) {
+        rawIssue = inferred;
+        if (this.stateRepo) {
+          try {
+            const snapshot = await this.stateRepo.load();
+            if (snapshot && !snapshot.issue) {
+              const sm = StateMachine.fromSnapshot(snapshot);
+              sm.setIssue(inferred);
+              await this.stateRepo.save(sm.toSnapshot());
+            }
+          } catch {
+            // Non-fatal persistence
+          }
+        }
+      }
+    }
+
     if (rawIssue === null || rawIssue === undefined || String(rawIssue).trim() === '') {
       return PreFlightCheckEngine.evaluate({
         issueNumber: null
@@ -44,7 +83,6 @@ export class RunPreFlightCheckUseCase {
 
     const issueId = String(rawIssue).trim();
     const issueNum = Number(issueId);
-    const cwd = params.workspaceDir || process.cwd();
 
     let issueState: string | null = null;
 

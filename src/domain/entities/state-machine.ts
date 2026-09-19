@@ -209,6 +209,26 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  public inferIssue(context?: {
+    cwd?: string | null;
+    branch?: string | null;
+    worktreePath?: string | null;
+  }): number | null {
+    if (this._issue) {
+      return this._issue.value;
+    }
+    const inferred = IssueNumber.inferFromContext({
+      worktreePath: this._worktree?.worktreePath ?? context?.worktreePath,
+      cwd: context?.cwd,
+      branch: this._worktree?.branch ?? context?.branch
+    });
+    if (inferred !== null) {
+      this.setIssue(inferred);
+      return inferred;
+    }
+    return null;
+  }
+
   public setBaseBranch(baseBranch: string | null | undefined): void {
     this._baseBranch = baseBranch && baseBranch.trim() ? baseBranch.trim() : null;
     this._updatedAt = new Date().toISOString();
@@ -322,9 +342,18 @@ export class StateMachine {
 
     const stage = new Stage(snapshot.currentStage);
     const mode = snapshot.mode || MODE_STANDARD;
-    const issue = IssueNumber.tryFrom(snapshot.issue);
-    const baseBranch = snapshot.baseBranch || null;
     const worktree = snapshot.worktree ? WorktreeDescriptor.fromJSON(snapshot.worktree) : null;
+    let issue = IssueNumber.tryFrom(snapshot.issue);
+    if (!issue && worktree) {
+      const inferred = IssueNumber.inferFromContext({
+        worktreePath: worktree.worktreePath,
+        branch: worktree.branch
+      });
+      if (inferred !== null) {
+        issue = IssueNumber.tryFrom(inferred);
+      }
+    }
+    const baseBranch = snapshot.baseBranch || null;
 
     return new StateMachine({
       stage,

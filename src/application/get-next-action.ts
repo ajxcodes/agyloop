@@ -27,19 +27,22 @@ import {
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
-  MODE_YOLO
+  MODE_YOLO,
+  IssueNumber
 } from '../domain';
 import {
   StateRepository,
   ConfigRepository,
   PlanGeneratorPort,
-  GitHubGateway
+  GitHubGateway,
+  WorktreeManagerPort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 
 export interface GetNextActionParams {
   readonly workspaceDir?: string;
   readonly configPath?: string | null;
+  readonly issue?: number | string | null;
 }
 
 export interface SubagentInvocationItem {
@@ -74,13 +77,15 @@ export class GetNextActionUseCase {
   private readonly planGenerator?: PlanGeneratorPort;
   private readonly githubGateway?: GitHubGateway;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  private readonly worktreeManager?: WorktreeManagerPort;
 
   constructor(
     stateRepo: StateRepository,
     configRepo: ConfigRepository,
     planGenerator?: PlanGeneratorPort,
     githubGateway?: GitHubGateway,
-    resolveSubagentUseCase?: ResolveSubagentUseCase
+    resolveSubagentUseCase?: ResolveSubagentUseCase,
+    worktreeManager?: WorktreeManagerPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -88,6 +93,7 @@ export class GetNextActionUseCase {
     this.githubGateway = githubGateway;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
+    this.worktreeManager = worktreeManager;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -100,7 +106,59 @@ export class GetNextActionUseCase {
       cwd
     });
 
-    const activeIssue = sm.issue;
+    // Context resolution: explicit issue -> state.issue -> auto-inferred issue
+    const explicitIssue = IssueNumber.tryFrom(params.issue)?.value ?? null;
+    let inferredIssue: number | null = null;
+
+    if (!explicitIssue && !sm.issue) {
+      inferredIssue =
+        IssueNumber.inferFromPath(sm.worktree?.worktreePath as string | undefined) ??
+        IssueNumber.inferFromPath(cwd);
+      if (!inferredIssue && sm.worktree?.branch) {
+        inferredIssue = IssueNumber.inferFromBranch(sm.worktree.branch);
+      }
+      if (!inferredIssue && this.worktreeManager && this.worktreeManager.resolveBaseBranch) {
+        try {
+          const currentBranch = await this.worktreeManager.resolveBaseBranch(cwd);
+          inferredIssue = IssueNumber.inferFromBranch(currentBranch);
+        } catch {
+          // Non-fatal
+        }
+      }
+      if (inferredIssue) {
+        sm.setIssue(inferredIssue);
+        await this.stateRepo.save(sm.toSnapshot());
+      }
+    }
+
+    let activeIssue = explicitIssue ?? sm.issue ?? inferredIssue;
+
+    // Explicit flag ingestion / lifecycle initialization & resume:
+    // When explicit --issue <id> is provided:
+    // If state is COMPLETED or INITIALIZED with a different (or null) issue (or explicit override):
+    const isExplicit = explicitIssue !== null;
+    const shouldInitializeOrResume =
+      (isExplicit && (sm.currentStage === STAGE_COMPLETED || sm.currentStage === STAGE_INITIALIZED)) ||
+      (!isExplicit && inferredIssue !== null && sm.currentStage === STAGE_COMPLETED);
+
+    if (activeIssue && shouldInitializeOrResume) {
+      sm.reset(sm.mode, activeIssue);
+      const existingPlan = this.planGenerator?.resolvePlanFile({
+        projectRoot: cwd,
+        issue: activeIssue
+      });
+      if (existingPlan) {
+        sm.transition(STAGE_PLAN, { note: `Resumed planning for issue #${activeIssue}` });
+      } else {
+        sm.transition(STAGE_DISCOVERY, { note: `Initialized discovery for issue #${activeIssue}` });
+      }
+      await this.stateRepo.save(sm.toSnapshot());
+    } else if (isExplicit && sm.issue !== explicitIssue) {
+      sm.setIssue(explicitIssue);
+      await this.stateRepo.save(sm.toSnapshot());
+    }
+
+    activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
     const taskBranch = sm.worktree?.branch || null;
     const baseBranch = sm.baseBranch || 'main';

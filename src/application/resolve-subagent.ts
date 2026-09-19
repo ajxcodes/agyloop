@@ -39,7 +39,8 @@ import {
   DIFF_EXCLUDED_PATTERNS,
   DIFF_EXCLUDE_ARGS,
   MAX_INLINE_DIFF_LINES,
-  DiffAnalyzer
+  DiffAnalyzer,
+  IssueNumber
 } from '../domain';
 
 export {
@@ -358,18 +359,28 @@ export class ResolveSubagentUseCase {
     const repo = params.repo || resolvedRepo;
     let issueContextBlock = '';
 
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
     if (params.issueData) {
       issueContextBlock = formatIssueForPrompt(params.issueData);
-    } else if (params.issueNumber && this.githubGateway) {
-      const issueVo = parseInt(String(params.issueNumber), 10);
-      if (!isNaN(issueVo)) {
-        const fetched = this.githubGateway.fetchIssue(issueVo, {
-          repo,
-          cwd: workspaceDir
-        });
-        if (fetched && !(fetched instanceof Promise)) {
-          issueContextBlock = formatIssueForPrompt(fetched);
+    } else if (effectiveIssue) {
+      if (this.githubGateway) {
+        const issueVo = parseInt(String(effectiveIssue), 10);
+        if (!isNaN(issueVo)) {
+          const fetched = this.githubGateway.fetchIssue(issueVo, {
+            repo,
+            cwd: workspaceDir
+          });
+          if (fetched && !(fetched instanceof Promise)) {
+            issueContextBlock = formatIssueForPrompt(fetched);
+          }
         }
+      }
+      if (!issueContextBlock) {
+        issueContextBlock = `### Active Issue: #${effectiveIssue}`;
       }
     }
 
@@ -429,9 +440,14 @@ export class ResolveSubagentUseCase {
       prompt += `### Execution Workspace / Worktree:\n**Working Directory**: \`${params.workspaceDir}\`\n\n`;
     }
 
-    if (params.issueNumber) {
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
       if (params.issueTitle || params.issueBody) {
-        prompt += `### Issue Context (#${params.issueNumber}):\n`;
+        prompt += `### Issue Context (#${effectiveIssue}):\n`;
         if (params.issueTitle) {
           prompt += `**Title**: ${params.issueTitle}\n`;
         }
@@ -443,7 +459,7 @@ export class ResolveSubagentUseCase {
       } else {
         let fetchedFormatted = '';
         if (this.githubGateway) {
-          const issueVo = parseInt(String(params.issueNumber), 10);
+          const issueVo = parseInt(String(effectiveIssue), 10);
           if (!isNaN(issueVo)) {
             const workspaceDir = params.workspaceDir || process.cwd();
             const currentRepo = this.githubGateway.getCurrentRepo(workspaceDir);
@@ -461,7 +477,7 @@ export class ResolveSubagentUseCase {
         if (fetchedFormatted) {
           prompt += `${fetchedFormatted}\n\n`;
         } else {
-          prompt += `### Issue Context (#${params.issueNumber}):\n\n`;
+          prompt += `### Issue Context (#${effectiveIssue}):\n\n`;
         }
       }
     }
@@ -526,8 +542,13 @@ export class ResolveSubagentUseCase {
     prompt += `2. **Log Shielding Mandate**: Do not flood the parent conversation with raw terminal output. Filter noise and extract concise failure summaries.\n`;
     prompt += `3. **Strict Timeout & Exit Code Respect**: Any non-zero exit code or timeout is an immediate gate failure.\n\n`;
 
-    if (params.issueNumber) {
-      prompt += `### Active Issue: #${params.issueNumber}\n\n`;
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
+      prompt += `### Active Issue: #${effectiveIssue}\n\n`;
     }
 
     if (params.commands && params.commands.length > 0) {
@@ -577,9 +598,14 @@ export class ResolveSubagentUseCase {
     prompt += `2. **Tier 2 (Manual Diff & Standards Inspection)**: Independently inspect working diff against Acceptance Criteria and repository standards (\`.github/critique.md\`, zero magic numbers/strings, clean architecture).\n`;
     prompt += `3. **Consolidated Verdict**: Cross-reference both tiers into the structured verdict block (\`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\`).\n\n`;
 
-    if (params.issueNumber) {
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
       if (params.issueTitle || params.issueBody) {
-        prompt += `### Active Issue: #${params.issueNumber}\n`;
+        prompt += `### Active Issue: #${effectiveIssue}\n`;
         if (params.issueTitle) {
           prompt += `**Title**: ${params.issueTitle}\n`;
         }
@@ -591,7 +617,7 @@ export class ResolveSubagentUseCase {
       } else {
         let fetchedFormatted = '';
         if (this.githubGateway) {
-          const issueVo = parseInt(String(params.issueNumber), 10);
+          const issueVo = parseInt(String(effectiveIssue), 10);
           if (!isNaN(issueVo)) {
             const workspaceDir = params.workspaceDir || process.cwd();
             const currentRepo = this.githubGateway.getCurrentRepo(workspaceDir);
@@ -609,7 +635,7 @@ export class ResolveSubagentUseCase {
         if (fetchedFormatted) {
           prompt += `${fetchedFormatted}\n\n`;
         } else {
-          prompt += `### Active Issue: #${params.issueNumber}\n\n`;
+          prompt += `### Active Issue: #${effectiveIssue}\n\n`;
         }
       }
     }

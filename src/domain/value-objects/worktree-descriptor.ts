@@ -136,8 +136,12 @@ export class WorktreeDescriptor {
     if (!json || typeof json !== 'object') {
       throw new ValidationError('worktree', json, 'WorktreeDescriptor json must be an object.');
     }
+    const pathStr = typeof json.worktreePath === 'string' ? json.worktreePath : '';
+    const match = pathStr.match(/\.worktrees[/\\](\d+)(?:[/\\]|$)/);
+    const inferredId = match && match[1] ? match[1] : 'adhoc';
+
     return new WorktreeDescriptor({
-      taskId: json.taskId,
+      taskId: json.taskId !== undefined && json.taskId !== null && json.taskId !== '' ? json.taskId : inferredId,
       worktreePath: json.worktreePath,
       branch: json.branch,
       baseBranch: json.baseBranch,
