@@ -238,6 +238,8 @@ export class ExecuteCommitUseCase {
           addRes.stderr || addRes.stdout || 'Failed to stage working changes.'
         );
       }
+      // Defensive untrack: remove any accidentally staged symlinks (.agyloop, node_modules, artifacts)
+      await this.commandExecutor.execute('git rm --cached -rf .agyloop node_modules artifacts || true', { cwd });
     }
 
     // Execute git commit

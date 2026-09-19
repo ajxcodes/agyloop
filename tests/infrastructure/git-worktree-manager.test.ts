@@ -47,16 +47,16 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.strictEqual(branch, 'task/87-git-worktree-isolation');
   });
 
-  test('ensureGitIgnore creates .gitignore with .worktrees/ when missing', async () => {
+  test('ensureGitIgnore creates .gitignore with .worktrees when missing', async () => {
     const manager = new GitWorktreeManager();
     const created = await manager.ensureGitIgnore({ workspaceDir: tmpDir });
     assert.strictEqual(created, true);
 
     const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
-    assert.ok(content.includes('.worktrees/'));
+    assert.ok(content.includes('.worktrees'));
   });
 
-  test('ensureGitIgnore appends .worktrees/ when .gitignore exists but lacks it', async () => {
+  test('ensureGitIgnore appends .worktrees when .gitignore exists but lacks it', async () => {
     fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\ndist/\n', 'utf8');
     const manager = new GitWorktreeManager();
     const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir });
@@ -64,11 +64,11 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
     const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
     assert.ok(content.includes('node_modules/'));
-    assert.ok(content.includes('.worktrees/'));
+    assert.ok(content.includes('.worktrees'));
   });
 
-  test('ensureGitIgnore returns false and does not duplicate if .worktrees/ already present', async () => {
-    fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n.worktrees/\n', 'utf8');
+  test('ensureGitIgnore returns false and does not duplicate if .worktrees already present', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n.worktrees\n', 'utf8');
     const manager = new GitWorktreeManager();
     const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir });
     assert.strictEqual(modified, false);
@@ -125,7 +125,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
     // Verify .gitignore updated
     assert.ok(fs.existsSync(path.join(tmpDir, '.gitignore')));
-    assert.ok(fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8').includes('.worktrees/'));
+    assert.ok(fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8').includes('.worktrees'));
 
     // Verify command was executed
     assert.ok(executedCommands.some((c) => c.includes('git worktree add -b "task/87-git-worktree-isolation"')));
