@@ -95,7 +95,7 @@ export class DiffAnalyzer {
         continue;
       }
       let file = '';
-      const match = trimmed.match(/diff --git a\/(.+?) b\/(.+?)(?:\r?\n|$)/);
+      const match = trimmed.match(/^diff --git a\/(.+?) b\/(.+?)(?:\r?\n|$)/m);
       if (match) {
         file = match[2]?.trim() || match[1]?.trim() || '';
       } else {
@@ -175,7 +175,7 @@ export class DiffAnalyzer {
     }
 
     const files = new Set<string>();
-    const matches = diffText.matchAll(/diff --git a\/(.+?) b\/(.+?)(?:\r?\n|$)/g);
+    const matches = diffText.matchAll(/^diff --git a\/(.+?) b\/(.+?)(?:\r?\n|$)/gm);
     for (const match of matches) {
       const file = (match[2] || match[1] || '').trim();
       if (file) {

@@ -49,6 +49,21 @@ describe('DiffAnalyzer Domain Service', () => {
     assert.ok(files.includes('src/application/run-review.ts'));
   });
 
+  test('ignores diff --git strings embedded inside modified file hunks', () => {
+    const diffWithEmbeddedDiff = `diff --git a/src/test.ts b/src/test.ts
+--- a/src/test.ts
++++ b/src/test.ts
+@@ -1,3 +1,5 @@
++const mockDiff = \`diff --git a/spurious.ts b/spurious.ts
++--- a/spurious.ts
+++++ b/spurious.ts\`
+`;
+    const files = DiffAnalyzer.extractModifiedFiles(diffWithEmbeddedDiff);
+    assert.strictEqual(files.length, 1);
+    assert.ok(files.includes('src/test.ts'));
+    assert.ok(!files.includes('spurious.ts'), 'Should not extract spurious.ts from hunk');
+  });
+
   test('calculates additions and deletions correctly', () => {
     const { additions, deletions } = DiffAnalyzer.calculateMetrics(SAMPLE_DIFF_SRC);
     assert.ok(additions > 0);
