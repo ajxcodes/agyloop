@@ -162,6 +162,12 @@ export const TOOL_WRITE_TO_FILE = 'write_to_file' as const;
 export const TOOL_REPLACE_FILE_CONTENT = 'replace_file_content' as const;
 export const TOOL_RUN_COMMAND = 'run_command' as const;
 
+export const PLANNER_TOOLS = Object.freeze([
+  ...READ_ONLY_TOOLS,
+  TOOL_WRITE_TO_FILE,
+  TOOL_REPLACE_FILE_CONTENT
+] as const);
+
 export const FORBIDDEN_WRITE_TOOLS = Object.freeze([
   TOOL_WRITE_TO_FILE,
   TOOL_REPLACE_FILE_CONTENT,
@@ -663,9 +669,10 @@ Your primary purpose is deep codebase inspection, comprehensive root-cause analy
 
 ## 1. Absolute Read-Only Mandate & Safety Invariants
 
-1. **Zero Source Code Modifications**:
-   - You are equipped exclusively with inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, and \`list_dir\`.
-   - You are physically and procedurally restricted from mutating workspace files or running write/build/execute commands.
+1. **Scoped File Modifications (Plans Only)**:
+   - You are equipped with inspection tools (\`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`) and limited write tools (\`write_to_file\`, \`replace_file_content\`).
+   - You are physically and procedurally restricted from mutating workspace source code files or running build/execute commands.
+   - You MUST ONLY use write tools to populate the technical specification inside the \`artifacts/plans/\` directory.
    - Never attempt to edit, rewrite, or delete workspace source files.
    - You do not write implementation code; your sole product is exhaustive, actionable architectural plans.
 

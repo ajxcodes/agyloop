@@ -153,10 +153,12 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.invocationPayload.Subagents.length, 1);
 
     const sub = result.invocationPayload.Subagents[0];
-    assert.strictEqual(sub.TypeName, 'research');
+    assert.strictEqual(sub.TypeName, 'self');
     assert.strictEqual(sub.Role, ROLE_TITLE_PLANNER);
     assert.strictEqual(sub.Model, 'pro');
     assert.strictEqual(sub.Workspace, 'share');
+    assert.ok(result.description.includes('scoped write tools'));
+    assert.ok(result.humanSummary.includes('scoped write tools'));
   });
 
   test('returns human approval gate for STAGE_PLAN in standard mode', async () => {

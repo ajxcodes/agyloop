@@ -304,7 +304,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
 
     const def = resolveUseCase.execute({ role: 'planner' });
     assert.strictEqual(def.name, 'planner');
-    assert.strictEqual(def.capabilities.enable_write_tools, false);
+    assert.strictEqual(def.capabilities.enable_write_tools, true);
     assert.strictEqual(def.capabilities.enable_subagent_tools, false);
     assert.strictEqual(def.tools.includes('view_file'), true);
     assert.strictEqual(def.tools.includes('run_command'), false);

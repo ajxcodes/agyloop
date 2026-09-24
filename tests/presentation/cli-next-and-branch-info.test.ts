@@ -114,7 +114,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
         assert.strictEqual(parsed.nextStage, 'PLAN');
         assert.strictEqual(parsed.actionType, 'subagent');
         assert.ok(parsed.invocationPayload);
-        assert.strictEqual(parsed.invocationPayload.Subagents[0].TypeName, 'research');
+        assert.strictEqual(parsed.invocationPayload.Subagents[0].TypeName, 'self');
       } finally {
         process.chdir(prevCwd);
         console.log = originalLog;

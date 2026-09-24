@@ -219,7 +219,7 @@ export class GetNextActionUseCase {
         const invocationPayload: SubagentInvocationPayload = {
           Subagents: [
             {
-              TypeName: 'research',
+              TypeName: 'self',
               Role: ROLE_TITLE_PLANNER,
               Model: subagent.model,
               Workspace: 'share',
@@ -234,12 +234,12 @@ export class GetNextActionUseCase {
           actionType: 'subagent',
           role: ROLE_PLANNER,
           title: 'Invoke Planning Architect Subagent',
-          description: 'Generate architectural plan and specifications in artifacts/plans/ with physical write suppression.',
+          description: 'Generate architectural plan and specifications in artifacts/plans/ with scoped write tools.',
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (read-only tools).`
+          humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (scoped write tools).`
         };
       }
 
