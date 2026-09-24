@@ -613,8 +613,50 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const rootAgyloop = path.join(workspace, DEFAULT_STATE_DIR);
       const targetAgyloop = path.join(worktreePath, DEFAULT_STATE_DIR);
 
-      if (fs.existsSync(rootAgyloop) && !fs.existsSync(targetAgyloop)) {
-        fs.symlinkSync(rootAgyloop, targetAgyloop, 'junction');
+      // AFTER: Guard self-referential symlinks when root and target are identical
+      const resolvedRoot = path.resolve(rootAgyloop);
+      const resolvedTarget = path.resolve(targetAgyloop);
+
+      if (resolvedRoot === resolvedTarget) {
+        // We are at root / no worktree active: ensure it's a real directory
+        // If it's already a symlink (e.g. pre-existing self-referential or broken symlink),
+        // fs.existsSync returns false and fs.mkdirSync throws ELOOP unless unlinked.
+        try {
+          if (fs.lstatSync(resolvedTarget).isSymbolicLink()) {
+            fs.unlinkSync(resolvedTarget);
+          }
+        } catch {
+          // Entry doesn't exist, proceed
+        }
+
+        if (!fs.existsSync(resolvedTarget)) {
+          fs.mkdirSync(resolvedTarget, { recursive: true });
+        }
+      } else {
+        // Ensure root .agyloop exists before symlinking
+        if (!fs.existsSync(resolvedRoot)) {
+          fs.mkdirSync(resolvedRoot, { recursive: true });
+        }
+
+        // In a worktree: safely link target -> root
+        if (!fs.existsSync(targetAgyloop)) {
+          // If a broken or leftover symlink exists, unlink it first
+          try {
+            if (fs.lstatSync(targetAgyloop).isSymbolicLink()) {
+              fs.unlinkSync(targetAgyloop);
+            }
+          } catch {
+            // Path doesn't exist, proceed
+          }
+
+          // Ensure parent directory exists before symlinking
+          const parentDir = path.dirname(targetAgyloop);
+          if (!fs.existsSync(parentDir)) {
+            fs.mkdirSync(parentDir, { recursive: true });
+          }
+
+          fs.symlinkSync(rootAgyloop, targetAgyloop, process.platform === 'win32' ? 'junction' : 'dir');
+        }
       }
     } catch {
       // Non-fatal

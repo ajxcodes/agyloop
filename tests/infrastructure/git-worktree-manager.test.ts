@@ -387,4 +387,118 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       )
     );
   });
+
+  test('createWorktree creates real .agyloop directory instead of symlink when resolvedRoot === resolvedTarget', async () => {
+    const existingWorktreePath = path.resolve(tmpDir, '.worktrees', '87');
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `fatal: 'task/87' is already checked out at '${existingWorktreePath}'`,
+            combinedOutput: `fatal: 'task/87' is already checked out at '${existingWorktreePath}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    // Invoke createWorktree pointing workspaceDir to existingWorktreePath so workspace and worktreePath match
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: existingWorktreePath,
+      worktreesDir: existingWorktreePath
+    });
+
+    const agyloopPath = path.join(descriptor.worktreePath, '.agyloop');
+    assert.ok(fs.existsSync(agyloopPath));
+    const stat = fs.lstatSync(agyloopPath);
+    assert.strictEqual(stat.isDirectory(), true);
+    assert.strictEqual(stat.isSymbolicLink(), false);
+  });
+
+  test('createWorktree heals pre-existing self-referential symlink into a real directory', async () => {
+    const targetDir = path.resolve(tmpDir, 'repo-root');
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    // Intentionally create a self-referential / cyclic symlink: .agyloop -> .agyloop
+    const cyclicSymlinkPath = path.join(targetDir, '.agyloop');
+    fs.symlinkSync(cyclicSymlinkPath, cyclicSymlinkPath);
+    assert.ok(fs.lstatSync(cyclicSymlinkPath).isSymbolicLink());
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `fatal: 'task/87' is already checked out at '${targetDir}'`,
+            combinedOutput: `fatal: 'task/87' is already checked out at '${targetDir}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: targetDir,
+      worktreesDir: targetDir
+    });
+
+    assert.strictEqual(descriptor.worktreePath, targetDir);
+    const healedStat = fs.lstatSync(cyclicSymlinkPath);
+    assert.strictEqual(healedStat.isDirectory(), true);
+    assert.strictEqual(healedStat.isSymbolicLink(), false);
+  });
+
+  test('createWorktree creates symlink pointing to root .agyloop when in isolated worktree', async () => {
+    const rootRepo = path.resolve(tmpDir, 'primary-root');
+    fs.mkdirSync(rootRepo, { recursive: true });
+    const rootAgyloop = path.join(rootRepo, '.agyloop');
+
+    const wtPath = path.resolve(rootRepo, '.worktrees', '87');
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --show-toplevel')) {
+          return makeResult(cmd, { stdout: `${rootRepo}\n` });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git worktree add')) {
+          fs.mkdirSync(wtPath, { recursive: true });
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: rootRepo
+    });
+
+    assert.strictEqual(descriptor.worktreePath, wtPath);
+
+    // Verify root .agyloop exists as directory
+    assert.ok(fs.existsSync(rootAgyloop));
+    assert.strictEqual(fs.lstatSync(rootAgyloop).isDirectory(), true);
+
+    // Verify target in worktree is a symlink pointing to root
+    const wtAgyloop = path.join(wtPath, '.agyloop');
+    assert.ok(fs.existsSync(wtAgyloop));
+    const wtStat = fs.lstatSync(wtAgyloop);
+    assert.strictEqual(wtStat.isSymbolicLink(), true);
+    assert.strictEqual(fs.realpathSync(wtAgyloop), fs.realpathSync(rootAgyloop));
+  });
 });
