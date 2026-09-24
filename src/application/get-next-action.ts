@@ -35,7 +35,8 @@ import {
   ConfigRepository,
   PlanGeneratorPort,
   GitHubGateway,
-  WorktreeManagerPort
+  WorktreeManagerPort,
+  BuildDetectorPort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 
@@ -78,6 +79,7 @@ export class GetNextActionUseCase {
   private readonly githubGateway?: GitHubGateway;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
   private readonly worktreeManager?: WorktreeManagerPort;
+  private readonly buildDetector?: BuildDetectorPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -85,7 +87,8 @@ export class GetNextActionUseCase {
     planGenerator?: PlanGeneratorPort,
     githubGateway?: GitHubGateway,
     resolveSubagentUseCase?: ResolveSubagentUseCase,
-    worktreeManager?: WorktreeManagerPort
+    worktreeManager?: WorktreeManagerPort,
+    buildDetector?: BuildDetectorPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -94,6 +97,7 @@ export class GetNextActionUseCase {
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
     this.worktreeManager = worktreeManager;
+    this.buildDetector = buildDetector;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -266,10 +270,17 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
+        let commands: string[] | undefined;
+        if (this.buildDetector) {
+          const resolvedCommands = await this.buildDetector.resolveCommands(worktreePath || cwd, config);
+          commands = resolvedCommands.map(c => c.command);
+        }
+
         const prompt = this.resolveSubagentUseCase.buildGateTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: worktreePath || cwd,
-          config
+          config,
+          commands
         });
 
         const invocationPayload: SubagentInvocationPayload = {

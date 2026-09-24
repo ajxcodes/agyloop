@@ -410,7 +410,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         planGenerator,
         githubGateway,
         undefined,
-        worktreeManager
+        worktreeManager,
+        buildDetector
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,

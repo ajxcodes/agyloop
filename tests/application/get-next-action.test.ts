@@ -22,15 +22,19 @@ const {
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
-  ROLE_TITLE_REVIEWER
+  ROLE_TITLE_REVIEWER,
+  Ecosystem,
+  ECOSYSTEM_NODE
 } = require('../../dist/domain');
 
 import type {
   StateRepository,
   ConfigRepository,
-  AgyLoopConfig
+  AgyLoopConfig,
+  BuildDetectorPort,
+  DetectedProject
 } from '../../src/ports';
-import type { StateMachineSnapshot } from '../../src/domain';
+import type { StateMachineSnapshot, GateCommandDefinition } from '../../src/domain';
 
 class MockStateRepo implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
@@ -53,6 +57,28 @@ class MockStateRepo implements StateRepository {
 
   getStateFilePath(): string {
     return '/repo/.agyloop/state.json';
+  }
+}
+
+class MockBuildDetector implements BuildDetectorPort {
+  private readonly commands: readonly GateCommandDefinition[];
+
+  constructor(commands: readonly GateCommandDefinition[] = []) {
+    this.commands = commands;
+  }
+
+  async detect(workspaceDir: string): Promise<DetectedProject> {
+    return {
+      workspaceDir,
+      ecosystems: [],
+      primaryEcosystem: new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'], packageManager: 'npm' }),
+      commands: this.commands,
+      hasOverrides: false
+    };
+  }
+
+  async resolveCommands(): Promise<readonly GateCommandDefinition[]> {
+    return this.commands;
   }
 }
 
@@ -257,6 +283,48 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.Role, ROLE_TITLE_GATE);
     assert.strictEqual(sub.Model, 'flash_lite');
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+  });
+
+  test('returns gate subagent payload with resolved verification commands for STAGE_QUALITY_GATE', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockBuildDetector = new MockBuildDetector([
+      { id: 'test', command: 'npm test', label: 'Run test suite' },
+      { id: 'typecheck', command: 'npx tsc --noEmit', label: 'TypeScript check' }
+    ]);
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockBuildDetector
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_QUALITY_GATE);
+    assert.ok(result.invocationPayload);
+
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Target Verification Commands:'));
+    assert.ok(sub.Prompt.includes('1. `npm test`'));
+    assert.ok(sub.Prompt.includes('2. `npx tsc --noEmit`'));
   });
 
   test('returns reviewer subagent payload for STAGE_REVIEW', async () => {
