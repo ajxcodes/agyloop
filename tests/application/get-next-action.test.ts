@@ -4,7 +4,7 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
-const { GetNextActionUseCase } = require('../../dist/application');
+const { GetNextActionUseCase, InferBaseBranchUseCase } = require('../../dist/application');
 const {
   StateMachine,
   STAGE_INITIALIZED,
@@ -495,4 +495,115 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.ok(sub.Prompt.includes('Active Issue: #85 - Fix prompt issue context and blank plan spec'));
     assert.ok(sub.Prompt.includes('Detailed issue description for issue 85.'));
   });
+
+  test('infers baseBranch when missing and activeIssue is present with worktreeManager', async () => {
+    const sm = StateMachine.createInitial({ issue: 93 });
+    sm.transition(STAGE_DISCOVERY);
+    assert.strictEqual(sm.baseBranch, null);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockWorktreeManager: any = {
+      resolveBaseBranch: async () => 'main',
+      listBranches: async () => ['main', 'phase/5-quality-gates'],
+      isAncestorMerged: async () => false
+    };
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: '[Phase 5] [Bug] agyloop: GetNextAction reports baseBranch as main',
+        body: 'Details here',
+        labels: ['phase:5', 'bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const inferUseCase = new InferBaseBranchUseCase(
+      mockWorktreeManager,
+      mockGithub,
+      stateRepo
+    );
+
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub,
+      undefined,
+      mockWorktreeManager,
+      undefined,
+      inferUseCase
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.baseBranch, 'phase/5-quality-gates');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, 'phase/5-quality-gates');
+  });
+
+  test('lazily creates InferBaseBranchUseCase when not injected and worktreeManager is provided', async () => {
+    const sm = StateMachine.createInitial({ issue: 93 });
+    sm.transition(STAGE_DISCOVERY);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockWorktreeManager: any = {
+      resolveBaseBranch: async () => 'main',
+      listBranches: async () => ['main', 'phase/5-quality-gates'],
+      isAncestorMerged: async () => false
+    };
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: '[Phase 5] [Bug] agyloop: GetNextAction reports baseBranch as main',
+        body: 'Details here',
+        labels: ['phase:5', 'bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub,
+      undefined,
+      mockWorktreeManager
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.baseBranch, 'phase/5-quality-gates');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, 'phase/5-quality-gates');
+  });
+
+  test('handles inferBaseBranch failure non-fatally with warning', async () => {
+    const sm = StateMachine.createInitial({ issue: 93 });
+    sm.transition(STAGE_DISCOVERY);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockInferUseCase: any = {
+      execute: async () => {
+        throw new Error('Network failure or git corruption');
+      }
+    };
+
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockInferUseCase
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.baseBranch, 'main');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, null);
+  });
 });
+
