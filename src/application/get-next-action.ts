@@ -40,6 +40,7 @@ import {
   BuildDetectorPort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
   readonly workspaceDir?: string;
@@ -81,6 +82,7 @@ export class GetNextActionUseCase {
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly buildDetector?: BuildDetectorPort;
+  private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
 
   constructor(
     stateRepo: StateRepository,
@@ -89,7 +91,8 @@ export class GetNextActionUseCase {
     githubGateway?: GitHubGateway,
     resolveSubagentUseCase?: ResolveSubagentUseCase,
     worktreeManager?: WorktreeManagerPort,
-    buildDetector?: BuildDetectorPort
+    buildDetector?: BuildDetectorPort,
+    inferBaseBranchUseCase?: InferBaseBranchUseCase
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -99,6 +102,7 @@ export class GetNextActionUseCase {
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
     this.worktreeManager = worktreeManager;
     this.buildDetector = buildDetector;
+    this.inferBaseBranchUseCase = inferBaseBranchUseCase;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -164,6 +168,22 @@ export class GetNextActionUseCase {
     }
 
     activeIssue = sm.issue;
+    if (!sm.baseBranch && activeIssue && this.inferBaseBranchUseCase) {
+      try {
+        const inference = await this.inferBaseBranchUseCase.execute({
+          issueNumber: activeIssue,
+          workspaceDir: cwd
+        });
+        if (inference.baseBranch) {
+          sm.setBaseBranch(inference.baseBranch);
+          await this.stateRepo.save(sm.toSnapshot());
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[agyloop] Diagnostic: Failed to infer base branch for issue #${activeIssue}: ${errMsg}`);
+      }
+    }
+
     const worktreePath = sm.worktree?.worktreePath || null;
     const taskBranch = sm.worktree?.branch || null;
     const baseBranch = sm.baseBranch || 'main';

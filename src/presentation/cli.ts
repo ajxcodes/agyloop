@@ -420,7 +420,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         githubGateway,
         undefined,
         worktreeManager,
-        buildDetector
+        buildDetector,
+        inferBaseBranchUseCase
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
