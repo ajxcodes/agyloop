@@ -529,5 +529,205 @@ new file mode 100644
       assert.ok(rmIdx !== -1, 'git rm --cached command should have been executed');
       assert.ok(rmIdx > addIdx, 'git rm --cached should run after git add -A');
     });
+
+    test('pushes active task branch to remote on successful commit', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 88,
+        worktreePath: '/mock/repo/.worktrees/88',
+        branch: 'fix/88',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: push task branch (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git push -u origin "fix/88"'] = { exitCode: 0 };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'push task branch',
+        issueNumber: 88
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(result.pushError, undefined);
+      assert.strictEqual(result.fallbackUsed, false);
+      assert.ok(executor.executedCommands.includes('git push -u origin "fix/88"'));
+    });
+
+    test('attempts HTTPS fallback push with gh auth token when standard push fails', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 88,
+        worktreePath: '/mock/repo/.worktrees/88',
+        branch: 'fix/88',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: fallback push (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git push -u origin "fix/88"'] = {
+        exitCode: 1,
+        stderr: 'Permission denied (publickey).'
+      };
+      executor.responses['gh auth token'] = {
+        exitCode: 0,
+        stdout: 'ghp_secret_token_1234\n'
+      };
+
+      const fallbackCmd =
+        `git -c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="git@github.com:" ` +
+        `-c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="https://github.com/" ` +
+        `push -u origin "fix/88"`;
+      executor.responses[fallbackCmd] = { exitCode: 0 };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'fallback push',
+        issueNumber: 88
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.fallbackUsed, true);
+      assert.strictEqual(result.pushError, undefined);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.ok(executor.executedCommands.includes(fallbackCmd));
+    });
+
+    test('preserves worktree when standard push and fallback push fail', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 88,
+        worktreePath: '/mock/repo/.worktrees/88',
+        branch: 'fix/88',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: failed push (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git push -u origin "fix/88"'] = {
+        exitCode: 1,
+        stderr: 'Permission denied (publickey).'
+      };
+      executor.responses['gh auth token'] = {
+        exitCode: 0,
+        stdout: 'ghp_secret_token_1234\n'
+      };
+
+      const fallbackCmd =
+        `git -c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="git@github.com:" ` +
+        `-c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="https://github.com/" ` +
+        `push -u origin "fix/88"`;
+      executor.responses[fallbackCmd] = {
+        exitCode: 1,
+        stderr: 'fatal: Authentication failed'
+      };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'failed push',
+        issueNumber: 88
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.fallbackUsed, false);
+      assert.strictEqual(result.pushError, 'fatal: Authentication failed');
+      // Strictly preserved: shouldTeardown overridden to false!
+      assert.strictEqual(result.worktreeTornDown, false);
+      assert.strictEqual(worktreeManager.removedWorktreeOptions, null);
+    });
+
+    test('infers active branch via git rev-parse --abbrev-ref HEAD when sm.worktree is missing', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: inferred branch push (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/inferred-88\n' };
+      executor.responses['git push -u origin "fix/inferred-88"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'inferred branch push',
+        issueNumber: 88
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.pushError, undefined);
+      assert.ok(executor.executedCommands.includes('git rev-parse --abbrev-ref HEAD'));
+      assert.ok(executor.executedCommands.includes('git push -u origin "fix/inferred-88"'));
+      assert.strictEqual(result.prCommand, 'gh pr create --base "main" --head "fix/inferred-88"');
+    });
   });
 });

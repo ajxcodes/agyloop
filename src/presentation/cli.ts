@@ -962,7 +962,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
           console.log(`\n✓ Successfully committed via --commit-after: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.\n`);
+          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+          if (result.executeCommitResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (result.executeCommitResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
+          }
+          console.log('');
         } else if (result.currentStage === STAGE_COMMIT) {
           console.log(`Next Step: Run 'agyloop commit' to draft and approve conventional commit.\n`);
         }
@@ -1048,6 +1055,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (execResult.confirmed && execResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
           console.log(`✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.`);
+          if (execResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (execResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${execResult.pushError}`);
+          }
           if (execResult.worktreeTornDown) {
             console.log(`✓ Isolated git worktree torn down and pruned.`);
           }
@@ -1119,7 +1132,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
           console.log(`\n✓ 100% Unattended Loop Finished: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline Stage: ${formatStageBadge(result.currentStage)}\n`);
+          console.log(`✓ Pipeline Stage: ${formatStageBadge(result.currentStage)}.`);
+          if (result.executeCommitResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (result.executeCommitResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
+          }
+          console.log('');
         } else {
           console.log(`\n✓ Quality gates and AI review passed in YOLO mode.`);
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
@@ -1198,7 +1218,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.\n`);
+          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+          if (result.executeCommitResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (result.executeCommitResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
+          }
+          console.log('');
           return EXIT_CODE_SUCCESS;
         }
 
