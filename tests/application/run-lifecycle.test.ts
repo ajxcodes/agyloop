@@ -392,6 +392,20 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.executeCommitResult, undefined);
     });
 
+    test('Step 1 (fresh run for bug/discovery): leaves stage in DISCOVERY and does NOT pause at APPROVAL gate', async () => {
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        type: 'discovery',
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.message, 'Pipeline advanced to DISCOVERY.');
+    });
+
     test('Step 2 (resuming from APPROVAL): advances to IMPLEMENT, passes gates & review, halts at COMMIT', async () => {
       // Simulate state rehydrated at APPROVAL
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
@@ -457,6 +471,22 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.currentStage, STAGE_APPROVAL);
       assert.strictEqual(result.pausedAtGate, GATE_APPROVAL);
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
+    });
+
+    test('mode "plan" for bug/discovery leaves stage in DISCOVERY and does NOT pause at APPROVAL gate', async () => {
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_PLAN,
+        issue: 32,
+        type: 'discovery',
+        title: 'Bug Fix Plan',
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, MODE_PLAN);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.message, 'Pipeline advanced to DISCOVERY.');
     });
 
     test('mode "implement" resumes execution directly from approved plan', async () => {

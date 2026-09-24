@@ -19,6 +19,8 @@ import {
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_TRIAGE,
+  GATE_APPROVAL,
+  GATE_COMMIT,
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
@@ -897,8 +899,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           );
         }
 
-        console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
-        console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+        if (result.pausedAtGate === GATE_APPROVAL) {
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
+          console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+        } else {
+          console.log(`\n✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+        }
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
@@ -1241,7 +1247,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           baseBranch: options.baseBranch || undefined
         });
 
-        if (result.pausedAtGate === 'APPROVAL') {
+        if (result.pausedAtGate === GATE_APPROVAL) {
           if (result.planResult?.scaffoldInfo) {
             const info = result.planResult.scaffoldInfo;
             console.log(`📁 Scaffolded Plan: artifacts/plans/${info.folderName}/`);
@@ -1285,7 +1291,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
-        if (result.pausedAtGate === 'COMMIT') {
+        if (result.pausedAtGate === GATE_COMMIT) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' to execute.\n`);
           return EXIT_CODE_SUCCESS;
         }

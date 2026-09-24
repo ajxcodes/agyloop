@@ -427,14 +427,17 @@ export class RunLifecycleUseCase {
       workspaceDir: workspace
     });
 
+    const isApproval = planResult.stateMachine.currentStage === STAGE_APPROVAL;
     return {
       success: true,
       mode: MODE_PLAN,
       currentStage: planResult.stateMachine.currentStage,
       stateMachine: planResult.stateMachine,
-      pausedAtGate: GATE_APPROVAL,
+      pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
       planResult,
-      message: NOTE_PAUSED_APPROVAL_GATE
+      message: isApproval
+        ? NOTE_PAUSED_APPROVAL_GATE
+        : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
     };
   }
 
@@ -960,14 +963,17 @@ export class RunLifecycleUseCase {
         workspaceDir: workspace
       });
 
+      const isApproval = planResult.stateMachine.currentStage === STAGE_APPROVAL;
       return {
         success: true,
         mode: MODE_STANDARD,
         currentStage: planResult.stateMachine.currentStage,
         stateMachine: planResult.stateMachine,
-        pausedAtGate: GATE_APPROVAL,
+        pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
         planResult,
-        message: NOTE_PAUSED_APPROVAL_GATE
+        message: isApproval
+          ? NOTE_PAUSED_APPROVAL_GATE
+          : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
       };
     }
 
