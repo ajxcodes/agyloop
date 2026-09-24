@@ -9,6 +9,7 @@ import {
   SubagentRole,
   ToolWhitelist,
   READ_ONLY_TOOLS,
+  PLANNER_TOOLS,
   IMPLEMENTER_TOOLS,
   GATE_TOOLS,
   REVIEWER_TOOLS,
@@ -65,9 +66,9 @@ export const PLANNER_SUBAGENT_DEF = Object.freeze({
   role: ROLE_TITLE_PLANNER,
   description: ROLE_DESC_PLANNER,
   defaultTier: TIER_PRO,
-  tools: READ_ONLY_TOOLS,
+  tools: PLANNER_TOOLS,
   capabilities: Object.freeze({
-    enable_write_tools: false,
+    enable_write_tools: true,
     enable_subagent_tools: false,
     enable_mcp_tools: true
   })
@@ -331,7 +332,7 @@ export class ResolveSubagentUseCase {
         ? config.options.enableMcpInPlanner
         : true;
 
-    const whitelist = ToolWhitelist.readOnly();
+    const whitelist = ToolWhitelist.planner();
 
     return {
       name: roleVo.value,
@@ -341,7 +342,7 @@ export class ResolveSubagentUseCase {
       apiModel: resolved.apiModel,
       tools: whitelist.toArray(),
       capabilities: {
-        enable_write_tools: false,
+        enable_write_tools: true,
         enable_subagent_tools: false,
         enable_mcp_tools: enableMcp
       },
@@ -389,7 +390,7 @@ export class ResolveSubagentUseCase {
     prompt += `Your goal is to inspect the codebase, perform root-cause analysis (for defects) or architectural design (for features), and produce an actionable specification.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Read-Only**: You have access strictly to inspection tools (${READ_ONLY_TOOLS.join(', ')}). Do not attempt to modify or write files.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`artifacts/plans/\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
     prompt += `3. **Deliverable**: Create the technical specification in the \`artifacts/plans/\` directory matching the standard templates:\n`;
     prompt += `   - Defects/Bugs: \`templates/discovery-plan.md\`\n`;

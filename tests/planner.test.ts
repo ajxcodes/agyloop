@@ -2,6 +2,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const {
   READ_ONLY_TOOLS,
+  PLANNER_TOOLS,
   FORBIDDEN_WRITE_TOOLS,
   GATE_TOOLS,
   REVIEWER_TOOLS,
@@ -18,34 +19,32 @@ const configRepo = new FileConfigRepository();
 const resolveUseCase = new ResolveSubagentUseCase(configRepo);
 
 describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => {
-  test('PLANNER_SUBAGENT_DEF enforces physical write suppression', () => {
+  test('PLANNER_SUBAGENT_DEF enforces scoped write permissions for plans', () => {
     assert.strictEqual(PLANNER_SUBAGENT_DEF.name, 'planner');
     assert.strictEqual(PLANNER_SUBAGENT_DEF.role, 'Architectural Planning Subagent');
-    assert.strictEqual(PLANNER_SUBAGENT_DEF.capabilities.enable_write_tools, false);
+    assert.strictEqual(PLANNER_SUBAGENT_DEF.capabilities.enable_write_tools, true);
     assert.strictEqual(PLANNER_SUBAGENT_DEF.capabilities.enable_subagent_tools, false);
     assert.strictEqual(PLANNER_SUBAGENT_DEF.capabilities.enable_mcp_tools, true);
   });
 
-  test('Tool whitelist strictly permits read inspection tools and forbids write/modifying tools', () => {
+  test('Tool whitelist permits read inspection tools and scoped plan writing tools', () => {
     assert.deepStrictEqual(
       [...PLANNER_SUBAGENT_DEF.tools],
-      ['view_file', 'grep_search', 'find_by_name', 'list_dir']
+      ['view_file', 'grep_search', 'find_by_name', 'list_dir', 'write_to_file', 'replace_file_content']
     );
 
-    for (const forbidden of FORBIDDEN_WRITE_TOOLS) {
-      assert.strictEqual(
-        (PLANNER_SUBAGENT_DEF.tools as readonly string[]).includes(forbidden),
-        false,
-        `Forbidden write tool '${forbidden}' must not be present in planner toolset.`
-      );
-    }
+    assert.strictEqual(
+      (PLANNER_SUBAGENT_DEF.tools as readonly string[]).includes('run_command'),
+      false,
+      "Forbidden write/execution tool 'run_command' must not be present in planner toolset."
+    );
   });
 
   test('getPlannerSystemPrompt returns comprehensive guidance with key architectural invariants', () => {
     const prompt = resolveUseCase.getPlannerSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 500);
     assert.ok(prompt.includes('AgyLoop Architectural Planning Subagent'));
-    assert.ok(prompt.includes('Zero Source Code Modifications'));
+    assert.ok(prompt.includes('Scoped File Modifications (Plans Only)'));
     assert.ok(prompt.includes('Root-Cause Analysis (RCA)'));
     assert.ok(prompt.includes('templates/discovery-plan.md'));
     assert.ok(prompt.includes('templates/implementation-plan.md'));
@@ -73,9 +72,11 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.strictEqual(def.model, 'pro');
     assert.strictEqual(def.apiModel, 'gemini-3.5-pro');
     assert.strictEqual(def.capabilities.enable_mcp_tools, false);
-    assert.strictEqual(def.capabilities.enable_write_tools, false);
+    assert.strictEqual(def.capabilities.enable_write_tools, true);
     assert.ok(def.tools.includes('view_file'));
     assert.ok(def.tools.includes('grep_search'));
+    assert.ok(def.tools.includes('write_to_file'));
+    assert.ok(def.tools.includes('replace_file_content'));
   });
 
   test('buildPlanningTaskPrompt formats execution directives and user instructions', () => {
@@ -85,6 +86,8 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
 
     assert.ok(prompt.includes('# Task: Architectural Investigation & Plan Generation'));
     assert.ok(prompt.includes('Operating Constraints:'));
+    assert.ok(prompt.includes('Scoped Write Access'));
+    assert.ok(prompt.includes('artifacts/plans/'));
     assert.ok(prompt.includes('User / Developer Directives:'));
     assert.ok(prompt.includes('Refactor database client to use connection pooling.'));
   });

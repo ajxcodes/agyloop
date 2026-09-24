@@ -155,6 +155,18 @@ describe('Domain Value Objects (Pure)', () => {
       assert.strictEqual(unsafeList.hasForbiddenWriteTools(), true);
     });
 
+    test('ToolWhitelist.planner() includes read inspection tools and plan write tools but not run_command', () => {
+      const plannerWhitelist = ToolWhitelist.planner();
+      assert.strictEqual(plannerWhitelist.isAllowed('view_file'), true);
+      assert.strictEqual(plannerWhitelist.isAllowed('grep_search'), true);
+      assert.strictEqual(plannerWhitelist.isAllowed('find_by_name'), true);
+      assert.strictEqual(plannerWhitelist.isAllowed('list_dir'), true);
+      assert.strictEqual(plannerWhitelist.isAllowed('write_to_file'), true);
+      assert.strictEqual(plannerWhitelist.isAllowed('replace_file_content'), true);
+      assert.strictEqual(plannerWhitelist.isAllowed('run_command'), false);
+      assert.strictEqual(plannerWhitelist.hasForbiddenWriteTools(), true);
+    });
+
     test('ToolWhitelist.implementation() includes all read and write tools', () => {
       const implWhitelist = ToolWhitelist.implementation();
       assert.strictEqual(implWhitelist.isAllowed('view_file'), true);

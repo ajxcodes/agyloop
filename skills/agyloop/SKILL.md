@@ -60,11 +60,11 @@ Run `bin/agyloop next --json` at any stage to inspect the next step and obtain t
 {
   "Subagents": [
     {
-      "TypeName": "research",
+      "TypeName": "self",
       "Role": "AgyLoop Planner",
       "Model": "pro",
       "Workspace": "share",
-      "Prompt": "Read issue context and codebase standards. Generate architectural plan and specifications in artifacts/plans/ with physical write suppression."
+      "Prompt": "Read issue context and codebase standards. Generate architectural plan and specifications in artifacts/plans/ with scoped write tools."
     }
   ]
 }

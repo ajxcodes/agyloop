@@ -207,7 +207,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
       assert.strictEqual(result.actionType, 'subagent');
       assert.strictEqual(result.role, ROLE_PLANNER);
       assert.ok(result.invocationPayload);
-      assert.strictEqual(result.invocationPayload.Subagents[0].TypeName, 'research');
+      assert.strictEqual(result.invocationPayload.Subagents[0].TypeName, 'self');
       assert.ok(result.invocationPayload.Subagents[0].Prompt.includes('#51'));
 
       // Check state snapshot was updated and persisted
