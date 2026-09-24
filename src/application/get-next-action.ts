@@ -19,6 +19,7 @@ import {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  STAGE_TRIAGE,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
@@ -362,6 +363,20 @@ export class GetNextActionUseCase {
           taskBranch,
           worktreePath,
           humanSummary: `Execute commit: run "agyloop commit" (targets base branch '${baseBranch}').`
+        };
+      }
+
+      case STAGE_TRIAGE: {
+        return {
+          currentStage: STAGE_TRIAGE,
+          nextStage: STAGE_IMPLEMENT,
+          actionType: 'human_gate',
+          title: 'PR Review Comments Triage Gate',
+          description: 'Open PR contains review comments requiring human triage before modifying code or resuming pipeline.',
+          baseBranch,
+          taskBranch,
+          worktreePath,
+          humanSummary: 'PR review comments detected. Run "bin/agyloop triage" to inspect categorized comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED.'
         };
       }
 

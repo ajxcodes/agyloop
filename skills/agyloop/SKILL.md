@@ -119,7 +119,8 @@ Run `bin/agyloop next --json` at any stage to inspect the next step and obtain t
 
 ## Lifecycle Stages & Closed-Loop Architecture
 
-$$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow \text{Approval Gate} \longrightarrow \text{Implement} \longleftrightarrow \text{Quality Gate} \longleftrightarrow \text{Two-Tier Review} \longrightarrow \text{Commit Gate} \longrightarrow \text{Completed}$$
+$$\text{Discovery (Conditional)} \longleftrightarrow \text{Plan} \longleftrightarrow \text{Approval Gate} \longleftrightarrow \text{Implement} \longleftrightarrow \text{Quality Gate} \longleftrightarrow \text{Two-Tier Review} \longleftrightarrow \text{Commit Gate} \longrightarrow \text{Completed}$$
+$$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftrightarrow \{\text{IMPLEMENT}, \text{PLAN}, \text{DISCOVERY}, \text{COMPLETED}\}$$
 
 ### 1. Conditional Discovery & Smart Pre-Flight Checks (`DISCOVERY`)
 - **Conditional Discovery Execution**:
@@ -130,7 +131,11 @@ $$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow
   - If issue is `CLOSED` on GitHub $\rightarrow$ cleanly halts (`Task #<id> is already closed.`).
   - If associated PR is already `MERGED` into base branch $\rightarrow$ cleanly halts (`PR for task #<id> is already merged.`).
   - If associated branch or PR is already `OPEN` $\rightarrow$ enters **Resume Mode** without creating duplicate branches.
-  - **PR Review Comments Ingestion**: In Resume Mode on an open PR, ingests review comments and `CHANGES_REQUESTED` threads via `gh pr view --json comments,reviews`, formatting them into a targeted `selfCorrectionPayload` for a fresh Implementer subagent.
+  - **Interactive PR Review Triage Gate**: In Resume Mode on an open PR with review comments or `CHANGES_REQUESTED`, instead of jumping directly into `IMPLEMENT`, the pipeline halts at the **Interactive Triage Gate (`STAGE_TRIAGE`)**. The developer is presented with categorized comments (`[error]`, `[suggestion]`, `[question]`) and routes the pipeline appropriately:
+    - Route to `IMPLEMENT` for code fixes and small adjustments.
+    - Route to `PLAN` for broader architectural rework.
+    - Route to `DISCOVERY` for deep root-cause investigation.
+    - Route to `COMPLETED` to dismiss or defer comments.
 - **Dynamic Base Branch Inference**:
   - Discovers collector branch (`phase/*` or `feature/*`).
   - Auto-creates collector branch from `main` if not yet existing and pushes to remote (best-effort).
@@ -138,7 +143,16 @@ $$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow
 - **Private vs. Public Sanitization**:
   - Automatically strips private tracking URLs (e.g. `ajxcodes/projects#...`) from public commits and PR markdown.
 
-### 2. Planning Subagent (`PLAN`)
+### 2. PR Review Comments Triage Gate (`TRIAGE`)
+- Halts pipeline execution when resuming on an open PR with review feedback (`pauseAtGate('TRIAGE')`).
+- Inspects categorized review comments: `bin/agyloop triage`.
+- Developer selects lifecycle destination:
+  - `bin/agyloop triage implement`: Directs to `IMPLEMENT` with comments context.
+  - `bin/agyloop triage plan`: Directs to `PLAN` for structural plan revision.
+  - `bin/agyloop triage discovery`: Directs to `DISCOVERY` for investigative RCA.
+  - `bin/agyloop triage dismiss`: Directs to `COMPLETED` dismissing comments.
+
+### 3. Planning Subagent (`PLAN`)
 - Launch the read-only **`planner`** subagent via `invoke_subagent`.
 - Support iterative plan revisions: accepts `userFeedback`, `previousPlanContent`, and tracks `iterationCount`.
 - Produce technical specifications in `artifacts/plans/`:
@@ -147,7 +161,7 @@ $$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow
   - `AgyLoop Summary.md` (cumulative run log)
 - Advance state: `bin/agyloop transition PLAN`.
 
-### 3. Human Approval Gate (`APPROVAL`) & Plan Redirection Loops
+### 4. Human Approval Gate (`APPROVAL`) & Plan Redirection Loops
 - Pause and present plan to the user.
 - Human timer pause: autonomous execution timers pause while awaiting developer feedback (`pauseAtGate('APPROVAL')`).
 - **Iterative Plan Redirection Loop (`APPROVAL <-> PLAN`)**:
@@ -155,21 +169,21 @@ $$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow
   - Redirections transition back to `PLAN` with the previous draft and feedback, spawning a fresh, clean Planner subagent.
 - Advance state: `bin/agyloop transition APPROVAL` (skipped automatically in `yolo` mode).
 
-### 4. Implementation Subagent (`IMPLEMENT`)
+### 5. Implementation Subagent (`IMPLEMENT`)
 - Verify or auto-provision worktree: `.worktrees/<task-id>` on task branch (idempotent; reuses existing worktree cleanly).
 - Launch the **`implementer`** subagent via `invoke_subagent` targeting `Cwd: .worktrees/<task-id>`.
 - Restrict Implementer `run_command` strictly to syntax validation (`npx tsc --noEmit`). Prohibit full test suites or linters.
 - Implementer signals `IMPLEMENTATION_DONE` upon completing checklist with clean syntax.
 - Advance state: `bin/agyloop transition IMPLEMENT` (or run `bin/agyloop implement`).
 
-### 5. Quality Gate Subagent (`QUALITY_GATE`)
+### 6. Quality Gate Subagent (`QUALITY_GATE`)
 - Launch the isolated **`gate`** subagent inside `.worktrees/<task-id>` via `invoke_subagent`.
 - Execute builds, typechecks, test suites, and linters inside the worktree directory.
 - Capture structured results: `GATE_STATUS: PASSED | FAILED`.
 - **Quality Gate Failure Loop**: If failed, transitions back to `IMPLEMENT` with isolated diagnostics in `selfCorrectionPayload` for a fresh Implementer subagent.
 - Advance state: `bin/agyloop transition QUALITY_GATE`.
 
-### 6. Two-Tier Review Architecture (`REVIEW`)
+### 7. Two-Tier Review Architecture (`REVIEW`)
 - **Tier 1 (Automated Critique Diagnostics)**:
   - Executes `critique` CLI inside `.worktrees/<task-id>` against base branch (`main` or phase collector).
   - Inspects code against repository standards (`.github/critique.md`, clean architecture boundaries, zero magic values).
@@ -181,7 +195,7 @@ $$\text{Discovery (Conditional)} \longrightarrow \text{Plan} \longleftrightarrow
   - Packages diagnostics and remediation actions into `selfCorrectionPayload`, reverting `REVIEW -> IMPLEMENT` for a fresh Implementer subagent.
 - Advance state: `bin/agyloop transition REVIEW`.
 
-### 7. Conventional Commit Gate (`COMMIT`) & Rejection Loops
+### 8. Conventional Commit Gate (`COMMIT`) & Rejection Loops
 - Human timer pause: autonomous execution timers pause while awaiting commit sign-off (`pauseAtGate('COMMIT')`).
 - Draft a semantic conventional commit message referencing the issue (`#<id>`).
 - Automatically sanitize private project tracker URLs.

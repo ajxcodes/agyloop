@@ -33,6 +33,7 @@ import {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  STAGE_TRIAGE,
   MODE_STANDARD,
   MODE_YOLO,
   MODE_PLAN,
@@ -41,10 +42,12 @@ import {
   MODE_COMMIT,
   GATE_APPROVAL,
   GATE_COMMIT,
+  GATE_TRIAGE,
   NOTE_LIFECYCLE_STARTED,
   NOTE_LIFECYCLE_COMPLETED,
   NOTE_PAUSED_APPROVAL_GATE,
   NOTE_PAUSED_COMMIT_GATE,
+  NOTE_PAUSED_TRIAGE_GATE,
   NOTE_AUTO_APPROVED_PLAN,
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
@@ -104,7 +107,7 @@ export interface RunLifecycleResult {
   readonly mode: ExecutionMode;
   readonly currentStage: StageName;
   readonly stateMachine: StateMachine;
-  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | null;
+  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | null;
   readonly planResult?: StartPlanningResult;
   readonly implementationResult?: StartImplementationResult;
   readonly qualityGateResult?: QualityGateRunResult;
@@ -284,8 +287,9 @@ export class RunLifecycleUseCase {
 
     // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
     const activeIssueToCheck = effectiveIssue;
+    let preflightResult = undefined;
     if (activeIssueToCheck && !params.dryRun) {
-      await this.runPreFlightCheckUseCase.execute({
+      preflightResult = await this.runPreFlightCheckUseCase.execute({
         issueNumber: activeIssueToCheck,
         workspaceDir: workspace,
         trackerRepo: config.migration?.trackerRepo
@@ -341,6 +345,46 @@ export class RunLifecycleUseCase {
       if (!params.dryRun) {
         await this.stateRepo.save(sm.toSnapshot());
       }
+    }
+
+    // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE
+    if (
+      preflightResult &&
+      preflightResult.isResume &&
+      ((preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) || preflightResult.prHasChangesRequested) &&
+      sm.currentStage !== STAGE_TRIAGE
+    ) {
+      if (sm.canTransition(STAGE_TRIAGE)) {
+        sm.transition(STAGE_TRIAGE, {
+          note: NOTE_PAUSED_TRIAGE_GATE,
+          prNumber: preflightResult.resumePrNumber,
+          commentsCount: preflightResult.prReviewComments?.length ?? 0
+        });
+      }
+      sm.pauseAtGate(GATE_TRIAGE);
+      if (!params.dryRun) {
+        await this.stateRepo.save(sm.toSnapshot());
+      }
+      return {
+        success: true,
+        mode: activeMode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        pausedAtGate: GATE_TRIAGE,
+        message: NOTE_PAUSED_TRIAGE_GATE
+      };
+    }
+
+    if (sm.currentStage === STAGE_TRIAGE) {
+      sm.pauseAtGate(GATE_TRIAGE);
+      return {
+        success: true,
+        mode: activeMode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        pausedAtGate: GATE_TRIAGE,
+        message: NOTE_PAUSED_TRIAGE_GATE
+      };
     }
 
     // 3. Dispatch based on operational mode

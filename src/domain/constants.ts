@@ -16,6 +16,7 @@ export const STAGE_QUALITY_GATE = 'QUALITY_GATE' as const;
 export const STAGE_REVIEW = 'REVIEW' as const;
 export const STAGE_COMMIT = 'COMMIT' as const;
 export const STAGE_COMPLETED = 'COMPLETED' as const;
+export const STAGE_TRIAGE = 'TRIAGE' as const;
 
 export const STAGES = Object.freeze({
   INITIALIZED: STAGE_INITIALIZED,
@@ -26,13 +27,14 @@ export const STAGES = Object.freeze({
   QUALITY_GATE: STAGE_QUALITY_GATE,
   REVIEW: STAGE_REVIEW,
   COMMIT: STAGE_COMMIT,
-  COMPLETED: STAGE_COMPLETED
+  COMPLETED: STAGE_COMPLETED,
+  TRIAGE: STAGE_TRIAGE
 });
 
 export type StageName = typeof STAGES[keyof typeof STAGES];
 
 export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[]>> = Object.freeze({
-  [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN]),
+  [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN]),
   [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT]), // IMPLEMENT allowed only in YOLO mode
   [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN]), // PLAN allowed if re-planning requested
@@ -46,8 +48,15 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
     STAGE_PLAN,
     STAGE_IMPLEMENT,
     STAGE_QUALITY_GATE,
-    STAGE_REVIEW
-  ]) // Can start next task or reopen for fixes/review/planning
+    STAGE_REVIEW,
+    STAGE_TRIAGE
+  ]), // Can start next task or reopen for fixes/review/planning/triage
+  [STAGE_TRIAGE]: Object.freeze([
+    STAGE_IMPLEMENT,
+    STAGE_PLAN,
+    STAGE_DISCOVERY,
+    STAGE_COMPLETED
+  ])
 });
 
 export const MODE_STANDARD = 'standard' as const;
@@ -1068,10 +1077,12 @@ export const SECTION_COMMIT_DETAILS_TITLE = '## Commit & Release Details' as con
 
 export const GATE_APPROVAL = 'APPROVAL' as const;
 export const GATE_COMMIT = 'COMMIT' as const;
+export const GATE_TRIAGE = 'TRIAGE' as const;
 
 export const LIFECYCLE_GATES = Object.freeze({
   APPROVAL: GATE_APPROVAL,
-  COMMIT: GATE_COMMIT
+  COMMIT: GATE_COMMIT,
+  TRIAGE: GATE_TRIAGE
 });
 
 export type LifecycleGateName = typeof LIFECYCLE_GATES[keyof typeof LIFECYCLE_GATES];
@@ -1080,6 +1091,8 @@ export const NOTE_LIFECYCLE_STARTED = 'Lifecycle execution started' as const;
 export const NOTE_LIFECYCLE_COMPLETED = 'Lifecycle completed successfully' as const;
 export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const;
 export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as const;
+export const NOTE_PAUSED_TRIAGE_GATE = 'Paused at PR review comments triage gate' as const;
+export const NOTE_TRIAGE_ROUTED = 'Triage completed: routed to target stage' as const;
 export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
 export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;
 export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
@@ -1102,6 +1115,7 @@ export const COMMAND_WORKTREE = 'worktree' as const;
 export const COMMAND_RELEASE = 'release' as const;
 export const COMMAND_NEXT = 'next' as const;
 export const COMMAND_BRANCH_INFO = 'branch-info' as const;
+export const COMMAND_TRIAGE = 'triage' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1119,7 +1133,8 @@ export const CLI_COMMANDS = Object.freeze({
   RELEASE: COMMAND_RELEASE,
   NEXT: COMMAND_NEXT,
   BRANCH_INFO: COMMAND_BRANCH_INFO,
-  CRITIQUE: COMMAND_CRITIQUE
+  CRITIQUE: COMMAND_CRITIQUE,
+  TRIAGE: COMMAND_TRIAGE
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];

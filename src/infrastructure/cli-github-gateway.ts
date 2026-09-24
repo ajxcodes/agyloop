@@ -293,13 +293,30 @@ export class CliGitHubGateway implements GitHubGateway {
       const parsed = JSON.parse(rawJson) as RawGhPrView;
       const results: PullRequestReviewComment[] = [];
 
+      const parseCategory = (body: string, reviewState?: string): { category: 'error' | 'suggestion' | 'question' | 'general'; severity?: string } => {
+        const lower = body.toLowerCase();
+        if ((reviewState || '').toUpperCase() === 'CHANGES_REQUESTED' || lower.includes('[error]') || lower.includes('[critical]')) {
+          return { category: 'error', severity: 'error' };
+        }
+        if (lower.includes('[suggestion]') || lower.includes('[warning]') || lower.includes('[nit]')) {
+          return { category: 'suggestion', severity: 'suggestion' };
+        }
+        if (lower.includes('[question]') || lower.includes('?')) {
+          return { category: 'question', severity: 'info' };
+        }
+        return { category: 'general', severity: 'info' };
+      };
+
       if (parsed.comments) {
         for (const c of parsed.comments) {
           if (c.body && c.body.trim()) {
+            const cat = parseCategory(c.body);
             results.push({
               author: (c.author && c.author.login) || 'unknown',
               body: c.body,
-              createdAt: c.createdAt
+              createdAt: c.createdAt,
+              category: cat.category,
+              severity: cat.severity
             });
           }
         }
@@ -308,23 +325,29 @@ export class CliGitHubGateway implements GitHubGateway {
       if (parsed.reviews) {
         for (const r of parsed.reviews) {
           if (r.body && r.body.trim()) {
+            const cat = parseCategory(r.body, r.state);
             results.push({
               author: (r.author && r.author.login) || 'unknown',
               body: r.body,
               state: r.state,
-              createdAt: r.submittedAt || r.createdAt
+              createdAt: r.submittedAt || r.createdAt,
+              category: cat.category,
+              severity: cat.severity
             });
           }
           if (r.comments) {
             for (const rc of r.comments) {
               if (rc.body && rc.body.trim()) {
+                const cat = parseCategory(rc.body, r.state);
                 results.push({
                   author: (rc.author && rc.author.login) || 'unknown',
                   body: rc.body,
                   path: rc.path,
                   line: rc.line,
                   state: r.state,
-                  createdAt: rc.createdAt
+                  createdAt: rc.createdAt,
+                  category: cat.category,
+                  severity: cat.severity
                 });
               }
             }

@@ -18,6 +18,7 @@ import {
   STAGE_INITIALIZED,
   STAGE_DISCOVERY,
   STAGE_PLAN,
+  STAGE_TRIAGE,
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
@@ -34,6 +35,7 @@ import {
   COMMAND_WORKTREE,
   COMMAND_RELEASE,
   COMMAND_CRITIQUE,
+  COMMAND_TRIAGE,
   FLAG_WORKTREE,
   FLAG_NO_WORKTREE,
   FLAG_FORCE,
@@ -77,7 +79,8 @@ import {
   ManageWorktreeUseCase,
   MilestoneReleaseUseCase,
   InferBaseBranchUseCase,
-  GetNextActionUseCase
+  GetNextActionUseCase,
+  TriagePrCommentsUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -107,6 +110,7 @@ export interface CliOptions {
   worktreeTarget: string | null;
   critiqueSubcommand: string | null;
   force: boolean;
+  triageAction: string | null;
 }
 
 export interface ParsedCliArgs {
@@ -141,6 +145,7 @@ Pipeline Management:
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
+  triage [action]    Triage PR review comments and route pipeline (implement|plan|discovery|dismiss)
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
@@ -211,7 +216,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     worktreeSubcommand: null,
     worktreeTarget: null,
     critiqueSubcommand: null,
-    force: false
+    force: false,
+    triageAction: null
   };
 
   const positional: string[] = [];
@@ -323,6 +329,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
         options.phaseBranch = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1] : null;
       } else if (command === 'critique') {
         options.critiqueSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'status';
+      } else if (command === 'triage') {
+        options.triageAction = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : null;
       } else if (cmdIndex + 1 < positional.length) {
         const matchNext = positional[cmdIndex + 1].match(REGEX_POSITIONAL_ISSUE_ID);
         if (matchNext) {
@@ -345,7 +353,8 @@ export function formatStageBadge(stage: string): string {
     QUALITY_GATE: '\x1b[36m',// Cyan
     REVIEW: '\x1b[34m',      // Blue
     COMMIT: '\x1b[32m',      // Green
-    COMPLETED: '\x1b[32m\x1b[1m' // Bold Green
+    COMPLETED: '\x1b[32m\x1b[1m', // Bold Green
+    TRIAGE: '\x1b[33m\x1b[1m'     // Bold Yellow
   };
   const reset = '\x1b[0m';
   const color = colors[stage] || '';
@@ -722,6 +731,52 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.error(`Error: Unknown critique subcommand "${sub}". Available: status, install, update.\n`);
           return EXIT_CODE_FAILURE;
         }
+      }
+    }
+
+    case 'triage': {
+      const triageUseCase = new TriagePrCommentsUseCase(
+        stateRepo,
+        githubGateway,
+        planGenerator
+      );
+
+      const action = (options.triageAction || 'implement').toLowerCase() as any;
+      console.log('\n=== AgyLoop: PR Review Comments Triage ===');
+      try {
+        const result = await triageUseCase.execute({
+          issue: options.issue,
+          action,
+          notes: options.message || undefined,
+          workspaceDir: process.cwd()
+        });
+
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.comments && result.comments.length > 0) {
+          console.log(`Found ${result.comments.length} PR review comment(s):\n`);
+          result.comments.forEach((c, idx) => {
+            const cat = c.category ? ` [${c.category.toUpperCase()}]` : '';
+            const loc = c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : '';
+            console.log(`  ${idx + 1}.${cat} @${c.author}${loc}:`);
+            const firstLine = (c.body || '').split('\n')[0].slice(0, 100);
+            console.log(`     "${firstLine}${firstLine.length >= 100 ? '...' : ''}"`);
+          });
+          console.log('');
+        } else {
+          console.log('No PR review comments found.\n');
+        }
+
+        console.log(`✓ Triage Action : ${action.toUpperCase()}`);
+        console.log(`✓ Next Stage    : ${formatStageBadge(result.targetStage)}`);
+        console.log(`✓ State Updated : Pipeline transitioned to ${result.targetStage}\n`);
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ Triage failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        return EXIT_CODE_FAILURE;
       }
     }
 

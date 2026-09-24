@@ -10,6 +10,8 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
+export type PRCommentCategory = 'error' | 'suggestion' | 'question' | 'general';
+
 export interface PullRequestReviewComment {
   readonly author: string;
   readonly body: string;
@@ -17,6 +19,8 @@ export interface PullRequestReviewComment {
   readonly line?: number;
   readonly state?: string;
   readonly createdAt?: string;
+  readonly category?: PRCommentCategory;
+  readonly severity?: string;
 }
 
 export interface GitHubIssueMilestone {
