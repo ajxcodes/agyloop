@@ -37,7 +37,8 @@ const {
   RunQualityGateUseCase,
   RunReviewUseCase,
   DraftCommitUseCase,
-  ExecuteCommitUseCase
+  ExecuteCommitUseCase,
+  InferBaseBranchUseCase
 } = require('../../dist/application');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
@@ -670,6 +671,72 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.currentStage, STAGE_COMPLETED);
+    });
+
+    test('initializes inferBaseBranchUseCase before startImplementationUseCase and passes it to startImplementationUseCase', () => {
+      let passedInferBaseBranchUseCase: any = null;
+      class SpyStartImplementationUseCase {
+        constructor(
+          _stateRepo: any,
+          _configRepo: any,
+          _planGenerator: any,
+          _githubGateway?: any,
+          _resolveSubagentUseCase?: any,
+          _worktreeManager?: any,
+          inferBaseBranchUseCase?: any
+        ) {
+          passedInferBaseBranchUseCase = inferBaseBranchUseCase;
+        }
+      }
+
+      const mockWorktreeManager: any = {
+        resolveTaskWorktreePath: async () => '/mock/worktree',
+        resolveTaskBranchName: () => 'task/32-test',
+        createWorktree: async () => ({})
+      };
+
+      const customInferBaseBranchUseCase = new InferBaseBranchUseCase(
+        mockWorktreeManager,
+        githubGateway,
+        stateRepo
+      );
+
+      // Case 1: Provided via deps
+      new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        worktreeManager: mockWorktreeManager,
+        inferBaseBranchUseCase: customInferBaseBranchUseCase,
+        startImplementationUseCase: new SpyStartImplementationUseCase(
+          stateRepo,
+          configRepo,
+          planGenerator,
+          githubGateway,
+          undefined,
+          mockWorktreeManager,
+          customInferBaseBranchUseCase
+        ) as any
+      });
+
+      // Case 2: Auto-instantiated when worktreeManager is present and passed to default StartImplementationUseCase
+      const lifecycle = new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        worktreeManager: mockWorktreeManager
+      });
+
+      assert.ok((lifecycle as any).inferBaseBranchUseCase instanceof InferBaseBranchUseCase);
+      assert.ok((lifecycle as any).startImplementationUseCase['inferBaseBranchUseCase'] instanceof InferBaseBranchUseCase);
+      assert.strictEqual(
+        (lifecycle as any).startImplementationUseCase['inferBaseBranchUseCase'],
+        (lifecycle as any).inferBaseBranchUseCase
+      );
     });
   });
 });
