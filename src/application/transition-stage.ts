@@ -166,7 +166,8 @@ export class TransitionStageUseCase {
         const activeIssue = sm.issue || params.issue;
         const resolvedPlan = this.planGenerator.resolvePlanFile({
           projectRoot: workspace,
-          issue: activeIssue
+          issue: activeIssue,
+          planDir: sm.planDir
         });
         if (resolvedPlan && resolvedPlan.summaryPath) {
           const stageMap: Record<string, string> = {

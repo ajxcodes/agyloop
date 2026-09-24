@@ -184,7 +184,8 @@ export class ExecuteCommitUseCase {
           const issue = sm.issue || params.issue;
           const planLoc = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
-            issue
+            issue,
+            planDir: sm.planDir
           });
           if (planLoc?.summaryPath) {
             summaryUpdated = this.planGenerator.updateSummaryLog(planLoc.summaryPath, {
@@ -316,7 +317,8 @@ export class ExecuteCommitUseCase {
       const issue = sm.issue || params.issue;
       const planLoc = this.planGenerator.resolvePlanFile({
         projectRoot: rootDir,
-        issue
+        issue,
+        planDir: sm.planDir
       });
       const summaryPath = planLoc?.summaryPath;
       if (summaryPath) {

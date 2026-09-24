@@ -35,6 +35,7 @@ export interface StateMachineSnapshot {
   readonly issue: number | null;
   readonly baseBranch?: string | null;
   readonly worktree?: Record<string, unknown> | null;
+  readonly planDir?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -50,6 +51,7 @@ export interface StateStatusSummary {
   readonly issue: number | null;
   readonly baseBranch?: string | null;
   readonly worktree?: WorktreeDescriptor | null;
+  readonly planDir?: string | null;
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -65,6 +67,7 @@ export class StateMachine {
   private _issue: IssueNumber | null;
   private _baseBranch: string | null;
   private _worktree: WorktreeDescriptor | null;
+  private _planDir: string | null;
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
@@ -79,6 +82,7 @@ export class StateMachine {
     issue?: IssueNumber | null;
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
+    planDir?: string | null;
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
@@ -92,6 +96,7 @@ export class StateMachine {
     this._issue = options.issue || null;
     this._baseBranch = options.baseBranch || null;
     this._worktree = options.worktree || null;
+    this._planDir = options.planDir || null;
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
@@ -139,6 +144,10 @@ export class StateMachine {
 
   public get worktree(): WorktreeDescriptor | null {
     return this._worktree;
+  }
+
+  public get planDir(): string | null {
+    return this._planDir;
   }
 
   public get createdAt(): string {
@@ -239,6 +248,11 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  public setPlanDir(dir: string | null | undefined): void {
+    this._planDir = dir && dir.trim() ? dir.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setMode(mode: ExecutionMode): void {
     if (!Object.values(EXECUTION_MODES).includes(mode)) {
       throw new ValidationError('mode', mode, `Invalid execution mode: ${mode}`);
@@ -286,6 +300,7 @@ export class StateMachine {
     this._issue = IssueNumber.tryFrom(issue);
     this._baseBranch = null;
     this._worktree = null;
+    this._planDir = null;
     this._pausedAtGate = null;
     this._pausedAtTimestamp = null;
     this._totalHumanWaitMs = 0;
@@ -307,6 +322,7 @@ export class StateMachine {
       issue: this.issue,
       baseBranch: this._baseBranch,
       worktree: this._worktree,
+      planDir: this._planDir,
       stepCount: this._history.length,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
@@ -325,6 +341,7 @@ export class StateMachine {
       issue: this.issue,
       baseBranch: this._baseBranch,
       worktree: this._worktree ? this._worktree.toJSON() : null,
+      planDir: this._planDir,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       history: Object.freeze([...this._history]),
@@ -333,6 +350,10 @@ export class StateMachine {
       totalHumanWaitMs: this._totalHumanWaitMs,
       planRevisionCount: this._planRevisionCount
     };
+  }
+
+  public toJSON(): StateMachineSnapshot {
+    return this.toSnapshot();
   }
 
   public static fromSnapshot(snapshot: StateMachineSnapshot): StateMachine {
@@ -354,6 +375,7 @@ export class StateMachine {
       }
     }
     const baseBranch = snapshot.baseBranch || null;
+    const planDir = snapshot.planDir || null;
 
     return new StateMachine({
       stage,
@@ -361,6 +383,7 @@ export class StateMachine {
       issue,
       baseBranch,
       worktree,
+      planDir,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       history: snapshot.history || [],
@@ -371,18 +394,24 @@ export class StateMachine {
     });
   }
 
+  public static fromJSON(json: StateMachineSnapshot): StateMachine {
+    return StateMachine.fromSnapshot(json);
+  }
+
   public static createInitial(options: {
     mode?: ExecutionMode;
     issue?: number | string | null;
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
+    planDir?: string | null;
   } = {}): StateMachine {
     return new StateMachine({
       stage: new Stage(STAGE_INITIALIZED),
       mode: options.mode || MODE_STANDARD,
       issue: IssueNumber.tryFrom(options.issue),
       baseBranch: options.baseBranch,
-      worktree: options.worktree
+      worktree: options.worktree,
+      planDir: options.planDir
     });
   }
 }

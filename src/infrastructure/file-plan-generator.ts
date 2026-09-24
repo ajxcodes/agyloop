@@ -499,7 +499,11 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     }
   }
 
-  public findPlanDirectory(projectRoot: string, issueNumber: number | string): string | null {
+  public findPlanDirectory(
+    projectRoot: string,
+    issueNumber: number | string,
+    title?: string
+  ): string | null {
     if (!issueNumber) return null;
     const plansDir = path.resolve(projectRoot, DEFAULT_PLANS_DIR);
     if (!fs.existsSync(plansDir)) return null;
@@ -507,10 +511,40 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     try {
       const entries = fs.readdirSync(plansDir, { withFileTypes: true });
       const targetPrefix = `${issueNumber}-`;
-      const match = entries.find((e) => e.isDirectory() && e.name.startsWith(targetPrefix));
-      if (match) {
-        return path.join(plansDir, match.name);
+      const candidates = entries
+        .filter((e) => e.isDirectory() && e.name.startsWith(targetPrefix))
+        .map((e) => e.name);
+
+      if (candidates.length === 0) {
+        return null;
       }
+
+      if (title) {
+        const slug = this.slugify(title);
+        const expectedFolderName = `${issueNumber}-${slug}`;
+        const exactMatch = candidates.find((name) => name === expectedFolderName);
+        if (exactMatch) {
+          return path.join(plansDir, exactMatch);
+        }
+      }
+
+      candidates.sort((a, b) => {
+        let mtimeA = 0;
+        let mtimeB = 0;
+        try {
+          mtimeA = fs.statSync(path.join(plansDir, a)).mtimeMs;
+        } catch {
+          // Ignore stat errors
+        }
+        try {
+          mtimeB = fs.statSync(path.join(plansDir, b)).mtimeMs;
+        } catch {
+          // Ignore stat errors
+        }
+        return mtimeB - mtimeA;
+      });
+
+      return path.join(plansDir, candidates[0]);
     } catch {
       // Read failed
     }
@@ -537,7 +571,11 @@ export class FilePlanGenerator implements PlanGeneratorPort {
           ? options.planDir
           : path.resolve(cwd, options.planDir);
       } else if (options.issue) {
-        resolvedPlanDir = this.findPlanDirectory(cwd, options.issue);
+        resolvedPlanDir = this.findPlanDirectory(
+          cwd,
+          options.issue,
+          options.title || undefined
+        );
       }
 
       if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {

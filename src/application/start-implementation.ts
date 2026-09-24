@@ -190,7 +190,7 @@ export class StartImplementationUseCase {
       projectRoot: workspace,
       issue: activeIssue,
       planPath: params.planPath,
-      planDir: params.planDir
+      planDir: params.planDir || sm.planDir
     });
 
     if (!resolved) {
@@ -199,6 +199,10 @@ export class StartImplementationUseCase {
         params.planPath || null,
         `Approved plan document could not be found${activeIssue ? ` for issue #${activeIssue}` : ''}. Ensure a plan exists in artifacts/plans/.`
       );
+    }
+
+    if (!sm.planDir && resolved.planDir) {
+      sm.setPlanDir(resolved.planDir);
     }
 
     const planContent = this.planGenerator.readPlanDocument(resolved.planPath);

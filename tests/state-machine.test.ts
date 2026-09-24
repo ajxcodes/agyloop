@@ -201,6 +201,39 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(reloadedSm.history[1].stage, STAGE_DISCOVERY);
   });
 
+  test('tracks and serializes planDir accurately across snapshots', () => {
+    const sm = StateMachine.createInitial({
+      mode: 'standard',
+      issue: 108,
+      planDir: '/repo/artifacts/plans/108-fix-plan-selection'
+    });
+    assert.strictEqual(sm.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const snap = sm.toSnapshot();
+    assert.strictEqual(snap.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const json = sm.toJSON();
+    assert.strictEqual(json.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const reloaded = StateMachine.fromSnapshot(snap);
+    assert.strictEqual(reloaded.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const fromJsonSm = StateMachine.fromJSON(json);
+    assert.strictEqual(fromJsonSm.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    // Test setter
+    sm.setPlanDir('/repo/artifacts/plans/108-updated');
+    assert.strictEqual(sm.planDir, '/repo/artifacts/plans/108-updated');
+
+    // Test getStatus
+    const status = sm.getStatus();
+    assert.strictEqual(status.planDir, '/repo/artifacts/plans/108-updated');
+
+    // Test reset clears planDir
+    sm.reset();
+    assert.strictEqual(sm.planDir, null);
+  });
+
   test('resets pipeline checkpoint', () => {
     const sm = StateMachine.createInitial({ mode: 'standard', issue: 99 });
     sm.transition(STAGE_DISCOVERY);

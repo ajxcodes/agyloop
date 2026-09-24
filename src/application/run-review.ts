@@ -246,7 +246,7 @@ export class RunReviewUseCase {
       projectRoot: workspace,
       issue: activeIssue,
       planPath: params.planPath,
-      planDir: params.planDir
+      planDir: params.planDir || sm.planDir
     });
 
     let planContent = '';
