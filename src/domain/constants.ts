@@ -1239,6 +1239,20 @@ export const CLI_FLAGS = Object.freeze({
   VERSION_SHORT: FLAG_VERSION_SHORT
 });
 
+// Git Push & Authentication Fallback Constants
+export const GIT_GITHUB_HOST = 'github.com' as const;
+export const GIT_SSH_URL_PREFIX = 'git@github.com:' as const;
+export const GIT_HTTPS_URL_PREFIX = 'https://github.com/' as const;
+
+/**
+ * Returns git CLI configuration arguments to redirect SSH and standard HTTPS pushes
+ * through the provided GitHub authentication token.
+ */
+export function buildGitTokenRedirectConfig(token: string): string {
+  const tokenUrl = `https://x-access-token:${token}@${GIT_GITHUB_HOST}/`;
+  return `-c url."${tokenUrl}".insteadOf="${GIT_SSH_URL_PREFIX}" -c url."${tokenUrl}".insteadOf="${GIT_HTTPS_URL_PREFIX}"`;
+}
+
 
 
 

@@ -28,7 +28,8 @@ import {
   SUMMARY_STATUS_COMPLETED,
   CommitMessage,
   CommitExecutionError,
-  InvalidTransitionError
+  InvalidTransitionError,
+  buildGitTokenRedirectConfig
 } from '../domain';
 import {
   StateRepository,
@@ -65,6 +66,8 @@ export interface ExecuteCommitResult {
   readonly prBaseBranch?: string;
   readonly prCommand?: string;
   readonly worktreeTornDown?: boolean;
+  readonly pushError?: string;
+  readonly fallbackUsed?: boolean;
 }
 
 export class ExecuteCommitUseCase {
@@ -272,14 +275,65 @@ export class ExecuteCommitUseCase {
 
     // Resolve PR target base branch (inferred collector branch or main)
     const prBaseBranch = sm.baseBranch || 'main';
-    const activeBranch = sm.worktree?.branch || '';
+
+    // Resolve active branch (worktree branch or git rev-parse HEAD fallback)
+    let activeBranch = sm.worktree?.branch || '';
+    if (!activeBranch) {
+      try {
+        const branchRes = await this.commandExecutor.execute('git rev-parse --abbrev-ref HEAD', { cwd });
+        const detected = branchRes.stdout.trim();
+        if (detected && detected !== 'HEAD') {
+          activeBranch = detected;
+        }
+      } catch {
+        // Fallback resolution failure non-fatal
+      }
+    }
+
     const prCommand = activeBranch
       ? `gh pr create --base "${prBaseBranch}" --head "${activeBranch}"`
       : `gh pr create --base "${prBaseBranch}"`;
 
+    // Remote Task Branch Push with Automated Token Fallback
+    let pushFailed = false;
+    let pushError: string | undefined;
+    let fallbackUsed = false;
+
+    if (activeBranch) {
+      try {
+        const pushRes = await this.commandExecutor.execute(`git push -u origin "${activeBranch}"`, { cwd });
+        if (pushRes.exitCode !== 0) {
+          const standardError = (pushRes.stderr || pushRes.stdout || 'Git push failed.').trim();
+
+          // Attempt HTTPS token fallback
+          const tokenRes = await this.commandExecutor.execute('gh auth token', { cwd });
+          const token = tokenRes.stdout.trim();
+
+          if (token && tokenRes.exitCode === 0) {
+            const redirectConfig = buildGitTokenRedirectConfig(token);
+            const fallbackCmd = `git ${redirectConfig} push -u origin "${activeBranch}"`;
+
+            const fallbackRes = await this.commandExecutor.execute(fallbackCmd, { cwd });
+            if (fallbackRes.exitCode === 0) {
+              fallbackUsed = true;
+            } else {
+              pushFailed = true;
+              pushError = (fallbackRes.stderr || fallbackRes.stdout || standardError).trim();
+            }
+          } else {
+            pushFailed = true;
+            pushError = standardError;
+          }
+        }
+      } catch (err: unknown) {
+        pushFailed = true;
+        pushError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
     // Automated Worktree Teardown
     let worktreeTornDown = false;
-    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager);
+    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager) && !pushFailed;
 
     if (shouldTeardown && this.worktreeManager && sm.worktree) {
       const wtPath = sm.worktree.worktreePath;
@@ -342,7 +396,9 @@ export class ExecuteCommitUseCase {
       summaryUpdated,
       prBaseBranch,
       prCommand,
-      worktreeTornDown
+      worktreeTornDown,
+      pushError,
+      fallbackUsed
     };
   }
 }
