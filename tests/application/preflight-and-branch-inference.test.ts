@@ -296,6 +296,53 @@ describe('InferBaseBranchUseCase', () => {
     assert.strictEqual(result.branchType, 'task');
   });
 
+  test('uses explicit explicitBaseBranch and infers fix prefix when issue has bug label on GitHub', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Fix issue on reopen',
+        body: '',
+        labels: ['bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    });
+
+    const useCase = new InferBaseBranchUseCase(makeMockWorktree(), mockGithub);
+    const result = await useCase.execute({
+      explicitBaseBranch: 'phase/5-bug-fix',
+      issueNumber: 82
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/5-bug-fix');
+    assert.strictEqual(result.isCollectorBranch, true);
+    assert.strictEqual(result.branchType, 'fix');
+    assert.strictEqual(result.taskBranchPrefix, 'fix/');
+    assert(result.suggestedBranch.startsWith('fix/82-'));
+    assert.strictEqual(result.isBug, true);
+  });
+
+  test('handles fetchIssue failure gracefully when explicitBaseBranch is provided', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async () => {
+        throw new Error('Network error');
+      }
+    });
+
+    const useCase = new InferBaseBranchUseCase(makeMockWorktree(), mockGithub);
+    const result = await useCase.execute({
+      explicitBaseBranch: 'phase/5-bug-fix',
+      issueNumber: 82
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/5-bug-fix');
+    assert.strictEqual(result.branchType, 'task');
+    assert.strictEqual(result.taskBranchPrefix, 'task/');
+    assert(result.suggestedBranch.startsWith('task/82-'));
+    assert.strictEqual(result.isBug, false);
+  });
+
   test('infers phase branch from issue labels and fetches GitHub issue if needed', async () => {
     const mockGithub = makeMockGithub({
       fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
