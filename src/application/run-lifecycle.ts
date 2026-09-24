@@ -188,6 +188,10 @@ export class RunLifecycleUseCase {
         this.planGenerator
       );
 
+    this.inferBaseBranchUseCase =
+      deps.inferBaseBranchUseCase ??
+      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
+
     this.startImplementationUseCase =
       deps.startImplementationUseCase ??
       new StartImplementationUseCase(
@@ -247,10 +251,6 @@ export class RunLifecycleUseCase {
     this.runPreFlightCheckUseCase =
       deps.runPreFlightCheckUseCase ??
       new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager, this.stateRepo);
-
-    this.inferBaseBranchUseCase =
-      deps.inferBaseBranchUseCase ??
-      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
   }
 
   public async execute(params: RunLifecycleParams = {}): Promise<RunLifecycleResult> {
