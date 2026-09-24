@@ -292,6 +292,52 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       const foundDir = generator.findPlanDirectory(tempDir, 12);
       assert.strictEqual(foundDir, scaffold.planDir);
     });
+
+    test('findPlanDirectory resolves most recent folder by mtime when multiple match', () => {
+      const plansDir = path.join(tempDir, 'artifacts', 'plans');
+      const dirOld = path.join(plansDir, '42-apple-first');
+      const dirNew = path.join(plansDir, '42-zebra-last');
+      fs.mkdirSync(dirOld, { recursive: true });
+      fs.mkdirSync(dirNew, { recursive: true });
+
+      // Set old time on dirOld, new time on dirNew
+      const pastTime = new Date(Date.now() - 60000);
+      const currentTime = new Date();
+      fs.utimesSync(dirOld, pastTime, pastTime);
+      fs.utimesSync(dirNew, currentTime, currentTime);
+
+      const found = generator.findPlanDirectory(tempDir, 42);
+      assert.strictEqual(found, dirNew);
+
+      // Now set dirOld to be newer than dirNew
+      const newestTime = new Date(Date.now() + 60000);
+      fs.utimesSync(dirOld, newestTime, newestTime);
+
+      const foundSwapped = generator.findPlanDirectory(tempDir, 42);
+      assert.strictEqual(foundSwapped, dirOld);
+    });
+
+    test('findPlanDirectory prefers exact slug match when title is provided', () => {
+      const plansDir = path.join(tempDir, 'artifacts', 'plans');
+      const dirA = path.join(plansDir, '55-feature-alpha');
+      const dirB = path.join(plansDir, '55-feature-beta');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+
+      // dirB is newer
+      const pastTime = new Date(Date.now() - 60000);
+      const currentTime = new Date();
+      fs.utimesSync(dirA, pastTime, pastTime);
+      fs.utimesSync(dirB, currentTime, currentTime);
+
+      // But searching with title "Feature Alpha" should pick dirA
+      const found = generator.findPlanDirectory(tempDir, 55, 'Feature Alpha');
+      assert.strictEqual(found, dirA);
+
+      // Searching without title picks newer dirB
+      const foundWithoutTitle = generator.findPlanDirectory(tempDir, 55);
+      assert.strictEqual(foundWithoutTitle, dirB);
+    });
   });
 
   describe('CLI Arguments & Integration', () => {

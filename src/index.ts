@@ -94,8 +94,12 @@ export function ensurePlanDirectory(projectRoot: string = process.cwd()): string
   return defaultPlanGenerator.ensurePlanDirectory(projectRoot);
 }
 
-export function findPlanDirectory(projectRoot: string, issueNumber: number | string): string | null {
-  return defaultPlanGenerator.findPlanDirectory(projectRoot, issueNumber);
+export function findPlanDirectory(
+  projectRoot: string,
+  issueNumber: number | string,
+  title?: string
+): string | null {
+  return defaultPlanGenerator.findPlanDirectory(projectRoot, issueNumber, title);
 }
 
 export function loadTemplate(templateName: string, customTemplatesDir?: string | null): string {

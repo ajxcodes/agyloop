@@ -399,7 +399,8 @@ export class GetNextActionUseCase {
     if (this.planGenerator) {
       const resolved = this.planGenerator.resolvePlanFile({
         projectRoot: cwd,
-        issue: activeIssue
+        issue: activeIssue,
+        planDir: sm.planDir
       });
       if (resolved) {
         planPath = resolved.planPath;

@@ -135,6 +135,9 @@ export class StartPlanningUseCase {
         type: planType,
         labels: planLabels
       });
+      if (scaffoldInfo && scaffoldInfo.planDir) {
+        sm.setPlanDir(scaffoldInfo.planDir);
+      }
     }
 
     // 4. Resolve planner subagent definition
