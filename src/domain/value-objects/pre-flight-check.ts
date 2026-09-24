@@ -46,6 +46,8 @@ export interface PreFlightCheckContext {
     readonly line?: number;
     readonly state?: string;
     readonly createdAt?: string;
+    readonly category?: string;
+    readonly severity?: string;
   }[];
   readonly prHasChangesRequested?: boolean;
 }
@@ -68,6 +70,8 @@ export interface PreFlightCheckResult {
     readonly line?: number;
     readonly state?: string;
     readonly createdAt?: string;
+    readonly category?: string;
+    readonly severity?: string;
   }[];
   readonly prHasChangesRequested?: boolean;
 }
