@@ -16,6 +16,7 @@ const {
 } = require('../../dist/presentation');
 const {
   STAGE_INITIALIZED,
+  STAGE_DISCOVERY,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_COMMIT,
@@ -296,6 +297,50 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         process.chdir(prevCwd);
         (process.stdin as any).isTTY = originalIsTTY;
         console.error = originalError;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli plan prints paused at APPROVAL gate when stage reaches APPROVAL', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-test-'));
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['plan', '--title', 'Feature Plan']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(output.includes(`Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`));
+        assert.ok(output.includes("run 'agyloop implement' to continue."));
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli plan prints pipeline advanced when stage remains at DISCOVERY (bug discovery)', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-discovery-test-'));
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['plan', '--type', 'discovery', '--title', 'Bug Fix RCA']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(!output.includes(`Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`));
+        assert.ok(output.includes(`✓ Pipeline advanced to ${formatStageBadge(STAGE_DISCOVERY)}.`));
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
