@@ -533,4 +533,125 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.strictEqual(wtStat.isSymbolicLink(), true);
     assert.strictEqual(fs.realpathSync(wtAgyloop), fs.realpathSync(rootAgyloop));
   });
+
+  test('listWorktrees filters out external subagent worktrees by default unless includeExternal is true', async () => {
+    const subagentPath = '/home/user/.gemini/antigravity/brain/abc-123/.system_generated/worktrees/subagent-1';
+    const otherExternalPath = '/tmp/some/other/worktree';
+    const porcelainOutput = [
+      `worktree ${tmpDir}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${path.join(tmpDir, '.worktrees', '90')}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/fix/90',
+      '',
+      `worktree ${subagentPath}`,
+      'HEAD 3333333333333333333333333333333333333333',
+      'branch refs/heads/subagent-branch',
+      '',
+      `worktree ${otherExternalPath}`,
+      'HEAD 4444444444444444444444444444444444444444',
+      'branch refs/heads/external-branch',
+      ''
+    ].join('\n');
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+
+    // Default: excludes external worktrees
+    const defaultList = await manager.listWorktrees({ workspaceDir: tmpDir });
+    assert.strictEqual(defaultList.length, 1);
+    assert.strictEqual(defaultList[0].taskId, '90');
+    assert.strictEqual(defaultList[0].worktreePath, path.resolve(tmpDir, '.worktrees', '90'));
+
+    // With includeExternal: true, includes all worktrees
+    const allList = await manager.listWorktrees({ workspaceDir: tmpDir, includeExternal: true });
+    assert.strictEqual(allList.length, 3);
+    assert.strictEqual(allList[0].taskId, '90');
+    assert.strictEqual(allList[1].worktreePath, path.resolve(subagentPath));
+    assert.strictEqual(allList[2].worktreePath, path.resolve(otherExternalPath));
+  });
+
+  test('cleanOrphanedWorktrees with subagents: true prunes external subagent worktrees while safeguarding process.cwd', async () => {
+    const executedCommands: string[] = [];
+    const currentCwd = path.resolve(process.cwd());
+    const subagentPath1 = '/home/user/.gemini/antigravity/brain/abc-123/.system_generated/worktrees/subagent-1';
+    const subagentPath2 = '/home/user/.gemini/antigravity/brain/def-456/.system_generated/worktrees/subagent-2';
+
+    let removeCount = 0;
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd.includes('git worktree remove')) {
+          removeCount++;
+          return makeResult(cmd);
+        }
+        if (cmd === 'git worktree list --porcelain') {
+          // If both subagents have been removed, return only root and cwd
+          if (removeCount >= 2) {
+            return makeResult(cmd, {
+              stdout: [
+                `worktree ${tmpDir}`,
+                'HEAD 1111111111111111111111111111111111111111',
+                'branch refs/heads/main',
+                '',
+                `worktree ${currentCwd}`,
+                'HEAD 2222222222222222222222222222222222222222',
+                'branch refs/heads/fix/90',
+                ''
+              ].join('\n')
+            });
+          }
+
+          return makeResult(cmd, {
+            stdout: [
+              `worktree ${tmpDir}`,
+              'HEAD 1111111111111111111111111111111111111111',
+              'branch refs/heads/main',
+              '',
+              `worktree ${currentCwd}`,
+              'HEAD 2222222222222222222222222222222222222222',
+              'branch refs/heads/fix/90',
+              '',
+              `worktree ${subagentPath1}`,
+              'HEAD 3333333333333333333333333333333333333333',
+              'branch refs/heads/subagent-1',
+              '',
+              `worktree ${subagentPath2}`,
+              'HEAD 4444444444444444444444444444444444444444',
+              'branch refs/heads/subagent-2',
+              ''
+            ].join('\n')
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const cleaned = await manager.cleanOrphanedWorktrees({
+      workspaceDir: tmpDir,
+      subagents: true
+    });
+
+    assert.strictEqual(cleaned, 2);
+    // Subagents should be removed via git worktree remove --force
+    assert.ok(executedCommands.some((c) => c.includes(`git worktree remove --force "${subagentPath1}"`)));
+    assert.ok(executedCommands.some((c) => c.includes(`git worktree remove --force "${subagentPath2}"`)));
+    // process.cwd() MUST NOT be removed
+    assert.strictEqual(
+      executedCommands.some((c) => c.includes(`git worktree remove --force "${currentCwd}"`)),
+      false
+    );
+  });
 });
+
