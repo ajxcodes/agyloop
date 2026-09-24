@@ -178,6 +178,38 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.ok(fs.existsSync(agyloopDir));
   });
 
+  test('createWorktree proactively queries branches and reuses existing fix/ branch without -b flag', async () => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\nfix/82-bug-fix\n', combinedOutput: 'main\nfix/82-bug-fix\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '82',
+      workspaceDir: tmpDir
+    });
+
+    assert.strictEqual(descriptor.taskId, '82');
+    assert.strictEqual(descriptor.branch, 'fix/82-bug-fix');
+    // Ensure it didn't run git worktree add -b "task/82"
+    assert.strictEqual(executedCommands.some((c) => c.includes('git worktree add -b')), false);
+    // Ensure it checked out the existing branch directly
+    assert.ok(executedCommands.some((c) => c.includes('git worktree add "') && c.includes('fix/82-bug-fix')));
+  });
+
   test('createWorktree handles existing branch by reusing existing branch without -b flag', async () => {
     const executedCommands: string[] = [];
     const mockExecutor: CommandExecutorPort = {

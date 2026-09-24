@@ -53,10 +53,36 @@ export class InferBaseBranchUseCase {
     if (params.explicitBaseBranch && params.explicitBaseBranch.trim()) {
       const explicit = params.explicitBaseBranch.trim();
       const isCollector = explicit.startsWith('phase/') || explicit.startsWith('feature/');
-      const isBug = (params.labels || []).some((l) => l.toLowerCase() === 'bug');
+
+      let labels: string[] = params.labels ? [...params.labels] : [];
+      let title: string = params.title || '';
+
+      if (params.issueNumber && this.githubGateway) {
+        const parsedNum = Number(params.issueNumber);
+        if (Number.isInteger(parsedNum) && parsedNum > 0) {
+          try {
+            const issueData = await this.githubGateway.fetchIssue(parsedNum, {
+              cwd,
+              repo: params.trackerRepo
+            });
+            if (issueData) {
+              if (issueData.labels && issueData.labels.length > 0 && labels.length === 0) {
+                labels = [...issueData.labels];
+              }
+              if (issueData.title && !title) {
+                title = issueData.title;
+              }
+            }
+          } catch {
+            // Network or offline fallback
+          }
+        }
+      }
+
+      const isBug = labels.some((l) => l.toLowerCase() === 'bug');
       const prefix = isBug ? 'fix/' : 'task/';
       const issuePart = params.issueNumber ? `${params.issueNumber}-` : '';
-      const slug = WorktreeDescriptor.slugify(params.title || 'task');
+      const slug = WorktreeDescriptor.slugify(title || 'task');
       const suggested = `${prefix}${issuePart}${slug}`;
       const result: BranchInferenceResult = {
         baseBranch: explicit,

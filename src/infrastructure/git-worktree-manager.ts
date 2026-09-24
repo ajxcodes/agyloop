@@ -230,11 +230,32 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       fs.mkdirSync(parentDir, { recursive: true });
     }
 
-    // 5. Execute git worktree add
-    let addRes = await this.commandExecutor.execute(
-      `git worktree add -b "${branch}" "${worktreePath}" "${baseBranch}"`,
-      { cwd: workspace }
-    );
+    // 5. Check if an existing branch matching task/<id> or fix/<id> already exists
+    let targetBranch = branch;
+    let branchAlreadyExists = false;
+
+    try {
+      const existingBranches = await this.listBranches({ workspaceDir: workspace });
+      const branchPattern = new RegExp(`^(task|fix)/${taskId}([-_/]|$)`, 'i');
+      const matched = existingBranches.find((b) => branchPattern.test(b));
+      if (matched) {
+        targetBranch = matched;
+        branchAlreadyExists = true;
+      }
+    } catch {
+      // Non-fatal, proceed with default branch
+    }
+
+    // 6. Execute git worktree add
+    let addRes = branchAlreadyExists
+      ? await this.commandExecutor.execute(
+          `git worktree add "${worktreePath}" "${targetBranch}"`,
+          { cwd: workspace }
+        )
+      : await this.commandExecutor.execute(
+          `git worktree add -b "${targetBranch}" "${worktreePath}" "${baseBranch}"`,
+          { cwd: workspace }
+        );
 
     if (addRes.exitCode !== 0) {
       const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
@@ -248,7 +269,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         return new WorktreeDescriptor({
           taskId,
           worktreePath: existingPath,
-          branch,
+          branch: targetBranch,
           baseBranch,
           slug,
           isIsolated: true
@@ -258,7 +279,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // If branch already exists, reuse the existing branch
       if (output.includes('already exists')) {
         addRes = await this.commandExecutor.execute(
-          `git worktree add "${worktreePath}" "${branch}"`,
+          `git worktree add "${worktreePath}" "${targetBranch}"`,
           { cwd: workspace }
         );
       }
@@ -275,7 +296,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         return new WorktreeDescriptor({
           taskId,
           worktreePath: existingPath,
-          branch,
+          branch: targetBranch,
           baseBranch,
           slug,
           isIsolated: true
@@ -285,11 +306,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       throw new WorktreeCreationError(
         'createWorktree',
         addRes.stderr || addRes.stdout || `Failed to create git worktree at ${worktreePath}`,
-        { taskId, branch, worktreePath, baseBranch }
+        { taskId, branch: targetBranch, worktreePath, baseBranch }
       );
     }
 
-    // 6. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
+    // 7. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
     this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
     this.linkArtifactsIfPresent(workspace, worktreePath);
     this.linkAgyloopStateIfPresent(workspace, worktreePath);
@@ -297,7 +318,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     return new WorktreeDescriptor({
       taskId,
       worktreePath,
-      branch,
+      branch: targetBranch,
       baseBranch,
       slug,
       isIsolated: true
