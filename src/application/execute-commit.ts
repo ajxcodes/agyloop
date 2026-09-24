@@ -28,7 +28,8 @@ import {
   SUMMARY_STATUS_COMPLETED,
   CommitMessage,
   CommitExecutionError,
-  InvalidTransitionError
+  InvalidTransitionError,
+  buildGitTokenRedirectConfig
 } from '../domain';
 import {
   StateRepository,
@@ -309,10 +310,8 @@ export class ExecuteCommitUseCase {
           const token = tokenRes.stdout.trim();
 
           if (token && tokenRes.exitCode === 0) {
-            const fallbackCmd =
-              `git -c url."https://x-access-token:${token}@github.com/".insteadOf="git@github.com:" ` +
-              `-c url."https://x-access-token:${token}@github.com/".insteadOf="https://github.com/" ` +
-              `push -u origin "${activeBranch}"`;
+            const redirectConfig = buildGitTokenRedirectConfig(token);
+            const fallbackCmd = `git ${redirectConfig} push -u origin "${activeBranch}"`;
 
             const fallbackRes = await this.commandExecutor.execute(fallbackCmd, { cwd });
             if (fallbackRes.exitCode === 0) {
