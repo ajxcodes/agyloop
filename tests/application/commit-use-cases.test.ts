@@ -85,9 +85,15 @@ class MockCommandExecutor implements CommandExecutorPort {
 
 class MockWorktreeManager implements Partial<WorktreeManagerPort> {
   public removedWorktreeOptions: any = null;
+  public cleanOrphanedCalls: any[] = [];
 
   public async removeWorktree(options: any): Promise<void> {
     this.removedWorktreeOptions = options;
+  }
+
+  public async cleanOrphanedWorktrees(options?: any): Promise<number> {
+    this.cleanOrphanedCalls.push(options);
+    return 1;
   }
 }
 
@@ -728,6 +734,46 @@ new file mode 100644
       assert.ok(executor.executedCommands.includes('git rev-parse --abbrev-ref HEAD'));
       assert.ok(executor.executedCommands.includes('git push -u origin "fix/inferred-88"'));
       assert.strictEqual(result.prCommand, 'gh pr create --base "main" --head "fix/inferred-88"');
+    });
+
+    test('invokes cleanOrphanedWorktrees with subagents: true after commit completion', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      sm.setIssue(90);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: clean subagents (#90)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit90\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/90\n' };
+      executor.responses['git push -u origin "fix/90"'] = { exitCode: 0 };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'clean subagents',
+        issueNumber: 90
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(worktreeManager.cleanOrphanedCalls.length, 1);
+      assert.strictEqual(worktreeManager.cleanOrphanedCalls[0].subagents, true);
+      assert.strictEqual(worktreeManager.cleanOrphanedCalls[0].workspaceDir, '/mock/repo');
     });
   });
 });

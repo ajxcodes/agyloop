@@ -110,6 +110,8 @@ export interface CliOptions {
   phaseBranch: string | null;
   worktreeSubcommand: string | null;
   worktreeTarget: string | null;
+  subagents: boolean;
+  all: boolean;
   critiqueSubcommand: string | null;
   force: boolean;
   triageAction: string | null;
@@ -163,6 +165,8 @@ Operational Flags:
       --worktree     Enable git worktree isolation for task execution (default: true)
       --no-worktree  Disable worktree isolation and execute directly in root workspace
       --keep-worktree Keep git worktree after commit completion (prevent auto-teardown)
+      --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
+      --all          Include/prune all worktrees (used with worktree list/prune/clean)
       --json         Output machine-readable JSON for scripting and piping
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
@@ -217,6 +221,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     phaseBranch: null,
     worktreeSubcommand: null,
     worktreeTarget: null,
+    subagents: false,
+    all: false,
     critiqueSubcommand: null,
     force: false,
     triageAction: null
@@ -247,6 +253,10 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.noWorktree = true;
     } else if (arg === '--keep-worktree') {
       options.keepWorktree = true;
+    } else if (arg === '--subagents') {
+      options.subagents = true;
+    } else if (arg === '--all') {
+      options.all = true;
     } else if (arg === '--json') {
       options.json = true;
     } else if (arg === '--force' || arg === '-f') {
@@ -630,7 +640,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const sub = options.worktreeSubcommand || 'list';
 
       if (sub === 'list') {
-        const res = await manageWorktreeUseCase.list();
+        const res = await manageWorktreeUseCase.list({
+          includeExternal: options.all
+        });
         const list = res.data || [];
         console.log('\n=== AgyLoop: Active Isolated Git Worktrees ===');
         if (list.length === 0) {
@@ -651,7 +663,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       if (sub === 'clean' || sub === 'prune') {
         console.log('Pruning orphaned git worktrees and locks...');
-        const res = await manageWorktreeUseCase.clean();
+        const res = await manageWorktreeUseCase.clean({
+          subagents: options.subagents,
+          all: options.all
+        });
         console.log(`✓ ${res.message}\n`);
         return EXIT_CODE_SUCCESS;
       }

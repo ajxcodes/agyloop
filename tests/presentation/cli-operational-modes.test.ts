@@ -165,6 +165,16 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsedRemove.command, 'worktree');
       assert.strictEqual(parsedRemove.options.worktreeSubcommand, 'remove');
       assert.strictEqual(parsedRemove.options.worktreeTarget, '87');
+
+      const parsedSubagents = parseArguments(['worktree', 'prune', '--subagents']);
+      assert.strictEqual(parsedSubagents.command, 'worktree');
+      assert.strictEqual(parsedSubagents.options.worktreeSubcommand, 'prune');
+      assert.strictEqual(parsedSubagents.options.subagents, true);
+
+      const parsedAll = parseArguments(['worktree', 'clean', '--all']);
+      assert.strictEqual(parsedAll.command, 'worktree');
+      assert.strictEqual(parsedAll.options.worktreeSubcommand, 'clean');
+      assert.strictEqual(parsedAll.options.all, true);
     });
   });
 

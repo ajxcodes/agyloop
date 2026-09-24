@@ -365,6 +365,18 @@ export class ExecuteCommitUseCase {
       }
     }
 
+    // Best-effort cleanup of stale external subagent worktrees
+    if (this.worktreeManager) {
+      try {
+        await this.worktreeManager.cleanOrphanedWorktrees({
+          workspaceDir: rootDir,
+          subagents: true
+        });
+      } catch {
+        // Non-blocking best effort cleanup
+      }
+    }
+
     // Update Summary Log
     let summaryUpdated = false;
     if (this.planGenerator) {

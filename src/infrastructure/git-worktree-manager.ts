@@ -399,6 +399,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     const blocks = output.split(/\n\s*\n/);
     const descriptors: WorktreeDescriptor[] = [];
     const normalizedRoot = path.resolve(workspace);
+    const expectedPrefix = path.join(normalizedRoot, DEFAULT_WORKTREES_DIR) + path.sep;
 
     for (const block of blocks) {
       const lines = block.split('\n');
@@ -419,6 +420,16 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // Skip the root primary workspace
       if (normalizedWtPath === normalizedRoot) {
         continue;
+      }
+
+      // Filter out external worktrees unless includeExternal is true
+      if (!options?.includeExternal) {
+        if (
+          normalizedWtPath !== path.join(normalizedRoot, DEFAULT_WORKTREES_DIR) &&
+          !normalizedWtPath.startsWith(expectedPrefix)
+        ) {
+          continue;
+        }
       }
 
       const branch = branchRef.replace(/^refs\/heads\//, '') || 'HEAD';
@@ -443,7 +454,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    */
   public async cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number> {
     const workspace = await this.getRepoRoot(options?.workspaceDir);
-    const initialList = await this.listWorktrees({ workspaceDir: workspace });
+    const initialList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
     await this.pruneWorktrees({ workspaceDir: workspace });
 
     const worktreesDir = path.join(workspace, DEFAULT_WORKTREES_DIR);
@@ -469,8 +480,41 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
     }
 
+    // Subagent external worktree pruning & garbage collection
+    if (options?.subagents || options?.all) {
+      const allWorktrees = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
+      const currentCwd = path.resolve(process.cwd());
+
+      for (const wt of allWorktrees) {
+        const normalizedWtPath = path.resolve(wt.worktreePath);
+        // Safeguard current process working directory
+        if (normalizedWtPath === currentCwd) {
+          continue;
+        }
+
+        const isSubagent =
+          normalizedWtPath.includes('.gemini/antigravity/brain/') ||
+          normalizedWtPath.includes('.system_generated/worktrees/') ||
+          options?.all === true;
+
+        if (isSubagent) {
+          try {
+            await this.removeWorktree({
+              worktreePath: normalizedWtPath,
+              workspaceDir: workspace,
+              force: true,
+              prune: true
+            });
+            cleaned++;
+          } catch {
+            // Non-fatal if removal fails
+          }
+        }
+      }
+    }
+
     await this.pruneWorktrees({ workspaceDir: workspace });
-    const finalList = await this.listWorktrees({ workspaceDir: workspace });
+    const finalList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
     const diff = Math.max(0, initialList.length - finalList.length);
     return Math.max(cleaned, diff);
   }

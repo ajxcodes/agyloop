@@ -161,6 +161,17 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     assert.ok(result.message.includes('2 active isolated worktree(s)'));
   });
 
+  test('list forwards includeExternal to manager', async () => {
+    const mock = new MockWorktreeManager();
+    const useCase = new ManageWorktreeUseCase(mock);
+
+    await useCase.list({ workspaceDir: '/repo', includeExternal: true });
+
+    assert.strictEqual(mock.listWorktreesCalls.length, 1);
+    assert.strictEqual(mock.listWorktreesCalls[0].includeExternal, true);
+    assert.strictEqual(mock.listWorktreesCalls[0].workspaceDir, '/repo');
+  });
+
   test('clean cleans orphaned worktrees and returns count', async () => {
     const mock = new MockWorktreeManager();
     mock.cleanCount = 4;
@@ -173,4 +184,17 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     assert.ok(result.message.includes('Cleaned 4 orphaned worktree(s)'));
     assert.strictEqual(mock.cleanOrphanedCalls.length, 1);
   });
+
+  test('clean forwards subagents and all flags to worktreeManager', async () => {
+    const mock = new MockWorktreeManager();
+    const useCase = new ManageWorktreeUseCase(mock);
+
+    await useCase.clean({ workspaceDir: '/repo', subagents: true, all: true });
+
+    assert.strictEqual(mock.cleanOrphanedCalls.length, 1);
+    assert.strictEqual(mock.cleanOrphanedCalls[0].subagents, true);
+    assert.strictEqual(mock.cleanOrphanedCalls[0].all, true);
+    assert.strictEqual(mock.cleanOrphanedCalls[0].workspaceDir, '/repo');
+  });
 });
+

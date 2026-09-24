@@ -44,10 +44,13 @@ export interface PruneWorktreesParams {
 
 export interface ListWorktreesParams {
   readonly workspaceDir?: string;
+  readonly includeExternal?: boolean;
 }
 
 export interface CleanWorktreesParams {
   readonly workspaceDir?: string;
+  readonly subagents?: boolean;
+  readonly all?: boolean;
 }
 
 export interface WorktreeOperationResult<T = void> {
@@ -126,7 +129,8 @@ export class ManageWorktreeUseCase {
     params: ListWorktreesParams = {}
   ): Promise<WorktreeOperationResult<readonly WorktreeDescriptor[]>> {
     const worktrees = await this.worktreeManager.listWorktrees({
-      workspaceDir: params.workspaceDir
+      workspaceDir: params.workspaceDir,
+      includeExternal: params.includeExternal
     });
 
     return {
@@ -143,7 +147,9 @@ export class ManageWorktreeUseCase {
     params: CleanWorktreesParams = {}
   ): Promise<WorktreeOperationResult<{ count: number }>> {
     const count = await this.worktreeManager.cleanOrphanedWorktrees({
-      workspaceDir: params.workspaceDir
+      workspaceDir: params.workspaceDir,
+      subagents: params.subagents,
+      all: params.all
     });
 
     return {

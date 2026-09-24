@@ -34,6 +34,7 @@ export interface PruneWorktreesOptions {
 
 export interface ListWorktreesOptions {
   readonly workspaceDir?: string;
+  readonly includeExternal?: boolean;
 }
 
 export interface EnsureGitIgnoreOptions {
@@ -43,6 +44,8 @@ export interface EnsureGitIgnoreOptions {
 
 export interface CleanOrphanedOptions {
   readonly workspaceDir?: string;
+  readonly subagents?: boolean;
+  readonly all?: boolean;
 }
 
 export interface ListBranchesOptions {
