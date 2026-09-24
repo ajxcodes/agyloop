@@ -542,7 +542,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, 'phase/5-quality-gates');
   });
 
-  test('lazily creates InferBaseBranchUseCase when not injected and worktreeManager is provided', async () => {
+  test('does not infer baseBranch when inferBaseBranchUseCase is not injected even if worktreeManager is provided', async () => {
     const sm = StateMachine.createInitial({ issue: 93 });
     sm.transition(STAGE_DISCOVERY);
 
@@ -575,8 +575,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     );
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
-    assert.strictEqual(result.baseBranch, 'phase/5-quality-gates');
-    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, 'phase/5-quality-gates');
+    assert.strictEqual(result.baseBranch, 'main');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, null);
   });
 
   test('handles inferBaseBranch failure non-fatally with warning', async () => {

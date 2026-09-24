@@ -40,7 +40,7 @@ import {
   BuildDetectorPort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
-import { InferBaseBranchUseCase } from './infer-base-branch';
+import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
   readonly workspaceDir?: string;
@@ -168,16 +168,9 @@ export class GetNextActionUseCase {
     }
 
     activeIssue = sm.issue;
-    if (!sm.baseBranch && activeIssue && (this.inferBaseBranchUseCase || this.worktreeManager)) {
+    if (!sm.baseBranch && activeIssue && this.inferBaseBranchUseCase) {
       try {
-        const inferBranchUseCase =
-          this.inferBaseBranchUseCase ??
-          new InferBaseBranchUseCase(
-            this.worktreeManager!,
-            this.githubGateway,
-            this.stateRepo
-          );
-        const inference = await inferBranchUseCase.execute({
+        const inference = await this.inferBaseBranchUseCase.execute({
           issueNumber: activeIssue,
           workspaceDir: cwd
         });
