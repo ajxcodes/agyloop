@@ -371,7 +371,11 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       let content = fs.readFileSync(summaryFilePath, 'utf8');
 
       if (updateData.stage) {
-        const stageQuery = String(updateData.stage).toLowerCase();
+        const rawQuery = String(updateData.stage).toLowerCase().trim();
+        // Normalize stage query keywords: strip digits, punctuation, and plurals for robust matching
+        const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const normQuery = normalize(rawQuery);
+
         const lines = content.split('\n');
         let updated = false;
 
@@ -381,9 +385,32 @@ export class FilePlanGenerator implements PlanGeneratorPort {
             const parts = line.split('|').map((p) => p.trim());
             if (parts.length >= 6) {
               const rowStage = parts[1].toLowerCase();
-              if (rowStage.includes(stageQuery)) {
-                const currentSubagent = updateData.subagent ? `\`${updateData.subagent}\`` : parts[2];
-                const currentModel = updateData.model ? `\`${updateData.model}\`` : parts[3];
+              const normRow = normalize(parts[1]);
+
+              // Check direct includes, normalized includes, or cross-matching synonyms
+              const matches =
+                rowStage.includes(rawQuery) ||
+                rawQuery.includes(rowStage) ||
+                normRow.includes(normQuery) ||
+                normQuery.includes(normRow) ||
+                (normQuery.includes('commit') && normRow.includes('commit')) ||
+                (normQuery.includes('quality') && normRow.includes('quality')) ||
+                (normQuery.includes('discovery') && normRow.includes('discovery')) ||
+                (normQuery.includes('plan') && normRow.includes('plan')) ||
+                (normQuery.includes('implement') && normRow.includes('implement')) ||
+                (normQuery.includes('review') && normRow.includes('review'));
+
+              if (matches) {
+                const formatCell = (val?: string, fallback = '-'): string => {
+                  if (!val) return fallback;
+                  const trimmed = val.trim();
+                  if (trimmed.startsWith('`') && trimmed.endsWith('`')) return trimmed;
+                  if (trimmed === '-' || trimmed.toLowerCase() === 'human gate') return trimmed;
+                  return `\`${trimmed}\``;
+                };
+
+                const currentSubagent = updateData.subagent ? formatCell(updateData.subagent, parts[2]) : parts[2];
+                const currentModel = updateData.model ? formatCell(updateData.model, parts[3]) : parts[3];
                 const currentStatus = updateData.status ? updateData.status.toUpperCase() : parts[4];
                 const currentDuration = updateData.duration ? updateData.duration : parts[5];
 

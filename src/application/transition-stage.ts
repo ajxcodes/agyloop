@@ -27,6 +27,8 @@ import {
   SUMMARY_STATUS_PENDING,
   SUMMARY_STATUS_IN_PROGRESS,
   SUMMARY_STATUS_COMPLETED,
+  MS_PER_SECOND,
+  SECONDS_PER_MINUTE,
   WorktreeCreationError
 } from '../domain';
 import { StateRepository, WorktreeManagerPort, PlanGeneratorPort } from '../ports';
@@ -148,6 +150,12 @@ export class TransitionStageUseCase {
       }
     }
 
+    const prevStage = sm.currentStage;
+    let gateWaitMs = 0;
+    if (sm.pausedAtGate && sm.pausedAtTimestamp) {
+      gateWaitMs = Math.max(0, Date.now() - new Date(sm.pausedAtTimestamp).getTime());
+    }
+
     if (sm.pausedAtGate) {
       sm.resumeFromGate();
     }
@@ -180,7 +188,51 @@ export class TransitionStageUseCase {
             [STAGE_COMMIT]: SUMMARY_STAGE_COMMIT_PR,
             [STAGE_COMPLETED]: SUMMARY_STAGE_COMMIT_PR
           };
+
+          const formatDuration = (ms: number): string => {
+            const totalSeconds = Math.max(0, Math.round(ms / MS_PER_SECOND));
+            const minutes = Math.floor(totalSeconds / SECONDS_PER_MINUTE);
+            const seconds = totalSeconds % SECONDS_PER_MINUTE;
+            if (minutes > 0) {
+              return `${minutes}m ${seconds}s`;
+            }
+            return `${seconds}s`;
+          };
+
+          // Compute duration for the stage just exited
+          let prevDurationStr: string | undefined = undefined;
+          const history = sm.history;
+          if (history.length >= 2) {
+            const currentEntry = history[history.length - 1];
+            const prevEntry = history[history.length - 2];
+            const startTime = new Date(prevEntry.timestamp).getTime();
+            const endTime = new Date(currentEntry.timestamp).getTime();
+            let durationMs = Math.max(0, endTime - startTime);
+            const waitMsForStage = gateWaitMs > 0 ? gateWaitMs : (prevStage === STAGE_IMPLEMENT ? sm.totalHumanWaitMs : 0);
+            if (waitMsForStage > 0) {
+              durationMs = Math.max(0, durationMs - waitMsForStage);
+            }
+            prevDurationStr = formatDuration(durationMs);
+          }
+
+          const prevMappedStage = stageMap[prevStage];
           const mappedStage = stageMap[targetStageStr];
+
+          // 1. Mark preceding stage as COMPLETED if transitioning forward
+          if (prevMappedStage && prevMappedStage !== mappedStage) {
+            this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
+              stage: prevMappedStage,
+              status: SUMMARY_STATUS_COMPLETED,
+              duration: prevDurationStr
+            });
+          } else if (prevMappedStage && prevDurationStr) {
+            this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
+              stage: prevMappedStage,
+              duration: prevDurationStr
+            });
+          }
+
+          // 2. Update current target stage
           if (mappedStage) {
             const statusMap: Record<string, string> = {
               [STAGE_APPROVAL]: SUMMARY_STATUS_PENDING,
