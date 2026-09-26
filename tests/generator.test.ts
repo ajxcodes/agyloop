@@ -270,6 +270,43 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.ok(content.includes('- **Tests:** 100% (26 passed)'));
       assert.ok(content.includes('- All architectural invariants satisfied'));
     });
+
+    test('updateSummaryLog matches and updates Quality Gate and Commit Gate table rows', () => {
+      const summaryResult = generator.generateSummaryLog({
+        targetDir: tempDir,
+        projectName: 'TestApp',
+        issueNumber: 50
+      });
+
+      // Update with stage queries matching TransitionStageUseCase mappings
+      const updatedQuality = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Quality Gates',
+        subagent: 'gate',
+        model: 'flash_lite',
+        status: 'PASSED',
+        duration: '45s'
+      });
+      assert.strictEqual(updatedQuality, true, 'Should find and update Quality Gate row');
+
+      const updatedCommit = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Commit / PR',
+        subagent: 'Human Gate',
+        model: '-',
+        status: 'COMPLETED',
+        duration: '1m 15s'
+      });
+      assert.strictEqual(updatedCommit, true, 'Should find and update Commit Gate row');
+
+      const content = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        content.includes('| 4. Quality Gate | `gate` | `flash_lite` | PASSED | 45s |'),
+        'Summary table should reflect updated Quality Gate row'
+      );
+      assert.ok(
+        content.includes('| 6. Commit Gate | Human Gate | - | COMPLETED | 1m 15s |'),
+        'Summary table should reflect updated Commit Gate row'
+      );
+    });
   });
 
   describe('scaffoldPlanDirectory() & findPlanDirectory()', () => {

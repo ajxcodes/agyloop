@@ -250,6 +250,7 @@ export const STATE_SCHEMA_VERSION = '1.0.0' as const;
 export const CLI_VERSION = '0.5.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
+export const SECONDS_PER_MINUTE = 60 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
 export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
