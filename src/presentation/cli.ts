@@ -921,7 +921,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Model Tier   : ${p.model}`);
           console.log(`Whitelisted  : ${p.tools.join(', ')}`);
           console.log(
-            `Safety Guard : Physical write suppression enabled (write_tools=false, mcp_tools=${p.capabilities.enable_mcp_tools})\n`
+            `Safety Guard : Scoped plan modification (write_tools=${p.capabilities.enable_write_tools}, mcp_tools=${p.capabilities.enable_mcp_tools})\n`
           );
         }
 
