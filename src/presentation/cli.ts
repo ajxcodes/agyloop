@@ -115,6 +115,7 @@ export interface CliOptions {
   critiqueSubcommand: string | null;
   force: boolean;
   triageAction: string | null;
+  step: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -134,7 +135,8 @@ Operational Modes:
   yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
   plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate
   implement          Resume implementation directly from approved plan specification
-  gates              Run standalone quality gates and AI PR review on working diff
+  gates              Run compound Tier 1 Quality Gates and Tier 1 Critique Review on working diff
+  gate               Alias for 'gates --step' (pause after quality verification before AI review)
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
 
@@ -154,6 +156,7 @@ Pipeline Management:
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
       --commit-after Automatically draft and commit changes if quality gates and AI review pass
+      --step         Pause compound execution after quality gates (before AI review) in 'gates' mode
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
@@ -225,7 +228,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     all: false,
     critiqueSubcommand: null,
     force: false,
-    triageAction: null
+    triageAction: null,
+    step: false
   };
 
   const positional: string[] = [];
@@ -239,6 +243,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.version = true;
     } else if (arg === '--commit-after') {
       options.commitAfter = true;
+    } else if (arg === '--step') {
+      options.step = true;
     } else if (arg === '--yolo') {
       options.yolo = true;
     } else if (arg === '--yes' || arg === '-y') {
@@ -329,6 +335,11 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
 
     if (cmdIndex < positional.length) {
       command = positional[cmdIndex];
+
+      if (command === 'gate') {
+        command = 'gates';
+        options.step = true;
+      }
 
       if (command === 'transition' && cmdIndex + 1 < positional.length) {
         options.stageArg = positional[cmdIndex + 1].toUpperCase();
@@ -995,7 +1006,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           configPath: options.configPath,
           dryRun: options.dryRun,
           worktree: options.noWorktree ? false : true,
-          baseBranch: options.baseBranch || undefined
+          baseBranch: options.baseBranch || undefined,
+          step: options.step,
+          onProgress: (msg) => {
+            const coloredMsg = msg.replace(/\[([A-Z_]+)\]/g, (_match, p1) => formatStageBadge(p1));
+            console.log(coloredMsg);
+          }
         });
 
         if (options.dryRun) {
