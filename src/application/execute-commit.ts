@@ -296,7 +296,7 @@ export class ExecuteCommitUseCase {
     const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
     const issueId = params.issue || sm.issue;
 
-    let prCommand = activeBranch
+    let prCommandCore = activeBranch
       ? `gh pr create --base "${prBaseBranch}" --head "${activeBranch}"`
       : `gh pr create --base "${prBaseBranch}"`;
 
@@ -307,13 +307,16 @@ export class ExecuteCommitUseCase {
       const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
       const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody).replace(/"/g, '\\"');
 
-      prCommand += ` --title "${sanitizedTitle}" --body "${sanitizedBody}"`;
+      prCommandCore += ` --title "${sanitizedTitle}" --body "${sanitizedBody}"`;
 
       if (milestone) {
         const escapedMilestone = milestone.replace(/"/g, '\\"');
-        prCommand += ` --milestone "${escapedMilestone}"`;
+        prCommandCore += ` --milestone "${escapedMilestone}"`;
       }
     }
+
+    // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
+    const prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
 
     // Remote Task Branch Push with Automated Token Fallback
     let pushFailed = false;
