@@ -735,7 +735,7 @@ new file mode 100644
       assert.ok(executor.executedCommands.includes('git push -u origin "fix/inferred-88"'));
       assert.strictEqual(
         result.prCommand,
-        'gh pr create --base "main" --head "fix/inferred-88" --title "fix: inferred branch push (#88)" --body "Closes #88"'
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base "main" --head "fix/inferred-88" --title "fix: inferred branch push (#88)" --body "Closes #88"; git stash pop -q; else gh pr create --base "main" --head "fix/inferred-88" --title "fix: inferred branch push (#88)" --body "Closes #88"; fi'
       );
     });
 
@@ -818,7 +818,7 @@ new file mode 100644
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"'
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"; git stash pop -q; else gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"; fi'
       );
     });
 
@@ -855,7 +855,7 @@ new file mode 100644
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'gh pr create --base "main" --head "task/62-override" --title "feat: commit with body (#62)" --body "Detailed feature description.\n\nCloses #62" --milestone "v0.7.0"'
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base "main" --head "task/62-override" --title "feat: commit with body (#62)" --body "Detailed feature description.\n\nCloses #62" --milestone "v0.7.0"; git stash pop -q; else gh pr create --base "main" --head "task/62-override" --title "feat: commit with body (#62)" --body "Detailed feature description.\n\nCloses #62" --milestone "v0.7.0"; fi'
       );
     });
 
@@ -888,7 +888,7 @@ new file mode 100644
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'gh pr create --base "main" --head "chore/cleanup"'
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base "main" --head "chore/cleanup"; git stash pop -q; else gh pr create --base "main" --head "chore/cleanup"; fi'
       );
     });
   });
