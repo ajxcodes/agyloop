@@ -118,6 +118,9 @@ export class StartPlanningUseCase {
           issueNumber: issueVo.value
         });
       }
+      if (issueData?.milestone?.title) {
+        sm.setMilestoneTitle(issueData.milestone.title);
+      }
     }
 
     const planTitle =

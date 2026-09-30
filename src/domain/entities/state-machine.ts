@@ -33,6 +33,7 @@ export interface StateMachineSnapshot {
   readonly currentStage: StageName;
   readonly mode: ExecutionMode;
   readonly issue: number | null;
+  readonly milestoneTitle?: string | null;
   readonly baseBranch?: string | null;
   readonly worktree?: Record<string, unknown> | null;
   readonly planDir?: string | null;
@@ -49,6 +50,7 @@ export interface StateStatusSummary {
   readonly currentStage: StageName;
   readonly mode: ExecutionMode;
   readonly issue: number | null;
+  readonly milestoneTitle?: string | null;
   readonly baseBranch?: string | null;
   readonly worktree?: WorktreeDescriptor | null;
   readonly planDir?: string | null;
@@ -65,6 +67,7 @@ export class StateMachine {
   private _stage: Stage;
   private _mode: ExecutionMode;
   private _issue: IssueNumber | null;
+  private _milestoneTitle: string | null;
   private _baseBranch: string | null;
   private _worktree: WorktreeDescriptor | null;
   private _planDir: string | null;
@@ -80,6 +83,7 @@ export class StateMachine {
     stage?: Stage;
     mode?: ExecutionMode;
     issue?: IssueNumber | null;
+    milestoneTitle?: string | null;
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
@@ -94,6 +98,7 @@ export class StateMachine {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
     this._issue = options.issue || null;
+    this._milestoneTitle = options.milestoneTitle && options.milestoneTitle.trim() ? options.milestoneTitle.trim() : null;
     this._baseBranch = options.baseBranch || null;
     this._worktree = options.worktree || null;
     this._planDir = options.planDir || null;
@@ -136,6 +141,10 @@ export class StateMachine {
 
   public get issueNumber(): IssueNumber | null {
     return this._issue;
+  }
+
+  public get milestoneTitle(): string | null {
+    return this._milestoneTitle;
   }
 
   public get baseBranch(): string | null {
@@ -238,6 +247,11 @@ export class StateMachine {
     return null;
   }
 
+  public setMilestoneTitle(milestone: string | null | undefined): void {
+    this._milestoneTitle = milestone && milestone.trim() ? milestone.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setBaseBranch(baseBranch: string | null | undefined): void {
     this._baseBranch = baseBranch && baseBranch.trim() ? baseBranch.trim() : null;
     this._updatedAt = new Date().toISOString();
@@ -298,6 +312,7 @@ export class StateMachine {
       this._mode = mode;
     }
     this._issue = IssueNumber.tryFrom(issue);
+    this._milestoneTitle = null;
     this._baseBranch = null;
     this._worktree = null;
     this._planDir = null;
@@ -320,6 +335,7 @@ export class StateMachine {
       currentStage: this._stage.value,
       mode: this._mode,
       issue: this.issue,
+      milestoneTitle: this._milestoneTitle,
       baseBranch: this._baseBranch,
       worktree: this._worktree,
       planDir: this._planDir,
@@ -339,6 +355,7 @@ export class StateMachine {
       currentStage: this._stage.value,
       mode: this._mode,
       issue: this.issue,
+      milestoneTitle: this._milestoneTitle,
       baseBranch: this._baseBranch,
       worktree: this._worktree ? this._worktree.toJSON() : null,
       planDir: this._planDir,
@@ -374,6 +391,7 @@ export class StateMachine {
         issue = IssueNumber.tryFrom(inferred);
       }
     }
+    const milestoneTitle = snapshot.milestoneTitle || null;
     const baseBranch = snapshot.baseBranch || null;
     const planDir = snapshot.planDir || null;
 
@@ -381,6 +399,7 @@ export class StateMachine {
       stage,
       mode,
       issue,
+      milestoneTitle,
       baseBranch,
       worktree,
       planDir,
@@ -401,6 +420,7 @@ export class StateMachine {
   public static createInitial(options: {
     mode?: ExecutionMode;
     issue?: number | string | null;
+    milestoneTitle?: string | null;
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
@@ -409,6 +429,7 @@ export class StateMachine {
       stage: new Stage(STAGE_INITIALIZED),
       mode: options.mode || MODE_STANDARD,
       issue: IssueNumber.tryFrom(options.issue),
+      milestoneTitle: options.milestoneTitle,
       baseBranch: options.baseBranch,
       worktree: options.worktree,
       planDir: options.planDir

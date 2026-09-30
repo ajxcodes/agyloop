@@ -29,6 +29,7 @@ import {
   CommitMessage,
   CommitExecutionError,
   InvalidTransitionError,
+  PublicSanitizer,
   buildGitTokenRedirectConfig
 } from '../domain';
 import {
@@ -48,6 +49,7 @@ export interface ExecuteCommitParams {
   readonly rootWorkspaceDir?: string;
   readonly dryRun?: boolean;
   readonly issue?: number | string | null;
+  readonly milestoneTitle?: string | null;
   readonly keepWorktree?: boolean;
   readonly rejectionTarget?: 'IMPLEMENT' | 'PLAN' | StageName | null;
   readonly rejectionDirective?: 'replan' | 'implement' | string | null;
@@ -290,9 +292,28 @@ export class ExecuteCommitUseCase {
       }
     }
 
-    const prCommand = activeBranch
+    // Resolve milestone and issue for PR generation
+    const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
+    const issueId = params.issue || sm.issue;
+
+    let prCommand = activeBranch
       ? `gh pr create --base "${prBaseBranch}" --head "${activeBranch}"`
       : `gh pr create --base "${prBaseBranch}"`;
+
+    if (issueId) {
+      const singleLine = commitMessage.toSingleLine();
+      const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine).replace(/"/g, '\\"');
+
+      const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
+      const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody).replace(/"/g, '\\"');
+
+      prCommand += ` --title "${sanitizedTitle}" --body "${sanitizedBody}"`;
+
+      if (milestone) {
+        const escapedMilestone = milestone.replace(/"/g, '\\"');
+        prCommand += ` --milestone "${escapedMilestone}"`;
+      }
+    }
 
     // Remote Task Branch Push with Automated Token Fallback
     let pushFailed = false;
