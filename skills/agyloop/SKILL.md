@@ -176,20 +176,32 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
 - Implementer signals `IMPLEMENTATION_DONE` upon completing checklist with clean syntax.
 - Advance state: `bin/agyloop transition IMPLEMENT` (or run `bin/agyloop implement`).
 
-### 6. Quality Gate Subagent (`QUALITY_GATE`)
-- Launch the isolated **`gate`** subagent inside `.worktrees/<task-id>` via `invoke_subagent`.
-- Execute builds, typechecks, test suites, and linters inside the worktree directory.
-- Capture structured results: `GATE_STATUS: PASSED | FAILED`.
-- **Quality Gate Failure Loop**: If failed, transitions back to `IMPLEMENT` with isolated diagnostics in `selfCorrectionPayload` for a fresh Implementer subagent.
+### 6. Quality Gate & Automated Compound Verification (`QUALITY_GATE`)
+- **Dual Execution Modes**:
+  - **Automated Compound Runner (`bin/agyloop gates`)**:
+    - The standard and recommended verification path for automated workflows.
+    - Executes Tier 1 quality gates (compilation, typechecks, linters, and full automated test suite) directly inside `.worktrees/<task-id>`.
+    - Automatically chains directly into **Tier 1 Automated Critique Review** (invoking `critique` analysis across the working diff).
+    - If both quality gates and critique pass without blocking issues, it automatically advances the state machine to `COMMIT` (or directly commits if `--commit-after` is supplied).
+  - **Standalone Subagent Dispatch (`gate`)**:
+    - Ephemeral micro-agent launched via `invoke_subagent` (using payload from `bin/agyloop next --json`).
+    - Intended for interactive subagent dispatch when complete conversational context isolation or granular error handling is required.
+    - Executes builds, typechecks, test suites, and linters inside `.worktrees/<task-id>`.
+    - Emits structured results: `GATE_STATUS: PASSED | FAILED`.
+- **Quality Gate Failure Loop**: If gates fail in either mode, transitions back to `IMPLEMENT` with isolated diagnostics in `selfCorrectionPayload` for a fresh Implementer subagent.
 - Advance state: `bin/agyloop transition QUALITY_GATE`.
 
 ### 7. Two-Tier Review Architecture (`REVIEW`)
 - **Tier 1 (Automated Critique Diagnostics)**:
   - Executes `critique` CLI inside `.worktrees/<task-id>` against base branch (`main` or phase collector).
   - Inspects code against repository standards (`.github/critique.md`, clean architecture boundaries, zero magic values).
+  - Automatically performed as part of `bin/agyloop gates` and `bin/agyloop yolo`.
 - **Tier 2 (AI Acceptance Criteria & Standards Audit)**:
-  - Spawns the read-only **`reviewer`** subagent with raw `critique` diagnostics, `git diff`, repo standards, and approved plan Acceptance Criteria.
+  - When deep Acceptance Criteria auditing or isolated evaluation is requested, spawns the read-only **`reviewer`** subagent via `invoke_subagent` (payload from `bin/agyloop next --json`).
+  - Supplied with raw `critique` diagnostics, `git diff`, repo standards, and approved plan Acceptance Criteria.
   - Reviewer verifies criteria fulfillment and emits structured verdict: `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`.
+- **Optional `--commit-after` Behavior**:
+  - Passing `--commit-after` to `bin/agyloop gates` or `bin/agyloop yolo` instructs the runner to automatically draft and execute the conventional commit upon clean quality gates and review approval, seamlessly advancing to `COMPLETED`.
 - **Mandatory Critique & Review Failure Loop**:
   - Any `critical` or `error` findings from `critique` or unfulfilled ACs mandate `CHANGES_REQUESTED`.
   - Packages diagnostics and remediation actions into `selfCorrectionPayload`, reverting `REVIEW -> IMPLEMENT` for a fresh Implementer subagent.
@@ -217,15 +229,37 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 
 ---
 
-## Operational Commands
+## CLI Command Reference & Cheatsheet
+
+> [!CAUTION]
+> **Anti-Hallucination Directive**:
+> Never guess subcommands or execute `bin/agyloop --help` during automated agent workflows. Reference this cheatsheet directly.
+> Note: `bin/agyloop start` does **NOT** exist. Use `bin/agyloop [issue]` or `bin/agyloop plan --issue <id>`.
+
+| Command / Invocation | Description & Primary Use Case | Key Flags & Arguments |
+| :--- | :--- | :--- |
+| `bin/agyloop [issue]` | Standard continuous lifecycle orchestrator. Runs Discovery $\rightarrow$ Plan $\rightarrow$ [Approval] $\rightarrow$ Implement $\rightarrow$ Gates $\rightarrow$ Review $\rightarrow$ [Commit]. | `[issue]` (e.g. `113`), `--yolo`, `--commit-after`, `--no-worktree`, `--dry-run` |
+| `bin/agyloop plan [--issue <id>]` | Plan-only mode. Generates persistent specification in `artifacts/plans/` and halts at `[APPROVAL]` gate. | `--issue <id>`, `--title <text>`, `--type <discovery\|implementation\|auto>`, `--dry-run` |
+| `bin/agyloop implement [--issue <id>]` | Resumes implementation directly from approved plan inside isolated worktree. | `--issue <id>`, `--no-worktree`, `--base-branch <branch>`, `--dry-run` |
+| `bin/agyloop gates [--issue <id>]` | Compound automated verification. Runs test suite, compilation, and automated Critique analysis; advances to `COMMIT` if clean. | `--commit-after`, `--staged`, `-m "<msg>"`, `--issue <id>`, `--dry-run` |
+| `bin/agyloop commit` | Drafts Conventional Commit and prompts for interactive human approval (or commits immediately with `-y`). | `-y` / `--yes`, `-m` / `--message "<msg>"`, `-s` / `--staged`, `--keep-worktree`, `--dry-run` |
+| `bin/agyloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. | `--issue <id>`, `--commit-after`, `--no-worktree`, `--dry-run` |
+| `bin/agyloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. | `--json` |
+| `bin/agyloop branch-info [--json]` | Displays base collector branch, active task branch, worktree directory, and PR target. | `--json` |
+| `bin/agyloop status` | Displays current pipeline stage, execution mode, active issue, worktree list, and transition history. | None |
+| `bin/agyloop worktree <subcommand>` | Manages isolated git worktrees. Valid subcommands: `list`, `clean`, `prune`, `remove <id>`. | `list`, `clean`, `prune`, `remove <task-id>`, `--all`, `--subagents` |
+| `bin/agyloop critique <subcommand>` | Manages Critique CLI integration and version status. Valid subcommands: `status`, `install`, `update`. | `status`, `install`, `update`, `--force`, `--json` |
+| `bin/agyloop triage <action>` | Routes open PR review comments to lifecycle stages. Valid actions: `implement`, `plan`, `discovery`, `dismiss`. | `implement`, `plan`, `discovery`, `dismiss`, `--issue <id>`, `-m "<notes>"`, `--json` |
+| `bin/agyloop release [phaseBranch]` | Creates a Milestone Release PR from phase collector to main with automated SemVer labeling and changelog. | `[phaseBranch]`, `--base-branch <branch>`, `--dry-run`, `--refresh` |
+| `bin/agyloop reset` | Resets the `.agyloop/state.json` checkpoint for the repository. | None |
+| `bin/agyloop transition <STAGE>` | Manually advances or rolls back the state machine to a specific lifecycle stage. | `<STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
+
+---
+
+## User Slash Commands
 
 - `/agyloop [task]`: Full end-to-end lifecycle with human approval gates.
 - `/agyloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
 - `/agyloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
 - `/agyloop gates`: Runs isolated builds, tests, and AI review on active worktree diff.
 - `/agyloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.
-- `bin/agyloop next [--json]`: Query the exact next action and get machine-readable `invoke_subagent` payloads.
-- `bin/agyloop branch-info [--json]`: Inspect active base collector branch, task branch, and worktree location.
-- `bin/agyloop commit [--keep-worktree]`: Commit staged changes in worktree, push, and teardown worktree.
-- `bin/agyloop worktree list`: List all active isolated git worktrees.
-- `bin/agyloop worktree prune`: Clean up stale worktrees and release orphaned git index locks.
