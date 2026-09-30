@@ -57,20 +57,21 @@ export class InferBaseBranchUseCase {
       let labels: string[] = params.labels ? [...params.labels] : [];
       let title: string = params.title || '';
 
+      let explicitIssueData: GitHubIssueData | null = null;
       if (params.issueNumber && this.githubGateway) {
         const parsedNum = Number(params.issueNumber);
         if (Number.isInteger(parsedNum) && parsedNum > 0) {
           try {
-            const issueData = await this.githubGateway.fetchIssue(parsedNum, {
+            explicitIssueData = await this.githubGateway.fetchIssue(parsedNum, {
               cwd,
               repo: params.trackerRepo
             });
-            if (issueData) {
-              if (issueData.labels && issueData.labels.length > 0 && labels.length === 0) {
-                labels = [...issueData.labels];
+            if (explicitIssueData) {
+              if (explicitIssueData.labels && explicitIssueData.labels.length > 0 && labels.length === 0) {
+                labels = [...explicitIssueData.labels];
               }
-              if (issueData.title && !title) {
-                title = issueData.title;
+              if (explicitIssueData.title && !title) {
+                title = explicitIssueData.title;
               }
             }
           } catch {
@@ -108,6 +109,9 @@ export class InferBaseBranchUseCase {
             const sm = StateMachine.fromSnapshot(snapshot);
             sm.setBaseBranch(explicit);
             if (params.issueNumber) sm.setIssue(params.issueNumber);
+            if (explicitIssueData?.milestone?.title) {
+              sm.setMilestoneTitle(explicitIssueData.milestone.title);
+            }
             await this.stateRepo.save(sm.toSnapshot());
           }
         } catch {
@@ -242,6 +246,9 @@ export class InferBaseBranchUseCase {
           sm.setBaseBranch(inference.baseBranch);
           if (params.issueNumber) {
             sm.setIssue(params.issueNumber);
+          }
+          if (issueData?.milestone?.title) {
+            sm.setMilestoneTitle(issueData.milestone.title);
           }
           await this.stateRepo.save(sm.toSnapshot());
         }

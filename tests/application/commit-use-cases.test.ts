@@ -733,7 +733,10 @@ new file mode 100644
       assert.strictEqual(result.pushError, undefined);
       assert.ok(executor.executedCommands.includes('git rev-parse --abbrev-ref HEAD'));
       assert.ok(executor.executedCommands.includes('git push -u origin "fix/inferred-88"'));
-      assert.strictEqual(result.prCommand, 'gh pr create --base "main" --head "fix/inferred-88"');
+      assert.strictEqual(
+        result.prCommand,
+        'gh pr create --base "main" --head "fix/inferred-88" --title "fix: inferred branch push (#88)" --body "Closes #88"'
+      );
     });
 
     test('invokes cleanOrphanedWorktrees with subagents: true after commit completion', async () => {
@@ -774,6 +777,119 @@ new file mode 100644
       assert.strictEqual(worktreeManager.cleanOrphanedCalls.length, 1);
       assert.strictEqual(worktreeManager.cleanOrphanedCalls[0].subagents, true);
       assert.strictEqual(worktreeManager.cleanOrphanedCalls[0].workspaceDir, '/mock/repo');
+    });
+
+    test('generates prCommand with title, body with Closes #id, and --milestone from sm.milestoneTitle', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 62,
+        worktreePath: '/mock/repo/.worktrees/62',
+        branch: 'task/62',
+        baseBranch: 'phase/v0.6.0'
+      });
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        worktree: wt,
+        baseBranch: 'phase/v0.6.0',
+        milestoneTitle: 'v0.6.0'
+      });
+      sm.setIssue(62);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat(pr): automated milestone linking (#62)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit62hash\n' };
+      executor.responses['git push -u origin "task/62"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        scope: 'pr',
+        description: 'automated milestone linking',
+        issueNumber: 62
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"'
+      );
+    });
+
+    test('generates prCommand with description and Closes #id in body when commit has body, and honors milestoneTitle param override', async () => {
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        baseBranch: 'main'
+      });
+      sm.setIssue(62);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat: commit with body (#62)\\n\\nDetailed feature description."'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit62hash2\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/62-override\n' };
+      executor.responses['git push -u origin "task/62-override"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        description: 'commit with body',
+        body: 'Detailed feature description.',
+        issueNumber: 62
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        milestoneTitle: 'v0.7.0'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'gh pr create --base "main" --head "task/62-override" --title "feat: commit with body (#62)" --body "Detailed feature description.\n\nCloses #62" --milestone "v0.7.0"'
+      );
+    });
+
+    test('generates prCommand without title, body, or milestone when no issue is present', async () => {
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        baseBranch: 'main'
+      });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "chore: ad-hoc task"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commitchore\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'chore/cleanup\n' };
+      executor.responses['git push -u origin "chore/cleanup"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'chore',
+        description: 'ad-hoc task'
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'gh pr create --base "main" --head "chore/cleanup"'
+      );
     });
   });
 });

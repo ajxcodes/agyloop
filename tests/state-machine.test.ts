@@ -234,6 +234,39 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(sm.planDir, null);
   });
 
+  test('tracks and serializes milestoneTitle accurately across snapshots', () => {
+    const sm = StateMachine.createInitial({
+      mode: 'standard',
+      issue: 62,
+      milestoneTitle: 'v0.6.0'
+    });
+    assert.strictEqual(sm.milestoneTitle, 'v0.6.0');
+
+    const snap = sm.toSnapshot();
+    assert.strictEqual(snap.milestoneTitle, 'v0.6.0');
+
+    const json = sm.toJSON();
+    assert.strictEqual(json.milestoneTitle, 'v0.6.0');
+
+    const reloaded = StateMachine.fromSnapshot(snap);
+    assert.strictEqual(reloaded.milestoneTitle, 'v0.6.0');
+
+    const fromJsonSm = StateMachine.fromJSON(json);
+    assert.strictEqual(fromJsonSm.milestoneTitle, 'v0.6.0');
+
+    // Test setter
+    sm.setMilestoneTitle('v0.7.0');
+    assert.strictEqual(sm.milestoneTitle, 'v0.7.0');
+
+    // Test getStatus
+    const status = sm.getStatus();
+    assert.strictEqual(status.milestoneTitle, 'v0.7.0');
+
+    // Test reset clears milestoneTitle
+    sm.reset();
+    assert.strictEqual(sm.milestoneTitle, null);
+  });
+
   test('resets pipeline checkpoint', () => {
     const sm = StateMachine.createInitial({ mode: 'standard', issue: 99 });
     sm.transition(STAGE_DISCOVERY);
