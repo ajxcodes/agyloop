@@ -355,4 +355,117 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       }
     });
   });
+
+  describe('bin/agyloop launcher staleness detection', () => {
+    const { checkStaleDist } = require('../../bin/agyloop.js');
+
+    test('warns when src/ .ts files are newer than dist/', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-stale-dist-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const srcDir = path.join(tempDir, 'src', 'nested');
+        const distDir = path.join(tempDir, 'dist', 'presentation');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.mkdirSync(distDir, { recursive: true });
+
+        const distCli = path.join(distDir, 'cli.js');
+        const srcFile = path.join(srcDir, 'index.ts');
+
+        fs.writeFileSync(distCli, 'console.log("compiled");');
+        fs.writeFileSync(srcFile, 'export const foo = 1;');
+
+        const pastTime = new Date(Date.now() - 60000);
+        const nowTime = new Date();
+        fs.utimesSync(distCli, pastTime, pastTime);
+        fs.utimesSync(srcFile, nowTime, nowTime);
+
+        checkStaleDist(tempDir);
+        assert.ok(warnMessage.includes("Notice: src/ contains modifications newer than dist/. Run 'npm run build' to apply updates."));
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('does not warn when dist/ is newer than src/', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-fresh-dist-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const srcDir = path.join(tempDir, 'src');
+        const distDir = path.join(tempDir, 'dist', 'presentation');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.mkdirSync(distDir, { recursive: true });
+
+        const distCli = path.join(distDir, 'cli.js');
+        const srcFile = path.join(srcDir, 'index.ts');
+
+        fs.writeFileSync(distCli, 'console.log("compiled");');
+        fs.writeFileSync(srcFile, 'export const foo = 1;');
+
+        const pastTime = new Date(Date.now() - 60000);
+        const nowTime = new Date();
+        fs.utimesSync(srcFile, pastTime, pastTime);
+        fs.utimesSync(distCli, nowTime, nowTime);
+
+        checkStaleDist(tempDir);
+        assert.strictEqual(warnMessage, '');
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('gracefully ignores when src/ directory is missing (e.g. production pack)', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-no-src-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const distDir = path.join(tempDir, 'dist', 'presentation');
+        fs.mkdirSync(distDir, { recursive: true });
+        fs.writeFileSync(path.join(distDir, 'cli.js'), 'console.log("compiled");');
+
+        checkStaleDist(tempDir);
+        assert.strictEqual(warnMessage, '');
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('gracefully ignores when dist/ is missing', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-no-dist-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const srcDir = path.join(tempDir, 'src');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.writeFileSync(path.join(srcDir, 'foo.ts'), 'export const foo = 1;');
+
+        checkStaleDist(tempDir);
+        assert.strictEqual(warnMessage, '');
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
+
