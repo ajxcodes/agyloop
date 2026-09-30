@@ -179,6 +179,8 @@ export class RunPreFlightCheckUseCase {
               prNumber: pr.number,
               prBaseBranch: pr.baseRefName,
               prHeadBranch: pr.headRefName,
+              mergeStateStatus: pr.mergeStateStatus,
+              mergeable: pr.mergeable,
               prReviewComments,
               prHasChangesRequested
             });

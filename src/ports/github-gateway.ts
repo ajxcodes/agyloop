@@ -48,6 +48,8 @@ export interface GitHubPullRequestData {
   readonly url: string;
   readonly merged: boolean;
   readonly labels: readonly string[];
+  readonly mergeStateStatus?: string;
+  readonly mergeable?: string;
 }
 
 export interface GitHubGatewayOptions {
