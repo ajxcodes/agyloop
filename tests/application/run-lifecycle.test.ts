@@ -529,6 +529,59 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.ok(result.reviewResult?.passed);
     });
 
+    test('mode "gates" emits explicit stage transition notifications via onProgress', async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const progressLogs: string[] = [];
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_GATES,
+        issue: 32,
+        workspaceDir: '/mock/workspace',
+        onProgress: (msg: string) => progressLogs.push(msg)
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.deepStrictEqual(progressLogs, [
+        '✓ State advanced: [IMPLEMENT] -> [QUALITY_GATE]',
+        '✓ Quality gates passed. State advanced: [QUALITY_GATE] -> [REVIEW]',
+        '✓ AI PR Review approved. State advanced: [REVIEW] -> [COMMIT]'
+      ]);
+    });
+
+    test('mode "gates --step" pauses execution at REVIEW stage before advancing to COMMIT', async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const progressLogs: string[] = [];
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_GATES,
+        issue: 32,
+        step: true,
+        workspaceDir: '/mock/workspace',
+        onProgress: (msg: string) => progressLogs.push(msg)
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_REVIEW);
+      assert.ok(result.qualityGateResult?.passed);
+      assert.strictEqual(result.reviewResult, undefined);
+      assert.strictEqual(result.message, 'Quality gates passed. Pipeline paused at REVIEW stage.');
+      assert.deepStrictEqual(progressLogs, [
+        '✓ State advanced: [IMPLEMENT] -> [QUALITY_GATE]',
+        '✓ Quality gates passed. State advanced: [QUALITY_GATE] -> [REVIEW]'
+      ]);
+    });
+
     test('mode "gates --commit-after" auto-commits upon passing gates and review', async () => {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
       sm.transition(STAGE_DISCOVERY);

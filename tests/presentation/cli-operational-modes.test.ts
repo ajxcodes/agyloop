@@ -62,6 +62,18 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.commitAfter, true);
     });
 
+    test('parses gates with --step', () => {
+      const parsed = parseArguments(['gates', '--step']);
+      assert.strictEqual(parsed.command, 'gates');
+      assert.strictEqual(parsed.options.step, true);
+    });
+
+    test('parses gate command as alias for gates with step option', () => {
+      const parsed = parseArguments(['gate']);
+      assert.strictEqual(parsed.command, 'gates');
+      assert.strictEqual(parsed.options.step, true);
+    });
+
     test('parses commit with -y / --yes flag', () => {
       const parsedShort = parseArguments(['commit', '-y']);
       assert.strictEqual(parsedShort.command, 'commit');

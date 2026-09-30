@@ -100,6 +100,8 @@ export interface RunLifecycleParams {
   readonly userInstructions?: string | null;
   readonly interactiveCommit?: boolean;
   readonly worktree?: boolean;
+  readonly step?: boolean;
+  readonly onProgress?: (message: string) => void;
 }
 
 export interface RunLifecycleResult {
@@ -593,29 +595,50 @@ export class RunLifecycleUseCase {
 
     await this.stateRepo.save(sm.toSnapshot());
 
-    // 1. Run Quality Gate
-    const qgResult = await this.runQualityGateUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      commands: params.commands,
-      timeoutSeconds: params.timeoutSeconds,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace
-    });
+    let qgResult: QualityGateRunResult | undefined;
 
-    sm = qgResult.stateMachine;
+    // 1. Run Quality Gate (if not already at REVIEW)
+    if (sm.currentStage !== STAGE_REVIEW) {
+      params.onProgress?.('✓ State advanced: [IMPLEMENT] -> [QUALITY_GATE]');
 
-    if (!qgResult.passed) {
+      qgResult = await this.runQualityGateUseCase.execute({
+        issue: sm.issue,
+        planPath: params.planPath,
+        planDir: params.planDir,
+        commands: params.commands,
+        timeoutSeconds: params.timeoutSeconds,
+        dryRun: params.dryRun,
+        configPath: params.configPath,
+        workspaceDir: activeWorkspace
+      });
+
+      sm = qgResult.stateMachine;
+
+      if (!qgResult.passed) {
+        return {
+          success: false,
+          mode: MODE_GATES,
+          currentStage: sm.currentStage,
+          stateMachine: sm,
+          qualityGateResult: qgResult,
+          worktree,
+          message: 'Quality gates failed. Pipeline reverted to IMPLEMENT.'
+        };
+      }
+
+      params.onProgress?.('✓ Quality gates passed. State advanced: [QUALITY_GATE] -> [REVIEW]');
+    }
+
+    // Interactive stepping option: pause pipeline at REVIEW before advancing to COMMIT
+    if (params.step === true) {
       return {
-        success: false,
+        success: true,
         mode: MODE_GATES,
         currentStage: sm.currentStage,
         stateMachine: sm,
         qualityGateResult: qgResult,
         worktree,
-        message: 'Quality gates failed. Pipeline reverted to IMPLEMENT.'
+        message: 'Quality gates passed. Pipeline paused at REVIEW stage.'
       };
     }
 
@@ -648,6 +671,8 @@ export class RunLifecycleUseCase {
         message: 'AI review requested changes. Pipeline reverted to IMPLEMENT.'
       };
     }
+
+    params.onProgress?.('✓ AI PR Review approved. State advanced: [REVIEW] -> [COMMIT]');
 
     // 3. Both passed -> state is at COMMIT
     if (commitAfter) {
