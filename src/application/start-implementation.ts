@@ -39,7 +39,8 @@ import {
   PlanGeneratorPort,
   GitHubGateway,
   GitHubIssueData,
-  WorktreeManagerPort
+  WorktreeManagerPort,
+  CommandExecutorPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { InferBaseBranchUseCase } from './infer-base-branch';
@@ -56,6 +57,8 @@ export interface StartImplementationParams {
   readonly selfCorrectionPayload?: string | null;
   readonly noWorktree?: boolean;
   readonly baseBranch?: string | null;
+  readonly hasMergeConflicts?: boolean;
+  readonly mergeBaseBranch?: string | null;
 }
 
 export interface StartImplementationResult {
@@ -78,6 +81,7 @@ export class StartImplementationUseCase {
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  private readonly commandExecutor?: CommandExecutorPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -86,7 +90,8 @@ export class StartImplementationUseCase {
     githubGateway?: GitHubGateway,
     resolveSubagentUseCase?: ResolveSubagentUseCase,
     worktreeManager?: WorktreeManagerPort,
-    inferBaseBranchUseCase?: InferBaseBranchUseCase
+    inferBaseBranchUseCase?: InferBaseBranchUseCase,
+    commandExecutor?: CommandExecutorPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -96,6 +101,7 @@ export class StartImplementationUseCase {
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
     this.worktreeManager = worktreeManager;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
+    this.commandExecutor = commandExecutor;
   }
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
@@ -249,6 +255,24 @@ export class StartImplementationUseCase {
       }
     }
 
+    // 6a. Merge conflict pre-flight: fetch remote changes, attempt merge, extract conflict markers
+    const effectiveMergeConflicts = params.hasMergeConflicts === true;
+    const effectiveMergeBaseBranch = params.mergeBaseBranch || null;
+
+    if (effectiveMergeConflicts && effectiveMergeBaseBranch && this.commandExecutor) {
+      const mergeConflictPayload = await this._resolveMergeConflicts(
+        workspace,
+        effectiveMergeBaseBranch
+      );
+      if (mergeConflictPayload) {
+        // Prepend conflict context to selfCorrectionPayload so the implementer is aware
+        selfCorrectionPayload = selfCorrectionPayload
+          ? `${mergeConflictPayload}\n\n${selfCorrectionPayload}`
+          : mergeConflictPayload;
+        isSelfCorrection = true;
+      }
+    }
+
     const taskPrompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
       planPath: resolved.planPath,
@@ -291,5 +315,127 @@ export class StartImplementationUseCase {
       isSelfCorrection,
       failureDiagnostics: failureDiagnostics ?? null
     };
+  }
+
+  /**
+   * Attempts to fetch and merge the remote base branch into the current worktree.
+   * On conflict, collects conflict marker snippets from all conflicting files
+   * and returns a structured payload string for the implementer's self-correction context.
+   *
+   * Returns null when no conflicts are detected or when the executor is unavailable.
+   */
+  private async _resolveMergeConflicts(
+    workspaceDir: string,
+    mergeBaseBranch: string
+  ): Promise<string | null> {
+    if (!this.commandExecutor) {
+      return null;
+    }
+
+    // Step 1: Fetch remote branch
+    const fetchResult = await this.commandExecutor.execute(
+      `git fetch origin ${mergeBaseBranch}`,
+      { cwd: workspaceDir }
+    );
+
+    if (fetchResult.exitCode !== 0) {
+      // Fetch failure is non-fatal; surface as a diagnostic note
+      return [
+        '### Merge Conflict Pre-Flight (Fetch Failed):',
+        `Unable to fetch \`origin/${mergeBaseBranch}\`. Verify network access and remote configuration.`,
+        '```',
+        (fetchResult.stderr || fetchResult.stdout).trim(),
+        '```'
+      ].join('\n');
+    }
+
+    // Step 2: Attempt merge
+    const mergeResult = await this.commandExecutor.execute(
+      `git merge origin/${mergeBaseBranch}`,
+      { cwd: workspaceDir }
+    );
+
+    if (mergeResult.exitCode === 0) {
+      // Clean merge — no conflict payload needed
+      return null;
+    }
+
+    // Step 3: Collect conflicting file paths
+    const conflictListResult = await this.commandExecutor.execute(
+      'git diff --name-only --diff-filter=U',
+      { cwd: workspaceDir }
+    );
+
+    const conflictingFiles = (conflictListResult.stdout || '')
+      .split('\n')
+      .map((f) => f.trim())
+      .filter(Boolean);
+
+    const conflictBlocks: string[] = [];
+
+    // Step 4: Extract conflict marker blocks from each conflicting file
+    for (const filePath of conflictingFiles) {
+      const readResult = await this.commandExecutor.execute(
+        `cat ${filePath}`,
+        { cwd: workspaceDir }
+      );
+
+      if (readResult.exitCode !== 0 || !readResult.stdout) {
+        continue;
+      }
+
+      const fileContent = readResult.stdout;
+      const snippets = StartImplementationUseCase._extractConflictSnippets(fileContent);
+
+      if (snippets.length > 0) {
+        conflictBlocks.push(`#### \`${filePath}\`\n\`\`\`\n${snippets.join('\n...\n')}\n\`\`\``);
+      }
+    }
+
+    const fileList = conflictingFiles.map((f) => `- \`${f}\``).join('\n');
+    const lines: string[] = [
+      '### Merge Conflict Pre-Flight:',
+      `The PR branch has merge conflicts with \`origin/${mergeBaseBranch}\`. The following files require manual conflict resolution before implementation can proceed:`,
+      '',
+      fileList
+    ];
+
+    if (conflictBlocks.length > 0) {
+      lines.push('', '#### Conflict Marker Snippets:', '', ...conflictBlocks);
+    }
+
+    lines.push(
+      '',
+      '**Resolution Instructions**: Resolve all conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) in the listed files, then stage the resolved files with `git add <file>` and run `git commit` to complete the merge before continuing implementation.'
+    );
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Extracts conflict marker blocks (<<<<<<< ... >>>>>>>) from file content.
+   * Returns an array of raw conflict block strings.
+   */
+  private static _extractConflictSnippets(content: string): string[] {
+    const snippets: string[] = [];
+    const lines = content.split('\n');
+    let inConflict = false;
+    let currentBlock: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith('<<<<<<<')) {
+        inConflict = true;
+        currentBlock = [line];
+      } else if (inConflict) {
+        currentBlock.push(line);
+        if (line.startsWith('>>>>>>>')) {
+          snippets.push(currentBlock.join('\n'));
+          inConflict = false;
+          currentBlock = [];
+        }
+      }
+    }
+
+    return snippets;
   }
 }

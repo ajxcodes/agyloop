@@ -76,6 +76,7 @@ import { ExecuteCommitUseCase, ExecuteCommitResult } from './execute-commit';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { RunPreFlightCheckUseCase } from './run-preflight-check';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import type { PreFlightCheckResult } from '../domain';
 
 export interface RunLifecycleParams {
   readonly mode?: ExecutionMode;
@@ -203,7 +204,8 @@ export class RunLifecycleUseCase {
         this.githubGateway,
         resolveSubagentUseCase,
         this.worktreeManager,
-        this.inferBaseBranchUseCase
+        this.inferBaseBranchUseCase,
+        this.commandExecutor
       );
 
     this.runQualityGateUseCase =
@@ -395,7 +397,7 @@ export class RunLifecycleUseCase {
         return this.executePlanMode(sm, params, workspace);
 
       case MODE_IMPLEMENT:
-        return this.executeImplementMode(sm, params, workspace);
+        return this.executeImplementMode(sm, params, workspace, preflightResult);
 
       case MODE_GATES:
         return this.executeGatesMode(sm, params, commitAfter, workspace);
@@ -404,11 +406,11 @@ export class RunLifecycleUseCase {
         return this.executeCommitMode(sm, params, workspace);
 
       case MODE_YOLO:
-        return this.executeYoloMode(sm, params, commitAfter, workspace);
+        return this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult);
 
       case MODE_STANDARD:
       default:
-        return this.executeStandardMode(sm, params, commitAfter, workspace);
+        return this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult);
     }
   }
 
@@ -526,7 +528,8 @@ export class RunLifecycleUseCase {
   private async executeImplementMode(
     sm: StateMachine,
     params: RunLifecycleParams,
-    workspace: string
+    workspace: string,
+    preflightResult?: PreFlightCheckResult
   ): Promise<RunLifecycleResult> {
     const worktree = await this.resolveWorktree(sm, params, workspace);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
@@ -538,7 +541,9 @@ export class RunLifecycleUseCase {
       userInstructions: params.userInstructions,
       configPath: params.configPath,
       dryRun: params.dryRun,
-      workspaceDir: activeWorkspace
+      workspaceDir: activeWorkspace,
+      hasMergeConflicts: preflightResult?.hasMergeConflicts,
+      mergeBaseBranch: preflightResult?.candidateBaseBranch
     });
 
     return {
@@ -783,7 +788,8 @@ export class RunLifecycleUseCase {
     sm: StateMachine,
     params: RunLifecycleParams,
     commitAfter: boolean,
-    workspace: string
+    workspace: string,
+    preflightResult?: PreFlightCheckResult
   ): Promise<RunLifecycleResult> {
     sm.setMode(MODE_YOLO);
     if (!params.dryRun) {
@@ -845,7 +851,9 @@ export class RunLifecycleUseCase {
         planDir: params.planDir,
         configPath: params.configPath,
         dryRun: params.dryRun,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch
       });
 
       sm = implResult.stateMachine;
@@ -975,7 +983,8 @@ export class RunLifecycleUseCase {
     sm: StateMachine,
     params: RunLifecycleParams,
     commitAfter: boolean,
-    workspace: string
+    workspace: string,
+    preflightResult?: PreFlightCheckResult
   ): Promise<RunLifecycleResult> {
     // 1. If at INITIALIZED or DISCOVERY: run planning and halt at APPROVAL gate
     if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
@@ -1016,7 +1025,9 @@ export class RunLifecycleUseCase {
         userInstructions: params.userInstructions,
         configPath: params.configPath,
         dryRun: params.dryRun,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch
       });
 
       sm = implResult.stateMachine;

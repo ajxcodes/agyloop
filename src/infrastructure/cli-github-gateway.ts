@@ -152,9 +152,9 @@ export class CliGitHubGateway implements GitHubGateway {
     try {
       let cmd: string;
       if (options.headBranch) {
-        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 1`;
+        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 1`;
       } else if (options.issueNumber) {
-        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 10`;
+        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 10`;
       } else {
         return null;
       }
@@ -169,6 +169,8 @@ export class CliGitHubGateway implements GitHubGateway {
         url?: string;
         mergedAt?: string | null;
         labels?: Array<{ name?: string } | string>;
+        mergeStateStatus?: string;
+        mergeable?: string;
       }
 
       const parsed = JSON.parse(raw) as RawGhPr[];
@@ -228,7 +230,9 @@ export class CliGitHubGateway implements GitHubGateway {
         headRefName: pr.headRefName || '',
         url: pr.url || '',
         merged: isMerged,
-        labels: prLabels
+        labels: prLabels,
+        mergeStateStatus: pr.mergeStateStatus,
+        mergeable: pr.mergeable
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

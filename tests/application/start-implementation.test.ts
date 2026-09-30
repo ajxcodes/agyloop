@@ -573,4 +573,240 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.ok(result.taskPrompt.includes('### Self-Correction Quality Gate Failure Diagnostics:'));
     assert.ok(result.taskPrompt.includes('Cannot find module "foo"'));
   });
+
+  // Merge conflict handling tests
+  test('injects merge conflict payload into selfCorrectionPayload when hasMergeConflicts is true and commandExecutor detects conflicts', async () => {
+    const testPlanDir2 = path.join(tempDir, 'artifacts', 'plans', '49-conflict-test');
+    fs.mkdirSync(testPlanDir2, { recursive: true });
+    fs.writeFileSync(path.join(testPlanDir2, 'implementation_plan.md'), '# Conflict Plan\n- [ ] Fix conflicts');
+
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 49,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir2);
+
+    type CommandExecutorPort = import('../../src').CommandExecutorPort;
+    type CommandExecutionResult = import('../../src').CommandExecutionResult;
+
+    // Mock executor: fetch succeeds, merge fails, conflicts listed, file has markers
+    const conflictFileContent = [
+      'line before',
+      '<<<<<<< HEAD',
+      'local version',
+      '=======',
+      'incoming version',
+      '>>>>>>> origin/main',
+      'line after'
+    ].join('\n');
+
+    const mockExecutor: CommandExecutorPort = {
+      async execute(command: string): Promise<CommandExecutionResult> {
+        const base: CommandExecutionResult = {
+          command,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          combinedOutput: '',
+          durationMs: 1,
+          timedOut: false
+        };
+        if (command.includes('git fetch')) {
+          return { ...base, exitCode: 0 };
+        }
+        if (command.includes('git merge')) {
+          return { ...base, exitCode: 1, stderr: 'CONFLICT (content): Merge conflict in src/foo.ts' };
+        }
+        if (command.includes('diff --name-only')) {
+          return { ...base, stdout: 'src/foo.ts\n' };
+        }
+        if (command.includes('cat ')) {
+          return { ...base, stdout: conflictFileContent };
+        }
+        return base;
+      }
+    };
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockExecutor
+    );
+
+    const result = await useCase.execute({
+      issue: 49,
+      workspaceDir: tempDir,
+      noWorktree: true,
+      hasMergeConflicts: true,
+      mergeBaseBranch: 'main'
+    });
+
+    assert.strictEqual(result.isSelfCorrection, true);
+    assert.ok(result.taskPrompt.includes('### Merge Conflict Pre-Flight:'));
+    assert.ok(result.taskPrompt.includes('src/foo.ts'));
+    assert.ok(result.taskPrompt.includes('<<<<<<<'));
+    assert.ok(result.taskPrompt.includes('>>>>>>>'));
+    assert.ok(result.taskPrompt.includes('Resolution Instructions'));
+  });
+
+  test('does not inject conflict payload when merge succeeds cleanly', async () => {
+    const testPlanDir3 = path.join(tempDir, 'artifacts', 'plans', '49-clean-merge');
+    fs.mkdirSync(testPlanDir3, { recursive: true });
+    fs.writeFileSync(path.join(testPlanDir3, 'implementation_plan.md'), '# Clean Merge Plan\n- [ ] Task');
+
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 49,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir3);
+
+    type CommandExecutorPort = import('../../src').CommandExecutorPort;
+    type CommandExecutionResult = import('../../src').CommandExecutionResult;
+
+    // Mock executor: both fetch and merge succeed
+    const mockExecutor: CommandExecutorPort = {
+      async execute(command: string): Promise<CommandExecutionResult> {
+        return {
+          command,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          combinedOutput: '',
+          durationMs: 1,
+          timedOut: false
+        };
+      }
+    };
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockExecutor
+    );
+
+    const result = await useCase.execute({
+      issue: 49,
+      workspaceDir: tempDir,
+      noWorktree: true,
+      hasMergeConflicts: true,
+      mergeBaseBranch: 'main'
+    });
+
+    assert.strictEqual(result.isSelfCorrection, false);
+    assert.ok(!result.taskPrompt.includes('### Merge Conflict Pre-Flight:'));
+  });
+
+  test('surfaces fetch failure as diagnostic note in conflict payload', async () => {
+    const testPlanDir4 = path.join(tempDir, 'artifacts', 'plans', '49-fetch-fail');
+    fs.mkdirSync(testPlanDir4, { recursive: true });
+    fs.writeFileSync(path.join(testPlanDir4, 'implementation_plan.md'), '# Fetch Fail Plan\n- [ ] Task');
+
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 49,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir4);
+
+    type CommandExecutorPort = import('../../src').CommandExecutorPort;
+    type CommandExecutionResult = import('../../src').CommandExecutionResult;
+
+    const mockExecutor: CommandExecutorPort = {
+      async execute(command: string): Promise<CommandExecutionResult> {
+        const base: CommandExecutionResult = {
+          command,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'fatal: unable to access remote',
+          combinedOutput: 'fatal: unable to access remote',
+          durationMs: 1,
+          timedOut: false
+        };
+        return base;
+      }
+    };
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockExecutor
+    );
+
+    const result = await useCase.execute({
+      issue: 49,
+      workspaceDir: tempDir,
+      noWorktree: true,
+      hasMergeConflicts: true,
+      mergeBaseBranch: 'main'
+    });
+
+    assert.strictEqual(result.isSelfCorrection, true);
+    assert.ok(result.taskPrompt.includes('Merge Conflict Pre-Flight (Fetch Failed):'));
+    assert.ok(result.taskPrompt.includes('unable to access remote'));
+  });
+
+  test('skips merge conflict logic when no commandExecutor is provided', async () => {
+    const testPlanDir5 = path.join(tempDir, 'artifacts', 'plans', '49-no-executor');
+    fs.mkdirSync(testPlanDir5, { recursive: true });
+    fs.writeFileSync(path.join(testPlanDir5, 'implementation_plan.md'), '# No Executor Plan\n- [ ] Task');
+
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 49,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir5);
+
+    // No commandExecutor provided — conflict logic should be skipped
+    const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
+
+    const result = await useCase.execute({
+      issue: 49,
+      workspaceDir: tempDir,
+      noWorktree: true,
+      hasMergeConflicts: true,
+      mergeBaseBranch: 'main'
+    });
+
+    // Without commandExecutor, no conflict payload should be injected
+    assert.strictEqual(result.isSelfCorrection, false);
+    assert.ok(!result.taskPrompt.includes('Merge Conflict'));
+  });
 });
