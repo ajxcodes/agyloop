@@ -30,8 +30,10 @@ export class ProcessCommandExecutor implements CommandExecutorPort {
       let timedOut = false;
       let timer: NodeJS.Timeout | null = null;
 
-      const proc = child_process.spawn(command, {
-        shell: true,
+      const useShell = !options.args;
+      const spawnArgs = options.args || [];
+      const proc = child_process.spawn(command, spawnArgs, {
+        shell: useShell,
         cwd,
         env,
         detached: process.platform !== 'win32'
