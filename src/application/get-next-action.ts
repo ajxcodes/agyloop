@@ -24,12 +24,15 @@ import {
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_TRIAGE,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
+  ROLE_TITLE_TRIAGE,
   MODE_YOLO,
-  IssueNumber
+  IssueNumber,
+  MAX_IMPLEMENT_GATE_LOOPS
 } from '../domain';
 import {
   StateRepository,
@@ -296,6 +299,19 @@ export class GetNextActionUseCase {
       }
 
       case STAGE_IMPLEMENT: {
+        if (sm.implementToGateLoops >= MAX_IMPLEMENT_GATE_LOOPS) {
+          return {
+            currentStage: sm.currentStage,
+            nextStage: STAGE_QUALITY_GATE,
+            actionType: 'human_gate',
+            title: 'Quality Gate Retry Breaker',
+            description: `Quality gate has failed ${sm.implementToGateLoops} times consecutively. Manual intervention required to prevent infinite loop.`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `Too many consecutive failures (${sm.implementToGateLoops}). Please inspect the workspace manually and fix the issue before running "agyloop transition QUALITY_GATE" or "agyloop implement".`
+          };
+        }
         return this.buildImplementAction(sm, config, cwd);
       }
 
@@ -402,16 +418,42 @@ export class GetNextActionUseCase {
       }
 
       case STAGE_TRIAGE: {
+        const subagent = this.resolveSubagentUseCase.execute({
+          role: ROLE_TRIAGE,
+          customConfig: config,
+          workspaceDir: cwd
+        });
+
+        const prompt = this.resolveSubagentUseCase.buildTriageTaskPrompt?.({
+          issueNumber: activeIssue,
+          workspaceDir: worktreePath || cwd,
+          config
+        }) || `Triage PR review comments.`;
+
+        const invocationPayload: SubagentInvocationPayload = {
+          Subagents: [
+            {
+              TypeName: 'self',
+              Role: ROLE_TITLE_TRIAGE,
+              Model: subagent.model,
+              Workspace: 'share',
+              Prompt: prompt
+            }
+          ]
+        };
+
         return {
           currentStage: STAGE_TRIAGE,
           nextStage: STAGE_IMPLEMENT,
-          actionType: 'human_gate',
-          title: 'PR Review Comments Triage Gate',
-          description: 'Open PR contains review comments requiring human triage before modifying code or resuming pipeline.',
+          actionType: 'subagent',
+          role: ROLE_TRIAGE,
+          title: 'Invoke Triage Subagent',
+          description: 'Open PR contains review comments requiring triage and pipeline routing.',
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: 'PR review comments detected. Run "bin/agyloop triage" to inspect categorized comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED.'
+          invocationPayload,
+          humanSummary: `Invoke Triage Subagent with Model '${subagent.model}' to categorize comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED.`
         };
       }
 

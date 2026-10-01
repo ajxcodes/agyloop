@@ -69,10 +69,10 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.step, true);
     });
 
-    test('parses gate command as alias for gates with step option', () => {
+    test('parses gate command as deprecated subcommand (no longer aliased to gates)', () => {
       const parsed = parseArguments(['gate']);
-      assert.strictEqual(parsed.command, 'gates');
-      assert.strictEqual(parsed.options.step, true);
+      assert.strictEqual(parsed.command, 'gate');
+      assert.strictEqual(parsed.options.step, false);
     });
 
     test('parses commit with -y / --yes flag', () => {

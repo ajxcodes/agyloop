@@ -13,18 +13,22 @@ import {
   IMPLEMENTER_TOOLS,
   GATE_TOOLS,
   REVIEWER_TOOLS,
+  TRIAGE_TOOLS,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_TRIAGE,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
+  ROLE_TITLE_TRIAGE,
   ROLE_DESC_PLANNER,
   ROLE_DESC_IMPLEMENTER,
   ROLE_DESC_GATE,
   ROLE_DESC_REVIEWER,
+  ROLE_DESC_TRIAGE,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
   DEFAULT_GATE_SYSTEM_PROMPT,
@@ -113,6 +117,18 @@ export const REVIEWER_SUBAGENT_DEF = Object.freeze({
   })
 });
 
+export const TRIAGE_SUBAGENT_DEF = Object.freeze({
+  name: ROLE_TRIAGE,
+  role: ROLE_TITLE_TRIAGE,
+  description: ROLE_DESC_TRIAGE,
+  defaultTier: TIER_FLASH,
+  tools: TRIAGE_TOOLS,
+  capabilities: Object.freeze({
+    enable_write_tools: false,
+    enable_subagent_tools: false,
+    enable_mcp_tools: false
+  })
+});
 
 export interface SubagentCapabilities {
   readonly enable_write_tools: boolean;
@@ -188,6 +204,12 @@ export interface ReviewerTaskPromptParams {
   readonly critiqueReport?: string | null;
   readonly critiquePath?: string | null;
   readonly userInstructions?: string | null;
+  readonly workspaceDir?: string;
+  readonly config?: AgyLoopConfig;
+}
+
+export interface TriageTaskPromptParams {
+  readonly issueNumber?: number | string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
 }
@@ -325,6 +347,23 @@ export class ResolveSubagentUseCase {
           promptPath: options.promptPath,
           workspaceDir: options.workspaceDir
         })
+      };
+    }
+
+    if (roleVo.value === ROLE_TRIAGE) {
+      return {
+        name: roleVo.value,
+        role: TRIAGE_SUBAGENT_DEF.role,
+        description: TRIAGE_SUBAGENT_DEF.description,
+        model: resolved.tier,
+        apiModel: resolved.apiModel,
+        tools: TRIAGE_TOOLS.slice(),
+        capabilities: {
+          enable_write_tools: false,
+          enable_subagent_tools: false,
+          enable_mcp_tools: false
+        },
+        system_prompt: `# AgyLoop Triage Subagent System Prompt\nYou are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.`
       };
     }
 
@@ -716,6 +755,23 @@ export class ResolveSubagentUseCase {
     prompt += `REMEDIATION_GUIDANCE:\n`;
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
     prompt += `\`\`\`\n`;
+
+    return prompt.trim();
+  }
+
+  public buildTriageTaskPrompt(params: TriageTaskPromptParams = {}): string {
+    let prompt = `# Task: Triage PR Review Comments\n\n`;
+    prompt += `You are executing the **TRIAGE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `Your goal is to categorize review comments and route the pipeline to the appropriate next stage.\n\n`;
+
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
+      prompt += `### Active Issue: #${effectiveIssue}\n\n`;
+    }
 
     return prompt.trim();
   }

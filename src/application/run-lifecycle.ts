@@ -38,7 +38,6 @@ import {
   MODE_YOLO,
   MODE_PLAN,
   MODE_IMPLEMENT,
-  MODE_GATES,
   MODE_COMMIT,
   GATE_APPROVAL,
   GATE_COMMIT,
@@ -399,9 +398,6 @@ export class RunLifecycleUseCase {
       case MODE_IMPLEMENT:
         return this.executeImplementMode(sm, params, workspace, preflightResult);
 
-      case MODE_GATES:
-        return this.executeGatesMode(sm, params, commitAfter, workspace);
-
       case MODE_COMMIT:
         return this.executeCommitMode(sm, params, workspace);
 
@@ -556,178 +552,6 @@ export class RunLifecycleUseCase {
       message: worktree
         ? `Implementation isolated in worktree: ${worktree.worktreePath}`
         : 'Implementation ready for code modifications.'
-    };
-  }
-
-  /**
-   * Standalone Gates mode: runs quality gates followed by AI PR review on working diff.
-   * If commitAfter is opted in, automatically drafts and executes conventional commit upon passing.
-   */
-  private async executeGatesMode(
-    sm: StateMachine,
-    params: RunLifecycleParams,
-    commitAfter: boolean,
-    workspace: string
-  ): Promise<RunLifecycleResult> {
-    const worktree = await this.resolveWorktree(sm, params, workspace);
-    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
-
-    // If starting from an earlier stage, advance through valid transitions to IMPLEMENT
-    if (sm.currentStage === STAGE_INITIALIZED) {
-      sm.transition(STAGE_DISCOVERY, { note: 'Direct gates mode initialization' });
-    }
-    if (sm.currentStage === STAGE_DISCOVERY) {
-      sm.transition(STAGE_PLAN, { note: 'Direct gates mode planning pass' });
-    }
-    if (sm.currentStage === STAGE_PLAN) {
-      sm.setMode(MODE_YOLO);
-      sm.transition(STAGE_IMPLEMENT, { note: 'Direct gates mode implementation stage' });
-      sm.setMode(MODE_GATES);
-    } else if (sm.currentStage === STAGE_APPROVAL) {
-      sm.transition(STAGE_IMPLEMENT, { note: 'Direct gates mode execution' });
-    }
-
-    if (params.dryRun) {
-      return {
-        success: true,
-        mode: MODE_GATES,
-        currentStage: commitAfter ? STAGE_COMPLETED : STAGE_COMMIT,
-        stateMachine: sm,
-        worktree,
-        message: `Simulated quality gates and AI PR review${commitAfter ? ' with --commit-after' : ''}.`
-      };
-    }
-
-    await this.stateRepo.save(sm.toSnapshot());
-
-    let qgResult: QualityGateRunResult | undefined;
-
-    // 1. Run Quality Gate (if not already at REVIEW)
-    if (sm.currentStage !== STAGE_REVIEW) {
-      params.onProgress?.('✓ State advanced: [IMPLEMENT] -> [QUALITY_GATE]');
-
-      qgResult = await this.runQualityGateUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        commands: params.commands,
-        timeoutSeconds: params.timeoutSeconds,
-        dryRun: params.dryRun,
-        configPath: params.configPath,
-        workspaceDir: activeWorkspace
-      });
-
-      sm = qgResult.stateMachine;
-
-      if (!qgResult.passed) {
-        return {
-          success: false,
-          mode: MODE_GATES,
-          currentStage: sm.currentStage,
-          stateMachine: sm,
-          qualityGateResult: qgResult,
-          worktree,
-          message: 'Quality gates failed. Pipeline reverted to IMPLEMENT.'
-        };
-      }
-
-      params.onProgress?.('✓ Quality gates passed. State advanced: [QUALITY_GATE] -> [REVIEW]');
-    }
-
-    // Interactive stepping option: pause pipeline at REVIEW before advancing to COMMIT
-    if (params.step === true) {
-      return {
-        success: true,
-        mode: MODE_GATES,
-        currentStage: sm.currentStage,
-        stateMachine: sm,
-        qualityGateResult: qgResult,
-        worktree,
-        message: 'Quality gates passed. Pipeline paused at REVIEW stage.'
-      };
-    }
-
-    // 2. Run AI PR Review
-    const reviewResult = await this.runReviewUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      standardsPath: params.standardsPath,
-      userInstructions: params.userInstructions,
-      workingDiff: params.workingDiff,
-      staged: params.staged,
-      baseRef: params.baseRef,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace
-    });
-
-    sm = reviewResult.stateMachine;
-
-    if (!reviewResult.passed) {
-      return {
-        success: false,
-        mode: MODE_GATES,
-        currentStage: sm.currentStage,
-        stateMachine: sm,
-        qualityGateResult: qgResult,
-        reviewResult,
-        worktree,
-        message: 'AI review requested changes. Pipeline reverted to IMPLEMENT.'
-      };
-    }
-
-    params.onProgress?.('✓ AI PR Review approved. State advanced: [REVIEW] -> [COMMIT]');
-
-    // 3. Both passed -> state is at COMMIT
-    if (commitAfter) {
-      const draftResult = await this.draftCommitUseCase.execute({
-        issue: sm.issue,
-        staged: params.staged,
-        userMessage: params.message,
-        workingDiff: params.workingDiff,
-        baseRef: params.baseRef,
-        workspaceDir: activeWorkspace
-      });
-
-      const execResult = await this.executeCommitUseCase.execute({
-        commitMessage: draftResult.commitMessage,
-        confirmed: true,
-        bypassConfirmation: true,
-        staged: params.staged,
-        dryRun: params.dryRun,
-        issue: sm.issue,
-        workspaceDir: activeWorkspace,
-        rootWorkspaceDir: workspace
-      });
-
-      if (execResult.success) {
-        await this.teardownWorktree(worktree, workspace);
-      }
-
-      return {
-        success: execResult.success,
-        mode: MODE_GATES,
-        currentStage: execResult.currentStage as StageName,
-        stateMachine: execResult.stateMachine,
-        qualityGateResult: qgResult,
-        reviewResult,
-        draftCommitResult: draftResult,
-        executeCommitResult: execResult,
-        worktree: execResult.success ? null : worktree,
-        message: NOTE_COMMIT_AFTER_EXECUTED
-      };
-    }
-
-    return {
-      success: true,
-      mode: MODE_GATES,
-      currentStage: sm.currentStage,
-      stateMachine: sm,
-      qualityGateResult: qgResult,
-      reviewResult,
-      worktree,
-      message: 'Quality gates and AI review passed. Pipeline ready at COMMIT gate.'
     };
   }
 
