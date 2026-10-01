@@ -350,7 +350,6 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         STAGE_INITIALIZED,
         STAGE_DISCOVERY,
         STAGE_PLAN,
-        STAGE_APPROVAL,
         STAGE_IMPLEMENT,
         STAGE_QUALITY_GATE,
         STAGE_REVIEW,
@@ -377,7 +376,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   });
 
   describe('2. Standard Multi-Step Lifecycle Flow with Human Approval Gates', () => {
-    test('Step 1 (fresh run): runs discovery & planning, scaffolds plan, and halts at APPROVAL', async () => {
+    test('Step 1 (fresh run): runs discovery & planning, scaffolds plan, and halts at PLAN', async () => {
       const result = await lifecycleUseCase.execute({
         mode: MODE_STANDARD,
         issue: 32,
@@ -385,8 +384,8 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       });
 
       assert.strictEqual(result.success, true);
-      assert.strictEqual(result.currentStage, STAGE_APPROVAL);
-      assert.strictEqual(result.pausedAtGate, GATE_APPROVAL);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
+      assert.strictEqual(result.pausedAtGate, undefined);
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
       assert.strictEqual(result.qualityGateResult, undefined);
       assert.strictEqual(result.executeCommitResult, undefined);
@@ -458,7 +457,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   });
 
   describe('3. Standalone Operational Modes', () => {
-    test('mode "plan" halts strictly at APPROVAL gate', async () => {
+    test('mode "plan" halts strictly at PLAN gate', async () => {
       const result = await lifecycleUseCase.execute({
         mode: MODE_PLAN,
         issue: 32,
@@ -468,8 +467,8 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.mode, MODE_PLAN);
-      assert.strictEqual(result.currentStage, STAGE_APPROVAL);
-      assert.strictEqual(result.pausedAtGate, GATE_APPROVAL);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
+      assert.strictEqual(result.pausedAtGate, undefined);
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
     });
 

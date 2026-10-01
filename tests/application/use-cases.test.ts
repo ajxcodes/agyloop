@@ -10,7 +10,7 @@ const {
 } = require('../../dist/application');
 const {
   STAGE_INITIALIZED,
-  STAGE_APPROVAL,
+  STAGE_APPROVAL, STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
   STAGE_COMPLETED,
@@ -184,10 +184,10 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       title: 'Build Payment Gateway'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.issue, 42);
     assert.strictEqual(stateRepo.saveCallCount, 1);
-    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_PLAN);
     assert.strictEqual(planGen.lastScaffoldParams?.issue, 42);
     assert.strictEqual(planGen.summaryUpdates.length, 2);
   });
@@ -215,9 +215,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       title: 'New Task After Completed'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.issue, 43);
-    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_PLAN);
     assert.strictEqual(stateRepo.snapshot?.issue, 43);
   });
 
@@ -244,9 +244,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       title: 'Different Task'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.issue, 20);
-    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_PLAN);
     assert.strictEqual(stateRepo.snapshot?.issue, 20);
   });
 

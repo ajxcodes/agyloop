@@ -18,6 +18,7 @@ const {
   STAGE_INITIALIZED,
   STAGE_DISCOVERY,
   STAGE_APPROVAL,
+  STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_COMMIT,
   STAGE_COMPLETED,
@@ -323,7 +324,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       }
     });
 
-    test('runCli plan prints paused at APPROVAL gate when stage reaches APPROVAL', async () => {
+    test('runCli plan prints pipeline advanced when stage reaches PLAN', async () => {
       const prevCwd = process.cwd();
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-test-'));
       let output = '';
@@ -336,8 +337,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         process.chdir(tempDir);
         const exitCode = await runCli(['plan', '--title', 'Feature Plan']);
         assert.strictEqual(exitCode, 0);
-        assert.ok(output.includes(`Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`));
-        assert.ok(output.includes("run 'agyloop implement' to continue."));
+        assert.ok(output.includes(`Pipeline advanced to ${formatStageBadge(STAGE_PLAN)}.`));
       } finally {
         process.chdir(prevCwd);
         console.log = originalLog;

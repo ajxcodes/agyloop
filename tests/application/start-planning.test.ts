@@ -170,10 +170,10 @@ describe('StartPlanningUseCase (Application Layer)', () => {
       skipDiscovery: true
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_DISCOVERY), false);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
-    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
 
     // Verify summary log does not record redundant discovery row when skipDiscovery is true
     assert.strictEqual(
@@ -182,7 +182,7 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     );
     assert.ok(
       planGenerator.summaryUpdates.some(
-        (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_PENDING
+        (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_IN_PROGRESS
       )
     );
   });
@@ -201,10 +201,10 @@ describe('StartPlanningUseCase (Application Layer)', () => {
       type: 'feature'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_DISCOVERY), true);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
-    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
 
     // Verify summary log records discovery completed and plan review pending
     assert.ok(
@@ -214,7 +214,7 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     );
     assert.ok(
       planGenerator.summaryUpdates.some(
-        (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_PENDING
+        (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_IN_PROGRESS
       )
     );
   });
@@ -280,10 +280,10 @@ describe('StartPlanningUseCase (Application Layer)', () => {
       issue: 11
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_DISCOVERY), true);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
-    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
 
     // Verify summary log recorded discovery completed and plan review pending
     assert.ok(
@@ -293,7 +293,7 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     );
     assert.ok(
       planGenerator.summaryUpdates.some(
-        (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_PENDING
+        (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_IN_PROGRESS
       )
     );
   });
