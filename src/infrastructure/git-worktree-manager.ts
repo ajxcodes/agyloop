@@ -246,66 +246,54 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // Non-fatal, proceed with default branch
     }
 
+    // Explicitly check if targetBranch is already checked out to avoid swallowing errors improperly
+    const rawListRes = await this.commandExecutor.execute('git worktree list --porcelain', { cwd: workspace });
+    const isCheckedOut = rawListRes.stdout.includes(`branch refs/heads/${targetBranch}\n`);
+
     // 6. Execute git worktree add
-    let addRes = branchAlreadyExists
-      ? await this.commandExecutor.execute(
-          `git worktree add "${worktreePath}" "${targetBranch}"`,
-          { cwd: workspace }
-        )
-      : await this.commandExecutor.execute(
-          `git worktree add -b "${targetBranch}" "${worktreePath}" "${baseBranch}"`,
-          { cwd: workspace }
-        );
-
-    if (addRes.exitCode !== 0) {
-      const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
-      // If branch is already checked out at a worktree, return existing worktree descriptor idempotently
-      if (output.includes('already checked out at')) {
-        const match = output.match(/already checked out at '([^']+)'/);
-        const existingPath = match ? match[1] : worktreePath;
-        this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
-        this.linkArtifactsIfPresent(workspace, existingPath);
-        this.linkAgyloopStateIfPresent(workspace, existingPath);
-        return new WorktreeDescriptor({
-          taskId,
-          worktreePath: existingPath,
-          branch: targetBranch,
-          baseBranch,
-          slug,
-          isIsolated: true
-        });
-      }
-
-      // If branch already exists, reuse the existing branch
-      if (output.includes('already exists')) {
-        addRes = await this.commandExecutor.execute(
-          `git worktree add "${worktreePath}" "${targetBranch}"`,
-          { cwd: workspace }
-        );
-      }
+    let addRes;
+    if (branchAlreadyExists && !isCheckedOut) {
+      // Branch exists but not checked out anywhere, reuse it without -b
+      addRes = await this.commandExecutor.execute(
+        `git worktree add "${worktreePath}" "${targetBranch}"`,
+        { cwd: workspace }
+      );
+    } else {
+      // Branch doesn't exist, create it with -b
+      // OR branch is checked out, which will intentionally fail so we can process the error correctly below
+      addRes = await this.commandExecutor.execute(
+        `git worktree add -b "${targetBranch}" "${worktreePath}" "${baseBranch}"`,
+        { cwd: workspace }
+      );
     }
 
     if (addRes.exitCode !== 0) {
-      const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
+      const output = addRes.stderr || addRes.stdout || '';
+      
+      // If it is 'already checked out at', we extract the path and return it
       if (output.includes('already checked out at')) {
         const match = output.match(/already checked out at '([^']+)'/);
-        const existingPath = match ? match[1] : worktreePath;
-        this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
-        this.linkArtifactsIfPresent(workspace, existingPath);
-        this.linkAgyloopStateIfPresent(workspace, existingPath);
-        return new WorktreeDescriptor({
-          taskId,
-          worktreePath: existingPath,
-          branch: targetBranch,
-          baseBranch,
-          slug,
-          isIsolated: true
-        });
+        if (match && match[1]) {
+          const checkedOutPath = path.resolve(match[1]);
+          this.linkNodeModulesIfPresent(workspace, checkedOutPath, options.linkNodeModules);
+          this.linkArtifactsIfPresent(workspace, checkedOutPath);
+          this.linkAgyloopStateIfPresent(workspace, checkedOutPath);
+          
+          return new WorktreeDescriptor({
+            taskId,
+            worktreePath: checkedOutPath,
+            branch: targetBranch,
+            baseBranch,
+            slug,
+            isIsolated: checkedOutPath !== path.resolve(workspace)
+          });
+        }
       }
-
+      
+      // Any other error
       throw new WorktreeCreationError(
         'createWorktree',
-        addRes.stderr || addRes.stdout || `Failed to create git worktree at ${worktreePath}`,
+        output || `Failed to create git worktree at ${worktreePath}`,
         { taskId, branch: targetBranch, worktreePath, baseBranch }
       );
     }
