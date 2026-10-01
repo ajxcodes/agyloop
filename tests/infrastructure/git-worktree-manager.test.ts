@@ -104,6 +104,12 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: '', combinedOutput: '' });
+        }
+        if (cmd.includes('git worktree list --porcelain')) {
+          return makeResult(cmd, { stdout: '', combinedOutput: '' });
+        }
         if (cmd.includes('git worktree add')) {
           return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
         }
@@ -218,6 +224,12 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'task/87\n', combinedOutput: 'task/87' });
+        }
+        if (cmd.includes('git worktree list --porcelain')) {
+          return makeResult(cmd, { stdout: '', combinedOutput: '' }); // Not checked out
+        }
         if (cmd.includes('git worktree add -b')) {
           return makeResult(cmd, { exitCode: 128, stderr: "fatal: a branch named 'task/87' already exists", combinedOutput: 'fatal' });
         }
@@ -235,8 +247,12 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     });
 
     assert.strictEqual(descriptor.taskId, '87');
-    assert.ok(executedCommands.some((c) => c.includes('git worktree add -b "task/87"')));
-    assert.ok(executedCommands.some((c) => c.includes('git worktree add "') && !c.includes('-b')));
+    // We should explicitly not run with -b since the branch exists
+    assert.ok(!executedCommands.some((c) => c.includes('git worktree add -b')));
+    assert.ok(
+      executedCommands.some((c) => c.includes('git worktree add "') && !c.includes('-b')),
+      'Expected executedCommands to contain `git worktree add "` without `-b`'
+    );
   });
 
   test('createWorktree idempotently returns existing descriptor when branch is already checked out', async () => {
