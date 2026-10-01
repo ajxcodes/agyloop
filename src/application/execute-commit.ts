@@ -315,6 +315,11 @@ export class ExecuteCommitUseCase {
       }
     }
 
+    if (issueId && prBaseBranch !== 'main') {
+      const closeCmd = `gh issue close ${issueId} --comment "Implemented and merged via PR #\\$PR_NUM into \\\`${prBaseBranch}\\\`."`;
+      prCommandCore = `PR_URL=$(${prCommandCore}); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE '[0-9]+$'); if [ -n "$PR_NUM" ]; then ${closeCmd}; fi`;
+    }
+
     // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
     const prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
 

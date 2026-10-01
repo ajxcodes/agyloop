@@ -818,7 +818,7 @@ new file mode 100644
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"; git stash pop -q; else gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"; fi'
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; PR_URL=$(gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE \'[0-9]+$\'); if [ -n "$PR_NUM" ]; then gh issue close 62 --comment "Implemented and merged via PR #\\$PR_NUM into \\`phase/v0.6.0\\`."; fi; git stash pop -q; else PR_URL=$(gh pr create --base "phase/v0.6.0" --head "task/62" --title "feat(pr): automated milestone linking (#62)" --body "Closes #62" --milestone "v0.6.0"); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE \'[0-9]+$\'); if [ -n "$PR_NUM" ]; then gh issue close 62 --comment "Implemented and merged via PR #\\$PR_NUM into \\`phase/v0.6.0\\`."; fi; fi'
       );
     });
 
