@@ -353,7 +353,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_IMPLEMENT);
   });
 
-  test('throws InvalidTransitionError when attempting implementation from PLAN in standard mode', async () => {
+  test('allows direct transition from PLAN to IMPLEMENT in standard mode by implicitly approving', async () => {
     const stateRepo = new MockStateRepository({
       version: '1.0.0',
       currentStage: STAGE_PLAN,
@@ -367,10 +367,16 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     const planGen = new MockPlanGenerator(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
-    await assert.rejects(
-      () => useCase.execute({ issue: 16, workspaceDir: tempDir }),
-      (err: any) => err instanceof InvalidTransitionError && err.fromStage === STAGE_PLAN
-    );
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.resumed, false);
+    
+    // History should reflect PLAN -> APPROVAL -> IMPLEMENT
+    const history = result.stateMachine.history;
+    assert.strictEqual(history[history.length - 2].stage, STAGE_APPROVAL);
+    assert.strictEqual(history[history.length - 2].metadata?.note, 'Implicitly approved by explicit implementation request');
+    assert.strictEqual(history[history.length - 1].stage, STAGE_IMPLEMENT);
   });
 
   test('throws InvalidTransitionError when pipeline state is uninitialized', async () => {
