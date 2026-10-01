@@ -19,7 +19,8 @@ const {
   MODE_YOLO,
   InvalidTransitionError,
   ValidationError,
-  DEFAULT_GATE_TIMEOUT_SECONDS
+  DEFAULT_GATE_TIMEOUT_SECONDS,
+  NOTE_IMPLICIT_APPROVAL
 } = require('../../dist/domain');
 
 type StateRepository = import('../../src').StateRepository;
@@ -375,7 +376,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     // History should reflect PLAN -> APPROVAL -> IMPLEMENT
     const history = result.stateMachine.history;
     assert.strictEqual(history[history.length - 2].stage, STAGE_APPROVAL);
-    assert.strictEqual(history[history.length - 2].metadata?.note, 'Implicitly approved by explicit implementation request');
+    assert.strictEqual(history[history.length - 2].metadata?.note, NOTE_IMPLICIT_APPROVAL);
     assert.strictEqual(history[history.length - 1].stage, STAGE_IMPLEMENT);
   });
 

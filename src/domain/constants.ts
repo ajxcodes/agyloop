@@ -326,6 +326,7 @@ export const NOTE_REVIEW_APPROVED = 'AI review approved: Code changes verified' 
 export const NOTE_REVIEW_CHANGES_REQUESTED = 'AI review requested changes: Reverting to IMPLEMENT' as const;
 export const NOTE_REOPEN_IMPLEMENTATION_COMPLETED = 'Reopening implementation from completed stage to address review findings' as const;
 export const NOTE_RERUN_GATES_COMPLETED = 'Re-executing quality gates from completed stage' as const;
+export const NOTE_IMPLICIT_APPROVAL = 'Implicitly approved by explicit implementation request' as const;
 
 // Status Identifiers
 export const STATUS_PASSED = 'PASSED' as const;
