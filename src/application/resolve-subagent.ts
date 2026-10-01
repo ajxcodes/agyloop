@@ -148,6 +148,8 @@ export interface PlanningTaskPromptParams {
   readonly userFeedback?: string | null;
   readonly previousPlanContent?: string | null;
   readonly iterationCount?: number | null;
+  readonly planDir?: string | null;
+  readonly planPath?: string | null;
 }
 
 export interface ImplementationTaskPromptParams {
@@ -389,12 +391,17 @@ export class ResolveSubagentUseCase {
     prompt += `You are executing the **PLAN** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the codebase, perform root-cause analysis (for defects) or architectural design (for features), and produce an actionable specification.\n\n`;
 
+    const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`artifacts/plans/\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
-    prompt += `3. **Deliverable**: Create the technical specification in the \`artifacts/plans/\` directory matching the standard templates:\n`;
-    prompt += `   - Defects/Bugs: \`templates/discovery-plan.md\`\n`;
-    prompt += `   - Features/Tasks: \`templates/implementation-plan.md\`\n\n`;
+    if (params.planPath) {
+      prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n\n`;
+    } else {
+      prompt += `3. **Deliverable**: Create the technical specification in the \`${targetDir}\` directory matching the standard templates:\n`;
+      prompt += `   - Defects/Bugs: \`templates/discovery-plan.md\`\n`;
+      prompt += `   - Features/Tasks: \`templates/implementation-plan.md\`\n\n`;
+    }
 
     if (issueContextBlock) {
       prompt += `----------------------------------------------------------------------\n`;
