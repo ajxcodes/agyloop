@@ -41,7 +41,7 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
   [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE]),
   [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT]), // IMPLEMENT allowed if gates fail
   [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT]), // IMPLEMENT allowed if review changes required
-  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN]),
+  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_COMPLETED]: Object.freeze([
     STAGE_INITIALIZED,
     STAGE_DISCOVERY,
@@ -62,7 +62,6 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
 export const MODE_STANDARD = 'standard' as const;
 export const MODE_PLAN = 'plan' as const;
 export const MODE_IMPLEMENT = 'implement' as const;
-export const MODE_GATES = 'gates' as const;
 export const MODE_COMMIT = 'commit' as const;
 export const MODE_YOLO = 'yolo' as const;
 
@@ -70,7 +69,6 @@ export const EXECUTION_MODES = Object.freeze({
   STANDARD: MODE_STANDARD,
   PLAN: MODE_PLAN,
   IMPLEMENT: MODE_IMPLEMENT,
-  GATES: MODE_GATES,
   COMMIT: MODE_COMMIT,
   YOLO: MODE_YOLO
 });
@@ -81,12 +79,14 @@ export const ROLE_PLANNER = 'planner' as const;
 export const ROLE_IMPLEMENTER = 'implementer' as const;
 export const ROLE_GATE = 'gate' as const;
 export const ROLE_REVIEWER = 'reviewer' as const;
+export const ROLE_TRIAGE = 'triage' as const;
 
 export const SUBAGENT_ROLES = Object.freeze({
   PLANNER: ROLE_PLANNER,
   IMPLEMENTER: ROLE_IMPLEMENTER,
   GATE: ROLE_GATE,
-  REVIEWER: ROLE_REVIEWER
+  REVIEWER: ROLE_REVIEWER,
+  TRIAGE: ROLE_TRIAGE
 });
 
 export type SubagentRoleName = typeof SUBAGENT_ROLES[keyof typeof SUBAGENT_ROLES];
@@ -95,6 +95,7 @@ export const ROLE_TITLE_PLANNER = 'Architectural Planning Subagent' as const;
 export const ROLE_TITLE_IMPLEMENTER = 'Code Implementation Subagent' as const;
 export const ROLE_TITLE_GATE = 'Quality Gate Verification Subagent' as const;
 export const ROLE_TITLE_REVIEWER = 'AI Reviewer Subagent' as const;
+export const ROLE_TITLE_TRIAGE = 'Triage Subagent' as const;
 
 export const ROLE_DESC_PLANNER =
   'Architectural reasoning, deep read-only inspection, and specification generation subagent' as const;
@@ -104,6 +105,8 @@ export const ROLE_DESC_GATE =
   'Automated build, test suite, typecheck, and lint verification subagent executing in isolated shell execution' as const;
 export const ROLE_DESC_REVIEWER =
   'Standards compliance, code quality, and acceptance criteria review subagent' as const;
+export const ROLE_DESC_TRIAGE =
+  'PR review comment triage and pipeline routing subagent' as const;
 
 
 export const TIER_INHERIT = 'inherit' as const;
@@ -197,6 +200,13 @@ export const REVIEWER_TOOLS = Object.freeze([
   TOOL_RUN_COMMAND
 ] as const);
 
+export const TRIAGE_TOOLS = Object.freeze([
+  TOOL_VIEW_FILE,
+  TOOL_GREP_SEARCH,
+  TOOL_FIND_BY_NAME,
+  TOOL_LIST_DIR
+] as const);
+
 
 export const ERR_INVALID_TRANSITION = 'ERR_INVALID_TRANSITION' as const;
 export const ERR_PHYSICAL_WRITE_VIOLATION = 'ERR_PHYSICAL_WRITE_VIOLATION' as const;
@@ -254,6 +264,7 @@ export const SECONDS_PER_MINUTE = 60 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
 export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
+export const MAX_IMPLEMENT_GATE_LOOPS = 3 as const;
 
 // Path & File Constants
 export const DEFAULT_STATE_DIR = '.agyloop' as const;

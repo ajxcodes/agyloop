@@ -25,7 +25,6 @@ import {
   MODE_PLAN,
   MODE_STANDARD,
   MODE_IMPLEMENT,
-  MODE_GATES,
   MODE_COMMIT,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
@@ -135,8 +134,6 @@ Operational Modes:
   yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
   plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate
   implement          Resume implementation directly from approved plan specification
-  gates              Run compound Tier 1 Quality Gates and Tier 1 Critique Review on working diff
-  gate               Alias for 'gates --step' (pause after quality verification before AI review)
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
 
@@ -156,7 +153,7 @@ Pipeline Management:
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
       --commit-after Automatically draft and commit changes if quality gates and AI review pass
-      --step         Pause compound execution after quality gates (before AI review) in 'gates' mode
+      --step         Pause compound execution after quality gates (before AI review)
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
@@ -181,8 +178,6 @@ Examples:
   agyloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
   agyloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
   agyloop implement                    Resume implementation from approved plan in artifacts/plans/
-  agyloop gates                         Run quality gates and AI PR review on working diff
-  agyloop gates --commit-after          Run gates and review, auto-committing if all pass
   agyloop commit                        Draft Conventional Commit and prompt for human approval
   agyloop commit -y                     Draft Conventional Commit and commit immediately
   agyloop critique status               Inspect critique resolution, installed version, and update status
@@ -335,11 +330,6 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
 
     if (cmdIndex < positional.length) {
       command = positional[cmdIndex];
-
-      if (command === 'gate') {
-        command = 'gates';
-        options.step = true;
-      }
 
       if (command === 'transition' && cmdIndex + 1 < positional.length) {
         options.stageArg = positional[cmdIndex + 1].toUpperCase();
@@ -996,94 +986,6 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
     }
 
-    case 'gates': {
-      console.log(`\n🧪 Executing AgyLoop Quality Gates & AI PR Review`);
-      try {
-        const result = await lifecycleUseCase.execute({
-          mode: MODE_GATES,
-          issue: options.issue,
-          commitAfter: options.commitAfter,
-          staged: options.staged,
-          message: options.message,
-          configPath: options.configPath,
-          dryRun: options.dryRun,
-          worktree: options.noWorktree ? false : true,
-          baseBranch: options.baseBranch || undefined,
-          step: options.step,
-          onProgress: (msg) => {
-            const coloredMsg = msg.replace(/\[([A-Z_]+)\]/g, (_match, p1) => formatStageBadge(p1));
-            console.log(coloredMsg);
-          }
-        });
-
-        if (options.dryRun) {
-          console.log(`\n[DRY RUN] ${result.message || 'Simulated gates execution completed.'}\n`);
-          return EXIT_CODE_SUCCESS;
-        }
-
-        if (result.qualityGateResult?.summaryReport) {
-          console.log('\n' + result.qualityGateResult.summaryReport + '\n');
-        }
-
-        if (result.qualityGateResult && !result.qualityGateResult.passed) {
-          console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
-          console.error(`Resolve failures and re-run 'agyloop gates'.\n`);
-          return EXIT_CODE_FAILURE;
-        }
-
-        console.log(`✓ Quality gates passed.`);
-
-        if (result.reviewResult) {
-          console.log(`\n=== AgyLoop: AI PR Review ===`);
-          console.log(`Verdict: ${result.reviewResult.verdict.status}`);
-          console.log(`Summary: ${result.reviewResult.verdict.summary}\n`);
-
-          if (!result.reviewResult.passed) {
-            console.error(`✗ AI Review requested changes. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
-            if (result.reviewResult.verdict.unfulfilledCriteria.length > 0) {
-              console.error('Unfulfilled Criteria:');
-              result.reviewResult.verdict.unfulfilledCriteria.forEach((c) => console.error(`  - ${c}`));
-            }
-            if (result.reviewResult.verdict.remediationGuidance.length > 0) {
-              console.error('Remediation Guidance:');
-              result.reviewResult.verdict.remediationGuidance.forEach((r) => console.error(`  - ${r}`));
-            }
-            console.error(`\nResolve review findings and re-run 'agyloop gates'.\n`);
-            return EXIT_CODE_FAILURE;
-          }
-
-          console.log(`✓ AI Review approved. Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
-        }
-
-        if (result.executeCommitResult && result.executeCommitResult.success) {
-          console.log(`\n✓ Successfully committed via --commit-after: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
-          if (result.executeCommitResult.fallbackUsed) {
-            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
-          }
-          if (result.executeCommitResult.pushError) {
-            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
-          }
-          console.log('');
-        } else if (result.currentStage === STAGE_COMMIT) {
-          console.log(`Next Step: Run 'agyloop commit' to draft and approve conventional commit.\n`);
-        }
-
-        return EXIT_CODE_SUCCESS;
-      } catch (err: unknown) {
-        if (err instanceof PreFlightHaltError) {
-          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
-          return EXIT_CODE_SUCCESS;
-        }
-        if (err instanceof MilestoneSealedError) {
-          console.error(`\n🛑 ${err.message}\n`);
-          return EXIT_CODE_FAILURE;
-        }
-        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
-        return EXIT_CODE_FAILURE;
-      }
-    }
-
     case 'commit': {
       console.log(`\n📦 AgyLoop: Semantic Conventional Commit Gate`);
       try {
@@ -1254,6 +1156,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
     }
+
+    case 'gate':
+    case 'gates':
+      console.error('error: `gate`/`gates` subcommands have been removed. Use `agyloop next` to invoke the gate subagent.');
+      return EXIT_CODE_FAILURE;
 
     default: {
       if (command !== null) {

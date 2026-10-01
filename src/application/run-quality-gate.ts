@@ -314,6 +314,7 @@ export class RunQualityGateUseCase {
         gateVerdict: STATUS_PASSED,
         gateTokens: gateReport.formatStructuredTokens()
       });
+      sm.resetImplementGateLoop();
     } else {
       sm.transition(STAGE_IMPLEMENT, {
         note: NOTE_GATES_FAILED,
@@ -324,6 +325,7 @@ export class RunQualityGateUseCase {
         failingAssertion: primaryDiagnostic?.failingAssertion,
         selfCorrectionPayload: gateReport.formatSelfCorrectionPayload()
       });
+      sm.incrementImplementGateLoop();
     }
 
     // 7. Update AgyLoop Summary.md via PlanGeneratorPort

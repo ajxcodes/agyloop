@@ -20,7 +20,6 @@ const {
   MODE_YOLO,
   MODE_PLAN,
   MODE_IMPLEMENT,
-  MODE_GATES,
   MODE_COMMIT,
   GATE_APPROVAL,
   GATE_COMMIT,
@@ -507,7 +506,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.ok(result.implementationResult);
     });
 
-    test('mode "gates" runs quality gates and AI PR review sequentially', async () => {
+    test('mode "standard" from IMPLEMENT stage runs quality gates and AI PR review sequentially', async () => {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
@@ -516,19 +515,19 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace'
       });
 
       assert.strictEqual(result.success, true);
-      assert.strictEqual(result.mode, MODE_GATES);
+      assert.strictEqual(result.mode, MODE_STANDARD);
       assert.strictEqual(result.currentStage, STAGE_COMMIT);
       assert.ok(result.qualityGateResult?.passed);
       assert.ok(result.reviewResult?.passed);
     });
 
-    test('mode "gates" emits explicit stage transition notifications via onProgress', async () => {
+    test('mode "standard" from IMPLEMENT stage does not emit stage transition notifications via onProgress', async () => {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
@@ -538,7 +537,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       const progressLogs: string[] = [];
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace',
         onProgress: (msg: string) => progressLogs.push(msg)
@@ -546,14 +545,10 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.currentStage, STAGE_COMMIT);
-      assert.deepStrictEqual(progressLogs, [
-        '✓ State advanced: [IMPLEMENT] -> [QUALITY_GATE]',
-        '✓ Quality gates passed. State advanced: [QUALITY_GATE] -> [REVIEW]',
-        '✓ AI PR Review approved. State advanced: [REVIEW] -> [COMMIT]'
-      ]);
+      assert.deepStrictEqual(progressLogs, []);
     });
 
-    test('mode "gates --step" pauses execution at REVIEW stage before advancing to COMMIT', async () => {
+    test('mode "standard" --step flag has no effect: pipeline advances fully to COMMIT', async () => {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
@@ -563,7 +558,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       const progressLogs: string[] = [];
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         step: true,
         workspaceDir: '/mock/workspace',
@@ -571,14 +566,9 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       });
 
       assert.strictEqual(result.success, true);
-      assert.strictEqual(result.currentStage, STAGE_REVIEW);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
       assert.ok(result.qualityGateResult?.passed);
-      assert.strictEqual(result.reviewResult, undefined);
-      assert.strictEqual(result.message, 'Quality gates passed. Pipeline paused at REVIEW stage.');
-      assert.deepStrictEqual(progressLogs, [
-        '✓ State advanced: [IMPLEMENT] -> [QUALITY_GATE]',
-        '✓ Quality gates passed. State advanced: [QUALITY_GATE] -> [REVIEW]'
-      ]);
+      assert.ok(result.reviewResult?.passed);
     });
 
     test('mode "gates --commit-after" auto-commits upon passing gates and review', async () => {
@@ -590,7 +580,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         commitAfter: true,
         issue: 32,
         workspaceDir: '/mock/workspace'
@@ -638,7 +628,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace'
       });
@@ -675,7 +665,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace'
       });

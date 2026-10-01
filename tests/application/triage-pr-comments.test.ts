@@ -104,7 +104,7 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
     assert.strictEqual(result.stateMachine.currentStage, STAGE_COMPLETED);
   });
 
-  test('getNextAction returns human_gate for STAGE_TRIAGE prompting triage execution', async () => {
+  test('getNextAction returns subagent for STAGE_TRIAGE prompting triage execution', async () => {
     const sm = StateMachine.createInitial({ issue: 83 });
     sm.transition(STAGE_TRIAGE);
     const stateRepo = makeMockStateRepo(sm.toSnapshot());
@@ -112,15 +112,16 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
       loadConfig: () => ({
         options: {},
         subagents: {}
-      })
+      }),
+      resolveModel: () => 'models/gemini-2.5-pro'
     };
 
     const getNext = new GetNextActionUseCase(stateRepo as any, configRepo as any);
     const action = await getNext.execute({ issue: 83 });
 
     assert.strictEqual(action.currentStage, STAGE_TRIAGE);
-    assert.strictEqual(action.actionType, 'human_gate');
+    assert.strictEqual(action.actionType, 'subagent');
     assert.ok(action.title.includes('Triage'));
-    assert.ok(action.humanSummary.includes('triage'));
+    assert.ok(action.humanSummary.includes('Triage'));
   });
 });

@@ -44,6 +44,7 @@ export interface StateMachineSnapshot {
   readonly pausedAtTimestamp?: string | null;
   readonly totalHumanWaitMs?: number;
   readonly planRevisionCount?: number;
+  readonly implementToGateLoops?: number;
 }
 
 export interface StateStatusSummary {
@@ -61,6 +62,7 @@ export interface StateStatusSummary {
   readonly totalHumanWaitMs: number;
   readonly activeExecutionDurationMs: number;
   readonly planRevisionCount: number;
+  readonly implementToGateLoops: number;
 }
 
 export class StateMachine {
@@ -78,6 +80,7 @@ export class StateMachine {
   private _pausedAtTimestamp: string | null;
   private _totalHumanWaitMs: number;
   private _planRevisionCount: number;
+  private _implementToGateLoops: number;
 
   constructor(options: {
     stage?: Stage;
@@ -94,6 +97,7 @@ export class StateMachine {
     pausedAtTimestamp?: string | null;
     totalHumanWaitMs?: number;
     planRevisionCount?: number;
+    implementToGateLoops?: number;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -109,6 +113,7 @@ export class StateMachine {
     this._pausedAtTimestamp = options.pausedAtTimestamp || null;
     this._totalHumanWaitMs = typeof options.totalHumanWaitMs === 'number' ? options.totalHumanWaitMs : 0;
     this._planRevisionCount = typeof options.planRevisionCount === 'number' ? options.planRevisionCount : 0;
+    this._implementToGateLoops = typeof options.implementToGateLoops === 'number' ? options.implementToGateLoops : 0;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -185,6 +190,20 @@ export class StateMachine {
 
   public get planRevisionCount(): number {
     return this._planRevisionCount;
+  }
+
+  public get implementToGateLoops(): number {
+    return this._implementToGateLoops;
+  }
+
+  public incrementImplementGateLoop(): void {
+    this._implementToGateLoops++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public resetImplementGateLoop(): void {
+    this._implementToGateLoops = 0;
+    this._updatedAt = new Date().toISOString();
   }
 
   public pauseAtGate(gateName: string): void {
@@ -320,6 +339,7 @@ export class StateMachine {
     this._pausedAtTimestamp = null;
     this._totalHumanWaitMs = 0;
     this._planRevisionCount = 0;
+    this._implementToGateLoops = 0;
     this._updatedAt = now;
     this._history = [
       {
@@ -345,7 +365,8 @@ export class StateMachine {
       pausedAtGate: this._pausedAtGate,
       totalHumanWaitMs: this._totalHumanWaitMs,
       activeExecutionDurationMs: this.activeExecutionDurationMs(),
-      planRevisionCount: this._planRevisionCount
+      planRevisionCount: this._planRevisionCount,
+      implementToGateLoops: this._implementToGateLoops
     };
   }
 
@@ -365,7 +386,8 @@ export class StateMachine {
       pausedAtGate: this._pausedAtGate,
       pausedAtTimestamp: this._pausedAtTimestamp,
       totalHumanWaitMs: this._totalHumanWaitMs,
-      planRevisionCount: this._planRevisionCount
+      planRevisionCount: this._planRevisionCount,
+      implementToGateLoops: this._implementToGateLoops
     };
   }
 
@@ -409,7 +431,8 @@ export class StateMachine {
       pausedAtGate: snapshot.pausedAtGate || null,
       pausedAtTimestamp: snapshot.pausedAtTimestamp || null,
       totalHumanWaitMs: typeof snapshot.totalHumanWaitMs === 'number' ? snapshot.totalHumanWaitMs : 0,
-      planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0
+      planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0,
+      implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0
     });
   }
 
