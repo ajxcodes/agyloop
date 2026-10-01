@@ -314,7 +314,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
         const exitCode = await runCli(['commit']);
         assert.strictEqual(exitCode, 1);
-        assert.ok(errorOutput.includes('Error: Interactive confirmation required. Pass -y/--yes in non-interactive environments.'));
+        assert.ok(errorOutput.includes('[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.'));
       } finally {
         process.chdir(prevCwd);
         (process.stdin as any).isTTY = originalIsTTY;

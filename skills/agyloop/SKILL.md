@@ -23,6 +23,7 @@ description: >-
 > 3. Spawning context-isolated subagents via `invoke_subagent`.
 > 4. Communicating with subagents via `send_message`.
 > 5. Presenting plans, status, and approval gates to the user.
+> 6. When invoking commit in an automated context, the orchestrator MUST use `bin/agyloop commit -y` or `bin/agyloop commit -y -m "<msg>"` after user confirmation, as interactive mode will abort in non-TTY environments.
 
 ---
 

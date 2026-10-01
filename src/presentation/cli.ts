@@ -1120,8 +1120,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
-        if (!options.yes && !process.stdin.isTTY) {
-          console.error(`\nError: Interactive confirmation required. Pass -y/--yes in non-interactive environments.\n`);
+        if (!options.yes && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+          console.error(`\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`);
           return EXIT_CODE_FAILURE;
         }
 
