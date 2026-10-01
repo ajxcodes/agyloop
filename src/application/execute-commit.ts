@@ -250,8 +250,10 @@ export class ExecuteCommitUseCase {
 
     // Execute git commit
     const fullMsg = commitMessage.toFullMessage();
-    const escapedMsg = fullMsg.replace(/"/g, '\\"');
-    const commitRes = await this.commandExecutor.execute(`git commit -m "${escapedMsg}"`, { cwd });
+    const commitRes = await this.commandExecutor.execute('git', { 
+      cwd, 
+      args: ['commit', '-m', fullMsg] 
+    });
 
     if (commitRes.exitCode !== 0) {
       throw new CommitExecutionError(
