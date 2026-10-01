@@ -28,8 +28,10 @@ import {
   StateRepository,
   GitHubGateway,
   PullRequestReviewComment,
-  PlanGeneratorPort
+  PlanGeneratorPort,
+  WorktreeManagerPort
 } from '../ports';
+import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export type TriageAction = 'implement' | 'plan' | 'discovery' | 'completed' | 'dismiss';
 
@@ -56,15 +58,21 @@ export class TriagePrCommentsUseCase {
   private readonly stateRepo: StateRepository;
   private readonly githubGateway?: GitHubGateway;
   private readonly planGenerator?: PlanGeneratorPort;
+  private readonly worktreeManager?: WorktreeManagerPort;
+  private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
 
   constructor(
     stateRepo: StateRepository,
     githubGateway?: GitHubGateway,
-    planGenerator?: PlanGeneratorPort
+    planGenerator?: PlanGeneratorPort,
+    worktreeManager?: WorktreeManagerPort,
+    inferBaseBranchUseCase?: InferBaseBranchUseCase
   ) {
     this.stateRepo = stateRepo;
     this.githubGateway = githubGateway;
     this.planGenerator = planGenerator;
+    this.worktreeManager = worktreeManager;
+    this.inferBaseBranchUseCase = inferBaseBranchUseCase;
   }
 
   public async execute(params: TriagePrCommentsParams = {}): Promise<TriagePrCommentsResult> {
@@ -151,6 +159,39 @@ export class TriagePrCommentsUseCase {
 
     // Transition from STAGE_TRIAGE to targetStage
     if (sm.canTransition(targetStage)) {
+      if (targetStage === STAGE_IMPLEMENT && this.worktreeManager) {
+        let baseBranch = sm.baseBranch;
+        if (!baseBranch && activeIssue && this.inferBaseBranchUseCase) {
+           try {
+             const inference = await this.inferBaseBranchUseCase.execute({ issueNumber: activeIssue, workspaceDir: cwd });
+             if (inference.baseBranch) {
+               baseBranch = inference.baseBranch;
+               sm.setBaseBranch(baseBranch);
+             }
+           } catch {
+             // Non-fatal
+           }
+        }
+        try {
+          const worktreeRes = await this.worktreeManager.createWorktree({
+            taskId: activeIssue || 'adhoc',
+            workspaceDir: cwd,
+            baseBranch: baseBranch || 'main'
+          });
+          sm.setWorktree(worktreeRes);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            success: false,
+            targetStage: sm.currentStage,
+            stateMachine: sm,
+            prNumber,
+            comments,
+            message: `Failed to construct worktree for implementation: ${msg}`
+          };
+        }
+      }
+
       sm.transition(targetStage, {
         note: params.notes || NOTE_TRIAGE_ROUTED,
         prNumber,
