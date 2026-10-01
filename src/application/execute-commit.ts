@@ -298,27 +298,28 @@ export class ExecuteCommitUseCase {
     const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
     const issueId = params.issue || sm.issue;
 
+    const escapeShellQuote = (str: string) => str.replace(/'/g, "'\\''");
+
     let prCommandCore = activeBranch
-      ? `gh pr create --base "${prBaseBranch}" --head "${activeBranch}"`
-      : `gh pr create --base "${prBaseBranch}"`;
+      ? `gh pr create --base '${escapeShellQuote(prBaseBranch)}' --head '${escapeShellQuote(activeBranch)}'`
+      : `gh pr create --base '${escapeShellQuote(prBaseBranch)}'`;
 
     if (issueId) {
       const singleLine = commitMessage.toSingleLine();
-      const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine).replace(/"/g, '\\"');
+      const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine);
 
       const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
-      const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody).replace(/"/g, '\\"');
+      const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody);
 
-      prCommandCore += ` --title "${sanitizedTitle}" --body "${sanitizedBody}"`;
+      prCommandCore += ` --title '${escapeShellQuote(sanitizedTitle)}' --body '${escapeShellQuote(sanitizedBody)}'`;
 
       if (milestone) {
-        const escapedMilestone = milestone.replace(/"/g, '\\"');
-        prCommandCore += ` --milestone "${escapedMilestone}"`;
+        prCommandCore += ` --milestone '${escapeShellQuote(milestone)}'`;
       }
     }
 
     if (issueId && prBaseBranch !== 'main') {
-      const closeCmd = `gh issue close ${issueId} --comment "Implemented and merged via PR #\\$PR_NUM into \\\`${prBaseBranch}\\\`."`;
+      const closeCmd = `gh issue close ${issueId} --comment 'Implemented and merged via PR #'"$PR_NUM"' into \`${escapeShellQuote(prBaseBranch)}\`.'`;
       prCommandCore = `PR_URL=$(${prCommandCore}); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE '[0-9]+$'); if [ -n "$PR_NUM" ]; then ${closeCmd}; fi`;
     }
 
