@@ -452,8 +452,8 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       assert.strictEqual(pruned, true);
       assert.strictEqual(result.stateMachine.worktree, null);
       assert.strictEqual(result.prBaseBranch, 'phase/1-bridge');
-      assert.ok(result.prCommand?.includes('--base "phase/1-bridge"'));
-      assert.ok(result.prCommand?.includes('--head "task/41-work"'));
+      assert.ok(result.prCommand?.includes('--base \'phase/1-bridge\''));
+      assert.ok(result.prCommand?.includes('--head \'task/41-work\''));
     });
 
     test('preserves worktree when keepWorktree is true', async () => {
