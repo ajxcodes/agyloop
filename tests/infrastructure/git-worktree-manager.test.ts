@@ -249,10 +249,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.strictEqual(descriptor.taskId, '87');
     // We should explicitly not run with -b since the branch exists
     assert.ok(!executedCommands.some((c) => c.includes('git worktree add -b')));
-    if (!executedCommands.some((c) => c.includes('git worktree add "') && !c.includes('-b'))) {
-      console.log('EXECUTED COMMANDS:', executedCommands);
-      assert.fail('Expected executedCommands to contain `git worktree add "` without `-b`');
-    }
+    assert.ok(
+      executedCommands.some((c) => c.includes('git worktree add "') && !c.includes('-b')),
+      'Expected executedCommands to contain `git worktree add "` without `-b`'
+    );
   });
 
   test('createWorktree idempotently returns existing descriptor when branch is already checked out', async () => {
