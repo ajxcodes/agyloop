@@ -26,6 +26,7 @@ import {
   SUMMARY_STATUS_IN_PROGRESS,
   NOTE_DEVELOPER_APPROVED,
   NOTE_AUTO_APPROVED_YOLO,
+  NOTE_IMPLICIT_APPROVAL,
   NOTE_REOPEN_IMPLEMENTATION_COMPLETED,
   VALIDATION_FIELD_PLAN_PATH,
   IssueNumber,
@@ -128,8 +129,13 @@ export class StartImplementationUseCase {
     let resumed = false;
     if (sm.currentStage === STAGE_APPROVAL) {
       sm.transition(STAGE_IMPLEMENT, { note: NOTE_DEVELOPER_APPROVED });
-    } else if (sm.currentStage === STAGE_PLAN && sm.mode === MODE_YOLO) {
-      sm.transition(STAGE_IMPLEMENT, { note: NOTE_AUTO_APPROVED_YOLO });
+    } else if (sm.currentStage === STAGE_PLAN) {
+      if (sm.mode === MODE_YOLO) {
+        sm.transition(STAGE_IMPLEMENT, { note: NOTE_AUTO_APPROVED_YOLO });
+      } else {
+        sm.transition(STAGE_APPROVAL, { note: NOTE_IMPLICIT_APPROVAL });
+        sm.transition(STAGE_IMPLEMENT, { note: NOTE_DEVELOPER_APPROVED });
+      }
     } else if (sm.currentStage === STAGE_IMPLEMENT) {
       resumed = true;
     } else if (sm.currentStage === STAGE_COMPLETED) {
@@ -139,7 +145,7 @@ export class StartImplementationUseCase {
         sm.currentStage,
         STAGE_IMPLEMENT,
         sm.mode,
-        `Cannot start implementation from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_APPROVAL}', '${STAGE_COMPLETED}' (or in '${STAGE_PLAN}' with YOLO mode).`
+        `Cannot start implementation from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_PLAN}', '${STAGE_APPROVAL}', or '${STAGE_COMPLETED}'.`
       );
     }
 
