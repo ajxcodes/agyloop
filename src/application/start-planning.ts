@@ -183,21 +183,16 @@ export class StartPlanningUseCase {
     } else if (sm.currentStage === STAGE_INITIALIZED) {
       if (params.skipDiscovery) {
         sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-        sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
       } else {
         sm.transition(STAGE_DISCOVERY, {
           note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
         });
         if (!isBug) {
           sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-          sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
         }
       }
     } else if (sm.currentStage === STAGE_DISCOVERY) {
       sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
-    } else if (sm.currentStage === STAGE_PLAN) {
-      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
     }
 
     // 6. Checkpoint state and update summary log
@@ -213,6 +208,14 @@ export class StartPlanningUseCase {
             status: SUMMARY_STATUS_IN_PROGRESS
           });
         } else if (sm.currentStage === STAGE_PLAN) {
+          if (!params.skipDiscovery) {
+            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+              stage: SUMMARY_STAGE_DISCOVERY,
+              subagent: plannerDef.name,
+              model: plannerDef.model,
+              status: SUMMARY_STATUS_COMPLETED
+            });
+          }
           this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,
