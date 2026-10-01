@@ -222,7 +222,7 @@ export class GetNextActionUseCase {
               TypeName: 'self',
               Role: ROLE_TITLE_PLANNER,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: prompt
             }
           ]
