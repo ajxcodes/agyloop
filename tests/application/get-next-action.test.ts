@@ -156,7 +156,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.TypeName, 'self');
     assert.strictEqual(sub.Role, ROLE_TITLE_PLANNER);
     assert.strictEqual(sub.Model, 'pro');
-    assert.strictEqual(sub.Workspace, 'share');
+    assert.strictEqual(sub.Workspace, 'inherit');
     assert.ok(result.description.includes('scoped write tools'));
     assert.ok(result.humanSummary.includes('scoped write tools'));
   });
