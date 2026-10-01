@@ -442,7 +442,8 @@ export class ResolveSubagentUseCase {
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Plan Fidelity**: Adhere strictly to the approved specification. Do not perform unauthorized refactorings, style drifts, or introduce unrequested dependencies.\n`;
     prompt += `2. **Surgical Modifications**: Use \`replace_file_content\` for targeted edits on existing files. Use \`write_to_file\` only for new files.\n`;
-    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n\n`;
+    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n`;
+    prompt += `4. **No Commits**: Do NOT commit your changes. Leave them staged or unstaged in the worktree. The orchestrator's commit gate handles committing.\n\n`;
 
     if (params.workspaceDir) {
       prompt += `### Execution Workspace / Worktree:\n**Working Directory**: \`${params.workspaceDir}\`\n\n`;
