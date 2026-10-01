@@ -205,7 +205,7 @@ export class StartImplementationUseCase {
       planDir: params.planDir || sm.planDir
     });
 
-    if (!resolved) {
+    if (!resolved && !resumed) {
       throw new ValidationError(
         VALIDATION_FIELD_PLAN_PATH,
         params.planPath || null,
@@ -213,11 +213,11 @@ export class StartImplementationUseCase {
       );
     }
 
-    if (!sm.planDir && resolved.planDir) {
+    if (!sm.planDir && resolved?.planDir) {
       sm.setPlanDir(resolved.planDir);
     }
 
-    const planContent = this.planGenerator.readPlanDocument(resolved.planPath);
+    const planContent = resolved ? this.planGenerator.readPlanDocument(resolved.planPath) : '';
 
     // 4. Resolve GitHub issue context if available
     let issueData: GitHubIssueData | null = null;
@@ -281,7 +281,7 @@ export class StartImplementationUseCase {
 
     const taskPrompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
-      planPath: resolved.planPath,
+      planPath: resolved?.planPath,
       issueNumber: activeIssue,
       issueTitle: issueData && !issueData.error ? issueData.title : undefined,
       issueBody: issueData && !issueData.error ? issueData.body : undefined,
@@ -296,7 +296,7 @@ export class StartImplementationUseCase {
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
 
-      if (resolved.summaryPath) {
+      if (resolved?.summaryPath) {
         this.planGenerator.updateSummaryLog(resolved.summaryPath, {
           stage: SUMMARY_STAGE_PLAN_REVIEW,
           status: SUMMARY_STATUS_APPROVED
@@ -312,8 +312,8 @@ export class StartImplementationUseCase {
 
     return {
       stateMachine: sm,
-      planDir: resolved.planDir,
-      planPath: resolved.planPath,
+      planDir: resolved?.planDir ?? null,
+      planPath: resolved?.planPath ?? null,
       planContent,
       implementerDef,
       taskPrompt,

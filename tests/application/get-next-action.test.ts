@@ -179,6 +179,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const sm = StateMachine.createInitial({ issue: 41, mode: MODE_YOLO });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
+    sm.setWorktree(new WorktreeDescriptor({ taskId: '41', worktreePath: '/repo/.worktrees/41', branch: 'task/41', baseBranch: 'main' }));
     const stateRepo = new MockStateRepo(sm.toSnapshot());
     const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
 

@@ -767,7 +767,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const triageUseCase = new TriagePrCommentsUseCase(
         stateRepo,
         githubGateway,
-        planGenerator
+        planGenerator,
+        worktreeManager,
+        inferBaseBranchUseCase
       );
 
       const action = (options.triageAction || 'implement').toLowerCase() as any;

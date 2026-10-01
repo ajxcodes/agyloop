@@ -435,6 +435,11 @@ export class GetNextActionUseCase {
   private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
+    
+    if (!worktreePath || worktreePath === cwd) {
+      throw new Error(`Validation failed for field 'worktreePath': Zero Direct Root Mutation invariant violated. Pipeline must execute code modifications inside an isolated worktree, but target resolved to root workspace '${cwd}'.`);
+    }
+
     const taskBranch = sm.worktree?.branch || null;
     const baseBranch = sm.baseBranch || 'main';
 
