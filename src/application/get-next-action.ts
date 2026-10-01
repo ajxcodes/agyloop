@@ -210,10 +210,25 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
+        let planDir = sm.planDir;
+        let planPath: string | undefined;
+        if (this.planGenerator) {
+          const resolved = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue: activeIssue,
+            planDir: sm.planDir
+          });
+          if (resolved) {
+            planPath = resolved.planPath;
+          }
+        }
+
         const prompt = this.resolveSubagentUseCase.buildPlanningTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: cwd,
-          config
+          config,
+          planDir,
+          planPath
         });
 
         const invocationPayload: SubagentInvocationPayload = {
