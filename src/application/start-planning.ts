@@ -95,9 +95,7 @@ export class StartPlanningUseCase {
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
       if (sm.currentStage === STAGE_COMPLETED || isNewIssue) {
-        sm.reset(MODE_PLAN, params.issue ?? sm.issue);
-      } else {
-        sm.setMode(MODE_PLAN);
+        sm.reset(sm.mode, params.issue ?? sm.issue);
       }
     } else {
       sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: params.issue });

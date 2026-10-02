@@ -88,6 +88,7 @@ export interface ResolvePlanOptions {
   readonly planPath?: string | null;
   readonly planDir?: string | null;
   readonly title?: string | null;
+  readonly stage?: string;
 }
 
 export interface ResolvedPlanLocation {
