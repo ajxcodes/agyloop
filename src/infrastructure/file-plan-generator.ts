@@ -55,6 +55,9 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 ## 3. Reproduction Steps & Verification Protocol
 - **Local Reproduction Command:**
 - **Failing Test Target:**
+### Manual Bug Smoke Test
+- **Smoke Test Results:**
+- **Step-by-Step Reproduction:**
 
 ## 4. Remediation Strategy
 - **Recommended Fix Approach:**
@@ -87,7 +90,7 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 ## 4. Quality Gate & Test Verification
 - **Automated Test Targets:**
 - **Build / Lint Commands:**
-- **Manual Verification Steps:**
+### Manual Smoke Test Protocol
 `,
 
   [TEMPLATE_SUMMARY]: `# AgyLoop Execution Summary
