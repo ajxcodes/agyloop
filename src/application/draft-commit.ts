@@ -67,9 +67,10 @@ export class DraftCommitUseCase {
   }
 
   public async execute(params: DraftCommitParams = {}): Promise<DraftCommitResult> {
-    const cwd = params.workspaceDir || process.cwd();
+    const initialDir = params.workspaceDir || process.cwd();
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
+    const cwd = sm.worktree?.worktreePath || initialDir;
 
     if (sm.currentStage !== STAGE_COMMIT && sm.currentStage !== STAGE_REVIEW) {
       throw new InvalidTransitionError(

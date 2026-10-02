@@ -21,6 +21,7 @@
 
 import {
   StateMachine,
+  IssueNumber,
   StageName,
   ExecutionMode,
   STAGE_INITIALIZED,
@@ -32,18 +33,20 @@ import {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  STAGE_TRIAGE,
   MODE_STANDARD,
   MODE_YOLO,
   MODE_PLAN,
   MODE_IMPLEMENT,
-  MODE_GATES,
   MODE_COMMIT,
   GATE_APPROVAL,
   GATE_COMMIT,
+  GATE_TRIAGE,
   NOTE_LIFECYCLE_STARTED,
   NOTE_LIFECYCLE_COMPLETED,
   NOTE_PAUSED_APPROVAL_GATE,
   NOTE_PAUSED_COMMIT_GATE,
+  NOTE_PAUSED_TRIAGE_GATE,
   NOTE_AUTO_APPROVED_PLAN,
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
@@ -72,6 +75,7 @@ import { ExecuteCommitUseCase, ExecuteCommitResult } from './execute-commit';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { RunPreFlightCheckUseCase } from './run-preflight-check';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import type { PreFlightCheckResult } from '../domain';
 
 export interface RunLifecycleParams {
   readonly mode?: ExecutionMode;
@@ -96,6 +100,8 @@ export interface RunLifecycleParams {
   readonly userInstructions?: string | null;
   readonly interactiveCommit?: boolean;
   readonly worktree?: boolean;
+  readonly step?: boolean;
+  readonly onProgress?: (message: string) => void;
 }
 
 export interface RunLifecycleResult {
@@ -103,7 +109,7 @@ export interface RunLifecycleResult {
   readonly mode: ExecutionMode;
   readonly currentStage: StageName;
   readonly stateMachine: StateMachine;
-  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | null;
+  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | null;
   readonly planResult?: StartPlanningResult;
   readonly implementationResult?: StartImplementationResult;
   readonly qualityGateResult?: QualityGateRunResult;
@@ -184,6 +190,10 @@ export class RunLifecycleUseCase {
         this.planGenerator
       );
 
+    this.inferBaseBranchUseCase =
+      deps.inferBaseBranchUseCase ??
+      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
+
     this.startImplementationUseCase =
       deps.startImplementationUseCase ??
       new StartImplementationUseCase(
@@ -193,7 +203,8 @@ export class RunLifecycleUseCase {
         this.githubGateway,
         resolveSubagentUseCase,
         this.worktreeManager,
-        this.inferBaseBranchUseCase
+        this.inferBaseBranchUseCase,
+        this.commandExecutor
       );
 
     this.runQualityGateUseCase =
@@ -242,11 +253,7 @@ export class RunLifecycleUseCase {
 
     this.runPreFlightCheckUseCase =
       deps.runPreFlightCheckUseCase ??
-      new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager);
-
-    this.inferBaseBranchUseCase =
-      deps.inferBaseBranchUseCase ??
-      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
+      new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager, this.stateRepo);
   }
 
   public async execute(params: RunLifecycleParams = {}): Promise<RunLifecycleResult> {
@@ -260,10 +267,32 @@ export class RunLifecycleUseCase {
 
     const commitAfter = params.commitAfter ?? config.options.commitAfter ?? false;
 
+    // Auto-infer issue context if not explicitly provided
+    let effectiveIssue =
+      params.issue !== undefined && params.issue !== null && String(params.issue).trim() !== ''
+        ? Number(params.issue)
+        : null;
+
+    if (!effectiveIssue) {
+      let inferred = IssueNumber.inferFromPath(workspace);
+      if (!inferred && this.worktreeManager && this.worktreeManager.resolveBaseBranch) {
+        try {
+          const curBranch = await this.worktreeManager.resolveBaseBranch(workspace);
+          inferred = IssueNumber.inferFromBranch(curBranch);
+        } catch {
+          // Non-fatal
+        }
+      }
+      if (inferred) {
+        effectiveIssue = inferred;
+      }
+    }
+
     // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
-    const activeIssueToCheck = params.issue;
+    const activeIssueToCheck = effectiveIssue;
+    let preflightResult = undefined;
     if (activeIssueToCheck && !params.dryRun) {
-      await this.runPreFlightCheckUseCase.execute({
+      preflightResult = await this.runPreFlightCheckUseCase.execute({
         issueNumber: activeIssueToCheck,
         workspaceDir: workspace,
         trackerRepo: config.migration?.trackerRepo
@@ -313,11 +342,52 @@ export class RunLifecycleUseCase {
       }
     }
 
-    if (params.issue && !isNewIssue && sm.issue !== Number(params.issue)) {
-      sm.setIssue(params.issue);
+    const finalIssue = params.issue ?? effectiveIssue;
+    if (finalIssue && !isNewIssue && sm.issue !== Number(finalIssue)) {
+      sm.setIssue(finalIssue);
       if (!params.dryRun) {
         await this.stateRepo.save(sm.toSnapshot());
       }
+    }
+
+    // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE
+    if (
+      preflightResult &&
+      preflightResult.isResume &&
+      ((preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) || preflightResult.prHasChangesRequested) &&
+      sm.currentStage !== STAGE_TRIAGE
+    ) {
+      if (sm.canTransition(STAGE_TRIAGE)) {
+        sm.transition(STAGE_TRIAGE, {
+          note: NOTE_PAUSED_TRIAGE_GATE,
+          prNumber: preflightResult.resumePrNumber,
+          commentsCount: preflightResult.prReviewComments?.length ?? 0
+        });
+      }
+      sm.pauseAtGate(GATE_TRIAGE);
+      if (!params.dryRun) {
+        await this.stateRepo.save(sm.toSnapshot());
+      }
+      return {
+        success: true,
+        mode: activeMode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        pausedAtGate: GATE_TRIAGE,
+        message: NOTE_PAUSED_TRIAGE_GATE
+      };
+    }
+
+    if (sm.currentStage === STAGE_TRIAGE) {
+      sm.pauseAtGate(GATE_TRIAGE);
+      return {
+        success: true,
+        mode: activeMode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        pausedAtGate: GATE_TRIAGE,
+        message: NOTE_PAUSED_TRIAGE_GATE
+      };
     }
 
     // 3. Dispatch based on operational mode
@@ -326,20 +396,17 @@ export class RunLifecycleUseCase {
         return this.executePlanMode(sm, params, workspace);
 
       case MODE_IMPLEMENT:
-        return this.executeImplementMode(sm, params, workspace);
-
-      case MODE_GATES:
-        return this.executeGatesMode(sm, params, commitAfter, workspace);
+        return this.executeImplementMode(sm, params, workspace, preflightResult);
 
       case MODE_COMMIT:
         return this.executeCommitMode(sm, params, workspace);
 
       case MODE_YOLO:
-        return this.executeYoloMode(sm, params, commitAfter, workspace);
+        return this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult);
 
       case MODE_STANDARD:
       default:
-        return this.executeStandardMode(sm, params, commitAfter, workspace);
+        return this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult);
     }
   }
 
@@ -352,6 +419,7 @@ export class RunLifecycleUseCase {
     workspace: string
   ): Promise<RunLifecycleResult> {
     const planResult = await this.startPlanningUseCase.execute({
+      mode: sm.mode,
       issue: sm.issue,
       title: params.title,
       type: params.type,
@@ -360,14 +428,17 @@ export class RunLifecycleUseCase {
       workspaceDir: workspace
     });
 
+    const isApproval = planResult.stateMachine.currentStage === STAGE_APPROVAL;
     return {
       success: true,
       mode: MODE_PLAN,
       currentStage: planResult.stateMachine.currentStage,
       stateMachine: planResult.stateMachine,
-      pausedAtGate: GATE_APPROVAL,
+      pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
       planResult,
-      message: NOTE_PAUSED_APPROVAL_GATE
+      message: isApproval
+        ? NOTE_PAUSED_APPROVAL_GATE
+        : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
     };
   }
 
@@ -454,7 +525,8 @@ export class RunLifecycleUseCase {
   private async executeImplementMode(
     sm: StateMachine,
     params: RunLifecycleParams,
-    workspace: string
+    workspace: string,
+    preflightResult?: PreFlightCheckResult
   ): Promise<RunLifecycleResult> {
     const worktree = await this.resolveWorktree(sm, params, workspace);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
@@ -466,7 +538,9 @@ export class RunLifecycleUseCase {
       userInstructions: params.userInstructions,
       configPath: params.configPath,
       dryRun: params.dryRun,
-      workspaceDir: activeWorkspace
+      workspaceDir: activeWorkspace,
+      hasMergeConflicts: preflightResult?.hasMergeConflicts,
+      mergeBaseBranch: preflightResult?.candidateBaseBranch
     });
 
     return {
@@ -479,154 +553,6 @@ export class RunLifecycleUseCase {
       message: worktree
         ? `Implementation isolated in worktree: ${worktree.worktreePath}`
         : 'Implementation ready for code modifications.'
-    };
-  }
-
-  /**
-   * Standalone Gates mode: runs quality gates followed by AI PR review on working diff.
-   * If commitAfter is opted in, automatically drafts and executes conventional commit upon passing.
-   */
-  private async executeGatesMode(
-    sm: StateMachine,
-    params: RunLifecycleParams,
-    commitAfter: boolean,
-    workspace: string
-  ): Promise<RunLifecycleResult> {
-    const worktree = await this.resolveWorktree(sm, params, workspace);
-    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
-
-    // If starting from an earlier stage, advance through valid transitions to IMPLEMENT
-    if (sm.currentStage === STAGE_INITIALIZED) {
-      sm.transition(STAGE_DISCOVERY, { note: 'Direct gates mode initialization' });
-    }
-    if (sm.currentStage === STAGE_DISCOVERY) {
-      sm.transition(STAGE_PLAN, { note: 'Direct gates mode planning pass' });
-    }
-    if (sm.currentStage === STAGE_PLAN) {
-      sm.setMode(MODE_YOLO);
-      sm.transition(STAGE_IMPLEMENT, { note: 'Direct gates mode implementation stage' });
-      sm.setMode(MODE_GATES);
-    } else if (sm.currentStage === STAGE_APPROVAL) {
-      sm.transition(STAGE_IMPLEMENT, { note: 'Direct gates mode execution' });
-    }
-
-    if (params.dryRun) {
-      return {
-        success: true,
-        mode: MODE_GATES,
-        currentStage: commitAfter ? STAGE_COMPLETED : STAGE_COMMIT,
-        stateMachine: sm,
-        worktree,
-        message: `Simulated quality gates and AI PR review${commitAfter ? ' with --commit-after' : ''}.`
-      };
-    }
-
-    await this.stateRepo.save(sm.toSnapshot());
-
-    // 1. Run Quality Gate
-    const qgResult = await this.runQualityGateUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      commands: params.commands,
-      timeoutSeconds: params.timeoutSeconds,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace
-    });
-
-    sm = qgResult.stateMachine;
-
-    if (!qgResult.passed) {
-      return {
-        success: false,
-        mode: MODE_GATES,
-        currentStage: sm.currentStage,
-        stateMachine: sm,
-        qualityGateResult: qgResult,
-        worktree,
-        message: 'Quality gates failed. Pipeline reverted to IMPLEMENT.'
-      };
-    }
-
-    // 2. Run AI PR Review
-    const reviewResult = await this.runReviewUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      standardsPath: params.standardsPath,
-      userInstructions: params.userInstructions,
-      workingDiff: params.workingDiff,
-      staged: params.staged,
-      baseRef: params.baseRef,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace
-    });
-
-    sm = reviewResult.stateMachine;
-
-    if (!reviewResult.passed) {
-      return {
-        success: false,
-        mode: MODE_GATES,
-        currentStage: sm.currentStage,
-        stateMachine: sm,
-        qualityGateResult: qgResult,
-        reviewResult,
-        worktree,
-        message: 'AI review requested changes. Pipeline reverted to IMPLEMENT.'
-      };
-    }
-
-    // 3. Both passed -> state is at COMMIT
-    if (commitAfter) {
-      const draftResult = await this.draftCommitUseCase.execute({
-        issue: sm.issue,
-        staged: params.staged,
-        userMessage: params.message,
-        workingDiff: params.workingDiff,
-        baseRef: params.baseRef,
-        workspaceDir: activeWorkspace
-      });
-
-      const execResult = await this.executeCommitUseCase.execute({
-        commitMessage: draftResult.commitMessage,
-        confirmed: true,
-        bypassConfirmation: true,
-        staged: params.staged,
-        dryRun: params.dryRun,
-        issue: sm.issue,
-        workspaceDir: activeWorkspace
-      });
-
-      if (execResult.success) {
-        await this.teardownWorktree(worktree, workspace);
-      }
-
-      return {
-        success: execResult.success,
-        mode: MODE_GATES,
-        currentStage: execResult.currentStage as StageName,
-        stateMachine: execResult.stateMachine,
-        qualityGateResult: qgResult,
-        reviewResult,
-        draftCommitResult: draftResult,
-        executeCommitResult: execResult,
-        worktree: execResult.success ? null : worktree,
-        message: NOTE_COMMIT_AFTER_EXECUTED
-      };
-    }
-
-    return {
-      success: true,
-      mode: MODE_GATES,
-      currentStage: sm.currentStage,
-      stateMachine: sm,
-      qualityGateResult: qgResult,
-      reviewResult,
-      worktree,
-      message: 'Quality gates and AI review passed. Pipeline ready at COMMIT gate.'
     };
   }
 
@@ -658,7 +584,8 @@ export class RunLifecycleUseCase {
       staged: params.staged,
       dryRun: params.dryRun,
       issue: sm.issue,
-      workspaceDir: activeWorkspace
+      workspaceDir: activeWorkspace,
+      rootWorkspaceDir: workspace
     });
 
     if (execResult.success) {
@@ -686,7 +613,8 @@ export class RunLifecycleUseCase {
     sm: StateMachine,
     params: RunLifecycleParams,
     commitAfter: boolean,
-    workspace: string
+    workspace: string,
+    preflightResult?: PreFlightCheckResult
   ): Promise<RunLifecycleResult> {
     sm.setMode(MODE_YOLO);
     if (!params.dryRun) {
@@ -700,6 +628,7 @@ export class RunLifecycleUseCase {
     if (params.dryRun) {
       if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
         planResult = await this.startPlanningUseCase.execute({
+          mode: sm.mode,
           issue: sm.issue,
           title: params.title,
           type: params.type,
@@ -722,6 +651,7 @@ export class RunLifecycleUseCase {
     // A. Planning & Auto-Approval
     if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
       planResult = await this.startPlanningUseCase.execute({
+        mode: sm.mode,
         issue: sm.issue,
         title: params.title,
         type: params.type,
@@ -748,7 +678,9 @@ export class RunLifecycleUseCase {
         planDir: params.planDir,
         configPath: params.configPath,
         dryRun: params.dryRun,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch
       });
 
       sm = implResult.stateMachine;
@@ -832,7 +764,8 @@ export class RunLifecycleUseCase {
         staged: params.staged,
         dryRun: params.dryRun,
         issue: sm.issue,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        rootWorkspaceDir: workspace
       });
 
       if (execResult.success) {
@@ -877,11 +810,13 @@ export class RunLifecycleUseCase {
     sm: StateMachine,
     params: RunLifecycleParams,
     commitAfter: boolean,
-    workspace: string
+    workspace: string,
+    preflightResult?: PreFlightCheckResult
   ): Promise<RunLifecycleResult> {
     // 1. If at INITIALIZED or DISCOVERY: run planning and halt at APPROVAL gate
     if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
       const planResult = await this.startPlanningUseCase.execute({
+        mode: sm.mode,
         issue: sm.issue,
         title: params.title,
         type: params.type,
@@ -890,14 +825,17 @@ export class RunLifecycleUseCase {
         workspaceDir: workspace
       });
 
+      const isApproval = planResult.stateMachine.currentStage === STAGE_APPROVAL;
       return {
         success: true,
         mode: MODE_STANDARD,
         currentStage: planResult.stateMachine.currentStage,
         stateMachine: planResult.stateMachine,
-        pausedAtGate: GATE_APPROVAL,
+        pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
         planResult,
-        message: NOTE_PAUSED_APPROVAL_GATE
+        message: isApproval
+          ? NOTE_PAUSED_APPROVAL_GATE
+          : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
       };
     }
 
@@ -915,7 +853,9 @@ export class RunLifecycleUseCase {
         userInstructions: params.userInstructions,
         configPath: params.configPath,
         dryRun: params.dryRun,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch
       });
 
       sm = implResult.stateMachine;
@@ -1004,7 +944,8 @@ export class RunLifecycleUseCase {
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
-          workspaceDir: activeWorkspace
+          workspaceDir: activeWorkspace,
+          rootWorkspaceDir: workspace
         });
 
         if (execResult.success) {
@@ -1033,7 +974,8 @@ export class RunLifecycleUseCase {
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
-          workspaceDir: activeWorkspace
+          workspaceDir: activeWorkspace,
+          rootWorkspaceDir: workspace
         });
 
         if (execResult.success) {

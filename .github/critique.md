@@ -18,7 +18,7 @@ This repository adheres to strict software engineering, hexagonal architecture, 
 - **Immutability**: Domain entities, value objects, and constant arrays/records must enforce immutability with `readonly` properties and `Object.freeze()`.
 - **Sealed Domain Errors**: Custom error hierarchy extending `AgyLoopError` with strongly-typed error codes (`ErrorCode`).
 - **Subagent Safety Invariants**:
-  - `planner`: Strict physical write suppression (`enable_write_tools: false`, read-only inspection whitelist).
+  - `planner`: Scoped plan write permissions (`enable_write_tools: true`, restricted to populating specifications inside `artifacts/plans/`).
   - `gate`: Verification-only tooling (`run_command`, `view_file`) with log noise shielding and structured summary reporting.
   - `reviewer`: Read-only inspection with `critique` integration and structured verdict reporting.
   - `implementer`: Fresh context handoff strictly loaded from approved plans.

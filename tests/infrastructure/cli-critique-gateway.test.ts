@@ -316,8 +316,8 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
       assert.strictEqual(mockExecutor.calls.length, 1);
       const call = mockExecutor.calls[0];
       assert.ok(call.command.includes('--json'));
-      assert.ok(call.command.includes('--staged'));
-      assert.ok(call.command.includes('--base origin/main'));
+      assert.ok(call.command.includes('git diff --cached origin/main -- .'));
+      assert.ok(call.command.includes('|'));
       assert.strictEqual(report.isPassing(), true);
       assert.strictEqual(report.summary, 'Review completed by critique.');
     } finally {

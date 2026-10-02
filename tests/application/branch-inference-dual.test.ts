@@ -41,7 +41,7 @@ function makeMockGithub(overrides: Partial<GitHubGateway> = {}): GitHubGateway {
 
 function makeMockWorktree(overrides: Partial<WorktreeManagerPort> = {}): WorktreeManagerPort {
   return {
-    resolveTaskWorktreePath: (_dir: string, taskId: string | number) => `/repo/.worktrees/${taskId}`,
+    resolveTaskWorktreePath: async (_dir: string, taskId: string | number) => `/repo/.worktrees/${taskId}`,
     resolveTaskBranchName: (taskId: string | number, slug?: string | null, prefix?: string) =>
       `${prefix || 'task'}/${taskId}-${slug ? slug.toLowerCase().replace(/[^a-z0-9]+/g, '-') : 'work'}`,
     ensureGitIgnore: async () => false,
@@ -195,5 +195,35 @@ describe('Dual-Branch Lifecycle & Remote Push Inference', () => {
     assert.strictEqual(result.baseBranch, 'phase/1-bridge-arch');
     assert.strictEqual(result.branchType, 'fix');
     assert.strictEqual(result.suggestedBranch, 'fix/12-socket-disconnect-bug');
+  });
+
+  test('infers collector branch from GitHub issue milestone title when issue has no phase label', async () => {
+    const mockGithub = makeMockGithub({
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'ajxcodes/agydeck',
+        number: num,
+        title: 'Fix worktree provisioning race',
+        body: 'Details',
+        labels: ['bug'],
+        milestone: { title: 'Phase 5: Orchestrator & Worktree Lifecycle Hardening' },
+        comments: [],
+        state: 'OPEN'
+      })
+    });
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/5-orchestrator-hardening'],
+      isAncestor: async () => false
+    });
+
+    const useCase = new InferBaseBranchUseCase(mockWorktree, mockGithub);
+    const result = await useCase.execute({
+      issueNumber: '56'
+    });
+
+    assert.strictEqual(result.baseBranch, 'phase/5-orchestrator-hardening');
+    assert.strictEqual(result.isCollectorBranch, true);
+    assert.strictEqual(result.branchType, 'fix');
+    assert.strictEqual(result.suggestedBranch, 'fix/56-fix-worktree-provisioning-race');
   });
 });

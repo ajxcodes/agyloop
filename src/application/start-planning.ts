@@ -17,6 +17,7 @@ import {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   MODE_PLAN,
+  ExecutionMode,
   NOTE_INITIATED_DISCOVERY_RCA,
   NOTE_GENERATING_SPECS,
   NOTE_AWAITING_REVIEW,
@@ -39,6 +40,7 @@ import {
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 
 export interface StartPlanningParams {
+  readonly mode?: ExecutionMode;
   readonly issue?: number | string | null;
   readonly title?: string | null;
   readonly type?: string | null;
@@ -92,15 +94,17 @@ export class StartPlanningUseCase {
       snapshot.issue !== null &&
       String(params.issue) !== String(snapshot.issue);
 
+    const targetMode = params.mode ?? MODE_PLAN;
+
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
       if (sm.currentStage === STAGE_COMPLETED || isNewIssue) {
-        sm.reset(MODE_PLAN, params.issue ?? sm.issue);
+        sm.reset(targetMode, params.issue ?? sm.issue);
       } else {
-        sm.setMode(MODE_PLAN);
+        sm.setMode(targetMode);
       }
     } else {
-      sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: params.issue });
+      sm = StateMachine.createInitial({ mode: targetMode, issue: params.issue });
     }
 
     const activeIssue = params.issue || sm.issue;
@@ -117,6 +121,9 @@ export class StartPlanningUseCase {
         throw new PreFlightHaltError(`Task #${issueVo.value} is already closed.`, 'CLOSED', {
           issueNumber: issueVo.value
         });
+      }
+      if (issueData?.milestone?.title) {
+        sm.setMilestoneTitle(issueData.milestone.title);
       }
     }
 
@@ -135,6 +142,9 @@ export class StartPlanningUseCase {
         type: planType,
         labels: planLabels
       });
+      if (scaffoldInfo && scaffoldInfo.planDir) {
+        sm.setPlanDir(scaffoldInfo.planDir);
+      }
     }
 
     // 4. Resolve planner subagent definition
@@ -177,21 +187,16 @@ export class StartPlanningUseCase {
     } else if (sm.currentStage === STAGE_INITIALIZED) {
       if (params.skipDiscovery) {
         sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-        sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
       } else {
         sm.transition(STAGE_DISCOVERY, {
           note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
         });
         if (!isBug) {
           sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-          sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
         }
       }
     } else if (sm.currentStage === STAGE_DISCOVERY) {
       sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
-    } else if (sm.currentStage === STAGE_PLAN) {
-      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
     }
 
     // 6. Checkpoint state and update summary log
@@ -207,6 +212,14 @@ export class StartPlanningUseCase {
             status: SUMMARY_STATUS_IN_PROGRESS
           });
         } else if (sm.currentStage === STAGE_PLAN) {
+          if (!params.skipDiscovery) {
+            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+              stage: SUMMARY_STAGE_DISCOVERY,
+              subagent: plannerDef.name,
+              model: plannerDef.model,
+              status: SUMMARY_STATUS_COMPLETED
+            });
+          }
           this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,

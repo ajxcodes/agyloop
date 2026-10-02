@@ -270,6 +270,43 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.ok(content.includes('- **Tests:** 100% (26 passed)'));
       assert.ok(content.includes('- All architectural invariants satisfied'));
     });
+
+    test('updateSummaryLog matches and updates Quality Gate and Commit Gate table rows', () => {
+      const summaryResult = generator.generateSummaryLog({
+        targetDir: tempDir,
+        projectName: 'TestApp',
+        issueNumber: 50
+      });
+
+      // Update with stage queries matching TransitionStageUseCase mappings
+      const updatedQuality = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Quality Gates',
+        subagent: 'gate',
+        model: 'flash_lite',
+        status: 'PASSED',
+        duration: '45s'
+      });
+      assert.strictEqual(updatedQuality, true, 'Should find and update Quality Gate row');
+
+      const updatedCommit = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Commit / PR',
+        subagent: 'Human Gate',
+        model: '-',
+        status: 'COMPLETED',
+        duration: '1m 15s'
+      });
+      assert.strictEqual(updatedCommit, true, 'Should find and update Commit Gate row');
+
+      const content = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        content.includes('| 4. Quality Gate | `gate` | `flash_lite` | PASSED | 45s |'),
+        'Summary table should reflect updated Quality Gate row'
+      );
+      assert.ok(
+        content.includes('| 6. Commit Gate | Human Gate | - | COMPLETED | 1m 15s |'),
+        'Summary table should reflect updated Commit Gate row'
+      );
+    });
   });
 
   describe('scaffoldPlanDirectory() & findPlanDirectory()', () => {
@@ -291,6 +328,52 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       // Test findPlanDirectory helper
       const foundDir = generator.findPlanDirectory(tempDir, 12);
       assert.strictEqual(foundDir, scaffold.planDir);
+    });
+
+    test('findPlanDirectory resolves most recent folder by mtime when multiple match', () => {
+      const plansDir = path.join(tempDir, 'artifacts', 'plans');
+      const dirOld = path.join(plansDir, '42-apple-first');
+      const dirNew = path.join(plansDir, '42-zebra-last');
+      fs.mkdirSync(dirOld, { recursive: true });
+      fs.mkdirSync(dirNew, { recursive: true });
+
+      // Set old time on dirOld, new time on dirNew
+      const pastTime = new Date(Date.now() - 60000);
+      const currentTime = new Date();
+      fs.utimesSync(dirOld, pastTime, pastTime);
+      fs.utimesSync(dirNew, currentTime, currentTime);
+
+      const found = generator.findPlanDirectory(tempDir, 42);
+      assert.strictEqual(found, dirNew);
+
+      // Now set dirOld to be newer than dirNew
+      const newestTime = new Date(Date.now() + 60000);
+      fs.utimesSync(dirOld, newestTime, newestTime);
+
+      const foundSwapped = generator.findPlanDirectory(tempDir, 42);
+      assert.strictEqual(foundSwapped, dirOld);
+    });
+
+    test('findPlanDirectory prefers exact slug match when title is provided', () => {
+      const plansDir = path.join(tempDir, 'artifacts', 'plans');
+      const dirA = path.join(plansDir, '55-feature-alpha');
+      const dirB = path.join(plansDir, '55-feature-beta');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+
+      // dirB is newer
+      const pastTime = new Date(Date.now() - 60000);
+      const currentTime = new Date();
+      fs.utimesSync(dirA, pastTime, pastTime);
+      fs.utimesSync(dirB, currentTime, currentTime);
+
+      // But searching with title "Feature Alpha" should pick dirA
+      const found = generator.findPlanDirectory(tempDir, 55, 'Feature Alpha');
+      assert.strictEqual(found, dirA);
+
+      // Searching without title picks newer dirB
+      const foundWithoutTitle = generator.findPlanDirectory(tempDir, 55);
+      assert.strictEqual(foundWithoutTitle, dirB);
     });
   });
 

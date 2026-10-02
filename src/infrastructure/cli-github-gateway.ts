@@ -98,7 +98,7 @@ export class CliGitHubGateway implements GitHubGateway {
 
     try {
       const rawJson = this.runGh(
-        `issue view ${issueNumber} ${repoFlag} --json number,title,body,labels,state,comments`,
+        `issue view ${issueNumber} ${repoFlag} --json number,title,body,state,labels`,
         { cwd: options.cwd }
       );
 
@@ -109,6 +109,7 @@ export class CliGitHubGateway implements GitHubGateway {
         state?: string;
         labels?: Array<{ name?: string } | string>;
         comments?: Array<{ author?: { login?: string }; body?: string; createdAt?: string }>;
+        milestone?: { title?: string } | null;
       }
 
       const parsed = JSON.parse(rawJson) as RawGhIssue;
@@ -126,7 +127,8 @@ export class CliGitHubGateway implements GitHubGateway {
         body: parsed.body || '',
         state: (parsed.state || 'OPEN').toUpperCase(),
         labels,
-        comments
+        comments,
+        milestone: parsed.milestone?.title ? { title: parsed.milestone.title } : undefined
       };
     } catch (err: unknown) {
       return {
@@ -150,9 +152,9 @@ export class CliGitHubGateway implements GitHubGateway {
     try {
       let cmd: string;
       if (options.headBranch) {
-        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 1`;
+        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 1`;
       } else if (options.issueNumber) {
-        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels --limit 10`;
+        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 10`;
       } else {
         return null;
       }
@@ -167,6 +169,8 @@ export class CliGitHubGateway implements GitHubGateway {
         url?: string;
         mergedAt?: string | null;
         labels?: Array<{ name?: string } | string>;
+        mergeStateStatus?: string;
+        mergeable?: string;
       }
 
       const parsed = JSON.parse(raw) as RawGhPr[];
@@ -177,16 +181,37 @@ export class CliGitHubGateway implements GitHubGateway {
       let pr: RawGhPr | undefined;
       if (options.issueNumber) {
         const numStr = String(options.issueNumber);
-        // Find exact match avoiding substring collisions (e.g. issue 4 shouldn't match PR 42)
-        pr = parsed.find((p) => {
-          const head = p.headRefName || '';
-          const title = p.title || '';
-          const branchPattern = new RegExp(`^(task|fix|feature|issue|bugfix)?/?${numStr}([-_/]|$)`, 'i');
-          if (branchPattern.test(head)) return true;
+        const branchPattern = new RegExp(
+          `^(?:task|fix|feature|issue|bugfix)?[-_/]?${numStr}(?:[-_/]|$)`,
+          'i'
+        );
+
+        // 1. Prefer head branch matching over title matching
+        pr = parsed.find((p) => branchPattern.test(p.headRefName || ''));
+
+        // 2. Fallback to title matching if no head branch match found
+        if (!pr) {
           const titlePattern = new RegExp(`(^|\\s|[\\[(])#${numStr}([\\])\\s,.:;]|$)`, 'i');
-          if (titlePattern.test(title)) return true;
-          return false;
-        });
+          const branchIssuePattern = /^(?:task|fix|feature|issue|bugfix)?[-_/]?(\d+)(?:[-_/]|$)/i;
+
+          pr = parsed.find((p) => {
+            const head = p.headRefName || '';
+            const title = p.title || '';
+
+            if (!titlePattern.test(title)) {
+              return false;
+            }
+
+            // Reject title matches if head branch explicitly points to a different issue number
+            const branchIssueMatch = head.match(branchIssuePattern);
+            if (branchIssueMatch && branchIssueMatch[1] !== numStr) {
+              return false;
+            }
+
+            return true;
+          });
+        }
+
         if (!pr) {
           return null;
         }
@@ -205,7 +230,9 @@ export class CliGitHubGateway implements GitHubGateway {
         headRefName: pr.headRefName || '',
         url: pr.url || '',
         merged: isMerged,
-        labels: prLabels
+        labels: prLabels,
+        mergeStateStatus: pr.mergeStateStatus,
+        mergeable: pr.mergeable
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -236,76 +263,76 @@ export class CliGitHubGateway implements GitHubGateway {
     const repoFlag = repo ? `--repo ${repo}` : '';
 
     try {
-      const rawJson = this.runGh(
-        `pr view ${prNumber} ${repoFlag} --json comments,reviews`,
-        { cwd: options.cwd }
-      );
+      const repoPath = repo || this.getCurrentRepo(options.cwd);
+      if (!repoPath) return [];
 
-      interface RawReviewComment {
-        author?: { login?: string };
-        body?: string;
-        path?: string;
-        line?: number;
-        createdAt?: string;
-      }
+      const issueCommentsRaw = this.runGh(`api repos/${repoPath}/issues/${prNumber}/comments`, { cwd: options.cwd });
+      const reviewsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/reviews`, { cwd: options.cwd });
+      const reviewCommentsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/comments`, { cwd: options.cwd });
 
-      interface RawReview {
-        author?: { login?: string };
-        body?: string;
-        state?: string;
-        submittedAt?: string;
-        createdAt?: string;
-        comments?: RawReviewComment[];
-      }
+      const parsedComments = JSON.parse(issueCommentsRaw) as Array<any>;
+      const parsedReviews = JSON.parse(reviewsRaw) as Array<any>;
+      const parsedReviewComments = JSON.parse(reviewCommentsRaw) as Array<any>;
 
-      interface RawGhPrView {
-        comments?: Array<{
-          author?: { login?: string };
-          body?: string;
-          createdAt?: string;
-        }>;
-        reviews?: RawReview[];
-      }
-
-      const parsed = JSON.parse(rawJson) as RawGhPrView;
       const results: PullRequestReviewComment[] = [];
 
-      if (parsed.comments) {
-        for (const c of parsed.comments) {
-          if (c.body && c.body.trim()) {
-            results.push({
-              author: (c.author && c.author.login) || 'unknown',
-              body: c.body,
-              createdAt: c.createdAt
-            });
-          }
+      const parseCategory = (body: string, reviewState?: string): { category: 'error' | 'suggestion' | 'question' | 'general'; severity?: string } => {
+        const lower = body.toLowerCase();
+        if ((reviewState || '').toUpperCase() === 'CHANGES_REQUESTED' || lower.includes('[error]') || lower.includes('[critical]')) {
+          return { category: 'error', severity: 'error' };
+        }
+        if (lower.includes('[suggestion]') || lower.includes('[warning]') || lower.includes('[nit]')) {
+          return { category: 'suggestion', severity: 'suggestion' };
+        }
+        if (lower.includes('[question]') || lower.includes('?')) {
+          return { category: 'question', severity: 'info' };
+        }
+        return { category: 'general', severity: 'info' };
+      };
+
+      for (const c of parsedComments) {
+        if (c.body && c.body.trim()) {
+          const cat = parseCategory(c.body);
+          results.push({
+            author: (c.user && c.user.login) || 'unknown',
+            body: c.body,
+            createdAt: c.created_at,
+            category: cat.category,
+            severity: cat.severity
+          });
         }
       }
 
-      if (parsed.reviews) {
-        for (const r of parsed.reviews) {
-          if (r.body && r.body.trim()) {
-            results.push({
-              author: (r.author && r.author.login) || 'unknown',
-              body: r.body,
-              state: r.state,
-              createdAt: r.submittedAt || r.createdAt
-            });
-          }
-          if (r.comments) {
-            for (const rc of r.comments) {
-              if (rc.body && rc.body.trim()) {
-                results.push({
-                  author: (rc.author && rc.author.login) || 'unknown',
-                  body: rc.body,
-                  path: rc.path,
-                  line: rc.line,
-                  state: r.state,
-                  createdAt: rc.createdAt
-                });
-              }
-            }
-          }
+      for (const r of parsedReviews) {
+        if (r.body && r.body.trim()) {
+          const cat = parseCategory(r.body, r.state);
+          results.push({
+            author: (r.user && r.user.login) || 'unknown',
+            body: r.body,
+            state: r.state,
+            createdAt: r.submitted_at || r.created_at,
+            category: cat.category,
+            severity: cat.severity
+          });
+        }
+      }
+
+      for (const rc of parsedReviewComments) {
+        if (rc.body && rc.body.trim()) {
+          const parentReview = parsedReviews.find(r => r.id === rc.pull_request_review_id);
+          const reviewState = parentReview ? parentReview.state : undefined;
+
+          const cat = parseCategory(rc.body, reviewState);
+          results.push({
+            author: (rc.user && rc.user.login) || 'unknown',
+            body: rc.body,
+            path: rc.path,
+            line: rc.line,
+            state: reviewState,
+            createdAt: rc.created_at,
+            category: cat.category,
+            severity: cat.severity
+          });
         }
       }
 

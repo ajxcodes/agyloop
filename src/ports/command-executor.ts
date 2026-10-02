@@ -9,6 +9,7 @@ export interface CommandExecutionOptions {
   readonly cwd?: string;
   readonly timeoutMs?: number;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly args?: string[];
 }
 
 export interface CommandExecutionResult {

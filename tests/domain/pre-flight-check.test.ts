@@ -115,4 +115,93 @@ describe('PreFlightCheckEngine Value Object', () => {
     assert.strictEqual(check.action, PREFLIGHT_ACTION_PROCEED);
     assert.strictEqual(check.canProceed, true);
   });
+
+  // Conflict detection tests
+  test('detects merge conflicts when mergeStateStatus is DIRTY on RESUME', () => {
+    const check = PreFlightCheckEngine.evaluate({
+      issueState: 'OPEN',
+      issueNumber: '49',
+      associatedPr: {
+        number: 200,
+        state: 'OPEN',
+        headRefName: 'fix/49-conflict-detection',
+        baseRefName: 'main',
+        mergeStateStatus: 'DIRTY'
+      }
+    });
+
+    assert.strictEqual(check.action, PREFLIGHT_ACTION_RESUME);
+    assert.strictEqual(check.hasMergeConflicts, true);
+    assert.ok(check.candidateBaseBranch, 'candidateBaseBranch should be set');
+    assert.ok(
+      check.candidateBaseBranch?.includes('main'),
+      `expected candidateBaseBranch to include 'main', got: ${check.candidateBaseBranch}`
+    );
+  });
+
+  test('detects merge conflicts when mergeable is CONFLICTING on RESUME', () => {
+    const check = PreFlightCheckEngine.evaluate({
+      issueState: 'OPEN',
+      issueNumber: '49',
+      associatedPr: {
+        number: 201,
+        state: 'OPEN',
+        headRefName: 'fix/49-conflict-detection',
+        baseRefName: 'phase/5-quality',
+        mergeable: 'CONFLICTING'
+      }
+    });
+
+    assert.strictEqual(check.action, PREFLIGHT_ACTION_RESUME);
+    assert.strictEqual(check.hasMergeConflicts, true);
+    assert.ok(check.candidateBaseBranch?.includes('phase/5-quality'));
+  });
+
+  test('does not flag merge conflicts when mergeStateStatus is CLEAN', () => {
+    const check = PreFlightCheckEngine.evaluate({
+      issueState: 'OPEN',
+      issueNumber: '49',
+      associatedPr: {
+        number: 202,
+        state: 'OPEN',
+        headRefName: 'fix/49-no-conflict',
+        baseRefName: 'main',
+        mergeStateStatus: 'CLEAN',
+        mergeable: 'MERGEABLE'
+      }
+    });
+
+    assert.strictEqual(check.action, PREFLIGHT_ACTION_RESUME);
+    assert.strictEqual(check.hasMergeConflicts, false);
+    assert.strictEqual(check.candidateBaseBranch, undefined);
+  });
+
+  test('detects merge conflicts on PROCEED path when context flags hasMergeConflicts directly', () => {
+    const check = PreFlightCheckEngine.evaluate({
+      issueState: 'OPEN',
+      issueNumber: '50',
+      hasMergeConflicts: true,
+      candidateBaseBranch: 'origin/main'
+    });
+
+    assert.strictEqual(check.action, PREFLIGHT_ACTION_PROCEED);
+    assert.strictEqual(check.hasMergeConflicts, true);
+    assert.strictEqual(check.candidateBaseBranch, 'origin/main');
+  });
+
+  test('candidateBaseBranch falls back to origin/main when PR has no baseRefName', () => {
+    const check = PreFlightCheckEngine.evaluate({
+      issueState: 'OPEN',
+      issueNumber: '51',
+      associatedPr: {
+        number: 203,
+        state: 'OPEN',
+        headRefName: 'fix/51-conflict',
+        mergeStateStatus: 'DIRTY'
+      }
+    });
+
+    assert.strictEqual(check.hasMergeConflicts, true);
+    assert.strictEqual(check.candidateBaseBranch, 'origin/main');
+  });
 });

@@ -314,6 +314,7 @@ export class RunQualityGateUseCase {
         gateVerdict: STATUS_PASSED,
         gateTokens: gateReport.formatStructuredTokens()
       });
+      sm.resetImplementGateLoop();
     } else {
       sm.transition(STAGE_IMPLEMENT, {
         note: NOTE_GATES_FAILED,
@@ -324,6 +325,7 @@ export class RunQualityGateUseCase {
         failingAssertion: primaryDiagnostic?.failingAssertion,
         selfCorrectionPayload: gateReport.formatSelfCorrectionPayload()
       });
+      sm.incrementImplementGateLoop();
     }
 
     // 7. Update AgyLoop Summary.md via PlanGeneratorPort
@@ -331,7 +333,7 @@ export class RunQualityGateUseCase {
       projectRoot: workspace,
       issue: activeIssue,
       planPath: params.planPath,
-      planDir: params.planDir
+      planDir: params.planDir || sm.planDir
     });
 
     const durationStr = `${(totalDurationMs / MS_PER_SECOND).toFixed(1)}s`;

@@ -87,6 +87,8 @@ export interface ResolvePlanOptions {
   readonly issue?: number | string | null;
   readonly planPath?: string | null;
   readonly planDir?: string | null;
+  readonly title?: string | null;
+  readonly stage?: string;
 }
 
 export interface ResolvedPlanLocation {
@@ -120,7 +122,7 @@ export interface PlanGeneratorPort {
   /**
    * Finds the existing plan directory for an issue.
    */
-  findPlanDirectory(projectRoot: string, issueNumber: number | string): string | null;
+  findPlanDirectory(projectRoot: string, issueNumber: number | string, title?: string): string | null;
 
   /**
    * Resolves the target plan directory and plan specification file.

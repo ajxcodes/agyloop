@@ -36,7 +36,9 @@ import {
   PublicSanitizer,
   InvalidTransitionError,
   AiReviewReport,
-  AiReviewFinding
+  AiReviewFinding,
+  DIFF_EXCLUDE_ARGS,
+  DiffAnalyzer
 } from '../domain';
 import {
   StateRepository,
@@ -44,6 +46,7 @@ import {
   PlanGeneratorPort,
   StandardsRepository,
   CritiquePort,
+  CritiqueResolution,
   CritiqueInstallerPort,
   ConfirmationPromptPort,
   CommandExecutorPort
@@ -176,7 +179,7 @@ export class RunReviewUseCase {
     this.critique = critique;
     this.commandExecutor = commandExecutor;
     this.resolveSubagentUseCase =
-      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo);
+      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, undefined, undefined, critique);
     this.critiqueInstaller = critiqueInstaller;
     this.confirmationPrompt = confirmationPrompt;
   }
@@ -192,7 +195,7 @@ export class RunReviewUseCase {
         STAGE_NONE,
         STAGE_REVIEW,
         MODE_STANDARD,
-        'Cannot run review: No pipeline state found. Run "agyloop implement" and "agyloop gates" first.'
+        'Cannot run review: No pipeline state found. Run "agyloop implement" and "agyloop next" first.'
       );
     }
 
@@ -243,7 +246,8 @@ export class RunReviewUseCase {
       projectRoot: workspace,
       issue: activeIssue,
       planPath: params.planPath,
-      planDir: params.planDir
+      planDir: params.planDir || sm.planDir,
+      stage: sm.currentStage
     });
 
     let planContent = '';
@@ -267,6 +271,7 @@ export class RunReviewUseCase {
     // Tier 1: Execute Automated Critique Diagnostics (if CritiquePort available)
     let aiReport: AiReviewReport | null = null;
     let critiqueReportText: string | null = params.critiqueReport || null;
+    let critiqueResolution: CritiqueResolution | null = null;
 
     if (this.critique) {
       const prompt = params.confirmationPrompt ?? this.confirmationPrompt;
@@ -275,6 +280,7 @@ export class RunReviewUseCase {
       let resolution = typeof this.critique.resolveReviewer === 'function'
         ? await Promise.resolve(this.critique.resolveReviewer(reviewCwd))
         : { source: 'system_path' as const, path: 'critique', isAvailable: true };
+      critiqueResolution = resolution;
 
       // Auto-install fallback prompt if critique CLI is absent and confirmation prompt is available
       if (!resolution.isAvailable && prompt && installer) {
@@ -288,6 +294,7 @@ export class RunReviewUseCase {
             autoInstalled = true;
             if (typeof this.critique.resolveReviewer === 'function') {
               resolution = await Promise.resolve(this.critique.resolveReviewer(reviewCwd));
+              critiqueResolution = resolution;
             }
           }
         }
@@ -324,13 +331,31 @@ export class RunReviewUseCase {
       }
     }
 
+    let workingDiff = params.workingDiff;
+    if (workingDiff === undefined && this.commandExecutor) {
+      try {
+        const targetBase = targetBaseRef || 'main';
+        const diffCmd = params.staged
+          ? `git diff --cached -- . ${DIFF_EXCLUDE_ARGS}`
+          : `git diff ${targetBase} -- . ${DIFF_EXCLUDE_ARGS}`;
+        const res = await this.commandExecutor.execute(diffCmd, { cwd: reviewCwd });
+        if (res && typeof res.stdout === 'string' && res.stdout.trim()) {
+          workingDiff = res.stdout;
+        }
+      } catch {
+        // Non-fatal, let Reviewer subagent inspect diff on demand
+      }
+    }
+
     // Tier 2: Assemble focused review task prompt for Reviewer subagent
     const taskPrompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
       issueNumber: activeIssue,
+      baseBranch: targetBaseRef,
       acceptanceCriteria,
       standardsContent,
-      workingDiff: params.workingDiff,
+      workingDiff,
       critiqueReport: critiqueReportText,
+      critiquePath: critiqueResolution?.isAvailable ? critiqueResolution.path : undefined,
       userInstructions: params.userInstructions,
       workspaceDir: workspace,
       config
@@ -344,12 +369,15 @@ export class RunReviewUseCase {
     } else if (aiReport) {
       verdict = ReviewVerdict.fromAiReviewReport(aiReport);
     } else {
-      // Default inspection verdict when neither raw subagent output nor critique gateway provided
       verdict = new ReviewVerdict({
-        status: VERDICT_APPROVED,
-        summary: 'Review passed: All acceptance criteria and code standards verified.',
-        unfulfilledCriteria: [],
-        remediationGuidance: []
+        status: VERDICT_CHANGES_REQUESTED,
+        summary: 'Review failed: Neither Reviewer subagent output nor critique report was generated.',
+        unfulfilledCriteria: [
+          'Review inspection not performed: neither subagent output nor critique report was provided'
+        ],
+        remediationGuidance: [
+          'Execute critique CLI or invoke Reviewer subagent to inspect diff against base branch and provide structured review output.'
+        ]
       });
     }
 

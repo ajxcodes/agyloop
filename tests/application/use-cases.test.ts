@@ -10,7 +10,7 @@ const {
 } = require('../../dist/application');
 const {
   STAGE_INITIALIZED,
-  STAGE_APPROVAL,
+  STAGE_APPROVAL, STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
   STAGE_COMPLETED,
@@ -184,10 +184,10 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       title: 'Build Payment Gateway'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.issue, 42);
     assert.strictEqual(stateRepo.saveCallCount, 1);
-    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_PLAN);
     assert.strictEqual(planGen.lastScaffoldParams?.issue, 42);
     assert.strictEqual(planGen.summaryUpdates.length, 2);
   });
@@ -215,9 +215,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       title: 'New Task After Completed'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.issue, 43);
-    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_PLAN);
     assert.strictEqual(stateRepo.snapshot?.issue, 43);
   });
 
@@ -244,9 +244,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       title: 'Different Task'
     });
 
-    assert.strictEqual(result.stateMachine.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
     assert.strictEqual(result.stateMachine.issue, 20);
-    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_PLAN);
     assert.strictEqual(stateRepo.snapshot?.issue, 20);
   });
 
@@ -266,6 +266,88 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     });
     assert.strictEqual(sm2.currentStage, 'PLAN');
     assert.strictEqual(stateRepo.saveCallCount, 2);
+  });
+
+  test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in AgyLoop Summary.md', async () => {
+    const stateRepo = new MockStateRepository();
+    const planGen = new MockPlanGenerator();
+    const transitionUseCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGen
+    );
+
+    // Initial state: DISCOVERY started 2 minutes ago
+    const twoMinutesAgo = new Date(Date.now() - 134000).toISOString();
+    stateRepo.snapshot = {
+      version: '1.0.0',
+      currentStage: 'DISCOVERY',
+      mode: MODE_STANDARD,
+      issue: 50,
+      createdAt: twoMinutesAgo,
+      updatedAt: twoMinutesAgo,
+      history: [
+        { stage: 'INITIALIZED', timestamp: twoMinutesAgo },
+        { stage: 'DISCOVERY', timestamp: twoMinutesAgo }
+      ],
+      totalHumanWaitMs: 0
+    };
+
+    await transitionUseCase.execute({
+      targetStage: 'PLAN',
+      issue: 50
+    });
+
+    // Should have updated summary log:
+    // 1. Preceding stage DISCOVERY marked COMPLETED with duration formatted (e.g. 2m 14s)
+    // 2. Current target stage Plan Review updated to IN PROGRESS
+    const discoveryUpdate = planGen.summaryUpdates.find(u => u.stage === 'Discovery');
+    assert.ok(discoveryUpdate, 'Expected Discovery update in summary');
+    assert.strictEqual(discoveryUpdate!.status, 'COMPLETED');
+    assert.strictEqual(discoveryUpdate!.duration, '2m 14s');
+
+    const planReviewUpdate = planGen.summaryUpdates.find(u => u.stage === 'Plan Review');
+    assert.ok(planReviewUpdate, 'Expected Plan Review update in summary');
+    assert.strictEqual(planReviewUpdate!.status, 'IN PROGRESS');
+  });
+
+  test('TransitionStageUseCase subtracts totalHumanWaitMs when computing stage duration', async () => {
+    const stateRepo = new MockStateRepository();
+    const planGen = new MockPlanGenerator();
+    const transitionUseCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGen
+    );
+
+    // Initial state: IMPLEMENT started 100 seconds ago, human wait 40 seconds => 60s active
+    const hundredSecondsAgo = new Date(Date.now() - 100000).toISOString();
+    stateRepo.snapshot = {
+      version: '1.0.0',
+      currentStage: 'IMPLEMENT',
+      mode: MODE_STANDARD,
+      issue: 50,
+      createdAt: hundredSecondsAgo,
+      updatedAt: hundredSecondsAgo,
+      history: [
+        { stage: 'APPROVAL', timestamp: hundredSecondsAgo },
+        { stage: 'IMPLEMENT', timestamp: hundredSecondsAgo }
+      ],
+      totalHumanWaitMs: 40000
+    };
+
+    await transitionUseCase.execute({
+      targetStage: 'QUALITY_GATE',
+      issue: 50,
+      noWorktree: true
+    });
+
+    const implementUpdate = planGen.summaryUpdates.find(u => u.stage === 'Implementation');
+    assert.ok(implementUpdate, 'Expected Implementation update in summary');
+    assert.strictEqual(implementUpdate!.status, 'COMPLETED');
+    assert.strictEqual(implementUpdate!.duration, '1m 0s');
   });
 
   test('GetPipelineStatusUseCase retrieves state and history from repository', async () => {
@@ -304,7 +386,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
 
     const def = resolveUseCase.execute({ role: 'planner' });
     assert.strictEqual(def.name, 'planner');
-    assert.strictEqual(def.capabilities.enable_write_tools, false);
+    assert.strictEqual(def.capabilities.enable_write_tools, true);
     assert.strictEqual(def.capabilities.enable_subagent_tools, false);
     assert.strictEqual(def.tools.includes('view_file'), true);
     assert.strictEqual(def.tools.includes('run_command'), false);

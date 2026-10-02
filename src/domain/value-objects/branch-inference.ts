@@ -23,6 +23,7 @@ export interface BranchInferenceContext {
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
   readonly issueLabels?: readonly string[];
+  readonly milestoneTitle?: string | null;
   readonly availableBranches?: readonly string[];
   readonly mergedBranches?: readonly string[];
   readonly defaultBranch?: string;
@@ -74,8 +75,12 @@ export class BranchInferenceEngine {
     const issuePart = context.issueNumber ? `${context.issueNumber}-` : '';
     const suggestedBranch = `${taskBranchPrefix}${issuePart}${slug}`;
 
-    // 2. Discover phase or feature identifier (label priority, then title regex)
-    const phaseInfo = BranchInferenceEngine.extractPhaseOrFeature(labels, title);
+    // 2. Discover phase or feature identifier (label priority, then milestoneTitle, then title regex)
+    const phaseInfo = BranchInferenceEngine.extractPhaseOrFeature(
+      labels,
+      title,
+      context.milestoneTitle
+    );
 
     // 3. If no phase or feature is associated, route to default branch
     if (!phaseInfo) {
@@ -199,6 +204,7 @@ export class BranchInferenceEngine {
     issueNumber?: string | number;
     existingBranches?: readonly string[];
     isAncestorOfMain?: (branch: string) => boolean;
+    milestoneTitle?: string | null;
   }): {
     baseBranch: string;
     isCollectorBranch: boolean;
@@ -219,6 +225,7 @@ export class BranchInferenceEngine {
       issueNumber: options.issueNumber,
       issueTitle: options.title,
       issueLabels: options.labels,
+      milestoneTitle: options.milestoneTitle,
       availableBranches: options.existingBranches,
       mergedBranches: merged
     });
@@ -265,7 +272,8 @@ export class BranchInferenceEngine {
 
   private static extractPhaseOrFeature(
     labels: readonly string[],
-    title: string
+    title: string,
+    milestoneTitle?: string | null
   ): PhaseMatchInfo | null {
     // Check labels first (Priority 1)
     for (const label of labels) {
@@ -290,9 +298,50 @@ export class BranchInferenceEngine {
       }
     }
 
-    // Check title regex fallback (Priority 2)
-    // Examples: 'Phase 1: Bridge', '[Phase 1] Bridge', 'Phase 1 - Bridge', '[Feature: Auth]'
-    const phaseTitleMatch = title.match(/(?:\[|\b)(?:Phase|Milestone)\s*([0-9]+[a-z0-9_.-]*)(?:\]|:|\s+-|\s)/i);
+    // Check milestone title first before falling back to issue title
+    if (milestoneTitle) {
+      const match = BranchInferenceEngine.matchPhaseOrFeaturePattern(milestoneTitle);
+      if (match) {
+        return match;
+      }
+    }
+
+    // Check title regex fallback
+    if (title) {
+      const match = BranchInferenceEngine.matchPhaseOrFeaturePattern(title);
+      if (match) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  private static matchPhaseOrFeaturePattern(text: string): PhaseMatchInfo | null {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    // Pattern 1: Label-style e.g. 'phase:1', 'phase-1'
+    const phaseLabelMatch = trimmed.match(/^(?:phase|milestone)[\s:\/-]+([a-z0-9_.-]+)$/i);
+    if (phaseLabelMatch) {
+      return {
+        type: 'phase',
+        identifier: phaseLabelMatch[1].toLowerCase(),
+        prefix: DEFAULT_PHASE_BRANCH_PREFIX
+      };
+    }
+
+    const featLabelMatch = trimmed.match(/^(?:feature|feat)[\s:\/-]+([a-z0-9_.-]+)$/i);
+    if (featLabelMatch) {
+      return {
+        type: 'feature',
+        identifier: featLabelMatch[1].toLowerCase(),
+        prefix: DEFAULT_FEATURE_BRANCH_PREFIX
+      };
+    }
+
+    // Pattern 2: Title/Milestone style e.g. 'Phase 1: Bridge', '[Phase 1] Bridge', 'Phase 1 - Bridge', 'Phase 1'
+    const phaseTitleMatch = trimmed.match(/(?:\[|\b)(?:Phase|Milestone)\s*([0-9]+[a-z0-9_.-]*)(?:\]|:|\s+-|\s|$)/i);
     if (phaseTitleMatch) {
       return {
         type: 'phase',
@@ -301,7 +350,7 @@ export class BranchInferenceEngine {
       };
     }
 
-    const featTitleMatch = title.match(/(?:\[|\b)(?:Feature|Feat)\s*[:\/-]?\s*([a-z0-9_.-]+)(?:\]|:|\s+-|\s)/i);
+    const featTitleMatch = trimmed.match(/(?:\[|\b)(?:Feature|Feat)\s*[:\/-]?\s*([a-z0-9_.-]+)(?:\]|:|\s+-|\s|$)/i);
     if (featTitleMatch) {
       return {
         type: 'feature',

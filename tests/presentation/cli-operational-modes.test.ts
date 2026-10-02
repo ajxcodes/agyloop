@@ -16,7 +16,9 @@ const {
 } = require('../../dist/presentation');
 const {
   STAGE_INITIALIZED,
+  STAGE_DISCOVERY,
   STAGE_APPROVAL,
+  STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_COMMIT,
   STAGE_COMPLETED,
@@ -61,6 +63,18 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.commitAfter, true);
     });
 
+    test('parses gates with --step', () => {
+      const parsed = parseArguments(['gates', '--step']);
+      assert.strictEqual(parsed.command, 'gates');
+      assert.strictEqual(parsed.options.step, true);
+    });
+
+    test('parses gate command as deprecated subcommand (no longer aliased to gates)', () => {
+      const parsed = parseArguments(['gate']);
+      assert.strictEqual(parsed.command, 'gate');
+      assert.strictEqual(parsed.options.step, false);
+    });
+
     test('parses commit with -y / --yes flag', () => {
       const parsedShort = parseArguments(['commit', '-y']);
       assert.strictEqual(parsedShort.command, 'commit');
@@ -90,6 +104,36 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       const parsed = parseArguments(['implement', '--issue', '32']);
       assert.strictEqual(parsed.command, 'implement');
       assert.strictEqual(parsed.options.issue, '32');
+    });
+
+    test('parses positional issue number: agyloop 77', () => {
+      const parsed = parseArguments(['77']);
+      assert.strictEqual(parsed.command, null);
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number with hash: agyloop #77', () => {
+      const parsed = parseArguments(['#77']);
+      assert.strictEqual(parsed.command, null);
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number after command: agyloop plan 77', () => {
+      const parsed = parseArguments(['plan', '77']);
+      assert.strictEqual(parsed.command, 'plan');
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number after command: agyloop yolo 77', () => {
+      const parsed = parseArguments(['yolo', '77']);
+      assert.strictEqual(parsed.command, 'yolo');
+      assert.strictEqual(parsed.options.issue, '77');
+    });
+
+    test('parses positional issue number before command: agyloop 77 plan', () => {
+      const parsed = parseArguments(['77', 'plan']);
+      assert.strictEqual(parsed.command, 'plan');
+      assert.strictEqual(parsed.options.issue, '77');
     });
 
     test('parses --dry-run and -s / --staged', () => {
@@ -134,6 +178,16 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsedRemove.command, 'worktree');
       assert.strictEqual(parsedRemove.options.worktreeSubcommand, 'remove');
       assert.strictEqual(parsedRemove.options.worktreeTarget, '87');
+
+      const parsedSubagents = parseArguments(['worktree', 'prune', '--subagents']);
+      assert.strictEqual(parsedSubagents.command, 'worktree');
+      assert.strictEqual(parsedSubagents.options.worktreeSubcommand, 'prune');
+      assert.strictEqual(parsedSubagents.options.subagents, true);
+
+      const parsedAll = parseArguments(['worktree', 'clean', '--all']);
+      assert.strictEqual(parsedAll.command, 'worktree');
+      assert.strictEqual(parsedAll.options.worktreeSubcommand, 'clean');
+      assert.strictEqual(parsedAll.options.all, true);
     });
   });
 
@@ -261,7 +315,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
         const exitCode = await runCli(['commit']);
         assert.strictEqual(exitCode, 1);
-        assert.ok(errorOutput.includes('Error: Interactive confirmation required. Pass -y/--yes in non-interactive environments.'));
+        assert.ok(errorOutput.includes('[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.'));
       } finally {
         process.chdir(prevCwd);
         (process.stdin as any).isTTY = originalIsTTY;
@@ -269,5 +323,161 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
+
+    test('runCli plan prints pipeline advanced when stage reaches PLAN', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-test-'));
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['plan', '--title', 'Feature Plan']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(output.includes(`Pipeline advanced to ${formatStageBadge(STAGE_PLAN)}.`));
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli plan prints pipeline advanced when stage remains at DISCOVERY (bug discovery)', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-discovery-test-'));
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['plan', '--type', 'discovery', '--title', 'Bug Fix RCA']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(!output.includes(`Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`));
+        assert.ok(output.includes(`✓ Pipeline advanced to ${formatStageBadge(STAGE_DISCOVERY)}.`));
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('bin/agyloop launcher staleness detection', () => {
+    const { checkStaleDist } = require('../../bin/agyloop.js');
+
+    test('warns when src/ .ts files are newer than dist/', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-stale-dist-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const srcDir = path.join(tempDir, 'src', 'nested');
+        const distDir = path.join(tempDir, 'dist', 'presentation');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.mkdirSync(distDir, { recursive: true });
+
+        const distCli = path.join(distDir, 'cli.js');
+        const srcFile = path.join(srcDir, 'index.ts');
+
+        fs.writeFileSync(distCli, 'console.log("compiled");');
+        fs.writeFileSync(srcFile, 'export const foo = 1;');
+
+        const pastTime = new Date(Date.now() - 60000);
+        const nowTime = new Date();
+        fs.utimesSync(distCli, pastTime, pastTime);
+        fs.utimesSync(srcFile, nowTime, nowTime);
+
+        checkStaleDist(tempDir);
+        assert.ok(warnMessage.includes("Notice: src/ contains modifications newer than dist/. Run 'npm run build' to apply updates."));
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('does not warn when dist/ is newer than src/', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-fresh-dist-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const srcDir = path.join(tempDir, 'src');
+        const distDir = path.join(tempDir, 'dist', 'presentation');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.mkdirSync(distDir, { recursive: true });
+
+        const distCli = path.join(distDir, 'cli.js');
+        const srcFile = path.join(srcDir, 'index.ts');
+
+        fs.writeFileSync(distCli, 'console.log("compiled");');
+        fs.writeFileSync(srcFile, 'export const foo = 1;');
+
+        const pastTime = new Date(Date.now() - 60000);
+        const nowTime = new Date();
+        fs.utimesSync(srcFile, pastTime, pastTime);
+        fs.utimesSync(distCli, nowTime, nowTime);
+
+        checkStaleDist(tempDir);
+        assert.strictEqual(warnMessage, '');
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('gracefully ignores when src/ directory is missing (e.g. production pack)', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-no-src-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const distDir = path.join(tempDir, 'dist', 'presentation');
+        fs.mkdirSync(distDir, { recursive: true });
+        fs.writeFileSync(path.join(distDir, 'cli.js'), 'console.log("compiled");');
+
+        checkStaleDist(tempDir);
+        assert.strictEqual(warnMessage, '');
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('gracefully ignores when dist/ is missing', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-no-dist-test-'));
+      let warnMessage = '';
+      const originalWarn = console.warn;
+      console.warn = (msg) => {
+        warnMessage += msg + '\n';
+      };
+
+      try {
+        const srcDir = path.join(tempDir, 'src');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.writeFileSync(path.join(srcDir, 'foo.ts'), 'export const foo = 1;');
+
+        checkStaleDist(tempDir);
+        assert.strictEqual(warnMessage, '');
+      } finally {
+        console.warn = originalWarn;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });
+

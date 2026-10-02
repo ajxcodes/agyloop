@@ -18,29 +18,36 @@ import {
   STAGE_INITIALIZED,
   STAGE_DISCOVERY,
   STAGE_PLAN,
+  STAGE_TRIAGE,
+  GATE_APPROVAL,
+  GATE_COMMIT,
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
   MODE_IMPLEMENT,
-  MODE_GATES,
   MODE_COMMIT,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_TRIAGE,
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
   COMMAND_WORKTREE,
   COMMAND_RELEASE,
   COMMAND_CRITIQUE,
+  COMMAND_TRIAGE,
   FLAG_WORKTREE,
   FLAG_NO_WORKTREE,
   FLAG_FORCE,
   FLAG_FORCE_SHORT,
+  REGEX_POSITIONAL_ISSUE_ID,
   PreFlightHaltError,
   MilestoneReleaseError,
-  MilestoneSealedError
+  MilestoneSealedError,
+  StateMachine,
+  IssueNumber
 } from '../domain';
 import {
   FileStateRepository,
@@ -74,10 +81,12 @@ import {
   ManageWorktreeUseCase,
   MilestoneReleaseUseCase,
   InferBaseBranchUseCase,
-  GetNextActionUseCase
+  GetNextActionUseCase,
+  TriagePrCommentsUseCase
 } from '../application';
 
 export interface CliOptions {
+  workspaceDir?: string;
   commitAfter: boolean;
   yolo: boolean;
   dryRun: boolean;
@@ -101,8 +110,12 @@ export interface CliOptions {
   phaseBranch: string | null;
   worktreeSubcommand: string | null;
   worktreeTarget: string | null;
+  subagents: boolean;
+  all: boolean;
   critiqueSubcommand: string | null;
   force: boolean;
+  triageAction: string | null;
+  step: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -122,7 +135,6 @@ Operational Modes:
   yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
   plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate
   implement          Resume implementation directly from approved plan specification
-  gates              Run standalone quality gates and AI PR review on working diff
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
 
@@ -137,10 +149,12 @@ Pipeline Management:
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
+  triage [action]    Triage PR review comments and route pipeline (implement|plan|discovery|dismiss)
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
       --commit-after Automatically draft and commit changes if quality gates and AI review pass
+      --step         Pause compound execution after quality gates (before AI review)
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
@@ -152,6 +166,8 @@ Operational Flags:
       --worktree     Enable git worktree isolation for task execution (default: true)
       --no-worktree  Disable worktree isolation and execute directly in root workspace
       --keep-worktree Keep git worktree after commit completion (prevent auto-teardown)
+      --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
+      --all          Include/prune all worktrees (used with worktree list/prune/clean)
       --json         Output machine-readable JSON for scripting and piping
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
@@ -163,8 +179,6 @@ Examples:
   agyloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
   agyloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
   agyloop implement                    Resume implementation from approved plan in artifacts/plans/
-  agyloop gates                         Run quality gates and AI PR review on working diff
-  agyloop gates --commit-after          Run gates and review, auto-committing if all pass
   agyloop commit                        Draft Conventional Commit and prompt for human approval
   agyloop commit -y                     Draft Conventional Commit and commit immediately
   agyloop critique status               Inspect critique resolution, installed version, and update status
@@ -206,8 +220,12 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     phaseBranch: null,
     worktreeSubcommand: null,
     worktreeTarget: null,
+    subagents: false,
+    all: false,
     critiqueSubcommand: null,
-    force: false
+    force: false,
+    triageAction: null,
+    step: false
   };
 
   const positional: string[] = [];
@@ -221,6 +239,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.version = true;
     } else if (arg === '--commit-after') {
       options.commitAfter = true;
+    } else if (arg === '--step') {
+      options.step = true;
     } else if (arg === '--yolo') {
       options.yolo = true;
     } else if (arg === '--yes' || arg === '-y') {
@@ -235,6 +255,10 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.noWorktree = true;
     } else if (arg === '--keep-worktree') {
       options.keepWorktree = true;
+    } else if (arg === '--subagents') {
+      options.subagents = true;
+    } else if (arg === '--all') {
+      options.all = true;
     } else if (arg === '--json') {
       options.json = true;
     } else if (arg === '--force' || arg === '-f') {
@@ -297,18 +321,36 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
   }
 
   if (positional.length > 0) {
-    command = positional[0];
-    if (command === 'transition' && positional.length > 1) {
-      options.stageArg = positional[1].toUpperCase();
-    } else if (command === 'prompt' && positional.length > 1) {
-      options.roleArg = positional[1].toLowerCase();
-    } else if (command === 'worktree') {
-      options.worktreeSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'list';
-      options.worktreeTarget = positional.length > 2 ? positional[2] : null;
-    } else if (command === 'release') {
-      options.phaseBranch = positional.length > 1 ? positional[1] : null;
-    } else if (command === 'critique') {
-      options.critiqueSubcommand = positional.length > 1 ? positional[1].toLowerCase() : 'status';
+    let cmdIndex = 0;
+
+    const match0 = positional[0].match(REGEX_POSITIONAL_ISSUE_ID);
+    if (match0) {
+      options.issue = match0[1];
+      cmdIndex = 1;
+    }
+
+    if (cmdIndex < positional.length) {
+      command = positional[cmdIndex];
+
+      if (command === 'transition' && cmdIndex + 1 < positional.length) {
+        options.stageArg = positional[cmdIndex + 1].toUpperCase();
+      } else if (command === 'prompt' && cmdIndex + 1 < positional.length) {
+        options.roleArg = positional[cmdIndex + 1].toLowerCase();
+      } else if (command === 'worktree') {
+        options.worktreeSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'list';
+        options.worktreeTarget = cmdIndex + 2 < positional.length ? positional[cmdIndex + 2] : null;
+      } else if (command === 'release') {
+        options.phaseBranch = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1] : null;
+      } else if (command === 'critique') {
+        options.critiqueSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'status';
+      } else if (command === 'triage') {
+        options.triageAction = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : null;
+      } else if (cmdIndex + 1 < positional.length) {
+        const matchNext = positional[cmdIndex + 1].match(REGEX_POSITIONAL_ISSUE_ID);
+        if (matchNext) {
+          options.issue = matchNext[1];
+        }
+      }
     }
   }
 
@@ -325,7 +367,8 @@ export function formatStageBadge(stage: string): string {
     QUALITY_GATE: '\x1b[36m',// Cyan
     REVIEW: '\x1b[34m',      // Blue
     COMMIT: '\x1b[32m',      // Green
-    COMPLETED: '\x1b[32m\x1b[1m' // Bold Green
+    COMPLETED: '\x1b[32m\x1b[1m', // Bold Green
+    TRIAGE: '\x1b[33m\x1b[1m'     // Bold Yellow
   };
   const reset = '\x1b[0m';
   const color = colors[stage] || '';
@@ -388,10 +431,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         stateRepo,
         configRepo,
         planGenerator,
-        githubGateway
+        githubGateway,
+        undefined,
+        worktreeManager,
+        buildDetector,
+        inferBaseBranchUseCase
       );
       const res = await getNextActionUseCase.execute({
-        configPath: options.configPath
+        configPath: options.configPath,
+        issue: options.issue
       });
 
       if (options.json) {
@@ -427,11 +475,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const currentBranch = await worktreeManager.resolveBaseBranch();
       const defaultBranch = 'main';
 
+      let issue = options.issue ? Number(options.issue) : snapshot?.issue || null;
+      if (!issue) {
+        issue =
+          IssueNumber.inferFromPath(snapshot?.worktree?.worktreePath as string | undefined) ??
+          IssueNumber.inferFromPath(process.cwd()) ??
+          IssueNumber.inferFromBranch(currentBranch);
+        if (issue && snapshot && !snapshot.issue) {
+          try {
+            const sm = StateMachine.fromSnapshot(snapshot);
+            sm.setIssue(issue);
+            await stateRepo.save(sm.toSnapshot());
+          } catch {
+            // Non-fatal persistence
+          }
+        }
+      }
+
       let baseBranch = snapshot?.baseBranch || null;
-      if (!baseBranch && snapshot?.issue) {
+      if (!baseBranch && issue) {
         try {
           const infer = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
-          const res = await infer.execute({ issueNumber: snapshot.issue });
+          const res = await infer.execute({ issueNumber: issue });
           baseBranch = res.baseBranch;
         } catch {
           baseBranch = null;
@@ -499,7 +564,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'config': {
       console.log('\n=== AgyLoop: Configuration & Model Routing ===');
-      const roles = ['planner', 'implementer', 'gate', 'reviewer'];
+      const roles = ['planner', 'implementer', 'gate', 'reviewer', 'triage'];
       console.log('\nSubagent Model Routing Table:');
       console.log('----------------------------------------------------------------------');
       console.log('Role         Configured           AGY Subagent Tier   Canonical API Model');
@@ -577,7 +642,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const sub = options.worktreeSubcommand || 'list';
 
       if (sub === 'list') {
-        const res = await manageWorktreeUseCase.list();
+        const res = await manageWorktreeUseCase.list({
+          includeExternal: options.all
+        });
         const list = res.data || [];
         console.log('\n=== AgyLoop: Active Isolated Git Worktrees ===');
         if (list.length === 0) {
@@ -598,7 +665,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       if (sub === 'clean' || sub === 'prune') {
         console.log('Pruning orphaned git worktrees and locks...');
-        const res = await manageWorktreeUseCase.clean();
+        const res = await manageWorktreeUseCase.clean({
+          subagents: options.subagents,
+          all: options.all
+        });
         console.log(`✓ ${res.message}\n`);
         return EXIT_CODE_SUCCESS;
       }
@@ -608,7 +678,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.error('Error: Please specify task ID or worktree path to remove. Example: agyloop worktree remove 87');
           return EXIT_CODE_FAILURE;
         }
-        const targetPath = worktreeManager.resolveTaskWorktreePath(process.cwd(), options.worktreeTarget);
+        const targetPath = await worktreeManager.resolveTaskWorktreePath(process.cwd(), options.worktreeTarget);
         console.log(`Removing worktree at ${targetPath}...`);
         const res = await manageWorktreeUseCase.teardown({ worktreePath: targetPath });
         console.log(`✓ ${res.message}\n`);
@@ -684,10 +754,58 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
     }
 
+    case 'triage': {
+      const triageUseCase = new TriagePrCommentsUseCase(
+        stateRepo,
+        githubGateway,
+        planGenerator,
+        worktreeManager,
+        inferBaseBranchUseCase
+      );
+
+      const action = (options.triageAction || 'implement').toLowerCase() as any;
+      console.log('\n=== AgyLoop: PR Review Comments Triage ===');
+      try {
+        const result = await triageUseCase.execute({
+          issue: options.issue,
+          action,
+          notes: options.message || undefined,
+          workspaceDir: process.cwd()
+        });
+
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.comments && result.comments.length > 0) {
+          console.log(`Found ${result.comments.length} PR review comment(s):\n`);
+          result.comments.forEach((c, idx) => {
+            const cat = c.category ? ` [${c.category.toUpperCase()}]` : '';
+            const loc = c.path ? ` (${c.path}${c.line ? `:${c.line}` : ''})` : '';
+            console.log(`  ${idx + 1}.${cat} @${c.author}${loc}:`);
+            const firstLine = (c.body || '').split('\n')[0].slice(0, 100);
+            console.log(`     "${firstLine}${firstLine.length >= 100 ? '...' : ''}"`);
+          });
+          console.log('');
+        } else {
+          console.log('No PR review comments found.\n');
+        }
+
+        console.log(`✓ Triage Action : ${action.toUpperCase()}`);
+        console.log(`✓ Next Stage    : ${formatStageBadge(result.targetStage)}`);
+        console.log(`✓ State Updated : Pipeline transitioned to ${result.targetStage}\n`);
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ Triage failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
     case 'prompt': {
       const role = options.roleArg || ROLE_PLANNER;
-      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE && role !== ROLE_REVIEWER) {
-        console.error(`Valid prompt roles: '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', '${ROLE_GATE}', '${ROLE_REVIEWER}'. Received: '${role}'.`);
+      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE && role !== ROLE_REVIEWER && role !== ROLE_TRIAGE) {
+        console.error(`Valid prompt roles: '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', '${ROLE_GATE}', '${ROLE_REVIEWER}', '${ROLE_TRIAGE}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
 
@@ -796,12 +914,16 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Model Tier   : ${p.model}`);
           console.log(`Whitelisted  : ${p.tools.join(', ')}`);
           console.log(
-            `Safety Guard : Physical write suppression enabled (write_tools=false, mcp_tools=${p.capabilities.enable_mcp_tools})\n`
+            `Safety Guard : Scoped plan modification (write_tools=${p.capabilities.enable_write_tools}, mcp_tools=${p.capabilities.enable_mcp_tools})\n`
           );
         }
 
-        console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
-        console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+        if (result.pausedAtGate === GATE_APPROVAL) {
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
+          console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+        } else {
+          console.log(`\n✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+        }
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
@@ -849,83 +971,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
           console.log(`Whitelisted  : ${impl.implementerDef.tools.join(', ')}\n`);
         }
-        console.log(`Next Step    : Execute checklist items and run 'agyloop gates' when complete.\n`);
-        return EXIT_CODE_SUCCESS;
-      } catch (err: unknown) {
-        if (err instanceof PreFlightHaltError) {
-          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
-          return EXIT_CODE_SUCCESS;
-        }
-        if (err instanceof MilestoneSealedError) {
-          console.error(`\n🛑 ${err.message}\n`);
-          return EXIT_CODE_FAILURE;
-        }
-        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
-        return EXIT_CODE_FAILURE;
-      }
-    }
-
-    case 'gates': {
-      console.log(`\n🧪 Executing AgyLoop Quality Gates & AI PR Review`);
-      try {
-        const result = await lifecycleUseCase.execute({
-          mode: MODE_GATES,
-          issue: options.issue,
-          commitAfter: options.commitAfter,
-          staged: options.staged,
-          message: options.message,
-          configPath: options.configPath,
-          dryRun: options.dryRun,
-          worktree: options.noWorktree ? false : true,
-          baseBranch: options.baseBranch || undefined
-        });
-
-        if (options.dryRun) {
-          console.log(`\n[DRY RUN] ${result.message || 'Simulated gates execution completed.'}\n`);
-          return EXIT_CODE_SUCCESS;
-        }
-
-        if (result.qualityGateResult?.summaryReport) {
-          console.log('\n' + result.qualityGateResult.summaryReport + '\n');
-        }
-
-        if (result.qualityGateResult && !result.qualityGateResult.passed) {
-          console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
-          console.error(`Resolve failures and re-run 'agyloop gates'.\n`);
-          return EXIT_CODE_FAILURE;
-        }
-
-        console.log(`✓ Quality gates passed.`);
-
-        if (result.reviewResult) {
-          console.log(`\n=== AgyLoop: AI PR Review ===`);
-          console.log(`Verdict: ${result.reviewResult.verdict.status}`);
-          console.log(`Summary: ${result.reviewResult.verdict.summary}\n`);
-
-          if (!result.reviewResult.passed) {
-            console.error(`✗ AI Review requested changes. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
-            if (result.reviewResult.verdict.unfulfilledCriteria.length > 0) {
-              console.error('Unfulfilled Criteria:');
-              result.reviewResult.verdict.unfulfilledCriteria.forEach((c) => console.error(`  - ${c}`));
-            }
-            if (result.reviewResult.verdict.remediationGuidance.length > 0) {
-              console.error('Remediation Guidance:');
-              result.reviewResult.verdict.remediationGuidance.forEach((r) => console.error(`  - ${r}`));
-            }
-            console.error(`\nResolve review findings and re-run 'agyloop gates'.\n`);
-            return EXIT_CODE_FAILURE;
-          }
-
-          console.log(`✓ AI Review approved. Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
-        }
-
-        if (result.executeCommitResult && result.executeCommitResult.success) {
-          console.log(`\n✓ Successfully committed via --commit-after: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.\n`);
-        } else if (result.currentStage === STAGE_COMMIT) {
-          console.log(`Next Step: Run 'agyloop commit' to draft and approve conventional commit.\n`);
-        }
-
+        console.log(`Next Step    : Execute checklist items and run 'agyloop next' when complete.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
@@ -944,6 +990,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'commit': {
       console.log(`\n📦 AgyLoop: Semantic Conventional Commit Gate`);
       try {
+        const snapshot = await stateRepo.load();
+        const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : null;
+        const rootWorkspaceDir = options.workspaceDir || process.cwd();
+        const effectiveWorkspaceDir = sm?.worktree?.worktreePath || rootWorkspaceDir;
+
         const draftCommitUseCase = new DraftCommitUseCase(
           stateRepo,
           commandExecutor,
@@ -955,7 +1006,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           issue: options.issue,
           staged: options.staged,
           userMessage: options.message,
-          workspaceDir: process.cwd()
+          workspaceDir: effectiveWorkspaceDir
         });
 
         console.log(`\nProposed Conventional Commit:`);
@@ -974,8 +1025,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
-        if (!options.yes && !process.stdin.isTTY) {
-          console.error(`\nError: Interactive confirmation required. Pass -y/--yes in non-interactive environments.\n`);
+        if (!options.yes && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+          console.error(`\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`);
           return EXIT_CODE_FAILURE;
         }
 
@@ -995,12 +1046,19 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,
           issue: options.issue,
           keepWorktree: options.keepWorktree,
-          workspaceDir: process.cwd()
+          workspaceDir: effectiveWorkspaceDir,
+          rootWorkspaceDir: rootWorkspaceDir
         });
 
         if (execResult.confirmed && execResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
           console.log(`✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.`);
+          if (execResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (execResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${execResult.pushError}`);
+          }
           if (execResult.worktreeTornDown) {
             console.log(`✓ Isolated git worktree torn down and pruned.`);
           }
@@ -1072,7 +1130,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
           console.log(`\n✓ 100% Unattended Loop Finished: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline Stage: ${formatStageBadge(result.currentStage)}\n`);
+          console.log(`✓ Pipeline Stage: ${formatStageBadge(result.currentStage)}.`);
+          if (result.executeCommitResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (result.executeCommitResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
+          }
+          console.log('');
         } else {
           console.log(`\n✓ Quality gates and AI review passed in YOLO mode.`);
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
@@ -1092,6 +1157,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
     }
+
+    case 'gate':
+    case 'gates':
+      console.error('error: `gate`/`gates` subcommands have been removed. Use `agyloop next` to invoke the gate subagent.');
+      return EXIT_CODE_FAILURE;
 
     default: {
       if (command !== null) {
@@ -1118,7 +1188,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           baseBranch: options.baseBranch || undefined
         });
 
-        if (result.pausedAtGate === 'APPROVAL') {
+        if (result.pausedAtGate === GATE_APPROVAL) {
           if (result.planResult?.scaffoldInfo) {
             const info = result.planResult.scaffoldInfo;
             console.log(`📁 Scaffolded Plan: artifacts/plans/${info.folderName}/`);
@@ -1151,11 +1221,18 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.\n`);
+          console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
+          if (result.executeCommitResult.fallbackUsed) {
+            console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
+          }
+          if (result.executeCommitResult.pushError) {
+            console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
+          }
+          console.log('');
           return EXIT_CODE_SUCCESS;
         }
 
-        if (result.pausedAtGate === 'COMMIT') {
+        if (result.pausedAtGate === GATE_COMMIT) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' to execute.\n`);
           return EXIT_CODE_SUCCESS;
         }

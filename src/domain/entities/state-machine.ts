@@ -33,8 +33,10 @@ export interface StateMachineSnapshot {
   readonly currentStage: StageName;
   readonly mode: ExecutionMode;
   readonly issue: number | null;
+  readonly milestoneTitle?: string | null;
   readonly baseBranch?: string | null;
   readonly worktree?: Record<string, unknown> | null;
+  readonly planDir?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -42,14 +44,17 @@ export interface StateMachineSnapshot {
   readonly pausedAtTimestamp?: string | null;
   readonly totalHumanWaitMs?: number;
   readonly planRevisionCount?: number;
+  readonly implementToGateLoops?: number;
 }
 
 export interface StateStatusSummary {
   readonly currentStage: StageName;
   readonly mode: ExecutionMode;
   readonly issue: number | null;
+  readonly milestoneTitle?: string | null;
   readonly baseBranch?: string | null;
   readonly worktree?: WorktreeDescriptor | null;
+  readonly planDir?: string | null;
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -57,14 +62,17 @@ export interface StateStatusSummary {
   readonly totalHumanWaitMs: number;
   readonly activeExecutionDurationMs: number;
   readonly planRevisionCount: number;
+  readonly implementToGateLoops: number;
 }
 
 export class StateMachine {
   private _stage: Stage;
   private _mode: ExecutionMode;
   private _issue: IssueNumber | null;
+  private _milestoneTitle: string | null;
   private _baseBranch: string | null;
   private _worktree: WorktreeDescriptor | null;
+  private _planDir: string | null;
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
@@ -72,13 +80,16 @@ export class StateMachine {
   private _pausedAtTimestamp: string | null;
   private _totalHumanWaitMs: number;
   private _planRevisionCount: number;
+  private _implementToGateLoops: number;
 
   constructor(options: {
     stage?: Stage;
     mode?: ExecutionMode;
     issue?: IssueNumber | null;
+    milestoneTitle?: string | null;
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
+    planDir?: string | null;
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
@@ -86,12 +97,15 @@ export class StateMachine {
     pausedAtTimestamp?: string | null;
     totalHumanWaitMs?: number;
     planRevisionCount?: number;
+    implementToGateLoops?: number;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
     this._issue = options.issue || null;
+    this._milestoneTitle = options.milestoneTitle && options.milestoneTitle.trim() ? options.milestoneTitle.trim() : null;
     this._baseBranch = options.baseBranch || null;
     this._worktree = options.worktree || null;
+    this._planDir = options.planDir || null;
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
@@ -99,6 +113,7 @@ export class StateMachine {
     this._pausedAtTimestamp = options.pausedAtTimestamp || null;
     this._totalHumanWaitMs = typeof options.totalHumanWaitMs === 'number' ? options.totalHumanWaitMs : 0;
     this._planRevisionCount = typeof options.planRevisionCount === 'number' ? options.planRevisionCount : 0;
+    this._implementToGateLoops = typeof options.implementToGateLoops === 'number' ? options.implementToGateLoops : 0;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -133,12 +148,20 @@ export class StateMachine {
     return this._issue;
   }
 
+  public get milestoneTitle(): string | null {
+    return this._milestoneTitle;
+  }
+
   public get baseBranch(): string | null {
     return this._baseBranch;
   }
 
   public get worktree(): WorktreeDescriptor | null {
     return this._worktree;
+  }
+
+  public get planDir(): string | null {
+    return this._planDir;
   }
 
   public get createdAt(): string {
@@ -167,6 +190,20 @@ export class StateMachine {
 
   public get planRevisionCount(): number {
     return this._planRevisionCount;
+  }
+
+  public get implementToGateLoops(): number {
+    return this._implementToGateLoops;
+  }
+
+  public incrementImplementGateLoop(): void {
+    this._implementToGateLoops++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public resetImplementGateLoop(): void {
+    this._implementToGateLoops = 0;
+    this._updatedAt = new Date().toISOString();
   }
 
   public pauseAtGate(gateName: string): void {
@@ -209,6 +246,31 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  public inferIssue(context?: {
+    cwd?: string | null;
+    branch?: string | null;
+    worktreePath?: string | null;
+  }): number | null {
+    if (this._issue) {
+      return this._issue.value;
+    }
+    const inferred = IssueNumber.inferFromContext({
+      worktreePath: this._worktree?.worktreePath ?? context?.worktreePath,
+      cwd: context?.cwd,
+      branch: this._worktree?.branch ?? context?.branch
+    });
+    if (inferred !== null) {
+      this.setIssue(inferred);
+      return inferred;
+    }
+    return null;
+  }
+
+  public setMilestoneTitle(milestone: string | null | undefined): void {
+    this._milestoneTitle = milestone && milestone.trim() ? milestone.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setBaseBranch(baseBranch: string | null | undefined): void {
     this._baseBranch = baseBranch && baseBranch.trim() ? baseBranch.trim() : null;
     this._updatedAt = new Date().toISOString();
@@ -216,6 +278,11 @@ export class StateMachine {
 
   public setWorktree(worktree: WorktreeDescriptor | null | undefined): void {
     this._worktree = worktree || null;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public setPlanDir(dir: string | null | undefined): void {
+    this._planDir = dir && dir.trim() ? dir.trim() : null;
     this._updatedAt = new Date().toISOString();
   }
 
@@ -264,12 +331,15 @@ export class StateMachine {
       this._mode = mode;
     }
     this._issue = IssueNumber.tryFrom(issue);
+    this._milestoneTitle = null;
     this._baseBranch = null;
     this._worktree = null;
+    this._planDir = null;
     this._pausedAtGate = null;
     this._pausedAtTimestamp = null;
     this._totalHumanWaitMs = 0;
     this._planRevisionCount = 0;
+    this._implementToGateLoops = 0;
     this._updatedAt = now;
     this._history = [
       {
@@ -285,15 +355,18 @@ export class StateMachine {
       currentStage: this._stage.value,
       mode: this._mode,
       issue: this.issue,
+      milestoneTitle: this._milestoneTitle,
       baseBranch: this._baseBranch,
       worktree: this._worktree,
+      planDir: this._planDir,
       stepCount: this._history.length,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       pausedAtGate: this._pausedAtGate,
       totalHumanWaitMs: this._totalHumanWaitMs,
       activeExecutionDurationMs: this.activeExecutionDurationMs(),
-      planRevisionCount: this._planRevisionCount
+      planRevisionCount: this._planRevisionCount,
+      implementToGateLoops: this._implementToGateLoops
     };
   }
 
@@ -303,16 +376,23 @@ export class StateMachine {
       currentStage: this._stage.value,
       mode: this._mode,
       issue: this.issue,
+      milestoneTitle: this._milestoneTitle,
       baseBranch: this._baseBranch,
       worktree: this._worktree ? this._worktree.toJSON() : null,
+      planDir: this._planDir,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       history: Object.freeze([...this._history]),
       pausedAtGate: this._pausedAtGate,
       pausedAtTimestamp: this._pausedAtTimestamp,
       totalHumanWaitMs: this._totalHumanWaitMs,
-      planRevisionCount: this._planRevisionCount
+      planRevisionCount: this._planRevisionCount,
+      implementToGateLoops: this._implementToGateLoops
     };
+  }
+
+  public toJSON(): StateMachineSnapshot {
+    return this.toSnapshot();
   }
 
   public static fromSnapshot(snapshot: StateMachineSnapshot): StateMachine {
@@ -322,38 +402,60 @@ export class StateMachine {
 
     const stage = new Stage(snapshot.currentStage);
     const mode = snapshot.mode || MODE_STANDARD;
-    const issue = IssueNumber.tryFrom(snapshot.issue);
-    const baseBranch = snapshot.baseBranch || null;
     const worktree = snapshot.worktree ? WorktreeDescriptor.fromJSON(snapshot.worktree) : null;
+    let issue = IssueNumber.tryFrom(snapshot.issue);
+    if (!issue && worktree) {
+      const inferred = IssueNumber.inferFromContext({
+        worktreePath: worktree.worktreePath,
+        branch: worktree.branch
+      });
+      if (inferred !== null) {
+        issue = IssueNumber.tryFrom(inferred);
+      }
+    }
+    const milestoneTitle = snapshot.milestoneTitle || null;
+    const baseBranch = snapshot.baseBranch || null;
+    const planDir = snapshot.planDir || null;
 
     return new StateMachine({
       stage,
       mode,
       issue,
+      milestoneTitle,
       baseBranch,
       worktree,
+      planDir,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       history: snapshot.history || [],
       pausedAtGate: snapshot.pausedAtGate || null,
       pausedAtTimestamp: snapshot.pausedAtTimestamp || null,
       totalHumanWaitMs: typeof snapshot.totalHumanWaitMs === 'number' ? snapshot.totalHumanWaitMs : 0,
-      planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0
+      planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0,
+      implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0
     });
+  }
+
+  public static fromJSON(json: StateMachineSnapshot): StateMachine {
+    return StateMachine.fromSnapshot(json);
   }
 
   public static createInitial(options: {
     mode?: ExecutionMode;
     issue?: number | string | null;
+    milestoneTitle?: string | null;
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
+    planDir?: string | null;
   } = {}): StateMachine {
     return new StateMachine({
       stage: new Stage(STAGE_INITIALIZED),
       mode: options.mode || MODE_STANDARD,
       issue: IssueNumber.tryFrom(options.issue),
+      milestoneTitle: options.milestoneTitle,
       baseBranch: options.baseBranch,
-      worktree: options.worktree
+      worktree: options.worktree,
+      planDir: options.planDir
     });
   }
 }

@@ -6,6 +6,7 @@
 
 import {
   READ_ONLY_TOOLS,
+  PLANNER_TOOLS,
   FORBIDDEN_WRITE_TOOLS,
   IMPLEMENTER_TOOLS,
   GATE_TOOLS,
@@ -53,6 +54,10 @@ export class ToolWhitelist {
 
   public static readOnly(): ToolWhitelist {
     return new ToolWhitelist(READ_ONLY_TOOLS);
+  }
+
+  public static planner(): ToolWhitelist {
+    return new ToolWhitelist(PLANNER_TOOLS);
   }
 
   public static implementation(): ToolWhitelist {

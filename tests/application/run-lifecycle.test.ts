@@ -20,7 +20,6 @@ const {
   MODE_YOLO,
   MODE_PLAN,
   MODE_IMPLEMENT,
-  MODE_GATES,
   MODE_COMMIT,
   GATE_APPROVAL,
   GATE_COMMIT,
@@ -37,7 +36,8 @@ const {
   RunQualityGateUseCase,
   RunReviewUseCase,
   DraftCommitUseCase,
-  ExecuteCommitUseCase
+  ExecuteCommitUseCase,
+  InferBaseBranchUseCase
 } = require('../../dist/application');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
@@ -349,7 +349,6 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         STAGE_INITIALIZED,
         STAGE_DISCOVERY,
         STAGE_PLAN,
-        STAGE_APPROVAL,
         STAGE_IMPLEMENT,
         STAGE_QUALITY_GATE,
         STAGE_REVIEW,
@@ -376,7 +375,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   });
 
   describe('2. Standard Multi-Step Lifecycle Flow with Human Approval Gates', () => {
-    test('Step 1 (fresh run): runs discovery & planning, scaffolds plan, and halts at APPROVAL', async () => {
+    test('Step 1 (fresh run): runs discovery & planning, scaffolds plan, and halts at PLAN', async () => {
       const result = await lifecycleUseCase.execute({
         mode: MODE_STANDARD,
         issue: 32,
@@ -384,11 +383,25 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       });
 
       assert.strictEqual(result.success, true);
-      assert.strictEqual(result.currentStage, STAGE_APPROVAL);
-      assert.strictEqual(result.pausedAtGate, GATE_APPROVAL);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
+      assert.strictEqual(result.pausedAtGate, undefined);
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
       assert.strictEqual(result.qualityGateResult, undefined);
       assert.strictEqual(result.executeCommitResult, undefined);
+    });
+
+    test('Step 1 (fresh run for bug/discovery): leaves stage in DISCOVERY and does NOT pause at APPROVAL gate', async () => {
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        type: 'discovery',
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.message, 'Pipeline advanced to DISCOVERY.');
     });
 
     test('Step 2 (resuming from APPROVAL): advances to IMPLEMENT, passes gates & review, halts at COMMIT', async () => {
@@ -443,7 +456,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   });
 
   describe('3. Standalone Operational Modes', () => {
-    test('mode "plan" halts strictly at APPROVAL gate', async () => {
+    test('mode "plan" halts strictly at PLAN gate', async () => {
       const result = await lifecycleUseCase.execute({
         mode: MODE_PLAN,
         issue: 32,
@@ -453,9 +466,25 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.mode, MODE_PLAN);
-      assert.strictEqual(result.currentStage, STAGE_APPROVAL);
-      assert.strictEqual(result.pausedAtGate, GATE_APPROVAL);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
+      assert.strictEqual(result.pausedAtGate, undefined);
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
+    });
+
+    test('mode "plan" for bug/discovery leaves stage in DISCOVERY and does NOT pause at APPROVAL gate', async () => {
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_PLAN,
+        issue: 32,
+        type: 'discovery',
+        title: 'Bug Fix Plan',
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, MODE_PLAN);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.message, 'Pipeline advanced to DISCOVERY.');
     });
 
     test('mode "implement" resumes execution directly from approved plan', async () => {
@@ -477,7 +506,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.ok(result.implementationResult);
     });
 
-    test('mode "gates" runs quality gates and AI PR review sequentially', async () => {
+    test('mode "standard" from IMPLEMENT stage runs quality gates and AI PR review sequentially', async () => {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
@@ -486,13 +515,57 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace'
       });
 
       assert.strictEqual(result.success, true);
-      assert.strictEqual(result.mode, MODE_GATES);
+      assert.strictEqual(result.mode, MODE_STANDARD);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.ok(result.qualityGateResult?.passed);
+      assert.ok(result.reviewResult?.passed);
+    });
+
+    test('mode "standard" from IMPLEMENT stage does not emit stage transition notifications via onProgress', async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const progressLogs: string[] = [];
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace',
+        onProgress: (msg: string) => progressLogs.push(msg)
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.deepStrictEqual(progressLogs, []);
+    });
+
+    test('mode "standard" --step flag has no effect: pipeline advances fully to COMMIT', async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const progressLogs: string[] = [];
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        step: true,
+        workspaceDir: '/mock/workspace',
+        onProgress: (msg: string) => progressLogs.push(msg)
+      });
+
+      assert.strictEqual(result.success, true);
       assert.strictEqual(result.currentStage, STAGE_COMMIT);
       assert.ok(result.qualityGateResult?.passed);
       assert.ok(result.reviewResult?.passed);
@@ -507,7 +580,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         commitAfter: true,
         issue: 32,
         workspaceDir: '/mock/workspace'
@@ -555,7 +628,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace'
       });
@@ -592,7 +665,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       stateRepo.savedSnapshot = sm.toSnapshot();
 
       const result = await lifecycleUseCase.execute({
-        mode: MODE_GATES,
+        mode: MODE_STANDARD,
         issue: 32,
         workspaceDir: '/mock/workspace'
       });
@@ -670,6 +743,72 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.currentStage, STAGE_COMPLETED);
+    });
+
+    test('initializes inferBaseBranchUseCase before startImplementationUseCase and passes it to startImplementationUseCase', () => {
+      let passedInferBaseBranchUseCase: any = null;
+      class SpyStartImplementationUseCase {
+        constructor(
+          _stateRepo: any,
+          _configRepo: any,
+          _planGenerator: any,
+          _githubGateway?: any,
+          _resolveSubagentUseCase?: any,
+          _worktreeManager?: any,
+          inferBaseBranchUseCase?: any
+        ) {
+          passedInferBaseBranchUseCase = inferBaseBranchUseCase;
+        }
+      }
+
+      const mockWorktreeManager: any = {
+        resolveTaskWorktreePath: async () => '/mock/worktree',
+        resolveTaskBranchName: () => 'task/32-test',
+        createWorktree: async () => ({})
+      };
+
+      const customInferBaseBranchUseCase = new InferBaseBranchUseCase(
+        mockWorktreeManager,
+        githubGateway,
+        stateRepo
+      );
+
+      // Case 1: Provided via deps
+      new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        worktreeManager: mockWorktreeManager,
+        inferBaseBranchUseCase: customInferBaseBranchUseCase,
+        startImplementationUseCase: new SpyStartImplementationUseCase(
+          stateRepo,
+          configRepo,
+          planGenerator,
+          githubGateway,
+          undefined,
+          mockWorktreeManager,
+          customInferBaseBranchUseCase
+        ) as any
+      });
+
+      // Case 2: Auto-instantiated when worktreeManager is present and passed to default StartImplementationUseCase
+      const lifecycle = new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        worktreeManager: mockWorktreeManager
+      });
+
+      assert.ok((lifecycle as any).inferBaseBranchUseCase instanceof InferBaseBranchUseCase);
+      assert.ok((lifecycle as any).startImplementationUseCase['inferBaseBranchUseCase'] instanceof InferBaseBranchUseCase);
+      assert.strictEqual(
+        (lifecycle as any).startImplementationUseCase['inferBaseBranchUseCase'],
+        (lifecycle as any).inferBaseBranchUseCase
+      );
     });
   });
 });

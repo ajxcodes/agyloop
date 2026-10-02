@@ -10,6 +10,8 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
+export type PRCommentCategory = 'error' | 'suggestion' | 'question' | 'general';
+
 export interface PullRequestReviewComment {
   readonly author: string;
   readonly body: string;
@@ -17,6 +19,12 @@ export interface PullRequestReviewComment {
   readonly line?: number;
   readonly state?: string;
   readonly createdAt?: string;
+  readonly category?: PRCommentCategory;
+  readonly severity?: string;
+}
+
+export interface GitHubIssueMilestone {
+  readonly title: string;
 }
 
 export interface GitHubIssueData {
@@ -27,6 +35,7 @@ export interface GitHubIssueData {
   readonly state?: string; // 'OPEN' | 'CLOSED'
   readonly labels: readonly string[];
   readonly comments: readonly GitHubComment[];
+  readonly milestone?: GitHubIssueMilestone;
   readonly error?: string;
 }
 
@@ -39,6 +48,8 @@ export interface GitHubPullRequestData {
   readonly url: string;
   readonly merged: boolean;
   readonly labels: readonly string[];
+  readonly mergeStateStatus?: string;
+  readonly mergeable?: string;
 }
 
 export interface GitHubGatewayOptions {

@@ -4,7 +4,7 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
-const { GetNextActionUseCase } = require('../../dist/application');
+const { GetNextActionUseCase, InferBaseBranchUseCase } = require('../../dist/application');
 const {
   StateMachine,
   STAGE_INITIALIZED,
@@ -22,15 +22,19 @@ const {
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
-  ROLE_TITLE_REVIEWER
+  ROLE_TITLE_REVIEWER,
+  Ecosystem,
+  ECOSYSTEM_NODE
 } = require('../../dist/domain');
 
 import type {
   StateRepository,
   ConfigRepository,
-  AgyLoopConfig
+  AgyLoopConfig,
+  BuildDetectorPort,
+  DetectedProject
 } from '../../src/ports';
-import type { StateMachineSnapshot } from '../../src/domain';
+import type { StateMachineSnapshot, GateCommandDefinition } from '../../src/domain';
 
 class MockStateRepo implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
@@ -53,6 +57,28 @@ class MockStateRepo implements StateRepository {
 
   getStateFilePath(): string {
     return '/repo/.agyloop/state.json';
+  }
+}
+
+class MockBuildDetector implements BuildDetectorPort {
+  private readonly commands: readonly GateCommandDefinition[];
+
+  constructor(commands: readonly GateCommandDefinition[] = []) {
+    this.commands = commands;
+  }
+
+  async detect(workspaceDir: string): Promise<DetectedProject> {
+    return {
+      workspaceDir,
+      ecosystems: [],
+      primaryEcosystem: new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'], packageManager: 'npm' }),
+      commands: this.commands,
+      hasOverrides: false
+    };
+  }
+
+  async resolveCommands(): Promise<readonly GateCommandDefinition[]> {
+    return this.commands;
   }
 }
 
@@ -127,10 +153,12 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.invocationPayload.Subagents.length, 1);
 
     const sub = result.invocationPayload.Subagents[0];
-    assert.strictEqual(sub.TypeName, 'research');
+    assert.strictEqual(sub.TypeName, 'self');
     assert.strictEqual(sub.Role, ROLE_TITLE_PLANNER);
     assert.strictEqual(sub.Model, 'pro');
-    assert.strictEqual(sub.Workspace, 'share');
+    assert.strictEqual(sub.Workspace, 'inherit');
+    assert.ok(result.description.includes('scoped write tools'));
+    assert.ok(result.humanSummary.includes('scoped write tools'));
   });
 
   test('returns human approval gate for STAGE_PLAN in standard mode', async () => {
@@ -151,6 +179,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const sm = StateMachine.createInitial({ issue: 41, mode: MODE_YOLO });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
+    sm.setWorktree(new WorktreeDescriptor({ taskId: '41', worktreePath: '/repo/.worktrees/41', branch: 'task/41', baseBranch: 'main' }));
     const stateRepo = new MockStateRepo(sm.toSnapshot());
     const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
 
@@ -167,8 +196,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.Model, 'inherit');
   });
 
-  test('returns implementer subagent payload for STAGE_APPROVAL', async () => {
-    const sm = StateMachine.createInitial({ issue: 41 });
+  test('returns human approval gate for STAGE_APPROVAL in standard mode', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, mode: MODE_STANDARD });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
@@ -188,16 +217,11 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_APPROVAL);
     assert.strictEqual(result.nextStage, STAGE_IMPLEMENT);
-    assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'implementer');
-    assert.ok(result.invocationPayload);
-
-    const sub = result.invocationPayload.Subagents[0];
-    assert.strictEqual(sub.TypeName, 'self');
-    assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(result.humanSummary.includes('wait for approval'));
   });
 
-  test('returns gate subagent payload for STAGE_IMPLEMENT', async () => {
+  test('returns implementer subagent payload for STAGE_IMPLEMENT', async () => {
     const sm = StateMachine.createInitial({ issue: 41 });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -220,17 +244,17 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
     assert.strictEqual(result.nextStage, STAGE_QUALITY_GATE);
     assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'gate');
+    assert.strictEqual(result.role, 'implementer');
     assert.ok(result.invocationPayload);
 
     const sub = result.invocationPayload.Subagents[0];
     assert.strictEqual(sub.TypeName, 'self');
-    assert.strictEqual(sub.Role, ROLE_TITLE_GATE);
-    assert.strictEqual(sub.Model, 'flash_lite');
+    assert.strictEqual(sub.Role, ROLE_TITLE_IMPLEMENTER);
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+    assert.strictEqual(sub.Prompt.includes('Approved Technical Plan'), false);
   });
 
-  test('returns reviewer subagent payload for STAGE_QUALITY_GATE', async () => {
+  test('returns gate subagent payload for STAGE_QUALITY_GATE', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -254,18 +278,59 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_QUALITY_GATE);
     assert.strictEqual(result.nextStage, STAGE_REVIEW);
     assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'reviewer');
+    assert.strictEqual(result.role, 'gate');
     assert.ok(result.invocationPayload);
 
     const sub = result.invocationPayload.Subagents[0];
-    assert.strictEqual(sub.TypeName, 'research');
-    assert.strictEqual(sub.Role, ROLE_TITLE_REVIEWER);
-    assert.strictEqual(sub.Model, 'flash');
-    assert.ok(sub.Prompt.includes('phase/1-bridge'));
+    assert.strictEqual(sub.TypeName, 'self');
+    assert.strictEqual(sub.Role, ROLE_TITLE_GATE);
+    assert.strictEqual(sub.Model, 'flash_lite');
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
   });
 
-  test('returns human commit gate for STAGE_REVIEW', async () => {
+  test('returns gate subagent payload with resolved verification commands for STAGE_QUALITY_GATE', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockBuildDetector = new MockBuildDetector([
+      { id: 'test', command: 'npm test', label: 'Run test suite' },
+      { id: 'typecheck', command: 'npx tsc --noEmit', label: 'TypeScript check' }
+    ]);
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockBuildDetector
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_QUALITY_GATE);
+    assert.ok(result.invocationPayload);
+
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Target Verification Commands:'));
+    assert.ok(sub.Prompt.includes('1. `npm test`'));
+    assert.ok(sub.Prompt.includes('2. `npx tsc --noEmit`'));
+  });
+
+  test('returns reviewer subagent payload for STAGE_REVIEW', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -273,6 +338,15 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_IMPLEMENT);
     sm.transition(STAGE_QUALITY_GATE);
     sm.transition(STAGE_REVIEW);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge',
+        createdAt: new Date().toISOString()
+      })
+    );
 
     const stateRepo = new MockStateRepo(sm.toSnapshot());
     const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
@@ -280,12 +354,20 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_REVIEW);
     assert.strictEqual(result.nextStage, STAGE_COMMIT);
-    assert.strictEqual(result.actionType, 'human_gate');
-    assert.ok(result.humanSummary.includes('agyloop commit'));
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'reviewer');
+    assert.ok(result.invocationPayload);
+
+    const sub = result.invocationPayload.Subagents[0];
+    assert.strictEqual(sub.TypeName, 'self');
+    assert.strictEqual(sub.Role, ROLE_TITLE_REVIEWER);
+    assert.strictEqual(sub.Model, 'flash');
+    assert.ok(sub.Prompt.includes('phase/1-bridge'));
+    assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
   });
 
-  test('returns completed action for STAGE_COMMIT and STAGE_COMPLETED', async () => {
-    const sm = StateMachine.createInitial({ issue: 41 });
+  test('returns commit human gate for STAGE_COMMIT', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
@@ -300,10 +382,231 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
     assert.strictEqual(result.nextStage, STAGE_COMPLETED);
-    assert.strictEqual(result.actionType, 'completed');
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(result.humanSummary.includes('agyloop commit'));
+  });
 
+  test('returns completed action for STAGE_COMPLETED', async () => {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
     sm.transition(STAGE_COMPLETED);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
     const completedResult = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(completedResult.currentStage, STAGE_COMPLETED);
+    assert.strictEqual(completedResult.nextStage, STAGE_INITIALIZED);
     assert.strictEqual(completedResult.actionType, 'completed');
   });
+
+  test('populates issue context and omits blank plan block for STAGE_IMPLEMENT when githubGateway is configured', async () => {
+    const sm = StateMachine.createInitial({ issue: 85 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 85,
+        worktreePath: '/repo/.worktrees/85',
+        branch: 'fix/85',
+        baseBranch: 'main',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: 'Fix prompt issue context and blank plan spec',
+        body: 'Detailed issue description for issue 85.',
+        labels: ['bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.ok(result.invocationPayload);
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Active Issue: #85 - Fix prompt issue context and blank plan spec'));
+    assert.ok(sub.Prompt.includes('Detailed issue description for issue 85.'));
+    assert.strictEqual(sub.Prompt.includes('Approved Technical Plan'), false);
+  });
+
+  test('populates issue context for STAGE_REVIEW when githubGateway is configured', async () => {
+    const sm = StateMachine.createInitial({ issue: 85, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 85,
+        worktreePath: '/repo/.worktrees/85',
+        branch: 'fix/85',
+        baseBranch: 'main',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: 'Fix prompt issue context and blank plan spec',
+        body: 'Detailed issue description for issue 85.',
+        labels: ['bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.ok(result.invocationPayload);
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Active Issue: #85 - Fix prompt issue context and blank plan spec'));
+    assert.ok(sub.Prompt.includes('Detailed issue description for issue 85.'));
+  });
+
+  test('infers baseBranch when missing and activeIssue is present with worktreeManager', async () => {
+    const sm = StateMachine.createInitial({ issue: 93 });
+    sm.transition(STAGE_DISCOVERY);
+    assert.strictEqual(sm.baseBranch, null);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockWorktreeManager: any = {
+      resolveBaseBranch: async () => 'main',
+      listBranches: async () => ['main', 'phase/5-quality-gates'],
+      isAncestorMerged: async () => false
+    };
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: '[Phase 5] [Bug] agyloop: GetNextAction reports baseBranch as main',
+        body: 'Details here',
+        labels: ['phase:5', 'bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const inferUseCase = new InferBaseBranchUseCase(
+      mockWorktreeManager,
+      mockGithub,
+      stateRepo
+    );
+
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub,
+      undefined,
+      mockWorktreeManager,
+      undefined,
+      inferUseCase
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.baseBranch, 'phase/5-quality-gates');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, 'phase/5-quality-gates');
+  });
+
+  test('does not infer baseBranch when inferBaseBranchUseCase is not injected even if worktreeManager is provided', async () => {
+    const sm = StateMachine.createInitial({ issue: 93 });
+    sm.transition(STAGE_DISCOVERY);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockWorktreeManager: any = {
+      resolveBaseBranch: async () => 'main',
+      listBranches: async () => ['main', 'phase/5-quality-gates'],
+      isAncestorMerged: async () => false
+    };
+    const mockGithub: any = {
+      getCurrentRepo: () => 'ajxcodes/agyloop',
+      fetchIssue: (num: number) => ({
+        repo: 'ajxcodes/agyloop',
+        number: num,
+        title: '[Phase 5] [Bug] agyloop: GetNextAction reports baseBranch as main',
+        body: 'Details here',
+        labels: ['phase:5', 'bug'],
+        comments: [],
+        state: 'OPEN'
+      })
+    };
+
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      mockGithub,
+      undefined,
+      mockWorktreeManager
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.baseBranch, 'main');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, null);
+  });
+
+  test('handles inferBaseBranch failure non-fatally with warning', async () => {
+    const sm = StateMachine.createInitial({ issue: 93 });
+    sm.transition(STAGE_DISCOVERY);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const mockInferUseCase: any = {
+      execute: async () => {
+        throw new Error('Network failure or git corruption');
+      }
+    };
+
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockInferUseCase
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.baseBranch, 'main');
+    assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, null);
+  });
 });
+
