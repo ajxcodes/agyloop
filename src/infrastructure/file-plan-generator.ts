@@ -27,7 +27,10 @@ import {
   TEMPLATE_SUMMARY,
   DEFAULT_TEMPLATES_DIRNAME,
   TEMPLATE_FILES,
-  CANDIDATE_PLAN_FILENAMES
+  CANDIDATE_PLAN_FILENAMES,
+  STAGE_DISCOVERY,
+  FILENAME_ALT_DISCOVERY_PLAN,
+  FILENAME_ALT_IMPLEMENTATION_PLAN
 } from '../domain';
 
 export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freeze({
@@ -606,7 +609,16 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       }
 
       if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {
-        for (const candidate of CANDIDATE_PLAN_FILENAMES) {
+        let candidates = [...CANDIDATE_PLAN_FILENAMES];
+        if (options.stage === STAGE_DISCOVERY) {
+          candidates = [
+            TEMPLATE_DISCOVERY,
+            FILENAME_ALT_DISCOVERY_PLAN,
+            TEMPLATE_IMPLEMENTATION,
+            FILENAME_ALT_IMPLEMENTATION_PLAN
+          ];
+        }
+        for (const candidate of candidates) {
           const candidatePath = path.join(resolvedPlanDir, candidate);
           if (fs.existsSync(candidatePath)) {
             resolvedPlanPath = candidatePath;

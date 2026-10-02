@@ -263,38 +263,17 @@ export class CliGitHubGateway implements GitHubGateway {
     const repoFlag = repo ? `--repo ${repo}` : '';
 
     try {
-      const rawJson = this.runGh(
-        `pr view ${prNumber} ${repoFlag} --json comments,reviews`,
-        { cwd: options.cwd }
-      );
+      const repoPath = repo || this.getCurrentRepo(options.cwd);
+      if (!repoPath) return [];
 
-      interface RawReviewComment {
-        author?: { login?: string };
-        body?: string;
-        path?: string;
-        line?: number;
-        createdAt?: string;
-      }
+      const issueCommentsRaw = this.runGh(`api repos/${repoPath}/issues/${prNumber}/comments`, { cwd: options.cwd });
+      const reviewsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/reviews`, { cwd: options.cwd });
+      const reviewCommentsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/comments`, { cwd: options.cwd });
 
-      interface RawReview {
-        author?: { login?: string };
-        body?: string;
-        state?: string;
-        submittedAt?: string;
-        createdAt?: string;
-        comments?: RawReviewComment[];
-      }
+      const parsedComments = JSON.parse(issueCommentsRaw) as Array<any>;
+      const parsedReviews = JSON.parse(reviewsRaw) as Array<any>;
+      const parsedReviewComments = JSON.parse(reviewCommentsRaw) as Array<any>;
 
-      interface RawGhPrView {
-        comments?: Array<{
-          author?: { login?: string };
-          body?: string;
-          createdAt?: string;
-        }>;
-        reviews?: RawReview[];
-      }
-
-      const parsed = JSON.parse(rawJson) as RawGhPrView;
       const results: PullRequestReviewComment[] = [];
 
       const parseCategory = (body: string, reviewState?: string): { category: 'error' | 'suggestion' | 'question' | 'general'; severity?: string } => {
@@ -311,51 +290,49 @@ export class CliGitHubGateway implements GitHubGateway {
         return { category: 'general', severity: 'info' };
       };
 
-      if (parsed.comments) {
-        for (const c of parsed.comments) {
-          if (c.body && c.body.trim()) {
-            const cat = parseCategory(c.body);
-            results.push({
-              author: (c.author && c.author.login) || 'unknown',
-              body: c.body,
-              createdAt: c.createdAt,
-              category: cat.category,
-              severity: cat.severity
-            });
-          }
+      for (const c of parsedComments) {
+        if (c.body && c.body.trim()) {
+          const cat = parseCategory(c.body);
+          results.push({
+            author: (c.user && c.user.login) || 'unknown',
+            body: c.body,
+            createdAt: c.created_at,
+            category: cat.category,
+            severity: cat.severity
+          });
         }
       }
 
-      if (parsed.reviews) {
-        for (const r of parsed.reviews) {
-          if (r.body && r.body.trim()) {
-            const cat = parseCategory(r.body, r.state);
-            results.push({
-              author: (r.author && r.author.login) || 'unknown',
-              body: r.body,
-              state: r.state,
-              createdAt: r.submittedAt || r.createdAt,
-              category: cat.category,
-              severity: cat.severity
-            });
-          }
-          if (r.comments) {
-            for (const rc of r.comments) {
-              if (rc.body && rc.body.trim()) {
-                const cat = parseCategory(rc.body, r.state);
-                results.push({
-                  author: (rc.author && rc.author.login) || 'unknown',
-                  body: rc.body,
-                  path: rc.path,
-                  line: rc.line,
-                  state: r.state,
-                  createdAt: rc.createdAt,
-                  category: cat.category,
-                  severity: cat.severity
-                });
-              }
-            }
-          }
+      for (const r of parsedReviews) {
+        if (r.body && r.body.trim()) {
+          const cat = parseCategory(r.body, r.state);
+          results.push({
+            author: (r.user && r.user.login) || 'unknown',
+            body: r.body,
+            state: r.state,
+            createdAt: r.submitted_at || r.created_at,
+            category: cat.category,
+            severity: cat.severity
+          });
+        }
+      }
+
+      for (const rc of parsedReviewComments) {
+        if (rc.body && rc.body.trim()) {
+          const parentReview = parsedReviews.find(r => r.id === rc.pull_request_review_id);
+          const reviewState = parentReview ? parentReview.state : undefined;
+
+          const cat = parseCategory(rc.body, reviewState);
+          results.push({
+            author: (rc.user && rc.user.login) || 'unknown',
+            body: rc.body,
+            path: rc.path,
+            line: rc.line,
+            state: reviewState,
+            createdAt: rc.created_at,
+            category: cat.category,
+            severity: cat.severity
+          });
         }
       }
 

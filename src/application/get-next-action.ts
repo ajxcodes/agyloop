@@ -157,7 +157,8 @@ export class GetNextActionUseCase {
       sm.reset(sm.mode, activeIssue);
       const existingPlan = this.planGenerator?.resolvePlanFile({
         projectRoot: cwd,
-        issue: activeIssue
+        issue: activeIssue,
+        stage: sm.currentStage
       });
       if (existingPlan) {
         sm.transition(STAGE_PLAN, { note: `Resumed planning for issue #${activeIssue}` });
@@ -219,7 +220,8 @@ export class GetNextActionUseCase {
           const resolved = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
             issue: activeIssue,
-            planDir: sm.planDir
+            planDir: sm.planDir,
+            stage: sm.currentStage
           });
           if (resolved) {
             planPath = resolved.planPath;
@@ -424,11 +426,11 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        const prompt = this.resolveSubagentUseCase.buildTriageTaskPrompt?.({
+        const prompt = this.resolveSubagentUseCase.buildTriageTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: worktreePath || cwd,
           config
-        }) || `Triage PR review comments.`;
+        });
 
         const invocationPayload: SubagentInvocationPayload = {
           Subagents: [
@@ -497,7 +499,8 @@ export class GetNextActionUseCase {
       const resolved = this.planGenerator.resolvePlanFile({
         projectRoot: cwd,
         issue: activeIssue,
-        planDir: sm.planDir
+        planDir: sm.planDir,
+        stage: sm.currentStage
       });
       if (resolved) {
         planPath = resolved.planPath;

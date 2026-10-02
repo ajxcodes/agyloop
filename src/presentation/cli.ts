@@ -30,6 +30,7 @@ import {
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_TRIAGE,
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -563,7 +564,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'config': {
       console.log('\n=== AgyLoop: Configuration & Model Routing ===');
-      const roles = ['planner', 'implementer', 'gate', 'reviewer'];
+      const roles = ['planner', 'implementer', 'gate', 'reviewer', 'triage'];
       console.log('\nSubagent Model Routing Table:');
       console.log('----------------------------------------------------------------------');
       console.log('Role         Configured           AGY Subagent Tier   Canonical API Model');
@@ -803,8 +804,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'prompt': {
       const role = options.roleArg || ROLE_PLANNER;
-      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE && role !== ROLE_REVIEWER) {
-        console.error(`Valid prompt roles: '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', '${ROLE_GATE}', '${ROLE_REVIEWER}'. Received: '${role}'.`);
+      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE && role !== ROLE_REVIEWER && role !== ROLE_TRIAGE) {
+        console.error(`Valid prompt roles: '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', '${ROLE_GATE}', '${ROLE_REVIEWER}', '${ROLE_TRIAGE}'. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
 
@@ -970,7 +971,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
           console.log(`Whitelisted  : ${impl.implementerDef.tools.join(', ')}\n`);
         }
-        console.log(`Next Step    : Execute checklist items and run 'agyloop gates' when complete.\n`);
+        console.log(`Next Step    : Execute checklist items and run 'agyloop next' when complete.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {

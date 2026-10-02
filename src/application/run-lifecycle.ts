@@ -419,6 +419,7 @@ export class RunLifecycleUseCase {
     workspace: string
   ): Promise<RunLifecycleResult> {
     const planResult = await this.startPlanningUseCase.execute({
+      mode: sm.mode,
       issue: sm.issue,
       title: params.title,
       type: params.type,
@@ -627,6 +628,7 @@ export class RunLifecycleUseCase {
     if (params.dryRun) {
       if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
         planResult = await this.startPlanningUseCase.execute({
+          mode: sm.mode,
           issue: sm.issue,
           title: params.title,
           type: params.type,
@@ -649,6 +651,7 @@ export class RunLifecycleUseCase {
     // A. Planning & Auto-Approval
     if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
       planResult = await this.startPlanningUseCase.execute({
+        mode: sm.mode,
         issue: sm.issue,
         title: params.title,
         type: params.type,
@@ -813,6 +816,7 @@ export class RunLifecycleUseCase {
     // 1. If at INITIALIZED or DISCOVERY: run planning and halt at APPROVAL gate
     if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
       const planResult = await this.startPlanningUseCase.execute({
+        mode: sm.mode,
         issue: sm.issue,
         title: params.title,
         type: params.type,

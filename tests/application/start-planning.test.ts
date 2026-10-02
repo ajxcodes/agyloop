@@ -187,6 +187,23 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     );
   });
 
+  test('respects provided mode parameter during execute', async () => {
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+
+    const result = await useCase.execute({
+      issue: 12,
+      mode: 'yolo' as any
+    });
+
+    assert.strictEqual(result.stateMachine.mode, 'yolo');
+    assert.strictEqual(stateRepo.savedSnapshot.mode, 'yolo');
+  });
+
   test('preserves DISCOVERY in history and advances to APPROVAL for features', async () => {
     const useCase = new StartPlanningUseCase(
       stateRepo,

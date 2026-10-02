@@ -195,7 +195,7 @@ export class RunReviewUseCase {
         STAGE_NONE,
         STAGE_REVIEW,
         MODE_STANDARD,
-        'Cannot run review: No pipeline state found. Run "agyloop implement" and "agyloop gates" first.'
+        'Cannot run review: No pipeline state found. Run "agyloop implement" and "agyloop next" first.'
       );
     }
 
@@ -246,7 +246,8 @@ export class RunReviewUseCase {
       projectRoot: workspace,
       issue: activeIssue,
       planPath: params.planPath,
-      planDir: params.planDir || sm.planDir
+      planDir: params.planDir || sm.planDir,
+      stage: sm.currentStage
     });
 
     let planContent = '';
