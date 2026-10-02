@@ -300,31 +300,52 @@ export class ExecuteCommitUseCase {
 
     const escapeShellQuote = (str: string) => str.replace(/'/g, "'\\''");
 
-    let prCommandCore = activeBranch
-      ? `gh pr create --base '${escapeShellQuote(prBaseBranch)}' --head '${escapeShellQuote(activeBranch)}'`
-      : `gh pr create --base '${escapeShellQuote(prBaseBranch)}'`;
-
-    if (issueId) {
-      const singleLine = commitMessage.toSingleLine();
-      const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine);
-
-      const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
-      const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody);
-
-      prCommandCore += ` --title '${escapeShellQuote(sanitizedTitle)}' --body '${escapeShellQuote(sanitizedBody)}'`;
-
-      if (milestone) {
-        prCommandCore += ` --milestone '${escapeShellQuote(milestone)}'`;
+    // Check if PR already exists for the active branch
+    let prExists = false;
+    if (activeBranch) {
+      try {
+        const prListRes = await this.commandExecutor.execute(`gh pr list --head '${escapeShellQuote(activeBranch)}' --json number`, { cwd });
+        if (prListRes.exitCode === 0 && prListRes.stdout.trim()) {
+          const prs = JSON.parse(prListRes.stdout.trim());
+          if (Array.isArray(prs) && prs.length > 0) {
+            prExists = true;
+          }
+        }
+      } catch (err) {
+        // Fallback to assuming no PR exists if gh fails or is unauthenticated
       }
     }
 
-    if (issueId && prBaseBranch !== 'main') {
-      const closeCmd = `gh issue close ${issueId} --comment 'Implemented and merged via PR #'"$PR_NUM"' into \`${escapeShellQuote(prBaseBranch)}\`.'`;
-      prCommandCore = `PR_URL=$(${prCommandCore}); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE '[0-9]+$'); if [ -n "$PR_NUM" ]; then ${closeCmd}; fi`;
-    }
+    let prCommand: string;
+    if (prExists) {
+      prCommand = `echo "PR already exists for branch '${escapeShellQuote(activeBranch)}'."; gh pr view`;
+    } else {
+      let prCommandCore = activeBranch
+        ? `gh pr create --base '${escapeShellQuote(prBaseBranch)}' --head '${escapeShellQuote(activeBranch)}'`
+        : `gh pr create --base '${escapeShellQuote(prBaseBranch)}'`;
 
-    // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
-    const prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
+      if (issueId) {
+        const singleLine = commitMessage.toSingleLine();
+        const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine);
+
+        const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
+        const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody);
+
+        prCommandCore += ` --title '${escapeShellQuote(sanitizedTitle)}' --body '${escapeShellQuote(sanitizedBody)}'`;
+
+        if (milestone) {
+          prCommandCore += ` --milestone '${escapeShellQuote(milestone)}'`;
+        }
+      }
+
+      if (issueId && prBaseBranch !== 'main') {
+        const closeCmd = `gh issue close ${issueId} --comment 'Implemented and merged via PR #'"$PR_NUM"' into \`${escapeShellQuote(prBaseBranch)}\`.'`;
+        prCommandCore = `PR_URL=$(${prCommandCore}); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE '[0-9]+$'); if [ -n "$PR_NUM" ]; then ${closeCmd}; fi`;
+      }
+
+      // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
+      prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
+    }
 
     // Remote Task Branch Push with Automated Token Fallback
     let pushFailed = false;

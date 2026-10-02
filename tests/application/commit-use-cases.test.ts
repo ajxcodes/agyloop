@@ -891,5 +891,42 @@ new file mode 100644
         'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'main\' --head \'chore/cleanup\'; git stash pop -q; else gh pr create --base \'main\' --head \'chore/cleanup\'; fi'
       );
     });
+
+    test('skips PR creation and suggests viewing if PR already exists', async () => {
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        baseBranch: 'main'
+      });
+      sm.setIssue(170);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: skip pr create (#170)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit170\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/170\n' };
+      executor.responses['git push -u origin "fix/170"'] = { exitCode: 0 };
+      executor.responses['gh pr list --head \'fix/170\' --json number'] = { exitCode: 0, stdout: '[{"number":170}]\n' };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'skip pr create',
+        issueNumber: 170
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'echo "PR already exists for branch \'fix/170\'."; gh pr view'
+      );
+    });
   });
 });
+
