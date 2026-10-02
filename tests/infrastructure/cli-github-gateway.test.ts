@@ -178,3 +178,36 @@ describe('CliGitHubGateway fetchIssue', () => {
   });
 });
 
+describe('CliGitHubGateway fetchPullRequestComments', () => {
+  test('uses gh api instead of gh pr view to avoid GraphQL deprecation', () => {
+    const gateway = new CliGitHubGateway();
+    const capturedCmds: string[] = [];
+    
+    gateway.runGh = (cmd: string) => {
+      capturedCmds.push(cmd);
+      if (cmd.includes('/issues/59/comments')) {
+        return JSON.stringify([{ user: { login: 'user1' }, body: 'issue comment', created_at: '2023' }]);
+      }
+      if (cmd.includes('/pulls/59/reviews')) {
+        return JSON.stringify([{ id: 1, user: { login: 'user2' }, body: 'review body', state: 'APPROVED', submitted_at: '2024' }]);
+      }
+      if (cmd.includes('/pulls/59/comments')) {
+        return JSON.stringify([{ user: { login: 'user3' }, body: 'review comment', path: 'src/a.ts', line: 10, pull_request_review_id: 1, created_at: '2025' }]);
+      }
+      return '[]';
+    };
+
+    const comments = gateway.fetchPullRequestComments(59, { repo: 'ajxcodes/agyloop' });
+    
+    assert.strictEqual(capturedCmds.length, 3);
+    assert.ok(capturedCmds[0].includes('api repos/ajxcodes/agyloop/issues/59/comments'));
+    assert.ok(capturedCmds[1].includes('api repos/ajxcodes/agyloop/pulls/59/reviews'));
+    assert.ok(capturedCmds[2].includes('api repos/ajxcodes/agyloop/pulls/59/comments'));
+    
+    assert.strictEqual(comments.length, 3);
+    assert.strictEqual(comments[0].body, 'issue comment');
+    assert.strictEqual(comments[1].body, 'review body');
+    assert.strictEqual(comments[2].body, 'review comment');
+    assert.strictEqual(comments[2].state, 'APPROVED');
+  });
+});

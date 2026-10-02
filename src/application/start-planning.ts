@@ -17,6 +17,7 @@ import {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   MODE_PLAN,
+  ExecutionMode,
   NOTE_INITIATED_DISCOVERY_RCA,
   NOTE_GENERATING_SPECS,
   NOTE_AWAITING_REVIEW,
@@ -39,6 +40,7 @@ import {
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 
 export interface StartPlanningParams {
+  readonly mode?: ExecutionMode;
   readonly issue?: number | string | null;
   readonly title?: string | null;
   readonly type?: string | null;
@@ -92,13 +94,17 @@ export class StartPlanningUseCase {
       snapshot.issue !== null &&
       String(params.issue) !== String(snapshot.issue);
 
+    const targetMode = params.mode ?? MODE_PLAN;
+
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
       if (sm.currentStage === STAGE_COMPLETED || isNewIssue) {
-        sm.reset(sm.mode, params.issue ?? sm.issue);
+        sm.reset(targetMode, params.issue ?? sm.issue);
+      } else {
+        sm.setMode(targetMode);
       }
     } else {
-      sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: params.issue });
+      sm = StateMachine.createInitial({ mode: targetMode, issue: params.issue });
     }
 
     const activeIssue = params.issue || sm.issue;

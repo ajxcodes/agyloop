@@ -252,15 +252,15 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     // 6. Execute git worktree add
     let addRes;
-    if (branchAlreadyExists && !isCheckedOut) {
-      // Branch exists but not checked out anywhere, reuse it without -b
+    if (branchAlreadyExists) {
+      // Branch exists. Reuse it without -b. If it is already checked out elsewhere,
+      // it will intentionally fail with "already checked out at" which we catch below.
       addRes = await this.commandExecutor.execute(
         `git worktree add "${worktreePath}" "${targetBranch}"`,
         { cwd: workspace }
       );
     } else {
       // Branch doesn't exist, create it with -b
-      // OR branch is checked out, which will intentionally fail so we can process the error correctly below
       addRes = await this.commandExecutor.execute(
         `git worktree add -b "${targetBranch}" "${worktreePath}" "${baseBranch}"`,
         { cwd: workspace }
