@@ -138,7 +138,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.ok(result.humanSummary.includes('bin/agyloop transition DISCOVERY --issue 41'));
   });
 
-  test('returns planning subagent payload for STAGE_DISCOVERY', async () => {
+  test('returns discovery subagent payload for STAGE_DISCOVERY', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);
     const stateRepo = new MockStateRepo(sm.toSnapshot());
@@ -148,20 +148,20 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
     assert.strictEqual(result.nextStage, STAGE_PLAN);
     assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'planner');
+    assert.strictEqual(result.role, 'discovery');
     assert.ok(result.invocationPayload);
     assert.strictEqual(result.invocationPayload.Subagents.length, 1);
 
     const sub = result.invocationPayload.Subagents[0];
     assert.strictEqual(sub.TypeName, 'self');
-    assert.strictEqual(sub.Role, ROLE_TITLE_PLANNER);
-    assert.strictEqual(sub.Model, 'pro');
+    assert.strictEqual(sub.Role, 'Discovery Subagent');
+    assert.strictEqual(sub.Model, 'inherit');
     assert.strictEqual(sub.Workspace, 'inherit');
-    assert.ok(result.description.includes('scoped write tools'));
+    assert.ok(result.description.includes('smoke testing'));
     assert.ok(result.humanSummary.includes('scoped write tools'));
   });
 
-  test('returns human approval gate for STAGE_PLAN in standard mode', async () => {
+  test('returns planning subagent payload for STAGE_PLAN in standard mode', async () => {
     const sm = StateMachine.createInitial({ issue: 41, mode: MODE_STANDARD });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -171,11 +171,12 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_PLAN);
     assert.strictEqual(result.nextStage, STAGE_APPROVAL);
-    assert.strictEqual(result.actionType, 'human_gate');
-    assert.ok(result.humanSummary.includes('wait for approval'));
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'planner');
+    assert.ok(result.humanSummary.includes('scoped write tools'));
   });
 
-  test('auto-advances to implement subagent for STAGE_PLAN in yolo mode', async () => {
+  test('returns planning subagent payload for STAGE_PLAN in yolo mode', async () => {
     const sm = StateMachine.createInitial({ issue: 41, mode: MODE_YOLO });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -185,15 +186,15 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_PLAN);
-    assert.strictEqual(result.nextStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.nextStage, STAGE_APPROVAL);
     assert.strictEqual(result.actionType, 'subagent');
-    assert.strictEqual(result.role, 'implementer');
+    assert.strictEqual(result.role, 'planner');
     assert.ok(result.invocationPayload);
 
     const sub = result.invocationPayload.Subagents[0];
     assert.strictEqual(sub.TypeName, 'self');
-    assert.strictEqual(sub.Role, ROLE_TITLE_IMPLEMENTER);
-    assert.strictEqual(sub.Model, 'inherit');
+    assert.strictEqual(sub.Role, ROLE_TITLE_PLANNER);
+    assert.strictEqual(sub.Model, 'pro');
   });
 
   test('returns human approval gate for STAGE_APPROVAL in standard mode', async () => {

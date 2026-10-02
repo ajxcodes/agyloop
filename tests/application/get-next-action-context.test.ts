@@ -22,7 +22,8 @@ const {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
-  ROLE_PLANNER
+  ROLE_PLANNER,
+  ROLE_DISCOVERY
 } = require('../../dist/domain');
 
 import type {
@@ -205,7 +206,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
       assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
       assert.strictEqual(result.nextStage, STAGE_PLAN);
       assert.strictEqual(result.actionType, 'subagent');
-      assert.strictEqual(result.role, ROLE_PLANNER);
+      assert.strictEqual(result.role, ROLE_DISCOVERY);
       assert.ok(result.invocationPayload);
       assert.strictEqual(result.invocationPayload.Subagents[0].TypeName, 'self');
       assert.ok(result.invocationPayload.Subagents[0].Prompt.includes('#51'));
@@ -257,8 +258,8 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
       assert.strictEqual(result.currentStage, STAGE_PLAN);
       assert.strictEqual(result.nextStage, STAGE_APPROVAL);
-      assert.strictEqual(result.actionType, 'human_gate');
-      assert.ok(result.humanSummary.includes('Present the plan to the user'));
+      assert.strictEqual(result.actionType, 'subagent');
+      assert.strictEqual(result.role, ROLE_PLANNER);
 
       const saved = await stateRepo.load();
       assert.strictEqual(saved?.issue, 51);

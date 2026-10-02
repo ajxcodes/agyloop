@@ -76,6 +76,7 @@ export const EXECUTION_MODES = Object.freeze({
 export type ExecutionMode = typeof EXECUTION_MODES[keyof typeof EXECUTION_MODES];
 
 export const ROLE_PLANNER = 'planner' as const;
+export const ROLE_DISCOVERY = 'discovery' as const;
 export const ROLE_IMPLEMENTER = 'implementer' as const;
 export const ROLE_GATE = 'gate' as const;
 export const ROLE_REVIEWER = 'reviewer' as const;
@@ -83,6 +84,7 @@ export const ROLE_TRIAGE = 'triage' as const;
 
 export const SUBAGENT_ROLES = Object.freeze({
   PLANNER: ROLE_PLANNER,
+  DISCOVERY: ROLE_DISCOVERY,
   IMPLEMENTER: ROLE_IMPLEMENTER,
   GATE: ROLE_GATE,
   REVIEWER: ROLE_REVIEWER,
@@ -92,6 +94,7 @@ export const SUBAGENT_ROLES = Object.freeze({
 export type SubagentRoleName = typeof SUBAGENT_ROLES[keyof typeof SUBAGENT_ROLES];
 
 export const ROLE_TITLE_PLANNER = 'Architectural Planning Subagent' as const;
+export const ROLE_TITLE_DISCOVERY = 'Discovery Subagent' as const;
 export const ROLE_TITLE_IMPLEMENTER = 'Code Implementation Subagent' as const;
 export const ROLE_TITLE_GATE = 'Quality Gate Verification Subagent' as const;
 export const ROLE_TITLE_REVIEWER = 'AI Reviewer Subagent' as const;
@@ -99,6 +102,8 @@ export const ROLE_TITLE_TRIAGE = 'Triage Subagent' as const;
 
 export const ROLE_DESC_PLANNER =
   'Architectural reasoning, deep read-only inspection, and specification generation subagent' as const;
+export const ROLE_DESC_DISCOVERY =
+  'Defect discovery, root-cause analysis, and edge-case investigation subagent' as const;
 export const ROLE_DESC_IMPLEMENTER =
   'Precise code implementation, refactoring, test authoring, and build verification subagent' as const;
 export const ROLE_DESC_GATE =
@@ -670,6 +675,25 @@ export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;
 export const PLAN_DEFAULT_SPECIFICATION_TITLE = 'Plan Specification' as const;
 export const PLAN_DEFAULT_TITLE = 'Task Plan' as const;
 
+
+export const DEFAULT_DISCOVERY_SYSTEM_PROMPT = `# AgyLoop Discovery Subagent System Prompt
+
+You are the **AgyLoop Discovery Subagent**, a specialized investigator in Google Antigravity.
+
+Your primary purpose is deep defect discovery, comprehensive root-cause analysis (RCA), and edge-case investigation. You prepare actionable discovery reports for downstream planning and implementation.
+
+---
+
+## 1. Absolute Read-Only Mandate
+- You are equipped with inspection tools (\`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`) and limited write tools (\`write_to_file\`, \`replace_file_content\`).
+- You MUST ONLY use write tools to populate the discovery specification inside the \`artifacts/plans/\` directory.
+- Never attempt to edit, rewrite, or delete workspace source files.
+
+## 2. Investigative Methodology
+- Inspect repository structure and package manifests.
+- Locate all relevant symbols, classes, functions across the codebase.
+- Trace the failure mechanism from ingress to failure.
+- Manually smoke test the bug to record exact, minimal reproduction commands, failing test targets, and reproduction results.` as const;
 
 // Default System Prompts (Embedded Domain Fallbacks)
 export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt

@@ -25,11 +25,13 @@ import {
   ROLE_GATE,
   ROLE_REVIEWER,
   ROLE_TRIAGE,
+  ROLE_DISCOVERY,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
   ROLE_TITLE_TRIAGE,
+  ROLE_TITLE_DISCOVERY,
   MODE_YOLO,
   IssueNumber,
   MAX_IMPLEMENT_GATE_LOOPS
@@ -209,6 +211,62 @@ export class GetNextActionUseCase {
 
       case STAGE_DISCOVERY: {
         const subagent = this.resolveSubagentUseCase.execute({
+          role: ROLE_DISCOVERY,
+          customConfig: config,
+          workspaceDir: cwd
+        });
+
+        let planDir = sm.planDir;
+        let planPath: string | undefined;
+        if (this.planGenerator) {
+          const resolved = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue: activeIssue,
+            planDir: sm.planDir,
+            stage: sm.currentStage
+          });
+          if (resolved) {
+            planPath = resolved.planPath;
+          }
+        }
+
+        const prompt = this.resolveSubagentUseCase.buildDiscoveryTaskPrompt({
+          issueNumber: activeIssue,
+          workspaceDir: cwd,
+          config,
+          planDir,
+          planPath
+        });
+
+        const invocationPayload: SubagentInvocationPayload = {
+          Subagents: [
+            {
+              TypeName: 'self',
+              Role: ROLE_TITLE_DISCOVERY,
+              Model: subagent.model,
+              Workspace: 'inherit',
+              Prompt: prompt
+            }
+          ]
+        };
+
+        return {
+          currentStage: STAGE_DISCOVERY,
+          nextStage: STAGE_PLAN,
+          actionType: 'subagent',
+          role: ROLE_DISCOVERY,
+          title: 'Invoke Defect Discovery Subagent',
+          description: 'Execute root-cause analysis and manual smoke testing to produce a discovery report.',
+          baseBranch,
+          taskBranch,
+          worktreePath,
+          invocationPayload,
+          humanSummary: `Invoke ${ROLE_TITLE_DISCOVERY} with Model '${subagent.model}' (scoped write tools).`
+        };
+      }
+
+      case STAGE_PLAN: {
+        const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_PLANNER,
           customConfig: config,
           workspaceDir: cwd
@@ -249,8 +307,8 @@ export class GetNextActionUseCase {
         };
 
         return {
-          currentStage: STAGE_DISCOVERY,
-          nextStage: STAGE_PLAN,
+          currentStage: STAGE_PLAN,
+          nextStage: STAGE_APPROVAL,
           actionType: 'subagent',
           role: ROLE_PLANNER,
           title: 'Invoke Planning Architect Subagent',
@@ -260,25 +318,6 @@ export class GetNextActionUseCase {
           worktreePath,
           invocationPayload,
           humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (scoped write tools).`
-        };
-      }
-
-      case STAGE_PLAN: {
-        if (sm.mode === MODE_YOLO) {
-          // In YOLO mode, auto-advance to implement
-          return this.buildImplementAction(sm, config, cwd);
-        }
-
-        return {
-          currentStage: STAGE_PLAN,
-          nextStage: STAGE_APPROVAL,
-          actionType: 'human_gate',
-          title: 'Human Approval Gate',
-          description: 'Review the technical plan in artifacts/plans/. Seek user confirmation before modifying source code.',
-          baseBranch,
-          taskBranch,
-          worktreePath,
-          humanSummary: 'Present the plan to the user and wait for approval. Once approved, run "agyloop implement" or "agyloop transition IMPLEMENT".'
         };
       }
 
@@ -330,11 +369,29 @@ export class GetNextActionUseCase {
           commands = resolvedCommands.map(c => c.command);
         }
 
+        let planContent = '';
+        if (this.planGenerator) {
+          const resolved = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue: activeIssue,
+            planDir: sm.planDir,
+            stage: sm.currentStage
+          });
+          if (resolved) {
+            try {
+              planContent = this.planGenerator.readPlanDocument(resolved.planPath);
+            } catch {
+              // Non-fatal
+            }
+          }
+        }
+
         const prompt = this.resolveSubagentUseCase.buildGateTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: worktreePath || cwd,
           config,
-          commands
+          commands,
+          planContent: planContent || undefined
         });
 
         const invocationPayload: SubagentInvocationPayload = {

@@ -19,20 +19,24 @@ import {
   ROLE_GATE,
   ROLE_REVIEWER,
   ROLE_TRIAGE,
+  ROLE_DISCOVERY,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
   ROLE_TITLE_TRIAGE,
+  ROLE_TITLE_DISCOVERY,
   ROLE_DESC_PLANNER,
   ROLE_DESC_IMPLEMENTER,
   ROLE_DESC_GATE,
   ROLE_DESC_REVIEWER,
   ROLE_DESC_TRIAGE,
+  ROLE_DESC_DISCOVERY,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
   DEFAULT_GATE_SYSTEM_PROMPT,
   DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT,
+  DEFAULT_DISCOVERY_SYSTEM_PROMPT,
   PLAN_DEFAULT_SPECIFICATION_TITLE,
   TIER_PRO,
   TIER_INHERIT,
@@ -69,6 +73,19 @@ export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
   role: ROLE_TITLE_PLANNER,
   description: ROLE_DESC_PLANNER,
+  defaultTier: TIER_PRO,
+  tools: PLANNER_TOOLS,
+  capabilities: Object.freeze({
+    enable_write_tools: true,
+    enable_subagent_tools: false,
+    enable_mcp_tools: true
+  })
+});
+
+export const DISCOVERY_SUBAGENT_DEF = Object.freeze({
+  name: ROLE_DISCOVERY,
+  role: ROLE_TITLE_DISCOVERY,
+  description: ROLE_DESC_DISCOVERY,
   defaultTier: TIER_PRO,
   tools: PLANNER_TOOLS,
   capabilities: Object.freeze({
@@ -190,6 +207,7 @@ export interface GateTaskPromptParams {
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+  readonly planContent?: string | null;
 }
 
 export interface ReviewerTaskPromptParams {
@@ -252,6 +270,16 @@ export class ResolveSubagentUseCase {
     return DEFAULT_PLANNER_SYSTEM_PROMPT;
   }
 
+  public getDiscoverySystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_DISCOVERY, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
+    }
+    return DEFAULT_DISCOVERY_SYSTEM_PROMPT;
+  }
+
   public getImplementerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
     if (this.promptRepo) {
       return this.promptRepo.loadPrompt(ROLE_IMPLEMENTER, {
@@ -286,6 +314,27 @@ export class ResolveSubagentUseCase {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
     const config = options.customConfig || this.configRepo.loadConfig({ cwd: options.workspaceDir });
     const resolved = this.configRepo.resolveModel(roleVo.value, config);
+
+    if (roleVo.value === ROLE_DISCOVERY) {
+      const whitelist = ToolWhitelist.planner();
+      return {
+        name: roleVo.value,
+        role: DISCOVERY_SUBAGENT_DEF.role,
+        description: DISCOVERY_SUBAGENT_DEF.description,
+        model: resolved.tier,
+        apiModel: resolved.apiModel,
+        tools: whitelist.toArray(),
+        capabilities: {
+          enable_write_tools: true,
+          enable_subagent_tools: false,
+          enable_mcp_tools: true
+        },
+        system_prompt: this.getDiscoverySystemPrompt({
+          promptPath: options.promptPath,
+          workspaceDir: options.workspaceDir
+        })
+      };
+    }
 
     if (roleVo.value === ROLE_IMPLEMENTER) {
       const whitelist = ToolWhitelist.implementation();
@@ -394,6 +443,85 @@ export class ResolveSubagentUseCase {
     };
   }
 
+  public buildDiscoveryTaskPrompt(params: PlanningTaskPromptParams = {}): string {
+    const workspaceDir = params.workspaceDir || process.cwd();
+    const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
+    const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+    const repo = params.repo || resolvedRepo;
+    let issueContextBlock = '';
+
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (params.issueData) {
+      issueContextBlock = formatIssueForPrompt(params.issueData);
+    } else if (effectiveIssue) {
+      if (this.githubGateway) {
+        const issueVo = parseInt(String(effectiveIssue), 10);
+        if (!isNaN(issueVo)) {
+          const fetched = this.githubGateway.fetchIssue(issueVo, {
+            repo,
+            cwd: workspaceDir
+          });
+          if (fetched && !(fetched instanceof Promise)) {
+            issueContextBlock = formatIssueForPrompt(fetched);
+          }
+        }
+      }
+      if (!issueContextBlock) {
+        issueContextBlock = `### Active Issue: #${effectiveIssue}`;
+      }
+    }
+
+    let prompt = `# Task: Defect Discovery & Root Cause Analysis\n\n`;
+    prompt += `You are executing the **DISCOVERY** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `Your goal is to inspect the codebase, perform root-cause analysis (RCA), manually smoke test the bug, and produce an actionable discovery report.\n\n`;
+
+    const targetDir = params.planDir || 'artifacts/plans/';
+    prompt += `### Operating Constraints:\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `2. **Empirical Verification**: Verify all file paths and manually reproduce the issue to record exact steps and results.\n`;
+    if (params.planPath) {
+      prompt += `3. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+    } else {
+      prompt += `3. **Deliverable**: Create the discovery specification in the \`${targetDir}\` directory matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+    }
+
+    if (issueContextBlock) {
+      prompt += `----------------------------------------------------------------------\n`;
+      prompt += `${issueContextBlock}\n`;
+      prompt += `----------------------------------------------------------------------\n\n`;
+    }
+
+    if (params.iterationCount && params.iterationCount > 0) {
+      prompt += `### Plan Revision / Redirection Cycle: Iteration #${params.iterationCount}\n\n`;
+    }
+
+    if (params.userFeedback && params.userFeedback.trim()) {
+      prompt += `### User Redirection Feedback:\n${params.userFeedback.trim()}\n\n`;
+    }
+
+    if (params.previousPlanContent && params.previousPlanContent.trim()) {
+      prompt += `### Previous Plan Draft:\n\`\`\`markdown\n${params.previousPlanContent.trim()}\n\`\`\`\n\n`;
+    }
+
+    if (params.userInstructions) {
+      prompt += `### User / Developer Directives:\n${params.userInstructions}\n\n`;
+    }
+
+    prompt += `### Expected Output Structure:\n`;
+    prompt += `- **Summary & Symptoms**: Reiterate scope and clear completion criteria.\n`;
+    prompt += `- **Root Cause Analysis**: Detailed breakdown of failure mechanisms.\n`;
+    prompt += `- **Manual Bug Smoke Test**: Exact reproduction steps and results.\n`;
+    prompt += `- **Remediation Strategy**: Cleanest fix approach.\n`;
+
+    return prompt.trim();
+  }
+
   public buildPlanningTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
     const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
@@ -428,18 +556,20 @@ export class ResolveSubagentUseCase {
 
     let prompt = `# Task: Architectural Investigation & Plan Generation\n\n`;
     prompt += `You are executing the **PLAN** phase of the AgyLoop pair-programming lifecycle.\n`;
-    prompt += `Your goal is to inspect the codebase, perform root-cause analysis (for defects) or architectural design (for features), and produce an actionable specification.\n\n`;
+    prompt += `Your goal is to inspect the codebase, perform architectural design, and produce an actionable specification.\n\n`;
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
     if (params.planPath) {
-      prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n\n`;
+      prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
+      prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
     } else {
-      prompt += `3. **Deliverable**: Create the technical specification in the \`${targetDir}\` directory matching the standard templates:\n`;
-      prompt += `   - Defects/Bugs: \`templates/discovery-plan.md\`\n`;
-      prompt += `   - Features/Tasks: \`templates/implementation-plan.md\`\n\n`;
+      prompt += `3. **Deliverable**: Create the technical specification in the \`${targetDir}\` directory matching \`templates/implementation-plan.md\`.\n`;
+      prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
+      prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
     }
 
     if (issueContextBlock) {
@@ -609,6 +739,12 @@ export class ResolveSubagentUseCase {
 
     if (params.userInstructions) {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
+    }
+
+    if (params.planContent && params.planContent.trim()) {
+      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
+      prompt += `You MUST read the "Manual Smoke Test Protocol" from the provided plan below and execute those steps automatically using your tools.\n`;
+      prompt += `\`\`\`markdown\n${params.planContent.trim()}\n\`\`\`\n\n`;
     }
 
     prompt += `### Required Verdict Output:\n`;
