@@ -363,6 +363,14 @@ export class RunLifecycleUseCase {
           prNumber: preflightResult.resumePrNumber,
           commentsCount: preflightResult.prReviewComments?.length ?? 0
         });
+      } else {
+        return {
+          success: false,
+          mode: activeMode,
+          currentStage: sm.currentStage,
+          stateMachine: sm,
+          message: `Cannot transition to TRIAGE from ${sm.currentStage}`
+        };
       }
       sm.pauseAtGate(GATE_TRIAGE);
       if (!params.dryRun) {

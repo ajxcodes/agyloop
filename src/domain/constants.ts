@@ -35,12 +35,12 @@ export type StageName = typeof STAGES[keyof typeof STAGES];
 
 export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[]>> = Object.freeze({
   [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN, STAGE_TRIAGE]),
-  [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN]),
-  [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT]), // IMPLEMENT allowed only in YOLO mode
-  [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN]), // PLAN allowed if re-planning requested
-  [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE]),
-  [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT]), // IMPLEMENT allowed if gates fail
-  [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT]), // IMPLEMENT allowed if review changes required
+  [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN, STAGE_TRIAGE]),
+  [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed only in YOLO mode
+  [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]), // PLAN allowed if re-planning requested
+  [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE, STAGE_TRIAGE]),
+  [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if gates fail
+  [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if review changes required
   [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_COMPLETED]: Object.freeze([
     STAGE_INITIALIZED,

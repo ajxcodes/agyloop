@@ -124,4 +124,35 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
     assert.ok(action.title.includes('Triage'));
     assert.ok(action.humanSummary.includes('Triage'));
   });
+
+  test('enters STAGE_TRIAGE from STAGE_IMPLEMENT then transitions to target', async () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_PLAN);
+    sm.transition('APPROVAL');
+    sm.transition(STAGE_IMPLEMENT);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const result = await useCase.execute({ issue: 83, action: 'plan' });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+  });
+
+  test('throws when transition to STAGE_TRIAGE is not allowed', async () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_PLAN);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+    const original = StateMachine.prototype.canTransition;
+    StateMachine.prototype.canTransition = () => false;
+    try {
+      const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+      await assert.rejects(
+        () => useCase.execute({ issue: 83, action: 'implement' }),
+        /Cannot transition to TRIAGE from PLAN/
+      );
+    } finally {
+      StateMachine.prototype.canTransition = original;
+    }
+  });
 });

@@ -811,4 +811,64 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       );
     });
   });
+
+  describe('6. Preflight PR comment routing to TRIAGE', () => {
+    const { STAGE_TRIAGE, GATE_TRIAGE, ALLOWED_TRANSITIONS } = require('../../dist/domain');
+    const fromStages = [STAGE_DISCOVERY, STAGE_PLAN, STAGE_APPROVAL, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW];
+
+    function buildLifecycle(stage: string) {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      (sm as any)._currentStage = stage;
+      stateRepo.savedSnapshot = { ...sm.toSnapshot(), currentStage: stage };
+      const preflight = {
+        execute: async () => ({
+          isResume: true,
+          resumePrNumber: 5,
+          prReviewComments: [{ author: 'r', body: 'fix', category: 'error' }]
+        })
+      };
+      return new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        buildDetector,
+        standardsRepo,
+        critique,
+        confirmationPrompt,
+        runPreFlightCheckUseCase: preflight
+      });
+    }
+
+    test('ALLOWED_TRANSITIONS permits TRIAGE from intermediate stages', () => {
+      for (const stage of fromStages) {
+        assert.ok(ALLOWED_TRANSITIONS[stage].includes(STAGE_TRIAGE), `${stage} should allow TRIAGE`);
+      }
+    });
+
+    for (const stage of fromStages) {
+      test(`transitions to TRIAGE from ${stage}`, async () => {
+        const lifecycle = buildLifecycle(stage);
+        const result = await lifecycle.execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: '/mock/workspace' });
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.currentStage, STAGE_TRIAGE);
+        assert.strictEqual(result.pausedAtGate, GATE_TRIAGE);
+      });
+    }
+
+    test('returns failure when TRIAGE transition is not allowed', async () => {
+      const lifecycle = buildLifecycle(STAGE_REVIEW);
+      const original = StateMachine.prototype.canTransition;
+      StateMachine.prototype.canTransition = () => false;
+      try {
+        const result = await lifecycle.execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: '/mock/workspace' });
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.currentStage, STAGE_REVIEW);
+        assert.strictEqual(result.message, `Cannot transition to TRIAGE from ${STAGE_REVIEW}`);
+      } finally {
+        StateMachine.prototype.canTransition = original;
+      }
+    });
+  });
 });
