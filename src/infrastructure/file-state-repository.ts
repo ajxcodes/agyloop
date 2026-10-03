@@ -106,7 +106,7 @@ export class FileStateRepository implements StateRepository {
     }
   }
 
-  public save(snapshot: StateMachineSnapshot): void {
+  private validateWorktreeIssueMatch(snapshot: StateMachineSnapshot): void {
     const inferredIssue = IssueNumber.inferFromPath(process.cwd());
     if (inferredIssue !== null && snapshot.issue !== undefined && snapshot.issue !== inferredIssue) {
       throw new StateStorageError(
@@ -115,6 +115,10 @@ export class FileStateRepository implements StateRepository {
         `Cannot save state for issue ${snapshot.issue} from inside worktree for issue ${inferredIssue}. Use read-only commands inside worktrees.`
       );
     }
+  }
+
+  public save(snapshot: StateMachineSnapshot): void {
+    this.validateWorktreeIssueMatch(snapshot);
 
     const dir = path.dirname(this.stateFilePath);
     try {
