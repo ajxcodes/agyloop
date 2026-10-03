@@ -82,7 +82,8 @@ import {
   MilestoneReleaseUseCase,
   InferBaseBranchUseCase,
   GetNextActionUseCase,
-  TriagePrCommentsUseCase
+  TriagePrCommentsUseCase,
+  TriageAction
 } from '../application';
 
 export interface CliOptions {
@@ -767,7 +768,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.error('Error: Action argument is required. Available: implement, plan, discovery, dismiss.');
         return EXIT_CODE_FAILURE;
       }
-      const action = options.triageAction.toLowerCase() as any;
+      const rawAction = options.triageAction.toLowerCase();
+      const validActions = ['implement', 'plan', 'discovery', 'dismiss', 'completed'];
+      if (!validActions.includes(rawAction)) {
+        console.error(`Error: Unrecognized triage action '${options.triageAction}'. Available: implement, plan, discovery, dismiss, completed.`);
+        return EXIT_CODE_FAILURE;
+      }
+      const action = rawAction as TriageAction;
       console.log('\n=== AgyLoop: PR Review Comments Triage ===');
       try {
         const result = await triageUseCase.execute({

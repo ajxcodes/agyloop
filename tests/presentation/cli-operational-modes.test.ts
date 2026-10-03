@@ -387,6 +387,27 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
+
+    test('runCli triage with invalid action fails', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-invalid-action-test-'));
+      let errorOutput = '';
+      const originalError = console.error;
+      console.error = (msg) => {
+        errorOutput += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['triage', 'invalid']);
+        assert.strictEqual(exitCode, 1);
+        assert.ok(errorOutput.includes("Error: Unrecognized triage action 'invalid'"));
+      } finally {
+        process.chdir(prevCwd);
+        console.error = originalError;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('bin/agyloop launcher staleness detection', () => {
