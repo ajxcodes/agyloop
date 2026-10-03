@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
-import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE } from '../domain';
+import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber } from '../domain';
 import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
@@ -107,6 +107,15 @@ export class FileStateRepository implements StateRepository {
   }
 
   public save(snapshot: StateMachineSnapshot): void {
+    const inferredIssue = IssueNumber.inferFromPath(process.cwd());
+    if (inferredIssue !== null && snapshot.issue !== undefined && snapshot.issue !== inferredIssue) {
+      throw new StateStorageError(
+        this.stateFilePath,
+        'write',
+        `Cannot save state for issue ${snapshot.issue} from inside worktree for issue ${inferredIssue}. Use read-only commands inside worktrees.`
+      );
+    }
+
     const dir = path.dirname(this.stateFilePath);
     try {
       if (!fs.existsSync(dir)) {

@@ -23,14 +23,19 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   let tempDir: string;
   let stateFile: string;
   let repo: any;
+  let originalCwd: () => string;
 
   beforeEach(() => {
+    originalCwd = process.cwd;
+    process.cwd = () => '/mock/repo/root'; // Prevent IssueNumber.inferFromPath from seeing we're in .worktrees/174
+
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-'));
     stateFile = path.join(tempDir, '.agyloop', 'state.json');
     repo = new FileStateRepository({ stateFilePath: stateFile });
   });
 
   afterEach(() => {
+    process.cwd = originalCwd;
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
