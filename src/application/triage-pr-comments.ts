@@ -151,6 +151,8 @@ export class TriagePrCommentsUseCase {
         prNumber,
         commentCount: comments.length
       });
+    } else if (sm.currentStage !== STAGE_TRIAGE) {
+      throw new Error(`Cannot transition to TRIAGE from ${sm.currentStage}`);
     }
 
     if (sm.pausedAtGate) {
