@@ -191,7 +191,7 @@ export class StartPlanningUseCase {
         sm.transition(STAGE_DISCOVERY, {
           note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
         });
-        if (!isBug) {
+        if (!isBug || targetMode === MODE_PLAN) {
           sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
         }
       }

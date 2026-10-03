@@ -345,7 +345,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       }
     });
 
-    test('runCli plan prints pipeline advanced when stage remains at DISCOVERY (bug discovery)', async () => {
+    test('runCli plan prints pipeline advanced when stage remains at PLAN (bug discovery)', async () => {
       const prevCwd = process.cwd();
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-discovery-test-'));
       let output = '';
@@ -358,11 +358,32 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         process.chdir(tempDir);
         const exitCode = await runCli(['plan', '--type', 'discovery', '--title', 'Bug Fix RCA']);
         assert.strictEqual(exitCode, 0);
-        assert.ok(!output.includes(`Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`));
-        assert.ok(output.includes(`✓ Pipeline advanced to ${formatStageBadge(STAGE_DISCOVERY)}.`));
+        // It will now advance to PLAN
+        assert.ok(output.includes(`✓ Pipeline advanced to ${formatStageBadge(STAGE_PLAN)}.`));
       } finally {
         process.chdir(prevCwd);
         console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli triage without action fails and prompts for action', async () => {
+      const prevCwd = process.cwd();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-no-action-test-'));
+      let errorOutput = '';
+      const originalError = console.error;
+      console.error = (msg) => {
+        errorOutput += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['triage']);
+        assert.strictEqual(exitCode, 1);
+        assert.ok(errorOutput.includes('Error: Action argument is required. Available: implement, plan, discovery, dismiss.'));
+      } finally {
+        process.chdir(prevCwd);
+        console.error = originalError;
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });

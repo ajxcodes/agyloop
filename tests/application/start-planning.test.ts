@@ -255,7 +255,8 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     );
 
     const result = await useCase.execute({
-      issue: 11
+      issue: 11,
+      mode: 'standard' as any
     });
 
     assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);

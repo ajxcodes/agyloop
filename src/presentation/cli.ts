@@ -763,7 +763,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         inferBaseBranchUseCase
       );
 
-      const action = (options.triageAction || 'implement').toLowerCase() as any;
+      if (!options.triageAction) {
+        console.error('Error: Action argument is required. Available: implement, plan, discovery, dismiss.');
+        return EXIT_CODE_FAILURE;
+      }
+      const action = options.triageAction.toLowerCase() as any;
       console.log('\n=== AgyLoop: PR Review Comments Triage ===');
       try {
         const result = await triageUseCase.execute({
