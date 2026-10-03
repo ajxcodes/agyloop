@@ -15,6 +15,7 @@ const {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   MODE_PLAN,
+  MODE_STANDARD,
   PreFlightHaltError,
   SUMMARY_STAGE_DISCOVERY,
   SUMMARY_STAGE_PLAN_REVIEW,
@@ -255,7 +256,8 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     );
 
     const result = await useCase.execute({
-      issue: 11
+      issue: 11,
+      mode: MODE_STANDARD
     });
 
     assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);

@@ -471,7 +471,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
     });
 
-    test('mode "plan" for bug/discovery leaves stage in DISCOVERY and does NOT pause at APPROVAL gate', async () => {
+    test('mode "plan" for bug/discovery advances to PLAN and halts at PLAN gate', async () => {
       const result = await lifecycleUseCase.execute({
         mode: MODE_PLAN,
         issue: 32,
@@ -482,9 +482,9 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.mode, MODE_PLAN);
-      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
       assert.strictEqual(result.pausedAtGate, undefined);
-      assert.strictEqual(result.message, 'Pipeline advanced to DISCOVERY.');
+      assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
     });
 
     test('mode "implement" resumes execution directly from approved plan', async () => {
