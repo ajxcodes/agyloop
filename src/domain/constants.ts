@@ -271,6 +271,18 @@ export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
 export const MAX_IMPLEMENT_GATE_LOOPS = 3 as const;
 
+export const STATE_MUTATING_COMMANDS = Object.freeze([
+  'transition',
+  'reset',
+  'plan',
+  'implement',
+  'commit',
+  'yolo',
+  'triage',
+  'release',
+  null
+] as const);
+
 // Path & File Constants
 export const DEFAULT_STATE_DIR = '.agyloop' as const;
 export const DEFAULT_STATE_FILE = 'state.json' as const;
