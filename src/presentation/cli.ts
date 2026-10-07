@@ -764,17 +764,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         inferBaseBranchUseCase
       );
 
-      if (!options.triageAction) {
-        console.error('Error: Action argument is required. Available: implement, plan, discovery, dismiss.');
-        return EXIT_CODE_FAILURE;
-      }
-      const rawAction = options.triageAction.toLowerCase();
+      const rawAction = options.triageAction ? options.triageAction.toLowerCase() : null;
       const validActions = ['implement', 'plan', 'discovery', 'dismiss', 'completed'];
-      if (!validActions.includes(rawAction)) {
+      if (rawAction && !validActions.includes(rawAction)) {
         console.error(`Error: Unrecognized triage action '${options.triageAction}'. Available: implement, plan, discovery, dismiss, completed.`);
         return EXIT_CODE_FAILURE;
       }
-      const action = rawAction as TriageAction;
+      const action = (rawAction || undefined) as TriageAction | undefined;
       console.log('\n=== AgyLoop: PR Review Comments Triage ===');
       try {
         const result = await triageUseCase.execute({
@@ -801,6 +797,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log('');
         } else {
           console.log('No PR review comments found.\n');
+        }
+
+        if (!action) {
+          console.log('(Read-only list mode: no state changes. Provide an action: implement|plan|discovery|dismiss.)\n');
+          return EXIT_CODE_SUCCESS;
         }
 
         console.log(`✓ Triage Action : ${action.toUpperCase()}`);

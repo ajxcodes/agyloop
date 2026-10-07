@@ -5,7 +5,7 @@
  * Strictly prefixes all invocations with `env GITHUB_TOKEN=''` to use the authenticated local keyring.
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
@@ -14,6 +14,7 @@ import {
   GitHubIssueData,
   GitHubComment,
   PullRequestReviewComment,
+  UnresolvedReviewThread,
   GitHubPullRequestData,
   FindPullRequestOptions,
   CreatePullRequestOptions,
@@ -42,6 +43,23 @@ export class CliGitHubGateway implements GitHubGateway {
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       throw new GitHubContextError(`runGh: ${commandArgs}`, { commandArgs, cwd }, err);
+    }
+  }
+
+  /**
+   * Executes `gh` with an argv array (no shell involved), so arguments are passed verbatim.
+   */
+  public runGhArgs(args: readonly string[], options: { cwd?: string } = {}): string {
+    const cwd = options.cwd || process.cwd();
+    try {
+      return execFileSync('gh', [...args], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, GITHUB_TOKEN: '' }
+      }).trim();
+    } catch (err: unknown) {
+      throw new GitHubContextError(`runGhArgs: ${args[0] ?? ''}`, { cwd }, err);
     }
   }
 
@@ -251,6 +269,54 @@ export class CliGitHubGateway implements GitHubGateway {
     }
   }
 
+  public listUnresolvedReviewThreads(
+    prNumber: number,
+    options: GitHubGatewayOptions = {}
+  ): UnresolvedReviewThread[] {
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    if (!repo || !prNumber || prNumber <= 0) return [];
+    const [owner, name] = repo.split('/');
+    const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:100){nodes{databaseId}}}}}}}`;
+    const raw = this.runGhArgs(
+      ['api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${prNumber}`],
+      { cwd: options.cwd }
+    );
+    const parsed = JSON.parse(raw);
+    const nodes: Array<{ id: string; isResolved: boolean; comments?: { nodes?: Array<{ databaseId?: number }> } }> =
+      parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes || [];
+    return nodes
+      .filter((n) => !n.isResolved)
+      .map((n) => ({
+        id: n.id,
+        commentIds: (n.comments?.nodes || [])
+          .map((c) => c.databaseId)
+          .filter((x): x is number => typeof x === 'number')
+      }));
+  }
+
+  public replyToThread(
+    threadId: string,
+    body: string,
+    options: GitHubGatewayOptions = {}
+  ): void {
+    const query = `mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}`;
+    this.runGhArgs(
+      ['api', 'graphql', '-f', `query=${query}`, '-f', `threadId=${threadId}`, '-f', `body=${body}`],
+      { cwd: options.cwd }
+    );
+  }
+
+  public resolveReviewThread(
+    threadId: string,
+    options: GitHubGatewayOptions = {}
+  ): void {
+    const query = `mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}`;
+    this.runGhArgs(
+      ['api', 'graphql', '-f', `query=${query}`, '-f', `threadId=${threadId}`],
+      { cwd: options.cwd }
+    );
+  }
+
   public fetchPullRequestComments(
     prNumber: number,
     options: GitHubGatewayOptions = {}
@@ -324,6 +390,7 @@ export class CliGitHubGateway implements GitHubGateway {
 
           const cat = parseCategory(rc.body, reviewState);
           results.push({
+            id: rc.id,
             author: (rc.user && rc.user.login) || 'unknown',
             body: rc.body,
             path: rc.path,
