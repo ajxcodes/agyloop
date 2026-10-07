@@ -216,7 +216,8 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        let planDir = sm.planDir;
+         
+        const planDir = sm.planDir;
         let planPath: string | undefined;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
@@ -272,7 +273,8 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        let planDir = sm.planDir;
+         
+        const planDir = sm.planDir;
         let planPath: string | undefined;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
@@ -370,6 +372,7 @@ export class GetNextActionUseCase {
         }
 
         let planContent = '';
+        let planPath: string | undefined;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
@@ -378,6 +381,7 @@ export class GetNextActionUseCase {
             stage: sm.currentStage
           });
           if (resolved) {
+            planPath = resolved.planPath;
             try {
               planContent = this.planGenerator.readPlanDocument(resolved.planPath);
             } catch {
@@ -391,7 +395,8 @@ export class GetNextActionUseCase {
           workspaceDir: worktreePath || cwd,
           config,
           commands,
-          planContent: planContent || undefined
+          planContent: planContent || undefined,
+          planPath
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -400,7 +405,7 @@ export class GetNextActionUseCase {
               TypeName: 'self',
               Role: ROLE_TITLE_GATE,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: `Execute verification quality gates strictly inside isolated worktree directory:\nCwd: ${worktreePath || cwd}\n\n${prompt}`
             }
           ]
@@ -441,7 +446,7 @@ export class GetNextActionUseCase {
               TypeName: 'self',
               Role: ROLE_TITLE_REVIEWER,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: `Inspect isolated worktree diff against base '${baseBranch}':\nCwd: ${worktreePath || cwd}\n\n${prompt}`
             }
           ]
@@ -495,7 +500,7 @@ export class GetNextActionUseCase {
               TypeName: 'self',
               Role: ROLE_TITLE_TRIAGE,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: prompt
             }
           ]
@@ -533,6 +538,7 @@ export class GetNextActionUseCase {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
@@ -583,7 +589,7 @@ export class GetNextActionUseCase {
           TypeName: 'self',
           Role: ROLE_TITLE_IMPLEMENTER,
           Model: subagent.model,
-          Workspace: 'share',
+          Workspace: 'inherit',
           Prompt: `Execute code modifications strictly inside isolated worktree directory:\nCwd: ${worktreePath || cwd}\nBranch: ${taskBranch || '(auto)'}\n\n${prompt}`
         }
       ]

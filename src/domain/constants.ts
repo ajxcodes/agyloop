@@ -465,6 +465,7 @@ export const REGEX_TAP_SKIPPED = /skipped\s+(\d+)/i;
 export const REGEX_MD_TABLE_HEADER = /\|\s*Command\s*\|\s*Exit Code\s*\|\s*Duration\s*\|\s*Status\s*\|/i;
 export const REGEX_MD_TABLE_ROW = /\|\s*([^|]+?)\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([A-Z_\s]+?)\s*\|/;
 
+// eslint-disable-next-line no-control-regex
 export const REGEX_ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 export const REGEX_STACK_FRAME = /^\s*at\s+(?:(?<callSite>.*?)\s+\((?<fileLocation>[^)]+:\d+:\d+)\)|(?<directLocation>[^\s()]+\.[a-zA-Z0-9]+:\d+:\d+))/;
 export const REGEX_FILE_LOCATION = /(?:at\s+.*?\(([^)]+:\d+:\d+)\)|at\s+([^\s()]+\.[a-zA-Z0-9]+:\d+:\d+)|([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+:\d+:\d+))/;
@@ -1092,6 +1093,7 @@ export const CONVENTIONAL_COMMIT_TYPES = Object.freeze([
 export type ConventionalCommitType = typeof CONVENTIONAL_COMMIT_TYPES[number];
 
 export const REGEX_CONVENTIONAL_HEADER =
+  // eslint-disable-next-line no-useless-escape
   /^(?<type>[a-z]+)(?:\((?<scope>[a-z0-9_.\-\/]+)\))?(?<breaking>!)?:\s*(?<description>.+)$/i;
 export const REGEX_BREAKING_CHANGE_FOOTER =
   /^BREAKING[ -]CHANGE:\s*(.+)$/im;

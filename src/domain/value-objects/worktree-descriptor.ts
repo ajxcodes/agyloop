@@ -132,6 +132,7 @@ export class WorktreeDescriptor {
     };
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public static fromJSON(json: any): WorktreeDescriptor {
     if (!json || typeof json !== 'object') {
       throw new ValidationError('worktree', json, 'WorktreeDescriptor json must be an object.');

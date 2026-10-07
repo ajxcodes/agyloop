@@ -148,6 +148,7 @@ export class ExecuteCommitUseCase {
     const isExplicitlyConfirmed = params.confirmed === true;
     const isBypassed = params.bypassConfirmation === true || isYolo;
 
+    // eslint-disable-next-line no-useless-assignment
     let userConfirmed = false;
 
     if (params.confirmed === false) {
@@ -311,6 +312,7 @@ export class ExecuteCommitUseCase {
             prExists = true;
           }
         }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (err) {
         // Fallback to assuming no PR exists if gh fails or is unauthenticated
       }

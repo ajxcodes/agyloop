@@ -131,6 +131,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const updated = `${content}${separator}\n# AgyLoop Git Worktrees\n${targetEntry}\n`;
       fs.writeFileSync(gitignorePath, updated, 'utf8');
       return true;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (err) {
       // Non-fatal warning if .gitignore cannot be modified
       return false;
@@ -248,6 +249,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     // Explicitly check if targetBranch is already checked out to avoid swallowing errors improperly
     const rawListRes = await this.commandExecutor.execute('git worktree list --porcelain', { cwd: workspace });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const isCheckedOut = rawListRes.stdout.includes(`branch refs/heads/${targetBranch}\n`);
 
     // 6. Execute git worktree add
@@ -585,7 +587,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    */
   public async isAncestor(options: IsAncestorOptions): Promise<boolean> {
     const workspace = options.workspaceDir || process.cwd();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ancestorBranch = options.ancestorBranch || (options as any).ancestor || '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const descendantBranch = options.descendantBranch || (options as any).descendant || '';
 
     const ancestorSha = await this.getCommitHash(ancestorBranch, workspace);

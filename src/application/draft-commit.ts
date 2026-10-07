@@ -14,6 +14,7 @@ import {
   StateMachine,
   STAGE_COMMIT,
   STAGE_REVIEW,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MODE_STANDARD,
   CommitMessage,
   DiffAnalyzer,

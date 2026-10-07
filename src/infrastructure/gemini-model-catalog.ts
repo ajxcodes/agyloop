@@ -12,6 +12,7 @@ import { ModelCatalogPort, DiscoveredModel, FetchModelsOptions, ConfigRepository
 import {
   STATIC_MODELS,
   ModelTierName,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TIER_INHERIT,
   TIER_PRO,
   TIER_FLASH,

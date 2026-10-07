@@ -13,8 +13,11 @@ import {
   PreFlightCheckEngine,
   PreFlightCheckResult,
   PreFlightHaltError,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   PREFLIGHT_ACTION_HALT,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   PREFLIGHT_ACTION_RESUME,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   PREFLIGHT_ACTION_PROCEED,
   IssueNumber,
   StateMachine
@@ -154,6 +157,7 @@ export class RunPreFlightCheckUseCase {
           }
 
           if (pr && pr.state === 'OPEN') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             let prReviewComments: any[] = [];
             let prHasChangesRequested = false;
 

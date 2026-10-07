@@ -120,7 +120,7 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('Developer Directives:'));
     assert.ok(prompt.includes('Ensure strict typing.'));
     assert.ok(prompt.includes('Approved Technical Plan (implementation-plan.md)'));
-    assert.ok(prompt.includes('Step 1: Implement feature'));
+    assert.ok(prompt.includes('The approved technical plan is located at'));
     assert.ok(prompt.includes('Definition of Done:'));
   });
 

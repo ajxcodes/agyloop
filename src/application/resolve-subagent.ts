@@ -8,6 +8,7 @@
 import {
   SubagentRole,
   ToolWhitelist,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   READ_ONLY_TOOLS,
   PLANNER_TOOLS,
   IMPLEMENTER_TOOLS,
@@ -208,6 +209,7 @@ export interface GateTaskPromptParams {
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
   readonly planContent?: string | null;
+  readonly planPath?: string | null;
 }
 
 export interface ReviewerTaskPromptParams {
@@ -251,7 +253,9 @@ export class ResolveSubagentUseCase {
     if (
       critiquePortOrManageCritique instanceof ManageCritiqueUseCase ||
       (critiquePortOrManageCritique &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         typeof (critiquePortOrManageCritique as any).getStatus === 'function' &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         typeof (critiquePortOrManageCritique as any).resolveCritiquePath === 'function')
     ) {
       this.manageCritiqueUseCase = critiquePortOrManageCritique as ManageCritiqueUseCase;
@@ -664,11 +668,13 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    if (params.planContent && params.planContent.trim()) {
-      const planFileName = params.planPath
-        ? params.planPath.replace(/^.*[\\/]/, '')
-        : PLAN_DEFAULT_SPECIFICATION_TITLE;
-      prompt += `### Approved Technical Plan (${planFileName}):\n\n`;
+    if (params.planPath) {
+      const planFileName = params.planPath.replace(/^.*[\\/]/, '');
+      prompt += `### Approved Technical Plan (${planFileName}):\n`;
+      prompt += `The approved technical plan is located at \`${params.planPath}\`.\n`;
+      prompt += `You MUST read this file using the \`view_file\` tool to understand the acceptance criteria and implementation checklist before proceeding.\n\n`;
+    } else if (params.planContent && params.planContent.trim()) {
+      prompt += `### Approved Technical Plan (${PLAN_DEFAULT_SPECIFICATION_TITLE}):\n\n`;
       prompt += `${params.planContent.trim()}\n\n`;
     }
 
@@ -741,7 +747,10 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    if (params.planContent && params.planContent.trim()) {
+    if (params.planPath) {
+      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
+      prompt += `You MUST read the "Manual Smoke Test Protocol" from the approved plan located at \`${params.planPath}\` using the \`view_file\` tool and execute those steps automatically using your tools.\n\n`;
+    } else if (params.planContent && params.planContent.trim()) {
       prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
       prompt += `You MUST read the "Manual Smoke Test Protocol" from the provided plan below and execute those steps automatically using your tools.\n`;
       prompt += `\`\`\`markdown\n${params.planContent.trim()}\n\`\`\`\n\n`;

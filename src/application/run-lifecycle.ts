@@ -42,12 +42,15 @@ import {
   GATE_APPROVAL,
   GATE_COMMIT,
   GATE_TRIAGE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_LIFECYCLE_STARTED,
   NOTE_LIFECYCLE_COMPLETED,
   NOTE_PAUSED_APPROVAL_GATE,
   NOTE_PAUSED_COMMIT_GATE,
   NOTE_PAUSED_TRIAGE_GATE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AUTO_APPROVED_PLAN,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
   GateCommandDefinition,

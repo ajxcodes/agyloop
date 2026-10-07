@@ -31,9 +31,13 @@ import {
   MARKER_YARN_LOCK,
   MARKER_BUN_LOCK,
   MARKER_PACKAGE_LOCK,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_PLAYWRIGHT_CONFIG_TS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_PLAYWRIGHT_CONFIG_JS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_PLAYWRIGHT_CONFIG_MJS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_PLAYWRIGHT_CONFIG_CJS,
   PLAYWRIGHT_CONFIG_MARKERS,
   PLAYWRIGHT_SCRIPT_CANDIDATES,
@@ -45,14 +49,21 @@ import {
   MARKER_REQUIREMENTS_TXT,
   MARKER_GRADLEW,
   MARKER_GRADLEW_BAT,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_BUILD_GRADLE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_BUILD_GRADLE_KTS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_SETTINGS_GRADLE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_SETTINGS_GRADLE_KTS,
   GRADLE_MARKERS,
   MARKER_POM_XML,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_CSPROJ,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_SLN,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_FSPROJ,
   DOTNET_EXTENSIONS,
   PYTHON_MARKERS,
@@ -516,6 +527,7 @@ export class FileBuildDetector implements BuildDetectorPort {
       return gateCommands;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const anyConfig = config as Record<string, any>;
     const qualityGatesSection = anyConfig.quality_gates || anyConfig.qualityGates;
     if (

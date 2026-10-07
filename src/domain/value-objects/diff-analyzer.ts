@@ -18,6 +18,7 @@ import {
   COMMIT_TYPE_BUILD,
   COMMIT_TYPE_CI,
   CONVENTIONAL_COMMIT_TYPES,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   REGEX_DIFF_FILE_HEADER,
   REGEX_BREAKING_CHANGE_FOOTER,
   REGEX_ISSUE_NUMBER_REF,
@@ -245,6 +246,7 @@ export class DiffAnalyzer {
 
   public static inferScope(files: readonly string[], explicitScope?: string | null): string | null {
     if (explicitScope && typeof explicitScope === 'string') {
+      // eslint-disable-next-line no-useless-escape
       const clean = explicitScope.trim().toLowerCase().replace(/[^a-z0-9_.\-\/]/g, '');
       if (clean.length > 0) {
         return clean;

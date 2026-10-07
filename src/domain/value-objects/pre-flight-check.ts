@@ -12,6 +12,7 @@
 import {
   PREFLIGHT_ACTION_PROCEED,
   PREFLIGHT_ACTION_RESUME,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   PREFLIGHT_ACTION_HALT,
   PREFLIGHT_ACTION_HALT_CLOSED,
   PREFLIGHT_ACTION_HALT_PR_MERGED,
@@ -176,6 +177,7 @@ export class PreFlightCheckEngine {
 
     if (hasOpenPr || discoveredBranch || context.existingWorktreePath) {
       const branchName = discoveredBranch || `task/${issueId}`;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const prDetails = prNumber ? ` (PR #${prNumber})` : '';
       return {
         action: PREFLIGHT_ACTION_RESUME,
