@@ -297,7 +297,8 @@ export class CliCritiqueGateway implements CritiquePort {
       return AiReviewReport.bypassed(MSG_CRITIQUE_NOT_FOUND);
     }
 
-    let execPath = resolution.path;
+     
+    const execPath = resolution.path;
 
     // If resolved to a critique source directory (e.g. ../critique or user data dir)
     // and bin/critique.js is missing or source files in src/ are newer than bin/critique.js, compile it

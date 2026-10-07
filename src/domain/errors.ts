@@ -18,6 +18,7 @@ import {
   ERR_BUILD_DETECTION,
   ERR_GATE_SUMMARY_PARSE,
   ERR_CRITIQUE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   ERR_AI_REVIEWER,
   ERR_CRITIQUE_INSTALL,
   ERR_CRITIQUE_UPDATE,

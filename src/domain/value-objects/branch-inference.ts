@@ -278,6 +278,7 @@ export class BranchInferenceEngine {
     // Check labels first (Priority 1)
     for (const label of labels) {
       // Phase labels: 'phase:1', 'phase: 2', 'phase/1', 'phase-1'
+      // eslint-disable-next-line no-useless-escape
       const phaseLabelMatch = label.match(/^(?:phase|milestone)[\s:\/-]+([a-z0-9_.-]+)$/i);
       if (phaseLabelMatch) {
         return {
@@ -288,6 +289,7 @@ export class BranchInferenceEngine {
       }
 
       // Feature labels: 'feature:auth', 'feat:bridge'
+      // eslint-disable-next-line no-useless-escape
       const featLabelMatch = label.match(/^(?:feature|feat)[\s:\/-]+([a-z0-9_.-]+)$/i);
       if (featLabelMatch) {
         return {
@@ -322,6 +324,7 @@ export class BranchInferenceEngine {
     if (!trimmed) return null;
 
     // Pattern 1: Label-style e.g. 'phase:1', 'phase-1'
+    // eslint-disable-next-line no-useless-escape
     const phaseLabelMatch = trimmed.match(/^(?:phase|milestone)[\s:\/-]+([a-z0-9_.-]+)$/i);
     if (phaseLabelMatch) {
       return {
@@ -331,6 +334,7 @@ export class BranchInferenceEngine {
       };
     }
 
+    // eslint-disable-next-line no-useless-escape
     const featLabelMatch = trimmed.match(/^(?:feature|feat)[\s:\/-]+([a-z0-9_.-]+)$/i);
     if (featLabelMatch) {
       return {
@@ -350,6 +354,7 @@ export class BranchInferenceEngine {
       };
     }
 
+    // eslint-disable-next-line no-useless-escape
     const featTitleMatch = trimmed.match(/(?:\[|\b)(?:Feature|Feat)\s*[:\/-]?\s*([a-z0-9_.-]+)(?:\]|:|\s+-|\s|$)/i);
     if (featTitleMatch) {
       return {

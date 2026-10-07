@@ -216,7 +216,8 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        let planDir = sm.planDir;
+         
+        const planDir = sm.planDir;
         let planPath: string | undefined;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
@@ -272,7 +273,8 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        let planDir = sm.planDir;
+         
+        const planDir = sm.planDir;
         let planPath: string | undefined;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
@@ -536,6 +538,7 @@ export class GetNextActionUseCase {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;

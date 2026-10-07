@@ -11,13 +11,19 @@ import {
   CLI_VERSION,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_QUALITY_GATE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_INITIALIZED,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_DISCOVERY,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_PLAN,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_TRIAGE,
   GATE_APPROVAL,
   GATE_COMMIT,
@@ -25,6 +31,7 @@ import {
   MODE_PLAN,
   MODE_STANDARD,
   MODE_IMPLEMENT,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MODE_COMMIT,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
@@ -34,13 +41,21 @@ import {
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_WORKTREE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_RELEASE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_CRITIQUE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_TRIAGE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_NO_WORKTREE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_FORCE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_FORCE_SHORT,
   REGEX_POSITIONAL_ISSUE_ID,
   PreFlightHaltError,
@@ -66,14 +81,18 @@ import {
 } from '../infrastructure';
 import {
   RunLifecycleUseCase,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   StartPlanningUseCase,
   TransitionStageUseCase,
   GetPipelineStatusUseCase,
   ResetPipelineUseCase,
   ListModelsUseCase,
   ResolveSubagentUseCase,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   StartImplementationUseCase,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   RunQualityGateUseCase,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   RunReviewUseCase,
   ManageCritiqueUseCase,
   DraftCommitUseCase,

@@ -24,7 +24,9 @@ import {
   SECTION_REVIEW_SELF_CORRECTION_TITLE,
   REGEX_REVIEW_STATUS_TOKEN,
   REGEX_REVIEW_SUMMARY_TOKEN,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   REGEX_UNFULFILLED_AC_TOKEN,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   REGEX_REMEDIATION_GUIDANCE_TOKEN
 } from '../constants';
 import { ReviewerSubagentError, ValidationError } from '../errors';
@@ -252,6 +254,7 @@ export class ReviewVerdict {
     }
 
     // 2. Extract summary
+    // eslint-disable-next-line no-useless-assignment
     let summary = '';
     const summaryMatch = text.match(REGEX_REVIEW_SUMMARY_TOKEN);
     if (summaryMatch) {

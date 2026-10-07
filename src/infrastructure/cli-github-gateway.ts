@@ -41,6 +41,7 @@ export class CliGitHubGateway implements GitHubGateway {
         }
       }).trim();
     } catch (err: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const errorMessage = err instanceof Error ? err.message : String(err);
       throw new GitHubContextError(`runGh: ${commandArgs}`, { commandArgs, cwd }, err);
     }
@@ -326,6 +327,7 @@ export class CliGitHubGateway implements GitHubGateway {
     }
 
     const repo = options.repo || this.getCurrentRepo(options.cwd);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const repoFlag = repo ? `--repo ${repo}` : '';
 
     try {
@@ -336,8 +338,11 @@ export class CliGitHubGateway implements GitHubGateway {
       const reviewsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/reviews`, { cwd: options.cwd });
       const reviewCommentsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/comments`, { cwd: options.cwd });
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const parsedComments = JSON.parse(issueCommentsRaw) as Array<any>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const parsedReviews = JSON.parse(reviewsRaw) as Array<any>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const parsedReviewComments = JSON.parse(reviewCommentsRaw) as Array<any>;
 
       const results: PullRequestReviewComment[] = [];

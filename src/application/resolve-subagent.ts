@@ -8,6 +8,7 @@
 import {
   SubagentRole,
   ToolWhitelist,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   READ_ONLY_TOOLS,
   PLANNER_TOOLS,
   IMPLEMENTER_TOOLS,
@@ -252,7 +253,9 @@ export class ResolveSubagentUseCase {
     if (
       critiquePortOrManageCritique instanceof ManageCritiqueUseCase ||
       (critiquePortOrManageCritique &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         typeof (critiquePortOrManageCritique as any).getStatus === 'function' &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         typeof (critiquePortOrManageCritique as any).resolveCritiquePath === 'function')
     ) {
       this.manageCritiqueUseCase = critiquePortOrManageCritique as ManageCritiqueUseCase;

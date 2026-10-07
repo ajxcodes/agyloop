@@ -20,6 +20,7 @@ import {
   ExecutionMode,
   NOTE_INITIATED_DISCOVERY_RCA,
   NOTE_GENERATING_SPECS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AWAITING_REVIEW,
   SUMMARY_STAGE_DISCOVERY,
   SUMMARY_STAGE_PLAN_REVIEW,

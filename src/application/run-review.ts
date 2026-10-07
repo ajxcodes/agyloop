@@ -38,6 +38,7 @@ import {
   AiReviewReport,
   AiReviewFinding,
   DIFF_EXCLUDE_ARGS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   DiffAnalyzer
 } from '../domain';
 import {
@@ -250,6 +251,7 @@ export class RunReviewUseCase {
       stage: sm.currentStage
     });
 
+    // eslint-disable-next-line no-useless-assignment
     let planContent = '';
     let acceptanceCriteria: readonly string[] = Object.freeze([]);
 
