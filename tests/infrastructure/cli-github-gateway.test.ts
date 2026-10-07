@@ -211,3 +211,43 @@ describe('CliGitHubGateway fetchPullRequestComments', () => {
     assert.strictEqual(comments[2].state, 'APPROVED');
   });
 });
+
+describe('CliGitHubGateway argv-based thread methods (#136)', () => {
+  const cp = require('node:child_process');
+  const nasty = `it's "quoted" $HOME \`whoami\` $(id); rm -rf /`;
+
+  test('args are passed verbatim as argv without a shell', () => {
+    const orig = cp.execFileSync;
+    const calls: any[] = [];
+    cp.execFileSync = (file: string, args: string[], opts: any) => {
+      calls.push({ file, args, opts });
+      return '';
+    };
+    try {
+      const gateway = new CliGitHubGateway();
+      gateway.replyToThread('T"1 $x', nasty, { cwd: '/tmp' });
+      gateway.resolveReviewThread('T`1`', { cwd: '/tmp' });
+    } finally {
+      cp.execFileSync = orig;
+    }
+    assert.strictEqual(calls.length, 2);
+    assert.strictEqual(calls[0].file, 'gh');
+    assert.ok(calls[0].args.includes(`body=${nasty}`));
+    assert.ok(calls[0].args.includes('threadId=T"1 $x'));
+    assert.ok(calls[1].args.includes('threadId=T`1`'));
+    assert.ok(!calls[0].opts.shell);
+  });
+
+  test('listUnresolvedReviewThreads returns unresolved threads with comment ids', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGhArgs = () =>
+      JSON.stringify({
+        data: { repository: { pullRequest: { reviewThreads: { nodes: [
+          { id: 'A', isResolved: false, comments: { nodes: [{ databaseId: 1 }, { databaseId: 2 }] } },
+          { id: 'B', isResolved: true, comments: { nodes: [{ databaseId: 3 }] } }
+        ] } } } }
+      });
+    const out = gateway.listUnresolvedReviewThreads(7, { repo: 'o/r' });
+    assert.deepStrictEqual(out, [{ id: 'A', commentIds: [1, 2] }]);
+  });
+});

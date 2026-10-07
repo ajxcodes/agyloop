@@ -3,7 +3,7 @@ name: agyloop
 description: >-
   Multi-subagent development lifecycle orchestrator for Google Antigravity.
   Coordinates Context Discovery -> Planning -> Approval -> Implementation -> Quality Gates -> AI Review -> Conventional Commit.
-  Trigger whenever the user types /agyloop, /agyloop plan, /agyloop implement, /agyloop gates, /agyloop yolo, or requests to run the disciplined agyloop development pipeline.
+  Trigger whenever the user types /agyloop, /agyloop plan, /agyloop implement, /agyloop yolo, or requests to run the disciplined agyloop development pipeline.
 ---
 
 # AgyLoop Orchestrator Skill
@@ -16,6 +16,7 @@ description: >-
 > 1. Directly editing source code files in the primary repository or worktree (`write_to_file`, `replace_file_content` on project files).
 > 2. Directly running quality gate, build, or test commands (`npm test`, `npm run build`, `vitest`, `pytest`, etc.) in the root conversation context.
 > 3. Directly committing or pushing from the root working tree.
+> 4. Manually forcing stage transitions (e.g. `bin/agyloop transition COMMIT` or `COMPLETED`) that bypass the `QUALITY_GATE` or `REVIEW` stages. Forced transitions that skip these stages are forbidden.
 >
 > The root agent's ONLY permitted operational actions are:
 > 1. Running `bin/agyloop` CLI commands (`bin/agyloop transition ...`, `bin/agyloop next [--json]`, `bin/agyloop branch-info`, `bin/agyloop implement`, `bin/agyloop commit`).
@@ -151,7 +152,7 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
   - `bin/agyloop triage implement`: Directs to `IMPLEMENT` with comments context.
   - `bin/agyloop triage plan`: Directs to `PLAN` for structural plan revision.
   - `bin/agyloop triage discovery`: Directs to `DISCOVERY` for investigative RCA.
-  - `bin/agyloop triage dismiss`: Directs to `COMPLETED` dismissing comments.
+  - `bin/agyloop triage dismiss`: Directs to `COMPLETED` dismissing comments. With `-m "<notes>"`, replies to and resolves only the unresolved review threads containing the triaged comments (other threads are untouched); failures are logged as warnings and never block the transition.
 
 ### 3. Planning Subagent (`PLAN`)
 - Launch the read-only **`planner`** subagent via `invoke_subagent`.
@@ -179,11 +180,9 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
 
 ### 6. Quality Gate & Automated Compound Verification (`QUALITY_GATE`)
 - **Dual Execution Modes**:
-  - **Automated Compound Runner (`bin/agyloop gates`)**:
-    - The standard and recommended verification path for automated workflows.
-    - Executes Tier 1 quality gates (compilation, typechecks, linters, and full automated test suite) directly inside `.worktrees/<task-id>`.
-    - Automatically chains directly into **Tier 1 Automated Critique Review** (invoking `critique` analysis across the working diff).
-    - If both quality gates and critique pass without blocking issues, it automatically advances the state machine to `COMMIT` (or directly commits if `--commit-after` is supplied).
+  - **Gate Subagent Dispatch (`gate`)**:
+    - Run `bin/agyloop next --json` to retrieve the `invoke_subagent` payload, then launch the gate subagent.
+    - The `yolo` runner chains quality gates and Tier 1 critique automatically, advancing to `COMMIT` when clean.
   - **Standalone Subagent Dispatch (`gate`)**:
     - Ephemeral micro-agent launched via `invoke_subagent` (using payload from `bin/agyloop next --json`).
     - Intended for interactive subagent dispatch when complete conversational context isolation or granular error handling is required.
@@ -196,13 +195,13 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
 - **Tier 1 (Automated Critique Diagnostics)**:
   - Executes `critique` CLI inside `.worktrees/<task-id>` against base branch (`main` or phase collector).
   - Inspects code against repository standards (`.github/critique.md`, clean architecture boundaries, zero magic values).
-  - Automatically performed as part of `bin/agyloop gates` and `bin/agyloop yolo`.
+  - Automatically performed as part of `bin/agyloop yolo`.
 - **Tier 2 (AI Acceptance Criteria & Standards Audit)**:
   - When deep Acceptance Criteria auditing or isolated evaluation is requested, spawns the read-only **`reviewer`** subagent via `invoke_subagent` (payload from `bin/agyloop next --json`).
   - Supplied with raw `critique` diagnostics, `git diff`, repo standards, and approved plan Acceptance Criteria.
   - Reviewer verifies criteria fulfillment and emits structured verdict: `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`.
 - **Optional `--commit-after` Behavior**:
-  - Passing `--commit-after` to `bin/agyloop gates` or `bin/agyloop yolo` instructs the runner to automatically draft and execute the conventional commit upon clean quality gates and review approval, seamlessly advancing to `COMPLETED`.
+  - Passing `--commit-after` to `bin/agyloop yolo` instructs the runner to automatically draft and execute the conventional commit upon clean quality gates and review approval, seamlessly advancing to `COMPLETED`.
 - **Mandatory Critique & Review Failure Loop**:
   - Any `critical` or `error` findings from `critique` or unfulfilled ACs mandate `CHANGES_REQUESTED`.
   - Packages diagnostics and remediation actions into `selfCorrectionPayload`, reverting `REVIEW -> IMPLEMENT` for a fresh Implementer subagent.
@@ -242,7 +241,7 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `bin/agyloop [issue]` | Standard continuous lifecycle orchestrator. Runs Discovery $\rightarrow$ Plan $\rightarrow$ [Approval] $\rightarrow$ Implement $\rightarrow$ Gates $\rightarrow$ Review $\rightarrow$ [Commit]. | `[issue]` (e.g. `113`), `--yolo`, `--commit-after`, `--no-worktree`, `--dry-run` |
 | `bin/agyloop plan [--issue <id>]` | Plan-only mode. Generates persistent specification in `artifacts/plans/` and halts at `[APPROVAL]` gate. | `--issue <id>`, `--title <text>`, `--type <discovery\|implementation\|auto>`, `--dry-run` |
 | `bin/agyloop implement [--issue <id>]` | Resumes implementation directly from approved plan inside isolated worktree. | `--issue <id>`, `--no-worktree`, `--base-branch <branch>`, `--dry-run` |
-| `bin/agyloop gates [--issue <id>]` | Compound automated verification. Runs test suite, compilation, and automated Critique analysis; advances to `COMMIT` if clean. | `--commit-after`, `--staged`, `-m "<msg>"`, `--issue <id>`, `--dry-run` |
+| `bin/agyloop triage` | Read-only: lists current PR review comments without changing state. | `--issue <id>`, `--json` |
 | `bin/agyloop commit` | Drafts Conventional Commit and prompts for interactive human approval (or commits immediately with `-y`). | `-y` / `--yes`, `-m` / `--message "<msg>"`, `-s` / `--staged`, `--keep-worktree`, `--dry-run` |
 | `bin/agyloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. | `--issue <id>`, `--commit-after`, `--no-worktree`, `--dry-run` |
 | `bin/agyloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. | `--json` |
@@ -253,7 +252,7 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `bin/agyloop triage <action>` | Routes open PR review comments to lifecycle stages. Valid actions: `implement`, `plan`, `discovery`, `dismiss`. | `implement`, `plan`, `discovery`, `dismiss`, `--issue <id>`, `-m "<notes>"`, `--json` |
 | `bin/agyloop release [phaseBranch]` | Creates a Milestone Release PR from phase collector to main with automated SemVer labeling and changelog. | `[phaseBranch]`, `--base-branch <branch>`, `--dry-run`, `--refresh` |
 | `bin/agyloop reset` | Resets the `.agyloop/state.json` checkpoint for the repository. | None |
-| `bin/agyloop transition <STAGE>` | Manually advances or rolls back the state machine to a specific lifecycle stage. | `<STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
+| `bin/agyloop transition <TARGET_STAGE>` | Moves the state machine to the TARGET stage (the stage you want to enter, not the current one). Follow the sequence DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED. Calling `transition X` while already in stage `X` throws `InvalidTransitionError`. | `<TARGET_STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
 
 ---
 
@@ -262,5 +261,5 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 - `/agyloop [task]`: Full end-to-end lifecycle with human approval gates.
 - `/agyloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
 - `/agyloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
-- `/agyloop gates`: Runs isolated builds, tests, and AI review on active worktree diff.
+- Quality gate stage: run the `gate` subagent from the payload in `bin/agyloop next --json` against the active worktree diff.
 - `/agyloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.

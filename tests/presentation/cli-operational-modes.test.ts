@@ -367,23 +367,26 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       }
     });
 
-    test('runCli triage without action fails and prompts for action', async () => {
+    test('runCli triage without action runs read-only list mode and exits 0', async () => {
       const prevCwd = process.cwd();
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-no-action-test-'));
-      let errorOutput = '';
-      const originalError = console.error;
-      console.error = (msg) => {
-        errorOutput += msg + '\n';
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
       };
+      const filesBefore = fs.readdirSync(tempDir);
 
       try {
         process.chdir(tempDir);
         const exitCode = await runCli(['triage']);
-        assert.strictEqual(exitCode, 1);
-        assert.ok(errorOutput.includes('Error: Action argument is required. Available: implement, plan, discovery, dismiss.'));
+        assert.strictEqual(exitCode, 0);
+        assert.ok(output.includes('Read-only list mode: no state changes'));
+        assert.ok(!output.includes('State Updated'));
+        assert.deepStrictEqual(fs.readdirSync(tempDir), filesBefore);
       } finally {
         process.chdir(prevCwd);
-        console.error = originalError;
+        console.log = originalLog;
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });

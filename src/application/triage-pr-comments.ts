@@ -123,8 +123,40 @@ export class TriagePrCommentsUseCase {
       }
     }
 
-    // Default action to 'implement' if not specified
-    const selectedAction: TriageAction = params.action || 'implement';
+    // Read-only list mode: no action means display comments without mutating state
+    if (!params.action) {
+      return {
+        success: true,
+        targetStage: sm.currentStage,
+        stateMachine: sm,
+        prNumber,
+        comments,
+        message: `Listed ${comments.length} PR review comment(s) (read-only).`
+      };
+    }
+
+    const selectedAction: TriageAction = params.action;
+
+    if (selectedAction === 'dismiss' && params.notes && prNumber && this.githubGateway) {
+      const gw = this.githubGateway;
+      if (gw.listUnresolvedReviewThreads && gw.replyToThread && gw.resolveReviewThread) {
+        try {
+          const triagedIds = new Set<number>(
+            comments.map((c) => c.id).filter((x): x is number => typeof x === 'number')
+          );
+          const threads = await gw.listUnresolvedReviewThreads(prNumber, { cwd, repo: params.trackerRepo });
+          for (const thread of threads) {
+            if (!thread.commentIds.some((id) => triagedIds.has(id))) continue;
+            await gw.replyToThread(thread.id, params.notes, { cwd, repo: params.trackerRepo });
+            await gw.resolveReviewThread(thread.id, { cwd, repo: params.trackerRepo });
+          }
+        } catch (err: unknown) {
+          // Non-fatal: thread handling must not block state transition
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`Warning: failed to reply to/resolve review threads on PR #${prNumber}: ${msg}`);
+        }
+      }
+    }
     let targetStage: StageName;
 
     switch (selectedAction) {

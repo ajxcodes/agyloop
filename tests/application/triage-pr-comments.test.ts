@@ -2,6 +2,8 @@
  * agyloop - Triage PR Comments & Lifecycle Routing Unit Tests
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const {
@@ -154,5 +156,110 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
     } finally {
       StateMachine.prototype.canTransition = original;
     }
+  });
+});
+
+describe('Issue #136 hardening', () => {
+  const root = path.resolve(__dirname, '../..');
+  const skill = fs.readFileSync(path.join(root, 'skills/agyloop/SKILL.md'), 'utf8');
+  const planner = fs.readFileSync(path.join(root, 'prompts/planner.md'), 'utf8');
+
+  test('planner prompt filters already-implemented work', () => {
+    assert.ok(/filter out already implemented/i.test(planner));
+  });
+
+  test('SKILL.md forbids bypassing QUALITY_GATE/REVIEW via forced transitions', () => {
+    assert.ok(skill.includes('bypass the `QUALITY_GATE` or `REVIEW`'));
+  });
+
+  test('SKILL.md has no deprecated gates/gate CLI references and uses next --json', () => {
+    assert.ok(!/bin\/agyloop gates?\b/.test(skill));
+    assert.ok(skill.includes('bin/agyloop next --json'));
+  });
+
+  test('SKILL.md documents transition target semantics', () => {
+    assert.ok(skill.includes('<TARGET_STAGE>'));
+    assert.ok(skill.includes('InvalidTransitionError'));
+  });
+
+  test('transition to the current stage throws InvalidTransitionError', () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_PLAN);
+    assert.throws(() => sm.transition(STAGE_PLAN), (e: any) => e.name === 'InvalidTransitionError' || /InvalidTransition/.test(e.constructor.name));
+  });
+
+  test('triage with no action is read-only and does not change state', async () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_PLAN);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const result = await useCase.execute({
+      issue: 83,
+      comments: [{ author: 'r', body: 'hi', category: 'general' }]
+    });
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.comments.length, 1);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual((await stateRepo.load()).currentStage, STAGE_PLAN);
+  });
+
+  test('triage dismiss -m replies to and resolves only threads of triaged comments', async () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+    const replies: any[] = [];
+    const resolved: string[] = [];
+    const gateway = {
+      listUnresolvedReviewThreads: async () => [
+        { id: 'T1', commentIds: [101] },
+        { id: 'T2', commentIds: [202, 203] },
+        { id: 'T3', commentIds: [999] }
+      ],
+      replyToThread: async (id: string, body: string) => { replies.push([id, body]); },
+      resolveReviewThread: async (id: string) => { resolved.push(id); }
+    };
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: 5,
+      action: 'dismiss',
+      notes: 'Not applicable',
+      comments: [
+        { id: 101, author: 'r', body: 'x', category: 'general' },
+        { id: 203, author: 'r', body: 'y', category: 'general' }
+      ]
+    });
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_COMPLETED);
+    assert.deepStrictEqual(replies, [['T1', 'Not applicable'], ['T2', 'Not applicable']]);
+    assert.deepStrictEqual(resolved, ['T1', 'T2']);
+  });
+
+  test('thread handling failure emits a warning and the transition still succeeds', async () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+    const gateway = {
+      listUnresolvedReviewThreads: async () => [{ id: 'T1', commentIds: [101] }],
+      replyToThread: async () => { throw new Error('boom-reply'); },
+      resolveReviewThread: async () => {}
+    };
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...a: any[]) => { warnings.push(a.join(' ')); };
+    try {
+      const useCase = new TriagePrCommentsUseCase(stateRepo as any, gateway as any);
+      const result = await useCase.execute({
+        issue: 83,
+        prNumber: 5,
+        action: 'dismiss',
+        notes: 'n',
+        comments: [{ id: 101, author: 'r', body: 'x', category: 'general' }]
+      });
+      assert.strictEqual(result.stateMachine.currentStage, STAGE_COMPLETED);
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.strictEqual(warnings.length, 1);
+    assert.ok(warnings[0].includes('boom-reply'));
   });
 });

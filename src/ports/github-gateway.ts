@@ -13,6 +13,8 @@ export interface GitHubComment {
 export type PRCommentCategory = 'error' | 'suggestion' | 'question' | 'general';
 
 export interface PullRequestReviewComment {
+  /** REST database id (inline review comments only); used to map comments to threads. */
+  readonly id?: number;
   readonly author: string;
   readonly body: string;
   readonly path?: string;
@@ -21,6 +23,11 @@ export interface PullRequestReviewComment {
   readonly createdAt?: string;
   readonly category?: PRCommentCategory;
   readonly severity?: string;
+}
+
+export interface UnresolvedReviewThread {
+  readonly id: string;
+  readonly commentIds: readonly number[];
 }
 
 export interface GitHubIssueMilestone {
@@ -134,6 +141,32 @@ export interface GitHubGateway {
     prNumber: number,
     options?: GitHubGatewayOptions
   ): Promise<PullRequestReviewComment[]> | PullRequestReviewComment[];
+
+  /**
+   * Lists unresolved review threads on a pull request, with the database ids
+   * of the comments each thread contains.
+   */
+  listUnresolvedReviewThreads?(
+    prNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<UnresolvedReviewThread[]> | UnresolvedReviewThread[];
+
+  /**
+   * Posts a reply on a review thread (by GraphQL node ID).
+   */
+  replyToThread?(
+    threadId: string,
+    body: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
+
+  /**
+   * Resolves a review thread via GraphQL `resolveReviewThread`.
+   */
+  resolveReviewThread?(
+    threadId: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
 }
 
 /**

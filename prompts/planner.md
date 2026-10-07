@@ -65,6 +65,9 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Lint, typecheck, or build commands.
    - Manual verification steps if applicable.
 
+### Historical Context Filtering:
+- Only generate checklist items for work NOT already implemented. Check git history and closed issues, and filter out already implemented features; do not generate redundant checklist items for delivered functionality.
+
 ---
 
 ## 4. Communication Style
