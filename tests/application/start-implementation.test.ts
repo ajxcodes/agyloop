@@ -275,7 +275,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.ok(result.taskPrompt.includes('Plan Fidelity'));
     assert.ok(result.taskPrompt.includes('Issue Context (#16)'));
     assert.ok(result.taskPrompt.includes('### Approved Technical Plan'));
-    assert.ok(result.taskPrompt.includes('Step 1: Write code'));
+    assert.ok(result.taskPrompt.includes('The approved technical plan is located at'));
     assert.ok(result.taskPrompt.includes('Definition of Done'));
 
     // Verify summary log was updated
