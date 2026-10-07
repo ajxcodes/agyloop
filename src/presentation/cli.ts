@@ -445,6 +445,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
 
+  const stateMutatingCommands = ['transition', 'reset', 'plan', 'implement', 'commit', 'yolo', 'triage', 'release', null];
+  if (process.env.AGY_SUBAGENT === '1' && stateMutatingCommands.includes(effectiveCommand)) {
+    console.error('Error: Execution blocked. Subagents are not permitted to mutate global pipeline state.');
+    console.error(`Command '${effectiveCommand === null ? '(default)' : effectiveCommand}' violates the Zero Direct Root Mutation invariant.`);
+    return EXIT_CODE_FAILURE;
+  }
+
   switch (effectiveCommand) {
     case 'next': {
       const getNextActionUseCase = new GetNextActionUseCase(
