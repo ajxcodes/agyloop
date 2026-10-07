@@ -62,7 +62,8 @@ import {
   MilestoneReleaseError,
   MilestoneSealedError,
   StateMachine,
-  IssueNumber
+  IssueNumber,
+  STATE_MUTATING_COMMANDS
 } from '../domain';
 import {
   FileStateRepository,
@@ -444,6 +445,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
+
+  if (process.env.AGY_SUBAGENT === '1' && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
+    console.error('Error: Execution blocked. Subagents are not permitted to mutate global pipeline state.');
+    console.error(`Command '${effectiveCommand === null ? '(default)' : effectiveCommand}' violates the Zero Direct Root Mutation invariant.`);
+    return EXIT_CODE_FAILURE;
+  }
 
   switch (effectiveCommand) {
     case 'next': {
