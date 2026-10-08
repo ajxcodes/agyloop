@@ -272,6 +272,42 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(sm.milestoneTitle, null);
   });
 
+  test('tracks and serializes triagePayload accurately across snapshots', () => {
+    const sm = StateMachine.createInitial({
+      mode: 'standard',
+      issue: 190
+    });
+    
+    // Test default null
+    assert.strictEqual(sm.triagePayload, null);
+
+    // Test setter
+    sm.setTriagePayload('- [ajxcodes]: Fix this bug');
+    assert.strictEqual(sm.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test getStatus
+    const status = sm.getStatus();
+    assert.strictEqual(status.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test toSnapshot & toJSON
+    const snap = sm.toSnapshot();
+    assert.strictEqual(snap.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    const json = sm.toJSON();
+    assert.strictEqual(json.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test fromSnapshot & fromJSON
+    const reloaded = StateMachine.fromSnapshot(snap);
+    assert.strictEqual(reloaded.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    const fromJsonSm = StateMachine.fromJSON(json);
+    assert.strictEqual(fromJsonSm.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test reset clears triagePayload
+    sm.reset();
+    assert.strictEqual(sm.triagePayload, null);
+  });
+
   test('resets pipeline checkpoint', () => {
     const sm = StateMachine.createInitial({ mode: 'standard', issue: 99 });
     sm.transition(STAGE_DISCOVERY);

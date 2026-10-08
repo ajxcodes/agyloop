@@ -232,6 +232,7 @@ export interface TriageTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+  readonly triagePayload?: string | null;
 }
 
 export class ResolveSubagentUseCase {
@@ -917,6 +918,10 @@ export class ResolveSubagentUseCase {
 
     if (effectiveIssue) {
       prompt += `### Active Issue: #${effectiveIssue}\n\n`;
+    }
+
+    if (params.triagePayload && params.triagePayload.trim()) {
+      prompt += `### Review Comments to Triage:\n${params.triagePayload.trim()}\n\n`;
     }
 
     return prompt.trim();

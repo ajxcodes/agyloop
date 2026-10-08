@@ -361,6 +361,9 @@ export class RunLifecycleUseCase {
       sm.currentStage !== STAGE_TRIAGE
     ) {
       if (sm.canTransition(STAGE_TRIAGE)) {
+        if (preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) {
+          sm.setTriagePayload(preflightResult.prReviewComments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n'));
+        }
         sm.transition(STAGE_TRIAGE, {
           note: NOTE_PAUSED_TRIAGE_GATE,
           prNumber: preflightResult.resumePrNumber,

@@ -177,6 +177,17 @@ export class TriagePrCommentsUseCase {
         break;
     }
 
+    if (targetStage === STAGE_COMPLETED) {
+      sm.setTriagePayload(null);
+    } else if (comments.length > 0) {
+      const formattedComments = comments
+        .map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`)
+        .join('\n');
+      sm.setTriagePayload(formattedComments);
+    } else if (!sm.triagePayload && params.notes) {
+      sm.setTriagePayload(params.notes);
+    }
+
     // Ensure state machine is in STAGE_TRIAGE or can transition
     if (sm.currentStage !== STAGE_TRIAGE && sm.canTransition(STAGE_TRIAGE)) {
       sm.transition(STAGE_TRIAGE, {

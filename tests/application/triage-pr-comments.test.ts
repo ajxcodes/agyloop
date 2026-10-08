@@ -157,6 +157,28 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
       StateMachine.prototype.canTransition = original;
     }
   });
+
+  test('formats PR comments and updates sm.triagePayload on execute', async () => {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const result = await useCase.execute({
+      issue: 83,
+      action: 'implement',
+      comments: [
+        { author: 'Alice', body: 'Please fix typo' },
+        { author: 'Bob', body: 'Missing unit test' }
+      ]
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(
+      result.stateMachine.triagePayload,
+      '- [Alice]: Please fix typo\n- [Bob]: Missing unit test'
+    );
+  });
 });
 
 describe('Issue #136 hardening', () => {
