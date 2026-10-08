@@ -419,6 +419,7 @@ export const SECTION_SELF_CORRECTION_TITLE = '### Self-Correction Quality Gate F
 export const MSG_NO_FAILURES = 'All verification commands passed without failures.' as const;
 export const MSG_COMMAND_FAILED_NO_OUTPUT = 'Command failed without output.' as const;
 export const MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST = 'State mutation is forbidden within smoke test isolation directories' as const;
+export const MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE = 'Test suite is forbidden from mutating the root orchestrator state.' as const;
 export const DIVIDER_DASHED = '----------------------------------------------------------------------' as const;
 
 // Structured Review Verdict Protocol Tokens, Verdicts & Thresholds

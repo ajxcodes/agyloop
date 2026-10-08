@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
 import * as os from 'os';
-import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST } from '../domain';
+import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } from '../domain';
 import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
@@ -121,6 +121,17 @@ export class FileStateRepository implements StateRepository {
         operation,
         MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST
       );
+    }
+
+    if (process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT)) {
+      const realRootPath = path.join(this.discoverWorkspaceRoot(__dirname), DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+      if (this.stateFilePath === realRootPath) {
+        throw new StateStorageError(
+          this.stateFilePath,
+          operation,
+          MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
+        );
+      }
     }
   }
 
