@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { FileStateRepository } = require('../../dist/infrastructure/file-state-repository');
-const { StateStorageError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST } = require('../../dist/domain');
+const { StateStorageError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } = require('../../dist/domain');
 
 describe('FileStateRepository', () => {
   let originalCwd: () => string;
@@ -129,6 +129,79 @@ describe('FileStateRepository', () => {
       assert.doesNotThrow(() => {
         repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
       });
+    });
+  });
+
+  describe('test environment isolation', () => {
+    test('throws StateStorageError on reset and save when touching real root repo in test env', () => {
+      // By not providing stateFilePath, it will default to the real root repo
+      const repo = new FileStateRepository();
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'test';
+      try {
+        assert.throws(() => {
+          repo.reset();
+        }, (err: any) => {
+          return err instanceof StateStorageError && 
+                 err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE;
+        });
+
+        assert.throws(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        }, (err: any) => {
+          return err instanceof StateStorageError && 
+                 err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE;
+        });
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    test('throws StateStorageError on reset and save when NODE_TEST_CONTEXT is set and NODE_ENV is undefined', () => {
+      const repo = new FileStateRepository();
+      const prevEnv = process.env.NODE_ENV;
+      const prevTestCtx = process.env.NODE_TEST_CONTEXT;
+      delete process.env.NODE_ENV;
+      process.env.NODE_TEST_CONTEXT = 'true';
+      try {
+        assert.throws(() => {
+          repo.reset();
+        }, (err: any) => {
+          return err instanceof StateStorageError && 
+                 err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE;
+        });
+
+        assert.throws(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        }, (err: any) => {
+          return err instanceof StateStorageError && 
+                 err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE;
+        });
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevTestCtx !== undefined) {
+          process.env.NODE_TEST_CONTEXT = prevTestCtx;
+        } else {
+          delete process.env.NODE_TEST_CONTEXT;
+        }
+      }
+    });
+
+    test('allows reset and save with a mock temp path even if NODE_ENV === "test"', () => {
+      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'test';
+      process.cwd = () => '/';
+      try {
+        assert.doesNotThrow(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        });
+        assert.doesNotThrow(() => {
+          repo.reset();
+        });
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
     });
   });
 });
