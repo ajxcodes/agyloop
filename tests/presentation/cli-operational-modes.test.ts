@@ -142,6 +142,15 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.dryRun, true);
     });
 
+    test('parses --message-file and --create-pr flags', () => {
+      const parsed = parseArguments(['commit', '--message-file', 'msg.txt', '--create-pr']);
+      assert.strictEqual(parsed.options.messageFile, 'msg.txt');
+      assert.strictEqual(parsed.options.createPr, true);
+
+      const parsedEq = parseArguments(['commit', '--message-file=msg.txt']);
+      assert.strictEqual(parsedEq.options.messageFile, 'msg.txt');
+    });
+
     test('parses --worktree and --no-worktree flags', () => {
       const parsedDefault = parseArguments(['yolo']);
       assert.strictEqual(parsedDefault.options.worktree, true);

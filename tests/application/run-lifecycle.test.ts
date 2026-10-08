@@ -26,7 +26,8 @@ const {
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
   CommitMessage,
-  AiReviewReport
+  AiReviewReport,
+  WorktreeDescriptor
 } = require('../../dist/domain');
 
 const {
@@ -274,7 +275,29 @@ class MockConfirmationPrompt {
   }
 }
 
+class MockWorktreeManager {
+  public async createWorktree(params: any): Promise<any> {
+    return WorktreeDescriptor.create({
+      taskId: params.issueNumber || 999,
+      worktreePath: `/mock/workspace/.worktrees/${params.issueNumber || 999}`,
+      branch: `task/${params.issueNumber || 999}`,
+      baseBranch: params.baseBranch || 'main'
+    });
+  }
+  public async removeWorktree(options: any): Promise<void> {}
+  public async cleanOrphanedWorktrees(options?: any): Promise<number> { return 0; }
+  public async resolveTaskWorktreePath(): Promise<string | null> { return '/mock/workspace/.worktrees/999'; }
+  public async resolveTaskBranchName(): Promise<string> { return 'task/999'; }
+}
+
 describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
+  const mockWorktree = WorktreeDescriptor.create({
+    taskId: 999,
+    worktreePath: '/mock/repo/.worktrees/999',
+    branch: 'fix/999',
+    baseBranch: 'main'
+  });
+
   let stateRepo: MockStateRepository;
   let configRepo: MockConfigRepository;
   let planGenerator: MockPlanGenerator;
@@ -284,6 +307,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   let standardsRepo: MockStandardsRepository;
   let critique: MockCritique;
   let confirmationPrompt: MockConfirmationPrompt;
+  let worktreeManager: MockWorktreeManager;
   let lifecycleUseCase: any;
 
   beforeEach(() => {
@@ -296,6 +320,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     standardsRepo = new MockStandardsRepository();
     critique = new MockCritique();
     confirmationPrompt = new MockConfirmationPrompt();
+    worktreeManager = new MockWorktreeManager();
 
     lifecycleUseCase = new RunLifecycleUseCase({
       stateRepo,
@@ -306,7 +331,8 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       buildDetector,
       standardsRepo,
       critique,
-      confirmationPrompt
+      confirmationPrompt,
+      worktreeManager
     });
   });
 
@@ -406,7 +432,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
     test('Step 2 (resuming from APPROVAL): advances to IMPLEMENT, passes gates & review, halts at COMMIT', async () => {
       // Simulate state rehydrated at APPROVAL
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -429,7 +455,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('Step 3 (at COMMIT with interactive confirmation): confirms commit and transitions to COMPLETED', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -488,7 +514,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('mode "implement" resumes execution directly from approved plan', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -507,7 +533,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('mode "standard" from IMPLEMENT stage runs quality gates and AI PR review sequentially', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -528,7 +554,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('mode "standard" from IMPLEMENT stage does not emit stage transition notifications via onProgress', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -549,7 +575,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('mode "standard" --step flag has no effect: pipeline advances fully to COMMIT', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -572,7 +598,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('mode "gates --commit-after" auto-commits upon passing gates and review', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -592,7 +618,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('mode "commit" drafts and executes commit with yes bypass', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -620,7 +646,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     test('reverts from QUALITY_GATE to IMPLEMENT on verification command failure', async () => {
       commandExecutor.failCommands.add('npm test');
 
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -657,7 +683,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         })
       );
 
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -679,7 +705,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     test('recovers after fix: re-running after correcting issue completes pipeline', async () => {
       // Step 1: Failed gates put pipeline in IMPLEMENT
       commandExecutor.failCommands.add('npm test');
-      const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_IMPLEMENT);
@@ -724,7 +750,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('already completed pipeline reports completed status cleanly', async () => {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);
       sm.transition(STAGE_PLAN);
       sm.transition(STAGE_APPROVAL);
@@ -817,7 +843,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     const fromStages = [STAGE_DISCOVERY, STAGE_PLAN, STAGE_APPROVAL, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW];
 
     function buildLifecycle(stage: string) {
-      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 });
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       (sm as any)._currentStage = stage;
       stateRepo.savedSnapshot = { ...sm.toSnapshot(), currentStage: stage };
       const preflight = {

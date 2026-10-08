@@ -813,6 +813,7 @@ Your primary purpose is to execute code changes, refactoring, test authoring, an
    - Use \`write_to_file\` exclusively when creating brand-new source or test files.
    - Restrict \`run_command\` strictly to lightweight syntax checks and type validation (e.g. \`npx tsc --noEmit\`).
    - Prohibit running full test suites (\`npm test\`), linters, or heavy build pipelines; all automated verification is strictly reserved for the downstream Quality Gate (\`prompts/gate.md\`).
+   - All temporary scripts, files, and debugging artifacts must be placed in the \`scratch/\` directory. Do not pollute the root workspace.
 
 ---
 
@@ -1184,6 +1185,7 @@ export const COMMAND_RELEASE = 'release' as const;
 export const COMMAND_NEXT = 'next' as const;
 export const COMMAND_BRANCH_INFO = 'branch-info' as const;
 export const COMMAND_TRIAGE = 'triage' as const;
+export const COMMAND_SYNC = 'sync' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1202,7 +1204,8 @@ export const CLI_COMMANDS = Object.freeze({
   NEXT: COMMAND_NEXT,
   BRANCH_INFO: COMMAND_BRANCH_INFO,
   CRITIQUE: COMMAND_CRITIQUE,
-  TRIAGE: COMMAND_TRIAGE
+  TRIAGE: COMMAND_TRIAGE,
+  SYNC: COMMAND_SYNC
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];

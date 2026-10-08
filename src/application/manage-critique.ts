@@ -78,9 +78,13 @@ export class ManageCritiqueUseCase {
       }
     }
 
-    const versionInfo = await this.installerPort.checkUpdateAvailable(currentVersion, {
+    let versionInfo = await this.installerPort.checkUpdateAvailable(currentVersion, {
       resolvedPath: resolution.path
     });
+
+    if (resolution.source === 'sibling') {
+      versionInfo = { ...versionInfo, isOutdated: false };
+    }
 
     return {
       resolution,
