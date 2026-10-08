@@ -15,7 +15,8 @@ const {
   STAGE_QUALITY_GATE,
   STAGE_COMPLETED,
   MODE_STANDARD,
-  DEFAULT_GATE_TIMEOUT_SECONDS
+  DEFAULT_GATE_TIMEOUT_SECONDS,
+  HALT_TYPE_MISSING_PLAN_DIR
 } = require('../../dist/domain');
 
 type StateRepository = import('../../src').StateRepository;
@@ -262,10 +263,24 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     assert.strictEqual(stateRepo.saveCallCount, 1);
 
     const sm2 = await transitionUseCase.execute({
-      targetStage: 'PLAN'
+      targetStage: 'TRIAGE'
     });
-    assert.strictEqual(sm2.currentStage, 'PLAN');
+    assert.strictEqual(sm2.currentStage, 'TRIAGE');
     assert.strictEqual(stateRepo.saveCallCount, 2);
+  });
+
+  test('TransitionStageUseCase blocks transition to PLAN if planDir is null', async () => {
+    const stateRepo = new MockStateRepository();
+    const transitionUseCase = new TransitionStageUseCase(stateRepo);
+
+    await assert.rejects(
+      () => transitionUseCase.execute({ targetStage: 'PLAN' }),
+      {
+        name: 'PreFlightHaltError',
+        message: 'Cannot transition to PLAN stage without an active plan directory. Use `bin/agyloop plan` or `bin/agyloop <issue>` to initialize the planning phase.',
+        haltType: HALT_TYPE_MISSING_PLAN_DIR
+      }
+    );
   });
 
   test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in AgyLoop Summary.md', async () => {
@@ -285,6 +300,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       currentStage: 'DISCOVERY',
       mode: MODE_STANDARD,
       issue: 50,
+      planDir: 'artifacts/plans/dummy-plan',
       createdAt: twoMinutesAgo,
       updatedAt: twoMinutesAgo,
       history: [

@@ -209,7 +209,8 @@ export const TRIAGE_TOOLS = Object.freeze([
   TOOL_VIEW_FILE,
   TOOL_GREP_SEARCH,
   TOOL_FIND_BY_NAME,
-  TOOL_LIST_DIR
+  TOOL_LIST_DIR,
+  TOOL_RUN_COMMAND
 ] as const);
 
 
@@ -233,6 +234,7 @@ export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
 export const ERR_PREFLIGHT_HALT = 'ERR_PREFLIGHT_HALT' as const;
 export const ERR_MILESTONE_RELEASE = 'ERR_MILESTONE_RELEASE' as const;
 export const ERR_MILESTONE_SEALED = 'ERR_MILESTONE_SEALED' as const;
+export const HALT_TYPE_MISSING_PLAN_DIR = 'MISSING_PLAN_DIR' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -254,7 +256,8 @@ export const ERROR_CODES = Object.freeze({
   WORKTREE: ERR_WORKTREE,
   PREFLIGHT_HALT: ERR_PREFLIGHT_HALT,
   MILESTONE_RELEASE: ERR_MILESTONE_RELEASE,
-  MILESTONE_SEALED: ERR_MILESTONE_SEALED
+  MILESTONE_SEALED: ERR_MILESTONE_SEALED,
+  PREFLIGHT_HALT_MISSING_PLAN_DIR: HALT_TYPE_MISSING_PLAN_DIR
 });
 
 
@@ -709,7 +712,8 @@ Your primary purpose is deep defect discovery, comprehensive root-cause analysis
 - Locate all relevant symbols, classes, functions across the codebase.
 - Trace the failure mechanism from ingress to failure.
 - Manually smoke test the bug to record exact, minimal reproduction commands, failing test targets, and reproduction results.
-- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory (e.g., \`/tmp/smoke-<issue>\` or \`artifacts/smoke-<issue>\`) rather than running commands in the shared workspace. This ensures \`FileStateRepository\` writes to an isolated \`.agyloop/state.json\` and does not corrupt the global pipeline. After the smoke test is complete, you MUST destroy this isolated directory to keep the workspace clean.` as const;
+- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely (explicitly recommending \`/tmp/smoke-<issue>\`). If it is placed anywhere inside the workspace (e.g., \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.
+- If testing root commands, you must run them in the isolated directory and unset \`AGY_SUBAGENT\` (\`env -u AGY_SUBAGENT ...\`) to bypass the guard for the test.` as const;
 
 // Default System Prompts (Embedded Domain Fallbacks)
 export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt
@@ -778,6 +782,7 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Exact automated test commands (e.g. \`node --test tests/example.test.js\`).
    - Lint, typecheck, or build commands.
    - Manual verification steps if applicable.
+   - NOTE: If the smoke test requires state-mutating commands (like \`bin/agyloop transition\`), explicitly mandate cloning to an isolated dummy directory OUTSIDE the workspace (e.g. \`/tmp/smoke-<issue>\`), and unset \`AGY_SUBAGENT\` to simulate human execution.
 
 ---
 
@@ -863,7 +868,8 @@ Your primary purpose is to execute verification suites (typechecking, linting, b
 - Execute verification commands sequentially (e.g. \`npm run typecheck\`, \`npm test\`).
 - Track execution status, exit code, and runtime duration for each command.
 - Respect execution timeouts strictly.
-- If you must execute state-mutating commands or destructive manual smoke tests, you MUST clone the repository into an isolated worktree sibling (e.g., \`artifacts/smoke-<issue>\`) to ensure the global state machine is not corrupted. After the smoke test is complete, you MUST destroy this isolated directory to keep the workspace clean.
+- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely (explicitly recommending \`/tmp/smoke-<issue>\`). If it is placed anywhere inside the workspace (e.g., \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.
+- If testing root commands, you must run them in the isolated directory and unset \`AGY_SUBAGENT\` (\`env -u AGY_SUBAGENT ...\`) to bypass the guard for the test.
 
 ### Phase B: Diagnostics Extraction & Filtering
 - When a command succeeds (exit code 0):

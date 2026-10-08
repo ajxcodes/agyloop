@@ -446,7 +446,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
 
-  if (process.env.AGY_SUBAGENT === '1' && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
+  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== 'triage' && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
     console.error('Error: Execution blocked. Subagents are not permitted to mutate global pipeline state.');
     console.error(`Command '${effectiveCommand === null ? '(default)' : effectiveCommand}' violates the Zero Direct Root Mutation invariant.`);
     return EXIT_CODE_FAILURE;
@@ -797,6 +797,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
       const action = (rawAction || undefined) as TriageAction | undefined;
+
+      if (action && process.env.AGY_SUBAGENT !== '1') {
+        console.error('Error: Execution blocked. Root agent is not allowed to run pipeline routing triage actions.');
+        console.error('You must invoke the dedicated Triage Subagent to handle PR review categorization.');
+        return EXIT_CODE_FAILURE;
+      }
+
       console.log('\n=== AgyLoop: PR Review Comments Triage ===');
       try {
         const result = await triageUseCase.execute({

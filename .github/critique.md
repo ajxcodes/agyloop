@@ -21,6 +21,7 @@ This repository adheres to strict software engineering, hexagonal architecture, 
   - `planner`: Scoped plan write permissions (`enable_write_tools: true`, restricted to populating specifications inside `artifacts/plans/`).
   - `gate`: Verification-only tooling (`run_command`, `view_file`) with log noise shielding and structured summary reporting.
   - `reviewer`: Read-only inspection with `critique` integration and structured verdict reporting.
+  - `triage`: Read-only file permissions (`enable_write_tools: false`) equipped with `run_command` strictly for executing CLI triage routing actions.
   - `implementer`: Fresh context handoff strictly loaded from approved plans.
 
 ## 3. Testing & Verification
