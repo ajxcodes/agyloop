@@ -4,6 +4,7 @@
  * Formats terminal output and dispatches commands to application use cases.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   STAGES,
@@ -49,6 +50,7 @@ import {
   COMMAND_CRITIQUE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_TRIAGE,
+  COMMAND_SYNC,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -103,7 +105,8 @@ import {
   InferBaseBranchUseCase,
   GetNextActionUseCase,
   TriagePrCommentsUseCase,
-  TriageAction
+  TriageAction,
+  SyncUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -137,6 +140,8 @@ export interface CliOptions {
   force: boolean;
   triageAction: string | null;
   step: boolean;
+  messageFile: string | null;
+  createPr: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -158,6 +163,7 @@ Operational Modes:
   implement          Resume implementation directly from approved plan specification
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
+  sync               Fast-forward collector branch and process merged PRs to auto-close issues
 
 Pipeline Management:
   next               Inspect state and generate next invoke_subagent command/payload
@@ -178,6 +184,8 @@ Operational Flags:
       --step         Pause compound execution after quality gates (before AI review)
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
+      --message-file <path> Read commit message from file
+      --create-pr    Automatically create a PR after commit
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force fresh version check or reinstallation)
       --issue <num>  Associate execution with GitHub issue number
@@ -246,7 +254,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     critiqueSubcommand: null,
     force: false,
     triageAction: null,
-    step: false
+    step: false,
+    messageFile: null,
+    createPr: false
   };
 
   const positional: string[] = [];
@@ -300,6 +310,16 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--message=')) {
       options.message = arg.split('=')[1] || null;
+    } else if (arg === '--message-file') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.messageFile = args[++i];
+      } else {
+        options.messageFile = null;
+      }
+    } else if (arg.startsWith('--message-file=')) {
+      options.messageFile = arg.split('=')[1] || null;
+    } else if (arg === '--create-pr') {
+      options.createPr = true;
     } else if (arg === '--dry-run') {
       options.dryRun = true;
     } else if (arg === '--refresh') {
@@ -1040,6 +1060,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const rootWorkspaceDir = options.workspaceDir || process.cwd();
         const effectiveWorkspaceDir = sm?.worktree?.worktreePath || rootWorkspaceDir;
 
+        let finalMessage = options.message;
+        if (options.messageFile) {
+          finalMessage = fs.readFileSync(options.messageFile, 'utf8').trim();
+        }
+
         const draftCommitUseCase = new DraftCommitUseCase(
           stateRepo,
           commandExecutor,
@@ -1050,7 +1075,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const draftResult = await draftCommitUseCase.execute({
           issue: options.issue,
           staged: options.staged,
-          userMessage: options.message,
+          userMessage: finalMessage,
           workspaceDir: effectiveWorkspaceDir
         });
 
@@ -1092,7 +1117,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           issue: options.issue,
           keepWorktree: options.keepWorktree,
           workspaceDir: effectiveWorkspaceDir,
-          rootWorkspaceDir: rootWorkspaceDir
+          rootWorkspaceDir: rootWorkspaceDir,
+          createPr: options.createPr
         });
 
         if (execResult.confirmed && execResult.success) {
@@ -1120,6 +1146,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
       } catch (err: unknown) {
         console.error(`\n✗ ${err instanceof Error ? err.message : String(err)}\n`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
+    case COMMAND_SYNC: {
+      console.log(`\n🔄 AgyLoop: Synchronizing Remote Collector Branch & Merged PRs`);
+      const syncUseCase = new SyncUseCase(
+        commandExecutor,
+        githubGateway,
+        stateRepo,
+        worktreeManager
+      );
+      const res = await syncUseCase.execute({ workspaceDir: process.cwd() });
+      if (res.success) {
+        console.log(`✓ ${res.message}\n`);
+        return EXIT_CODE_SUCCESS;
+      } else {
+        console.error(`✗ ${res.message}\n`);
         return EXIT_CODE_FAILURE;
       }
     }
@@ -1186,6 +1230,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         } else {
           console.log(`\n✓ Quality gates and AI review passed in YOLO mode.`);
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
+        }
+
+        if (result.reviewResult?.updateNotification) {
+          console.log('\n' + result.reviewResult.updateNotification);
         }
 
         return EXIT_CODE_SUCCESS;
@@ -1284,10 +1332,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (result.currentStage === STAGE_COMPLETED) {
           console.log(`✓ Pipeline is in ${formatStageBadge(STAGE_COMPLETED)} stage.\n`);
-          return EXIT_CODE_SUCCESS;
+        } else {
+          console.log(`Pipeline at stage: ${formatStageBadge(result.currentStage)}\n`);
         }
 
-        console.log(`Pipeline at stage: ${formatStageBadge(result.currentStage)}\n`);
+        if (result.reviewResult?.updateNotification) {
+          console.log('\n' + result.reviewResult.updateNotification);
+        }
+
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {

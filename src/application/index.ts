@@ -22,5 +22,6 @@ export * from './milestone-release';
 export * from './manage-issue-migration';
 export * from './get-next-action';
 export * from './triage-pr-comments';
+export * from './sync';
 
 

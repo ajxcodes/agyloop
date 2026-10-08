@@ -55,6 +55,7 @@ export interface ExecuteCommitParams {
   readonly rejectionDirective?: 'replan' | 'implement' | string | null;
   readonly rejectionFeedback?: string | null;
   readonly rejectionReason?: string | null;
+  readonly createPr?: boolean;
 }
 
 export interface ExecuteCommitResult {
@@ -97,7 +98,10 @@ export class ExecuteCommitUseCase {
     const initialDir = params.workspaceDir || process.cwd();
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
-    const cwd = sm.worktree?.worktreePath || initialDir;
+    const cwd = sm.worktree?.worktreePath;
+    if (!cwd) {
+      throw new CommitExecutionError('validateWorktree', 'Worktree path is missing in state. Cannot commit to root workspace.');
+    }
     const rootDir = params.rootWorkspaceDir || initialDir;
 
     if (sm.currentStage !== STAGE_COMMIT) {
@@ -267,17 +271,6 @@ export class ExecuteCommitUseCase {
     const revRes = await this.commandExecutor.execute('git rev-parse HEAD', { cwd });
     const commitHash = revRes.stdout.trim() || 'unknown';
 
-    // Advance StateMachine
-    const transitionNote = isYolo ? NOTE_COMMIT_AUTO_APPROVED : NOTE_COMMIT_CONFIRMED;
-    sm.transition(STAGE_COMPLETED, {
-      note: transitionNote,
-      commitHash,
-      commitMessage: commitMessage.toSingleLine()
-    });
-
-    // Checkpoint state
-    await this.stateRepo.save(sm.toSnapshot());
-
     // Resolve PR target base branch (inferred collector branch or main)
     const prBaseBranch = sm.baseBranch || 'main';
 
@@ -340,11 +333,6 @@ export class ExecuteCommitUseCase {
         }
       }
 
-      if (issueId && prBaseBranch !== 'main') {
-        const closeCmd = `gh issue close ${issueId} --comment 'Implemented and merged via PR #'"$PR_NUM"' into \`${escapeShellQuote(prBaseBranch)}\`.'`;
-        prCommandCore = `PR_URL=$(${prCommandCore}); echo "$PR_URL"; PR_NUM=\\$(echo "$PR_URL" | grep -oE '[0-9]+$'); if [ -n "$PR_NUM" ]; then ${closeCmd}; fi`;
-      }
-
       // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
       prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
     }
@@ -385,6 +373,30 @@ export class ExecuteCommitUseCase {
         pushError = err instanceof Error ? err.message : String(err);
       }
     }
+
+    if (pushFailed) {
+      throw new CommitExecutionError('git push', `Failed to push to remote: ${pushError}`);
+    }
+
+    if (params.createPr && !prExists) {
+      try {
+        await this.commandExecutor.execute(prCommand, { cwd });
+      } catch (err: unknown) {
+        // Non-fatal if PR creation fails during auto-create
+        console.warn('Auto PR creation failed:', err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    // Advance StateMachine
+    const transitionNote = isYolo ? NOTE_COMMIT_AUTO_APPROVED : NOTE_COMMIT_CONFIRMED;
+    sm.transition(STAGE_COMPLETED, {
+      note: transitionNote,
+      commitHash,
+      commitMessage: commitMessage.toSingleLine()
+    });
+
+    // Checkpoint state
+    await this.stateRepo.save(sm.toSnapshot());
 
     // Automated Worktree Teardown
     let worktreeTornDown = false;

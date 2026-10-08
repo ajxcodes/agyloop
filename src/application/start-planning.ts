@@ -36,9 +36,12 @@ import {
   ConfigRepository,
   PlanGeneratorPort,
   GitHubIssueData,
-  ScaffoldResult
+  ScaffoldResult,
+  CommandExecutorPort,
+  WorktreeManagerPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
+import { SyncUseCase } from './sync';
 
 export interface StartPlanningParams {
   readonly mode?: ExecutionMode;
@@ -68,22 +71,43 @@ export class StartPlanningUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly planGenerator: PlanGeneratorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  private readonly commandExecutor?: CommandExecutorPort;
+  private readonly worktreeManager?: WorktreeManagerPort;
 
   constructor(
     stateRepo: StateRepository,
     githubGateway: GitHubGateway,
     configRepo: ConfigRepository,
-    planGenerator: PlanGeneratorPort
+    planGenerator: PlanGeneratorPort,
+    commandExecutor?: CommandExecutorPort,
+    worktreeManager?: WorktreeManagerPort
   ) {
     this.stateRepo = stateRepo;
     this.githubGateway = githubGateway;
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
+    this.commandExecutor = commandExecutor;
+    this.worktreeManager = worktreeManager;
     this.resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo);
   }
 
   public async execute(params: StartPlanningParams = {}): Promise<StartPlanningResult> {
     const workspace = params.workspaceDir || process.cwd();
+
+    // 0. Best-effort remote sync of the base collector branch
+    if (this.commandExecutor && this.worktreeManager && !params.dryRun) {
+      try {
+        const syncUseCase = new SyncUseCase(
+          this.commandExecutor,
+          this.githubGateway,
+          this.stateRepo,
+          this.worktreeManager
+        );
+        await syncUseCase.execute({ workspaceDir: workspace });
+      } catch (e) {
+        console.warn('Auto-sync before planning failed:', e instanceof Error ? e.message : String(e));
+      }
+    }
 
     // 1. Rehydrate or initialize StateMachine
     const snapshot = await this.stateRepo.load();

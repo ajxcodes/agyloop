@@ -149,6 +149,27 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
     assert.strictEqual(status.versionInfo.isOutdated, true);
   });
 
+  it('getStatus forces isOutdated false when source is sibling', async () => {
+    const critiquePort = new MockCritiquePort({
+      resolution: {
+        source: 'sibling',
+        path: '/mock/user/critique/bin/critique.js',
+        isAvailable: true
+      },
+      version: '0.1.6'
+    });
+    const installerPort = new MockCritiqueInstallerPort({ latestVersion: '0.2.0' });
+
+    const useCase = new ManageCritiqueUseCase(critiquePort, installerPort);
+    const status = await useCase.getStatus();
+
+    assert.strictEqual(status.resolution.isAvailable, true);
+    assert.strictEqual(status.versionInfo.isInstalled, true);
+    assert.strictEqual(status.versionInfo.currentVersion, '0.1.6');
+    assert.strictEqual(status.versionInfo.latestVersion, '0.2.0');
+    assert.strictEqual(status.versionInfo.isOutdated, false);
+  });
+
   it('install executes installer and returns result', async () => {
     const critiquePort = new MockCritiquePort();
     const installerPort = new MockCritiqueInstallerPort({

@@ -312,7 +312,6 @@ export class RunReviewUseCase {
           });
           if (versionInfo.isOutdated && versionInfo.currentVersion && versionInfo.latestVersion) {
             updateNotification = `💡 A new version of critique is available (v${versionInfo.currentVersion} -> v${versionInfo.latestVersion}).\n   Run \`agyloop critique update\` to upgrade.`;
-            console.log(`\n${updateNotification}\n`);
           }
         } catch {
           // Non-blocking, ignore errors

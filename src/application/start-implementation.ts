@@ -45,6 +45,7 @@ import {
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import { SyncUseCase } from './sync';
 
 export interface StartImplementationParams {
   readonly issue?: number | string | null;
@@ -107,6 +108,21 @@ export class StartImplementationUseCase {
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
     const workspace = params.workspaceDir || process.cwd();
+
+    // 0. Best-effort remote sync of the base collector branch
+    if (this.commandExecutor && this.worktreeManager && this.githubGateway && !params.dryRun && !params.noWorktree) {
+      try {
+        const syncUseCase = new SyncUseCase(
+          this.commandExecutor,
+          this.githubGateway,
+          this.stateRepo,
+          this.worktreeManager
+        );
+        await syncUseCase.execute({ workspaceDir: workspace });
+      } catch (e) {
+        console.warn('Auto-sync before implementation failed:', e instanceof Error ? e.message : String(e));
+      }
+    }
 
     // 1. Load active pipeline state checkpoint
     const snapshot = await this.stateRepo.load();
