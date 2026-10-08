@@ -491,7 +491,8 @@ export class GetNextActionUseCase {
         const prompt = this.resolveSubagentUseCase.buildTriageTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: worktreePath || cwd,
-          config
+          config,
+          triagePayload: sm.triagePayload
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -580,7 +581,8 @@ export class GetNextActionUseCase {
       planPath: planPath || undefined,
       issueNumber: activeIssue,
       workspaceDir: worktreePath || cwd,
-      config
+      config,
+      prReviewComments: sm.triagePayload
     });
 
     const invocationPayload: SubagentInvocationPayload = {

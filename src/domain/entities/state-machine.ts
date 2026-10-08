@@ -37,6 +37,7 @@ export interface StateMachineSnapshot {
   readonly baseBranch?: string | null;
   readonly worktree?: Record<string, unknown> | null;
   readonly planDir?: string | null;
+  readonly triagePayload?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -55,6 +56,7 @@ export interface StateStatusSummary {
   readonly baseBranch?: string | null;
   readonly worktree?: WorktreeDescriptor | null;
   readonly planDir?: string | null;
+  readonly triagePayload?: string | null;
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -73,6 +75,7 @@ export class StateMachine {
   private _baseBranch: string | null;
   private _worktree: WorktreeDescriptor | null;
   private _planDir: string | null;
+  private _triagePayload: string | null;
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
@@ -90,6 +93,7 @@ export class StateMachine {
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
+    triagePayload?: string | null;
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
@@ -106,6 +110,7 @@ export class StateMachine {
     this._baseBranch = options.baseBranch || null;
     this._worktree = options.worktree || null;
     this._planDir = options.planDir || null;
+    this._triagePayload = options.triagePayload || null;
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
@@ -162,6 +167,10 @@ export class StateMachine {
 
   public get planDir(): string | null {
     return this._planDir;
+  }
+
+  public get triagePayload(): string | null {
+    return this._triagePayload;
   }
 
   public get createdAt(): string {
@@ -286,6 +295,11 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  public setTriagePayload(payload: string | null | undefined): void {
+    this._triagePayload = payload && payload.trim() ? payload.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setMode(mode: ExecutionMode): void {
     if (!Object.values(EXECUTION_MODES).includes(mode)) {
       throw new ValidationError('mode', mode, `Invalid execution mode: ${mode}`);
@@ -335,6 +349,7 @@ export class StateMachine {
     this._baseBranch = null;
     this._worktree = null;
     this._planDir = null;
+    this._triagePayload = null;
     this._pausedAtGate = null;
     this._pausedAtTimestamp = null;
     this._totalHumanWaitMs = 0;
@@ -359,6 +374,7 @@ export class StateMachine {
       baseBranch: this._baseBranch,
       worktree: this._worktree,
       planDir: this._planDir,
+      triagePayload: this._triagePayload,
       stepCount: this._history.length,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
@@ -380,6 +396,7 @@ export class StateMachine {
       baseBranch: this._baseBranch,
       worktree: this._worktree ? this._worktree.toJSON() : null,
       planDir: this._planDir,
+      triagePayload: this._triagePayload,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       history: Object.freeze([...this._history]),
@@ -416,6 +433,7 @@ export class StateMachine {
     const milestoneTitle = snapshot.milestoneTitle || null;
     const baseBranch = snapshot.baseBranch || null;
     const planDir = snapshot.planDir || null;
+    const triagePayload = snapshot.triagePayload || null;
 
     return new StateMachine({
       stage,
@@ -425,6 +443,7 @@ export class StateMachine {
       baseBranch,
       worktree,
       planDir,
+      triagePayload,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       history: snapshot.history || [],
@@ -447,6 +466,7 @@ export class StateMachine {
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
+    triagePayload?: string | null;
   } = {}): StateMachine {
     return new StateMachine({
       stage: new Stage(STAGE_INITIALIZED),

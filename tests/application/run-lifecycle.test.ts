@@ -870,5 +870,16 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         StateMachine.prototype.canTransition = original;
       }
     });
+
+    test('formats preflight PR review comments with author and body into triage payload', async () => {
+      const lifecycle = buildLifecycle(STAGE_IMPLEMENT);
+      const result = await lifecycle.execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: '/mock/workspace' });
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_TRIAGE);
+      assert.strictEqual(
+        stateRepo.savedSnapshot.triagePayload,
+        '- [r]: fix'
+      );
+    });
   });
 });

@@ -706,7 +706,8 @@ Your primary purpose is deep defect discovery, comprehensive root-cause analysis
 - Inspect repository structure and package manifests.
 - Locate all relevant symbols, classes, functions across the codebase.
 - Trace the failure mechanism from ingress to failure.
-- Manually smoke test the bug to record exact, minimal reproduction commands, failing test targets, and reproduction results.` as const;
+- Manually smoke test the bug to record exact, minimal reproduction commands, failing test targets, and reproduction results.
+- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory (e.g., \`/tmp/smoke-<issue>\` or \`artifacts/smoke-<issue>\`) rather than running commands in the shared workspace. This ensures \`FileStateRepository\` writes to an isolated \`.agyloop/state.json\` and does not corrupt the global pipeline. After the smoke test is complete, you MUST destroy this isolated directory to keep the workspace clean.` as const;
 
 // Default System Prompts (Embedded Domain Fallbacks)
 export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt
@@ -860,6 +861,7 @@ Your primary purpose is to execute verification suites (typechecking, linting, b
 - Execute verification commands sequentially (e.g. \`npm run typecheck\`, \`npm test\`).
 - Track execution status, exit code, and runtime duration for each command.
 - Respect execution timeouts strictly.
+- If you must execute state-mutating commands or destructive manual smoke tests, you MUST clone the repository into an isolated worktree sibling (e.g., \`artifacts/smoke-<issue>\`) to ensure the global state machine is not corrupted. After the smoke test is complete, you MUST destroy this isolated directory to keep the workspace clean.
 
 ### Phase B: Diagnostics Extraction & Filtering
 - When a command succeeds (exit code 0):

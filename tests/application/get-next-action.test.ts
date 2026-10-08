@@ -16,6 +16,7 @@ const {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  STAGE_TRIAGE,
   MODE_STANDARD,
   MODE_YOLO,
   WorktreeDescriptor,
@@ -608,6 +609,49 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.baseBranch, 'main');
     assert.strictEqual(stateRepo.savedSnapshot?.baseBranch, null);
+  });
+
+  test('embeds PR review comments in STAGE_TRIAGE subagent prompt', async () => {
+    const sm = StateMachine.createInitial({ issue: 190 });
+    sm.transition(STAGE_TRIAGE);
+    sm.setTriagePayload('Reviewer: Please fix the magic constants in resolve-subagent.ts');
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_TRIAGE);
+    assert.ok(result.invocationPayload);
+    
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Reviewer: Please fix the magic constants'));
+  });
+
+  test('embeds PR review comments in STAGE_IMPLEMENT subagent prompt', async () => {
+    const sm = StateMachine.createInitial({ issue: 190 });
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.setTriagePayload('Reviewer: Consider using a map instead of a switch statement');
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 190,
+        worktreePath: '/repo/.worktrees/190',
+        branch: 'fix/190',
+        baseBranch: 'main',
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.ok(result.invocationPayload);
+    
+    const sub = result.invocationPayload.Subagents[0];
+    assert.ok(sub.Prompt.includes('Consider using a map'));
   });
 });
 
