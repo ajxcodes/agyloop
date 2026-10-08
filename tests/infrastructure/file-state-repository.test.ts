@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { FileStateRepository } = require('../../dist/infrastructure/file-state-repository');
-const { StateStorageError } = require('../../dist/domain');
+const { StateStorageError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST } = require('../../dist/domain');
 
 describe('FileStateRepository', () => {
   let originalCwd: () => string;
@@ -71,6 +71,64 @@ describe('FileStateRepository', () => {
         repo.save(snapshot);
       });
       assert.ok(fs.existsSync(stateFile));
+    });
+  });
+
+  describe('smoke test isolation', () => {
+    test('throws StateStorageError on save when cwd is in /tmp', () => {
+      process.cwd = () => path.join('/tmp', 'foo');
+      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      
+      const prevEnv = process.env.NODE_ENV;
+      const prevTestCtx = process.env.NODE_TEST_CONTEXT;
+      process.env.NODE_ENV = 'production';
+      delete process.env.NODE_TEST_CONTEXT;
+      try {
+        assert.throws(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        }, (err: any) => {
+          return err instanceof StateStorageError && 
+                 err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+        });
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevTestCtx !== undefined) {
+          process.env.NODE_TEST_CONTEXT = prevTestCtx;
+        }
+      }
+    });
+
+    test('throws StateStorageError on save when cwd is in artifacts/smoke', () => {
+      process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
+      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      
+      assert.throws(() => {
+        repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+      }, (err: any) => {
+        return err instanceof StateStorageError && 
+               err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+      });
+    });
+
+    test('throws StateStorageError on reset when cwd is in artifacts/smoke', () => {
+      process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
+      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      
+      assert.throws(() => {
+        repo.reset();
+      }, (err: any) => {
+        return err instanceof StateStorageError && 
+               err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+      });
+    });
+
+    test('allows save when cwd is normal path', () => {
+      process.cwd = () => path.join('/home/user/project');
+      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      
+      assert.doesNotThrow(() => {
+        repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+      });
     });
   });
 });
