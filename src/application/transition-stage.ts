@@ -30,7 +30,9 @@ import {
   SUMMARY_STATUS_COMPLETED,
   MS_PER_SECOND,
   SECONDS_PER_MINUTE,
-  WorktreeCreationError
+  WorktreeCreationError,
+  PreFlightHaltError,
+  HALT_TYPE_MISSING_PLAN_DIR
 } from '../domain';
 import { StateRepository, WorktreeManagerPort, PlanGeneratorPort } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
@@ -90,6 +92,13 @@ export class TransitionStageUseCase {
       typeof params.targetStage === 'string'
         ? params.targetStage.toUpperCase()
         : params.targetStage;
+
+    if (targetStageStr === STAGE_PLAN && !sm.planDir) {
+      throw new PreFlightHaltError(
+        'Cannot transition to PLAN stage without an active plan directory. Use `bin/agyloop plan` or `bin/agyloop <issue>` to initialize the planning phase.',
+        HALT_TYPE_MISSING_PLAN_DIR
+      );
+    }
 
     // Guardrail: Auto-provision worktree on entering IMPLEMENT stage
     if (targetStageStr === STAGE_IMPLEMENT) {

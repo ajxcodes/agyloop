@@ -417,7 +417,7 @@ export class ResolveSubagentUseCase {
           enable_subagent_tools: false,
           enable_mcp_tools: false
         },
-        system_prompt: `# AgyLoop Triage Subagent System Prompt\nYou are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.`
+        system_prompt: `# AgyLoop Triage Subagent System Prompt\nYou are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.\nYou may use \`bin/agyloop triage <implement|plan|discovery|completed|dismiss>\` to route the pipeline.`
       };
     }
 

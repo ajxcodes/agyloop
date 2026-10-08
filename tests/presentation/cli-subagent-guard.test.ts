@@ -103,6 +103,12 @@ describe('CLI Subagent Guard', () => {
       assert.strictEqual(exitCode, 0);
       assert.ok(standardOutput.includes('Next Subagent Directive'));
     });
+
+    test('permits subagents to run triage', async () => {
+      await runCli(['triage', 'implement']);
+      assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
+      assert.strictEqual(errorOutput.includes('Root agent is not allowed'), false);
+    });
   });
 
   describe('When AGY_SUBAGENT is not set', () => {
@@ -113,6 +119,12 @@ describe('CLI Subagent Guard', () => {
     test('permits mutating commands', async () => {
       await runCli(['transition', 'PLAN']);
       assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
+    });
+
+    test('blocks root agent from running triage actions', async () => {
+      const exitCode = await runCli(['triage', 'implement']);
+      assert.strictEqual(exitCode, 1);
+      assert.ok(errorOutput.includes('Error: Execution blocked. Root agent is not allowed to run pipeline routing triage actions.'));
     });
   });
 });
