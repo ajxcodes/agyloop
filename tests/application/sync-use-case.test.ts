@@ -81,6 +81,8 @@ describe('SyncUseCase', () => {
     
     assert.ok(github.closedIssues.includes(10));
     assert.ok(github.comments.some(c => c.issueId === 10 && c.body.includes('PR #42')));
+    assert.ok(result.logs !== undefined, 'Result should include logs metadata');
+    assert.ok(result.logs.some((l: string) => l.includes('Closed issue #10')));
   });
 
   it('fast-forwards branch without checking out if not currently on it', async () => {
@@ -101,5 +103,29 @@ describe('SyncUseCase', () => {
 
     assert.strictEqual(result.success, true);
     assert.ok(executor.executedCommands.includes('git fetch origin phase/123:phase/123'));
+  });
+
+  it('returns warnings in result metadata if an operation fails', async () => {
+    const executor = new MockCommandExecutor();
+    const github = new MockGitHubGateway();
+    const state = new MockStateRepo();
+    const worktree = new MockWorktreeManager();
+
+    worktree.baseBranch = 'phase/123';
+    
+    // Simulate fetch failure
+    executor.execute = async (cmd) => {
+      if (cmd === 'git fetch origin') {
+        throw new Error('Network error');
+      }
+      return { stdout: '', exitCode: 0 };
+    };
+
+    const useCase = new SyncUseCase(executor, github, state, worktree);
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.strictEqual(result.success, true);
+    assert.ok(result.warnings !== undefined, 'Result should include warnings metadata');
+    assert.ok(result.warnings.some((w: string) => w.includes('Failed to fetch from origin: Network error')));
   });
 });

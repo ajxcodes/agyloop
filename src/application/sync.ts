@@ -7,6 +7,8 @@ export interface SyncParams {
 export interface SyncResult {
   readonly success: boolean;
   readonly message: string;
+  readonly warnings?: string[];
+  readonly logs?: string[];
 }
 
 export class SyncUseCase {
@@ -29,6 +31,8 @@ export class SyncUseCase {
 
   public async execute(params: SyncParams = {}): Promise<SyncResult> {
     const cwd = params.workspaceDir || process.cwd();
+    const warnings: string[] = [];
+    const logs: string[] = [];
 
     try {
       // 1. Resolve collector branch
@@ -49,7 +53,7 @@ export class SyncUseCase {
       try {
         await this.commandExecutor.execute('git fetch origin', { cwd });
       } catch (e) {
-        console.warn('Failed to fetch from origin:', e);
+        warnings.push(`Failed to fetch from origin: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       try {
@@ -64,7 +68,7 @@ export class SyncUseCase {
           await this.commandExecutor.execute(`git fetch origin ${collectorBranch}:${collectorBranch}`, { cwd });
         }
       } catch (e) {
-        console.warn(`Failed to fast-forward collector branch ${collectorBranch}:`, e);
+        warnings.push(`Failed to fast-forward collector branch ${collectorBranch}: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       // 3. Close issues whose PRs merged into the collector branch
@@ -87,18 +91,20 @@ export class SyncUseCase {
                 if (this.githubGateway.commentOnIssue) {
                   await Promise.resolve(this.githubGateway.commentOnIssue(issueId, `Automatically closed by agyloop sync. Implemented and merged via PR #${pr.number} into \`${collectorBranch}\`.`, { cwd }));
                 }
-                console.log(`Closed issue #${issueId} (merged in PR #${pr.number} to ${collectorBranch})`);
+                logs.push(`Closed issue #${issueId} (merged in PR #${pr.number} to ${collectorBranch})`);
               }
             }
           }
         } catch (e) {
-          console.warn('Failed to close merged issues:', e);
+          warnings.push(`Failed to close merged issues: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
 
       return {
         success: true,
-        message: `Successfully synced ${collectorBranch} and processed merged PRs.`
+        message: `Successfully synced ${collectorBranch} and processed merged PRs.`,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        logs: logs.length > 0 ? logs : undefined
       };
     } catch (err) {
       return {
