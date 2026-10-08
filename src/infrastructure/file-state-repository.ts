@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
+import * as os from 'os';
 import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber } from '../domain';
 import { StateRepository } from '../ports';
 
@@ -106,6 +107,23 @@ export class FileStateRepository implements StateRepository {
     }
   }
 
+  private validateSmokeTestIsolation(operation: 'write' | 'delete'): void {
+    const cwd = path.resolve(process.cwd());
+    const isArtifactsSmoke = cwd.includes(`${path.sep}artifacts${path.sep}smoke`);
+    
+    // Bypass the /tmp block during unit tests because agyloop tests run in /tmp
+    const isTmpDir = cwd.startsWith('/tmp') || cwd.startsWith(os.tmpdir());
+    const isTmpBlocked = process.env.NODE_ENV !== 'test' && !process.env.NODE_TEST_CONTEXT;
+
+    if (isArtifactsSmoke || (isTmpDir && isTmpBlocked)) {
+      throw new StateStorageError(
+        this.stateFilePath,
+        operation,
+        'State mutation is forbidden within smoke test isolation directories'
+      );
+    }
+  }
+
   private validateWorktreeIssueMatch(snapshot: StateMachineSnapshot): void {
     const inferredIssue = IssueNumber.inferFromPath(process.cwd());
     if (inferredIssue !== null && snapshot.issue !== undefined && snapshot.issue !== inferredIssue) {
@@ -118,6 +136,7 @@ export class FileStateRepository implements StateRepository {
   }
 
   public save(snapshot: StateMachineSnapshot): void {
+    this.validateSmokeTestIsolation('write');
     this.validateWorktreeIssueMatch(snapshot);
 
     const dir = path.dirname(this.stateFilePath);
@@ -138,6 +157,7 @@ export class FileStateRepository implements StateRepository {
   }
 
   public reset(): void {
+    this.validateSmokeTestIsolation('delete');
     try {
       if (fs.existsSync(this.stateFilePath)) {
         fs.unlinkSync(this.stateFilePath);
