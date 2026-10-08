@@ -83,13 +83,13 @@ export class SyncUseCase {
             const match = body.match(/Closes #(\d+)/i);
             if (match) {
               const issueId = parseInt(match[1], 10);
-              const issue = await Promise.resolve(this.githubGateway.fetchIssue(issueId, { cwd }));
+              const issue = await this.githubGateway.fetchIssue(issueId, { cwd });
               if (issue && issue.state !== 'CLOSED') {
                 if (this.githubGateway.closeIssue) {
-                  await Promise.resolve(this.githubGateway.closeIssue(issueId, { cwd }));
+                  await this.githubGateway.closeIssue(issueId, { cwd });
                 }
                 if (this.githubGateway.commentOnIssue) {
-                  await Promise.resolve(this.githubGateway.commentOnIssue(issueId, `Automatically closed by agyloop sync. Implemented and merged via PR #${pr.number} into \`${collectorBranch}\`.`, { cwd }));
+                  await this.githubGateway.commentOnIssue(issueId, `Automatically closed by agyloop sync. Implemented and merged via PR #${pr.number} into \`${collectorBranch}\`.`, { cwd });
                 }
                 logs.push(`Closed issue #${issueId} (merged in PR #${pr.number} to ${collectorBranch})`);
               }
