@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
 import * as os from 'os';
-import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber } from '../domain';
+import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST } from '../domain';
 import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
@@ -119,7 +119,7 @@ export class FileStateRepository implements StateRepository {
       throw new StateStorageError(
         this.stateFilePath,
         operation,
-        'State mutation is forbidden within smoke test isolation directories'
+        MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST
       );
     }
   }

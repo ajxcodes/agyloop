@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { FileStateRepository } = require('../../dist/infrastructure/file-state-repository');
-const { StateStorageError } = require('../../dist/domain');
+const { StateStorageError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST } = require('../../dist/domain');
 
 describe('FileStateRepository', () => {
   let originalCwd: () => string;
@@ -88,7 +88,7 @@ describe('FileStateRepository', () => {
           repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
         }, (err: any) => {
           return err instanceof StateStorageError && 
-                 err.message === 'State mutation is forbidden within smoke test isolation directories';
+                 err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
         });
       } finally {
         process.env.NODE_ENV = prevEnv;
@@ -106,7 +106,7 @@ describe('FileStateRepository', () => {
         repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
       }, (err: any) => {
         return err instanceof StateStorageError && 
-               err.message === 'State mutation is forbidden within smoke test isolation directories';
+               err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
       });
     });
 
@@ -118,7 +118,7 @@ describe('FileStateRepository', () => {
         repo.reset();
       }, (err: any) => {
         return err instanceof StateStorageError && 
-               err.message === 'State mutation is forbidden within smoke test isolation directories';
+               err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
       });
     });
 
