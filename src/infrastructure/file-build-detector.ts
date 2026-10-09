@@ -657,7 +657,8 @@ export class FileBuildDetector implements BuildDetectorPort {
    */
   public static isBinaryAvailable(binary: string): boolean {
     try {
-      const res = child_process.spawnSync('which', [binary], {
+      const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+      const res = child_process.spawnSync(lookupCmd, [binary], {
         stdio: ['ignore', 'ignore', 'ignore'],
         encoding: 'utf8'
       });

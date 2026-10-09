@@ -448,5 +448,37 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       assert.strictEqual(resolvedDisabled.length, 1);
       assert.strictEqual(resolvedDisabled[0].command, 'npm test');
     });
+
+    test('isBinaryAvailable uses where on win32 and which on other platforms', () => {
+      const childProcess = require('child_process');
+      const originalSpawnSync = childProcess.spawnSync;
+      const originalPlatform = process.platform;
+
+      let capturedCmd: string | null = null;
+      let capturedArgs: string[] = [];
+
+      try {
+        childProcess.spawnSync = (cmd: string, args: string[]) => {
+          capturedCmd = cmd;
+          capturedArgs = args;
+          return { status: 0 };
+        };
+
+        // Test non-win32 platform
+        Object.defineProperty(process, 'platform', { value: 'linux' });
+        assert.strictEqual(FileBuildDetector.isBinaryAvailable('docker'), true);
+        assert.strictEqual(capturedCmd, 'which');
+        assert.deepStrictEqual(capturedArgs, ['docker']);
+
+        // Test win32 platform
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        assert.strictEqual(FileBuildDetector.isBinaryAvailable('docker'), true);
+        assert.strictEqual(capturedCmd, 'where');
+        assert.deepStrictEqual(capturedArgs, ['docker']);
+      } finally {
+        childProcess.spawnSync = originalSpawnSync;
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+      }
+    });
   });
 });
