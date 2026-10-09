@@ -38,10 +38,15 @@ describe('OpenCodeAgentRunner', () => {
 
     assert.strictEqual(mockExecutor.executedCommands.length, 1);
     const executed = mockExecutor.executedCommands[0];
-    assert.strictEqual(
-      executed.command,
-      "opencode run --standalone --auto --model ollama/ornith:9b-128k 'Design architecture for Phase 6'"
-    );
+    assert.strictEqual(executed.command, 'opencode');
+    assert.deepStrictEqual(executed.options?.args, [
+      'run',
+      '--standalone',
+      '--auto',
+      '--model',
+      'ollama/ornith:9b-128k',
+      'Design architecture for Phase 6'
+    ]);
     assert.strictEqual(executed.options?.cwd, '/tmp/test-workspace');
   });
 
@@ -59,10 +64,15 @@ describe('OpenCodeAgentRunner', () => {
     });
 
     assert.strictEqual(mockExecutor.executedCommands.length, 1);
-    assert.strictEqual(
-      mockExecutor.executedCommands[0].command,
-      "opencode run --standalone --auto --model custom-provider/custom-model:latest 'Implement feature'"
-    );
+    assert.strictEqual(mockExecutor.executedCommands[0].command, 'opencode');
+    assert.deepStrictEqual(mockExecutor.executedCommands[0].options?.args, [
+      'run',
+      '--standalone',
+      '--auto',
+      '--model',
+      'custom-provider/custom-model:latest',
+      'Implement feature'
+    ]);
   });
 
   test('normalizes model name without provider prefix to ollama/ provider', async () => {
@@ -78,28 +88,39 @@ describe('OpenCodeAgentRunner', () => {
     });
 
     assert.strictEqual(mockExecutor.executedCommands.length, 1);
-    assert.strictEqual(
-      mockExecutor.executedCommands[0].command,
-      "opencode run --standalone --auto --model ollama/ornith:9b-128k 'Implement feature'"
-    );
+    assert.strictEqual(mockExecutor.executedCommands[0].command, 'opencode');
+    assert.deepStrictEqual(mockExecutor.executedCommands[0].options?.args, [
+      'run',
+      '--standalone',
+      '--auto',
+      '--model',
+      'ollama/ornith:9b-128k',
+      'Implement feature'
+    ]);
   });
 
-  test('escapes single quotes in prompt safely', async () => {
+  test('passes prompt verbatim as argument array without shell escaping', async () => {
     const mockExecutor = new MockCommandExecutor();
     const runner = new OpenCodeAgentRunner({
       commandExecutor: mockExecutor
     });
 
+    const rawPrompt = "Don't break 'existing' code; $(rm -rf /)";
     await runner.invokeSubagent({
       subagentName: 'tester',
-      prompt: "Don't break 'existing' code"
+      prompt: rawPrompt
     });
 
     assert.strictEqual(mockExecutor.executedCommands.length, 1);
-    assert.strictEqual(
-      mockExecutor.executedCommands[0].command,
-      "opencode run --standalone --auto --model ollama/ornith:9b-128k 'Don'\\''t break '\\''existing'\\'' code'"
-    );
+    assert.strictEqual(mockExecutor.executedCommands[0].command, 'opencode');
+    assert.deepStrictEqual(mockExecutor.executedCommands[0].options?.args, [
+      'run',
+      '--standalone',
+      '--auto',
+      '--model',
+      'ollama/ornith:9b-128k',
+      rawPrompt
+    ]);
   });
 
   test('throws error if opencode CLI returns non-zero exit code', async () => {

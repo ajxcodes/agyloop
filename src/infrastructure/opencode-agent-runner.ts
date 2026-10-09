@@ -30,12 +30,10 @@ export class OpenCodeAgentRunner implements AgentRunnerPort {
     if (model && !model.includes('/')) {
       model = `ollama/${model}`;
     }
-    const prompt = payload.prompt;
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const args = ['run', '--standalone', '--auto', '--model', model, payload.prompt];
 
-    const command = `${this.binaryPath} run --standalone --auto --model ${model} '${escapedPrompt}'`;
-
-    const result = await this.executor.execute(command, {
+    const result = await this.executor.execute(this.binaryPath, {
+      args,
       cwd: payload.cwd,
       env: payload.env
     });
