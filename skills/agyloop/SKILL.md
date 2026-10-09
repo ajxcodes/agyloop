@@ -25,6 +25,10 @@ description: >-
 > 4. Communicating with subagents via `send_message`.
 > 5. Presenting plans, status, and approval gates to the user.
 > 6. When invoking commit in an automated context, the orchestrator MUST use `bin/agyloop commit -y` or `bin/agyloop commit -y -m "<msg>"` after user confirmation, as interactive mode will abort in non-TTY environments.
+>
+> ### Worker Subagent Contract (Anti-Inception Guardrails)
+> Subagents spawned by agyloop are leaf workers and are STRICTLY PROHIBITED from acting as the orchestrator.
+> Subagents must NEVER call `invoke_subagent`, `define_subagent`, or spawn duplicate subagents. Subagents must execute their designated task directly using only their permitted tools and report results back to the caller.
 
 ---
 
