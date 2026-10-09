@@ -26,7 +26,15 @@ import {
   TIER_FLASH,
   STATIC_MODELS,
   DEFAULT_GATE_TIMEOUT_SECONDS,
-  ConfigResolutionError
+  ConfigResolutionError,
+  DEFAULT_CB_MAX_TURNS_PER_SUBAGENT,
+  DEFAULT_CB_MAX_GATE_RETRIES,
+  DEFAULT_CB_MAX_CONCURRENT_SUBAGENTS,
+  DEFAULT_CB_MAX_WALL_CLOCK_DURATION_SECONDS,
+  DEFAULT_CB_TOKEN_BUDGET_THRESHOLD,
+  CB_ACTION_PAUSE_FOR_HUMAN,
+  CB_ACTIONS,
+  ValidationError
 } from '../domain';
 
 export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
@@ -41,6 +49,14 @@ export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
     gateTimeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS,
     autoApproveInYolo: true,
     enableMcpInPlanner: true
+  }),
+  circuitBreakers: Object.freeze({
+    maxTurnsPerSubagent: DEFAULT_CB_MAX_TURNS_PER_SUBAGENT,
+    maxGateRetries: DEFAULT_CB_MAX_GATE_RETRIES,
+    maxConcurrentSubagents: DEFAULT_CB_MAX_CONCURRENT_SUBAGENTS,
+    maxWallClockDurationSeconds: DEFAULT_CB_MAX_WALL_CLOCK_DURATION_SECONDS,
+    tokenBudgetThreshold: DEFAULT_CB_TOKEN_BUDGET_THRESHOLD,
+    actionOnTrip: CB_ACTION_PAUSE_FOR_HUMAN
   })
 });
 
@@ -101,22 +117,30 @@ export class FileConfigRepository implements ConfigRepository {
       }
     }
 
-    // 2. Global user configuration (~/.gemini/config/agyloop.json)
-    const globalPath = path.join(os.homedir(), '.gemini', 'config', 'agyloop.json');
-    if (fs.existsSync(globalPath)) {
-      try {
-        const raw = fs.readFileSync(globalPath, 'utf8');
-        resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
-      } catch {
-        // Ignore read error
+    // 2. Global user configuration (~/.gemini/config/agyloop.json or ~/.gemini/config/codeloop.json)
+    const globalCandidates = [
+      path.join(os.homedir(), '.gemini', 'config', 'agyloop.json'),
+      path.join(os.homedir(), '.gemini', 'config', 'codeloop.json')
+    ];
+    for (const globalPath of globalCandidates) {
+      if (fs.existsSync(globalPath)) {
+        try {
+          const raw = fs.readFileSync(globalPath, 'utf8');
+          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
+          break;
+        } catch {
+          // Ignore read error
+        }
       }
     }
 
-    // 3. Workspace configuration (.agyloop.json or .agyloop/config.json)
+    // 3. Workspace configuration (.agyloop.json, .codeloop.json, .agyloop/config.json, .codeloop/config.json)
     const cwd = options.workspaceDir || options.cwd || process.cwd();
     const wsCandidates = [
       path.join(cwd, '.agyloop.json'),
-      path.join(cwd, '.agyloop', 'config.json')
+      path.join(cwd, '.codeloop.json'),
+      path.join(cwd, '.agyloop', 'config.json'),
+      path.join(cwd, '.codeloop', 'config.json')
     ];
 
     for (const wsPath of wsCandidates) {
@@ -148,6 +172,9 @@ export class FileConfigRepository implements ConfigRepository {
         const raw = fs.readFileSync(resolvedCustomPath, 'utf8');
         resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
       } catch (err: unknown) {
+        if (err instanceof ConfigResolutionError || err instanceof ValidationError) {
+          throw err;
+        }
         throw new ConfigResolutionError(
           options.customPath,
           `Failed to parse custom config file: ${resolvedCustomPath}`,
@@ -156,7 +183,44 @@ export class FileConfigRepository implements ConfigRepository {
       }
     }
 
+    // Merge default circuit breakers if omitted or partially specified
+    resolved = {
+      ...resolved,
+      circuitBreakers: {
+        ...DEFAULT_CONFIG.circuitBreakers,
+        ...(resolved.circuitBreakers || {})
+      }
+    };
+
+    this.validateCircuitBreakers(resolved.circuitBreakers);
+
     return resolved;
+  }
+
+  private validateCircuitBreakers(cb?: AgyLoopConfig['circuitBreakers']): void {
+    if (!cb) return;
+
+    if (cb.maxTurnsPerSubagent !== undefined && (typeof cb.maxTurnsPerSubagent !== 'number' || cb.maxTurnsPerSubagent <= 0)) {
+      throw new ValidationError('circuitBreakers.maxTurnsPerSubagent', cb.maxTurnsPerSubagent, 'Must be a positive number');
+    }
+    if (cb.maxGateRetries !== undefined && (typeof cb.maxGateRetries !== 'number' || cb.maxGateRetries < 0)) {
+      throw new ValidationError('circuitBreakers.maxGateRetries', cb.maxGateRetries, 'Must be a non-negative number');
+    }
+    if (cb.maxConcurrentSubagents !== undefined && (typeof cb.maxConcurrentSubagents !== 'number' || cb.maxConcurrentSubagents <= 0)) {
+      throw new ValidationError('circuitBreakers.maxConcurrentSubagents', cb.maxConcurrentSubagents, 'Must be a positive number');
+    }
+    if (cb.maxWallClockDurationSeconds !== undefined && (typeof cb.maxWallClockDurationSeconds !== 'number' || cb.maxWallClockDurationSeconds <= 0)) {
+      throw new ValidationError('circuitBreakers.maxWallClockDurationSeconds', cb.maxWallClockDurationSeconds, 'Must be a positive number');
+    }
+    if (cb.tokenBudgetThreshold !== undefined && (typeof cb.tokenBudgetThreshold !== 'number' || cb.tokenBudgetThreshold <= 0)) {
+      throw new ValidationError('circuitBreakers.tokenBudgetThreshold', cb.tokenBudgetThreshold, 'Must be a positive number');
+    }
+    if (cb.actionOnTrip !== undefined) {
+      const allowedActions = Object.values(CB_ACTIONS);
+      if (!(allowedActions as readonly string[]).includes(cb.actionOnTrip)) {
+        throw new ValidationError('circuitBreakers.actionOnTrip', cb.actionOnTrip, `Must be one of: ${allowedActions.join(', ')}`);
+      }
+    }
   }
 
   public mapModelToTier(inputModel: string): ModelTierName {

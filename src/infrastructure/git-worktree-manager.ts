@@ -510,6 +510,80 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
+   * Stashes or quarantines dirty changes in a worktree to prevent data loss.
+   */
+  public async quarantineWorktree(options: {
+    worktreePath: string;
+    taskId?: string | number;
+    quarantineBranch?: boolean;
+    workspaceDir?: string;
+  }): Promise<{ quarantined: boolean; branch?: string; stashed?: boolean }> {
+    const wtPath = path.resolve(options.worktreePath);
+    if (!fs.existsSync(wtPath)) {
+      return { quarantined: false };
+    }
+
+    // Check if worktree is dirty
+    const statusRes = await this.commandExecutor.execute('git status --porcelain', {
+      cwd: wtPath
+    });
+    const isDirty = Boolean(statusRes.stdout && statusRes.stdout.trim().length > 0);
+    if (!isDirty) {
+      return { quarantined: false };
+    }
+
+    const taskId = options.taskId ?? path.basename(wtPath);
+    const timestamp = Date.now();
+
+    if (options.quarantineBranch) {
+      const qBranch = `quarantine/task-${taskId}-${timestamp}`;
+      await this.commandExecutor.execute(`git checkout -b ${qBranch}`, { cwd: wtPath });
+      await this.commandExecutor.execute('git add -A', { cwd: wtPath });
+      await this.commandExecutor.execute(
+        `git commit -m "quarantine: automated emergency abort checkpoint for task ${taskId}"`,
+        { cwd: wtPath }
+      );
+      return { quarantined: true, branch: qBranch };
+    }
+
+    // Default: git stash
+    const stashMsg = `quarantine-abort-task-${taskId}-${timestamp}`;
+    const stashRes = await this.commandExecutor.execute(`git stash push -u -m "${stashMsg}"`, {
+      cwd: wtPath
+    });
+    const stashed = stashRes.exitCode === 0;
+    return { quarantined: true, stashed };
+  }
+
+  /**
+   * Clears stale .git/index.lock if present.
+   */
+  public async clearIndexLock(workspaceDir?: string): Promise<boolean> {
+    const workspace = await this.getRepoRoot(workspaceDir);
+    const gitDir = path.join(workspace, '.git');
+    let indexLockPath = path.join(gitDir, 'index.lock');
+
+    try {
+      if (fs.existsSync(gitDir) && fs.statSync(gitDir).isFile()) {
+        const gitContent = fs.readFileSync(gitDir, 'utf8');
+        const match = gitContent.match(/gitdir:\s*(.+)/i);
+        if (match && match[1]) {
+          indexLockPath = path.join(path.resolve(workspace, match[1].trim()), 'index.lock');
+        }
+      }
+
+      if (fs.existsSync(indexLockPath)) {
+        fs.unlinkSync(indexLockPath);
+        return true;
+      }
+    } catch {
+      // Non-fatal
+    }
+
+    return false;
+  }
+
+  /**
    * Lists local and remote branches in the repository.
    */
   public async listBranches(options?: ListBranchesOptions): Promise<readonly string[]> {

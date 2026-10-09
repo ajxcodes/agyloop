@@ -525,6 +525,28 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         }
       }
 
+      if (updateData.abortEvent) {
+        const evt = updateData.abortEvent;
+        const filesTouchedStr = evt.filesTouched && evt.filesTouched.length > 0
+          ? evt.filesTouched.map((f) => `\`${f}\``).join(', ')
+          : 'None';
+        const teardownStr = typeof evt.teardownMetrics === 'object' && evt.teardownMetrics !== null
+          ? JSON.stringify(evt.teardownMetrics)
+          : String(evt.teardownMetrics || 'Complete');
+
+        const abortBlock = [
+          '### [ABORTED]',
+          `- **Timestamp:** ${evt.timestamp}`,
+          `- **Aborted Stage:** ${evt.stage}`,
+          `- **Active Subagent:** ${evt.subagent || 'None'}`,
+          `- **Files Touched:** ${filesTouchedStr}`,
+          `- **Teardown Metrics:** ${teardownStr}`,
+          evt.reason ? `- **Reason:** ${evt.reason}` : null
+        ].filter(Boolean).join('\n');
+
+        content = content.trimEnd() + '\n\n' + abortBlock + '\n';
+      }
+
       fs.writeFileSync(summaryFilePath, content, 'utf8');
       return true;
     } catch {

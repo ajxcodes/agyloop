@@ -45,6 +45,14 @@ export interface SummaryUpdateData {
     readonly targetStage?: string;
     readonly reason?: string;
   } | string;
+  readonly abortEvent?: {
+    readonly timestamp: string;
+    readonly stage: string;
+    readonly subagent?: string;
+    readonly filesTouched?: readonly string[];
+    readonly teardownMetrics?: Record<string, unknown> | string;
+    readonly reason?: string;
+  };
 }
 
 export interface GeneratePlanOptions {

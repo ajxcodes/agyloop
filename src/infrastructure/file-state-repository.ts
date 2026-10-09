@@ -205,6 +205,69 @@ export class FileStateRepository implements StateRepository {
     }
   }
 
+  public resetTask(issue: number | string): void {
+    this.validateSmokeTestIsolation('delete');
+    const taskFile = path.join(
+      this.workspaceRoot,
+      DEFAULT_STATE_DIR,
+      DEFAULT_TASKS_STATE_DIR,
+      `${issue}.json`
+    );
+    try {
+      if (fs.existsSync(taskFile)) {
+        fs.unlinkSync(taskFile);
+      }
+    } catch (err) {
+      throw new StateStorageError(
+        taskFile,
+        'delete',
+        `Failed to remove task state file at ${taskFile}`,
+        err
+      );
+    }
+  }
+
+  public resetAll(): void {
+    this.validateSmokeTestIsolation('delete');
+    // 1. Remove root state file
+    const rootStateFile = path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+    try {
+      if (fs.existsSync(rootStateFile)) {
+        fs.unlinkSync(rootStateFile);
+      }
+    } catch {
+      // Continue to tasks dir
+    }
+
+    // 2. Remove all task state files in tasks dir
+    const tasksDir = path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_TASKS_STATE_DIR);
+    try {
+      if (fs.existsSync(tasksDir)) {
+        const files = fs.readdirSync(tasksDir);
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            try {
+              fs.unlinkSync(path.join(tasksDir, file));
+            } catch {
+              // Ignore individual delete error
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore directory read error
+    }
+
+    // 3. Also unlink current stateFilePath if distinct
+    if (this.stateFilePath !== rootStateFile && fs.existsSync(this.stateFilePath)) {
+      try {
+        fs.unlinkSync(this.stateFilePath);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
   /**
    * Scans and returns all known task snapshots from .agyloop/tasks/*.json
    * and the singleton snapshot from .agyloop/state.json if present.

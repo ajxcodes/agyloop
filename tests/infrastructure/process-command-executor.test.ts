@@ -36,4 +36,17 @@ describe('ProcessCommandExecutor (Infrastructure Layer)', () => {
     assert.notStrictEqual(result.exitCode, 0);
     assert.ok(elapsed < 2500, `Execution took ${elapsed}ms, expected timeout around 200ms`);
   });
+
+  test('killAll terminates tracked processes on the instance', async () => {
+    const procPromise = executor.execute('node -e "setInterval(() => {}, 1000);"');
+
+    // Give process a small tick to start and register in activeProcesses
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const killed = executor.killAll();
+    assert.ok(killed >= 1, `Expected at least 1 killed process, got ${killed}`);
+
+    const result = await procPromise;
+    assert.ok(result.exitCode !== 0, `Expected non-zero exit code, got ${result.exitCode}`);
+  });
 });

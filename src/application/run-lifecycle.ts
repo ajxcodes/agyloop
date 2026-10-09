@@ -42,6 +42,7 @@ import {
   GATE_APPROVAL,
   GATE_COMMIT,
   GATE_TRIAGE,
+  GATE_CIRCUIT_BREAKER,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_LIFECYCLE_STARTED,
   NOTE_LIFECYCLE_COMPLETED,
@@ -54,7 +55,12 @@ import {
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
   GateCommandDefinition,
-  WorktreeDescriptor
+  WorktreeDescriptor,
+  DEFAULT_CB_MAX_GATE_RETRIES,
+  CB_ACTION_PAUSE_FOR_HUMAN,
+  CB_ACTION_ABORT,
+  CB_ACTION_WARN,
+  CircuitBreakerTrippedError
 } from '../domain';
 import {
   StateRepository,
@@ -112,7 +118,7 @@ export interface RunLifecycleResult {
   readonly mode: ExecutionMode;
   readonly currentStage: StageName;
   readonly stateMachine: StateMachine;
-  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | null;
+  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | typeof GATE_CIRCUIT_BREAKER | null;
   readonly planResult?: StartPlanningResult;
   readonly implementationResult?: StartImplementationResult;
   readonly qualityGateResult?: QualityGateRunResult;
@@ -715,6 +721,21 @@ export class RunLifecycleUseCase {
     sm = qgResult.stateMachine;
 
     if (!qgResult.passed) {
+      const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
+      const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
+      const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
+
+      if (sm.implementToGateLoops >= maxRetries) {
+        return this.handleCircuitBreakerTrip(
+          sm,
+          'qualityGateRetries',
+          maxRetries,
+          sm.implementToGateLoops,
+          actionOnTrip,
+          'Quality gates failed repeatedly.'
+        );
+      }
+
       return {
         success: false,
         mode: MODE_YOLO,
@@ -892,6 +913,21 @@ export class RunLifecycleUseCase {
       sm = qgResult.stateMachine;
 
       if (!qgResult.passed) {
+        const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
+        const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
+        const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
+
+        if (sm.implementToGateLoops >= maxRetries) {
+          return this.handleCircuitBreakerTrip(
+            sm,
+            'qualityGateRetries',
+            maxRetries,
+            sm.implementToGateLoops,
+            actionOnTrip,
+            'Quality gates failed repeatedly.'
+          );
+        }
+
         return {
           success: false,
           mode: MODE_STANDARD,
@@ -1045,6 +1081,43 @@ export class RunLifecycleUseCase {
       implementationResult: implResult,
       qualityGateResult: qgResult,
       reviewResult
+    };
+  }
+
+  private handleCircuitBreakerTrip(
+    sm: StateMachine,
+    breaker: string,
+    limit: number,
+    actual: number,
+    action: string,
+    extraMessage?: string
+  ): RunLifecycleResult {
+    const baseMsg = `Circuit breaker '${breaker}' tripped: exceeded limit ${limit} (actual: ${actual}).`;
+    const fullMsg = extraMessage ? `${baseMsg} ${extraMessage}` : baseMsg;
+
+    if (action === CB_ACTION_ABORT) {
+      throw new CircuitBreakerTrippedError(breaker, limit, actual, action, fullMsg);
+    }
+
+    if (action === CB_ACTION_WARN) {
+      return {
+        success: false,
+        mode: sm.mode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        message: `[WARNING] ${fullMsg}`
+      };
+    }
+
+    // Default: pause_for_human
+    sm.pauseAtGate(GATE_CIRCUIT_BREAKER);
+    return {
+      success: false,
+      mode: sm.mode,
+      currentStage: sm.currentStage,
+      stateMachine: sm,
+      pausedAtGate: GATE_CIRCUIT_BREAKER,
+      message: `${fullMsg} Paused for human intervention.`
     };
   }
 }

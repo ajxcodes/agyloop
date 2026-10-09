@@ -27,7 +27,9 @@ import {
   ERR_WORKTREE,
   ERR_PREFLIGHT_HALT,
   ERR_MILESTONE_RELEASE,
-  ERR_MILESTONE_SEALED
+  ERR_MILESTONE_SEALED,
+  ERR_CIRCUIT_BREAKER_TRIPPED,
+  ERR_EMERGENCY_ABORT
 } from './constants';
 
 
@@ -95,6 +97,41 @@ export class ConfigResolutionError extends AgyLoopError {
     const msg = customMessage || `Failed to resolve configuration for '${target}'.`;
     super(msg, { target, ...details });
     this.target = target;
+  }
+}
+
+export class CircuitBreakerTrippedError extends AgyLoopError {
+  public readonly code = ERR_CIRCUIT_BREAKER_TRIPPED;
+  public readonly breaker: string;
+  public readonly limit: number;
+  public readonly actual: number;
+  public readonly action: string;
+
+  constructor(
+    breaker: string,
+    limit: number,
+    actual: number,
+    action: string,
+    customMessage?: string
+  ) {
+    const msg =
+      customMessage ||
+      `Circuit breaker '${breaker}' tripped: exceeded limit ${limit} (actual: ${actual}). Action: ${action}.`;
+    super(msg, { breaker, limit, actual, action });
+    this.breaker = breaker;
+    this.limit = limit;
+    this.actual = actual;
+    this.action = action;
+  }
+}
+
+export class EmergencyAbortError extends AgyLoopError {
+  public readonly code = ERR_EMERGENCY_ABORT;
+  public readonly reason: string;
+
+  constructor(reason: string, details?: Record<string, unknown>) {
+    super(`Emergency abort triggered: ${reason}`, details);
+    this.reason = reason;
   }
 }
 

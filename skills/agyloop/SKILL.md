@@ -257,13 +257,15 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `bin/agyloop release [phaseBranch]` | Creates a Milestone Release PR from phase collector to main with automated SemVer labeling and changelog. | `[phaseBranch]`, `--base-branch <branch>`, `--dry-run`, `--refresh` |
 | `bin/agyloop reset` | Resets the `.agyloop/state.json` checkpoint for the repository. | None |
 | `bin/agyloop transition <TARGET_STAGE>` | Moves the state machine to the TARGET stage (the stage you want to enter, not the current one). Follow the sequence DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED. Calling `transition X` while already in stage `X` throws `InvalidTransitionError`. | `<TARGET_STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
+| `bin/agyloop abort` / `bin/codeloop abort` | Emergency Stop: terminates active subagents, clears git index locks, quarantines uncommitted changes, and shuts down test sandboxes. | `-f` / `--force`, `--quarantine`, `--reason "<text>"` |
 
 ---
 
 ## User Slash Commands
 
-- `/agyloop [task]`: Full end-to-end lifecycle with human approval gates.
-- `/agyloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
-- `/agyloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
+- `/agyloop [task]` or `/codeloop [task]`: Full end-to-end lifecycle with human approval gates.
+- `/agyloop plan` or `/codeloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
+- `/agyloop implement` or `/codeloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
 - Quality gate stage: run the `gate` subagent from the payload in `bin/agyloop next --json` against the active worktree diff.
-- `/agyloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.
+- `/agyloop yolo` or `/codeloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.
+- `/agyloop abort` or `/codeloop abort`: Emergency Stop halting all active subagents and restoring workspace stability.

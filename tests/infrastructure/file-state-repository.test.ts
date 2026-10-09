@@ -250,5 +250,31 @@ describe('FileStateRepository', () => {
       const stages = states.map((s: any) => s.currentStage).sort();
       assert.deepStrictEqual(stages, ['DISCOVERY', 'IMPLEMENT', 'INITIALIZED']);
     });
+
+    test('resetTask removes specific task state file without touching root or other tasks', () => {
+      const repo = new FileStateRepository({ workspaceDir: tempDir });
+      fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'state.json'), JSON.stringify({ issue: null }));
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '20.json'), JSON.stringify({ issue: 20 }));
+
+      repo.resetTask(10);
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '10.json')), false);
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '20.json')), true);
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'state.json')), true);
+    });
+
+    test('resetAll purges all task files and resets root state', () => {
+      const repo = new FileStateRepository({ workspaceDir: tempDir });
+      fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'state.json'), JSON.stringify({ issue: null }));
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '20.json'), JSON.stringify({ issue: 20 }));
+
+      repo.resetAll();
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '10.json')), false);
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '20.json')), false);
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'state.json')), false);
+    });
   });
 });

@@ -198,6 +198,24 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsedAll.options.worktreeSubcommand, 'clean');
       assert.strictEqual(parsedAll.options.all, true);
     });
+
+    test('parses abort command and quarantine flags', () => {
+      const parsed = parseArguments(['abort', '--force', '--quarantine', '--reason', 'Testing emergency halt']);
+      assert.strictEqual(parsed.command, 'abort');
+      assert.strictEqual(parsed.options.force, true);
+      assert.strictEqual(parsed.options.quarantine, true);
+      assert.strictEqual(parsed.options.reason, 'Testing emergency halt');
+    });
+
+    test('parses reset command with --issue and --all options', () => {
+      const parsedIssue = parseArguments(['reset', '--issue', '99']);
+      assert.strictEqual(parsedIssue.command, 'reset');
+      assert.strictEqual(parsedIssue.options.issue, '99');
+
+      const parsedAll = parseArguments(['reset', '--all']);
+      assert.strictEqual(parsedAll.command, 'reset');
+      assert.strictEqual(parsedAll.options.all, true);
+    });
   });
 
   describe('Help Output & Stage Badges', () => {
