@@ -4,8 +4,6 @@
 # ==============================================================================
 set -euo pipefail
 
-echo "Warning: The 'agyloop' command is deprecated. Please use 'codeloop' instead." >&2
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! command -v node &>/dev/null; then

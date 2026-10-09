@@ -265,7 +265,7 @@ export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
 
 // Numeric Constants & Default Invariants
 export const STATE_SCHEMA_VERSION = '1.0.0' as const;
-export const CLI_VERSION = '0.5.0' as const;
+export const CLI_VERSION = '0.6.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
 export const SECONDS_PER_MINUTE = 60 as const;
@@ -289,6 +289,7 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
 // Path & File Constants
 export const DEFAULT_STATE_DIR = '.agyloop' as const;
 export const DEFAULT_STATE_FILE = 'state.json' as const;
+export const DEFAULT_TASKS_STATE_DIR = 'tasks' as const;
 export const DEFAULT_PLANS_DIR = 'artifacts/plans' as const;
 export const DEFAULT_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
 export const DEFAULT_TEMPLATES_DIRNAME = 'templates' as const;
