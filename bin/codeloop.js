@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * agyloop - Multi-Subagent Development Lifecycle Orchestrator CLI
+ * codeloop - Multi-Subagent Development Lifecycle Orchestrator CLI
  *
- * Deprecated thin launcher delegating directly to the compiled presentation dispatcher.
+ * Thin launcher delegating directly to the compiled presentation dispatcher.
  */
-console.warn("Warning: The 'agyloop' command is deprecated. Please use 'codeloop' instead.");
-
 const fs = require('fs');
 const path = require('path');
 
