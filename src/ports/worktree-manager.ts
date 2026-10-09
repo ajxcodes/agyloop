@@ -135,6 +135,21 @@ export interface WorktreeManagerPort {
   cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number>;
 
   /**
+   * Stashes or quarantines dirty changes in a worktree to prevent data loss.
+   */
+  quarantineWorktree?(options: {
+    worktreePath: string;
+    taskId?: string | number;
+    quarantineBranch?: boolean;
+    workspaceDir?: string;
+  }): Promise<{ quarantined: boolean; branch?: string; stashed?: boolean }>;
+
+  /**
+   * Clears stale .git/index.lock if present.
+   */
+  clearIndexLock?(workspaceDir?: string): Promise<boolean>;
+
+  /**
    * Lists local and optionally remote branches in the repository.
    */
   listBranches?(options?: ListBranchesOptions): Promise<readonly string[]>;

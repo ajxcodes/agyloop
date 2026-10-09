@@ -106,7 +106,8 @@ import {
   GetNextActionUseCase,
   TriagePrCommentsUseCase,
   TriageAction,
-  SyncUseCase
+  SyncUseCase,
+  AbortPipelineUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -142,6 +143,8 @@ export interface CliOptions {
   step: boolean;
   messageFile: string | null;
   createPr: boolean;
+  quarantine: boolean;
+  reason: string | null;
 }
 
 export interface ParsedCliArgs {
@@ -172,7 +175,8 @@ Pipeline Management:
   config             Display active configuration and model routing table
   models             List available Gemini models and mapped Antigravity tiers
   prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
-  reset              Reset .agyloop/state.json checkpoint
+  reset              Reset .agyloop/state.json checkpoint (supports --issue <id> and --all)
+  abort              Emergency Stop: halts subagents, clears locks, quarantines worktrees, stops sandboxes
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
@@ -187,7 +191,8 @@ Operational Flags:
       --message-file <path> Read commit message from file
       --create-pr    Automatically create a PR after commit
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
-  -f, --force        Force operation (force fresh version check or reinstallation)
+  -f, --force        Force operation (force abort, fresh version check or reinstallation)
+      --quarantine   Quarantine uncommitted changes to a dedicated branch during abort
       --issue <num>  Associate execution with GitHub issue number
       --title <text> Specify plan title for persistent artifact scaffolding
       --type <type>  Specify plan type (discovery | implementation | auto)
@@ -256,7 +261,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     triageAction: null,
     step: false,
     messageFile: null,
-    createPr: false
+    createPr: false,
+    quarantine: false,
+    reason: null
   };
 
   const positional: string[] = [];
@@ -294,6 +301,16 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.json = true;
     } else if (arg === '--force' || arg === '-f') {
       options.force = true;
+    } else if (arg === '--quarantine') {
+      options.quarantine = true;
+    } else if (arg === '--reason') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.reason = args[++i];
+      } else {
+        options.reason = null;
+      }
+    } else if (arg.startsWith('--reason=')) {
+      options.reason = arg.split('=')[1] || null;
     } else if (arg === '--base-branch') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.baseBranch = args[++i];
@@ -356,6 +373,14 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--config=')) {
       options.configPath = arg.split('=')[1] || null;
+    } else if (arg === '--workspace' || arg === '--workspace-dir') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.workspaceDir = args[++i];
+      }
+    } else if (arg.startsWith('--workspace=')) {
+      options.workspaceDir = arg.split('=')[1] || undefined;
+    } else if (arg.startsWith('--workspace-dir=')) {
+      options.workspaceDir = arg.split('=')[1] || undefined;
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
@@ -430,7 +455,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   }
 
   const issueValue = IssueNumber.tryFrom(options.issue)?.value;
-  const stateRepo = new FileStateRepository({ issue: issueValue });
+  const stateRepo = new FileStateRepository({ workspaceDir: options.workspaceDir, issue: issueValue });
   const githubGateway = new CliGitHubGateway();
   const configRepo = new FileConfigRepository();
   const modelCatalog = new GeminiModelCatalog({ configRepo });
@@ -495,7 +520,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       }
 
-      console.log('\n=== AgyLoop: Next Subagent Directive ===');
+      console.log('\n=== CodeLoop: Next Subagent Directive ===');
       console.log(`Current Stage : ${formatStageBadge(res.currentStage)}`);
       console.log(`Next Action   : ${res.title}`);
       if (res.baseBranch) {
@@ -572,7 +597,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       }
 
-      console.log('\n=== AgyLoop: Branch Lifecycle & Target Diagnostics ===');
+      console.log('\n=== CodeLoop: Branch Lifecycle & Target Diagnostics ===');
       console.log(`Base Collector Branch : ${collectorBranch ? collectorBranch : '(none - direct from ' + defaultBranch + ')'}`);
       console.log(`Active Task Branch    : ${activeTaskBranch ? activeTaskBranch : '(none - worktree not active)'}`);
       console.log(`Milestone Target      : ${defaultBranch}`);
@@ -587,7 +612,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'status': {
       const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
       const result = await getStatusUseCase.execute();
-      console.log('\n=== AgyLoop: Pipeline Status ===');
+      console.log('\n=== CodeLoop: Pipeline Status ===');
       console.log(`Current Stage : ${formatStageBadge(result.status.currentStage)}`);
       console.log(`Execution Mode: ${result.status.mode}`);
       console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
@@ -602,9 +627,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         for (const task of result.activeTasks) {
           const issueStr = task.issue ? `#${task.issue}` : 'Root';
           const issuePad = issueStr.padEnd(11);
-          const stageBadge = formatStageBadge(task.status.currentStage).padEnd(20);
+          const rawStage = `[${task.status.currentStage}]`;
+          const stageBadge = formatStageBadge(task.status.currentStage);
+          const stagePaddingNeeded = Math.max(0, 20 - rawStage.length);
+          const stagePad = stageBadge + ' '.repeat(stagePaddingNeeded);
           const modePad = task.status.mode.padEnd(15);
-          console.log(`${issuePad} ${stageBadge} ${modePad} ${task.status.updatedAt}`);
+          console.log(`${issuePad} ${stagePad} ${modePad} ${task.status.updatedAt}`);
         }
         console.log('--------------------------------------------------------------------------------');
       }
@@ -626,7 +654,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'config': {
-      console.log('\n=== AgyLoop: Configuration & Model Routing ===');
+      console.log('\n=== CodeLoop: Configuration & Model Routing ===');
       const roles = ['planner', 'implementer', 'gate', 'reviewer', 'triage'];
       console.log('\nSubagent Model Routing Table:');
       console.log('----------------------------------------------------------------------');
@@ -649,7 +677,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'models': {
-      console.log('\n=== AgyLoop: Discovering Available Gemini Models ===');
+      console.log('\n=== CodeLoop: Discovering Available Gemini Models ===');
       const listModelsUseCase = new ListModelsUseCase(modelCatalog);
       const models = await listModelsUseCase.execute({ forceRefresh: options.refresh });
       console.log(`Found ${models.length} candidate models:\n`);
@@ -667,8 +695,50 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'reset': {
       const resetUseCase = new ResetPipelineUseCase(stateRepo);
-      await resetUseCase.execute();
-      console.log('✓ AgyLoop pipeline state reset. .agyloop/state.json cleared.');
+      await resetUseCase.execute({
+        issue: options.issue,
+        all: options.all
+      });
+      if (options.all) {
+        console.log('✓ CodeLoop pipeline state reset. .agyloop/state.json and all task checkpoints purged.');
+      } else if (options.issue) {
+        console.log(`✓ CodeLoop task state reset. Checkpoint for issue #${options.issue} cleared.`);
+      } else {
+        console.log('✓ CodeLoop pipeline state reset. .agyloop/state.json cleared.');
+      }
+      return EXIT_CODE_SUCCESS;
+    }
+
+    case 'abort': {
+      console.log('\n🛑 CodeLoop: Initiating Emergency Abort Protocol...');
+      const abortUseCase = new AbortPipelineUseCase({
+        stateRepo,
+        commandExecutor,
+        worktreeManager,
+        planGenerator
+      });
+
+      const abortResult = await abortUseCase.execute({
+        workspaceDir: options.workspaceDir,
+        issue: options.issue,
+        force: options.force,
+        quarantine: options.quarantine
+      });
+
+      console.log(`✓ Emergency Abort completed in ${abortResult.durationMs}ms:`);
+      console.log(`  - Processes terminated     : ${abortResult.processesTerminated}`);
+      console.log(`  - Stale git locks cleared  : ${abortResult.indexLockRemoved ? 'YES' : 'NONE'}`);
+      console.log(`  - Worktrees quarantined    : ${abortResult.worktreesQuarantined.length}`);
+      for (const wt of abortResult.worktreesQuarantined) {
+        const actionStr = wt.branch ? `branch: ${wt.branch}` : (wt.stashed ? 'stashed' : 'quarantined');
+        console.log(`    * ${wt.worktreePath} (${actionStr})`);
+      }
+      console.log(`  - Containers terminated    : ${abortResult.containersTerminated.length}`);
+      for (const c of abortResult.containersTerminated) {
+        console.log(`    * ${c}`);
+      }
+      console.log(`  - Summary audit checkpoint : ${abortResult.auditLogged ? 'LOGGED' : 'SKIPPED'}`);
+      console.log('');
       return EXIT_CODE_SUCCESS;
     }
 
@@ -709,7 +779,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           includeExternal: options.all
         });
         const list = res.data || [];
-        console.log('\n=== AgyLoop: Active Isolated Git Worktrees ===');
+        console.log('\n=== CodeLoop: Active Isolated Git Worktrees ===');
         if (list.length === 0) {
           console.log('No isolated worktrees found.\n');
         } else {
@@ -762,7 +832,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             return EXIT_CODE_SUCCESS;
           }
 
-          console.log('\n=== AgyLoop: Critique CLI Status ===');
+          console.log('\n=== CodeLoop: Critique CLI Status ===');
           console.log(`Resolution Source : ${status.resolution.source}`);
           console.log(`Resolved Path     : ${status.resolution.path || 'Not found'}`);
           console.log(`Installed Version : ${status.versionInfo.currentVersion ? `v${status.versionInfo.currentVersion}` : 'Not installed'}`);
@@ -840,7 +910,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
 
-      console.log('\n=== AgyLoop: PR Review Comments Triage ===');
+      console.log('\n=== CodeLoop: PR Review Comments Triage ===');
       try {
         const result = await triageUseCase.execute({
           issue: options.issue,
@@ -896,7 +966,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         promptRepo
       );
       const def = resolveSubagentUseCase.execute({ role, customConfig: config });
-      console.log('\n=== AgyLoop: Subagent Definition ===');
+      console.log('\n=== CodeLoop: Subagent Definition ===');
       console.log(`Subagent Name : ${def.name}`);
       console.log(`Subagent Role : ${def.role}`);
       console.log(`Resolved Tier : ${def.model} (API default: ${def.apiModel})`);
@@ -905,7 +975,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.log(
         `Capabilities  : write_tools=${def.capabilities.enable_write_tools}, mcp_tools=${def.capabilities.enable_mcp_tools}`
       );
-      console.log(`\n=== AgyLoop: System Prompt (${DEFAULT_PROMPTS_DIR}/${role}.md) ===\n`);
+      console.log(`\n=== CodeLoop: System Prompt (${DEFAULT_PROMPTS_DIR}/${role}.md) ===\n`);
       console.log(def.system_prompt);
       console.log('');
       return EXIT_CODE_SUCCESS;
@@ -1374,8 +1444,54 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 }
 
 export async function main(): Promise<void> {
+  const rawArgs = process.argv.slice(2);
+  let parsedOptions: CliOptions | null = null;
   try {
-    const code = await runCli(process.argv.slice(2));
+    const parsed = parseArguments(rawArgs);
+    parsedOptions = parsed.options;
+  } catch {
+    // Non-fatal fallback if parsing raw args fails
+  }
+
+  let isAborting = false;
+  const handleSignal = async (signal: string) => {
+    if (isAborting) {
+      process.exit(1);
+    }
+    isAborting = true;
+    console.error(`\n[${signal}] Received emergency termination signal. Invoking abort protocol...`);
+    try {
+      const issueValue = parsedOptions?.issue ? IssueNumber.tryFrom(parsedOptions.issue)?.value : undefined;
+      const stateRepo = new FileStateRepository({
+        workspaceDir: parsedOptions?.workspaceDir,
+        issue: issueValue
+      });
+      const abortUseCase = new AbortPipelineUseCase({
+        stateRepo,
+        commandExecutor: new ProcessCommandExecutor(),
+        worktreeManager: new GitWorktreeManager(),
+        planGenerator: new FilePlanGenerator()
+      });
+      await abortUseCase.execute({
+        workspaceDir: parsedOptions?.workspaceDir,
+        issue: issueValue,
+        force: true,
+        reason: `POSIX Signal ${signal}`
+      });
+    } catch {
+      // Best-effort cleanup
+    }
+    process.exit(1);
+  };
+
+  process.once('SIGINT', () => handleSignal('SIGINT'));
+  process.once('SIGTERM', () => handleSignal('SIGTERM'));
+  if (process.platform !== 'win32') {
+    process.once('SIGUSR1', () => handleSignal('SIGUSR1'));
+  }
+
+  try {
+    const code = await runCli(rawArgs);
     if (code !== 0) {
       process.exit(code);
     }

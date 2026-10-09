@@ -38,6 +38,15 @@ export interface IssueMigrationConfig {
   readonly hookCommand?: string;
 }
 
+export interface CircuitBreakersConfig {
+  readonly maxTurnsPerSubagent?: number;
+  readonly maxGateRetries?: number;
+  readonly maxConcurrentSubagents?: number;
+  readonly maxWallClockDurationSeconds?: number;
+  readonly tokenBudgetThreshold?: number;
+  readonly actionOnTrip?: 'pause_for_human' | 'abort' | 'warn' | string;
+}
+
 export interface VersioningConfig {
   readonly strategy?: 'package_json' | 'git_tag_only' | 'none' | string;
   readonly file?: string;
@@ -48,6 +57,7 @@ export interface VersioningConfig {
 export interface AgyLoopConfig {
   readonly models: ModelRoutingConfig;
   readonly options: PipelineOptionsConfig;
+  readonly circuitBreakers?: CircuitBreakersConfig;
   readonly migration?: IssueMigrationConfig;
   readonly versioning?: VersioningConfig;
 }

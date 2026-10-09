@@ -234,6 +234,8 @@ export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
 export const ERR_PREFLIGHT_HALT = 'ERR_PREFLIGHT_HALT' as const;
 export const ERR_MILESTONE_RELEASE = 'ERR_MILESTONE_RELEASE' as const;
 export const ERR_MILESTONE_SEALED = 'ERR_MILESTONE_SEALED' as const;
+export const ERR_CIRCUIT_BREAKER_TRIPPED = 'ERR_CIRCUIT_BREAKER_TRIPPED' as const;
+export const ERR_EMERGENCY_ABORT = 'ERR_EMERGENCY_ABORT' as const;
 export const HALT_TYPE_MISSING_PLAN_DIR = 'MISSING_PLAN_DIR' as const;
 
 export const ERROR_CODES = Object.freeze({
@@ -257,6 +259,8 @@ export const ERROR_CODES = Object.freeze({
   PREFLIGHT_HALT: ERR_PREFLIGHT_HALT,
   MILESTONE_RELEASE: ERR_MILESTONE_RELEASE,
   MILESTONE_SEALED: ERR_MILESTONE_SEALED,
+  CIRCUIT_BREAKER_TRIPPED: ERR_CIRCUIT_BREAKER_TRIPPED,
+  EMERGENCY_ABORT: ERR_EMERGENCY_ABORT,
   PREFLIGHT_HALT_MISSING_PLAN_DIR: HALT_TYPE_MISSING_PLAN_DIR
 });
 
@@ -274,6 +278,25 @@ export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
 export const MAX_IMPLEMENT_GATE_LOOPS = 3 as const;
 
+// Circuit Breaker Defaults & Action Types
+export const DEFAULT_CB_MAX_TURNS_PER_SUBAGENT = 15 as const;
+export const DEFAULT_CB_MAX_GATE_RETRIES = 3 as const;
+export const DEFAULT_CB_MAX_CONCURRENT_SUBAGENTS = 4 as const;
+export const DEFAULT_CB_MAX_WALL_CLOCK_DURATION_SECONDS = 900 as const;
+export const DEFAULT_CB_TOKEN_BUDGET_THRESHOLD = 150000 as const;
+
+export const CB_ACTION_PAUSE_FOR_HUMAN = 'pause_for_human' as const;
+export const CB_ACTION_ABORT = 'abort' as const;
+export const CB_ACTION_WARN = 'warn' as const;
+export const DEFAULT_CB_ACTION_ON_TRIP = CB_ACTION_PAUSE_FOR_HUMAN;
+
+export const CB_ACTIONS = Object.freeze({
+  PAUSE_FOR_HUMAN: CB_ACTION_PAUSE_FOR_HUMAN,
+  ABORT: CB_ACTION_ABORT,
+  WARN: CB_ACTION_WARN
+});
+export type CircuitBreakerActionType = typeof CB_ACTIONS[keyof typeof CB_ACTIONS];
+
 export const STATE_MUTATING_COMMANDS = Object.freeze([
   'transition',
   'reset',
@@ -283,6 +306,7 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   'yolo',
   'triage',
   'release',
+  'abort',
   null
 ] as const);
 
@@ -1156,11 +1180,13 @@ export const SECTION_COMMIT_DETAILS_TITLE = '## Commit & Release Details' as con
 export const GATE_APPROVAL = 'APPROVAL' as const;
 export const GATE_COMMIT = 'COMMIT' as const;
 export const GATE_TRIAGE = 'TRIAGE' as const;
+export const GATE_CIRCUIT_BREAKER = 'CIRCUIT_BREAKER' as const;
 
 export const LIFECYCLE_GATES = Object.freeze({
   APPROVAL: GATE_APPROVAL,
   COMMIT: GATE_COMMIT,
-  TRIAGE: GATE_TRIAGE
+  TRIAGE: GATE_TRIAGE,
+  CIRCUIT_BREAKER: GATE_CIRCUIT_BREAKER
 });
 
 export type LifecycleGateName = typeof LIFECYCLE_GATES[keyof typeof LIFECYCLE_GATES];
@@ -1195,6 +1221,7 @@ export const COMMAND_NEXT = 'next' as const;
 export const COMMAND_BRANCH_INFO = 'branch-info' as const;
 export const COMMAND_TRIAGE = 'triage' as const;
 export const COMMAND_SYNC = 'sync' as const;
+export const COMMAND_ABORT = 'abort' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1214,7 +1241,8 @@ export const CLI_COMMANDS = Object.freeze({
   BRANCH_INFO: COMMAND_BRANCH_INFO,
   CRITIQUE: COMMAND_CRITIQUE,
   TRIAGE: COMMAND_TRIAGE,
-  SYNC: COMMAND_SYNC
+  SYNC: COMMAND_SYNC,
+  ABORT: COMMAND_ABORT
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
@@ -1306,6 +1334,7 @@ export const FLAG_KEEP_WORKTREE = '--keep-worktree' as const;
 export const FLAG_JSON = '--json' as const;
 export const FLAG_FORCE = '--force' as const;
 export const FLAG_FORCE_SHORT = '-f' as const;
+export const FLAG_QUARANTINE = '--quarantine' as const;
 
 export const CLI_FLAGS = Object.freeze({
   YOLO: FLAG_YOLO,
@@ -1328,6 +1357,7 @@ export const CLI_FLAGS = Object.freeze({
   JSON: FLAG_JSON,
   FORCE: FLAG_FORCE,
   FORCE_SHORT: FLAG_FORCE_SHORT,
+  QUARANTINE: FLAG_QUARANTINE,
   HELP: FLAG_HELP,
   HELP_SHORT: FLAG_HELP_SHORT,
   VERSION: FLAG_VERSION,

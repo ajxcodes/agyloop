@@ -43,6 +43,38 @@
         },
         "yolo": {
           "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
+        },
+        "abort": {
+          "description": "Emergency Stop: halt subagents, clear git index locks, quarantine worktrees, and stop sandboxes"
+        }
+      },
+      "flags": {
+        "--commit-after": {
+          "type": "boolean",
+          "description": "Automatically commit if all quality gates and reviews pass green",
+          "default": false
+        }
+      }
+    },
+    "codeloop": {
+      "name": "codeloop",
+      "description": "Multi-subagent development lifecycle orchestrator (alias for agyloop)",
+      "usage": "/codeloop [plan | implement | gates | yolo | abort] [--commit-after]",
+      "subcommands": {
+        "plan": {
+          "description": "Run read-only planning subagent and generate persistent specs in artifacts/plans/"
+        },
+        "implement": {
+          "description": "Resume straight from an approved plan with a fresh context"
+        },
+        "gates": {
+          "description": "Run quality and AI review gates on current working diff"
+        },
+        "yolo": {
+          "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
+        },
+        "abort": {
+          "description": "Emergency Stop: halt subagents, clear git index locks, quarantine worktrees, and stop sandboxes"
         }
       },
       "flags": {

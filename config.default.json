@@ -11,5 +11,13 @@
     "gateTimeoutSeconds": 300,
     "autoApproveInYolo": true,
     "enableMcpInPlanner": true
+  },
+  "circuitBreakers": {
+    "maxTurnsPerSubagent": 15,
+    "maxGateRetries": 3,
+    "maxConcurrentSubagents": 4,
+    "maxWallClockDurationSeconds": 900,
+    "tokenBudgetThreshold": 150000,
+    "actionOnTrip": "pause_for_human"
   }
 }

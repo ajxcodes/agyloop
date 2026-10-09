@@ -86,10 +86,10 @@ describe('CLI Subagent Guard', () => {
       assert.ok(errorOutput.includes("Command 'yolo' violates the Zero Direct Root Mutation invariant."));
     });
 
-    test('blocks mutating commands (default/null)', async () => {
-      const exitCode = await runCli([]);
+    test('blocks mutating commands (abort)', async () => {
+      const exitCode = await runCli(['abort']);
       assert.strictEqual(exitCode, 1);
-      assert.ok(errorOutput.includes("Command '(default)' violates the Zero Direct Root Mutation invariant."));
+      assert.ok(errorOutput.includes("Command 'abort' violates the Zero Direct Root Mutation invariant."));
     });
 
     test('permits non-mutating commands (status)', async () => {

@@ -23,6 +23,16 @@ export interface StateRepository {
   reset(): Promise<void> | void;
 
   /**
+   * Removes a specific task checkpoint (.agyloop/tasks/<issue>.json).
+   */
+  resetTask?(issue: number | string): Promise<void> | void;
+
+  /**
+   * Purges root state (.agyloop/state.json) and all task checkpoints (.agyloop/tasks/*.json).
+   */
+  resetAll?(): Promise<void> | void;
+
+  /**
    * Returns the canonical path/URI of the state checkpoint file.
    */
   getStateFilePath(): string;

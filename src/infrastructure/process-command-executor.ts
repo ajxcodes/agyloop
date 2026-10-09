@@ -13,6 +13,59 @@ import {
 } from '../ports';
 
 export class ProcessCommandExecutor implements CommandExecutorPort {
+  private static readonly activeInstances = new Set<ProcessCommandExecutor>();
+  private readonly activeProcesses = new Set<child_process.ChildProcess>();
+
+  constructor() {
+    ProcessCommandExecutor.activeInstances.add(this);
+  }
+
+  public getActiveProcesses(): Set<child_process.ChildProcess> {
+    return new Set(this.activeProcesses);
+  }
+
+  public static getActiveProcesses(): Set<child_process.ChildProcess> {
+    const allProcesses = new Set<child_process.ChildProcess>();
+    for (const instance of ProcessCommandExecutor.activeInstances) {
+      for (const proc of instance.activeProcesses) {
+        allProcesses.add(proc);
+      }
+    }
+    return allProcesses;
+  }
+
+  public static killAll(signal: NodeJS.Signals = 'SIGTERM'): number {
+    let killedCount = 0;
+    for (const instance of ProcessCommandExecutor.activeInstances) {
+      killedCount += instance.killAll(signal);
+    }
+    return killedCount;
+  }
+
+  public killAll(signal?: string): number {
+    const targetSignal = (signal || 'SIGTERM') as NodeJS.Signals;
+    let killedCount = 0;
+    for (const proc of this.activeProcesses) {
+      try {
+        if (proc.pid && process.platform !== 'win32') {
+          process.kill(-proc.pid, targetSignal);
+        } else {
+          proc.kill(targetSignal);
+        }
+        killedCount++;
+      } catch {
+        try {
+          proc.kill(targetSignal);
+          killedCount++;
+        } catch {
+          // Process already dead
+        }
+      }
+    }
+    this.activeProcesses.clear();
+    return killedCount;
+  }
+
   public async execute(
     command: string,
     options: CommandExecutionOptions = {}
@@ -38,6 +91,11 @@ export class ProcessCommandExecutor implements CommandExecutorPort {
         env,
         detached: process.platform !== 'win32'
       });
+
+      this.activeProcesses.add(proc);
+      const cleanProc = () => {
+        this.activeProcesses.delete(proc);
+      };
 
       if (timeoutMs) {
         timer = setTimeout(() => {
@@ -86,6 +144,7 @@ export class ProcessCommandExecutor implements CommandExecutorPort {
       });
 
       proc.on('error', (err: Error) => {
+        cleanProc();
         if (timer) clearTimeout(timer);
         const durationMs = Date.now() - startTime;
         stderrBuffer += `\nProcess execution error: ${err.message}`;
@@ -102,6 +161,7 @@ export class ProcessCommandExecutor implements CommandExecutorPort {
       });
 
       proc.on('close', (code: number | null) => {
+        cleanProc();
         if (timer) clearTimeout(timer);
         const durationMs = Date.now() - startTime;
         let exitCode = code !== null ? code : 1;
