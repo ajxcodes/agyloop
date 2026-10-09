@@ -104,7 +104,7 @@ export class GetNextActionUseCase {
     this.planGenerator = planGenerator;
     this.githubGateway = githubGateway;
     this.resolveSubagentUseCase =
-      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
+      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway, undefined, undefined, buildDetector);
     this.worktreeManager = worktreeManager;
     this.buildDetector = buildDetector;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;

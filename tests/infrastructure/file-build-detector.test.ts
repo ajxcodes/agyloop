@@ -18,7 +18,9 @@ const {
   ECOSYSTEM_MAVEN,
   ECOSYSTEM_DOTNET,
   ECOSYSTEM_UNKNOWN,
-  DEFAULT_GATE_COMMANDS
+  DEFAULT_GATE_COMMANDS,
+  CMD_ID_ACT,
+  CMD_LABEL_ACT
 } = require('../../dist');
 
 describe('FileBuildDetector (Infrastructure Layer)', () => {
@@ -307,6 +309,144 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       assert.strictEqual(resolved.length, 2);
       assert.strictEqual(resolved[0].command, 'cargo clippy');
       assert.strictEqual(resolved[1].command, 'cargo test --release');
+    });
+  });
+
+  describe('Act & Container Quality Gates (AC1 - AC5)', () => {
+    test('AC1: detects .github/workflows directory and checks act binary presence', () => {
+      const workflowsDir = path.join(tempDir, '.github', 'workflows');
+      fs.mkdirSync(workflowsDir, { recursive: true });
+      fs.writeFileSync(path.join(workflowsDir, 'ci.yml'), 'name: CI\n', 'utf8');
+
+      const detector = new FileBuildDetector();
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.github', 'workflows')), true);
+      assert.strictEqual(typeof detector.hasActBinary(), 'boolean');
+      assert.strictEqual(typeof FileBuildDetector.hasActBinary(), 'boolean');
+    });
+
+    test('AC2: parses .agyloop.json options for containerGates and act config overrides', async () => {
+      const workflowsDir = path.join(tempDir, '.github', 'workflows');
+      fs.mkdirSync(workflowsDir, { recursive: true });
+      fs.writeFileSync(path.join(workflowsDir, 'test.yml'), 'name: Test\n', 'utf8');
+
+      const detector = new FileBuildDetector();
+      // Stub hasActBinary and resolveContainerSocket to ensure deterministic resolution
+      detector.hasActBinary = () => true;
+      detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
+
+      const config = {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: {
+          commitAfter: false,
+          gateTimeoutSeconds: 300,
+          autoApproveInYolo: true,
+          enableMcpInPlanner: true,
+          containerGates: true,
+          act: {
+            enabled: true,
+            workflow: '.github/workflows/test.yml',
+            job: 'test-job'
+          }
+        }
+      };
+
+      const resolved = await detector.resolveCommands(tempDir, config);
+      assert.strictEqual(resolved.length, 1);
+      assert.strictEqual(resolved[0].id, CMD_ID_ACT);
+      assert.strictEqual(resolved[0].label, CMD_LABEL_ACT);
+      assert.strictEqual(resolved[0].command, 'act -W .github/workflows/test.yml -j test-job');
+    });
+
+    test('AC3: detects Docker vs Podman daemon socket and appends --container-daemon-socket for Podman', async () => {
+      const workflowsDir = path.join(tempDir, '.github', 'workflows');
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      const detector = new FileBuildDetector();
+      detector.hasActBinary = () => true;
+
+      // When Podman socket is resolved
+      detector.resolveContainerSocket = () => ({
+        socketPath: 'unix:///run/user/1000/podman/podman.sock',
+        runtime: 'podman'
+      });
+
+      const config = {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: {
+          commitAfter: false,
+          gateTimeoutSeconds: 300,
+          autoApproveInYolo: true,
+          enableMcpInPlanner: true,
+          act: {
+            enabled: true,
+            workflow: '.github/workflows/ci.yml'
+          }
+        }
+      };
+
+      const resolved = await detector.resolveCommands(tempDir, config);
+      assert.strictEqual(resolved.length, 1);
+      assert.strictEqual(
+        resolved[0].command,
+        'act -W .github/workflows/ci.yml --container-daemon-socket unix:///run/user/1000/podman/podman.sock'
+      );
+    });
+
+    test('AC4: act command replaces or precedes standard gate commands when container gates are active', async () => {
+      // Create node package so normal detect would return npm test
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      const workflowsDir = path.join(tempDir, '.github', 'workflows');
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      const detector = new FileBuildDetector();
+      detector.hasActBinary = () => true;
+      detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
+
+      const detected = await detector.detect(tempDir, {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true, containerGates: true }
+      });
+
+      assert.strictEqual(detected.commands[0].id, CMD_ID_ACT);
+    });
+
+    test('AC5: gracefully falls back to host verification commands if act or container socket is unavailable', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      const workflowsDir = path.join(tempDir, '.github', 'workflows');
+      fs.mkdirSync(workflowsDir, { recursive: true });
+
+      const detector = new FileBuildDetector();
+      // Case A: Act binary missing
+      detector.hasActBinary = () => false;
+      detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
+
+      const resolvedNoAct = await detector.resolveCommands(tempDir, {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true, containerGates: true }
+      });
+      assert.strictEqual(resolvedNoAct.length, 1);
+      assert.strictEqual(resolvedNoAct[0].command, 'npm test');
+
+      // Case B: Container socket missing
+      detector.hasActBinary = () => true;
+      detector.resolveContainerSocket = () => null;
+
+      const resolvedNoSocket = await detector.resolveCommands(tempDir, {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true, containerGates: true }
+      });
+      assert.strictEqual(resolvedNoSocket.length, 1);
+      assert.strictEqual(resolvedNoSocket[0].command, 'npm test');
+
+      // Case C: containerGates explicitly set to false
+      detector.hasActBinary = () => true;
+      detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
+      const resolvedDisabled = await detector.resolveCommands(tempDir, {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true, containerGates: false }
+      });
+      assert.strictEqual(resolvedDisabled.length, 1);
+      assert.strictEqual(resolvedDisabled[0].command, 'npm test');
     });
   });
 });

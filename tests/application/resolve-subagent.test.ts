@@ -267,5 +267,40 @@ index 1111111..2222222 100644
       );
     });
   });
+
+  describe('Discovery Subagent Container Execution & Fallback (AC6 - AC8)', () => {
+    test('AC6 & AC7: injects container execution capabilities and Strict Container-Only Guardrail when container runtime/daemon is available', () => {
+      const mockDetector: any = {
+        resolveContainerRuntime: () => 'podman',
+        resolveContainerSocket: () => ({ socketPath: 'unix:///run/user/1000/podman/podman.sock', runtime: 'podman' })
+      };
+      const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, undefined, mockDetector);
+
+      const prompt = useCase.buildDiscoveryTaskPrompt({
+        issueNumber: 119
+      });
+
+      assert.ok(prompt.includes('Strict Container-Only Guardrail'));
+      assert.ok(prompt.includes('Command execution in Discovery can ONLY run containerized invocations (`act`, `podman run`, `docker run`)'));
+      assert.ok(prompt.includes('Empirical Verification via Ephemeral Container'));
+      assert.ok(prompt.includes('Use podman (`podman run`) or `act` to empirically reproduce'));
+    });
+
+    test('AC8: injects graceful fallback to static RCA code tracing when container runtime/daemon is unavailable', () => {
+      const mockDetector: any = {
+        resolveContainerRuntime: () => null,
+        resolveContainerSocket: () => null
+      };
+      const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, undefined, mockDetector);
+
+      const prompt = useCase.buildDiscoveryTaskPrompt({
+        issueNumber: 119
+      });
+
+      assert.ok(prompt.includes('Empirical Verification Fallback'));
+      assert.ok(prompt.includes('Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing.'));
+      assert.ok(!prompt.includes('Strict Container-Only Guardrail'));
+    });
+  });
 });
 

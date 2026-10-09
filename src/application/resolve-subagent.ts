@@ -68,6 +68,7 @@ import {
   GitHubIssueData,
   PromptRepository,
   CritiquePort,
+  BuildDetectorPort,
   formatIssueForPrompt
 } from '../ports';
 import { ManageCritiqueUseCase } from './manage-critique';
@@ -186,6 +187,8 @@ export interface PlanningTaskPromptParams {
   readonly iterationCount?: number | null;
   readonly planDir?: string | null;
   readonly planPath?: string | null;
+  readonly containerRuntime?: 'podman' | 'docker' | null;
+  readonly buildDetector?: BuildDetectorPort;
 }
 
 export interface ImplementationTaskPromptParams {
@@ -243,16 +246,19 @@ export class ResolveSubagentUseCase {
   private readonly promptRepo?: PromptRepository;
   private readonly critiquePort?: CritiquePort;
   private readonly manageCritiqueUseCase?: ManageCritiqueUseCase;
+  private readonly buildDetector?: BuildDetectorPort;
 
   constructor(
     configRepo: ConfigRepository,
     githubGateway?: GitHubGateway,
     promptRepo?: PromptRepository,
-    critiquePortOrManageCritique?: CritiquePort | ManageCritiqueUseCase
+    critiquePortOrManageCritique?: CritiquePort | ManageCritiqueUseCase,
+    buildDetector?: BuildDetectorPort
   ) {
     this.configRepo = configRepo;
     this.githubGateway = githubGateway;
     this.promptRepo = promptRepo;
+    this.buildDetector = buildDetector;
     if (
       critiquePortOrManageCritique instanceof ManageCritiqueUseCase ||
       (critiquePortOrManageCritique &&
@@ -486,15 +492,31 @@ export class ResolveSubagentUseCase {
     prompt += `You are executing the **DISCOVERY** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the codebase, perform root-cause analysis (RCA), manually smoke test the bug, and produce an actionable discovery report.\n\n`;
 
+    // Resolve container runtime and daemon availability
+    const detector = params.buildDetector || this.buildDetector;
+    const runtime = params.containerRuntime !== undefined
+      ? params.containerRuntime
+      : (detector && typeof detector.resolveContainerRuntime === 'function' ? detector.resolveContainerRuntime() : null);
+    const socket = detector && typeof detector.resolveContainerSocket === 'function' ? detector.resolveContainerSocket() : null;
+    const isContainerAvailable = Boolean(runtime && socket);
+
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
-    prompt += `2. **Empirical Verification**: Verify all file paths and manually reproduce the issue to record exact steps and results.\n`;
+
+    if (isContainerAvailable) {
+      prompt += `2. **Strict Container-Only Guardrail**: Command execution in Discovery can ONLY run containerized invocations (\`act\`, \`podman run\`, \`docker run\`). Uncontained host mutations or native executions on the host are strictly prohibited to prevent host environment pollution.\n`;
+      prompt += `3. **Empirical Verification via Ephemeral Container**: Use ${runtime} (\`${runtime} run\`) or \`act\` to empirically reproduce the issue in an isolated container environment and record exact steps and results.\n`;
+    } else {
+      prompt += `2. **Empirical Verification Fallback**: Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing. Log an informative warning regarding container unavailability.\n`;
+    }
+
+    const deliverableNum = isContainerAvailable ? 4 : 3;
     if (params.planPath) {
-      prompt += `3. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `${deliverableNum}. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
       prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
     } else {
-      prompt += `3. **Deliverable**: Create the discovery specification in the \`${targetDir}\` directory matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification in the \`${targetDir}\` directory matching \`templates/discovery-plan.md\`.\n`;
       prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
     }
 

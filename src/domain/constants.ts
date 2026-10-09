@@ -596,6 +596,7 @@ export const GRADLE_MARKERS = Object.freeze([
 ] as const);
 
 export const MARKER_POM_XML = 'pom.xml' as const;
+export const MARKER_GITHUB_WORKFLOWS = '.github/workflows' as const;
 
 export const MARKER_EXT_CSPROJ = '.csproj' as const;
 export const MARKER_EXT_SLN = '.sln' as const;
@@ -637,6 +638,7 @@ export const CMD_ID_GRADLE_CHECK = 'gradle-check' as const;
 export const CMD_ID_GRADLE_TEST = 'gradle-test' as const;
 export const CMD_ID_MAVEN_TEST = 'maven-test' as const;
 export const CMD_ID_DOTNET_TEST = 'dotnet-test' as const;
+export const CMD_ID_ACT = 'act' as const;
 export const CMD_ID_E2E = 'e2e' as const;
 
 export const KEYWORD_CHECK = 'check' as const;
@@ -657,6 +659,7 @@ export const CMD_LABEL_GRADLE_CHECK = 'Gradle Check' as const;
 export const CMD_LABEL_GRADLE_TEST = 'Gradle Test Suite' as const;
 export const CMD_LABEL_MAVEN_TEST = 'Maven Test Suite' as const;
 export const CMD_LABEL_DOTNET_TEST = '.NET Automated Test Suite' as const;
+export const CMD_LABEL_ACT = 'Act Container Workflow Verification' as const;
 
 // Command Prefixes
 export const CMD_PREFIX_CUSTOM = 'custom' as const;
