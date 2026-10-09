@@ -15,6 +15,7 @@ export * from './critique-installer';
 export * from './standards-repository';
 export * from './confirmation-prompt';
 export * from './worktree-manager';
+export * from './agent-runner';
 
 
 

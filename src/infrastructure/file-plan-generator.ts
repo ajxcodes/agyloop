@@ -33,6 +33,8 @@ import {
   FILENAME_ALT_IMPLEMENTATION_PLAN
 } from '../domain';
 
+export const LEGACY_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
+
 export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freeze({
   [TEMPLATE_DISCOVERY]: `# [Discovery] - {Title}
 
@@ -313,7 +315,9 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     };
 
     const content = this.renderTemplate(rawTemplate, mergedVariables);
-    const summaryPath = path.join(targetDir, DEFAULT_SUMMARY_FILENAME);
+    const legacySummaryPath = path.join(targetDir, LEGACY_SUMMARY_FILENAME);
+    const defaultSummaryPath = path.join(targetDir, DEFAULT_SUMMARY_FILENAME);
+    const summaryPath = fs.existsSync(legacySummaryPath) ? legacySummaryPath : defaultSummaryPath;
 
     let created = false;
     if (!fs.existsSync(summaryPath) || overwrite) {
@@ -671,12 +675,19 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       return null;
     }
 
-    const summaryPath = path.join(resolvedPlanDir, DEFAULT_SUMMARY_FILENAME);
+    const legacySummaryPath = path.join(resolvedPlanDir, LEGACY_SUMMARY_FILENAME);
+    const defaultSummaryPath = path.join(resolvedPlanDir, DEFAULT_SUMMARY_FILENAME);
+    const summaryPath = fs.existsSync(legacySummaryPath)
+      ? legacySummaryPath
+      : fs.existsSync(defaultSummaryPath)
+        ? defaultSummaryPath
+        : undefined;
+
     return {
       planDir: resolvedPlanDir,
       planPath: resolvedPlanPath,
       planFileName: path.basename(resolvedPlanPath),
-      summaryPath: fs.existsSync(summaryPath) ? summaryPath : undefined
+      summaryPath
     };
   }
 

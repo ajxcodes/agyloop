@@ -1,5 +1,9 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/agyloop.json",
+  "runner": "auto",
+  "opencode": {
+    "model": "ollama/ornith:9b-128k"
+  },
   "models": {
     "planner": "pro",
     "implementer": "inherit",

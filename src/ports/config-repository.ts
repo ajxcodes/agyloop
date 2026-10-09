@@ -54,7 +54,16 @@ export interface VersioningConfig {
   readonly initialVersion?: string;
 }
 
+export type RunnerType = 'auto' | 'antigravity' | 'opencode';
+
+export interface OpenCodeConfig {
+  readonly model?: string;
+  readonly [key: string]: unknown;
+}
+
 export interface AgyLoopConfig {
+  readonly runner?: RunnerType;
+  readonly opencode?: OpenCodeConfig;
   readonly models: ModelRoutingConfig;
   readonly options: PipelineOptionsConfig;
   readonly circuitBreakers?: CircuitBreakersConfig;
@@ -65,6 +74,7 @@ export interface AgyLoopConfig {
 export interface ConfigLoadOptions {
   readonly customPath?: string | null;
   readonly cwd?: string;
+  readonly model?: string;
 }
 
 export interface ConfigRepository {

@@ -80,8 +80,10 @@ import {
   CliCritiqueGateway,
   GithubCritiqueInstallerGateway,
   FileStandardsRepository,
-  GitWorktreeManager
+  GitWorktreeManager,
+  RunnerFactory
 } from '../infrastructure';
+import { installOpenCodeIntegration } from './opencode-setup';
 import {
   RunLifecycleUseCase,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -138,6 +140,8 @@ export interface CliOptions {
   subagents: boolean;
   all: boolean;
   critiqueSubcommand: string | null;
+  opencodeSubcommand: string | null;
+  model: string | null;
   force: boolean;
   triageAction: string | null;
   step: boolean;
@@ -180,6 +184,7 @@ Pipeline Management:
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
+  opencode [cmd]     Manage OpenCode integration assets (install)
   triage [action]    Triage PR review comments and route pipeline (implement|plan|discovery|dismiss)
 
 Operational Flags:
@@ -197,6 +202,7 @@ Operational Flags:
       --title <text> Specify plan title for persistent artifact scaffolding
       --type <type>  Specify plan type (discovery | implementation | auto)
       --config <path> Path to custom configuration file (.agyloop.json)
+      --model <name> Override agent runner model (e.g. ornith:9b-128k)
       --worktree     Enable git worktree isolation for task execution (default: true)
       --no-worktree  Disable worktree isolation and execute directly in root workspace
       --keep-worktree Keep git worktree after commit completion (prevent auto-teardown)
@@ -215,6 +221,7 @@ Examples:
   codeloop implement                    Resume implementation from approved plan in artifacts/plans/
   codeloop commit                        Draft Conventional Commit and prompt for human approval
   codeloop commit -y                     Draft Conventional Commit and commit immediately
+  codeloop opencode install              Install OpenCode integration assets to ~/.opencode/skills/
   codeloop critique status               Inspect critique resolution, installed version, and update status
   codeloop critique install              Install latest critique CLI into user data directory
   codeloop critique update               Update critique CLI to latest release
@@ -257,6 +264,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     subagents: false,
     all: false,
     critiqueSubcommand: null,
+    opencodeSubcommand: null,
+    model: null,
     force: false,
     triageAction: null,
     step: false,
@@ -373,6 +382,14 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--config=')) {
       options.configPath = arg.split('=')[1] || null;
+    } else if (arg === '--model') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.model = args[++i];
+      } else {
+        options.model = null;
+      }
+    } else if (arg.startsWith('--model=')) {
+      options.model = arg.split('=')[1] || null;
     } else if (arg === '--workspace' || arg === '--workspace-dir') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.workspaceDir = args[++i];
@@ -409,6 +426,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
         options.phaseBranch = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1] : null;
       } else if (command === 'critique') {
         options.critiqueSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'status';
+      } else if (command === 'opencode') {
+        options.opencodeSubcommand = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : 'install';
       } else if (command === 'triage') {
         options.triageAction = cmdIndex + 1 < positional.length ? positional[cmdIndex + 1].toLowerCase() : null;
       } else if (cmdIndex + 1 < positional.length) {
@@ -469,7 +488,16 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const confirmationPrompt = new ReadlineConfirmationPrompt();
   const worktreeManager = new GitWorktreeManager(commandExecutor);
 
-  const config = configRepo.loadConfig({ customPath: options.configPath });
+  const config = configRepo.loadConfig({
+    customPath: options.configPath,
+    model: options.model || undefined
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const runner = RunnerFactory.createRunner({
+    config,
+    commandExecutor
+  });
 
   const lifecycleUseCase = new RunLifecycleUseCase({
     stateRepo,
@@ -982,7 +1010,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'release': {
-      console.log('\n🚀 AgyLoop: Milestone Release PR Orchestrator');
+      console.log('\n🚀 CodeLoop: Milestone Release PR Orchestrator');
       try {
         const milestoneReleaseUseCase = new MilestoneReleaseUseCase(
           worktreeManager,
@@ -1034,7 +1062,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'plan': {
-      console.log(`\n🚀 Starting AgyLoop [PLAN-ONLY] Mode`);
+      console.log(`\n🚀 Starting CodeLoop [PLAN-ONLY] Mode`);
       try {
         const result = await lifecycleUseCase.execute({
           mode: MODE_PLAN,
@@ -1078,7 +1106,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
-          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
         }
         if (err instanceof MilestoneSealedError) {
@@ -1091,7 +1119,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'implement': {
-      console.log(`\n🚀 Resuming AgyLoop Implementation`);
+      console.log(`\n🚀 Resuming CodeLoop Implementation`);
       try {
         const result = await lifecycleUseCase.execute({
           mode: MODE_IMPLEMENT,
@@ -1126,7 +1154,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
-          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
         }
         if (err instanceof MilestoneSealedError) {
@@ -1139,7 +1167,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'commit': {
-      console.log(`\n📦 AgyLoop: Semantic Conventional Commit Gate`);
+      console.log(`\n📦 CodeLoop: Semantic Conventional Commit Gate`);
       try {
         const snapshot = await stateRepo.load();
         const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : null;
@@ -1223,7 +1251,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             console.log(`\nNext Step (Create PR):\n  ${execResult.prCommand}`);
           }
           if (execResult.summaryUpdated) {
-            console.log(`✓ AgyLoop Summary.md updated with commit hash and timestamp.\n`);
+            console.log(`✓ CodeLoop Summary.md updated with commit hash and timestamp.\n`);
           }
           return EXIT_CODE_SUCCESS;
         } else {
@@ -1237,7 +1265,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case COMMAND_SYNC: {
-      console.log(`\n🔄 AgyLoop: Synchronizing Remote Collector Branch & Merged PRs`);
+      console.log(`\n🔄 CodeLoop: Synchronizing Remote Collector Branch & Merged PRs`);
       const syncUseCase = new SyncUseCase(
         commandExecutor,
         githubGateway,
@@ -1255,7 +1283,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'yolo': {
-      console.log(`\n⚡ Starting AgyLoop [YOLO] Fast-Path Mode`);
+      console.log(`\n⚡ Starting CodeLoop [YOLO] Fast-Path Mode`);
       try {
         const result = await lifecycleUseCase.execute({
           mode: MODE_YOLO,
@@ -1325,7 +1353,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
-          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
         }
         if (err instanceof MilestoneSealedError) {
@@ -1342,6 +1370,26 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.error('error: `gate`/`gates` subcommands have been removed. Use `agyloop next` to invoke the gate subagent.');
       return EXIT_CODE_FAILURE;
 
+    case 'opencode': {
+      const subcmd = options.opencodeSubcommand || 'install';
+      if (subcmd === 'install') {
+        try {
+          const res = installOpenCodeIntegration({ force: options.force });
+          console.log('\n✓ OpenCode Integration Assets Installed:');
+          console.log(`  Source : ${res.sourcePath}`);
+          console.log(`  Target : ${res.installedPath}`);
+          console.log(`  Mode   : ${res.isSymlink ? 'Symlink' : 'Copy'}\n`);
+          return EXIT_CODE_SUCCESS;
+        } catch (err: unknown) {
+          console.error(`✗ Failed to install OpenCode integration: ${err instanceof Error ? err.message : String(err)}`);
+          return EXIT_CODE_FAILURE;
+        }
+      } else {
+        console.error(`Unknown opencode subcommand "${subcmd}". Available: install`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
     default: {
       if (command !== null) {
         console.error(`Error: Unknown command "${command}". Run "agyloop --help" for available commands.\n`);
@@ -1349,7 +1397,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
 
       // Default execution: Continuous Lifecycle Orchestration
-      console.log(`\n🔄 AgyLoop Continuous Development Lifecycle`);
+      console.log(`\n🔄 CodeLoop Continuous Development Lifecycle`);
       try {
         const result = await lifecycleUseCase.execute({
           mode: MODE_STANDARD,
@@ -1429,7 +1477,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         if (err instanceof PreFlightHaltError) {
-          console.log(`\n🛑 AgyLoop Pre-Flight Check: ${err.message}\n`);
+          console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
         }
         if (err instanceof MilestoneSealedError) {
