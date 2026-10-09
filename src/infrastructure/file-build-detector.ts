@@ -8,6 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as child_process from 'child_process';
 
 import {
   Ecosystem,
@@ -59,6 +60,7 @@ import {
   MARKER_SETTINGS_GRADLE_KTS,
   GRADLE_MARKERS,
   MARKER_POM_XML,
+  MARKER_GITHUB_WORKFLOWS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_CSPROJ,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -107,6 +109,7 @@ import {
   CMD_ID_GRADLE_TEST,
   CMD_ID_MAVEN_TEST,
   CMD_ID_DOTNET_TEST,
+  CMD_ID_ACT,
   CMD_LABEL_TYPECHECK,
   CMD_LABEL_BUILD,
   CMD_LABEL_TEST,
@@ -121,6 +124,7 @@ import {
   CMD_LABEL_GRADLE_TEST,
   CMD_LABEL_MAVEN_TEST,
   CMD_LABEL_DOTNET_TEST,
+  CMD_LABEL_ACT,
   CMD_PREFIX_CUSTOM,
   CMD_PREFIX_CONFIG,
   SCRIPT_NAME_TYPECHECK,
@@ -137,7 +141,7 @@ export class FileBuildDetector implements BuildDetectorPort {
   /**
    * Inspects workspace markers and lockfiles to detect ecosystems and verification commands.
    */
-  public async detect(workspaceDir: string): Promise<DetectedProject> {
+  public async detect(workspaceDir: string, config?: AgyLoopConfig): Promise<DetectedProject> {
     const resolvedDir = path.resolve(workspaceDir || process.cwd());
 
     try {
@@ -163,6 +167,12 @@ export class FileBuildDetector implements BuildDetectorPort {
 
       const detectedEcosystems: Ecosystem[] = [];
       const ecosystemCommands: GateCommandDefinition[] = [];
+
+      // Act Container Gate Resolution
+      const actCommand = this.resolveActCommand(resolvedDir, config);
+      if (actCommand) {
+        ecosystemCommands.push(actCommand);
+      }
 
       // 1. Node / TypeScript / JavaScript Detection
       if (fileNames.has(MARKER_PACKAGE_JSON)) {
@@ -330,8 +340,14 @@ export class FileBuildDetector implements BuildDetectorPort {
       return this.normalizeCommands(configuredCommands, CMD_PREFIX_CONFIG);
     }
 
+    // 2b. Act Container Gate Resolution (if enabled/configured or auto-detected with containerGates: true)
+    const actCommand = this.resolveActCommand(workspaceDir, config);
+    if (actCommand) {
+      return [actCommand];
+    }
+
     // 3. Auto-detected commands from workspace filesystem markers
-    const detected = await this.detect(workspaceDir);
+    const detected = await this.detect(workspaceDir, config);
     if (detected.commands && detected.commands.length > 0) {
       return detected.commands;
     }
@@ -572,5 +588,141 @@ export class FileBuildDetector implements BuildDetectorPort {
         command: String(cmd)
       };
     });
+  }
+
+  /**
+   * Resolves the container runtime CLI ('podman' | 'docker' | null).
+   */
+  public static resolveContainerRuntime(): 'podman' | 'docker' | null {
+    if (FileBuildDetector.isBinaryAvailable('podman')) {
+      return 'podman';
+    }
+    if (FileBuildDetector.isBinaryAvailable('docker')) {
+      return 'docker';
+    }
+    return null;
+  }
+
+  public resolveContainerRuntime(): 'podman' | 'docker' | null {
+    return FileBuildDetector.resolveContainerRuntime();
+  }
+
+  /**
+   * Resolves the container daemon socket path and type.
+   * Priority:
+   * 1. Podman socket: unix://$XDG_RUNTIME_DIR/podman/podman.sock or /run/user/<uid>/podman/podman.sock
+   * 2. Docker socket: /var/run/docker.sock or DOCKER_HOST env
+   */
+  public static resolveContainerSocket(): { socketPath: string; runtime: 'podman' | 'docker' } | null {
+    // Check Podman socket
+    const xdgRuntime = process.env.XDG_RUNTIME_DIR;
+    if (xdgRuntime) {
+      const podmanSock = path.join(xdgRuntime, 'podman', 'podman.sock');
+      if (fs.existsSync(podmanSock)) {
+        return { socketPath: `unix://${podmanSock}`, runtime: 'podman' };
+      }
+    }
+
+    // Check Docker Host env
+    if (process.env.DOCKER_HOST) {
+      return { socketPath: process.env.DOCKER_HOST, runtime: 'docker' };
+    }
+
+    // Check standard Docker socket
+    const standardDockerSock = '/var/run/docker.sock';
+    if (fs.existsSync(standardDockerSock)) {
+      return { socketPath: `unix://${standardDockerSock}`, runtime: 'docker' };
+    }
+
+    return null;
+  }
+
+  public resolveContainerSocket(): { socketPath: string; runtime: 'podman' | 'docker' } | null {
+    return FileBuildDetector.resolveContainerSocket();
+  }
+
+  /**
+   * Checks if the `act` CLI binary is available on PATH.
+   */
+  public static hasActBinary(): boolean {
+    return FileBuildDetector.isBinaryAvailable('act');
+  }
+
+  public hasActBinary(): boolean {
+    return FileBuildDetector.hasActBinary();
+  }
+
+  /**
+   * Checks if a command / binary is available on PATH.
+   */
+  public static isBinaryAvailable(binary: string): boolean {
+    try {
+      const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+      const res = child_process.spawnSync(lookupCmd, [binary], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        encoding: 'utf8'
+      });
+      return res.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  public isBinaryAvailable(binary: string): boolean {
+    return FileBuildDetector.isBinaryAvailable(binary);
+  }
+
+  /**
+   * Inspects configuration and repository to resolve an `act` verification command if applicable.
+   * Returns null if container gates are disabled, workflows are missing, act is missing, or no socket is found.
+   */
+  public resolveActCommand(workspaceDir: string, config?: AgyLoopConfig): GateCommandDefinition | null {
+    const options = config?.options;
+
+    // Check if containerGates is explicitly disabled
+    if (options?.containerGates === false) {
+      return null;
+    }
+
+    const actConfig = options?.act;
+    if (actConfig?.enabled === false) {
+      return null;
+    }
+
+    // Verify .github/workflows directory presence
+    const workflowsDir = path.join(workspaceDir, MARKER_GITHUB_WORKFLOWS);
+    if (!fs.existsSync(workflowsDir)) {
+      return null;
+    }
+
+    // Verify act binary is installed
+    if (!this.hasActBinary()) {
+      return null;
+    }
+
+    // Verify container daemon socket is present
+    const socketInfo = this.resolveContainerSocket();
+    if (!socketInfo) {
+      return null;
+    }
+
+    // Construct act command arguments
+    let cmd = 'act';
+    if (actConfig?.workflow) {
+      cmd += ` -W ${actConfig.workflow}`;
+    }
+    if (actConfig?.job) {
+      cmd += ` -j ${actConfig.job}`;
+    }
+
+    if (socketInfo.runtime === 'podman') {
+      cmd += ` --container-daemon-socket ${socketInfo.socketPath}`;
+    }
+
+    return {
+      id: CMD_ID_ACT,
+      label: CMD_LABEL_ACT,
+      command: cmd
+    };
   }
 }
