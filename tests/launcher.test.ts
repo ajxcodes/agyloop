@@ -1,11 +1,7 @@
-import { describe, test } from 'node:test';
-import assert from 'node:assert';
-import { spawnSync } from 'child_process';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const { describe, test } = require('node:test');
+const assert = require('node:assert');
+const { spawnSync } = require('child_process');
+const path = require('path');
 
 describe('CLI Launchers and Rebranding', () => {
   const rootDir = path.resolve(__dirname, '..');
@@ -60,9 +56,8 @@ describe('CLI Launchers and Rebranding', () => {
     );
   });
 
-  test('bin/codeloop.js exports main, parseArguments, runCli, checkStaleDist', async () => {
-    const codeloopModule = await import('../bin/codeloop.js');
-    const codeloop = codeloopModule.default || codeloopModule;
+  test('bin/codeloop.js exports main, parseArguments, runCli, checkStaleDist', () => {
+    const codeloop = require('../bin/codeloop.js');
     assert.strictEqual(typeof codeloop.main, 'function');
     assert.strictEqual(typeof codeloop.parseArguments, 'function');
     assert.strictEqual(typeof codeloop.runCli, 'function');
