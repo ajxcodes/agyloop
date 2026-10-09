@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
+    "codeloop": "./bin/codeloop.js",
     "agyloop": "./bin/agyloop.js"
   },
   "scripts": {
