@@ -25,7 +25,8 @@ const {
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
   Ecosystem,
-  ECOSYSTEM_NODE
+  ECOSYSTEM_NODE,
+  ANTI_INCEPTION_GUARDRAIL
 } = require('../../dist/domain');
 
 import type {
@@ -653,5 +654,70 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const sub = result.invocationPayload.Subagents[0];
     assert.ok(sub.Prompt.includes('Consider using a map'));
   });
+
+  test('asserts every prompt payload emitted by GetNextActionUseCase contains the anti-inception guardrail across all stages', async () => {
+    const stagesToTest = [
+      STAGE_DISCOVERY,
+      STAGE_PLAN,
+      STAGE_IMPLEMENT,
+      STAGE_QUALITY_GATE,
+      STAGE_REVIEW,
+      STAGE_TRIAGE
+    ];
+
+    for (const stage of stagesToTest) {
+      const sm = StateMachine.createInitial({ issue: 203, mode: MODE_YOLO });
+      if (stage === STAGE_DISCOVERY) {
+        sm.transition(STAGE_DISCOVERY);
+      } else if (stage === STAGE_PLAN) {
+        sm.transition(STAGE_PLAN);
+      } else if (stage === STAGE_IMPLEMENT) {
+        sm.transition(STAGE_PLAN);
+        sm.transition(STAGE_IMPLEMENT);
+      } else if (stage === STAGE_QUALITY_GATE) {
+        sm.transition(STAGE_PLAN);
+        sm.transition(STAGE_IMPLEMENT);
+        sm.transition(STAGE_QUALITY_GATE);
+      } else if (stage === STAGE_REVIEW) {
+        sm.transition(STAGE_PLAN);
+        sm.transition(STAGE_IMPLEMENT);
+        sm.transition(STAGE_QUALITY_GATE);
+        sm.transition(STAGE_REVIEW);
+      } else if (stage === STAGE_TRIAGE) {
+        sm.transition(STAGE_TRIAGE);
+      }
+
+      if (stage === STAGE_IMPLEMENT || stage === STAGE_QUALITY_GATE || stage === STAGE_REVIEW) {
+        sm.setWorktree(
+          WorktreeDescriptor.create({
+            taskId: 203,
+            worktreePath: '/repo/.worktrees/203',
+            branch: 'fix/203',
+            baseBranch: 'main',
+            createdAt: new Date().toISOString()
+          })
+        );
+      }
+      if (stage === STAGE_TRIAGE) {
+        sm.setTriagePayload('Sample review comment');
+      }
+
+      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+      const result = await useCase.execute({ workspaceDir: '/repo' });
+      assert.ok(
+        result.invocationPayload,
+        `Expected invocationPayload for stage ${stage}`
+      );
+      for (const subagent of result.invocationPayload.Subagents) {
+        assert.ok(
+          subagent.Prompt.includes(ANTI_INCEPTION_GUARDRAIL),
+          `Expected subagent prompt in stage ${stage} to contain anti-inception guardrail`
+        );
+      }
+    }
+  });
 });
+
 

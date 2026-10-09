@@ -11,7 +11,8 @@ const {
   ResolveSubagentUseCase,
   ManageCritiqueUseCase,
   DIFF_EXCLUDE_ARGS,
-  MAX_INLINE_DIFF_LINES
+  MAX_INLINE_DIFF_LINES,
+  ANTI_INCEPTION_GUARDRAIL
 } = require('../../dist/application');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 const { RESOLVER_SOURCE_USER_DATA, RESOLVER_SOURCE_NONE } = require('../../dist/domain');
@@ -240,4 +241,31 @@ index 1111111..2222222 100644
       assert.ok(prompt.includes('+const small = true;'));
     });
   });
+
+  describe('Anti-Inception Guardrails', () => {
+    test('appends anti-inception guardrail to all subagent task prompts', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+
+      const discoveryPrompt = useCase.buildDiscoveryTaskPrompt({ issueNumber: 203 });
+      const planningPrompt = useCase.buildPlanningTaskPrompt({ issueNumber: 203 });
+      const implementPrompt = useCase.buildImplementationTaskPrompt({ issueNumber: 203 });
+      const gatePrompt = useCase.buildGateTaskPrompt({ issueNumber: 203 });
+      const reviewerPrompt = useCase.buildReviewerTaskPrompt({ issueNumber: 203 });
+      const triagePrompt = useCase.buildTriageTaskPrompt({ issueNumber: 203 });
+
+      assert.ok(discoveryPrompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(planningPrompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(implementPrompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(gatePrompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(reviewerPrompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(triagePrompt.includes(ANTI_INCEPTION_GUARDRAIL));
+
+      assert.ok(
+        triagePrompt.includes(
+          'You are the Triage Subagent. Directly inspect the comments and execute `bin/agyloop triage <action>` using `run_command`. Do NOT spawn another subagent to do this.'
+        )
+      );
+    });
+  });
 });
+

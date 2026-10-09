@@ -50,14 +50,16 @@ import {
   DIFF_EXCLUDE_ARGS,
   MAX_INLINE_DIFF_LINES,
   DiffAnalyzer,
-  IssueNumber
+  IssueNumber,
+  ANTI_INCEPTION_GUARDRAIL
 } from '../domain';
 
 export {
   DIFF_EXCLUDED_PATHSPECS,
   DIFF_EXCLUDED_PATTERNS,
   DIFF_EXCLUDE_ARGS,
-  MAX_INLINE_DIFF_LINES
+  MAX_INLINE_DIFF_LINES,
+  ANTI_INCEPTION_GUARDRAIL
 };
 import {
   ConfigRepository,
@@ -522,7 +524,9 @@ export class ResolveSubagentUseCase {
     prompt += `- **Summary & Symptoms**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Root Cause Analysis**: Detailed breakdown of failure mechanisms.\n`;
     prompt += `- **Manual Bug Smoke Test**: Exact reproduction steps and results.\n`;
-    prompt += `- **Remediation Strategy**: Cleanest fix approach.\n`;
+    prompt += `- **Remediation Strategy**: Cleanest fix approach.\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -603,7 +607,9 @@ export class ResolveSubagentUseCase {
     prompt += `- **Summary & Acceptance Criteria**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
-    prompt += `- **Quality Gate Targets**: Precise automated test commands to verify the change.\n`;
+    prompt += `- **Quality Gate Targets**: Precise automated test commands to verify the change.\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -712,7 +718,9 @@ export class ResolveSubagentUseCase {
     prompt += `### Definition of Done:\n`;
     prompt += `1. All tasks in the plan checklist are implemented.\n`;
     prompt += `2. All tests pass with 100% pass rate.\n`;
-    prompt += `3. No linting or TypeScript compilation errors remain.\n`;
+    prompt += `3. No linting or TypeScript compilation errors remain.\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -760,7 +768,9 @@ export class ResolveSubagentUseCase {
     prompt += `### Required Verdict Output:\n`;
     prompt += `- Overall Status: PASSED or FAILED\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
-    prompt += `- Concise Failure Diagnostics (if failed)\n`;
+    prompt += `- Concise Failure Diagnostics (if failed)\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -901,7 +911,9 @@ export class ResolveSubagentUseCase {
     prompt += `- <Unfulfilled criterion 1> (or "None" if all criteria are met)\n`;
     prompt += `REMEDIATION_GUIDANCE:\n`;
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
-    prompt += `\`\`\`\n`;
+    prompt += `\`\`\`\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -923,6 +935,9 @@ export class ResolveSubagentUseCase {
     if (params.triagePayload && params.triagePayload.trim()) {
       prompt += `### Review Comments to Triage:\n${params.triagePayload.trim()}\n\n`;
     }
+
+    prompt += `You are the Triage Subagent. Directly inspect the comments and execute \`bin/agyloop triage <action>\` using \`run_command\`. Do NOT spawn another subagent to do this.\n\n`;
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
