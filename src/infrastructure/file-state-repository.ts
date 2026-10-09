@@ -8,21 +8,41 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from 'child_process';
 import * as os from 'os';
-import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } from '../domain';
+import {
+  StateMachineSnapshot,
+  StateStorageError,
+  DEFAULT_STATE_DIR,
+  DEFAULT_STATE_FILE,
+  DEFAULT_TASKS_STATE_DIR,
+  IssueNumber,
+  MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST,
+  MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
+} from '../domain';
 import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
   private static readonly workspaceRootCache = new Map<string, string>();
   private readonly stateFilePath: string;
+  private readonly workspaceRoot: string;
 
-  constructor(options: { workspaceDir?: string; stateFilePath?: string } = {}) {
+  constructor(options: { workspaceDir?: string; stateFilePath?: string; issue?: number | null } = {}) {
+    const workspace = options.workspaceDir
+      ? path.resolve(options.workspaceDir)
+      : this.discoverWorkspaceRoot(process.cwd());
+    this.workspaceRoot = workspace;
+
     if (options.stateFilePath) {
       this.stateFilePath = options.stateFilePath;
     } else {
-      const workspace = options.workspaceDir
-        ? path.resolve(options.workspaceDir)
-        : this.discoverWorkspaceRoot(process.cwd());
-      this.stateFilePath = path.join(workspace, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+      const inferredIssue = options.issue !== undefined && options.issue !== null
+        ? options.issue
+        : IssueNumber.inferFromPath(process.cwd());
+
+      if (inferredIssue !== null && inferredIssue !== undefined) {
+        this.stateFilePath = path.join(workspace, DEFAULT_STATE_DIR, DEFAULT_TASKS_STATE_DIR, `${inferredIssue}.json`);
+      } else {
+        this.stateFilePath = path.join(workspace, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+      }
     }
   }
 
@@ -124,8 +144,10 @@ export class FileStateRepository implements StateRepository {
     }
 
     if (process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT)) {
-      const realRootPath = path.join(this.discoverWorkspaceRoot(__dirname), DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
-      if (this.stateFilePath === realRootPath) {
+      const realRoot = this.discoverWorkspaceRoot(__dirname);
+      const realRootPath = path.join(realRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+      const realTasksDir = path.join(realRoot, DEFAULT_STATE_DIR, DEFAULT_TASKS_STATE_DIR);
+      if (this.stateFilePath === realRootPath || this.stateFilePath.startsWith(realTasksDir + path.sep)) {
         throw new StateStorageError(
           this.stateFilePath,
           operation,
@@ -181,5 +203,52 @@ export class FileStateRepository implements StateRepository {
         err
       );
     }
+  }
+
+  /**
+   * Scans and returns all known task snapshots from .agyloop/tasks/*.json
+   * and the singleton snapshot from .agyloop/state.json if present.
+   */
+  public listAllStates(): StateMachineSnapshot[] {
+    const results: StateMachineSnapshot[] = [];
+    const rootStateFile = path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+    const tasksDir = path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_TASKS_STATE_DIR);
+
+    if (fs.existsSync(rootStateFile)) {
+      try {
+        const content = fs.readFileSync(rootStateFile, 'utf8');
+        const snapshot = JSON.parse(content) as StateMachineSnapshot;
+        if (snapshot && snapshot.currentStage) {
+          results.push(snapshot);
+        }
+      } catch {
+        // Gracefully ignore corrupt or invalid state files
+      }
+    }
+
+    if (fs.existsSync(tasksDir)) {
+      try {
+        const files = fs.readdirSync(tasksDir);
+        for (const file of files) {
+          if (!file.endsWith('.json')) {
+            continue;
+          }
+          const taskFilePath = path.join(tasksDir, file);
+          try {
+            const content = fs.readFileSync(taskFilePath, 'utf8');
+            const snapshot = JSON.parse(content) as StateMachineSnapshot;
+            if (snapshot && snapshot.currentStage) {
+              results.push(snapshot);
+            }
+          } catch {
+            // Gracefully ignore corrupt or invalid task state files
+          }
+        }
+      } catch {
+        // Gracefully ignore directory read errors
+      }
+    }
+
+    return results;
   }
 }

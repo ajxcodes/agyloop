@@ -26,4 +26,9 @@ export interface StateRepository {
    * Returns the canonical path/URI of the state checkpoint file.
    */
   getStateFilePath(): string;
+
+  /**
+   * Scans and returns all known task snapshots and the singleton root snapshot if present.
+   */
+  listAllStates?(): Promise<StateMachineSnapshot[]> | StateMachineSnapshot[];
 }

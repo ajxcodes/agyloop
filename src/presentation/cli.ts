@@ -151,10 +151,10 @@ export interface ParsedCliArgs {
 
 export function printHelp(): void {
   console.log(`
-agyloop v${CLI_VERSION} - Antigravity Development Lifecycle Orchestrator
+codeloop v${CLI_VERSION} - Multi-Agent Development Lifecycle Orchestrator
 
 Usage:
-  agyloop [command] [options]
+  codeloop [command] [options]
 
 Operational Modes:
   (default)          Run continuous lifecycle (Discovery -> Plan -> [Approval] -> Implement -> Gates -> Review -> [Commit])
@@ -168,7 +168,7 @@ Operational Modes:
 Pipeline Management:
   next               Inspect state and generate next invoke_subagent command/payload
   branch-info        Display base collector branch, active task branch, and PR target
-  status             Display current pipeline stage and checkpoint history
+  status             Display current pipeline stage, active tasks matrix, and checkpoint history
   config             Display active configuration and model routing table
   models             List available Gemini models and mapped Antigravity tiers
   prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
@@ -205,21 +205,21 @@ Operational Flags:
   -v, --version      Show version information and exit
 
 Examples:
-  agyloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
-  agyloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
-  agyloop implement                    Resume implementation from approved plan in artifacts/plans/
-  agyloop commit                        Draft Conventional Commit and prompt for human approval
-  agyloop commit -y                     Draft Conventional Commit and commit immediately
-  agyloop critique status               Inspect critique resolution, installed version, and update status
-  agyloop critique install              Install latest critique CLI into user data directory
-  agyloop critique update               Update critique CLI to latest release
-  agyloop release phase/1-bridge-arch   Generate milestone release PR to main with SemVer label
-  agyloop release --dry-run             Preview calculated SemVer bump and compiled changelog
-  agyloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
-  agyloop yolo --commit-after           100% end-to-end hands-off loop: plan -> implement -> gates -> review -> commit
-  agyloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
-  agyloop worktree list                 List all active isolated git worktrees
-  agyloop worktree prune                Prune dangling worktrees and lock metadata
+  codeloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
+  codeloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
+  codeloop implement                    Resume implementation from approved plan in artifacts/plans/
+  codeloop commit                        Draft Conventional Commit and prompt for human approval
+  codeloop commit -y                     Draft Conventional Commit and commit immediately
+  codeloop critique status               Inspect critique resolution, installed version, and update status
+  codeloop critique install              Install latest critique CLI into user data directory
+  codeloop critique update               Update critique CLI to latest release
+  codeloop release phase/1-bridge-arch   Generate milestone release PR to main with SemVer label
+  codeloop release --dry-run             Preview calculated SemVer bump and compiled changelog
+  codeloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
+  codeloop yolo --commit-after           100% end-to-end hands-off loop: plan -> implement -> gates -> review -> commit
+  codeloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
+  codeloop worktree list                 List all active isolated git worktrees
+  codeloop worktree prune                Prune dangling worktrees and lock metadata
 `);
 }
 
@@ -429,7 +429,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     return EXIT_CODE_SUCCESS;
   }
 
-  const stateRepo = new FileStateRepository();
+  const issueValue = IssueNumber.tryFrom(options.issue)?.value;
+  const stateRepo = new FileStateRepository({ issue: issueValue });
   const githubGateway = new CliGitHubGateway();
   const configRepo = new FileConfigRepository();
   const modelCatalog = new GeminiModelCatalog({ configRepo });
@@ -592,6 +593,21 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
       console.log(`Updated At    : ${result.status.updatedAt}`);
       console.log(`Checkpoint    : ${result.stateFilePath}`);
+
+      if (result.activeTasks && result.activeTasks.length > 0) {
+        console.log(`\nActive Tasks Matrix (${result.activeTasks.length}):`);
+        console.log('--------------------------------------------------------------------------------');
+        console.log('Issue       Stage                Mode            Updated At');
+        console.log('--------------------------------------------------------------------------------');
+        for (const task of result.activeTasks) {
+          const issueStr = task.issue ? `#${task.issue}` : 'Root';
+          const issuePad = issueStr.padEnd(11);
+          const stageBadge = formatStageBadge(task.status.currentStage).padEnd(20);
+          const modePad = task.status.mode.padEnd(15);
+          console.log(`${issuePad} ${stageBadge} ${modePad} ${task.status.updatedAt}`);
+        }
+        console.log('--------------------------------------------------------------------------------');
+      }
 
       const worktrees = await worktreeManager.listWorktrees();
       if (worktrees.length > 0) {

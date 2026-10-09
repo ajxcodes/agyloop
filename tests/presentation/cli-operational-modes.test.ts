@@ -214,7 +214,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         console.log = originalLog;
       }
 
-      assert.ok(output.includes(`agyloop v${CLI_VERSION}`));
+      assert.ok(output.includes(`codeloop v${CLI_VERSION}`));
       assert.ok(output.includes('Operational Modes:'));
       assert.ok(output.includes('yolo'));
       assert.ok(output.includes('plan'));
@@ -224,7 +224,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.ok(output.includes('--commit-after'));
       assert.ok(output.includes('--yolo'));
       assert.ok(output.includes('Examples:'));
-      assert.ok(output.includes('agyloop yolo --commit-after'));
+      assert.ok(output.includes('codeloop yolo --commit-after'));
     });
 
     test('formatStageBadge formats ANSI color tags cleanly', () => {

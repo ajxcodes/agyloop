@@ -204,4 +204,51 @@ describe('FileStateRepository', () => {
       }
     });
   });
+
+  describe('task scoping and multi-state management', () => {
+    test('routes to .agyloop/tasks/<issue>.json when issue is provided', () => {
+      process.cwd = () => path.join('/home/user/project');
+      const repo = new FileStateRepository({ workspaceDir: tempDir, issue: 56 });
+      const expectedPath = path.join(tempDir, '.agyloop', 'tasks', '56.json');
+      assert.strictEqual(repo.getStateFilePath(), expectedPath);
+
+      repo.save({ issue: 56, currentStage: 'PLAN', history: [] } as any);
+      assert.ok(fs.existsSync(expectedPath));
+
+      const loaded = repo.load();
+      assert.strictEqual(loaded?.issue, 56);
+      assert.strictEqual(loaded?.currentStage, 'PLAN');
+    });
+
+    test('listAllStates reads root state and multiple task states, ignoring corrupt JSON and non-JSON files', () => {
+      const repo = new FileStateRepository({ workspaceDir: tempDir });
+
+      // Save root state
+      fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, '.agyloop', 'state.json'),
+        JSON.stringify({ issue: null, currentStage: 'INITIALIZED', history: [] })
+      );
+
+      // Save task states
+      fs.writeFileSync(
+        path.join(tempDir, '.agyloop', 'tasks', '10.json'),
+        JSON.stringify({ issue: 10, currentStage: 'DISCOVERY', history: [] })
+      );
+      fs.writeFileSync(
+        path.join(tempDir, '.agyloop', 'tasks', '20.json'),
+        JSON.stringify({ issue: 20, currentStage: 'IMPLEMENT', history: [] })
+      );
+
+      // Add invalid files (corrupt JSON, non-json file)
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', 'corrupt.json'), 'invalid json{{{');
+      fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', 'notes.txt'), 'random text');
+
+      const states = repo.listAllStates();
+      assert.strictEqual(states.length, 3);
+
+      const stages = states.map((s: any) => s.currentStage).sort();
+      assert.deepStrictEqual(stages, ['DISCOVERY', 'IMPLEMENT', 'INITIALIZED']);
+    });
+  });
 });
