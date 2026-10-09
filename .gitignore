@@ -2,8 +2,8 @@
 artifacts
 artifacts/
 artifacts/plans/
-.agyloop/
-.worktrees/
+.agyloop
+.worktrees
 config.json
 
 # Environment & Secrets

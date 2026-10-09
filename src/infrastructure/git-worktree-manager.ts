@@ -12,7 +12,8 @@ import {
   WorktreeCreationError,
   WorktreeCleanupError,
   DEFAULT_WORKTREES_DIR,
-  DEFAULT_TASK_BRANCH_PREFIX
+  DEFAULT_TASK_BRANCH_PREFIX,
+  DEFAULT_STATE_DIR
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -39,16 +40,55 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
+   * Resolves the primary repository root.
+   * When inside a linked git worktree or nested subdirectory, git rev-parse --show-toplevel
+   * returns the worktree path itself, not the primary repo root.
+   * git worktree list --porcelain outputs all worktrees, and the very first worktree listed
+   * is always the main repository root.
+   */
+  private async getRepoRoot(workspaceDir?: string): Promise<string> {
+    const cwd = workspaceDir || process.cwd();
+    try {
+      const res = await this.commandExecutor.execute('git worktree list --porcelain', { cwd });
+      if (res.exitCode === 0 && res.stdout) {
+        const firstLine = res.stdout.trim().split('\n')[0] || '';
+        const match = firstLine.match(/^worktree (.+)$/);
+        if (match && match[1]) {
+          return path.resolve(match[1].trim());
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+
+    try {
+      const res = await this.commandExecutor.execute('git rev-parse --show-toplevel', { cwd });
+      if (res.exitCode === 0 && res.stdout && res.stdout.trim()) {
+        const topLevel = res.stdout.trim();
+        if (path.isAbsolute(topLevel)) {
+          return path.resolve(topLevel);
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+
+    return path.resolve(cwd);
+  }
+
+  /**
    * Resolves absolute or relative worktree path for a given task ID.
    */
-  public resolveTaskWorktreePath(
+  public async resolveTaskWorktreePath(
     workspaceDir: string,
     taskId: string | number,
-    worktreesDir: string = DEFAULT_WORKTREES_DIR
-  ): string {
-    const cleanWorkspace = workspaceDir || process.cwd();
-    const cleanId = String(taskId).trim();
-    return path.resolve(cleanWorkspace, worktreesDir, cleanId);
+    worktreesDir?: string
+  ): Promise<string> {
+    const root = await this.getRepoRoot(workspaceDir);
+    const targetWorktreesDir = worktreesDir || DEFAULT_WORKTREES_DIR;
+    return path.isAbsolute(targetWorktreesDir)
+      ? path.resolve(targetWorktreesDir, String(taskId).trim())
+      : path.resolve(root, targetWorktreesDir, String(taskId).trim());
   }
 
   /**
@@ -63,11 +103,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
-   * Automatically adds .worktrees/ to .gitignore if not already present.
+   * Automatically adds .worktrees to .gitignore if not already present.
    */
   public async ensureGitIgnore(options?: EnsureGitIgnoreOptions): Promise<boolean> {
-    const workspace = options?.workspaceDir || process.cwd();
-    const targetEntry = options?.entry || '.worktrees/';
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
+    const targetEntry = options?.entry || '.worktrees';
     const gitignorePath = path.join(workspace, '.gitignore');
 
     try {
@@ -91,6 +131,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const updated = `${content}${separator}\n# AgyLoop Git Worktrees\n${targetEntry}\n`;
       fs.writeFileSync(gitignorePath, updated, 'utf8');
       return true;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (err) {
       // Non-fatal warning if .gitignore cannot be modified
       return false;
@@ -140,7 +181,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Provisions an isolated git worktree under .worktrees/<task-id> on branch task/<task-id>-<slug>.
    */
   public async createWorktree(options: CreateWorktreeOptions): Promise<WorktreeDescriptor> {
-    const workspace = options.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options.workspaceDir);
     const taskId = String(options.taskId).trim();
     if (!taskId) {
       throw new WorktreeCreationError('createWorktree', 'Task ID is required to create a worktree.');
@@ -154,11 +195,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         : '';
 
     const branch = this.resolveTaskBranchName(taskId, slug, options.branchPrefix);
-    const worktreePath = this.resolveTaskWorktreePath(workspace, taskId, options.worktreesDir);
+    const worktreePath = await this.resolveTaskWorktreePath(workspace, taskId, options.worktreesDir);
 
-    // 1. Ensure .worktrees/ and .agyloop/ are ignored in root repo
-    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees/' });
-    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.agyloop/' });
+    // 1. Ensure .worktrees and .agyloop are ignored in root repo
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: '.worktrees' });
+    await this.ensureGitIgnore({ workspaceDir: workspace, entry: `${DEFAULT_STATE_DIR}` });
 
     // 2. Resolve base branch
     const baseBranch = options.baseBranch || (await this.resolveBaseBranch(workspace));
@@ -168,8 +209,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const existing = await this.listWorktrees({ workspaceDir: workspace });
       const found = existing.find((wt) => wt.worktreePath === worktreePath);
       if (found) {
-        // Already registered worktree, ensure node_modules and return
+        // Already registered worktree, ensure node_modules, artifacts, and .agyloop, then return
         this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
+        this.linkArtifactsIfPresent(workspace, worktreePath);
+        this.linkAgyloopStateIfPresent(workspace, worktreePath);
         return found;
       }
 
@@ -188,71 +231,84 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       fs.mkdirSync(parentDir, { recursive: true });
     }
 
-    // 5. Execute git worktree add
-    let addRes = await this.commandExecutor.execute(
-      `git worktree add -b "${branch}" "${worktreePath}" "${baseBranch}"`,
-      { cwd: workspace }
-    );
+    // 5. Check if an existing branch matching task/<id> or fix/<id> already exists
+    let targetBranch = branch;
+    let branchAlreadyExists = false;
 
-    if (addRes.exitCode !== 0) {
-      const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
-      // If branch is already checked out at a worktree, return existing worktree descriptor idempotently
-      if (output.includes('already checked out at')) {
-        const match = output.match(/already checked out at '([^']+)'/);
-        const existingPath = match ? match[1] : worktreePath;
-        this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
-        this.linkArtifactsIfPresent(workspace, existingPath);
-        return new WorktreeDescriptor({
-          taskId,
-          worktreePath: existingPath,
-          branch,
-          baseBranch,
-          slug,
-          isIsolated: true
-        });
+    try {
+      const existingBranches = await this.listBranches({ workspaceDir: workspace });
+      const branchPattern = new RegExp(`^(task|fix)/${taskId}([-_/]|$)`, 'i');
+      const matched = existingBranches.find((b) => branchPattern.test(b));
+      if (matched) {
+        targetBranch = matched;
+        branchAlreadyExists = true;
       }
-
-      // If branch already exists, reuse the existing branch
-      if (output.includes('already exists')) {
-        addRes = await this.commandExecutor.execute(
-          `git worktree add "${worktreePath}" "${branch}"`,
-          { cwd: workspace }
-        );
-      }
+    } catch {
+      // Non-fatal, proceed with default branch
     }
 
-    if (addRes.exitCode !== 0) {
-      const output = (addRes.stderr || '') + '\n' + (addRes.stdout || '');
-      if (output.includes('already checked out at')) {
-        const match = output.match(/already checked out at '([^']+)'/);
-        const existingPath = match ? match[1] : worktreePath;
-        this.linkNodeModulesIfPresent(workspace, existingPath, options.linkNodeModules);
-        this.linkArtifactsIfPresent(workspace, existingPath);
-        return new WorktreeDescriptor({
-          taskId,
-          worktreePath: existingPath,
-          branch,
-          baseBranch,
-          slug,
-          isIsolated: true
-        });
-      }
+    // Explicitly check if targetBranch is already checked out to avoid swallowing errors improperly
+    const rawListRes = await this.commandExecutor.execute('git worktree list --porcelain', { cwd: workspace });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const isCheckedOut = rawListRes.stdout.includes(`branch refs/heads/${targetBranch}\n`);
 
-      throw new WorktreeCreationError(
-        'createWorktree',
-        addRes.stderr || addRes.stdout || `Failed to create git worktree at ${worktreePath}`,
-        { taskId, branch, worktreePath, baseBranch }
+    // 6. Execute git worktree add
+    let addRes;
+    if (branchAlreadyExists) {
+      // Branch exists. Reuse it without -b. If it is already checked out elsewhere,
+      // it will intentionally fail with "already checked out at" which we catch below.
+      addRes = await this.commandExecutor.execute(
+        `git worktree add "${worktreePath}" "${targetBranch}"`,
+        { cwd: workspace }
+      );
+    } else {
+      // Branch doesn't exist, create it with -b
+      addRes = await this.commandExecutor.execute(
+        `git worktree add -b "${targetBranch}" "${worktreePath}" "${baseBranch}"`,
+        { cwd: workspace }
       );
     }
 
-    // 6. Build Cache Optimization & Artifacts Mirroring
+    if (addRes.exitCode !== 0) {
+      const output = addRes.stderr || addRes.stdout || '';
+      
+      // If it is 'already checked out at', we extract the path and return it
+      if (output.includes('already checked out at')) {
+        const match = output.match(/already checked out at '([^']+)'/);
+        if (match && match[1]) {
+          const checkedOutPath = path.resolve(match[1]);
+          this.linkNodeModulesIfPresent(workspace, checkedOutPath, options.linkNodeModules);
+          this.linkArtifactsIfPresent(workspace, checkedOutPath);
+          this.linkAgyloopStateIfPresent(workspace, checkedOutPath);
+          
+          return new WorktreeDescriptor({
+            taskId,
+            worktreePath: checkedOutPath,
+            branch: targetBranch,
+            baseBranch,
+            slug,
+            isIsolated: checkedOutPath !== path.resolve(workspace)
+          });
+        }
+      }
+      
+      // Any other error
+      throw new WorktreeCreationError(
+        'createWorktree',
+        output || `Failed to create git worktree at ${worktreePath}`,
+        { taskId, branch: targetBranch, worktreePath, baseBranch }
+      );
+    }
+
+    // 7. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
     this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
     this.linkArtifactsIfPresent(workspace, worktreePath);
+    this.linkAgyloopStateIfPresent(workspace, worktreePath);
 
     return new WorktreeDescriptor({
       taskId,
       worktreePath,
-      branch,
+      branch: targetBranch,
       baseBranch,
       slug,
       isIsolated: true
@@ -263,7 +319,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Detaches and removes worktree directory and cleans up metadata.
    */
   public async removeWorktree(options: RemoveWorktreeOptions): Promise<void> {
-    const workspace = options.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options.workspaceDir);
     const worktreePath = options.worktreePath;
 
     if (!worktreePath) return;
@@ -271,6 +327,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     // Safely remove symlinks before git worktree remove
     this.unlinkSymlink(path.join(worktreePath, 'node_modules'));
     this.unlinkSymlink(path.join(worktreePath, 'artifacts'));
+    this.unlinkSymlink(path.join(worktreePath, DEFAULT_STATE_DIR));
 
     // Execute git worktree remove --force
     const removeRes = await this.commandExecutor.execute(
@@ -305,7 +362,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Prunes dangling worktrees via git worktree prune.
    */
   public async pruneWorktrees(options?: PruneWorktreesOptions): Promise<void> {
-    const workspace = options?.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
     const cmd = options?.expire
       ? `git worktree prune --expire "${options.expire}"`
       : 'git worktree prune';
@@ -317,7 +374,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Lists active worktrees registered in the git repository.
    */
   public async listWorktrees(options?: ListWorktreesOptions): Promise<readonly WorktreeDescriptor[]> {
-    const workspace = options?.workspaceDir || process.cwd();
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
     const res = await this.commandExecutor.execute('git worktree list --porcelain', {
       cwd: workspace
     });
@@ -332,6 +389,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     const blocks = output.split(/\n\s*\n/);
     const descriptors: WorktreeDescriptor[] = [];
     const normalizedRoot = path.resolve(workspace);
+    const expectedPrefix = path.join(normalizedRoot, DEFAULT_WORKTREES_DIR) + path.sep;
 
     for (const block of blocks) {
       const lines = block.split('\n');
@@ -352,6 +410,16 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // Skip the root primary workspace
       if (normalizedWtPath === normalizedRoot) {
         continue;
+      }
+
+      // Filter out external worktrees unless includeExternal is true
+      if (!options?.includeExternal) {
+        if (
+          normalizedWtPath !== path.join(normalizedRoot, DEFAULT_WORKTREES_DIR) &&
+          !normalizedWtPath.startsWith(expectedPrefix)
+        ) {
+          continue;
+        }
       }
 
       const branch = branchRef.replace(/^refs\/heads\//, '') || 'HEAD';
@@ -375,8 +443,8 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Cleans orphaned or stale worktrees/locks and returns count pruned.
    */
   public async cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number> {
-    const workspace = options?.workspaceDir || process.cwd();
-    const initialList = await this.listWorktrees({ workspaceDir: workspace });
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
+    const initialList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
     await this.pruneWorktrees({ workspaceDir: workspace });
 
     const worktreesDir = path.join(workspace, DEFAULT_WORKTREES_DIR);
@@ -402,8 +470,41 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
     }
 
+    // Subagent external worktree pruning & garbage collection
+    if (options?.subagents || options?.all) {
+      const allWorktrees = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
+      const currentCwd = path.resolve(process.cwd());
+
+      for (const wt of allWorktrees) {
+        const normalizedWtPath = path.resolve(wt.worktreePath);
+        // Safeguard current process working directory
+        if (normalizedWtPath === currentCwd) {
+          continue;
+        }
+
+        const isSubagent =
+          normalizedWtPath.includes('.gemini/antigravity/brain/') ||
+          normalizedWtPath.includes('.system_generated/worktrees/') ||
+          options?.all === true;
+
+        if (isSubagent) {
+          try {
+            await this.removeWorktree({
+              worktreePath: normalizedWtPath,
+              workspaceDir: workspace,
+              force: true,
+              prune: true
+            });
+            cleaned++;
+          } catch {
+            // Non-fatal if removal fails
+          }
+        }
+      }
+    }
+
     await this.pruneWorktrees({ workspaceDir: workspace });
-    const finalList = await this.listWorktrees({ workspaceDir: workspace });
+    const finalList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
     const diff = Math.max(0, initialList.length - finalList.length);
     return Math.max(cleaned, diff);
   }
@@ -486,12 +587,31 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    */
   public async isAncestor(options: IsAncestorOptions): Promise<boolean> {
     const workspace = options.workspaceDir || process.cwd();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ancestorBranch = options.ancestorBranch || (options as any).ancestor || '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const descendantBranch = options.descendantBranch || (options as any).descendant || '';
+
+    const ancestorSha = await this.getCommitHash(ancestorBranch, workspace);
+    const descendantSha = await this.getCommitHash(descendantBranch, workspace);
+
+    if (ancestorSha && descendantSha && ancestorSha === descendantSha) {
+      return false;
+    }
+
     const res = await this.commandExecutor.execute(
-      `git merge-base --is-ancestor "${options.ancestorBranch}" "${options.descendantBranch}"`,
+      `git merge-base --is-ancestor "${ancestorBranch}" "${descendantBranch}"`,
       { cwd: workspace }
     );
 
     return res.exitCode === 0;
+  }
+
+  private async getCommitHash(branch: string, workspace: string): Promise<string> {
+    const res = await this.commandExecutor.execute(`git rev-parse "${branch}^{commit}"`, {
+      cwd: workspace
+    });
+    return (res.stdout || '').trim();
   }
 
   /**
@@ -539,6 +659,61 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
       if (fs.existsSync(rootArtifacts) && !fs.existsSync(targetArtifacts)) {
         fs.symlinkSync(rootArtifacts, targetArtifacts, 'junction');
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  private linkAgyloopStateIfPresent(workspace: string, worktreePath: string): void {
+    try {
+      const rootAgyloop = path.join(workspace, DEFAULT_STATE_DIR);
+      const targetAgyloop = path.join(worktreePath, DEFAULT_STATE_DIR);
+
+      // AFTER: Guard self-referential symlinks when root and target are identical
+      const resolvedRoot = path.resolve(rootAgyloop);
+      const resolvedTarget = path.resolve(targetAgyloop);
+
+      if (resolvedRoot === resolvedTarget) {
+        // We are at root / no worktree active: ensure it's a real directory
+        // If it's already a symlink (e.g. pre-existing self-referential or broken symlink),
+        // fs.existsSync returns false and fs.mkdirSync throws ELOOP unless unlinked.
+        try {
+          if (fs.lstatSync(resolvedTarget).isSymbolicLink()) {
+            fs.unlinkSync(resolvedTarget);
+          }
+        } catch {
+          // Entry doesn't exist, proceed
+        }
+
+        if (!fs.existsSync(resolvedTarget)) {
+          fs.mkdirSync(resolvedTarget, { recursive: true });
+        }
+      } else {
+        // Ensure root .agyloop exists before symlinking
+        if (!fs.existsSync(resolvedRoot)) {
+          fs.mkdirSync(resolvedRoot, { recursive: true });
+        }
+
+        // In a worktree: safely link target -> root
+        if (!fs.existsSync(targetAgyloop)) {
+          // If a broken or leftover symlink exists, unlink it first
+          try {
+            if (fs.lstatSync(targetAgyloop).isSymbolicLink()) {
+              fs.unlinkSync(targetAgyloop);
+            }
+          } catch {
+            // Path doesn't exist, proceed
+          }
+
+          // Ensure parent directory exists before symlinking
+          const parentDir = path.dirname(targetAgyloop);
+          if (!fs.existsSync(parentDir)) {
+            fs.mkdirSync(parentDir, { recursive: true });
+          }
+
+          fs.symlinkSync(rootAgyloop, targetAgyloop, process.platform === 'win32' ? 'junction' : 'dir');
+        }
       }
     } catch {
       // Non-fatal

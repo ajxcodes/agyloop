@@ -23,14 +23,19 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   let tempDir: string;
   let stateFile: string;
   let repo: any;
+  let originalCwd: () => string;
 
   beforeEach(() => {
+    originalCwd = process.cwd;
+    process.cwd = () => '/mock/repo/root'; // Prevent IssueNumber.inferFromPath from seeing we're in .worktrees/174
+
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-'));
     stateFile = path.join(tempDir, '.agyloop', 'state.json');
     repo = new FileStateRepository({ stateFilePath: stateFile });
   });
 
   afterEach(() => {
+    process.cwd = originalCwd;
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -161,7 +166,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.ok(activeDuration >= 0);
   });
 
-  test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, and STAGE_REVIEW', () => {
+  test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW, STAGE_PLAN, and STAGE_DISCOVERY', () => {
     const sm = StateMachine.createInitial({ mode: 'standard' });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
@@ -173,13 +178,15 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     sm.transition(STAGE_COMPLETED);
 
     assert.strictEqual(sm.canTransition(STAGE_INITIALIZED), true);
+    assert.strictEqual(sm.canTransition(STAGE_DISCOVERY), true);
+    assert.strictEqual(sm.canTransition(STAGE_PLAN), true);
     assert.strictEqual(sm.canTransition(STAGE_IMPLEMENT), true);
     assert.strictEqual(sm.canTransition(STAGE_QUALITY_GATE), true);
     assert.strictEqual(sm.canTransition(STAGE_REVIEW), true);
 
-    // Reopen implementation from completed
-    sm.transition(STAGE_IMPLEMENT);
-    assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
+    // Reopen planning from completed
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.currentStage, STAGE_PLAN);
   });
 
   test('persists checkpoint to state.json and reloads state cleanly', () => {
@@ -199,6 +206,108 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(reloadedSm.history[1].stage, STAGE_DISCOVERY);
   });
 
+  test('tracks and serializes planDir accurately across snapshots', () => {
+    const sm = StateMachine.createInitial({
+      mode: 'standard',
+      issue: 108,
+      planDir: '/repo/artifacts/plans/108-fix-plan-selection'
+    });
+    assert.strictEqual(sm.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const snap = sm.toSnapshot();
+    assert.strictEqual(snap.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const json = sm.toJSON();
+    assert.strictEqual(json.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const reloaded = StateMachine.fromSnapshot(snap);
+    assert.strictEqual(reloaded.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    const fromJsonSm = StateMachine.fromJSON(json);
+    assert.strictEqual(fromJsonSm.planDir, '/repo/artifacts/plans/108-fix-plan-selection');
+
+    // Test setter
+    sm.setPlanDir('/repo/artifacts/plans/108-updated');
+    assert.strictEqual(sm.planDir, '/repo/artifacts/plans/108-updated');
+
+    // Test getStatus
+    const status = sm.getStatus();
+    assert.strictEqual(status.planDir, '/repo/artifacts/plans/108-updated');
+
+    // Test reset clears planDir
+    sm.reset();
+    assert.strictEqual(sm.planDir, null);
+  });
+
+  test('tracks and serializes milestoneTitle accurately across snapshots', () => {
+    const sm = StateMachine.createInitial({
+      mode: 'standard',
+      issue: 62,
+      milestoneTitle: 'v0.6.0'
+    });
+    assert.strictEqual(sm.milestoneTitle, 'v0.6.0');
+
+    const snap = sm.toSnapshot();
+    assert.strictEqual(snap.milestoneTitle, 'v0.6.0');
+
+    const json = sm.toJSON();
+    assert.strictEqual(json.milestoneTitle, 'v0.6.0');
+
+    const reloaded = StateMachine.fromSnapshot(snap);
+    assert.strictEqual(reloaded.milestoneTitle, 'v0.6.0');
+
+    const fromJsonSm = StateMachine.fromJSON(json);
+    assert.strictEqual(fromJsonSm.milestoneTitle, 'v0.6.0');
+
+    // Test setter
+    sm.setMilestoneTitle('v0.7.0');
+    assert.strictEqual(sm.milestoneTitle, 'v0.7.0');
+
+    // Test getStatus
+    const status = sm.getStatus();
+    assert.strictEqual(status.milestoneTitle, 'v0.7.0');
+
+    // Test reset clears milestoneTitle
+    sm.reset();
+    assert.strictEqual(sm.milestoneTitle, null);
+  });
+
+  test('tracks and serializes triagePayload accurately across snapshots', () => {
+    const sm = StateMachine.createInitial({
+      mode: 'standard',
+      issue: 190
+    });
+    
+    // Test default null
+    assert.strictEqual(sm.triagePayload, null);
+
+    // Test setter
+    sm.setTriagePayload('- [ajxcodes]: Fix this bug');
+    assert.strictEqual(sm.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test getStatus
+    const status = sm.getStatus();
+    assert.strictEqual(status.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test toSnapshot & toJSON
+    const snap = sm.toSnapshot();
+    assert.strictEqual(snap.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    const json = sm.toJSON();
+    assert.strictEqual(json.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test fromSnapshot & fromJSON
+    const reloaded = StateMachine.fromSnapshot(snap);
+    assert.strictEqual(reloaded.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    const fromJsonSm = StateMachine.fromJSON(json);
+    assert.strictEqual(fromJsonSm.triagePayload, '- [ajxcodes]: Fix this bug');
+
+    // Test reset clears triagePayload
+    sm.reset();
+    assert.strictEqual(sm.triagePayload, null);
+  });
+
   test('resets pipeline checkpoint', () => {
     const sm = StateMachine.createInitial({ mode: 'standard', issue: 99 });
     sm.transition(STAGE_DISCOVERY);
@@ -207,6 +316,53 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
 
     repo.reset();
     assert.strictEqual(fs.existsSync(stateFile), false);
+  });
+
+  test('resolves state file path relative to explicit workspaceDir', () => {
+    const explicitRepo = new FileStateRepository({ workspaceDir: tempDir });
+    assert.strictEqual(explicitRepo.getStateFilePath(), path.join(tempDir, '.agyloop', 'state.json'));
+  });
+
+  test('resolves canonical root repo state file when instantiated without options inside worktree', () => {
+    const defaultRepo = new FileStateRepository();
+    // Default repo when run in git repo / worktree should resolve to a valid .agyloop/state.json path
+    assert.ok(defaultRepo.getStateFilePath().endsWith(path.join('.agyloop', 'state.json')));
+    // It should not point to an isolated task worktree folder when root discovery succeeds
+    assert.ok(path.isAbsolute(defaultRepo.getStateFilePath()));
+  });
+
+  test('memoizes workspace root resolution avoiding duplicate child processes for identical cwd', () => {
+    const childProcess = require('child_process');
+    FileStateRepository.clearWorkspaceRootCache();
+
+    let execCallCount = 0;
+    const originalExecSync = childProcess.execSync;
+    childProcess.execSync = function (...args: any[]) {
+      execCallCount++;
+      return originalExecSync.apply(this, args);
+    };
+
+    try {
+      const repo1 = new FileStateRepository();
+      const initialExecCalls = execCallCount;
+      assert.ok(initialExecCalls > 0, 'First instantiation should invoke execSync');
+
+      // Second instantiation should reuse cached root without spawning child processes
+      const repo2 = new FileStateRepository();
+      assert.strictEqual(execCallCount, initialExecCalls, 'Second instantiation should reuse cached workspace root');
+      assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
+    } finally {
+      childProcess.execSync = originalExecSync;
+      FileStateRepository.clearWorkspaceRootCache();
+    }
+  });
+
+  test('clearWorkspaceRootCache invalidates cached workspace root', () => {
+    const repo1 = new FileStateRepository();
+    assert.ok(repo1.getStateFilePath());
+    FileStateRepository.clearWorkspaceRootCache();
+    const repo2 = new FileStateRepository();
+    assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
   });
 
   describe('CLI Argument Parsing', () => {

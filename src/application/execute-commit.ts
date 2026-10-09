@@ -28,7 +28,9 @@ import {
   SUMMARY_STATUS_COMPLETED,
   CommitMessage,
   CommitExecutionError,
-  InvalidTransitionError
+  InvalidTransitionError,
+  PublicSanitizer,
+  buildGitTokenRedirectConfig
 } from '../domain';
 import {
   StateRepository,
@@ -47,11 +49,13 @@ export interface ExecuteCommitParams {
   readonly rootWorkspaceDir?: string;
   readonly dryRun?: boolean;
   readonly issue?: number | string | null;
+  readonly milestoneTitle?: string | null;
   readonly keepWorktree?: boolean;
   readonly rejectionTarget?: 'IMPLEMENT' | 'PLAN' | StageName | null;
   readonly rejectionDirective?: 'replan' | 'implement' | string | null;
   readonly rejectionFeedback?: string | null;
   readonly rejectionReason?: string | null;
+  readonly createPr?: boolean;
 }
 
 export interface ExecuteCommitResult {
@@ -65,6 +69,8 @@ export interface ExecuteCommitResult {
   readonly prBaseBranch?: string;
   readonly prCommand?: string;
   readonly worktreeTornDown?: boolean;
+  readonly pushError?: string;
+  readonly fallbackUsed?: boolean;
 }
 
 export class ExecuteCommitUseCase {
@@ -89,9 +95,14 @@ export class ExecuteCommitUseCase {
   }
 
   public async execute(params: ExecuteCommitParams = {}): Promise<ExecuteCommitResult> {
-    const cwd = params.workspaceDir || process.cwd();
+    const initialDir = params.workspaceDir || process.cwd();
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
+    const cwd = sm.worktree?.worktreePath;
+    if (!cwd) {
+      throw new CommitExecutionError('validateWorktree', 'Worktree path is missing in state. Cannot commit to root workspace.');
+    }
+    const rootDir = params.rootWorkspaceDir || initialDir;
 
     if (sm.currentStage !== STAGE_COMMIT) {
       throw new InvalidTransitionError(
@@ -141,7 +152,7 @@ export class ExecuteCommitUseCase {
     const isExplicitlyConfirmed = params.confirmed === true;
     const isBypassed = params.bypassConfirmation === true || isYolo;
 
-    let userConfirmed = false;
+    let userConfirmed: boolean;
 
     if (params.confirmed === false) {
       userConfirmed = false;
@@ -182,7 +193,8 @@ export class ExecuteCommitUseCase {
           const issue = sm.issue || params.issue;
           const planLoc = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
-            issue
+            issue,
+            planDir: sm.planDir
           });
           if (planLoc?.summaryPath) {
             summaryUpdated = this.planGenerator.updateSummaryLog(planLoc.summaryPath, {
@@ -236,12 +248,16 @@ export class ExecuteCommitUseCase {
           addRes.stderr || addRes.stdout || 'Failed to stage working changes.'
         );
       }
+      // Defensive untrack: remove any accidentally staged symlinks (.agyloop, node_modules, artifacts)
+      await this.commandExecutor.execute('git rm --cached -rf .agyloop node_modules artifacts || true', { cwd });
     }
 
     // Execute git commit
     const fullMsg = commitMessage.toFullMessage();
-    const escapedMsg = fullMsg.replace(/"/g, '\\"');
-    const commitRes = await this.commandExecutor.execute(`git commit -m "${escapedMsg}"`, { cwd });
+    const commitRes = await this.commandExecutor.execute('git', { 
+      cwd, 
+      args: ['commit', '-m', fullMsg] 
+    });
 
     if (commitRes.exitCode !== 0) {
       throw new CommitExecutionError(
@@ -254,6 +270,122 @@ export class ExecuteCommitUseCase {
     const revRes = await this.commandExecutor.execute('git rev-parse HEAD', { cwd });
     const commitHash = revRes.stdout.trim() || 'unknown';
 
+    // Resolve PR target base branch (inferred collector branch or main)
+    const prBaseBranch = sm.baseBranch || 'main';
+
+    // Resolve active branch (worktree branch or git rev-parse HEAD fallback)
+    let activeBranch = sm.worktree?.branch || '';
+    if (!activeBranch) {
+      try {
+        const branchRes = await this.commandExecutor.execute('git rev-parse --abbrev-ref HEAD', { cwd });
+        const detected = branchRes.stdout.trim();
+        if (detected && detected !== 'HEAD') {
+          activeBranch = detected;
+        }
+      } catch {
+        // Fallback resolution failure non-fatal
+      }
+    }
+
+    // Resolve milestone and issue for PR generation
+    const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
+    const issueId = params.issue || sm.issue;
+
+    const escapeShellQuote = (str: string) => str.replace(/'/g, "'\\''");
+
+    // Check if PR already exists for the active branch
+    let prExists = false;
+    if (activeBranch) {
+      try {
+        const prListRes = await this.commandExecutor.execute(`gh pr list --head '${escapeShellQuote(activeBranch)}' --json number`, { cwd });
+        if (prListRes.exitCode === 0 && prListRes.stdout.trim()) {
+          const prs = JSON.parse(prListRes.stdout.trim());
+          if (Array.isArray(prs) && prs.length > 0) {
+            prExists = true;
+          }
+        }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      } catch (err) {
+        // Fallback to assuming no PR exists if gh fails or is unauthenticated
+      }
+    }
+
+    let prCommand: string;
+    if (prExists) {
+      prCommand = `echo "PR already exists for branch '${escapeShellQuote(activeBranch)}'."; gh pr view`;
+    } else {
+      let prCommandCore = activeBranch
+        ? `gh pr create --base '${escapeShellQuote(prBaseBranch)}' --head '${escapeShellQuote(activeBranch)}'`
+        : `gh pr create --base '${escapeShellQuote(prBaseBranch)}'`;
+
+      if (issueId) {
+        const singleLine = commitMessage.toSingleLine();
+        const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine);
+
+        const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
+        const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody);
+
+        prCommandCore += ` --title '${escapeShellQuote(sanitizedTitle)}' --body '${escapeShellQuote(sanitizedBody)}'`;
+
+        if (milestone) {
+          prCommandCore += ` --milestone '${escapeShellQuote(milestone)}'`;
+        }
+      }
+
+      // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
+      prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
+    }
+
+    // Remote Task Branch Push with Automated Token Fallback
+    let pushFailed = false;
+    let pushError: string | undefined;
+    let fallbackUsed = false;
+
+    if (activeBranch) {
+      try {
+        const pushRes = await this.commandExecutor.execute(`git push -u origin "${activeBranch}"`, { cwd });
+        if (pushRes.exitCode !== 0) {
+          const standardError = (pushRes.stderr || pushRes.stdout || 'Git push failed.').trim();
+
+          // Attempt HTTPS token fallback
+          const tokenRes = await this.commandExecutor.execute('gh auth token', { cwd });
+          const token = tokenRes.stdout.trim();
+
+          if (token && tokenRes.exitCode === 0) {
+            const redirectConfig = buildGitTokenRedirectConfig(token);
+            const fallbackCmd = `git ${redirectConfig} push -u origin "${activeBranch}"`;
+
+            const fallbackRes = await this.commandExecutor.execute(fallbackCmd, { cwd });
+            if (fallbackRes.exitCode === 0) {
+              fallbackUsed = true;
+            } else {
+              pushFailed = true;
+              pushError = (fallbackRes.stderr || fallbackRes.stdout || standardError).trim();
+            }
+          } else {
+            pushFailed = true;
+            pushError = standardError;
+          }
+        }
+      } catch (err: unknown) {
+        pushFailed = true;
+        pushError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (pushFailed) {
+      throw new CommitExecutionError('git push', `Failed to push to remote: ${pushError}`);
+    }
+
+    if (params.createPr && !prExists) {
+      try {
+        await this.commandExecutor.execute(prCommand, { cwd });
+      } catch (err: unknown) {
+        // Non-fatal if PR creation fails during auto-create
+        console.warn('Auto PR creation failed:', err instanceof Error ? err.message : String(err));
+      }
+    }
+
     // Advance StateMachine
     const transitionNote = isYolo ? NOTE_COMMIT_AUTO_APPROVED : NOTE_COMMIT_CONFIRMED;
     sm.transition(STAGE_COMPLETED, {
@@ -265,20 +397,12 @@ export class ExecuteCommitUseCase {
     // Checkpoint state
     await this.stateRepo.save(sm.toSnapshot());
 
-    // Resolve PR target base branch (inferred collector branch or main)
-    const prBaseBranch = sm.baseBranch || 'main';
-    const activeBranch = sm.worktree?.branch || '';
-    const prCommand = activeBranch
-      ? `gh pr create --base "${prBaseBranch}" --head "${activeBranch}"`
-      : `gh pr create --base "${prBaseBranch}"`;
-
     // Automated Worktree Teardown
     let worktreeTornDown = false;
-    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager);
+    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager) && !pushFailed;
 
     if (shouldTeardown && this.worktreeManager && sm.worktree) {
       const wtPath = sm.worktree.worktreePath;
-      const rootDir = params.rootWorkspaceDir || cwd;
 
       let doTeardown = false;
       if (isExplicitlyConfirmed || isBypassed) {
@@ -307,13 +431,26 @@ export class ExecuteCommitUseCase {
       }
     }
 
+    // Best-effort cleanup of stale external subagent worktrees
+    if (this.worktreeManager) {
+      try {
+        await this.worktreeManager.cleanOrphanedWorktrees({
+          workspaceDir: rootDir,
+          subagents: true
+        });
+      } catch {
+        // Non-blocking best effort cleanup
+      }
+    }
+
     // Update Summary Log
     let summaryUpdated = false;
     if (this.planGenerator) {
       const issue = sm.issue || params.issue;
       const planLoc = this.planGenerator.resolvePlanFile({
-        projectRoot: cwd,
-        issue
+        projectRoot: rootDir,
+        issue,
+        planDir: sm.planDir
       });
       const summaryPath = planLoc?.summaryPath;
       if (summaryPath) {
@@ -337,7 +474,9 @@ export class ExecuteCommitUseCase {
       summaryUpdated,
       prBaseBranch,
       prCommand,
-      worktreeTornDown
+      worktreeTornDown,
+      pushError,
+      fallbackUsed
     };
   }
 }

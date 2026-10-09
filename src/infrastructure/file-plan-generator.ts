@@ -27,7 +27,10 @@ import {
   TEMPLATE_SUMMARY,
   DEFAULT_TEMPLATES_DIRNAME,
   TEMPLATE_FILES,
-  CANDIDATE_PLAN_FILENAMES
+  CANDIDATE_PLAN_FILENAMES,
+  STAGE_DISCOVERY,
+  FILENAME_ALT_DISCOVERY_PLAN,
+  FILENAME_ALT_IMPLEMENTATION_PLAN
 } from '../domain';
 
 export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freeze({
@@ -52,6 +55,9 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 ## 3. Reproduction Steps & Verification Protocol
 - **Local Reproduction Command:**
 - **Failing Test Target:**
+### Manual Bug Smoke Test
+- **Smoke Test Results:**
+- **Step-by-Step Reproduction:**
 
 ## 4. Remediation Strategy
 - **Recommended Fix Approach:**
@@ -84,7 +90,7 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 ## 4. Quality Gate & Test Verification
 - **Automated Test Targets:**
 - **Build / Lint Commands:**
-- **Manual Verification Steps:**
+### Manual Smoke Test Protocol
 `,
 
   [TEMPLATE_SUMMARY]: `# AgyLoop Execution Summary
@@ -371,7 +377,11 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       let content = fs.readFileSync(summaryFilePath, 'utf8');
 
       if (updateData.stage) {
-        const stageQuery = String(updateData.stage).toLowerCase();
+        const rawQuery = String(updateData.stage).toLowerCase().trim();
+        // Normalize stage query keywords: strip digits, punctuation, and plurals for robust matching
+        const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const normQuery = normalize(rawQuery);
+
         const lines = content.split('\n');
         let updated = false;
 
@@ -381,9 +391,32 @@ export class FilePlanGenerator implements PlanGeneratorPort {
             const parts = line.split('|').map((p) => p.trim());
             if (parts.length >= 6) {
               const rowStage = parts[1].toLowerCase();
-              if (rowStage.includes(stageQuery)) {
-                const currentSubagent = updateData.subagent ? `\`${updateData.subagent}\`` : parts[2];
-                const currentModel = updateData.model ? `\`${updateData.model}\`` : parts[3];
+              const normRow = normalize(parts[1]);
+
+              // Check direct includes, normalized includes, or cross-matching synonyms
+              const matches =
+                rowStage.includes(rawQuery) ||
+                rawQuery.includes(rowStage) ||
+                normRow.includes(normQuery) ||
+                normQuery.includes(normRow) ||
+                (normQuery.includes('commit') && normRow.includes('commit')) ||
+                (normQuery.includes('quality') && normRow.includes('quality')) ||
+                (normQuery.includes('discovery') && normRow.includes('discovery')) ||
+                (normQuery.includes('plan') && normRow.includes('plan')) ||
+                (normQuery.includes('implement') && normRow.includes('implement')) ||
+                (normQuery.includes('review') && normRow.includes('review'));
+
+              if (matches) {
+                const formatCell = (val?: string, fallback = '-'): string => {
+                  if (!val) return fallback;
+                  const trimmed = val.trim();
+                  if (trimmed.startsWith('`') && trimmed.endsWith('`')) return trimmed;
+                  if (trimmed === '-' || trimmed.toLowerCase() === 'human gate') return trimmed;
+                  return `\`${trimmed}\``;
+                };
+
+                const currentSubagent = updateData.subagent ? formatCell(updateData.subagent, parts[2]) : parts[2];
+                const currentModel = updateData.model ? formatCell(updateData.model, parts[3]) : parts[3];
                 const currentStatus = updateData.status ? updateData.status.toUpperCase() : parts[4];
                 const currentDuration = updateData.duration ? updateData.duration : parts[5];
 
@@ -499,7 +532,11 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     }
   }
 
-  public findPlanDirectory(projectRoot: string, issueNumber: number | string): string | null {
+  public findPlanDirectory(
+    projectRoot: string,
+    issueNumber: number | string,
+    title?: string
+  ): string | null {
     if (!issueNumber) return null;
     const plansDir = path.resolve(projectRoot, DEFAULT_PLANS_DIR);
     if (!fs.existsSync(plansDir)) return null;
@@ -507,10 +544,40 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     try {
       const entries = fs.readdirSync(plansDir, { withFileTypes: true });
       const targetPrefix = `${issueNumber}-`;
-      const match = entries.find((e) => e.isDirectory() && e.name.startsWith(targetPrefix));
-      if (match) {
-        return path.join(plansDir, match.name);
+      const candidates = entries
+        .filter((e) => e.isDirectory() && e.name.startsWith(targetPrefix))
+        .map((e) => e.name);
+
+      if (candidates.length === 0) {
+        return null;
       }
+
+      if (title) {
+        const slug = this.slugify(title);
+        const expectedFolderName = `${issueNumber}-${slug}`;
+        const exactMatch = candidates.find((name) => name === expectedFolderName);
+        if (exactMatch) {
+          return path.join(plansDir, exactMatch);
+        }
+      }
+
+      candidates.sort((a, b) => {
+        let mtimeA = 0;
+        let mtimeB = 0;
+        try {
+          mtimeA = fs.statSync(path.join(plansDir, a)).mtimeMs;
+        } catch {
+          // Ignore stat errors
+        }
+        try {
+          mtimeB = fs.statSync(path.join(plansDir, b)).mtimeMs;
+        } catch {
+          // Ignore stat errors
+        }
+        return mtimeB - mtimeA;
+      });
+
+      return path.join(plansDir, candidates[0]);
     } catch {
       // Read failed
     }
@@ -537,11 +604,24 @@ export class FilePlanGenerator implements PlanGeneratorPort {
           ? options.planDir
           : path.resolve(cwd, options.planDir);
       } else if (options.issue) {
-        resolvedPlanDir = this.findPlanDirectory(cwd, options.issue);
+        resolvedPlanDir = this.findPlanDirectory(
+          cwd,
+          options.issue,
+          options.title || undefined
+        );
       }
 
       if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {
-        for (const candidate of CANDIDATE_PLAN_FILENAMES) {
+        let candidates = [...CANDIDATE_PLAN_FILENAMES];
+        if (options.stage === STAGE_DISCOVERY) {
+          candidates = [
+            TEMPLATE_DISCOVERY,
+            FILENAME_ALT_DISCOVERY_PLAN,
+            TEMPLATE_IMPLEMENTATION,
+            FILENAME_ALT_IMPLEMENTATION_PLAN
+          ];
+        }
+        for (const candidate of candidates) {
           const candidatePath = path.join(resolvedPlanDir, candidate);
           if (fs.existsSync(candidatePath)) {
             resolvedPlanPath = candidatePath;

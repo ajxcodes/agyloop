@@ -14,8 +14,10 @@ import {
   MSG_CLEAN_DIFF_REVIEW,
   REGEX_JSON_CODE_BLOCK
 } from '../constants';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { ValidationError, CritiqueError, AiReviewerError } from '../errors';
 import { ReviewConfidence } from './review-confidence';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { AiReviewFinding, AiReviewFindingProps } from './ai-review-finding';
 
 export interface AiReviewReportProps {

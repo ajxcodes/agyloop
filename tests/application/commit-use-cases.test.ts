@@ -16,7 +16,8 @@ const {
   MODE_YOLO,
   CommitMessage,
   InvalidTransitionError,
-  CommitExecutionError
+  CommitExecutionError,
+  WorktreeDescriptor
 } = require('../../dist/domain');
 const {
   DraftCommitUseCase,
@@ -31,7 +32,8 @@ import type {
   GitHubIssueData,
   PlanGeneratorPort,
   ConfirmationPromptPort,
-  ResolvedPlanLocation
+  ResolvedPlanLocation,
+  WorktreeManagerPort
 } from '../../src/ports';
 
 class MockStateRepository implements StateRepository {
@@ -62,10 +64,12 @@ class MockStateRepository implements StateRepository {
 
 class MockCommandExecutor implements CommandExecutorPort {
   public executedCommands: string[] = [];
+  public executedOptions: Array<any> = [];
   public responses: Record<string, Partial<CommandExecutionResult>> = {};
 
-  public async execute(command: string): Promise<CommandExecutionResult> {
+  public async execute(command: string, options?: any): Promise<CommandExecutionResult> {
     this.executedCommands.push(command);
+    this.executedOptions.push(options);
     const mock = this.responses[command] || {};
     return {
       command,
@@ -76,6 +80,20 @@ class MockCommandExecutor implements CommandExecutorPort {
       durationMs: 10,
       timedOut: false
     };
+  }
+}
+
+class MockWorktreeManager implements Partial<WorktreeManagerPort> {
+  public removedWorktreeOptions: any = null;
+  public cleanOrphanedCalls: any[] = [];
+
+  public async removeWorktree(options: any): Promise<void> {
+    this.removedWorktreeOptions = options;
+  }
+
+  public async cleanOrphanedWorktrees(options?: any): Promise<number> {
+    this.cleanOrphanedCalls.push(options);
+    return 1;
   }
 }
 
@@ -129,6 +147,13 @@ class MockConfirmationPrompt implements ConfirmationPromptPort {
 }
 
 describe('Commit Application Use Cases', () => {
+  const mockWorktree = WorktreeDescriptor.create({
+    taskId: 999,
+    worktreePath: '/mock/repo/.worktrees/999',
+    branch: 'fix/999',
+    baseBranch: 'main'
+  });
+
   describe('DraftCommitUseCase', () => {
     test('throws InvalidTransitionError when pipeline is not at STAGE_COMMIT or STAGE_REVIEW', async () => {
       const sm = new StateMachine({ stage: new Stage(STAGE_IMPLEMENT) });
@@ -144,7 +169,7 @@ describe('Commit Application Use Cases', () => {
     });
 
     test('drafts conventional commit message using diff and active issue context', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), issue: null });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), issue: null, worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
@@ -172,7 +197,7 @@ new file mode 100644
     });
 
     test('accepts user message override', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
@@ -188,11 +213,34 @@ new file mode 100644
       assert.strictEqual(result.commitMessage.scope, 'core');
       assert.strictEqual(result.commitMessage.toSingleLine(), 'refactor(core): overhaul lifecycle transitions (#30)');
     });
+
+    test('evaluates git commands in worktree directory when sm.worktree is configured', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 48,
+        worktreePath: '/mock/repo/.worktrees/48',
+        branch: 'fix/48',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(48);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git diff HEAD'] = {
+        stdout: `diff --git a/file.ts b/file.ts\n+++ b/file.ts\n@@ -0,0 +1 @@\n+test`
+      };
+      const gateway = new MockGitHubGateway();
+      const useCase = new DraftCommitUseCase(stateRepo, executor, gateway);
+
+      await useCase.execute({ workspaceDir: '/mock/repo' });
+
+      assert.ok(executor.executedCommands.includes('git diff HEAD'));
+      assert.strictEqual(executor.executedOptions[0]?.cwd, '/mock/repo/.worktrees/48');
+    });
   });
 
   describe('ExecuteCommitUseCase', () => {
     test('throws InvalidTransitionError when not at STAGE_COMMIT', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_IMPLEMENT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_IMPLEMENT), worktree: mockWorktree });
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
       const useCase = new ExecuteCommitUseCase(stateRepo, executor);
@@ -204,7 +252,7 @@ new file mode 100644
     });
 
     test('enforces human confirmation gate and throws if neither confirmed nor prompter available', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
       const useCase = new ExecuteCommitUseCase(stateRepo, executor);
@@ -218,7 +266,7 @@ new file mode 100644
     });
 
     test('prompts user and returns cancelled result if user declines confirmation', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
       const prompter = new MockConfirmationPrompt(false); // User answers 'no'
@@ -234,7 +282,7 @@ new file mode 100644
     });
 
     test('executes git commit, advances state, updates summary, and checkpoints on user confirmation', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
@@ -277,7 +325,7 @@ new file mode 100644
     });
 
     test('auto-approves in YOLO mode without interactive prompt', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), mode: MODE_YOLO });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), mode: MODE_YOLO, worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
@@ -294,7 +342,7 @@ new file mode 100644
     });
 
     test('handles dryRun mode without executing git commit or disk mutation', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
       const useCase = new ExecuteCommitUseCase(stateRepo, executor);
@@ -313,7 +361,7 @@ new file mode 100644
     });
 
     test('handles dryRun mode without explicit confirmation or prompting', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
       const prompter = new MockConfirmationPrompt(false);
@@ -334,7 +382,7 @@ new file mode 100644
     });
 
     test('handles human rejection by routing to IMPLEMENT and updating summary log', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
@@ -371,7 +419,7 @@ new file mode 100644
     });
 
     test('handles human rejection by routing to PLAN when redesign is required', async () => {
-      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
@@ -405,5 +453,513 @@ new file mode 100644
       assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.targetStage, STAGE_PLAN);
       assert.strictEqual(planGen.updatedSummary!.data.commitRejection?.reason, 'Architecture requires redesign');
     });
+
+    test('evaluates git commands in worktree directory and worktree removal in rootWorkspaceDir when sm.worktree is configured', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 48,
+        worktreePath: '/mock/repo/.worktrees/48',
+        branch: 'fix/48',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(48);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix(worktree): test commit (#48)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'feedbeef1234\n' };
+
+      const worktreeManager = new MockWorktreeManager();
+      const planGen = new MockPlanGenerator();
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        planGen as unknown as PlanGeneratorPort,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        scope: 'worktree',
+        description: 'test commit',
+        issueNumber: 48
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+
+      // Verify all git commands ran inside the worktree directory
+      assert.ok(executor.executedOptions.length > 0);
+      for (const opt of executor.executedOptions) {
+        assert.strictEqual(opt?.cwd, '/mock/repo/.worktrees/48');
+      }
+
+      // Verify worktree removal was performed using rootWorkspaceDir
+      assert.ok(worktreeManager.removedWorktreeOptions);
+      assert.strictEqual(worktreeManager.removedWorktreeOptions.workspaceDir, '/mock/repo');
+      assert.strictEqual(worktreeManager.removedWorktreeOptions.worktreePath, '/mock/repo/.worktrees/48');
+    });
+
+    test('executes defensive git rm --cached after git add -A to untrack symlinks', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git rm --cached -rf .agyloop node_modules artifacts || true'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat(scope): defensive untrack test (#30)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'deadbeef1234\n' };
+
+      const prompter = new MockConfirmationPrompt(true);
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, undefined, prompter);
+
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        scope: 'scope',
+        description: 'defensive untrack test',
+        issueNumber: 30
+      });
+
+      await useCase.execute({ commitMessage: commitMsg });
+
+      // Verify git add -A was called
+      assert.ok(executor.executedCommands.includes('git add -A'));
+
+      // Verify defensive git rm --cached ran after git add -A
+      const addIdx = executor.executedCommands.indexOf('git add -A');
+      const rmIdx = executor.executedCommands.indexOf('git rm --cached -rf .agyloop node_modules artifacts || true');
+      assert.ok(rmIdx !== -1, 'git rm --cached command should have been executed');
+      assert.ok(rmIdx > addIdx, 'git rm --cached should run after git add -A');
+    });
+
+    test('pushes active task branch to remote on successful commit', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 88,
+        worktreePath: '/mock/repo/.worktrees/88',
+        branch: 'fix/88',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: push task branch (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git push -u origin "fix/88"'] = { exitCode: 0 };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'push task branch',
+        issueNumber: 88
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(result.pushError, undefined);
+      assert.strictEqual(result.fallbackUsed, false);
+      assert.ok(executor.executedCommands.includes('git push -u origin "fix/88"'));
+    });
+
+    test('attempts HTTPS fallback push with gh auth token when standard push fails', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 88,
+        worktreePath: '/mock/repo/.worktrees/88',
+        branch: 'fix/88',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: fallback push (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git push -u origin "fix/88"'] = {
+        exitCode: 1,
+        stderr: 'Permission denied (publickey).'
+      };
+      executor.responses['gh auth token'] = {
+        exitCode: 0,
+        stdout: 'ghp_secret_token_1234\n'
+      };
+
+      const fallbackCmd =
+        `git -c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="git@github.com:" ` +
+        `-c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="https://github.com/" ` +
+        `push -u origin "fix/88"`;
+      executor.responses[fallbackCmd] = { exitCode: 0 };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'fallback push',
+        issueNumber: 88
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.fallbackUsed, true);
+      assert.strictEqual(result.pushError, undefined);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.ok(executor.executedCommands.includes(fallbackCmd));
+    });
+
+    test('preserves worktree when standard push and fallback push fail', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 88,
+        worktreePath: '/mock/repo/.worktrees/88',
+        branch: 'fix/88',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: failed push (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit1234\n' };
+      executor.responses['git push -u origin "fix/88"'] = {
+        exitCode: 1,
+        stderr: 'Permission denied (publickey).'
+      };
+      executor.responses['gh auth token'] = {
+        exitCode: 0,
+        stdout: 'ghp_secret_token_1234\n'
+      };
+
+      const fallbackCmd =
+        `git -c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="git@github.com:" ` +
+        `-c url."https://x-access-token:ghp_secret_token_1234@github.com/".insteadOf="https://github.com/" ` +
+        `push -u origin "fix/88"`;
+      executor.responses[fallbackCmd] = {
+        exitCode: 1,
+        stderr: 'fatal: Authentication failed'
+      };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'failed push',
+        issueNumber: 88
+      });
+
+      await assert.rejects(
+        () => useCase.execute({
+          commitMessage: commitMsg,
+          confirmed: true,
+          workspaceDir: '/mock/repo',
+          rootWorkspaceDir: '/mock/repo'
+        }),
+        (err: any) => err.message.includes('fatal: Authentication failed')
+      );
+      assert.strictEqual(worktreeManager.removedWorktreeOptions, null);
+    });
+
+    test('throws error if worktreePath is missing from state', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) }); // no worktree
+      sm.setIssue(88);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'missing worktree test',
+        issueNumber: 88
+      });
+
+      await assert.rejects(
+        () => useCase.execute({
+          commitMessage: commitMsg,
+          confirmed: true,
+          workspaceDir: '/mock/repo'
+        }),
+        (err: any) => err.message.includes('Worktree path is missing in state')
+      );
+    });
+
+    test('invokes cleanOrphanedWorktrees with subagents: true after commit completion', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      sm.setIssue(90);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: clean subagents (#90)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit90\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/90\n' };
+      executor.responses['git push -u origin "fix/90"'] = { exitCode: 0 };
+
+      const worktreeManager = new MockWorktreeManager();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        undefined,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'clean subagents',
+        issueNumber: 90
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        rootWorkspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(worktreeManager.cleanOrphanedCalls.length, 1);
+      assert.strictEqual(worktreeManager.cleanOrphanedCalls[0].subagents, true);
+      assert.strictEqual(worktreeManager.cleanOrphanedCalls[0].workspaceDir, '/mock/repo');
+    });
+
+    test('executes pr command when createPr is true', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 91,
+        worktreePath: '/mock/repo/.worktrees/91',
+        branch: 'task/91',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: auto pr (#91)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit91\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/91\n' };
+      executor.responses['git push -u origin "task/91"'] = { exitCode: 0 };
+      executor.responses["gh pr list --head 'task/91' --json number"] = { exitCode: 0, stdout: '[]' };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'auto pr',
+        issueNumber: 91
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        createPr: true
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(executor.executedCommands.some(cmd => cmd.includes('gh pr create')));
+    });
+
+    test('generates prCommand with title, body with Closes #id, and --milestone from sm.milestoneTitle', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 62,
+        worktreePath: '/mock/repo/.worktrees/62',
+        branch: 'task/62',
+        baseBranch: 'phase/v0.6.0'
+      });
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        worktree: wt,
+        baseBranch: 'phase/v0.6.0',
+        milestoneTitle: 'v0.6.0'
+      });
+      sm.setIssue(62);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat(pr): automated milestone linking (#62)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit62hash\n' };
+      executor.responses['git push -u origin "task/62"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        scope: 'pr',
+        description: 'automated milestone linking',
+        issueNumber: 62
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'phase/v0.6.0\' --head \'task/62\' --title \'feat(pr): automated milestone linking (#62)\' --body \'Closes #62\' --milestone \'v0.6.0\'; git stash pop -q; else gh pr create --base \'phase/v0.6.0\' --head \'task/62\' --title \'feat(pr): automated milestone linking (#62)\' --body \'Closes #62\' --milestone \'v0.6.0\'; fi'
+      );
+    });
+
+    test('generates prCommand with description and Closes #id in body when commit has body, and honors milestoneTitle param override', async () => {
+      const wt = WorktreeDescriptor.create({ taskId: 62, worktreePath: '/mock/repo/.worktrees/62', branch: 'task/62-override', baseBranch: 'main' });
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        baseBranch: 'main',
+        worktree: wt
+      });
+      sm.setIssue(62);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat: commit with body (#62)\\n\\nDetailed feature description."'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit62hash2\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/62-override\n' };
+      executor.responses['git push -u origin "task/62-override"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        description: 'commit with body',
+        body: 'Detailed feature description.',
+        issueNumber: 62
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo',
+        milestoneTitle: 'v0.7.0'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'main\' --head \'task/62-override\' --title \'feat: commit with body (#62)\' --body \'Detailed feature description.\n\nCloses #62\' --milestone \'v0.7.0\'; git stash pop -q; else gh pr create --base \'main\' --head \'task/62-override\' --title \'feat: commit with body (#62)\' --body \'Detailed feature description.\n\nCloses #62\' --milestone \'v0.7.0\'; fi'
+      );
+    });
+
+    test('generates prCommand without title, body, or milestone when no issue is present', async () => {
+      const wt = WorktreeDescriptor.create({ taskId: 999, worktreePath: '/mock/repo/.worktrees/999', branch: 'chore/cleanup', baseBranch: 'main' });
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        baseBranch: 'main',
+        worktree: wt
+      });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "chore: ad-hoc task"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commitchore\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'chore/cleanup\n' };
+      executor.responses['git push -u origin "chore/cleanup"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'chore',
+        description: 'ad-hoc task'
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'main\' --head \'chore/cleanup\' --title \'chore: ad-hoc task\' --body \'Closes #999\'; git stash pop -q; else gh pr create --base \'main\' --head \'chore/cleanup\' --title \'chore: ad-hoc task\' --body \'Closes #999\'; fi'
+      );
+    });
+
+    test('skips PR creation and suggests viewing if PR already exists', async () => {
+      const wt = WorktreeDescriptor.create({ taskId: 170, worktreePath: '/mock/repo/.worktrees/170', branch: 'fix/170', baseBranch: 'main' });
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        baseBranch: 'main',
+        worktree: wt
+      });
+      sm.setIssue(170);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: skip pr create (#170)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit170\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/170\n' };
+      executor.responses['git push -u origin "fix/170"'] = { exitCode: 0 };
+      executor.responses['gh pr list --head \'fix/170\' --json number'] = { exitCode: 0, stdout: '[{"number":170}]\n' };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'skip pr create',
+        issueNumber: 170
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        result.prCommand,
+        'echo "PR already exists for branch \'fix/170\'."; gh pr view'
+      );
+    });
   });
 });
+

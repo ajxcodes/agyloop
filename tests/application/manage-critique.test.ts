@@ -149,6 +149,27 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
     assert.strictEqual(status.versionInfo.isOutdated, true);
   });
 
+  it('getStatus forces isOutdated false when source is sibling', async () => {
+    const critiquePort = new MockCritiquePort({
+      resolution: {
+        source: 'sibling',
+        path: '/mock/user/critique/bin/critique.js',
+        isAvailable: true
+      },
+      version: '0.1.6'
+    });
+    const installerPort = new MockCritiqueInstallerPort({ latestVersion: '0.2.0' });
+
+    const useCase = new ManageCritiqueUseCase(critiquePort, installerPort);
+    const status = await useCase.getStatus();
+
+    assert.strictEqual(status.resolution.isAvailable, true);
+    assert.strictEqual(status.versionInfo.isInstalled, true);
+    assert.strictEqual(status.versionInfo.currentVersion, '0.1.6');
+    assert.strictEqual(status.versionInfo.latestVersion, '0.2.0');
+    assert.strictEqual(status.versionInfo.isOutdated, false);
+  });
+
   it('install executes installer and returns result', async () => {
     const critiquePort = new MockCritiquePort();
     const installerPort = new MockCritiqueInstallerPort({
@@ -184,5 +205,63 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
 
     assert.strictEqual(res.success, true);
     assert.strictEqual(res.version, '0.2.1');
+  });
+
+  describe('resolveCritiquePath', () => {
+    it('instance method returns resolved path when critique is available', () => {
+      const critiquePort = new MockCritiquePort({
+        resolution: {
+          source: RESOLVER_SOURCE_USER_DATA,
+          path: '/custom/bin/critique',
+          isAvailable: true
+        }
+      });
+      const installerPort = new MockCritiqueInstallerPort();
+      const useCase = new ManageCritiqueUseCase(critiquePort, installerPort);
+
+      const path = useCase.resolveCritiquePath('/workspace');
+      assert.strictEqual(path, '/custom/bin/critique');
+    });
+
+    it('instance method returns null when critique is unavailable', () => {
+      const critiquePort = new MockCritiquePort({
+        resolution: {
+          source: RESOLVER_SOURCE_NONE,
+          path: null,
+          isAvailable: false
+        }
+      });
+      const installerPort = new MockCritiqueInstallerPort();
+      const useCase = new ManageCritiqueUseCase(critiquePort, installerPort);
+
+      const path = useCase.resolveCritiquePath();
+      assert.strictEqual(path, null);
+    });
+
+    it('static method safely returns path when critiquePort is available', () => {
+      const critiquePort = new MockCritiquePort({
+        resolution: {
+          source: RESOLVER_SOURCE_USER_DATA,
+          path: '/usr/local/bin/critique',
+          isAvailable: true
+        }
+      });
+
+      const path = ManageCritiqueUseCase.resolveCritiquePath(critiquePort, '/workspace');
+      assert.strictEqual(path, '/usr/local/bin/critique');
+    });
+
+    it('static method safely returns null when critiquePort is undefined or unavailable', () => {
+      assert.strictEqual(ManageCritiqueUseCase.resolveCritiquePath(undefined), null);
+
+      const unavailablePort = new MockCritiquePort({
+        resolution: {
+          source: RESOLVER_SOURCE_NONE,
+          path: null,
+          isAvailable: false
+        }
+      });
+      assert.strictEqual(ManageCritiqueUseCase.resolveCritiquePath(unavailablePort), null);
+    });
   });
 });

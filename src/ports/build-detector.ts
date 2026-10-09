@@ -24,7 +24,7 @@ export interface BuildDetectorPort {
   /**
    * Inspects workspace markers and lockfiles to detect ecosystems and verification commands.
    */
-  detect(workspaceDir: string): Promise<DetectedProject>;
+  detect(workspaceDir: string, config?: AgyLoopConfig): Promise<DetectedProject>;
 
   /**
    * Resolves the concrete verification commands following strict precedence:
@@ -38,4 +38,14 @@ export interface BuildDetectorPort {
     config?: AgyLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]>;
+
+  /**
+   * Resolves the available container runtime CLI ('podman' | 'docker' | null).
+   */
+  resolveContainerRuntime?(): 'podman' | 'docker' | null;
+
+  /**
+   * Resolves the container daemon socket path and runtime type.
+   */
+  resolveContainerSocket?(): { socketPath: string; runtime: 'podman' | 'docker' } | null;
 }

@@ -16,6 +16,7 @@ export const STAGE_QUALITY_GATE = 'QUALITY_GATE' as const;
 export const STAGE_REVIEW = 'REVIEW' as const;
 export const STAGE_COMMIT = 'COMMIT' as const;
 export const STAGE_COMPLETED = 'COMPLETED' as const;
+export const STAGE_TRIAGE = 'TRIAGE' as const;
 
 export const STAGES = Object.freeze({
   INITIALIZED: STAGE_INITIALIZED,
@@ -26,27 +27,41 @@ export const STAGES = Object.freeze({
   QUALITY_GATE: STAGE_QUALITY_GATE,
   REVIEW: STAGE_REVIEW,
   COMMIT: STAGE_COMMIT,
-  COMPLETED: STAGE_COMPLETED
+  COMPLETED: STAGE_COMPLETED,
+  TRIAGE: STAGE_TRIAGE
 });
 
 export type StageName = typeof STAGES[keyof typeof STAGES];
 
 export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[]>> = Object.freeze({
-  [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN]),
-  [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN]),
-  [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT]), // IMPLEMENT allowed only in YOLO mode
-  [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN]), // PLAN allowed if re-planning requested
-  [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE]),
-  [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT]), // IMPLEMENT allowed if gates fail
-  [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT]), // IMPLEMENT allowed if review changes required
-  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN]),
-  [STAGE_COMPLETED]: Object.freeze([STAGE_INITIALIZED, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW]) // Can start next task or reopen for fixes/review
+  [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN, STAGE_TRIAGE]),
+  [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN, STAGE_TRIAGE]),
+  [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed only in YOLO mode
+  [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]), // PLAN allowed if re-planning requested
+  [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE, STAGE_TRIAGE]),
+  [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if gates fail
+  [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if review changes required
+  [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]),
+  [STAGE_COMPLETED]: Object.freeze([
+    STAGE_INITIALIZED,
+    STAGE_DISCOVERY,
+    STAGE_PLAN,
+    STAGE_IMPLEMENT,
+    STAGE_QUALITY_GATE,
+    STAGE_REVIEW,
+    STAGE_TRIAGE
+  ]), // Can start next task or reopen for fixes/review/planning/triage
+  [STAGE_TRIAGE]: Object.freeze([
+    STAGE_IMPLEMENT,
+    STAGE_PLAN,
+    STAGE_DISCOVERY,
+    STAGE_COMPLETED
+  ])
 });
 
 export const MODE_STANDARD = 'standard' as const;
 export const MODE_PLAN = 'plan' as const;
 export const MODE_IMPLEMENT = 'implement' as const;
-export const MODE_GATES = 'gates' as const;
 export const MODE_COMMIT = 'commit' as const;
 export const MODE_YOLO = 'yolo' as const;
 
@@ -54,7 +69,6 @@ export const EXECUTION_MODES = Object.freeze({
   STANDARD: MODE_STANDARD,
   PLAN: MODE_PLAN,
   IMPLEMENT: MODE_IMPLEMENT,
-  GATES: MODE_GATES,
   COMMIT: MODE_COMMIT,
   YOLO: MODE_YOLO
 });
@@ -62,32 +76,42 @@ export const EXECUTION_MODES = Object.freeze({
 export type ExecutionMode = typeof EXECUTION_MODES[keyof typeof EXECUTION_MODES];
 
 export const ROLE_PLANNER = 'planner' as const;
+export const ROLE_DISCOVERY = 'discovery' as const;
 export const ROLE_IMPLEMENTER = 'implementer' as const;
 export const ROLE_GATE = 'gate' as const;
 export const ROLE_REVIEWER = 'reviewer' as const;
+export const ROLE_TRIAGE = 'triage' as const;
 
 export const SUBAGENT_ROLES = Object.freeze({
   PLANNER: ROLE_PLANNER,
+  DISCOVERY: ROLE_DISCOVERY,
   IMPLEMENTER: ROLE_IMPLEMENTER,
   GATE: ROLE_GATE,
-  REVIEWER: ROLE_REVIEWER
+  REVIEWER: ROLE_REVIEWER,
+  TRIAGE: ROLE_TRIAGE
 });
 
 export type SubagentRoleName = typeof SUBAGENT_ROLES[keyof typeof SUBAGENT_ROLES];
 
 export const ROLE_TITLE_PLANNER = 'Architectural Planning Subagent' as const;
+export const ROLE_TITLE_DISCOVERY = 'Discovery Subagent' as const;
 export const ROLE_TITLE_IMPLEMENTER = 'Code Implementation Subagent' as const;
 export const ROLE_TITLE_GATE = 'Quality Gate Verification Subagent' as const;
 export const ROLE_TITLE_REVIEWER = 'AI Reviewer Subagent' as const;
+export const ROLE_TITLE_TRIAGE = 'Triage Subagent' as const;
 
 export const ROLE_DESC_PLANNER =
   'Architectural reasoning, deep read-only inspection, and specification generation subagent' as const;
+export const ROLE_DESC_DISCOVERY =
+  'Defect discovery, root-cause analysis, and edge-case investigation subagent' as const;
 export const ROLE_DESC_IMPLEMENTER =
   'Precise code implementation, refactoring, test authoring, and build verification subagent' as const;
 export const ROLE_DESC_GATE =
   'Automated build, test suite, typecheck, and lint verification subagent executing in isolated shell execution' as const;
 export const ROLE_DESC_REVIEWER =
   'Standards compliance, code quality, and acceptance criteria review subagent' as const;
+export const ROLE_DESC_TRIAGE =
+  'PR review comment triage and pipeline routing subagent' as const;
 
 
 export const TIER_INHERIT = 'inherit' as const;
@@ -146,6 +170,12 @@ export const TOOL_WRITE_TO_FILE = 'write_to_file' as const;
 export const TOOL_REPLACE_FILE_CONTENT = 'replace_file_content' as const;
 export const TOOL_RUN_COMMAND = 'run_command' as const;
 
+export const PLANNER_TOOLS = Object.freeze([
+  ...READ_ONLY_TOOLS,
+  TOOL_WRITE_TO_FILE,
+  TOOL_REPLACE_FILE_CONTENT
+] as const);
+
 export const FORBIDDEN_WRITE_TOOLS = Object.freeze([
   TOOL_WRITE_TO_FILE,
   TOOL_REPLACE_FILE_CONTENT,
@@ -175,6 +205,14 @@ export const REVIEWER_TOOLS = Object.freeze([
   TOOL_RUN_COMMAND
 ] as const);
 
+export const TRIAGE_TOOLS = Object.freeze([
+  TOOL_VIEW_FILE,
+  TOOL_GREP_SEARCH,
+  TOOL_FIND_BY_NAME,
+  TOOL_LIST_DIR,
+  TOOL_RUN_COMMAND
+] as const);
+
 
 export const ERR_INVALID_TRANSITION = 'ERR_INVALID_TRANSITION' as const;
 export const ERR_PHYSICAL_WRITE_VIOLATION = 'ERR_PHYSICAL_WRITE_VIOLATION' as const;
@@ -196,6 +234,7 @@ export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
 export const ERR_PREFLIGHT_HALT = 'ERR_PREFLIGHT_HALT' as const;
 export const ERR_MILESTONE_RELEASE = 'ERR_MILESTONE_RELEASE' as const;
 export const ERR_MILESTONE_SEALED = 'ERR_MILESTONE_SEALED' as const;
+export const HALT_TYPE_MISSING_PLAN_DIR = 'MISSING_PLAN_DIR' as const;
 
 export const ERROR_CODES = Object.freeze({
   INVALID_TRANSITION: ERR_INVALID_TRANSITION,
@@ -217,7 +256,8 @@ export const ERROR_CODES = Object.freeze({
   WORKTREE: ERR_WORKTREE,
   PREFLIGHT_HALT: ERR_PREFLIGHT_HALT,
   MILESTONE_RELEASE: ERR_MILESTONE_RELEASE,
-  MILESTONE_SEALED: ERR_MILESTONE_SEALED
+  MILESTONE_SEALED: ERR_MILESTONE_SEALED,
+  PREFLIGHT_HALT_MISSING_PLAN_DIR: HALT_TYPE_MISSING_PLAN_DIR
 });
 
 
@@ -228,9 +268,23 @@ export const STATE_SCHEMA_VERSION = '1.0.0' as const;
 export const CLI_VERSION = '0.5.0' as const;
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300 as const;
 export const MS_PER_SECOND = 1000 as const;
+export const SECONDS_PER_MINUTE = 60 as const;
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
 export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
+export const MAX_IMPLEMENT_GATE_LOOPS = 3 as const;
+
+export const STATE_MUTATING_COMMANDS = Object.freeze([
+  'transition',
+  'reset',
+  'plan',
+  'implement',
+  'commit',
+  'yolo',
+  'triage',
+  'release',
+  null
+] as const);
 
 // Path & File Constants
 export const DEFAULT_STATE_DIR = '.agyloop' as const;
@@ -303,6 +357,7 @@ export const NOTE_REVIEW_APPROVED = 'AI review approved: Code changes verified' 
 export const NOTE_REVIEW_CHANGES_REQUESTED = 'AI review requested changes: Reverting to IMPLEMENT' as const;
 export const NOTE_REOPEN_IMPLEMENTATION_COMPLETED = 'Reopening implementation from completed stage to address review findings' as const;
 export const NOTE_RERUN_GATES_COMPLETED = 'Re-executing quality gates from completed stage' as const;
+export const NOTE_IMPLICIT_APPROVAL = 'Implicitly approved by explicit implementation request' as const;
 
 // Status Identifiers
 export const STATUS_PASSED = 'PASSED' as const;
@@ -366,6 +421,8 @@ export const LABEL_FAILING_ASSERTION = 'Failing Assertion' as const;
 export const SECTION_SELF_CORRECTION_TITLE = '### Self-Correction Quality Gate Failure Diagnostics:' as const;
 export const MSG_NO_FAILURES = 'All verification commands passed without failures.' as const;
 export const MSG_COMMAND_FAILED_NO_OUTPUT = 'Command failed without output.' as const;
+export const MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST = 'State mutation is forbidden within smoke test isolation directories' as const;
+export const MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE = 'Test suite is forbidden from mutating the root orchestrator state.' as const;
 export const DIVIDER_DASHED = '----------------------------------------------------------------------' as const;
 
 // Structured Review Verdict Protocol Tokens, Verdicts & Thresholds
@@ -425,6 +482,7 @@ export const REGEX_TAP_SKIPPED = /skipped\s+(\d+)/i;
 export const REGEX_MD_TABLE_HEADER = /\|\s*Command\s*\|\s*Exit Code\s*\|\s*Duration\s*\|\s*Status\s*\|/i;
 export const REGEX_MD_TABLE_ROW = /\|\s*([^|]+?)\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([A-Z_\s]+?)\s*\|/;
 
+// eslint-disable-next-line no-control-regex
 export const REGEX_ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 export const REGEX_STACK_FRAME = /^\s*at\s+(?:(?<callSite>.*?)\s+\((?<fileLocation>[^)]+:\d+:\d+)\)|(?<directLocation>[^\s()]+\.[a-zA-Z0-9]+:\d+:\d+))/;
 export const REGEX_FILE_LOCATION = /(?:at\s+.*?\(([^)]+:\d+:\d+)\)|at\s+([^\s()]+\.[a-zA-Z0-9]+:\d+:\d+)|([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+:\d+:\d+))/;
@@ -538,6 +596,7 @@ export const GRADLE_MARKERS = Object.freeze([
 ] as const);
 
 export const MARKER_POM_XML = 'pom.xml' as const;
+export const MARKER_GITHUB_WORKFLOWS = '.github/workflows' as const;
 
 export const MARKER_EXT_CSPROJ = '.csproj' as const;
 export const MARKER_EXT_SLN = '.sln' as const;
@@ -579,6 +638,7 @@ export const CMD_ID_GRADLE_CHECK = 'gradle-check' as const;
 export const CMD_ID_GRADLE_TEST = 'gradle-test' as const;
 export const CMD_ID_MAVEN_TEST = 'maven-test' as const;
 export const CMD_ID_DOTNET_TEST = 'dotnet-test' as const;
+export const CMD_ID_ACT = 'act' as const;
 export const CMD_ID_E2E = 'e2e' as const;
 
 export const KEYWORD_CHECK = 'check' as const;
@@ -599,6 +659,7 @@ export const CMD_LABEL_GRADLE_CHECK = 'Gradle Check' as const;
 export const CMD_LABEL_GRADLE_TEST = 'Gradle Test Suite' as const;
 export const CMD_LABEL_MAVEN_TEST = 'Maven Test Suite' as const;
 export const CMD_LABEL_DOTNET_TEST = '.NET Automated Test Suite' as const;
+export const CMD_LABEL_ACT = 'Act Container Workflow Verification' as const;
 
 // Command Prefixes
 export const CMD_PREFIX_CUSTOM = 'custom' as const;
@@ -636,6 +697,32 @@ export const PLAN_DEFAULT_SPECIFICATION_TITLE = 'Plan Specification' as const;
 export const PLAN_DEFAULT_TITLE = 'Task Plan' as const;
 
 
+export const ANTI_INCEPTION_GUARDRAIL = `### Anti-Inception & Role Boundary Guardrail:
+- You are an isolated worker subagent, NOT the orchestrator.
+- You are STRICTLY FORBIDDEN from calling \`invoke_subagent\`, \`define_subagent\`, or spawning other subagents.
+- Do not attempt to orchestrate lifecycle stages; perform your specific role directly.` as const;
+
+export const DEFAULT_DISCOVERY_SYSTEM_PROMPT = `# AgyLoop Discovery Subagent System Prompt
+
+You are the **AgyLoop Discovery Subagent**, a specialized investigator in Google Antigravity.
+
+Your primary purpose is deep defect discovery, comprehensive root-cause analysis (RCA), and edge-case investigation. You prepare actionable discovery reports for downstream planning and implementation.
+
+---
+
+## 1. Absolute Read-Only Mandate
+- You are equipped with inspection tools (\`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`) and limited write tools (\`write_to_file\`, \`replace_file_content\`).
+- You MUST ONLY use write tools to populate the discovery specification inside the \`artifacts/plans/\` directory.
+- Never attempt to edit, rewrite, or delete workspace source files.
+
+## 2. Investigative Methodology
+- Inspect repository structure and package manifests.
+- Locate all relevant symbols, classes, functions across the codebase.
+- Trace the failure mechanism from ingress to failure.
+- Manually smoke test the bug to record exact, minimal reproduction commands, failing test targets, and reproduction results.
+- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely (explicitly recommending \`/tmp/smoke-<issue>\`). If it is placed anywhere inside the workspace (e.g., \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.
+- If testing root commands, you must run them in the isolated directory and unset \`AGY_SUBAGENT\` (\`env -u AGY_SUBAGENT ...\`) to bypass the guard for the test.` as const;
+
 // Default System Prompts (Embedded Domain Fallbacks)
 export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt
 
@@ -647,9 +734,10 @@ Your primary purpose is deep codebase inspection, comprehensive root-cause analy
 
 ## 1. Absolute Read-Only Mandate & Safety Invariants
 
-1. **Zero Source Code Modifications**:
-   - You are equipped exclusively with inspection tools: \`view_file\`, \`grep_search\`, \`find_by_name\`, and \`list_dir\`.
-   - You are physically and procedurally restricted from mutating workspace files or running write/build/execute commands.
+1. **Scoped File Modifications (Plans Only)**:
+   - You are equipped with inspection tools (\`view_file\`, \`grep_search\`, \`find_by_name\`, \`list_dir\`) and limited write tools (\`write_to_file\`, \`replace_file_content\`).
+   - You are physically and procedurally restricted from mutating workspace source code files or running build/execute commands.
+   - You MUST ONLY use write tools to populate the technical specification inside the \`artifacts/plans/\` directory.
    - Never attempt to edit, rewrite, or delete workspace source files.
    - You do not write implementation code; your sole product is exhaustive, actionable architectural plans.
 
@@ -702,6 +790,7 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Exact automated test commands (e.g. \`node --test tests/example.test.js\`).
    - Lint, typecheck, or build commands.
    - Manual verification steps if applicable.
+   - NOTE: If the smoke test requires state-mutating commands (like \`bin/agyloop transition\`), explicitly mandate cloning to an isolated dummy directory OUTSIDE the workspace (e.g. \`/tmp/smoke-<issue>\`), and unset \`AGY_SUBAGENT\` to simulate human execution.
 
 ---
 
@@ -732,6 +821,7 @@ Your primary purpose is to execute code changes, refactoring, test authoring, an
    - Use \`write_to_file\` exclusively when creating brand-new source or test files.
    - Restrict \`run_command\` strictly to lightweight syntax checks and type validation (e.g. \`npx tsc --noEmit\`).
    - Prohibit running full test suites (\`npm test\`), linters, or heavy build pipelines; all automated verification is strictly reserved for the downstream Quality Gate (\`prompts/gate.md\`).
+   - All temporary scripts, files, and debugging artifacts must be placed in the \`scratch/\` directory. Do not pollute the root workspace.
 
 ---
 
@@ -787,6 +877,8 @@ Your primary purpose is to execute verification suites (typechecking, linting, b
 - Execute verification commands sequentially (e.g. \`npm run typecheck\`, \`npm test\`).
 - Track execution status, exit code, and runtime duration for each command.
 - Respect execution timeouts strictly.
+- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely (explicitly recommending \`/tmp/smoke-<issue>\`). If it is placed anywhere inside the workspace (e.g., \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.
+- If testing root commands, you must run them in the isolated directory and unset \`AGY_SUBAGENT\` (\`env -u AGY_SUBAGENT ...\`) to bypass the guard for the test.
 
 ### Phase B: Diagnostics Extraction & Filtering
 - When a command succeeds (exit code 0):
@@ -926,6 +1018,28 @@ export const MSG_CRITIQUE_NOT_FOUND =
   'Critique CLI binary not found. Please install critique or place it on PATH, ~/.local/bin, or as sibling ../critique.' as const;
 export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
 
+export const DIFF_EXCLUDED_PATHSPECS = Object.freeze([
+  ':!package-lock.json',
+  ':!pnpm-lock.yaml',
+  ':!yarn.lock',
+  ':!bun.lockb',
+  ':!dist/',
+  ':!build/'
+] as const);
+
+export const DIFF_EXCLUDED_PATTERNS = Object.freeze([
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb',
+  'dist/',
+  'build/'
+] as const);
+
+export const DIFF_EXCLUDE_ARGS = "':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock' ':!bun.lockb' ':!dist/' ':!build/'" as const;
+
+export const MAX_INLINE_DIFF_LINES = 1000 as const;
+
 export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
 
 You are the **AgyLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.
@@ -1010,12 +1124,14 @@ export const CONVENTIONAL_COMMIT_TYPES = Object.freeze([
 export type ConventionalCommitType = typeof CONVENTIONAL_COMMIT_TYPES[number];
 
 export const REGEX_CONVENTIONAL_HEADER =
+  // eslint-disable-next-line no-useless-escape
   /^(?<type>[a-z]+)(?:\((?<scope>[a-z0-9_.\-\/]+)\))?(?<breaking>!)?:\s*(?<description>.+)$/i;
 export const REGEX_BREAKING_CHANGE_FOOTER =
   /^BREAKING[ -]CHANGE:\s*(.+)$/im;
 export const REGEX_DIFF_FILE_HEADER =
   /^diff --git\/(.+?) b\/(.+?)$/gm;
 export const REGEX_ISSUE_NUMBER_REF = /#(\d+)/;
+export const REGEX_POSITIONAL_ISSUE_ID = /^#?(\d+)$/;
 export const REGEX_LEADING_CONVENTIONAL_PREFIX =
   /^(?:\[(?:task|feat|feature|fix|bug|refactor|chore|perf|docs)\]\s*(?:phase\s*\d+:?\s*)?|feat|fix|refactor|chore|test|perf|docs|style):\s*/i;
 
@@ -1038,10 +1154,12 @@ export const SECTION_COMMIT_DETAILS_TITLE = '## Commit & Release Details' as con
 
 export const GATE_APPROVAL = 'APPROVAL' as const;
 export const GATE_COMMIT = 'COMMIT' as const;
+export const GATE_TRIAGE = 'TRIAGE' as const;
 
 export const LIFECYCLE_GATES = Object.freeze({
   APPROVAL: GATE_APPROVAL,
-  COMMIT: GATE_COMMIT
+  COMMIT: GATE_COMMIT,
+  TRIAGE: GATE_TRIAGE
 });
 
 export type LifecycleGateName = typeof LIFECYCLE_GATES[keyof typeof LIFECYCLE_GATES];
@@ -1050,6 +1168,8 @@ export const NOTE_LIFECYCLE_STARTED = 'Lifecycle execution started' as const;
 export const NOTE_LIFECYCLE_COMPLETED = 'Lifecycle completed successfully' as const;
 export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const;
 export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as const;
+export const NOTE_PAUSED_TRIAGE_GATE = 'Paused at PR review comments triage gate' as const;
+export const NOTE_TRIAGE_ROUTED = 'Triage completed: routed to target stage' as const;
 export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
 export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;
 export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
@@ -1072,6 +1192,8 @@ export const COMMAND_WORKTREE = 'worktree' as const;
 export const COMMAND_RELEASE = 'release' as const;
 export const COMMAND_NEXT = 'next' as const;
 export const COMMAND_BRANCH_INFO = 'branch-info' as const;
+export const COMMAND_TRIAGE = 'triage' as const;
+export const COMMAND_SYNC = 'sync' as const;
 
 export const CLI_COMMANDS = Object.freeze({
   PLAN: COMMAND_PLAN,
@@ -1089,7 +1211,9 @@ export const CLI_COMMANDS = Object.freeze({
   RELEASE: COMMAND_RELEASE,
   NEXT: COMMAND_NEXT,
   BRANCH_INFO: COMMAND_BRANCH_INFO,
-  CRITIQUE: COMMAND_CRITIQUE
+  CRITIQUE: COMMAND_CRITIQUE,
+  TRIAGE: COMMAND_TRIAGE,
+  SYNC: COMMAND_SYNC
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
@@ -1208,6 +1332,20 @@ export const CLI_FLAGS = Object.freeze({
   VERSION: FLAG_VERSION,
   VERSION_SHORT: FLAG_VERSION_SHORT
 });
+
+// Git Push & Authentication Fallback Constants
+export const GIT_GITHUB_HOST = 'github.com' as const;
+export const GIT_SSH_URL_PREFIX = 'git@github.com:' as const;
+export const GIT_HTTPS_URL_PREFIX = 'https://github.com/' as const;
+
+/**
+ * Returns git CLI configuration arguments to redirect SSH and standard HTTPS pushes
+ * through the provided GitHub authentication token.
+ */
+export function buildGitTokenRedirectConfig(token: string): string {
+  const tokenUrl = `https://x-access-token:${token}@${GIT_GITHUB_HOST}/`;
+  return `-c url."${tokenUrl}".insteadOf="${GIT_SSH_URL_PREFIX}" -c url."${tokenUrl}".insteadOf="${GIT_HTTPS_URL_PREFIX}"`;
+}
 
 
 

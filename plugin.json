@@ -1,7 +1,7 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "agyloop",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "author": {
     "name": "Alvin Jorrel Pascual",
@@ -61,16 +61,18 @@
       "model": "pro",
       "role": "Architectural Planning Subagent",
       "tools": {
-        "read_only": true,
+        "read_only": false,
         "whitelist": [
           "view_file",
           "grep_search",
           "find_by_name",
-          "list_dir"
+          "list_dir",
+          "write_to_file",
+          "replace_file_content"
         ]
       },
       "capabilities": {
-        "enable_write_tools": false,
+        "enable_write_tools": true,
         "enable_subagent_tools": false,
         "enable_mcp_tools": true
       },
@@ -111,6 +113,12 @@
       "description": "Standards compliance and acceptance criteria review subagent",
       "model": "flash",
       "role": "AI Reviewer Subagent"
+    },
+    "triage": {
+      "name": "triage",
+      "description": "Categorizes PR review comments and routes pipeline lifecycle stages",
+      "model": "inherit",
+      "role": "Triage Subagent"
     }
   }
 }

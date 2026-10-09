@@ -1,0 +1,23 @@
+{
+  "currentStage": "TRIAGE",
+  "nextStage": "IMPLEMENT",
+  "actionType": "subagent",
+  "role": "triage",
+  "title": "Invoke Triage Subagent",
+  "description": "Open PR contains review comments requiring triage and pipeline routing.",
+  "baseBranch": "phase/5-orchestrator-hardening",
+  "taskBranch": null,
+  "worktreePath": null,
+  "invocationPayload": {
+    "Subagents": [
+      {
+        "TypeName": "self",
+        "Role": "Triage Subagent",
+        "Model": "inherit",
+        "Workspace": "inherit",
+        "Prompt": "# Task: Triage PR Review Comments\n\nYou are executing the **TRIAGE** phase of the AgyLoop pair-programming lifecycle.\nYour goal is to categorize review comments and route the pipeline to the appropriate next stage.\n\n### Active Issue: #190"
+      }
+    ]
+  },
+  "humanSummary": "Invoke Triage Subagent with Model 'inherit' to categorize comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED."
+}

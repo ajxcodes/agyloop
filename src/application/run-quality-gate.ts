@@ -29,8 +29,11 @@ import {
   SUMMARY_STATUS_FAILED,
   STATUS_PASSED,
   STATUS_FAILED,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_TIMED_OUT,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_DISPLAY_TIMED_OUT,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_SKIPPED,
   NOTE_EXECUTING_GATES,
   NOTE_GATES_PASSED,
@@ -39,7 +42,9 @@ import {
   DEFAULT_GATE_TIMEOUT_SECONDS,
   DEFAULT_GATE_COMMANDS,
   GateCommandDefinition,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MAX_FILTERED_LOG_LINES,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MAX_FILTERED_OUTPUT_CHARS,
   MS_PER_SECOND,
   ECOSYSTEM_UNKNOWN,
@@ -53,12 +58,17 @@ import {
   TestMetrics,
   DiagnosticSnippet,
   GateSummaryReport,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TOKEN_GATE_STATUS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TOKEN_BUILD_STATUS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TOKEN_FAILURE_FILE,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TOKEN_FAILING_ASSERTION,
   MSG_COMMAND_FAILED_NO_OUTPUT,
   InvalidTransitionError,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
 } from '../domain';
 import {
@@ -207,6 +217,7 @@ export class RunQualityGateUseCase {
         const detected = await this.buildDetector.detect(workspace);
         detectedEcosystemNames = detected.ecosystems.map((e) => e.toString());
         primaryEcosystemName = detected.primaryEcosystem.toString();
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (err: unknown) {
         // Fall back gracefully if detector metadata extraction encounters an issue
         detectedEcosystemNames = [ECOSYSTEM_UNKNOWN];
@@ -314,6 +325,7 @@ export class RunQualityGateUseCase {
         gateVerdict: STATUS_PASSED,
         gateTokens: gateReport.formatStructuredTokens()
       });
+      sm.resetImplementGateLoop();
     } else {
       sm.transition(STAGE_IMPLEMENT, {
         note: NOTE_GATES_FAILED,
@@ -324,6 +336,7 @@ export class RunQualityGateUseCase {
         failingAssertion: primaryDiagnostic?.failingAssertion,
         selfCorrectionPayload: gateReport.formatSelfCorrectionPayload()
       });
+      sm.incrementImplementGateLoop();
     }
 
     // 7. Update AgyLoop Summary.md via PlanGeneratorPort
@@ -331,7 +344,7 @@ export class RunQualityGateUseCase {
       projectRoot: workspace,
       issue: activeIssue,
       planPath: params.planPath,
-      planDir: params.planDir
+      planDir: params.planDir || sm.planDir
     });
 
     const durationStr = `${(totalDurationMs / MS_PER_SECOND).toFixed(1)}s`;

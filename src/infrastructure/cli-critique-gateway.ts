@@ -32,7 +32,7 @@ import {
   PATH_USER_DATA_CRITIQUE_MAC,
   CRITIQUE_FLAG_JSON,
   CRITIQUE_FLAG_STAGED,
-  CRITIQUE_FLAG_BASE,
+  DIFF_EXCLUDE_ARGS,
   CRITIQUE_BUILD_COMMAND,
   MSG_CRITIQUE_NOT_FOUND
 } from '../domain/constants';
@@ -297,7 +297,8 @@ export class CliCritiqueGateway implements CritiquePort {
       return AiReviewReport.bypassed(MSG_CRITIQUE_NOT_FOUND);
     }
 
-    let execPath = resolution.path;
+     
+    const execPath = resolution.path;
 
     // If resolved to a critique source directory (e.g. ../critique or user data dir)
     // and bin/critique.js is missing or source files in src/ are newer than bin/critique.js, compile it
@@ -323,12 +324,14 @@ export class CliCritiqueGateway implements CritiquePort {
       command = `"${execPath}" ${CRITIQUE_FLAG_JSON}`;
     }
 
-    if (options.staged) {
-      command += ` ${CRITIQUE_FLAG_STAGED}`;
-    }
-
     if (options.baseRef) {
-      command += ` ${CRITIQUE_FLAG_BASE} ${options.baseRef}`;
+      // Pipe working tree diff manually so that unstaged changes are correctly evaluated against baseRef
+      const diffCmd = options.staged
+        ? `git diff --cached ${options.baseRef} -- . ${DIFF_EXCLUDE_ARGS}`
+        : `git diff ${options.baseRef} -- . ${DIFF_EXCLUDE_ARGS}`;
+      command = `${diffCmd} | ${command}`;
+    } else if (options.staged) {
+      command += ` ${CRITIQUE_FLAG_STAGED}`;
     }
 
     try {

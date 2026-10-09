@@ -90,9 +90,10 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 | Subagent Role | Default Model Tier | Primary Purpose |
 |---|---|---|
 | **`planner`** | `pro` / `inherit` | Architectural reasoning, deep inspection, edge-case analysis |
-| **`implementer`** | `inherit` / `flash` | Focused code generation and refactoring from plan |
-| **`gate`** | `flash_lite` | Fast, cheap build/test script execution and log parsing |
-| **`reviewer`** | `flash` / `pro` | Standards compliance and acceptance criteria validation |
+| **`implementer`** | `inherit` / `flash` | Focused code generation and refactoring from plan inside isolated worktree |
+| **`gate`** | `flash_lite` | Fast build/test execution, containerized `act` gates, and log parsing |
+| **`reviewer`** | `flash` / `pro` | Two-tier critique diagnostics and acceptance criteria audit |
+| **`triage`** | `inherit` | Categorizes PR review comments and routes pipeline lifecycle stages |
 
 ---
 
@@ -100,25 +101,25 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 
 ```bash
 # Full lifecycle with human approval gates (Plan -> Stop -> Implement -> Gate -> Review -> Commit)
-/agyloop
+/agyloop [issue]
 
 # Plan-only mode: generates persistent tech spec in artifacts/plans/ and hard-stops for review
-/agyloop plan
+/agyloop plan [--issue <id>]
 
-# Resumes implementation directly from an approved plan
-/agyloop implement
-
-# Runs isolated quality gate and AI review diagnostics on current working diff
-/agyloop gates
+# Resumes implementation directly from an approved plan inside isolated worktree
+/agyloop implement [--issue <id>]
 
 # Fast-path / unattended mode: auto-approves plan gate & infers defaults while keeping quality gates
-/agyloop yolo
+/agyloop yolo [--issue <id>]
 
 # Automatically commit if all quality gates and reviews pass green
 /agyloop --commit-after
 
-# 100% end-to-end autonomous execution (Issue -> Plan -> Implement -> Gates -> Review -> Commit)
-/agyloop yolo --commit-after
+# PR Review comment triage: inspect and route review feedback
+/agyloop triage [implement | plan | discovery | dismiss]
+
+# Worktree management: list, clean, prune isolated worktrees
+bin/agyloop worktree [list | clean | prune]
 ```
 
 ---

@@ -8,51 +8,92 @@
 import {
   SubagentRole,
   ToolWhitelist,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   READ_ONLY_TOOLS,
+  PLANNER_TOOLS,
   IMPLEMENTER_TOOLS,
   GATE_TOOLS,
   REVIEWER_TOOLS,
+  TRIAGE_TOOLS,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_TRIAGE,
+  ROLE_DISCOVERY,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
+  ROLE_TITLE_TRIAGE,
+  ROLE_TITLE_DISCOVERY,
   ROLE_DESC_PLANNER,
   ROLE_DESC_IMPLEMENTER,
   ROLE_DESC_GATE,
   ROLE_DESC_REVIEWER,
+  ROLE_DESC_TRIAGE,
+  ROLE_DESC_DISCOVERY,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
   DEFAULT_GATE_SYSTEM_PROMPT,
   DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT,
+  DEFAULT_DISCOVERY_SYSTEM_PROMPT,
   PLAN_DEFAULT_SPECIFICATION_TITLE,
   TIER_PRO,
   TIER_INHERIT,
   TIER_FLASH_LITE,
   TIER_FLASH,
   DiagnosticSnippet,
-  SECTION_SELF_CORRECTION_TITLE
+  SECTION_SELF_CORRECTION_TITLE,
+  DIFF_EXCLUDED_PATHSPECS,
+  DIFF_EXCLUDED_PATTERNS,
+  DIFF_EXCLUDE_ARGS,
+  MAX_INLINE_DIFF_LINES,
+  DiffAnalyzer,
+  IssueNumber,
+  ANTI_INCEPTION_GUARDRAIL
 } from '../domain';
+
+export {
+  DIFF_EXCLUDED_PATHSPECS,
+  DIFF_EXCLUDED_PATTERNS,
+  DIFF_EXCLUDE_ARGS,
+  MAX_INLINE_DIFF_LINES,
+  ANTI_INCEPTION_GUARDRAIL
+};
 import {
   ConfigRepository,
   AgyLoopConfig,
   GitHubGateway,
   GitHubIssueData,
   PromptRepository,
+  CritiquePort,
+  BuildDetectorPort,
   formatIssueForPrompt
 } from '../ports';
+import { ManageCritiqueUseCase } from './manage-critique';
 
 export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
   role: ROLE_TITLE_PLANNER,
   description: ROLE_DESC_PLANNER,
   defaultTier: TIER_PRO,
-  tools: READ_ONLY_TOOLS,
+  tools: PLANNER_TOOLS,
   capabilities: Object.freeze({
-    enable_write_tools: false,
+    enable_write_tools: true,
+    enable_subagent_tools: false,
+    enable_mcp_tools: true
+  })
+});
+
+export const DISCOVERY_SUBAGENT_DEF = Object.freeze({
+  name: ROLE_DISCOVERY,
+  role: ROLE_TITLE_DISCOVERY,
+  description: ROLE_DESC_DISCOVERY,
+  defaultTier: TIER_PRO,
+  tools: PLANNER_TOOLS,
+  capabilities: Object.freeze({
+    enable_write_tools: true,
     enable_subagent_tools: false,
     enable_mcp_tools: true
   })
@@ -97,6 +138,18 @@ export const REVIEWER_SUBAGENT_DEF = Object.freeze({
   })
 });
 
+export const TRIAGE_SUBAGENT_DEF = Object.freeze({
+  name: ROLE_TRIAGE,
+  role: ROLE_TITLE_TRIAGE,
+  description: ROLE_DESC_TRIAGE,
+  defaultTier: TIER_FLASH,
+  tools: TRIAGE_TOOLS,
+  capabilities: Object.freeze({
+    enable_write_tools: false,
+    enable_subagent_tools: false,
+    enable_mcp_tools: false
+  })
+});
 
 export interface SubagentCapabilities {
   readonly enable_write_tools: boolean;
@@ -132,10 +185,14 @@ export interface PlanningTaskPromptParams {
   readonly userFeedback?: string | null;
   readonly previousPlanContent?: string | null;
   readonly iterationCount?: number | null;
+  readonly planDir?: string | null;
+  readonly planPath?: string | null;
+  readonly containerRuntime?: 'podman' | 'docker' | null;
+  readonly buildDetector?: BuildDetectorPort;
 }
 
 export interface ImplementationTaskPromptParams {
-  readonly planContent: string;
+  readonly planContent?: string | null;
   readonly planPath?: string | null;
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
@@ -156,34 +213,64 @@ export interface GateTaskPromptParams {
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+  readonly planContent?: string | null;
+  readonly planPath?: string | null;
 }
 
 export interface ReviewerTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
   readonly issueBody?: string | null;
+  readonly repo?: string | null;
+  readonly baseBranch?: string | null;
   readonly acceptanceCriteria?: readonly string[];
   readonly standardsContent?: string | null;
   readonly workingDiff?: string | null;
   readonly critiqueReport?: string | null;
+  readonly critiquePath?: string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+}
+
+export interface TriageTaskPromptParams {
+  readonly issueNumber?: number | string | null;
+  readonly workspaceDir?: string;
+  readonly config?: AgyLoopConfig;
+  readonly triagePayload?: string | null;
 }
 
 export class ResolveSubagentUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly githubGateway?: GitHubGateway;
   private readonly promptRepo?: PromptRepository;
+  private readonly critiquePort?: CritiquePort;
+  private readonly manageCritiqueUseCase?: ManageCritiqueUseCase;
+  private readonly buildDetector?: BuildDetectorPort;
 
   constructor(
     configRepo: ConfigRepository,
     githubGateway?: GitHubGateway,
-    promptRepo?: PromptRepository
+    promptRepo?: PromptRepository,
+    critiquePortOrManageCritique?: CritiquePort | ManageCritiqueUseCase,
+    buildDetector?: BuildDetectorPort
   ) {
     this.configRepo = configRepo;
     this.githubGateway = githubGateway;
     this.promptRepo = promptRepo;
+    this.buildDetector = buildDetector;
+    if (
+      critiquePortOrManageCritique instanceof ManageCritiqueUseCase ||
+      (critiquePortOrManageCritique &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        typeof (critiquePortOrManageCritique as any).getStatus === 'function' &&
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        typeof (critiquePortOrManageCritique as any).resolveCritiquePath === 'function')
+    ) {
+      this.manageCritiqueUseCase = critiquePortOrManageCritique as ManageCritiqueUseCase;
+    } else if (critiquePortOrManageCritique) {
+      this.critiquePort = critiquePortOrManageCritique as CritiquePort;
+    }
   }
 
   public getPlannerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
@@ -194,6 +281,16 @@ export class ResolveSubagentUseCase {
       });
     }
     return DEFAULT_PLANNER_SYSTEM_PROMPT;
+  }
+
+  public getDiscoverySystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_DISCOVERY, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
+    }
+    return DEFAULT_DISCOVERY_SYSTEM_PROMPT;
   }
 
   public getImplementerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
@@ -230,6 +327,27 @@ export class ResolveSubagentUseCase {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
     const config = options.customConfig || this.configRepo.loadConfig({ cwd: options.workspaceDir });
     const resolved = this.configRepo.resolveModel(roleVo.value, config);
+
+    if (roleVo.value === ROLE_DISCOVERY) {
+      const whitelist = ToolWhitelist.planner();
+      return {
+        name: roleVo.value,
+        role: DISCOVERY_SUBAGENT_DEF.role,
+        description: DISCOVERY_SUBAGENT_DEF.description,
+        model: resolved.tier,
+        apiModel: resolved.apiModel,
+        tools: whitelist.toArray(),
+        capabilities: {
+          enable_write_tools: true,
+          enable_subagent_tools: false,
+          enable_mcp_tools: true
+        },
+        system_prompt: this.getDiscoverySystemPrompt({
+          promptPath: options.promptPath,
+          workspaceDir: options.workspaceDir
+        })
+      };
+    }
 
     if (roleVo.value === ROLE_IMPLEMENTER) {
       const whitelist = ToolWhitelist.implementation();
@@ -294,13 +412,30 @@ export class ResolveSubagentUseCase {
       };
     }
 
+    if (roleVo.value === ROLE_TRIAGE) {
+      return {
+        name: roleVo.value,
+        role: TRIAGE_SUBAGENT_DEF.role,
+        description: TRIAGE_SUBAGENT_DEF.description,
+        model: resolved.tier,
+        apiModel: resolved.apiModel,
+        tools: TRIAGE_TOOLS.slice(),
+        capabilities: {
+          enable_write_tools: false,
+          enable_subagent_tools: false,
+          enable_mcp_tools: false
+        },
+        system_prompt: `# AgyLoop Triage Subagent System Prompt\nYou are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.\nYou may use \`bin/agyloop triage <implement|plan|discovery|completed|dismiss>\` to route the pipeline.`
+      };
+    }
+
 
     const enableMcp =
       config && config.options && typeof config.options.enableMcpInPlanner === 'boolean'
         ? config.options.enableMcpInPlanner
         : true;
 
-    const whitelist = ToolWhitelist.readOnly();
+    const whitelist = ToolWhitelist.planner();
 
     return {
       name: roleVo.value,
@@ -310,7 +445,7 @@ export class ResolveSubagentUseCase {
       apiModel: resolved.apiModel,
       tools: whitelist.toArray(),
       capabilities: {
-        enable_write_tools: false,
+        enable_write_tools: true,
         enable_subagent_tools: false,
         enable_mcp_tools: enableMcp
       },
@@ -321,6 +456,103 @@ export class ResolveSubagentUseCase {
     };
   }
 
+  public buildDiscoveryTaskPrompt(params: PlanningTaskPromptParams = {}): string {
+    const workspaceDir = params.workspaceDir || process.cwd();
+    const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
+    const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+    const repo = params.repo || resolvedRepo;
+    let issueContextBlock = '';
+
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (params.issueData) {
+      issueContextBlock = formatIssueForPrompt(params.issueData);
+    } else if (effectiveIssue) {
+      if (this.githubGateway) {
+        const issueVo = parseInt(String(effectiveIssue), 10);
+        if (!isNaN(issueVo)) {
+          const fetched = this.githubGateway.fetchIssue(issueVo, {
+            repo,
+            cwd: workspaceDir
+          });
+          if (fetched && !(fetched instanceof Promise)) {
+            issueContextBlock = formatIssueForPrompt(fetched);
+          }
+        }
+      }
+      if (!issueContextBlock) {
+        issueContextBlock = `### Active Issue: #${effectiveIssue}`;
+      }
+    }
+
+    let prompt = `# Task: Defect Discovery & Root Cause Analysis\n\n`;
+    prompt += `You are executing the **DISCOVERY** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `Your goal is to inspect the codebase, perform root-cause analysis (RCA), manually smoke test the bug, and produce an actionable discovery report.\n\n`;
+
+    // Resolve container runtime and daemon availability
+    const detector = params.buildDetector || this.buildDetector;
+    const runtime = params.containerRuntime !== undefined
+      ? params.containerRuntime
+      : (detector && typeof detector.resolveContainerRuntime === 'function' ? detector.resolveContainerRuntime() : null);
+    const socket = detector && typeof detector.resolveContainerSocket === 'function' ? detector.resolveContainerSocket() : null;
+    const isContainerAvailable = Boolean(runtime && socket);
+
+    const targetDir = params.planDir || 'artifacts/plans/';
+    prompt += `### Operating Constraints:\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+
+    if (isContainerAvailable) {
+      prompt += `2. **Strict Container-Only Guardrail**: Command execution in Discovery can ONLY run containerized invocations (\`act\`, \`podman run\`, \`docker run\`). Uncontained host mutations or native executions on the host are strictly prohibited to prevent host environment pollution.\n`;
+      prompt += `3. **Empirical Verification via Ephemeral Container**: Use ${runtime} (\`${runtime} run\`) or \`act\` to empirically reproduce the issue in an isolated container environment and record exact steps and results.\n`;
+    } else {
+      prompt += `2. **Empirical Verification Fallback**: Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing. Log an informative warning regarding container unavailability.\n`;
+    }
+
+    const deliverableNum = isContainerAvailable ? 4 : 3;
+    if (params.planPath) {
+      prompt += `${deliverableNum}. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+    } else {
+      prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification in the \`${targetDir}\` directory matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+    }
+
+    if (issueContextBlock) {
+      prompt += `----------------------------------------------------------------------\n`;
+      prompt += `${issueContextBlock}\n`;
+      prompt += `----------------------------------------------------------------------\n\n`;
+    }
+
+    if (params.iterationCount && params.iterationCount > 0) {
+      prompt += `### Plan Revision / Redirection Cycle: Iteration #${params.iterationCount}\n\n`;
+    }
+
+    if (params.userFeedback && params.userFeedback.trim()) {
+      prompt += `### User Redirection Feedback:\n${params.userFeedback.trim()}\n\n`;
+    }
+
+    if (params.previousPlanContent && params.previousPlanContent.trim()) {
+      prompt += `### Previous Plan Draft:\n\`\`\`markdown\n${params.previousPlanContent.trim()}\n\`\`\`\n\n`;
+    }
+
+    if (params.userInstructions) {
+      prompt += `### User / Developer Directives:\n${params.userInstructions}\n\n`;
+    }
+
+    prompt += `### Expected Output Structure:\n`;
+    prompt += `- **Summary & Symptoms**: Reiterate scope and clear completion criteria.\n`;
+    prompt += `- **Root Cause Analysis**: Detailed breakdown of failure mechanisms.\n`;
+    prompt += `- **Manual Bug Smoke Test**: Exact reproduction steps and results.\n`;
+    prompt += `- **Remediation Strategy**: Cleanest fix approach.\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
+
+    return prompt.trim();
+  }
+
   public buildPlanningTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
     const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
@@ -328,31 +560,48 @@ export class ResolveSubagentUseCase {
     const repo = params.repo || resolvedRepo;
     let issueContextBlock = '';
 
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
     if (params.issueData) {
       issueContextBlock = formatIssueForPrompt(params.issueData);
-    } else if (params.issueNumber && this.githubGateway) {
-      const issueVo = parseInt(String(params.issueNumber), 10);
-      if (!isNaN(issueVo)) {
-        const fetched = this.githubGateway.fetchIssue(issueVo, {
-          repo,
-          cwd: workspaceDir
-        });
-        if (fetched && !(fetched instanceof Promise)) {
-          issueContextBlock = formatIssueForPrompt(fetched);
+    } else if (effectiveIssue) {
+      if (this.githubGateway) {
+        const issueVo = parseInt(String(effectiveIssue), 10);
+        if (!isNaN(issueVo)) {
+          const fetched = this.githubGateway.fetchIssue(issueVo, {
+            repo,
+            cwd: workspaceDir
+          });
+          if (fetched && !(fetched instanceof Promise)) {
+            issueContextBlock = formatIssueForPrompt(fetched);
+          }
         }
+      }
+      if (!issueContextBlock) {
+        issueContextBlock = `### Active Issue: #${effectiveIssue}`;
       }
     }
 
     let prompt = `# Task: Architectural Investigation & Plan Generation\n\n`;
     prompt += `You are executing the **PLAN** phase of the AgyLoop pair-programming lifecycle.\n`;
-    prompt += `Your goal is to inspect the codebase, perform root-cause analysis (for defects) or architectural design (for features), and produce an actionable specification.\n\n`;
+    prompt += `Your goal is to inspect the codebase, perform architectural design, and produce an actionable specification.\n\n`;
 
+    const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Read-Only**: You have access strictly to inspection tools (${READ_ONLY_TOOLS.join(', ')}). Do not attempt to modify or write files.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
-    prompt += `3. **Deliverable**: Create the technical specification in the \`artifacts/plans/\` directory matching the standard templates:\n`;
-    prompt += `   - Defects/Bugs: \`templates/discovery-plan.md\`\n`;
-    prompt += `   - Features/Tasks: \`templates/implementation-plan.md\`\n\n`;
+    if (params.planPath) {
+      prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
+      prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
+    } else {
+      prompt += `3. **Deliverable**: Create the technical specification in the \`${targetDir}\` directory matching \`templates/implementation-plan.md\`.\n`;
+      prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
+      prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
+    }
 
     if (issueContextBlock) {
       prompt += `----------------------------------------------------------------------\n`;
@@ -380,7 +629,9 @@ export class ResolveSubagentUseCase {
     prompt += `- **Summary & Acceptance Criteria**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
-    prompt += `- **Quality Gate Targets**: Precise automated test commands to verify the change.\n`;
+    prompt += `- **Quality Gate Targets**: Precise automated test commands to verify the change.\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -393,21 +644,52 @@ export class ResolveSubagentUseCase {
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Plan Fidelity**: Adhere strictly to the approved specification. Do not perform unauthorized refactorings, style drifts, or introduce unrequested dependencies.\n`;
     prompt += `2. **Surgical Modifications**: Use \`replace_file_content\` for targeted edits on existing files. Use \`write_to_file\` only for new files.\n`;
-    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n\n`;
+    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n`;
+    prompt += `4. **No Commits**: Do NOT commit your changes. Leave them staged or unstaged in the worktree. The orchestrator's commit gate handles committing.\n\n`;
 
     if (params.workspaceDir) {
       prompt += `### Execution Workspace / Worktree:\n**Working Directory**: \`${params.workspaceDir}\`\n\n`;
     }
 
-    if (params.issueNumber) {
-      prompt += `### Issue Context (#${params.issueNumber}):\n`;
-      if (params.issueTitle) {
-        prompt += `**Title**: ${params.issueTitle}\n`;
-      }
-      if (params.issueBody) {
-        prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
+      if (params.issueTitle || params.issueBody) {
+        prompt += `### Issue Context (#${effectiveIssue}):\n`;
+        if (params.issueTitle) {
+          prompt += `**Title**: ${params.issueTitle}\n`;
+        }
+        if (params.issueBody) {
+          prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+        } else {
+          prompt += `\n`;
+        }
       } else {
-        prompt += `\n`;
+        let fetchedFormatted = '';
+        if (this.githubGateway) {
+          const issueVo = parseInt(String(effectiveIssue), 10);
+          if (!isNaN(issueVo)) {
+            const workspaceDir = params.workspaceDir || process.cwd();
+            const currentRepo = this.githubGateway.getCurrentRepo(workspaceDir);
+            const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+            const repo = params.repo || resolvedRepo;
+            const fetched = this.githubGateway.fetchIssue(issueVo, {
+              repo,
+              cwd: workspaceDir
+            });
+            if (fetched && !(fetched instanceof Promise)) {
+              fetchedFormatted = formatIssueForPrompt(fetched);
+            }
+          }
+        }
+        if (fetchedFormatted) {
+          prompt += `${fetchedFormatted}\n\n`;
+        } else {
+          prompt += `### Issue Context (#${effectiveIssue}):\n\n`;
+        }
       }
     }
 
@@ -415,11 +697,15 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    const planFileName = params.planPath
-      ? params.planPath.replace(/^.*[\\/]/, '')
-      : PLAN_DEFAULT_SPECIFICATION_TITLE;
-    prompt += `### Approved Technical Plan (${planFileName}):\n\n`;
-    prompt += `${params.planContent.trim()}\n\n`;
+    if (params.planPath) {
+      const planFileName = params.planPath.replace(/^.*[\\/]/, '');
+      prompt += `### Approved Technical Plan (${planFileName}):\n`;
+      prompt += `The approved technical plan is located at \`${params.planPath}\`.\n`;
+      prompt += `You MUST read this file using the \`view_file\` tool to understand the acceptance criteria and implementation checklist before proceeding.\n\n`;
+    } else if (params.planContent && params.planContent.trim()) {
+      prompt += `### Approved Technical Plan (${PLAN_DEFAULT_SPECIFICATION_TITLE}):\n\n`;
+      prompt += `${params.planContent.trim()}\n\n`;
+    }
 
     if (params.selfCorrectionPayload && params.selfCorrectionPayload.trim()) {
       prompt += `${params.selfCorrectionPayload.trim()}\n\n`;
@@ -454,7 +740,9 @@ export class ResolveSubagentUseCase {
     prompt += `### Definition of Done:\n`;
     prompt += `1. All tasks in the plan checklist are implemented.\n`;
     prompt += `2. All tests pass with 100% pass rate.\n`;
-    prompt += `3. No linting or TypeScript compilation errors remain.\n`;
+    prompt += `3. No linting or TypeScript compilation errors remain.\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
@@ -469,8 +757,13 @@ export class ResolveSubagentUseCase {
     prompt += `2. **Log Shielding Mandate**: Do not flood the parent conversation with raw terminal output. Filter noise and extract concise failure summaries.\n`;
     prompt += `3. **Strict Timeout & Exit Code Respect**: Any non-zero exit code or timeout is an immediate gate failure.\n\n`;
 
-    if (params.issueNumber) {
-      prompt += `### Active Issue: #${params.issueNumber}\n\n`;
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
+      prompt += `### Active Issue: #${effectiveIssue}\n\n`;
     }
 
     if (params.commands && params.commands.length > 0) {
@@ -485,15 +778,33 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
+    if (params.planPath) {
+      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
+      prompt += `You MUST read the "Manual Smoke Test Protocol" from the approved plan located at \`${params.planPath}\` using the \`view_file\` tool and execute those steps automatically using your tools.\n\n`;
+    } else if (params.planContent && params.planContent.trim()) {
+      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
+      prompt += `You MUST read the "Manual Smoke Test Protocol" from the provided plan below and execute those steps automatically using your tools.\n`;
+      prompt += `\`\`\`markdown\n${params.planContent.trim()}\n\`\`\`\n\n`;
+    }
+
     prompt += `### Required Verdict Output:\n`;
     prompt += `- Overall Status: PASSED or FAILED\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
-    prompt += `- Concise Failure Diagnostics (if failed)\n`;
+    prompt += `- Concise Failure Diagnostics (if failed)\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }
 
   public buildReviewerTaskPrompt(params: ReviewerTaskPromptParams = {}): string {
+    const resolvedCritiquePath =
+      params.critiquePath ??
+      (this.manageCritiqueUseCase
+        ? this.manageCritiqueUseCase.resolveCritiquePath(params.workspaceDir)
+        : ManageCritiqueUseCase.resolveCritiquePath(this.critiquePort, params.workspaceDir));
+    const critiqueBinary = resolvedCritiquePath || '~/.local/bin/critique';
+
     let prompt = `# Task: Code Review & Standards Verification\n\n`;
     prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
@@ -503,15 +814,55 @@ export class ResolveSubagentUseCase {
     prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
 
-    if (params.issueNumber) {
-      prompt += `### Active Issue: #${params.issueNumber}\n`;
-      if (params.issueTitle) {
-        prompt += `**Title**: ${params.issueTitle}\n`;
-      }
-      if (params.issueBody) {
-        prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+    prompt += `### Two-Tier Review Methodology:\n`;
+    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using \`run_command\`:\n`;
+    prompt += `   \`\`\`bash\n`;
+    prompt += `   export PATH="$HOME/.local/bin:$PATH" && ${critiqueBinary} --json\n`;
+    prompt += `   \`\`\`\n`;
+    prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector) using the resolved path.\n`;
+    prompt += `   - Invariant: Any \`critical\` or \`error\` findings mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n`;
+    prompt += `2. **Tier 2 (Manual Diff & Standards Inspection)**: Independently inspect working diff against Acceptance Criteria and repository standards (\`.github/critique.md\`, zero magic numbers/strings, clean architecture).\n`;
+    prompt += `3. **Consolidated Verdict**: Cross-reference both tiers into the structured verdict block (\`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\`).\n\n`;
+
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
+      if (params.issueTitle || params.issueBody) {
+        prompt += `### Active Issue: #${effectiveIssue}\n`;
+        if (params.issueTitle) {
+          prompt += `**Title**: ${params.issueTitle}\n`;
+        }
+        if (params.issueBody) {
+          prompt += `**Description**:\n${params.issueBody.trim()}\n\n`;
+        } else {
+          prompt += `\n`;
+        }
       } else {
-        prompt += `\n`;
+        let fetchedFormatted = '';
+        if (this.githubGateway) {
+          const issueVo = parseInt(String(effectiveIssue), 10);
+          if (!isNaN(issueVo)) {
+            const workspaceDir = params.workspaceDir || process.cwd();
+            const currentRepo = this.githubGateway.getCurrentRepo(workspaceDir);
+            const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
+            const repo = params.repo || resolvedRepo;
+            const fetched = this.githubGateway.fetchIssue(issueVo, {
+              repo,
+              cwd: workspaceDir
+            });
+            if (fetched && !(fetched instanceof Promise)) {
+              fetchedFormatted = formatIssueForPrompt(fetched);
+            }
+          }
+        }
+        if (fetchedFormatted) {
+          prompt += `${fetchedFormatted}\n\n`;
+        } else {
+          prompt += `### Active Issue: #${effectiveIssue}\n\n`;
+        }
       }
     }
 
@@ -533,11 +884,40 @@ export class ResolveSubagentUseCase {
       prompt += `**Note**: Any \`critical\` or \`error\` findings from critique mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n\n`;
     }
 
+    const baseBranch = params.baseBranch || '<baseBranch>';
+    const diffExcludeArgs = DIFF_EXCLUDE_ARGS;
+    const diffInspectionCmd = `git diff ${baseBranch} -- . ${diffExcludeArgs}`;
+
+    let filteredDiff: string | null = null;
     if (params.workingDiff && params.workingDiff.trim()) {
-      prompt += `### Working Code Diff:\n\`\`\`diff\n${params.workingDiff.trim()}\n\`\`\`\n\n`;
+      filteredDiff = DiffAnalyzer.filterDiff(params.workingDiff);
+    }
+
+    if (filteredDiff && filteredDiff.trim()) {
+      const diffLines = filteredDiff.trim().split('\n');
+      if (diffLines.length > MAX_INLINE_DIFF_LINES) {
+        const statSummary = DiffAnalyzer.generateDiffStat(filteredDiff);
+        prompt += `### Working Code Diff:\n`;
+        prompt += `> [!NOTE]\n`;
+        prompt += `> Working diff exceeds 1,000 lines (${diffLines.length.toLocaleString()} lines). Full diff omitted to protect subagent context and shield against token bloat.\n\n`;
+        if (statSummary) {
+          prompt += `#### Diff Stat:\n\`\`\`\n${statSummary}\n\`\`\`\n\n`;
+        }
+        prompt += `### Working Diff Inspection:\n`;
+        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using \`run_command\`:\n`;
+        prompt += `\`\`\`bash\n`;
+        prompt += `git diff --stat ${baseBranch} -- . ${diffExcludeArgs}\n`;
+        prompt += `git diff ${baseBranch} -- <file_path>\n`;
+        prompt += `\`\`\`\n\n`;
+      } else {
+        prompt += `### Working Code Diff:\n\`\`\`diff\n${filteredDiff.trim()}\n\`\`\`\n\n`;
+      }
     } else {
       prompt += `### Working Diff Inspection:\n`;
-      prompt += `Inspect the working diff using \`run_command\` with \`git diff\` (or \`git diff --staged\`).\n\n`;
+      prompt += `Inspect the working diff using \`run_command\` with \`${diffInspectionCmd}\`:\n`;
+      prompt += `\`\`\`bash\n`;
+      prompt += `${diffInspectionCmd}\n`;
+      prompt += `\`\`\`\n\n`;
     }
 
     if (params.userInstructions) {
@@ -553,7 +933,33 @@ export class ResolveSubagentUseCase {
     prompt += `- <Unfulfilled criterion 1> (or "None" if all criteria are met)\n`;
     prompt += `REMEDIATION_GUIDANCE:\n`;
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
-    prompt += `\`\`\`\n`;
+    prompt += `\`\`\`\n\n`;
+
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
+
+    return prompt.trim();
+  }
+
+  public buildTriageTaskPrompt(params: TriageTaskPromptParams = {}): string {
+    let prompt = `# Task: Triage PR Review Comments\n\n`;
+    prompt += `You are executing the **TRIAGE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `Your goal is to categorize review comments and route the pipeline to the appropriate next stage.\n\n`;
+
+    const effectiveIssue =
+      params.issueNumber ??
+      IssueNumber.inferFromPath(params.workspaceDir) ??
+      IssueNumber.inferFromPath(process.cwd());
+
+    if (effectiveIssue) {
+      prompt += `### Active Issue: #${effectiveIssue}\n\n`;
+    }
+
+    if (params.triagePayload && params.triagePayload.trim()) {
+      prompt += `### Review Comments to Triage:\n${params.triagePayload.trim()}\n\n`;
+    }
+
+    prompt += `You are the Triage Subagent. Directly inspect the comments and execute \`bin/agyloop triage <action>\` using \`run_command\`. Do NOT spawn another subagent to do this.\n\n`;
+    prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();
   }

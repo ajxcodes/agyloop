@@ -12,6 +12,7 @@
 import {
   PREFLIGHT_ACTION_PROCEED,
   PREFLIGHT_ACTION_RESUME,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   PREFLIGHT_ACTION_HALT,
   PREFLIGHT_ACTION_HALT_CLOSED,
   PREFLIGHT_ACTION_HALT_PR_MERGED,
@@ -25,6 +26,8 @@ export interface PreFlightPrSummary {
   readonly merged?: boolean;
   readonly headRefName?: string | null;
   readonly baseRefName?: string | null;
+  readonly mergeStateStatus?: string | null;
+  readonly mergeable?: string | null;
 }
 
 export interface PreFlightCheckContext {
@@ -35,6 +38,10 @@ export interface PreFlightCheckContext {
   readonly prNumber?: number | null;
   readonly prBaseBranch?: string | null;
   readonly prHeadBranch?: string | null;
+  readonly mergeStateStatus?: string | null;
+  readonly mergeable?: string | null;
+  readonly hasMergeConflicts?: boolean;
+  readonly candidateBaseBranch?: string;
   readonly associatedPr?: PreFlightPrSummary | null;
   readonly existingBranch?: string | null;
   readonly existingBranches?: readonly string[];
@@ -46,6 +53,8 @@ export interface PreFlightCheckContext {
     readonly line?: number;
     readonly state?: string;
     readonly createdAt?: string;
+    readonly category?: string;
+    readonly severity?: string;
   }[];
   readonly prHasChangesRequested?: boolean;
 }
@@ -61,6 +70,8 @@ export interface PreFlightCheckResult {
   readonly existingBranch?: string | null;
   readonly resumePrNumber?: number;
   readonly baseBranch?: string;
+  readonly hasMergeConflicts?: boolean;
+  readonly candidateBaseBranch?: string;
   readonly prReviewComments?: readonly {
     readonly author: string;
     readonly body: string;
@@ -68,6 +79,8 @@ export interface PreFlightCheckResult {
     readonly line?: number;
     readonly state?: string;
     readonly createdAt?: string;
+    readonly category?: string;
+    readonly severity?: string;
   }[];
   readonly prHasChangesRequested?: boolean;
 }
@@ -139,8 +152,32 @@ export class PreFlightCheckEngine {
     // 4. Check if OPEN PR or existing branch exists (Resume Mode)
     const hasOpenPr = prState === 'OPEN';
 
+    // Conflict detection
+    const mergeStateStatus = (
+      context.associatedPr?.mergeStateStatus ||
+      context.mergeStateStatus ||
+      ''
+    ).trim().toUpperCase();
+
+    const mergeable = (
+      context.associatedPr?.mergeable ||
+      context.mergeable ||
+      ''
+    ).trim().toUpperCase();
+
+    const hasMergeConflicts = Boolean(
+      context.hasMergeConflicts ||
+      mergeStateStatus === 'DIRTY' ||
+      mergeable === 'CONFLICTING'
+    );
+
+    const candidateBaseBranch = hasMergeConflicts
+      ? (context.candidateBaseBranch || (prBaseBranch ? `origin/${prBaseBranch}` : 'origin/main'))
+      : undefined;
+
     if (hasOpenPr || discoveredBranch || context.existingWorktreePath) {
       const branchName = discoveredBranch || `task/${issueId}`;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const prDetails = prNumber ? ` (PR #${prNumber})` : '';
       return {
         action: PREFLIGHT_ACTION_RESUME,
@@ -154,6 +191,8 @@ export class PreFlightCheckEngine {
         existingBranch: branchName,
         resumePrNumber: prNumber || undefined,
         baseBranch: prBaseBranch || undefined,
+        hasMergeConflicts,
+        candidateBaseBranch,
         prReviewComments: context.prReviewComments,
         prHasChangesRequested: context.prHasChangesRequested
       };
@@ -167,6 +206,8 @@ export class PreFlightCheckEngine {
       isHalt: false,
       isResume: false,
       existingBranch: null,
+      hasMergeConflicts,
+      candidateBaseBranch,
       prReviewComments: context.prReviewComments,
       prHasChangesRequested: context.prHasChangesRequested
     };

@@ -73,6 +73,7 @@ export class CommitMessage {
       if (trimmedScope.length === 0) {
         this.scope = null;
       } else {
+        // eslint-disable-next-line no-useless-escape
         if (!/^[a-z0-9_.\-\/]+$/.test(trimmedScope)) {
           throw new ValidationError(
             'scope',
@@ -192,7 +193,8 @@ export class CommitMessage {
     const type = headerMatch.groups.type.toLowerCase();
     const scope = headerMatch.groups.scope ? headerMatch.groups.scope.toLowerCase() : null;
     const hasExclamation = Boolean(headerMatch.groups.breaking);
-    let description = headerMatch.groups.description.trim();
+     
+    const description = headerMatch.groups.description.trim();
 
     let issueNumber: number | null = null;
     const issueMatch = description.match(REGEX_ISSUE_NUMBER_REF);

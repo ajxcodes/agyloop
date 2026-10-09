@@ -17,8 +17,10 @@ import {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   MODE_PLAN,
+  ExecutionMode,
   NOTE_INITIATED_DISCOVERY_RCA,
   NOTE_GENERATING_SPECS,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AWAITING_REVIEW,
   SUMMARY_STAGE_DISCOVERY,
   SUMMARY_STAGE_PLAN_REVIEW,
@@ -34,11 +36,15 @@ import {
   ConfigRepository,
   PlanGeneratorPort,
   GitHubIssueData,
-  ScaffoldResult
+  ScaffoldResult,
+  CommandExecutorPort,
+  WorktreeManagerPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
+import { SyncUseCase } from './sync';
 
 export interface StartPlanningParams {
+  readonly mode?: ExecutionMode;
   readonly issue?: number | string | null;
   readonly title?: string | null;
   readonly type?: string | null;
@@ -65,22 +71,43 @@ export class StartPlanningUseCase {
   private readonly configRepo: ConfigRepository;
   private readonly planGenerator: PlanGeneratorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  private readonly commandExecutor?: CommandExecutorPort;
+  private readonly worktreeManager?: WorktreeManagerPort;
 
   constructor(
     stateRepo: StateRepository,
     githubGateway: GitHubGateway,
     configRepo: ConfigRepository,
-    planGenerator: PlanGeneratorPort
+    planGenerator: PlanGeneratorPort,
+    commandExecutor?: CommandExecutorPort,
+    worktreeManager?: WorktreeManagerPort
   ) {
     this.stateRepo = stateRepo;
     this.githubGateway = githubGateway;
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
+    this.commandExecutor = commandExecutor;
+    this.worktreeManager = worktreeManager;
     this.resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo);
   }
 
   public async execute(params: StartPlanningParams = {}): Promise<StartPlanningResult> {
     const workspace = params.workspaceDir || process.cwd();
+
+    // 0. Best-effort remote sync of the base collector branch
+    if (this.commandExecutor && this.worktreeManager && !params.dryRun) {
+      try {
+        const syncUseCase = new SyncUseCase(
+          this.commandExecutor,
+          this.githubGateway,
+          this.stateRepo,
+          this.worktreeManager
+        );
+        await syncUseCase.execute({ workspaceDir: workspace });
+      } catch (e) {
+        console.warn('Auto-sync before planning failed:', e instanceof Error ? e.message : String(e));
+      }
+    }
 
     // 1. Rehydrate or initialize StateMachine
     const snapshot = await this.stateRepo.load();
@@ -92,15 +119,17 @@ export class StartPlanningUseCase {
       snapshot.issue !== null &&
       String(params.issue) !== String(snapshot.issue);
 
+    const targetMode = params.mode ?? MODE_PLAN;
+
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
       if (sm.currentStage === STAGE_COMPLETED || isNewIssue) {
-        sm.reset(MODE_PLAN, params.issue ?? sm.issue);
+        sm.reset(targetMode, params.issue ?? sm.issue);
       } else {
-        sm.setMode(MODE_PLAN);
+        sm.setMode(targetMode);
       }
     } else {
-      sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: params.issue });
+      sm = StateMachine.createInitial({ mode: targetMode, issue: params.issue });
     }
 
     const activeIssue = params.issue || sm.issue;
@@ -117,6 +146,9 @@ export class StartPlanningUseCase {
         throw new PreFlightHaltError(`Task #${issueVo.value} is already closed.`, 'CLOSED', {
           issueNumber: issueVo.value
         });
+      }
+      if (issueData?.milestone?.title) {
+        sm.setMilestoneTitle(issueData.milestone.title);
       }
     }
 
@@ -135,6 +167,9 @@ export class StartPlanningUseCase {
         type: planType,
         labels: planLabels
       });
+      if (scaffoldInfo && scaffoldInfo.planDir) {
+        sm.setPlanDir(scaffoldInfo.planDir);
+      }
     }
 
     // 4. Resolve planner subagent definition
@@ -177,21 +212,16 @@ export class StartPlanningUseCase {
     } else if (sm.currentStage === STAGE_INITIALIZED) {
       if (params.skipDiscovery) {
         sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-        sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
       } else {
         sm.transition(STAGE_DISCOVERY, {
           note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
         });
-        if (!isBug) {
+        if (!isBug || targetMode === MODE_PLAN) {
           sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-          sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
         }
       }
     } else if (sm.currentStage === STAGE_DISCOVERY) {
       sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
-    } else if (sm.currentStage === STAGE_PLAN) {
-      sm.transition(STAGE_APPROVAL, { note: NOTE_AWAITING_REVIEW });
     }
 
     // 6. Checkpoint state and update summary log
@@ -207,6 +237,14 @@ export class StartPlanningUseCase {
             status: SUMMARY_STATUS_IN_PROGRESS
           });
         } else if (sm.currentStage === STAGE_PLAN) {
+          if (!params.skipDiscovery) {
+            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+              stage: SUMMARY_STAGE_DISCOVERY,
+              subagent: plannerDef.name,
+              model: plannerDef.model,
+              status: SUMMARY_STATUS_COMPLETED
+            });
+          }
           this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,

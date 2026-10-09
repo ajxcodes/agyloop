@@ -19,27 +19,38 @@ import {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  STAGE_TRIAGE,
   ROLE_PLANNER,
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_TRIAGE,
+  ROLE_DISCOVERY,
   ROLE_TITLE_PLANNER,
   ROLE_TITLE_IMPLEMENTER,
   ROLE_TITLE_GATE,
   ROLE_TITLE_REVIEWER,
-  MODE_YOLO
+  ROLE_TITLE_TRIAGE,
+  ROLE_TITLE_DISCOVERY,
+  MODE_YOLO,
+  IssueNumber,
+  MAX_IMPLEMENT_GATE_LOOPS
 } from '../domain';
 import {
   StateRepository,
   ConfigRepository,
   PlanGeneratorPort,
-  GitHubGateway
+  GitHubGateway,
+  WorktreeManagerPort,
+  BuildDetectorPort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
   readonly workspaceDir?: string;
   readonly configPath?: string | null;
+  readonly issue?: number | string | null;
 }
 
 export interface SubagentInvocationItem {
@@ -74,20 +85,29 @@ export class GetNextActionUseCase {
   private readonly planGenerator?: PlanGeneratorPort;
   private readonly githubGateway?: GitHubGateway;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  private readonly worktreeManager?: WorktreeManagerPort;
+  private readonly buildDetector?: BuildDetectorPort;
+  private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
 
   constructor(
     stateRepo: StateRepository,
     configRepo: ConfigRepository,
     planGenerator?: PlanGeneratorPort,
     githubGateway?: GitHubGateway,
-    resolveSubagentUseCase?: ResolveSubagentUseCase
+    resolveSubagentUseCase?: ResolveSubagentUseCase,
+    worktreeManager?: WorktreeManagerPort,
+    buildDetector?: BuildDetectorPort,
+    inferBaseBranchUseCase?: InferBaseBranchUseCase
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
     this.githubGateway = githubGateway;
     this.resolveSubagentUseCase =
-      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway);
+      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway, undefined, undefined, buildDetector);
+    this.worktreeManager = worktreeManager;
+    this.buildDetector = buildDetector;
+    this.inferBaseBranchUseCase = inferBaseBranchUseCase;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -100,7 +120,76 @@ export class GetNextActionUseCase {
       cwd
     });
 
-    const activeIssue = sm.issue;
+    // Context resolution: explicit issue -> state.issue -> auto-inferred issue
+    const explicitIssue = IssueNumber.tryFrom(params.issue)?.value ?? null;
+    let inferredIssue: number | null = null;
+
+    if (!explicitIssue && !sm.issue) {
+      inferredIssue =
+        IssueNumber.inferFromPath(sm.worktree?.worktreePath as string | undefined) ??
+        IssueNumber.inferFromPath(cwd);
+      if (!inferredIssue && sm.worktree?.branch) {
+        inferredIssue = IssueNumber.inferFromBranch(sm.worktree.branch);
+      }
+      if (!inferredIssue && this.worktreeManager && this.worktreeManager.resolveBaseBranch) {
+        try {
+          const currentBranch = await this.worktreeManager.resolveBaseBranch(cwd);
+          inferredIssue = IssueNumber.inferFromBranch(currentBranch);
+        } catch {
+          // Non-fatal
+        }
+      }
+      if (inferredIssue) {
+        sm.setIssue(inferredIssue);
+        await this.stateRepo.save(sm.toSnapshot());
+      }
+    }
+
+    let activeIssue = explicitIssue ?? sm.issue ?? inferredIssue;
+
+    // Explicit flag ingestion / lifecycle initialization & resume:
+    // When explicit --issue <id> is provided:
+    // If state is COMPLETED or INITIALIZED with a different (or null) issue (or explicit override):
+    const isExplicit = explicitIssue !== null;
+    const shouldInitializeOrResume =
+      (isExplicit && (sm.currentStage === STAGE_COMPLETED || sm.currentStage === STAGE_INITIALIZED)) ||
+      (!isExplicit && inferredIssue !== null && sm.currentStage === STAGE_COMPLETED);
+
+    if (activeIssue && shouldInitializeOrResume) {
+      sm.reset(sm.mode, activeIssue);
+      const existingPlan = this.planGenerator?.resolvePlanFile({
+        projectRoot: cwd,
+        issue: activeIssue,
+        stage: sm.currentStage
+      });
+      if (existingPlan) {
+        sm.transition(STAGE_PLAN, { note: `Resumed planning for issue #${activeIssue}` });
+      } else {
+        sm.transition(STAGE_DISCOVERY, { note: `Initialized discovery for issue #${activeIssue}` });
+      }
+      await this.stateRepo.save(sm.toSnapshot());
+    } else if (isExplicit && sm.issue !== explicitIssue) {
+      sm.setIssue(explicitIssue);
+      await this.stateRepo.save(sm.toSnapshot());
+    }
+
+    activeIssue = sm.issue;
+    if (!sm.baseBranch && activeIssue && this.inferBaseBranchUseCase) {
+      try {
+        const inference = await this.inferBaseBranchUseCase.execute({
+          issueNumber: activeIssue,
+          workspaceDir: cwd
+        });
+        if (inference.baseBranch) {
+          sm.setBaseBranch(inference.baseBranch);
+          await this.stateRepo.save(sm.toSnapshot());
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[agyloop] Diagnostic: Failed to infer base branch for issue #${activeIssue}: ${errMsg}`);
+      }
+    }
+
     const worktreePath = sm.worktree?.worktreePath || null;
     const taskBranch = sm.worktree?.branch || null;
     const baseBranch = sm.baseBranch || 'main';
@@ -122,24 +211,41 @@ export class GetNextActionUseCase {
 
       case STAGE_DISCOVERY: {
         const subagent = this.resolveSubagentUseCase.execute({
-          role: ROLE_PLANNER,
+          role: ROLE_DISCOVERY,
           customConfig: config,
           workspaceDir: cwd
         });
 
-        const prompt = this.resolveSubagentUseCase.buildPlanningTaskPrompt({
+         
+        const planDir = sm.planDir;
+        let planPath: string | undefined;
+        if (this.planGenerator) {
+          const resolved = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue: activeIssue,
+            planDir: sm.planDir,
+            stage: sm.currentStage
+          });
+          if (resolved) {
+            planPath = resolved.planPath;
+          }
+        }
+
+        const prompt = this.resolveSubagentUseCase.buildDiscoveryTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: cwd,
-          config
+          config,
+          planDir,
+          planPath
         });
 
         const invocationPayload: SubagentInvocationPayload = {
           Subagents: [
             {
-              TypeName: 'research',
-              Role: ROLE_TITLE_PLANNER,
+              TypeName: 'self',
+              Role: ROLE_TITLE_DISCOVERY,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: prompt
             }
           ]
@@ -149,26 +255,82 @@ export class GetNextActionUseCase {
           currentStage: STAGE_DISCOVERY,
           nextStage: STAGE_PLAN,
           actionType: 'subagent',
-          role: ROLE_PLANNER,
-          title: 'Invoke Planning Architect Subagent',
-          description: 'Generate architectural plan and specifications in artifacts/plans/ with physical write suppression.',
+          role: ROLE_DISCOVERY,
+          title: 'Invoke Defect Discovery Subagent',
+          description: 'Execute root-cause analysis and manual smoke testing to produce a discovery report.',
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (read-only tools).`
+          humanSummary: `Invoke ${ROLE_TITLE_DISCOVERY} with Model '${subagent.model}' (scoped write tools).`
         };
       }
 
       case STAGE_PLAN: {
-        if (sm.mode === MODE_YOLO) {
-          // In YOLO mode, auto-advance to implement
-          return this.buildImplementAction(sm, config, cwd);
+        const subagent = this.resolveSubagentUseCase.execute({
+          role: ROLE_PLANNER,
+          customConfig: config,
+          workspaceDir: cwd
+        });
+
+         
+        const planDir = sm.planDir;
+        let planPath: string | undefined;
+        if (this.planGenerator) {
+          const resolved = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue: activeIssue,
+            planDir: sm.planDir,
+            stage: sm.currentStage
+          });
+          if (resolved) {
+            planPath = resolved.planPath;
+          }
         }
+
+        const prompt = this.resolveSubagentUseCase.buildPlanningTaskPrompt({
+          issueNumber: activeIssue,
+          workspaceDir: cwd,
+          config,
+          planDir,
+          planPath
+        });
+
+        const invocationPayload: SubagentInvocationPayload = {
+          Subagents: [
+            {
+              TypeName: 'self',
+              Role: ROLE_TITLE_PLANNER,
+              Model: subagent.model,
+              Workspace: 'inherit',
+              Prompt: prompt
+            }
+          ]
+        };
 
         return {
           currentStage: STAGE_PLAN,
           nextStage: STAGE_APPROVAL,
+          actionType: 'subagent',
+          role: ROLE_PLANNER,
+          title: 'Invoke Planning Architect Subagent',
+          description: 'Generate architectural plan and specifications in artifacts/plans/ with scoped write tools.',
+          baseBranch,
+          taskBranch,
+          worktreePath,
+          invocationPayload,
+          humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (scoped write tools).`
+        };
+      }
+
+      case STAGE_APPROVAL: {
+        if (sm.mode === MODE_YOLO) {
+          return this.buildImplementAction(sm, config, cwd);
+        }
+
+        return {
+          currentStage: STAGE_APPROVAL,
+          nextStage: STAGE_IMPLEMENT,
           actionType: 'human_gate',
           title: 'Human Approval Gate',
           description: 'Review the technical plan in artifacts/plans/. Seek user confirmation before modifying source code.',
@@ -179,21 +341,62 @@ export class GetNextActionUseCase {
         };
       }
 
-      case STAGE_APPROVAL: {
+      case STAGE_IMPLEMENT: {
+        if (sm.implementToGateLoops >= MAX_IMPLEMENT_GATE_LOOPS) {
+          return {
+            currentStage: sm.currentStage,
+            nextStage: STAGE_QUALITY_GATE,
+            actionType: 'human_gate',
+            title: 'Quality Gate Retry Breaker',
+            description: `Quality gate has failed ${sm.implementToGateLoops} times consecutively. Manual intervention required to prevent infinite loop.`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `Too many consecutive failures (${sm.implementToGateLoops}). Please inspect the workspace manually and fix the issue before running "agyloop transition QUALITY_GATE" or "agyloop implement".`
+          };
+        }
         return this.buildImplementAction(sm, config, cwd);
       }
 
-      case STAGE_IMPLEMENT: {
+      case STAGE_QUALITY_GATE: {
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_GATE,
           customConfig: config,
           workspaceDir: cwd
         });
 
+        let commands: string[] | undefined;
+        if (this.buildDetector) {
+          const resolvedCommands = await this.buildDetector.resolveCommands(worktreePath || cwd, config);
+          commands = resolvedCommands.map(c => c.command);
+        }
+
+        let planContent = '';
+        let planPath: string | undefined;
+        if (this.planGenerator) {
+          const resolved = this.planGenerator.resolvePlanFile({
+            projectRoot: cwd,
+            issue: activeIssue,
+            planDir: sm.planDir,
+            stage: sm.currentStage
+          });
+          if (resolved) {
+            planPath = resolved.planPath;
+            try {
+              planContent = this.planGenerator.readPlanDocument(resolved.planPath);
+            } catch {
+              // Non-fatal
+            }
+          }
+        }
+
         const prompt = this.resolveSubagentUseCase.buildGateTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: worktreePath || cwd,
-          config
+          config,
+          commands,
+          planContent: planContent || undefined,
+          planPath
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -202,15 +405,15 @@ export class GetNextActionUseCase {
               TypeName: 'self',
               Role: ROLE_TITLE_GATE,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: `Execute verification quality gates strictly inside isolated worktree directory:\nCwd: ${worktreePath || cwd}\n\n${prompt}`
             }
           ]
         };
 
         return {
-          currentStage: STAGE_IMPLEMENT,
-          nextStage: STAGE_QUALITY_GATE,
+          currentStage: STAGE_QUALITY_GATE,
+          nextStage: STAGE_REVIEW,
           actionType: 'subagent',
           role: ROLE_GATE,
           title: 'Invoke Quality Gate Verifier Subagent',
@@ -223,7 +426,7 @@ export class GetNextActionUseCase {
         };
       }
 
-      case STAGE_QUALITY_GATE: {
+      case STAGE_REVIEW: {
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_REVIEWER,
           customConfig: config,
@@ -232,6 +435,7 @@ export class GetNextActionUseCase {
 
         const prompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
           issueNumber: activeIssue,
+          baseBranch,
           workspaceDir: worktreePath || cwd,
           config
         });
@@ -239,18 +443,18 @@ export class GetNextActionUseCase {
         const invocationPayload: SubagentInvocationPayload = {
           Subagents: [
             {
-              TypeName: 'research',
+              TypeName: 'self',
               Role: ROLE_TITLE_REVIEWER,
               Model: subagent.model,
-              Workspace: 'share',
+              Workspace: 'inherit',
               Prompt: `Inspect isolated worktree diff against base '${baseBranch}':\nCwd: ${worktreePath || cwd}\n\n${prompt}`
             }
           ]
         };
 
         return {
-          currentStage: STAGE_QUALITY_GATE,
-          nextStage: STAGE_REVIEW,
+          currentStage: STAGE_REVIEW,
+          nextStage: STAGE_COMMIT,
           actionType: 'subagent',
           role: ROLE_REVIEWER,
           title: 'Invoke AI Reviewer Subagent',
@@ -263,10 +467,10 @@ export class GetNextActionUseCase {
         };
       }
 
-      case STAGE_REVIEW: {
+      case STAGE_COMMIT: {
         return {
-          currentStage: STAGE_REVIEW,
-          nextStage: STAGE_COMMIT,
+          currentStage: STAGE_COMMIT,
+          nextStage: STAGE_COMPLETED,
           actionType: 'human_gate',
           title: 'Conventional Commit & Teardown Gate',
           description: 'Review passed. Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.',
@@ -277,17 +481,44 @@ export class GetNextActionUseCase {
         };
       }
 
-      case STAGE_COMMIT: {
+      case STAGE_TRIAGE: {
+        const subagent = this.resolveSubagentUseCase.execute({
+          role: ROLE_TRIAGE,
+          customConfig: config,
+          workspaceDir: cwd
+        });
+
+        const prompt = this.resolveSubagentUseCase.buildTriageTaskPrompt({
+          issueNumber: activeIssue,
+          workspaceDir: worktreePath || cwd,
+          config,
+          triagePayload: sm.triagePayload
+        });
+
+        const invocationPayload: SubagentInvocationPayload = {
+          Subagents: [
+            {
+              TypeName: 'self',
+              Role: ROLE_TITLE_TRIAGE,
+              Model: subagent.model,
+              Workspace: 'inherit',
+              Prompt: prompt
+            }
+          ]
+        };
+
         return {
-          currentStage: STAGE_COMMIT,
-          nextStage: STAGE_COMPLETED,
-          actionType: 'completed',
-          title: 'Lifecycle Completed',
-          description: 'Conventional commit executed, worktree torn down, and pipeline state finalized.',
+          currentStage: STAGE_TRIAGE,
+          nextStage: STAGE_IMPLEMENT,
+          actionType: 'subagent',
+          role: ROLE_TRIAGE,
+          title: 'Invoke Triage Subagent',
+          description: 'Open PR contains review comments requiring triage and pipeline routing.',
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: 'Pipeline completed successfully. All changes committed and worktree cleaned up.'
+          invocationPayload,
+          humanSummary: `Invoke Triage Subagent with Model '${subagent.model}' to categorize comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED.`
         };
       }
 
@@ -308,9 +539,15 @@ export class GetNextActionUseCase {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
+    
+    if (!worktreePath || worktreePath === cwd) {
+      throw new Error(`Validation failed for field 'worktreePath': Zero Direct Root Mutation invariant violated. Pipeline must execute code modifications inside an isolated worktree, but target resolved to root workspace '${cwd}'.`);
+    }
+
     const taskBranch = sm.worktree?.branch || null;
     const baseBranch = sm.baseBranch || 'main';
 
@@ -325,7 +562,9 @@ export class GetNextActionUseCase {
     if (this.planGenerator) {
       const resolved = this.planGenerator.resolvePlanFile({
         projectRoot: cwd,
-        issue: activeIssue
+        issue: activeIssue,
+        planDir: sm.planDir,
+        stage: sm.currentStage
       });
       if (resolved) {
         planPath = resolved.planPath;
@@ -342,7 +581,8 @@ export class GetNextActionUseCase {
       planPath: planPath || undefined,
       issueNumber: activeIssue,
       workspaceDir: worktreePath || cwd,
-      config
+      config,
+      prReviewComments: sm.triagePayload
     });
 
     const invocationPayload: SubagentInvocationPayload = {
@@ -351,15 +591,17 @@ export class GetNextActionUseCase {
           TypeName: 'self',
           Role: ROLE_TITLE_IMPLEMENTER,
           Model: subagent.model,
-          Workspace: 'share',
+          Workspace: 'inherit',
           Prompt: `Execute code modifications strictly inside isolated worktree directory:\nCwd: ${worktreePath || cwd}\nBranch: ${taskBranch || '(auto)'}\n\n${prompt}`
         }
       ]
     };
 
+    const nextStage = sm.currentStage === STAGE_IMPLEMENT ? STAGE_QUALITY_GATE : STAGE_IMPLEMENT;
+
     return {
       currentStage: sm.currentStage,
-      nextStage: STAGE_IMPLEMENT,
+      nextStage,
       actionType: 'subagent',
       role: ROLE_IMPLEMENTER,
       title: 'Invoke Code Implementer Subagent',

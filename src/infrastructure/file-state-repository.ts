@@ -6,19 +6,83 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE } from '../domain';
+import * as child_process from 'child_process';
+import * as os from 'os';
+import { StateMachineSnapshot, StateStorageError, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE, IssueNumber, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } from '../domain';
 import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
+  private static readonly workspaceRootCache = new Map<string, string>();
   private readonly stateFilePath: string;
 
   constructor(options: { workspaceDir?: string; stateFilePath?: string } = {}) {
     if (options.stateFilePath) {
       this.stateFilePath = options.stateFilePath;
     } else {
-      const workspace = options.workspaceDir || process.cwd();
+      const workspace = options.workspaceDir
+        ? path.resolve(options.workspaceDir)
+        : this.discoverWorkspaceRoot(process.cwd());
       this.stateFilePath = path.join(workspace, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
     }
+  }
+
+  /**
+   * Resolves the primary git workspace root with memoization by cwd.
+   * When inside a linked git worktree or nested subdirectory, this ensures
+   * the canonical root repository is located rather than a localized worktree.
+   */
+  private discoverWorkspaceRoot(cwd: string): string {
+    const resolvedCwd = path.resolve(cwd);
+    const cached = FileStateRepository.workspaceRootCache.get(resolvedCwd);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let discoveredRoot = resolvedCwd;
+
+    try {
+      const stdout = child_process.execSync('git worktree list --porcelain', {
+        cwd: resolvedCwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      if (stdout) {
+        const firstLine = stdout.trim().split('\n')[0] || '';
+        const match = firstLine.match(/^worktree (.+)$/);
+        if (match && match[1]) {
+          discoveredRoot = path.resolve(match[1].trim());
+          FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+          return discoveredRoot;
+        }
+      }
+    } catch {
+      // Fall through to git rev-parse
+    }
+
+    try {
+      const stdout = child_process.execSync('git rev-parse --show-toplevel', {
+        cwd: resolvedCwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      if (stdout && stdout.trim()) {
+        discoveredRoot = path.resolve(stdout.trim());
+        FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+        return discoveredRoot;
+      }
+    } catch {
+      // Fall through to cwd
+    }
+
+    FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+    return discoveredRoot;
+  }
+
+  /**
+   * Clears the static workspace root cache (useful for testing or cache invalidation).
+   */
+  public static clearWorkspaceRootCache(): void {
+    FileStateRepository.workspaceRootCache.clear();
   }
 
   public getStateFilePath(): string {
@@ -43,7 +107,49 @@ export class FileStateRepository implements StateRepository {
     }
   }
 
+  private validateSmokeTestIsolation(operation: 'write' | 'delete'): void {
+    const cwd = path.resolve(process.cwd());
+    const isArtifactsSmoke = cwd.includes(`${path.sep}artifacts${path.sep}smoke`);
+    
+    // Bypass the /tmp block during unit tests because agyloop tests run in /tmp
+    const isTmpDir = cwd.startsWith('/tmp') || cwd.startsWith(os.tmpdir());
+    const isTmpBlocked = process.env.NODE_ENV !== 'test' && !process.env.NODE_TEST_CONTEXT;
+
+    if (isArtifactsSmoke || (isTmpDir && isTmpBlocked)) {
+      throw new StateStorageError(
+        this.stateFilePath,
+        operation,
+        MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST
+      );
+    }
+
+    if (process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT)) {
+      const realRootPath = path.join(this.discoverWorkspaceRoot(__dirname), DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
+      if (this.stateFilePath === realRootPath) {
+        throw new StateStorageError(
+          this.stateFilePath,
+          operation,
+          MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
+        );
+      }
+    }
+  }
+
+  private validateWorktreeIssueMatch(snapshot: StateMachineSnapshot): void {
+    const inferredIssue = IssueNumber.inferFromPath(process.cwd());
+    if (inferredIssue !== null && snapshot.issue !== undefined && snapshot.issue !== inferredIssue) {
+      throw new StateStorageError(
+        this.stateFilePath,
+        'write',
+        `Cannot save state for issue ${snapshot.issue} from inside worktree for issue ${inferredIssue}. Use read-only commands inside worktrees.`
+      );
+    }
+  }
+
   public save(snapshot: StateMachineSnapshot): void {
+    this.validateSmokeTestIsolation('write');
+    this.validateWorktreeIssueMatch(snapshot);
+
     const dir = path.dirname(this.stateFilePath);
     try {
       if (!fs.existsSync(dir)) {
@@ -62,6 +168,7 @@ export class FileStateRepository implements StateRepository {
   }
 
   public reset(): void {
+    this.validateSmokeTestIsolation('delete');
     try {
       if (fs.existsSync(this.stateFilePath)) {
         fs.unlinkSync(this.stateFilePath);

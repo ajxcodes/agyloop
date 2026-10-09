@@ -10,13 +10,28 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
+export type PRCommentCategory = 'error' | 'suggestion' | 'question' | 'general';
+
 export interface PullRequestReviewComment {
+  /** REST database id (inline review comments only); used to map comments to threads. */
+  readonly id?: number;
   readonly author: string;
   readonly body: string;
   readonly path?: string;
   readonly line?: number;
   readonly state?: string;
   readonly createdAt?: string;
+  readonly category?: PRCommentCategory;
+  readonly severity?: string;
+}
+
+export interface UnresolvedReviewThread {
+  readonly id: string;
+  readonly commentIds: readonly number[];
+}
+
+export interface GitHubIssueMilestone {
+  readonly title: string;
 }
 
 export interface GitHubIssueData {
@@ -27,6 +42,7 @@ export interface GitHubIssueData {
   readonly state?: string; // 'OPEN' | 'CLOSED'
   readonly labels: readonly string[];
   readonly comments: readonly GitHubComment[];
+  readonly milestone?: GitHubIssueMilestone;
   readonly error?: string;
 }
 
@@ -39,6 +55,8 @@ export interface GitHubPullRequestData {
   readonly url: string;
   readonly merged: boolean;
   readonly labels: readonly string[];
+  readonly mergeStateStatus?: string;
+  readonly mergeable?: string;
 }
 
 export interface GitHubGatewayOptions {
@@ -123,6 +141,32 @@ export interface GitHubGateway {
     prNumber: number,
     options?: GitHubGatewayOptions
   ): Promise<PullRequestReviewComment[]> | PullRequestReviewComment[];
+
+  /**
+   * Lists unresolved review threads on a pull request, with the database ids
+   * of the comments each thread contains.
+   */
+  listUnresolvedReviewThreads?(
+    prNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<UnresolvedReviewThread[]> | UnresolvedReviewThread[];
+
+  /**
+   * Posts a reply on a review thread (by GraphQL node ID).
+   */
+  replyToThread?(
+    threadId: string,
+    body: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
+
+  /**
+   * Resolves a review thread via GraphQL `resolveReviewThread`.
+   */
+  resolveReviewThread?(
+    threadId: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
 }
 
 /**

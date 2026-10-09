@@ -14,12 +14,20 @@ export interface ModelRoutingConfig {
   readonly [role: string]: string;
 }
 
+export interface ActConfig {
+  readonly enabled?: boolean;
+  readonly workflow?: string;
+  readonly job?: string;
+}
+
 export interface PipelineOptionsConfig {
   readonly commitAfter: boolean;
   readonly gateTimeoutSeconds: number;
   readonly autoApproveInYolo: boolean;
   readonly enableMcpInPlanner: boolean;
   readonly gateCommands?: readonly string[] | readonly unknown[];
+  readonly containerGates?: boolean;
+  readonly act?: ActConfig;
   readonly [option: string]: unknown;
 }
 

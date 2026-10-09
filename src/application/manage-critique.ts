@@ -39,6 +39,32 @@ export class ManageCritiqueUseCase {
   }
 
   /**
+   * Resolves the critique binary path synchronously if available.
+   * Returns resolution path if available, or null.
+   */
+  public resolveCritiquePath(cwd?: string): string | null {
+    return ManageCritiqueUseCase.resolveCritiquePath(this.critiquePort, cwd);
+  }
+
+  /**
+   * Safely checks critiquePort.resolveReviewer(cwd) if provided, returning resolved path or null.
+   */
+  public static resolveCritiquePath(critiquePort?: CritiquePort, cwd?: string): string | null {
+    if (!critiquePort || typeof critiquePort.resolveReviewer !== 'function') {
+      return null;
+    }
+    try {
+      const resolution = critiquePort.resolveReviewer(cwd);
+      if (resolution && !(resolution instanceof Promise) && resolution.isAvailable && resolution.path) {
+        return resolution.path;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /**
    * Retrieves comprehensive critique status, including binary resolution,
    * installed version, latest release version, and update availability.
    */
@@ -52,9 +78,13 @@ export class ManageCritiqueUseCase {
       }
     }
 
-    const versionInfo = await this.installerPort.checkUpdateAvailable(currentVersion, {
+    let versionInfo = await this.installerPort.checkUpdateAvailable(currentVersion, {
       resolvedPath: resolution.path
     });
+
+    if (resolution.source === 'sibling') {
+      versionInfo = { ...versionInfo, isOutdated: false };
+    }
 
     return {
       resolution,
