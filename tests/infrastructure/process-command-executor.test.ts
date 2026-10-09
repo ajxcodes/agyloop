@@ -49,4 +49,28 @@ describe('ProcessCommandExecutor (Infrastructure Layer)', () => {
     const result = await procPromise;
     assert.ok(result.exitCode !== 0, `Expected non-zero exit code, got ${result.exitCode}`);
   });
+
+  test('isolates process tracking between distinct instances', async () => {
+    const executorA = new ProcessCommandExecutor();
+    const executorB = new ProcessCommandExecutor();
+
+    const procPromiseB = executorB.execute('node -e "setInterval(() => {}, 1000);"');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.strictEqual(executorA.getActiveProcesses().size, 0);
+    assert.strictEqual(executorB.getActiveProcesses().size, 1);
+
+    // Killing on instance A does not kill instance B's processes
+    const killedA = executorA.killAll();
+    assert.strictEqual(killedA, 0);
+    assert.strictEqual(executorB.getActiveProcesses().size, 1);
+
+    // Killing on instance B kills its process
+    const killedB = executorB.killAll();
+    assert.strictEqual(killedB, 1);
+    assert.strictEqual(executorB.getActiveProcesses().size, 0);
+
+    const resultB = await procPromiseB;
+    assert.ok(resultB.exitCode !== 0);
+  });
 });

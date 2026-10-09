@@ -13,37 +13,57 @@ import {
 } from '../ports';
 
 export class ProcessCommandExecutor implements CommandExecutorPort {
-  private static readonly activeProcesses = new Set<child_process.ChildProcess>();
+  private static readonly activeInstances = new Set<ProcessCommandExecutor>();
+  private readonly activeProcesses = new Set<child_process.ChildProcess>();
+
+  constructor() {
+    ProcessCommandExecutor.activeInstances.add(this);
+  }
+
+  public getActiveProcesses(): Set<child_process.ChildProcess> {
+    return new Set(this.activeProcesses);
+  }
 
   public static getActiveProcesses(): Set<child_process.ChildProcess> {
-    return ProcessCommandExecutor.activeProcesses;
+    const allProcesses = new Set<child_process.ChildProcess>();
+    for (const instance of ProcessCommandExecutor.activeInstances) {
+      for (const proc of instance.activeProcesses) {
+        allProcesses.add(proc);
+      }
+    }
+    return allProcesses;
   }
 
   public static killAll(signal: NodeJS.Signals = 'SIGTERM'): number {
     let killedCount = 0;
-    for (const proc of ProcessCommandExecutor.activeProcesses) {
+    for (const instance of ProcessCommandExecutor.activeInstances) {
+      killedCount += instance.killAll(signal);
+    }
+    return killedCount;
+  }
+
+  public killAll(signal?: string): number {
+    const targetSignal = (signal || 'SIGTERM') as NodeJS.Signals;
+    let killedCount = 0;
+    for (const proc of this.activeProcesses) {
       try {
         if (proc.pid && process.platform !== 'win32') {
-          process.kill(-proc.pid, signal);
+          process.kill(-proc.pid, targetSignal);
         } else {
-          proc.kill(signal);
+          proc.kill(targetSignal);
         }
         killedCount++;
       } catch {
         try {
-          proc.kill(signal);
+          proc.kill(targetSignal);
           killedCount++;
         } catch {
           // Process already dead
         }
       }
     }
-    ProcessCommandExecutor.activeProcesses.clear();
+    this.activeProcesses.clear();
     return killedCount;
-  }
-
-  public killAll(signal?: string): number {
-    return ProcessCommandExecutor.killAll(signal as NodeJS.Signals);
   }
 
   public async execute(
@@ -72,9 +92,9 @@ export class ProcessCommandExecutor implements CommandExecutorPort {
         detached: process.platform !== 'win32'
       });
 
-      ProcessCommandExecutor.activeProcesses.add(proc);
+      this.activeProcesses.add(proc);
       const cleanProc = () => {
-        ProcessCommandExecutor.activeProcesses.delete(proc);
+        this.activeProcesses.delete(proc);
       };
 
       if (timeoutMs) {

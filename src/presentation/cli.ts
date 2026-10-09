@@ -373,6 +373,14 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--config=')) {
       options.configPath = arg.split('=')[1] || null;
+    } else if (arg === '--workspace' || arg === '--workspace-dir') {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.workspaceDir = args[++i];
+      }
+    } else if (arg.startsWith('--workspace=')) {
+      options.workspaceDir = arg.split('=')[1] || undefined;
+    } else if (arg.startsWith('--workspace-dir=')) {
+      options.workspaceDir = arg.split('=')[1] || undefined;
     } else if (!arg.startsWith('-')) {
       positional.push(arg);
     }
@@ -447,7 +455,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   }
 
   const issueValue = IssueNumber.tryFrom(options.issue)?.value;
-  const stateRepo = new FileStateRepository({ issue: issueValue });
+  const stateRepo = new FileStateRepository({ workspaceDir: options.workspaceDir, issue: issueValue });
   const githubGateway = new CliGitHubGateway();
   const configRepo = new FileConfigRepository();
   const modelCatalog = new GeminiModelCatalog({ configRepo });
@@ -1436,6 +1444,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 }
 
 export async function main(): Promise<void> {
+  const rawArgs = process.argv.slice(2);
+  let parsedOptions: CliOptions | null = null;
+  try {
+    const parsed = parseArguments(rawArgs);
+    parsedOptions = parsed.options;
+  } catch {
+    // Non-fatal fallback if parsing raw args fails
+  }
+
   let isAborting = false;
   const handleSignal = async (signal: string) => {
     if (isAborting) {
@@ -1444,13 +1461,23 @@ export async function main(): Promise<void> {
     isAborting = true;
     console.error(`\n[${signal}] Received emergency termination signal. Invoking abort protocol...`);
     try {
+      const issueValue = parsedOptions?.issue ? IssueNumber.tryFrom(parsedOptions.issue)?.value : undefined;
+      const stateRepo = new FileStateRepository({
+        workspaceDir: parsedOptions?.workspaceDir,
+        issue: issueValue
+      });
       const abortUseCase = new AbortPipelineUseCase({
-        stateRepo: new FileStateRepository(),
+        stateRepo,
         commandExecutor: new ProcessCommandExecutor(),
         worktreeManager: new GitWorktreeManager(),
         planGenerator: new FilePlanGenerator()
       });
-      await abortUseCase.execute({ force: true, reason: `POSIX Signal ${signal}` });
+      await abortUseCase.execute({
+        workspaceDir: parsedOptions?.workspaceDir,
+        issue: issueValue,
+        force: true,
+        reason: `POSIX Signal ${signal}`
+      });
     } catch {
       // Best-effort cleanup
     }
@@ -1464,7 +1491,7 @@ export async function main(): Promise<void> {
   }
 
   try {
-    const code = await runCli(process.argv.slice(2));
+    const code = await runCli(rawArgs);
     if (code !== 0) {
       process.exit(code);
     }

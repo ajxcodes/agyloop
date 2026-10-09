@@ -28,6 +28,7 @@ export interface AbortPipelineParams {
 export interface AbortPipelineResult {
   readonly success: boolean;
   readonly processesTerminated: number;
+  readonly terminatedProcessesCount?: number;
   readonly indexLockRemoved: boolean;
   readonly worktreesQuarantined: Array<{ worktreePath: string; branch?: string; stashed?: boolean }>;
   readonly containersTerminated: string[];
@@ -62,9 +63,12 @@ export class AbortPipelineUseCase {
     try {
       if (this.commandExecutor.killAll) {
         processesTerminated = this.commandExecutor.killAll(params.force ? 'SIGKILL' : 'SIGTERM');
+        if (processesTerminated > 0) {
+          console.debug(`[abort] Terminated ${processesTerminated} active child process(es).`);
+        }
       }
-    } catch {
-      // Best-effort
+    } catch (err: unknown) {
+      console.debug(`[abort] Warning: failed to propagate process signals: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // 2. Clear Stale .git/index.lock
@@ -138,6 +142,7 @@ export class AbortPipelineUseCase {
             filesTouched: worktreesQuarantined.map((w) => w.worktreePath),
             teardownMetrics: {
               processesTerminated,
+              terminatedProcessesCount: processesTerminated,
               indexLockRemoved,
               containersTerminated: containersTerminated.length,
               worktreesQuarantined: worktreesQuarantined.length
@@ -154,6 +159,7 @@ export class AbortPipelineUseCase {
     return {
       success: true,
       processesTerminated,
+      terminatedProcessesCount: processesTerminated,
       indexLockRemoved,
       worktreesQuarantined,
       containersTerminated,

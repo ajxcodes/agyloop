@@ -131,6 +131,7 @@ describe('AbortPipelineUseCase (Emergency Abort Protocol)', () => {
 
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.processesTerminated, 3);
+    assert.strictEqual(result.terminatedProcessesCount, 3);
     assert.deepStrictEqual(mockCommandExecutor.killAllCalls, ['SIGKILL']);
     assert.strictEqual(result.indexLockRemoved, true);
     assert.strictEqual(mockWorktreeManager.clearedWorkspace, '/mock/workspace');
@@ -151,5 +152,6 @@ describe('AbortPipelineUseCase (Emergency Abort Protocol)', () => {
     assert.strictEqual(abortEvent.stage, 'IMPLEMENT');
     assert.strictEqual(abortEvent.reason, 'Manual abort trigger');
     assert.strictEqual(abortEvent.teardownMetrics.processesTerminated, 3);
+    assert.strictEqual(abortEvent.teardownMetrics.terminatedProcessesCount, 3);
   });
 });
