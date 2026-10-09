@@ -446,6 +446,9 @@ export class StartImplementationUseCase {
 
     for (const line of lines) {
       if (line.startsWith('<<<<<<<')) {
+        if (inConflict && currentBlock.length > 0) {
+          snippets.push(currentBlock.join('\n'));
+        }
         inConflict = true;
         currentBlock = [line];
       } else if (inConflict) {
@@ -456,6 +459,10 @@ export class StartImplementationUseCase {
           currentBlock = [];
         }
       }
+    }
+
+    if (inConflict && currentBlock.length > 0) {
+      snippets.push(currentBlock.join('\n'));
     }
 
     return snippets;
