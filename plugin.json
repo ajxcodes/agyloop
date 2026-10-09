@@ -1,7 +1,7 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "agyloop",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "author": {
     "name": "Alvin Jorrel Pascual",
@@ -113,6 +113,12 @@
       "description": "Standards compliance and acceptance criteria review subagent",
       "model": "flash",
       "role": "AI Reviewer Subagent"
+    },
+    "triage": {
+      "name": "triage",
+      "description": "Categorizes PR review comments and routes pipeline lifecycle stages",
+      "model": "inherit",
+      "role": "Triage Subagent"
     }
   }
 }
