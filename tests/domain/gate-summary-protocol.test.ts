@@ -219,7 +219,7 @@ npm ERR! A complete log of this run can be found in:
       assert.strictEqual(report.isFailed(), false);
 
       const text = report.formatTextReport({ nextStage: 'REVIEW' });
-      assert.ok(text.includes('=== AgyLoop: Quality Gate Report ==='));
+      assert.ok(text.includes('=== CodeLoop: Quality Gate Report ==='));
       assert.ok(text.includes('Overall Verdict : PASSED'));
       assert.ok(text.includes('Build System    : node'));
       assert.ok(text.includes('Total Duration  : 3.50s'));

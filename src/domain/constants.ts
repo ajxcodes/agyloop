@@ -134,6 +134,7 @@ export const MODEL_GEMINI_3_5_FLASH = 'gemini-3.5-flash' as const;
 export const MODEL_GEMINI_2_5_FLASH = 'gemini-2.5-flash' as const;
 export const MODEL_GEMINI_3_5_FLASH_LITE = 'gemini-3.5-flash-lite' as const;
 export const MODEL_GEMINI_2_5_FLASH_LITE = 'gemini-2.5-flash-lite' as const;
+export const DEFAULT_OPENCODE_MODEL = 'ollama/ornith:9b-128k' as const;
 
 export const STATIC_MODELS = Object.freeze({
   [TIER_PRO]: Object.freeze({
@@ -315,7 +316,7 @@ export const DEFAULT_STATE_DIR = '.agyloop' as const;
 export const DEFAULT_STATE_FILE = 'state.json' as const;
 export const DEFAULT_TASKS_STATE_DIR = 'tasks' as const;
 export const DEFAULT_PLANS_DIR = 'artifacts/plans' as const;
-export const DEFAULT_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
+export const DEFAULT_SUMMARY_FILENAME = 'CodeLoop Summary.md' as const;
 export const DEFAULT_TEMPLATES_DIRNAME = 'templates' as const;
 export const DEFAULT_WORKTREES_DIR = '.worktrees' as const;
 export const DEFAULT_TASK_BRANCH_PREFIX = 'task/' as const;
@@ -431,7 +432,7 @@ export const MAX_DIAGNOSTIC_LINES = 25 as const;
 export const MAX_DIAGNOSTIC_CHARS = 2000 as const;
 export const DIAGNOSTIC_TRUNCATION_MARKER = '... [diagnostics truncated under 25 lines limit]' as const;
 
-export const HEADER_QUALITY_GATE_REPORT = '=== AgyLoop: Quality Gate Report ===' as const;
+export const HEADER_QUALITY_GATE_REPORT = '=== CodeLoop: Quality Gate Report ===' as const;
 export const LABEL_OVERALL_VERDICT = 'Overall Verdict' as const;
 export const LABEL_BUILD_STATUS = 'Build Status' as const;
 export const LABEL_BUILD_SYSTEM = 'Build System' as const;
@@ -467,7 +468,7 @@ export const REVIEW_VERDICTS = Object.freeze([
 
 export type ReviewVerdictState = typeof REVIEW_VERDICTS[number];
 
-export const HEADER_REVIEW_VERDICT_REPORT = '=== AgyLoop: Review Verdict Report ===' as const;
+export const HEADER_REVIEW_VERDICT_REPORT = '=== CodeLoop: Review Verdict Report ===' as const;
 export const LABEL_REVIEW_STATUS = 'Review Status' as const;
 export const LABEL_REVIEW_SUMMARY = 'Review Summary' as const;
 export const LABEL_UNFULFILLED_AC = 'Unfulfilled Acceptance Criteria' as const;
@@ -1170,7 +1171,7 @@ export const NOTE_COMMIT_SKIPPED = 'Commit skipped by user' as const;
 export const NOTE_COMMIT_AUTO_APPROVED = 'Commit auto-approved' as const;
 export const NOTE_COMMIT_REJECTED = 'Commit rejected by user' as const;
 
-export const HEADER_COMMIT_DRAFT_REPORT = '=== AgyLoop: Conventional Commit Draft ===' as const;
+export const HEADER_COMMIT_DRAFT_REPORT = '=== CodeLoop: Conventional Commit Draft ===' as const;
 export const SECTION_COMMIT_DETAILS_TITLE = '## Commit & Release Details' as const;
 
 // ============================================================================

@@ -34,10 +34,15 @@ import {
   DEFAULT_CB_TOKEN_BUDGET_THRESHOLD,
   CB_ACTION_PAUSE_FOR_HUMAN,
   CB_ACTIONS,
-  ValidationError
+  ValidationError,
+  DEFAULT_OPENCODE_MODEL
 } from '../domain';
 
 export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
+  runner: 'auto',
+  opencode: Object.freeze({
+    model: DEFAULT_OPENCODE_MODEL
+  }),
   models: Object.freeze({
     [ROLE_PLANNER]: TIER_PRO,
     [ROLE_IMPLEMENTER]: TIER_INHERIT,
@@ -183,9 +188,30 @@ export class FileConfigRepository implements ConfigRepository {
       }
     }
 
-    // Merge default circuit breakers if omitted or partially specified
+    // Apply environment variable and option overrides
+    let runner = resolved.runner || DEFAULT_CONFIG.runner || 'auto';
+    const envRunner = process.env.CODELOOP_RUNNER;
+    if (envRunner) {
+      const normalizedEnv = envRunner.toLowerCase().trim();
+      if (normalizedEnv === 'auto' || normalizedEnv === 'antigravity' || normalizedEnv === 'opencode') {
+        runner = normalizedEnv;
+      }
+    }
+
+    const opencodeModel =
+      options.model ||
+      process.env.OPENCODE_MODEL ||
+      resolved.opencode?.model ||
+      DEFAULT_CONFIG.opencode?.model ||
+      DEFAULT_OPENCODE_MODEL;
+
     resolved = {
       ...resolved,
+      runner,
+      opencode: {
+        ...(resolved.opencode || {}),
+        model: opencodeModel
+      },
       circuitBreakers: {
         ...DEFAULT_CONFIG.circuitBreakers,
         ...(resolved.circuitBreakers || {})

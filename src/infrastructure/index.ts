@@ -16,6 +16,9 @@ export * from './file-standards-repository';
 export * from './readline-confirmation-prompt';
 export * from './git-worktree-manager';
 export * from './file-version-anchor';
+export * from './antigravity-agent-runner';
+export * from './opencode-agent-runner';
+export * from './runner-factory';
 
 
 
