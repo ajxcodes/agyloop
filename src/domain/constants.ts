@@ -1223,8 +1223,38 @@ export const COMMAND_BRANCH_INFO = 'branch-info' as const;
 export const COMMAND_TRIAGE = 'triage' as const;
 export const COMMAND_SYNC = 'sync' as const;
 export const COMMAND_ABORT = 'abort' as const;
+export const COMMAND_INIT = 'init' as const;
+
+export const FORGE_GITHUB = 'github' as const;
+export const FORGE_GITLAB = 'gitlab' as const;
+export const FORGE_GENERIC = 'generic' as const;
+
+export const CODELOOP_STATE_DIR = '.codeloop' as const;
+export const CODELOOP_CONFIG_FILE = 'config.json' as const;
+export const DEFAULT_SMOKE_TIMEOUT_SECONDS = 300 as const;
+
+/**
+ * Ephemeral runtime paths that must be git-ignored. `.codeloop/config.json` and
+ * `.agyloop/config.json` are intentionally absent so project config stays tracked.
+ */
+export const INIT_GITIGNORE_RULES: readonly string[] = Object.freeze([
+  '.codeloop/state.json',
+  '.codeloop/tasks/',
+  '.codeloop/locks/',
+  '.codeloop/logs/',
+  '.codeloop/critique-update-cache.json',
+  '.codeloop/*.bak',
+  '.agyloop/state.json',
+  '.agyloop/tasks/',
+  '.agyloop/locks/',
+  '.agyloop/logs/',
+  '.agyloop/critique-update-cache.json',
+  '.agyloop/*.bak',
+  '.worktrees/'
+]);
 
 export const CLI_COMMANDS = Object.freeze({
+  INIT: COMMAND_INIT,
   PLAN: COMMAND_PLAN,
   IMPLEMENT: COMMAND_IMPLEMENT,
   GATES: COMMAND_GATES,

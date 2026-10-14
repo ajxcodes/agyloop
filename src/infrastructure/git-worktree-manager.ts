@@ -13,7 +13,9 @@ import {
   WorktreeCleanupError,
   DEFAULT_WORKTREES_DIR,
   DEFAULT_TASK_BRANCH_PREFIX,
-  DEFAULT_STATE_DIR
+  DEFAULT_STATE_DIR,
+  CODELOOP_STATE_DIR,
+  INIT_GITIGNORE_RULES
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -107,7 +109,8 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    */
   public async ensureGitIgnore(options?: EnsureGitIgnoreOptions): Promise<boolean> {
     const workspace = await this.getRepoRoot(options?.workspaceDir);
-    const targetEntry = options?.entry || '.worktrees';
+    const rawEntry = options?.entry || '.worktrees';
+    const targetEntry = rawEntry.trim().replace(/\/$/, '');
     const gitignorePath = path.join(workspace, '.gitignore');
 
     try {
@@ -121,8 +124,21 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
 
       const content = fs.readFileSync(gitignorePath, 'utf8');
-      const escaped = targetEntry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\//g, '\\/?');
-      const regex = new RegExp(`(?:^|\\r?\\n)\\s*${escaped}\\s*(?:$|\\r?\\n)`);
+
+      // Granular state rules (agyloop/codeloop init) supersede the blanket state-dir ignore,
+      // which would otherwise hide the tracked config.json again.
+      if (targetEntry === DEFAULT_STATE_DIR || targetEntry === CODELOOP_STATE_DIR) {
+        const lines = content.split(/\r?\n/).map((l) => l.trim().replace(/^\//, '').replace(/\/$/, ''));
+        const granular = INIT_GITIGNORE_RULES
+          .filter((r) => r.startsWith('.agyloop/') || r.startsWith('.codeloop/'))
+          .map((r) => r.replace(/^\//, '').replace(/\/$/, ''));
+        if (granular.some((g) => lines.includes(g))) {
+          return false;
+        }
+      }
+
+      const escaped = targetEntry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(?:^|\\r?\\n)\\s*\\/?${escaped}\\/?\\s*(?:$|\\r?\\n)`);
       if (regex.test(content)) {
         return false;
       }

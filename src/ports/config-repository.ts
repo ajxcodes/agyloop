@@ -61,6 +61,35 @@ export interface OpenCodeConfig {
   readonly [key: string]: unknown;
 }
 
+export interface GitConfig {
+  readonly remote?: string;
+  readonly baseBranch?: string;
+  readonly collectorPrefix?: string;
+  readonly taskPrefix?: string;
+  readonly forge?: 'github' | 'gitlab' | 'generic' | string;
+}
+
+export interface VerificationCommandConfig {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly timeoutSeconds?: number;
+}
+
+export interface SmokeSuiteConfig {
+  readonly setup?: string;
+  readonly teardown?: string;
+  readonly timeoutSeconds?: number;
+  readonly steps: readonly VerificationCommandConfig[];
+}
+
+export interface VerificationConfig {
+  readonly ecosystem?: string;
+  readonly fastCheck?: readonly VerificationCommandConfig[];
+  readonly smoke?: SmokeSuiteConfig;
+  readonly gates?: readonly VerificationCommandConfig[];
+}
+
 export interface AgyLoopConfig {
   readonly runner?: RunnerType;
   readonly opencode?: OpenCodeConfig;
@@ -69,6 +98,8 @@ export interface AgyLoopConfig {
   readonly circuitBreakers?: CircuitBreakersConfig;
   readonly migration?: IssueMigrationConfig;
   readonly versioning?: VersioningConfig;
+  readonly git?: GitConfig;
+  readonly verification?: VerificationConfig;
 }
 
 export interface ConfigLoadOptions {

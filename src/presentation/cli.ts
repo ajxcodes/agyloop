@@ -51,6 +51,7 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_TRIAGE,
   COMMAND_SYNC,
+  COMMAND_INIT,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -81,7 +82,8 @@ import {
   GithubCritiqueInstallerGateway,
   FileStandardsRepository,
   GitWorktreeManager,
-  RunnerFactory
+  RunnerFactory,
+  FileProjectScaffolder
 } from '../infrastructure';
 import { installOpenCodeIntegration } from './opencode-setup';
 import {
@@ -109,7 +111,8 @@ import {
   TriagePrCommentsUseCase,
   TriageAction,
   SyncUseCase,
-  AbortPipelineUseCase
+  AbortPipelineUseCase,
+  InitProjectUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -164,6 +167,7 @@ Usage:
   codeloop [command] [options]
 
 Operational Modes:
+  init               Scaffold .codeloop/config.json (git, verification profile) and update .gitignore; migrates legacy .agyloop config
   (default)          Run continuous lifecycle (Discovery -> Plan -> [Approval] -> Implement -> Gates -> Review -> [Commit])
   yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
   plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate
@@ -230,6 +234,8 @@ Examples:
   codeloop yolo                          Unattended fast-path (auto-approves plan gate, runs gates and review)
   codeloop yolo --commit-after           100% end-to-end hands-off loop: plan -> implement -> gates -> review -> commit
   codeloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
+  codeloop init                          Detect project and scaffold .codeloop/config.json
+  codeloop init --dry-run --json         Preview generated config without writing anything
   codeloop worktree list                 List all active isolated git worktrees
   codeloop worktree prune                Prune dangling worktrees and lock metadata
 `);
@@ -527,6 +533,57 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   }
 
   switch (effectiveCommand) {
+    case COMMAND_INIT: {
+      const workspaceDir = options.workspaceDir || process.cwd();
+      const initUseCase = new InitProjectUseCase({
+        commandExecutor,
+        buildDetector,
+        scaffolder: new FileProjectScaffolder(),
+        confirmationPrompt,
+        configRepo
+      });
+      const res = await initUseCase.execute({
+        workspaceDir,
+        yes: options.yes,
+        interactive: !options.json && Boolean(process.stdin.isTTY),
+        force: options.force,
+        dryRun: options.dryRun
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return EXIT_CODE_SUCCESS;
+      }
+
+      console.log('\n=== CodeLoop: Project Init ===');
+      if (res.skipped) {
+        console.log(`Config already exists at ${res.configPath}. Use --force to overwrite.`);
+        return EXIT_CODE_SUCCESS;
+      }
+      console.log(`${res.dryRun ? '[dry-run] Would write' : '✓ Wrote'} config: ${res.configPath}`);
+      if (res.migratedFrom) {
+        console.log(`  Migrated legacy settings from: ${res.migratedFrom}`);
+      }
+      if (res.config?.git) {
+        console.log(`  Git: remote=${res.config.git.remote} base=${res.config.git.baseBranch} forge=${res.config.git.forge}`);
+      }
+      if (res.config?.verification) {
+        console.log(`  Ecosystem: ${res.config.verification.ecosystem}`);
+        console.log(`  Fast checks: ${res.config.verification.fastCheck?.length ?? 0}, smoke steps: ${res.config.verification.smoke?.steps.length ?? 0}, gates: ${res.config.verification.gates?.length ?? 0}`);
+      }
+      const verb = res.dryRun ? 'would add' : 'added';
+      if (res.gitignoreReplaced.length > 0) {
+        console.log(`  .gitignore: ${res.dryRun ? 'would replace' : 'replaced'} blanket ignore(s): ${res.gitignoreReplaced.join(', ')}`);
+      }
+      if (res.gitignoreAdded.length > 0) {
+        console.log(`  .gitignore: ${verb} ${res.gitignoreAdded.length} rule(s): ${res.gitignoreAdded.join(', ')}`);
+      } else if (res.gitignoreReplaced.length === 0) {
+        console.log('  .gitignore: already up to date');
+      }
+      console.log('');
+      return EXIT_CODE_SUCCESS;
+    }
+
     case 'next': {
       const getNextActionUseCase = new GetNextActionUseCase(
         stateRepo,

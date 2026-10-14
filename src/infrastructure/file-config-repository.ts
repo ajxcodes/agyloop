@@ -142,10 +142,10 @@ export class FileConfigRepository implements ConfigRepository {
     // 3. Workspace configuration (.agyloop.json, .codeloop.json, .agyloop/config.json, .codeloop/config.json)
     const cwd = options.workspaceDir || options.cwd || process.cwd();
     const wsCandidates = [
-      path.join(cwd, '.agyloop.json'),
+      path.join(cwd, '.codeloop', 'config.json'),
       path.join(cwd, '.codeloop.json'),
       path.join(cwd, '.agyloop', 'config.json'),
-      path.join(cwd, '.codeloop', 'config.json')
+      path.join(cwd, '.agyloop.json')
     ];
 
     for (const wsPath of wsCandidates) {

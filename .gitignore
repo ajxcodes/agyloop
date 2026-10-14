@@ -2,9 +2,21 @@
 artifacts
 artifacts/
 artifacts/plans/
-.agyloop
-.worktrees
-config.json
+# codeloop / agyloop ephemeral runtime state
+.codeloop/state.json
+.codeloop/tasks/
+.codeloop/locks/
+.codeloop/logs/
+.codeloop/critique-update-cache.json
+.codeloop/*.bak
+.agyloop/state.json
+.agyloop/tasks/
+.agyloop/locks/
+.agyloop/logs/
+.agyloop/critique-update-cache.json
+.agyloop/*.bak
+.worktrees/
+/config.json
 
 # Environment & Secrets
 .env
