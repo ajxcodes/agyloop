@@ -356,6 +356,12 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
           'getCommitsBetween',
           'isAncestor'
         ]
+      },
+      {
+        adapterFile: 'failover-agent-runner.ts',
+        className: 'FailoverAgentRunner',
+        portName: 'AgentRunnerPort',
+        requiredMethods: ['invokeSubagent']
       }
     ];
 

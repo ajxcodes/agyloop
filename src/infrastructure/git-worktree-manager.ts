@@ -15,7 +15,9 @@ import {
   DEFAULT_TASK_BRANCH_PREFIX,
   DEFAULT_STATE_DIR,
   CODELOOP_STATE_DIR,
-  INIT_GITIGNORE_RULES
+  INIT_GITIGNORE_RULES,
+  DEFAULT_BASE_BRANCH,
+  DEFAULT_BASE_BRANCH_CANDIDATES
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -156,6 +158,8 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
   /**
    * Inspects the base branch of the current repository.
+   * Staged probe (issue #218 / AC5): attached HEAD -> well-known local candidates
+   * (develop, master, main, trunk) -> DEFAULT_BASE_BRANCH.
    */
   public async resolveBaseBranch(workspaceDir?: string): Promise<string> {
     const workspace = workspaceDir || process.cwd();
@@ -171,26 +175,20 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // Fallback below
     }
 
-    // Try detecting main or master
-    try {
-      const mainCheck = await this.commandExecutor.execute('git rev-parse --verify main', {
-        cwd: workspace
-      });
-      if (mainCheck.exitCode === 0) return 'main';
-    } catch {
-      // Continue to master
+    // Try the well-known default branch candidates before falling back to 'main'.
+    for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+      try {
+        const check = await this.commandExecutor.execute(
+          `git rev-parse --verify refs/heads/${candidate}`,
+          { cwd: workspace }
+        );
+        if (check.exitCode === 0) return candidate;
+      } catch {
+        // Continue to the next candidate.
+      }
     }
 
-    try {
-      const masterCheck = await this.commandExecutor.execute('git rev-parse --verify master', {
-        cwd: workspace
-      });
-      if (masterCheck.exitCode === 0) return 'master';
-    } catch {
-      // Fallback
-    }
-
-    return 'main';
+    return DEFAULT_BASE_BRANCH;
   }
 
   /**

@@ -54,13 +54,15 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
+  NOTE_PAUSED_CIRCUIT_BREAKER_GATE,
   GateCommandDefinition,
   WorktreeDescriptor,
   DEFAULT_CB_MAX_GATE_RETRIES,
   CB_ACTION_PAUSE_FOR_HUMAN,
   CB_ACTION_ABORT,
   CB_ACTION_WARN,
-  CircuitBreakerTrippedError
+  CircuitBreakerTrippedError,
+  QuotaExhaustedError
 } from '../domain';
 import {
   StateRepository,
@@ -108,6 +110,12 @@ export interface RunLifecycleParams {
   readonly planDir?: string | null;
   readonly userInstructions?: string | null;
   readonly interactiveCommit?: boolean;
+  /**
+   * False when no human can answer prompts (non-TTY, `--json`). Threaded into the
+   * stage use cases that own a prompt so a non-interactive run never blocks
+   * (issue #218 AC6). Omitted means interactive.
+   */
+  readonly interactive?: boolean;
   readonly worktree?: boolean;
   readonly step?: boolean;
   readonly onProgress?: (message: string) => void;
@@ -119,6 +127,11 @@ export interface RunLifecycleResult {
   readonly currentStage: StageName;
   readonly stateMachine: StateMachine;
   readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | typeof GATE_CIRCUIT_BREAKER | null;
+  /**
+   * True when the halt was caused by provider quota exhaustion rather than a
+   * retry-count circuit breaker. Lets the CLI pick a distinguishable exit code.
+   */
+  readonly quotaExhausted?: boolean;
   readonly planResult?: StartPlanningResult;
   readonly implementationResult?: StartImplementationResult;
   readonly qualityGateResult?: QualityGateRunResult;
@@ -411,22 +424,48 @@ export class RunLifecycleUseCase {
     }
 
     // 3. Dispatch based on operational mode
-    switch (activeMode) {
-      case MODE_PLAN:
-        return this.executePlanMode(sm, params, workspace);
+    //
+    // A provider quota rejection (HTTP 429 / RESOURCE_EXHAUSTED) raised by any stage
+    // use-case is a recoverable halt, not a crash: checkpoint at the
+    // CIRCUIT_BREAKER gate so the next invocation resumes with full context
+    // (issue #218 AC4). Every other error propagates untouched.
+    try {
+      // `return await` (not bare `return`): a returned promise settles OUTSIDE the
+      // try block, so the rejection would bypass the quota interception below.
+      switch (activeMode) {
+        case MODE_PLAN:
+          return await this.executePlanMode(sm, params, workspace);
 
-      case MODE_IMPLEMENT:
-        return this.executeImplementMode(sm, params, workspace, preflightResult);
+        case MODE_IMPLEMENT:
+          return await this.executeImplementMode(sm, params, workspace, preflightResult);
 
-      case MODE_COMMIT:
-        return this.executeCommitMode(sm, params, workspace);
+        case MODE_COMMIT:
+          return await this.executeCommitMode(sm, params, workspace);
 
-      case MODE_YOLO:
-        return this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult);
+        case MODE_YOLO:
+          return await this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult);
 
-      case MODE_STANDARD:
-      default:
-        return this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult);
+        case MODE_STANDARD:
+        default:
+          return await this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult);
+      }
+    } catch (err: unknown) {
+      if (!(err instanceof QuotaExhaustedError)) {
+        throw err;
+      }
+
+      sm.pauseAtGate(GATE_CIRCUIT_BREAKER);
+      await this.persistCheckpoint(sm, params.dryRun);
+
+      return {
+        success: false,
+        mode: activeMode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        pausedAtGate: GATE_CIRCUIT_BREAKER,
+        quotaExhausted: true,
+        message: `${err.message} ${NOTE_PAUSED_CIRCUIT_BREAKER_GATE}: state persisted.`
+      };
     }
   }
 
@@ -599,11 +638,14 @@ export class RunLifecycleUseCase {
     const bypass = params.yes ?? false;
     const execResult = await this.executeCommitUseCase.execute({
       commitMessage: draftResult.commitMessage,
-      confirmed: bypass,
+      // Only assert explicit confirmation when the caller asked for it; passing a
+      // literal `false` short-circuits the gate and silently cancels the commit.
+      confirmed: bypass ? true : undefined,
       bypassConfirmation: bypass,
       staged: params.staged,
       dryRun: params.dryRun,
       issue: sm.issue,
+      interactive: params.interactive,
       workspaceDir: activeWorkspace,
       rootWorkspaceDir: workspace
     });
@@ -732,7 +774,8 @@ export class RunLifecycleUseCase {
           maxRetries,
           sm.implementToGateLoops,
           actionOnTrip,
-          'Quality gates failed repeatedly.'
+          'Quality gates failed repeatedly.',
+          params.dryRun
         );
       }
 
@@ -761,6 +804,7 @@ export class RunLifecycleUseCase {
       baseRef: params.baseRef,
       dryRun: params.dryRun,
       configPath: params.configPath,
+      interactive: params.interactive,
       workspaceDir: activeWorkspace
     });
 
@@ -924,7 +968,8 @@ export class RunLifecycleUseCase {
             maxRetries,
             sm.implementToGateLoops,
             actionOnTrip,
-            'Quality gates failed repeatedly.'
+            'Quality gates failed repeatedly.',
+            params.dryRun
           );
         }
 
@@ -955,6 +1000,7 @@ export class RunLifecycleUseCase {
         baseRef: params.baseRef,
         dryRun: params.dryRun,
         configPath: params.configPath,
+        interactive: params.interactive,
         workspaceDir: activeWorkspace
       });
 
@@ -1017,10 +1063,11 @@ export class RunLifecycleUseCase {
         };
       }
 
-      if (params.interactiveCommit && this.confirmationPrompt) {
+      if (params.interactiveCommit && params.interactive !== false && this.confirmationPrompt) {
         const execResult = await this.executeCommitUseCase.execute({
           commitMessage: draftResult.commitMessage,
           bypassConfirmation: false,
+          interactive: params.interactive,
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
@@ -1084,14 +1131,15 @@ export class RunLifecycleUseCase {
     };
   }
 
-  private handleCircuitBreakerTrip(
+  private async handleCircuitBreakerTrip(
     sm: StateMachine,
     breaker: string,
     limit: number,
     actual: number,
     action: string,
-    extraMessage?: string
-  ): RunLifecycleResult {
+    extraMessage?: string,
+    dryRun?: boolean
+  ): Promise<RunLifecycleResult> {
     const baseMsg = `Circuit breaker '${breaker}' tripped: exceeded limit ${limit} (actual: ${actual}).`;
     const fullMsg = extraMessage ? `${baseMsg} ${extraMessage}` : baseMsg;
 
@@ -1109,15 +1157,36 @@ export class RunLifecycleUseCase {
       };
     }
 
-    // Default: pause_for_human
+    // Default: pause_for_human.
+    // The pause MUST be persisted (issue #218 AC4): an in-memory pause alone leaves
+    // `pausedAtGate: null` on disk, so the next invocation restarts the stage from
+    // scratch with no context.
     sm.pauseAtGate(GATE_CIRCUIT_BREAKER);
+    await this.persistCheckpoint(sm, dryRun);
+
     return {
       success: false,
       mode: sm.mode,
       currentStage: sm.currentStage,
       stateMachine: sm,
       pausedAtGate: GATE_CIRCUIT_BREAKER,
-      message: `${fullMsg} Paused for human intervention.`
+      message: `${fullMsg} ${NOTE_PAUSED_CIRCUIT_BREAKER_GATE}: state persisted — re-run after the blocking condition clears.`
     };
+  }
+
+  /**
+   * Shared checkpoint helper. A storage failure must never replace the lifecycle
+   * diagnostic that triggered it (a read-only mount or full disk must not mask a
+   * circuit-breaker trip or a quota halt).
+   */
+  private async persistCheckpoint(sm: StateMachine, dryRun?: boolean): Promise<void> {
+    if (dryRun) {
+      return;
+    }
+    try {
+      await this.stateRepo.save(sm.toSnapshot());
+    } catch {
+      // Non-fatal by design — the in-memory pause and the returned diagnostic stand.
+    }
   }
 }

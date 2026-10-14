@@ -34,7 +34,9 @@ import {
   DEFAULT_CB_MAX_WALL_CLOCK_DURATION_SECONDS,
   DEFAULT_CB_TOKEN_BUDGET_THRESHOLD,
   CB_ACTION_PAUSE_FOR_HUMAN,
-  DEFAULT_OPENCODE_MODEL
+  DEFAULT_OPENCODE_MODEL,
+  DEFAULT_BASE_BRANCH,
+  DEFAULT_BASE_BRANCH_CANDIDATES
 } from '../domain';
 
 export interface InitProjectDeps {
@@ -212,10 +214,35 @@ export class InitProjectUseCase {
     const remotes = (await run('git remote')).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     const remote = remotes.includes('origin') ? 'origin' : remotes[0] || 'origin';
 
-    let baseBranch = 'main';
-    const head = await run('git symbolic-ref refs/remotes/origin/HEAD');
-    const m = head.match(/refs\/remotes\/[^/]+\/(.+)$/);
-    if (m) baseBranch = m[1];
+    // Staged base-branch probe (issue #218 / AC5). `run()` returns '' on a non-zero
+    // exit and swallows throws, so every stage below is total and cheap.
+    let baseBranch: string = DEFAULT_BASE_BRANCH;
+
+    // 1. Remote HEAD of the RESOLVED remote — never a hardcoded 'origin'.
+    const head = await run(`git symbolic-ref refs/remotes/${remote}/HEAD`);
+    const headMatch = head.match(/refs\/remotes\/[^/]+\/(.+)$/);
+    const headBranch = headMatch && headMatch[1] !== 'HEAD' ? headMatch[1] : null;
+
+    if (headBranch) {
+      baseBranch = headBranch;
+    } else {
+      // 2. Current local branch — empty on a detached HEAD.
+      const currentBranch = await run('git branch --show-current');
+      if (currentBranch && currentBranch !== 'HEAD') {
+        baseBranch = currentBranch;
+      } else {
+        // 3. Well-known candidates, most preferred first. String concatenation only —
+        //    the application layer must not import 'path'.
+        for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+          const verified = await run(`git rev-parse --verify refs/heads/${candidate}`);
+          if (verified) {
+            baseBranch = candidate;
+            break;
+          }
+        }
+        // 4. Otherwise DEFAULT_BASE_BRANCH stands as the terminal fallback.
+      }
+    }
 
     let forge: string = FORGE_GENERIC;
     if (remotes.length > 0) {

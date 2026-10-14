@@ -4,6 +4,7 @@
 
 export * from './constants';
 export * from './errors';
+export * from './quota-exhaustion';
 export * from './value-objects/stage';
 export * from './value-objects/issue-number';
 export * from './value-objects/model-tier';

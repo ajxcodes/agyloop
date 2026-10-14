@@ -8,12 +8,16 @@ const {
   ConfigResolutionError,
   StateStorageError,
   ValidationError,
+  QuotaExhaustedError,
+  classifyQuotaExhaustion,
+  ERROR_CODES,
   ERR_INVALID_TRANSITION,
   ERR_PHYSICAL_WRITE_VIOLATION,
   ERR_GITHUB_CONTEXT,
   ERR_CONFIG_RESOLUTION,
   ERR_STATE_STORAGE,
-  ERR_VALIDATION
+  ERR_VALIDATION,
+  ERR_QUOTA_EXHAUSTED
 } = require('../../dist/domain');
 
 describe('Sealed Domain Error Hierarchy', () => {
@@ -70,5 +74,21 @@ describe('Sealed Domain Error Hierarchy', () => {
     assert.strictEqual(err.field, 'issueNumber');
     assert.strictEqual(err.value, -1);
     assert.ok(err.message.includes('Must be positive'));
+  });
+
+  test('QuotaExhaustedError joins the sealed hierarchy under ERR_QUOTA_EXHAUSTED', () => {
+    const err = new QuotaExhaustedError({
+      signal: classifyQuotaExhaustion('RESOURCE_EXHAUSTED retry-after: 60'),
+      runner: 'opencode',
+      now: new Date('2026-10-14T12:00:00.000Z')
+    });
+
+    assert.ok(err instanceof AgyLoopError);
+    assert.ok(err instanceof Error);
+    assert.strictEqual(err.code, ERR_QUOTA_EXHAUSTED);
+    assert.strictEqual(ERROR_CODES.QUOTA_EXHAUSTED, ERR_QUOTA_EXHAUSTED);
+    assert.strictEqual(err.details.status, 429);
+    assert.strictEqual(err.details.runner, 'opencode');
+    assert.strictEqual(err.quotaResetAt, '2026-10-14T12:01:00.000Z');
   });
 });

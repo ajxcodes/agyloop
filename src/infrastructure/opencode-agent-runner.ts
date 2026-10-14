@@ -5,7 +5,7 @@
  */
 
 import { AgentRunnerPort, RunnerSubagentPayload, CommandExecutorPort } from '../ports';
-import { DEFAULT_OPENCODE_MODEL } from '../domain';
+import { DEFAULT_OPENCODE_MODEL, QuotaExhaustedError, classifyQuotaExhaustion } from '../domain';
 import { ProcessCommandExecutor } from './process-command-executor';
 
 export interface OpenCodeAgentRunnerOptions {
@@ -39,8 +39,25 @@ export class OpenCodeAgentRunner implements AgentRunnerPort {
     });
 
     if (result.exitCode !== 0) {
+      const stderr = result.stderr || '';
+      const stdout = result.stdout || '';
+
+      // Classify BEFORE throwing: a quota rejection (HTTP 429 / RESOURCE_EXHAUSTED)
+      // must survive as structured data so the lifecycle can checkpoint instead of
+      // losing the only carrier of the signal (issue #218 AC4).
+      const signal = classifyQuotaExhaustion(`${stderr}\n${stdout}`);
+      if (signal.isQuotaExhausted) {
+        throw new QuotaExhaustedError({
+          signal,
+          runner: 'opencode',
+          model,
+          attempt: 1
+        });
+      }
+
+      // Unchanged shape for every non-quota failure.
       throw new Error(
-        `OpenCode execution failed with exit code ${result.exitCode}: ${result.stderr || result.stdout}`
+        `OpenCode execution failed with exit code ${result.exitCode}: ${stderr || stdout}`
       );
     }
   }

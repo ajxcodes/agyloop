@@ -70,6 +70,12 @@ export interface RunReviewParams {
   readonly workspaceDir?: string;
   readonly confirmationPrompt?: ConfirmationPromptPort;
   readonly critiqueInstaller?: CritiqueInstallerPort;
+  /**
+   * True only when a human can answer prompts. Defaults to true for backwards
+   * compatibility; the CLI composition root and the readline adapter both enforce
+   * TTY so a non-interactive session can never block (issue #218 AC6).
+   */
+  readonly interactive?: boolean;
 }
 
 export interface RunReviewResult {
@@ -284,8 +290,10 @@ export class RunReviewUseCase {
         : { source: 'system_path' as const, path: 'critique', isAvailable: true };
       critiqueResolution = resolution;
 
-      // Auto-install fallback prompt if critique CLI is absent and confirmation prompt is available
-      if (!resolution.isAvailable && prompt && installer) {
+      // Auto-install fallback prompt if critique CLI is absent and confirmation prompt is available.
+      // Skipped when the session is non-interactive: this prompt defaults to "yes",
+      // so an unguarded CI/cron run would both block and silently mutate the machine.
+      if (!resolution.isAvailable && prompt && installer && params.interactive !== false) {
         const confirmed = await prompt.confirm(
           'Critique CLI is not installed. Would you like to install it automatically? [Y/n]',
           true

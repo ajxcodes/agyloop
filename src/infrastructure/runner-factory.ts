@@ -9,6 +9,7 @@ import * as child_process from 'child_process';
 import { AgentRunnerPort, AgyLoopConfig, CommandExecutorPort } from '../ports';
 import { DEFAULT_OPENCODE_MODEL } from '../domain';
 import { AntigravityAgentRunner } from './antigravity-agent-runner';
+import { FailoverAgentRunner } from './failover-agent-runner';
 import { OpenCodeAgentRunner } from './opencode-agent-runner';
 import { ProcessCommandExecutor } from './process-command-executor';
 
@@ -16,6 +17,12 @@ export interface RunnerFactoryOptions {
   readonly config?: AgyLoopConfig;
   readonly commandExecutor?: CommandExecutorPort;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Optional fallback runner (issue #218 AC4). When supplied, the OpenCode runner is
+   * wrapped in a {@link FailoverAgentRunner} that retries quota exhaustion once on
+   * this runner. Omitted ⇒ the resolved runner is returned unwrapped.
+   */
+  readonly failoverRunner?: AgentRunnerPort;
 }
 
 export class RunnerFactory {
@@ -40,10 +47,13 @@ export class RunnerFactory {
     // If explicit opencode
     if (selectedRunner === 'opencode') {
       const model = env.OPENCODE_MODEL || config?.opencode?.model || DEFAULT_OPENCODE_MODEL;
-      return new OpenCodeAgentRunner({
-        commandExecutor,
-        defaultModel: model
-      });
+      return this.withFailover(
+        new OpenCodeAgentRunner({
+          commandExecutor,
+          defaultModel: model
+        }),
+        options
+      );
     }
 
     // If explicit antigravity
@@ -55,10 +65,13 @@ export class RunnerFactory {
     if (selectedRunner === 'auto' || !selectedRunner) {
       if (this.detectsOpenCodeEnvironment(env)) {
         const model = env.OPENCODE_MODEL || config?.opencode?.model || DEFAULT_OPENCODE_MODEL;
-        return new OpenCodeAgentRunner({
-          commandExecutor,
-          defaultModel: model
-        });
+        return this.withFailover(
+          new OpenCodeAgentRunner({
+            commandExecutor,
+            defaultModel: model
+          }),
+          options
+        );
       }
       // Default safely to Antigravity
       return new AntigravityAgentRunner();
@@ -66,6 +79,26 @@ export class RunnerFactory {
 
     // Fallback default
     return new AntigravityAgentRunner();
+  }
+
+  /**
+   * Wraps a runner in the quota-aware decorator ONLY when a fallback is configured.
+   * Unconditional wrapping would break the documented `instanceof` contract of
+   * {@link RunnerFactory.createRunner}.
+   */
+  private static withFailover(
+    runner: AgentRunnerPort,
+    options: RunnerFactoryOptions
+  ): AgentRunnerPort {
+    if (!options.failoverRunner) {
+      return runner;
+    }
+    return new FailoverAgentRunner({
+      primary: runner,
+      fallback: options.failoverRunner,
+      primaryName: 'opencode',
+      fallbackName: 'failover'
+    });
   }
 
   private static detectsOpenCodeEnvironment(env: NodeJS.ProcessEnv): boolean {

@@ -281,6 +281,81 @@ new file mode 100644
       assert.strictEqual(result.currentStage, STAGE_COMMIT); // Unchanged
     });
 
+    // --- Zero-Hang Invariant (issue #218 / AC6) ---------------------------
+
+    test('skips the commit confirmation prompt when interactive is false', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      const prompter = new MockConfirmationPrompt(true); // Would answer "yes"
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, undefined, prompter);
+
+      const commitMsg = CommitMessage.create({ type: 'feat', description: 'test feature' });
+      const result = await useCase.execute({ commitMessage: commitMsg, interactive: false });
+
+      assert.strictEqual(prompter.lastPrompt, null, 'prompt must never be opened');
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.confirmed, false);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT); // Unchanged
+    });
+
+    test('skips the worktree teardown prompt when interactive is false', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      const worktreeManager = new MockWorktreeManager();
+      const prompter = new MockConfirmationPrompt(true); // Would answer "yes" to both prompts
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        prompter,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({ type: 'feat', description: 'test feature' });
+      const result = await useCase.execute({ commitMessage: commitMsg, interactive: false });
+
+      assert.strictEqual(prompter.lastPrompt, null, 'no prompt (commit or teardown) may be opened');
+      assert.ok(!result.worktreeTornDown);
+      assert.strictEqual(worktreeManager.removedWorktreeOptions, null);
+    });
+
+    test('still prompts for worktree teardown when interactive is not specified', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "feat(teardown): test commit"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'b1b2b3b4b5b6\n' };
+
+      const worktreeManager = new MockWorktreeManager();
+      const prompts: string[] = [];
+      const prompter: ConfirmationPromptPort = {
+        async confirm(message: string): Promise<boolean> {
+          prompts.push(message);
+          return true;
+        }
+      };
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        undefined,
+        prompter,
+        worktreeManager as unknown as WorktreeManagerPort
+      );
+
+      const commitMsg = CommitMessage.create({ type: 'feat', description: 'test commit' });
+      const result = await useCase.execute({ commitMessage: commitMsg });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(prompts.length, 2, 'commit gate then teardown gate');
+      assert.ok(prompts[1].includes('Teardown isolated git worktree'));
+    });
+
     test('executes git commit, advances state, updates summary, and checkpoints on user confirmation', async () => {
       const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);

@@ -1,0 +1,4 @@
+{
+  "description": "Run the CodeLoop multi-subagent development lifecycle",
+  "template": "Execute the codeloop multi-subagent lifecycle pipeline for the current task: $ARGUMENTS"
+}
