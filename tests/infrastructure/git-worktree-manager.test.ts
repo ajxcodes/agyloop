@@ -67,10 +67,52 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.ok(content.includes('.worktrees'));
   });
 
+  test('ensureGitIgnore does not re-add blanket .agyloop when granular state rules exist', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.gitignore'), '.agyloop/state.json\n.agyloop/tasks/\n', 'utf8');
+    const manager = new GitWorktreeManager();
+    const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir, entry: '.agyloop' });
+    assert.strictEqual(modified, false);
+    assert.ok(!fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8').split('\n').includes('.agyloop'));
+  });
+
+  test('ensureGitIgnore uses INIT_GITIGNORE_RULES to skip bare .agyloop when ephemeral rules exist', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.gitignore'),
+      '.agyloop/critique-update-cache.json\n.agyloop/*.bak\n',
+      'utf8'
+    );
+    const manager = new GitWorktreeManager();
+    const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir, entry: '.agyloop' });
+    assert.strictEqual(modified, false);
+    assert.ok(!fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8').split('\n').includes('.agyloop'));
+  });
+
   test('ensureGitIgnore returns false and does not duplicate if .worktrees already present', async () => {
     fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n.worktrees\n', 'utf8');
     const manager = new GitWorktreeManager();
     const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir });
+    assert.strictEqual(modified, false);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
+    const matches = content.match(/\.worktrees/g);
+    assert.strictEqual(matches?.length, 1);
+  });
+
+  test('ensureGitIgnore returns false and does not re-add .worktrees if .worktrees/ is already present', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n.worktrees/\n', 'utf8');
+    const manager = new GitWorktreeManager();
+    const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir });
+    assert.strictEqual(modified, false);
+
+    const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
+    const matches = content.match(/\.worktrees/g);
+    assert.strictEqual(matches?.length, 1);
+  });
+
+  test('ensureGitIgnore normalizes .worktrees/ entry and does not duplicate if .worktrees is present', async () => {
+    fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n.worktrees\n', 'utf8');
+    const manager = new GitWorktreeManager();
+    const modified = await manager.ensureGitIgnore({ workspaceDir: tmpDir, entry: '.worktrees/' });
     assert.strictEqual(modified, false);
 
     const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');

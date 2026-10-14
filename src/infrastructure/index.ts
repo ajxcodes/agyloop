@@ -19,6 +19,7 @@ export * from './file-version-anchor';
 export * from './antigravity-agent-runner';
 export * from './opencode-agent-runner';
 export * from './runner-factory';
+export * from './file-project-scaffolder';
 
 
 
