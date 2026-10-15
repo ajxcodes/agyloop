@@ -1304,6 +1304,7 @@ export const INIT_GITIGNORE_RULES: readonly string[] = Object.freeze([
   '.codeloop/logs/',
   '.codeloop/critique-update-cache.json',
   '.codeloop/*.bak',
+  '.agyloop',        // bare entry to match the .agyloop symlink (git stores as mode 120000)
   '.agyloop/state.json',
   '.agyloop/tasks/',
   '.agyloop/locks/',
