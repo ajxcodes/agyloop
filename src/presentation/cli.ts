@@ -28,6 +28,7 @@ import {
   STAGE_TRIAGE,
   GATE_APPROVAL,
   GATE_COMMIT,
+  GATE_CIRCUIT_BREAKER,
   MODE_YOLO,
   MODE_PLAN,
   MODE_STANDARD,
@@ -42,6 +43,7 @@ import {
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
+  EXIT_CODE_QUOTA_EXHAUSTED,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -52,6 +54,7 @@ import {
   COMMAND_TRIAGE,
   COMMAND_SYNC,
   COMMAND_INIT,
+  COMMAND_RESUME,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -64,10 +67,14 @@ import {
   PreFlightHaltError,
   MilestoneReleaseError,
   MilestoneSealedError,
+  QuotaExhaustedError,
+  CircuitBreakerTrippedError,
+  QUOTA_RESUME_COMMAND,
   StateMachine,
   IssueNumber,
   STATE_MUTATING_COMMANDS
 } from '../domain';
+import type { StateRepository } from '../ports';
 import {
   FileStateRepository,
   CliGitHubGateway,
@@ -112,7 +119,8 @@ import {
   TriageAction,
   SyncUseCase,
   AbortPipelineUseCase,
-  InitProjectUseCase
+  InitProjectUseCase,
+  ResumePipelineUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -159,6 +167,73 @@ export interface ParsedCliArgs {
   options: CliOptions;
 }
 
+/**
+ * Zero-Hang Invariant (issue #218 AC6): prompts are permitted only when a human is
+ * attached to BOTH stdin and stdout AND machine-readable output was not requested.
+ * Pure so it is unit-testable without touching the real process streams.
+ */
+export function computePromptsAllowed(
+  options: Pick<CliOptions, 'json'>,
+  stdinIsTTY: boolean,
+  stdoutIsTTY: boolean
+): boolean {
+  return !options.json && stdinIsTTY && stdoutIsTTY;
+}
+
+/**
+ * Command that clears a persisted gate pause (issue #218 AC4).
+ *
+ * `codeloop next` only *reports* a pause — it never clears one. `resumeFromGate()` is
+ * reachable from `resume`, `transition` and `triage`, so exit code 2 telling users to
+ * "resume with codeloop next" was advice that could not work. Help text, the `next`
+ * banner and the `status` recovery hint therefore name this command.
+ *
+ * It is declared here rather than imported so the help text keeps naming a command that
+ * clears the pause even if a domain constant drifts again;
+ * `tests/presentation/cli-gate-pause-visibility.test.ts` pins it against
+ * `QUOTA_RESUME_COMMAND` (domain), which must resolve to the same string.
+ */
+export const RESUME_COMMAND = 'codeloop resume';
+
+/**
+ * A gate pause read straight off the persisted checkpoint.
+ *
+ * Rendered as data (never prose) in `next --json`, and as an extra block in the human
+ * `status` / `next` output. `gate` is whatever `StateMachine.pauseAtGate()` recorded —
+ * today `CIRCUIT_BREAKER`, `APPROVAL`, `COMMIT` or `TRIAGE`.
+ */
+export interface PersistedGatePause {
+  readonly gate: string;
+  readonly pausedAt: string | null;
+  readonly resumeCommand: string;
+  readonly message: string;
+}
+
+/**
+ * Reads the persisted gate pause, or `null` when the pipeline is not paused.
+ *
+ * Never throws: a missing, unreadable or corrupt checkpoint must not take down a
+ * command whose real job is to report state (issue #218 AC4).
+ */
+export async function readPersistedGatePause(stateRepo: StateRepository): Promise<PersistedGatePause | null> {
+  try {
+    const snapshot = await stateRepo.load();
+    const gate = snapshot?.pausedAtGate ?? null;
+    if (!gate) {
+      return null;
+    }
+
+    return {
+      gate,
+      pausedAt: snapshot?.pausedAtTimestamp ?? null,
+      resumeCommand: RESUME_COMMAND,
+      message: `Pipeline is paused at the ${gate} gate. Resolve the blocking condition, then run \`${RESUME_COMMAND}\`.`
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function printHelp(): void {
   console.log(`
 codeloop v${CLI_VERSION} - Multi-Agent Development Lifecycle Orchestrator
@@ -184,11 +259,12 @@ Pipeline Management:
   models             List available Gemini models and mapped Antigravity tiers
   prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
   reset              Reset .agyloop/state.json checkpoint (supports --issue <id> and --all)
+  resume             Clear a persisted gate pause (CIRCUIT_BREAKER, APPROVAL, COMMIT, TRIAGE) and checkpoint the wait time
   abort              Emergency Stop: halts subagents, clears locks, quarantines worktrees, stops sandboxes
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
-  opencode [cmd]     Manage OpenCode integration assets (install)
+  opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
   triage [action]    Triage PR review comments and route pipeline (implement|plan|discovery|dismiss)
 
 Operational Flags:
@@ -219,13 +295,24 @@ Operational Flags:
   -h, --help         Show this help message and exit
   -v, --version      Show version information and exit
 
+Exit Codes:
+  0   Success
+  1   Failure (gate, review, config or usage error). Work is NOT checkpointed for resume.
+  2   Provider quota exhausted (HTTP 429 / RESOURCE_EXHAUSTED / rate-limit rejection).
+      Recoverable: state is checkpointed at the CIRCUIT_BREAKER gate and nothing is lost.
+      Resume with '${RESUME_COMMAND}' once the quota window resets — 'codeloop next' only
+      reports the pause, it does not clear it.
+      CI: treat 2 as failure too, but distinguish it from 1 to avoid hot-retrying a
+      provider that will keep rejecting until the window reopens.
+
 Examples:
   codeloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
   codeloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
   codeloop implement                    Resume implementation from approved plan in artifacts/plans/
+  codeloop resume                       Clear a persisted gate pause (e.g. CIRCUIT_BREAKER) and checkpoint the wait time
   codeloop commit                        Draft Conventional Commit and prompt for human approval
   codeloop commit -y                     Draft Conventional Commit and commit immediately
-  codeloop opencode install              Install OpenCode integration assets to ~/.opencode/skills/
+  codeloop opencode install              Install the OpenCode skill to ~/.config/opencode/skills/ and register the /codeloop command
   codeloop critique status               Inspect critique resolution, installed version, and update status
   codeloop critique install              Install latest critique CLI into user data directory
   codeloop critique update               Update critique CLI to latest release
@@ -466,6 +553,81 @@ export function formatStageBadge(stage: string): string {
   return `${color}[${stage}]${reset}`;
 }
 
+/**
+ * Shared diagnostic for lifecycle halts caused by provider quota exhaustion or a
+ * tripped circuit breaker (issue #218 AC4). Returns the exit code when the error
+ * was handled, or `null` so the caller keeps its existing handling.
+ *
+ * Quota failures get a dedicated exit code so CI can distinguish "provider said
+ * no" from an ordinary lifecycle failure.
+ */
+export function lifecycleHaltExitCode(err: unknown): number | null {
+  if (err instanceof QuotaExhaustedError) {
+    console.error(`\n🛑 Provider quota exhausted.\n${err.message}\n`);
+    console.error(`State is checkpointed — re-run \`${QUOTA_RESUME_COMMAND}\` once the quota window resets.\n`);
+    return EXIT_CODE_QUOTA_EXHAUSTED;
+  }
+
+  if (err instanceof CircuitBreakerTrippedError) {
+    console.error(`\n🛑 ${err.message}\n`);
+    console.error(`State is checkpointed — re-run \`${QUOTA_RESUME_COMMAND}\` after the blocking condition clears.\n`);
+    return EXIT_CODE_FAILURE;
+  }
+
+  return null;
+}
+
+/**
+ * Reports a persisted circuit-breaker halt (quota exhaustion or exhausted retries)
+ * from a lifecycle result and returns its exit code, or `null` when the pipeline is
+ * not halted at the breaker gate.
+ */
+export function persistedHaltExitCode(
+  result: {
+    readonly pausedAtGate?: string | null;
+    readonly quotaExhausted?: boolean;
+    readonly message?: string;
+  }
+): number | null {
+  if (result.pausedAtGate !== GATE_CIRCUIT_BREAKER) {
+    return null;
+  }
+  console.error(`\n🛑 ${result.message ?? 'Circuit breaker halted the pipeline.'}`);
+  console.error(`State is checkpointed — re-run \`${QUOTA_RESUME_COMMAND}\` after the blocking condition clears.\n`);
+  return result.quotaExhausted ? EXIT_CODE_QUOTA_EXHAUSTED : EXIT_CODE_FAILURE;
+}
+
+/**
+ * Projects the `codeloop resume --json` payload. Machine-readable output must not leak
+ * the rehydrated `StateMachine` the use case returns: its private fields are a domain
+ * implementation detail, and the primitives below are what a caller actually needs.
+ */
+function buildResumeJsonPayload(result: {
+  readonly success: boolean;
+  readonly resumed: boolean;
+  readonly persisted: boolean;
+  readonly pausedAtGate: string | null;
+  readonly pausedAtTimestamp: string | null;
+  readonly totalHumanWaitMs: number;
+  readonly currentStage: string | null;
+  readonly mode: string | null;
+  readonly issue: number | null;
+  readonly message: string;
+}): Record<string, unknown> {
+  return {
+    success: result.success,
+    resumed: result.resumed,
+    persisted: result.persisted,
+    pausedAtGate: result.pausedAtGate,
+    pausedAtTimestamp: result.pausedAtTimestamp,
+    totalHumanWaitMs: result.totalHumanWaitMs,
+    currentStage: result.currentStage,
+    mode: result.mode,
+    issue: result.issue,
+    message: result.message
+  };
+}
+
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
   const { command, options } = parseArguments(rawArgs);
 
@@ -491,7 +653,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   const standardsRepo = new FileStandardsRepository();
   const critique = new CliCritiqueGateway();
   const critiqueInstaller = new GithubCritiqueInstallerGateway();
-  const confirmationPrompt = new ReadlineConfirmationPrompt();
+  // Single source of truth for prompt permission (issue #218 AC6). Computed once and
+  // reused by every prompt-issuing call site; also handed to the readline adapter so
+  // a non-interactive session cannot block even if a caller forgets to gate.
+  const promptsAllowed = computePromptsAllowed(
+    options,
+    Boolean(process.stdin.isTTY),
+    Boolean(process.stdout.isTTY)
+  );
+  const confirmationPrompt = new ReadlineConfirmationPrompt({ interactive: promptsAllowed });
   const worktreeManager = new GitWorktreeManager(commandExecutor);
 
   const config = configRepo.loadConfig({
@@ -545,7 +715,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const res = await initUseCase.execute({
         workspaceDir,
         yes: options.yes,
-        interactive: !options.json && Boolean(process.stdin.isTTY),
+        interactive: promptsAllowed,
         force: options.force,
         dryRun: options.dryRun
       });
@@ -600,12 +770,41 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         issue: options.issue
       });
 
+      // A persisted gate pause (quota exhaustion, exhausted retries) must never be
+      // mistaken for a runnable directive. It is read BEFORE the `--json` branch
+      // because that command is what the agent harness runs (skills/agyloop/SKILL.md),
+      // and a pause it cannot see is a pause it will happily execute through.
+      const pause = await readPersistedGatePause(stateRepo);
+      const pausedAtBreakerGate = pause?.gate === GATE_CIRCUIT_BREAKER;
+
       if (options.json) {
-        console.log(JSON.stringify(res, null, 2));
+        // Machine-readable output stays a single JSON document: the pause travels as
+        // data, never as prose on stdout. `actionable` is the single boolean a harness
+        // needs to decide whether to invoke the subagent.
+        console.log(
+          JSON.stringify(
+            {
+              ...res,
+              actionable: pause === null,
+              pause
+            },
+            null,
+            2
+          )
+        );
+        if (pause) {
+          // Warnings go to stderr so stdout stays parseable.
+          console.error(`🛑 ${pause.message}`);
+        }
         return EXIT_CODE_SUCCESS;
       }
 
       console.log('\n=== CodeLoop: Next Subagent Directive ===');
+      if (pausedAtBreakerGate) {
+        console.log(`Status       : 🛑 ${GATE_CIRCUIT_BREAKER} — ${res.humanSummary}`);
+        console.log('Resolve the blocking condition (e.g. wait for the provider quota window),');
+        console.log(`then re-run \`${RESUME_COMMAND}\`. State is checkpointed; nothing is lost.\n`);
+      }
       console.log(`Current Stage : ${formatStageBadge(res.currentStage)}`);
       console.log(`Next Action   : ${res.title}`);
       if (res.baseBranch) {
@@ -704,6 +903,18 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.log(`Updated At    : ${result.status.updatedAt}`);
       console.log(`Checkpoint    : ${result.stateFilePath}`);
 
+      // Additive: nothing else below distinguishes a live pipeline from one halted at
+      // a gate, so an operator could not tell that the run was waiting on them.
+      const statusPause = await readPersistedGatePause(stateRepo);
+      if (statusPause) {
+        console.log(`Paused At Gate: ${statusPause.gate}`);
+        console.log(`Paused At     : ${statusPause.pausedAt ?? '(unknown)'}`);
+        if (statusPause.gate === GATE_CIRCUIT_BREAKER) {
+          console.log('Recovery      : resolve the blocking condition (e.g. wait for the provider quota window),');
+          console.log(`                then run \`${RESUME_COMMAND}\`.`);
+        }
+      }
+
       if (result.activeTasks && result.activeTasks.length > 0) {
         console.log(`\nActive Tasks Matrix (${result.activeTasks.length}):`);
         console.log('--------------------------------------------------------------------------------');
@@ -792,6 +1003,43 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log('✓ CodeLoop pipeline state reset. .agyloop/state.json cleared.');
       }
       return EXIT_CODE_SUCCESS;
+    }
+
+    case COMMAND_RESUME: {
+      // Guarded by STATE_MUTATING_COMMANDS ('resume' clears the persisted pause, so it
+      // mutates the checkpoint exactly like `reset` does): a subagent is refused above.
+      try {
+        const resumeUseCase = new ResumePipelineUseCase(stateRepo);
+        const resumeResult = await resumeUseCase.execute({ dryRun: options.dryRun });
+
+        if (options.json) {
+          // Single JSON document on stdout; anything diagnostic goes to stderr.
+          console.log(JSON.stringify(buildResumeJsonPayload(resumeResult), null, 2));
+          if (!resumeResult.success) {
+            console.error(`✗ ${resumeResult.message}`);
+          }
+          return resumeResult.success ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
+        }
+
+        if (!resumeResult.success) {
+          console.error(`✗ ${resumeResult.message}`);
+          return EXIT_CODE_FAILURE;
+        }
+
+        console.log('\n=== CodeLoop: Pipeline Resume ===');
+        console.log(`${options.dryRun ? '[dry-run] ' : '✓ '}${resumeResult.message}`);
+        console.log(`  Cleared Gate : ${resumeResult.pausedAtGate ?? '(none)'}`);
+        console.log(`  Cleared At   : ${resumeResult.pausedAtTimestamp ?? '(unknown)'}`);
+        console.log(`  Stage        : ${resumeResult.currentStage ?? '(no checkpoint)'}`);
+        if (resumeResult.resumed) {
+          console.log(`  Next Step    : run \`codeloop next\` to obtain the next directive.`);
+        }
+        console.log('');
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ Resume failed: ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
 
     case 'abort': {
@@ -1127,8 +1375,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           title: options.title,
           type: options.type,
           dryRun: options.dryRun,
-          configPath: options.configPath
+          configPath: options.configPath,
+          interactive: promptsAllowed
         });
+
+        const planBreakerHalt = persistedHaltExitCode(result);
+        if (planBreakerHalt !== null) {
+          return planBreakerHalt;
+        }
 
         if (options.dryRun) {
           console.log(
@@ -1162,6 +1416,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        const haltCode = lifecycleHaltExitCode(err);
+        if (haltCode !== null) {
+          return haltCode;
+        }
         if (err instanceof PreFlightHaltError) {
           console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
@@ -1184,8 +1442,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           configPath: options.configPath,
           dryRun: options.dryRun,
           worktree: options.noWorktree ? false : true,
-          baseBranch: options.baseBranch || undefined
+          baseBranch: options.baseBranch || undefined,
+          interactive: promptsAllowed
         });
+
+        const implementBreakerHalt = persistedHaltExitCode(result);
+        if (implementBreakerHalt !== null) {
+          return implementBreakerHalt;
+        }
 
         const impl = result.implementationResult;
         if (impl?.resumed) {
@@ -1210,6 +1474,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(`Next Step    : Execute checklist items and run 'agyloop next' when complete.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        const haltCode = lifecycleHaltExitCode(err);
+        if (haltCode !== null) {
+          return haltCode;
+        }
         if (err instanceof PreFlightHaltError) {
           console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
@@ -1266,8 +1534,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
-        if (!options.yes && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-          console.error(`\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`);
+        if (!options.yes && !promptsAllowed) {
+          // `promptsAllowed` folds in `!options.json`, so this single guard covers two
+          // unrelated situations. Saying "non-interactive terminal" about a fully
+          // interactive TTY is factually false and sends the user hunting for a TTY
+          // problem they do not have, so the diagnostic is split while the refusal
+          // (and its non-zero exit) stays identical.
+          console.error(
+            options.json
+              ? `\n[agyloop] Machine-readable output requested; re-run without --json or pass -y/--yes to confirm.\n`
+              : `\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`
+          );
           return EXIT_CODE_FAILURE;
         }
 
@@ -1281,8 +1558,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         const execResult = await executeCommitUseCase.execute({
           commitMessage: draftResult.commitMessage,
-          confirmed: options.yes,
+          // Only assert explicit confirmation when the user passed -y/--yes. A literal
+          // `false` short-circuits the gate in the use case and silently cancels the
+          // commit instead of prompting, which diverged from the lifecycle entry point.
+          confirmed: options.yes ? true : undefined,
           bypassConfirmation: options.yes,
+          interactive: promptsAllowed,
           staged: options.staged,
           dryRun: options.dryRun,
           issue: options.issue,
@@ -1353,8 +1634,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,
           configPath: options.configPath,
           worktree: options.noWorktree ? false : true,
-          baseBranch: options.baseBranch || undefined
+          baseBranch: options.baseBranch || undefined,
+          interactive: promptsAllowed
         });
+
+        const yoloBreakerHalt = persistedHaltExitCode(result);
+        if (yoloBreakerHalt !== null) {
+          return yoloBreakerHalt;
+        }
 
         if (options.dryRun) {
           console.log(`\n[DRY RUN] ${result.message || 'Simulated execution completed.'}\n`);
@@ -1409,6 +1696,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        const haltCode = lifecycleHaltExitCode(err);
+        if (haltCode !== null) {
+          return haltCode;
+        }
         if (err instanceof PreFlightHaltError) {
           console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;
@@ -1433,9 +1724,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         try {
           const res = installOpenCodeIntegration({ force: options.force });
           console.log('\n✓ OpenCode Integration Assets Installed:');
-          console.log(`  Source : ${res.sourcePath}`);
-          console.log(`  Target : ${res.installedPath}`);
-          console.log(`  Mode   : ${res.isSymlink ? 'Symlink' : 'Copy'}\n`);
+          console.log(`  Source   : ${res.sourcePath}`);
+          console.log(`  Target   : ${res.installedPath}`);
+          console.log(`  Mode     : ${res.isSymlink ? 'Symlink' : 'Copy'}`);
+          console.log(`  Workspace: ${res.canonicalBaseDir} (${res.canonicalizationMethod})`);
+          console.log(
+            `  Command  : ${res.commandRegistered ? 'registered' : res.configPath ? 'already present' : 'not registered'} @ ${res.configPath ?? '(none)'}`
+          );
+          for (const warning of res.warnings) {
+            console.log(`  ⚠️  ${warning}`);
+          }
+          if (res.degradedReason) {
+            console.log(`  ⚠️  Install degraded: ${res.degradedReason}`);
+          }
+          console.log('');
           return EXIT_CODE_SUCCESS;
         } catch (err: unknown) {
           console.error(`✗ Failed to install OpenCode integration: ${err instanceof Error ? err.message : String(err)}`);
@@ -1465,7 +1767,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           yes: options.yes,
           staged: options.staged,
           message: options.message,
-          interactiveCommit: true,
+          interactive: promptsAllowed,
+          interactiveCommit: promptsAllowed && !options.yes,
           dryRun: options.dryRun,
           configPath: options.configPath,
           worktree: options.noWorktree ? false : true,
@@ -1516,6 +1819,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
+        const breakerHaltCode = persistedHaltExitCode(result);
+        if (breakerHaltCode !== null) {
+          return breakerHaltCode;
+        }
+
         if (result.pausedAtGate === GATE_COMMIT) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' to execute.\n`);
           return EXIT_CODE_SUCCESS;
@@ -1533,6 +1841,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
+        const haltCode = lifecycleHaltExitCode(err);
+        if (haltCode !== null) {
+          return haltCode;
+        }
         if (err instanceof PreFlightHaltError) {
           console.log(`\n🛑 CodeLoop Pre-Flight Check: ${err.message}\n`);
           return EXIT_CODE_SUCCESS;

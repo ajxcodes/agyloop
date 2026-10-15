@@ -15,17 +15,34 @@ describe('InitProjectUseCase', () => {
   let dir: string;
   let confirmAnswer: boolean;
   let confirmCalls: number;
+  let executedCommands: string[];
 
-  const makeUseCase = () =>
-    new InitProjectUseCase({
+  type CommandStub = { stdout?: string; exitCode?: number };
+
+  const BASE_COMMANDS: Record<string, CommandStub> = {
+    'git remote': { stdout: 'origin\n' },
+    'git symbolic-ref refs/remotes/origin/HEAD': { stdout: 'refs/remotes/origin/develop\n' },
+    'git remote get-url origin': { stdout: 'git@github.com:a/b.git\n' }
+  };
+
+  // Any command absent from the map exits non-zero, so every new probe must be declared.
+  const makeUseCase = (overrides: Record<string, CommandStub> = {}) => {
+    const commands: Record<string, CommandStub> = { ...BASE_COMMANDS, ...overrides };
+    return new InitProjectUseCase({
       commandExecutor: {
         execute: async (cmd: string) => {
-          const out: Record<string, string> = {
-            'git remote': 'origin\n',
-            'git symbolic-ref refs/remotes/origin/HEAD': 'refs/remotes/origin/develop\n',
-            'git remote get-url origin': 'git@github.com:a/b.git\n'
+          executedCommands.push(cmd);
+          const stub = commands[cmd];
+          const exitCode = stub ? stub.exitCode ?? 0 : 1;
+          return {
+            command: cmd,
+            exitCode,
+            stdout: exitCode === 0 ? stub?.stdout || '' : '',
+            stderr: '',
+            combinedOutput: '',
+            durationMs: 0,
+            timedOut: false
           };
-          return { command: cmd, exitCode: cmd in out ? 0 : 1, stdout: out[cmd] || '', stderr: '', combinedOutput: '', durationMs: 0, timedOut: false };
         }
       },
       buildDetector: {
@@ -48,11 +65,17 @@ describe('InitProjectUseCase', () => {
         }
       }
     });
+  };
+
+  const readWrittenGit = (configPath: string): any => JSON.parse(fs.readFileSync(configPath, 'utf8')).git;
+  const branchProbes = (): string[] =>
+    executedCommands.filter((c) => c.startsWith('git rev-parse --verify refs/heads/'));
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-init-'));
     confirmAnswer = false;
     confirmCalls = 0;
+    executedCommands = [];
   });
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -119,5 +142,91 @@ describe('InitProjectUseCase', () => {
     });
     const res = await uc.execute({ workspaceDir: dir, interactive: false });
     assert.strictEqual(res.skipped, true);
+  });
+
+  // --- Base branch resolution (issue #218 / AC5) ---------------------------
+
+  test('falls back to the current local branch when origin/HEAD is missing', async () => {
+    const res = await makeUseCase({
+      'git symbolic-ref refs/remotes/origin/HEAD': { exitCode: 1 },
+      'git branch --show-current': { stdout: 'trunk\n' }
+    }).execute({ workspaceDir: dir, yes: true });
+
+    assert.strictEqual(readWrittenGit(res.configPath).baseBranch, 'trunk');
+    assert.strictEqual(executedCommands.includes('git branch --show-current'), true);
+    // A resolved local branch short-circuits the candidate probes.
+    assert.deepStrictEqual(branchProbes(), []);
+  });
+
+  test('probes develop, master, main, trunk in order when there is no local branch and no origin/HEAD', async () => {
+    const res = await makeUseCase({
+      'git symbolic-ref refs/remotes/origin/HEAD': { exitCode: 1 },
+      'git branch --show-current': { exitCode: 1 },
+      'git rev-parse --verify refs/heads/develop': { exitCode: 1 },
+      'git rev-parse --verify refs/heads/master': { exitCode: 1 },
+      'git rev-parse --verify refs/heads/main': { exitCode: 1 },
+      'git rev-parse --verify refs/heads/trunk': { exitCode: 1 }
+    }).execute({ workspaceDir: dir, dryRun: true });
+
+    assert.deepStrictEqual(branchProbes(), [
+      'git rev-parse --verify refs/heads/develop',
+      'git rev-parse --verify refs/heads/master',
+      'git rev-parse --verify refs/heads/main',
+      'git rev-parse --verify refs/heads/trunk'
+    ]);
+    assert.strictEqual(res.config.git.baseBranch, 'main');
+  });
+
+  test('prefers develop over master when both exist locally', async () => {
+    const res = await makeUseCase({
+      'git symbolic-ref refs/remotes/origin/HEAD': { exitCode: 1 },
+      'git branch --show-current': { exitCode: 1 },
+      'git rev-parse --verify refs/heads/develop': { stdout: 'aaa1111\n' },
+      'git rev-parse --verify refs/heads/master': { stdout: 'bbb2222\n' }
+    }).execute({ workspaceDir: dir, dryRun: true });
+
+    assert.strictEqual(res.config.git.baseBranch, 'develop');
+    // First hit wins — the later candidates are never probed.
+    assert.deepStrictEqual(branchProbes(), ['git rev-parse --verify refs/heads/develop']);
+  });
+
+  test('falls back to main when no candidate branch exists (all probes exit non-zero)', async () => {
+    const res = await makeUseCase({
+      'git symbolic-ref refs/remotes/origin/HEAD': { exitCode: 1 },
+      'git branch --show-current': { exitCode: 1 }
+    }).execute({ workspaceDir: dir, yes: true });
+
+    assert.strictEqual(readWrittenGit(res.configPath).baseBranch, 'main');
+  });
+
+  test('ignores a detached HEAD reported by git branch --show-current', async () => {
+    const res = await makeUseCase({
+      'git symbolic-ref refs/remotes/origin/HEAD': { exitCode: 1 },
+      'git branch --show-current': { stdout: 'HEAD\n' },
+      'git rev-parse --verify refs/heads/master': { stdout: 'ccc3333\n' }
+    }).execute({ workspaceDir: dir, dryRun: true });
+
+    assert.strictEqual(res.config.git.baseBranch, 'master');
+    assert.deepStrictEqual(branchProbes(), [
+      'git rev-parse --verify refs/heads/develop',
+      'git rev-parse --verify refs/heads/master'
+    ]);
+  });
+
+  test('reads origin/HEAD from the resolved remote when the remote is not named origin', async () => {
+    const res = await makeUseCase({
+      'git remote': { stdout: 'upstream\n' },
+      'git symbolic-ref refs/remotes/origin/HEAD': { exitCode: 1 },
+      'git symbolic-ref refs/remotes/upstream/HEAD': { stdout: 'refs/remotes/upstream/stable\n' },
+      'git remote get-url upstream': { stdout: 'git@github.com:a/b.git\n' }
+    }).execute({ workspaceDir: dir, dryRun: true });
+
+    assert.deepStrictEqual(res.config.git, { remote: 'upstream', baseBranch: 'stable', forge: 'github' });
+    assert.strictEqual(executedCommands.includes('git symbolic-ref refs/remotes/upstream/HEAD'), true);
+    // The hardcoded 'origin' ref is never consulted when it is not the resolved remote.
+    assert.strictEqual(
+      executedCommands.filter((c) => c.startsWith('git symbolic-ref ')).length,
+      1
+    );
   });
 });

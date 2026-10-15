@@ -288,4 +288,121 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     assert.ok(result.updateNotification.includes('v0.1.6 -> v0.2.0'));
     assert.ok(result.updateNotification.includes('agyloop critique update'));
   });
+
+  // --- Zero-Hang Invariant (issue #218 / AC6) ------------------------------
+  // The auto-install prompt defaults to "yes" and used to fire whenever the
+  // critique CLI was missing — i.e. on every fresh CI box, where the readline
+  // adapter would never settle.
+
+  it('never asks the critique auto-install prompt when interactive is false', async () => {
+    let promptAsked = false;
+    let installCalled = false;
+
+    const mockPrompt: ConfirmationPromptPort = {
+      async confirm(): Promise<boolean> {
+        promptAsked = true;
+        return true;
+      }
+    };
+
+    const mockInstaller: CritiqueInstallerPort = {
+      async fetchLatestVersion(): Promise<string | null> {
+        return '0.2.0';
+      },
+      async install(): Promise<CritiqueInstallResult> {
+        installCalled = true;
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async update(): Promise<CritiqueInstallResult> {
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async checkUpdateAvailable(): Promise<any> {
+        return { currentVersion: null, latestVersion: '0.2.0', lastCheckedAt: Date.now(), isOutdated: false, isInstalled: false, resolvedPath: null };
+      },
+      async getCachedVersionInfo(): Promise<any> {
+        return null;
+      }
+    };
+
+    const mockCritique: CritiquePort = {
+      resolveReviewer(): CritiqueResolution {
+        return { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false };
+      },
+      async review(): Promise<any> {
+        return AiReviewReport.bypassed('Critique CLI binary not found.');
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      new MockStateRepo(),
+      new MockConfigRepo(),
+      new MockPlanGenerator(),
+      undefined,
+      mockCritique,
+      undefined,
+      undefined,
+      mockInstaller,
+      mockPrompt
+    );
+
+    const result = await useCase.execute({ dryRun: true, interactive: false });
+
+    assert.strictEqual(promptAsked, false);
+    assert.strictEqual(installCalled, false);
+    assert.strictEqual(result.autoInstalled, false);
+  });
+
+  it('still asks the critique auto-install prompt when interactive is undefined (default)', async () => {
+    let promptAsked = false;
+
+    const mockPrompt: ConfirmationPromptPort = {
+      async confirm(): Promise<boolean> {
+        promptAsked = true;
+        return false;
+      }
+    };
+
+    const mockInstaller: CritiqueInstallerPort = {
+      async fetchLatestVersion(): Promise<string | null> {
+        return '0.2.0';
+      },
+      async install(): Promise<CritiqueInstallResult> {
+        return { success: false, version: null, targetPath: null, error: 'declined' };
+      },
+      async update(): Promise<CritiqueInstallResult> {
+        return { success: false, version: null, targetPath: null, error: 'declined' };
+      },
+      async checkUpdateAvailable(): Promise<any> {
+        return { currentVersion: null, latestVersion: '0.2.0', lastCheckedAt: Date.now(), isOutdated: false, isInstalled: false, resolvedPath: null };
+      },
+      async getCachedVersionInfo(): Promise<any> {
+        return null;
+      }
+    };
+
+    const mockCritique: CritiquePort = {
+      resolveReviewer(): CritiqueResolution {
+        return { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false };
+      },
+      async review(): Promise<any> {
+        return AiReviewReport.bypassed('Critique CLI binary not found.');
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      new MockStateRepo(),
+      new MockConfigRepo(),
+      new MockPlanGenerator(),
+      undefined,
+      mockCritique,
+      undefined,
+      undefined,
+      mockInstaller,
+      mockPrompt
+    );
+
+    await useCase.execute({ dryRun: true });
+
+    assert.strictEqual(promptAsked, true);
+  });
 });

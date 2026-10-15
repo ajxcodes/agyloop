@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { GitWorktreeManager } = require('../../dist/infrastructure');
-const { WorktreeCreationError } = require('../../dist/domain');
+const { WorktreeCreationError, INIT_GITIGNORE_RULES } = require('../../dist/domain');
 
 import type { CommandExecutorPort, CommandExecutionResult } from '../../src/ports';
 
@@ -65,6 +65,43 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
     assert.ok(content.includes('node_modules/'));
     assert.ok(content.includes('.worktrees'));
+  });
+
+  test('repo .gitignore keeps a bare .agyloop entry so a symlinked state dir stays ignored', () => {
+    // #102 regression: 19f00f7 (#216/#217) replaced the bare `.agyloop` entry with granular
+    // `.agyloop/...` rules. Those rules can never match a symlinked state dir -- git records it
+    // as mode 120000 (a file), so `git add -A` staged it and it landed in the open PR. A trailing
+    // slash would not help either: it matches directories only.
+    const content = fs.readFileSync(path.resolve(__dirname, '..', '..', '.gitignore'), 'utf8');
+    const lines = content.split(/\r?\n/);
+
+    assert.ok(
+      lines.includes('.agyloop'),
+      'repo .gitignore must contain a bare `.agyloop` entry (no trailing slash)'
+    );
+    assert.ok(
+      !lines.includes('.agyloop/'),
+      'a trailing-slash rule would not match a symlink and must not be the only entry'
+    );
+
+    // Granular rules are still meaningful and must be retained alongside the bare entry.
+    for (const rule of [
+      '.agyloop/state.json',
+      '.agyloop/tasks/',
+      '.agyloop/locks/',
+      '.agyloop/logs/',
+      '.agyloop/critique-update-cache.json',
+      '.agyloop/*.bak'
+    ]) {
+      assert.ok(lines.includes(rule), `granular rule ${rule} must be retained`);
+    }
+
+    // The bare entry is repo-scoped only; consumer scaffolding must stay granular so that
+    // `.agyloop/config.json` remains trackable (INIT_GITIGNORE_RULES).
+    assert.ok(
+      !INIT_GITIGNORE_RULES.includes('.agyloop'),
+      'consumer-project scaffolding must not gain a blanket .agyloop rule'
+    );
   });
 
   test('ensureGitIgnore does not re-add blanket .agyloop when granular state rules exist', async () => {
@@ -361,6 +398,375 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.strictEqual(descriptor.taskId, '87');
     assert.strictEqual(descriptor.worktreePath, existingWorktreePath);
     assert.strictEqual(descriptor.branch, 'task/87');
+  });
+
+  test('createWorktree attaches to the existing worktree when modern git reports "is already used by worktree at"', async () => {
+    // Regression for BUG-3 / issue #218: git >= 2.45 says "is already used by worktree at",
+    // which the previous "already checked out at" match never recognised.
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    const holderPath = path.join(rootRepo, '.worktrees', '218-triage');
+    fs.mkdirSync(holderPath, { recursive: true });
+    fs.mkdirSync(path.join(rootRepo, '.agyloop'), { recursive: true });
+    fs.mkdirSync(path.join(rootRepo, 'artifacts'), { recursive: true });
+    fs.mkdirSync(path.join(rootRepo, 'node_modules'), { recursive: true });
+
+    const porcelainOutput = [
+      `worktree ${rootRepo}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${holderPath}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/218',
+      ''
+    ].join('\n');
+
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/218\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `Preparing worktree (checking out 'task/218')\nfatal: 'task/218' is already used by worktree at '${holderPath}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    // Must resolve, not throw WorktreeCreationError.
+    const descriptor = await manager.createWorktree({ taskId: '218', workspaceDir: rootRepo });
+
+    assert.strictEqual(descriptor.taskId, '218');
+    assert.strictEqual(descriptor.branch, 'task/218');
+    assert.strictEqual(descriptor.worktreePath, path.resolve(holderPath));
+    assert.strictEqual(descriptor.isIsolated, true);
+
+    // The already-existing worktree got the same link treatment as a freshly created one.
+    assert.strictEqual(fs.lstatSync(path.join(holderPath, 'node_modules')).isSymbolicLink(), true);
+    assert.strictEqual(fs.lstatSync(path.join(holderPath, 'artifacts')).isSymbolicLink(), true);
+    const linkedAgyloop = path.join(holderPath, '.agyloop');
+    assert.strictEqual(fs.lstatSync(linkedAgyloop).isSymbolicLink(), true);
+    assert.strictEqual(
+      fs.realpathSync(linkedAgyloop),
+      fs.realpathSync(path.join(rootRepo, '.agyloop'))
+    );
+
+    // The branch already existed, so the -b variant was never attempted.
+    assert.strictEqual(executedCommands.some((c) => c.includes('git worktree add -b')), false);
+    assert.ok(executedCommands.some((c) => c.includes('git worktree add "') && c.includes('task/218')));
+  });
+
+  test('createWorktree recovers from modern git wording when the porcelain listing yields no holder', async () => {
+    // Pins the widened regex itself: with `git worktree list --porcelain` unavailable the
+    // path can only come from the error text, and modern git says "used by worktree at".
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    const holderPath = path.join(rootRepo, '.worktrees', '218-triage');
+    fs.mkdirSync(holderPath, { recursive: true });
+    fs.mkdirSync(path.join(rootRepo, '.agyloop'), { recursive: true });
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --show-toplevel')) {
+          return makeResult(cmd, { stdout: `${rootRepo}\n` });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/218\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `Preparing worktree (checking out 'task/218')\nfatal: 'task/218' is already used by worktree at '${holderPath}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({ taskId: '218', workspaceDir: rootRepo });
+
+    assert.strictEqual(descriptor.branch, 'task/218');
+    assert.strictEqual(descriptor.worktreePath, path.resolve(holderPath));
+    assert.strictEqual(
+      fs.lstatSync(path.join(holderPath, '.agyloop')).isSymbolicLink(),
+      true,
+      'expected .agyloop to be linked into the recovered worktree'
+    );
+  });
+
+  test('createWorktree still recovers from the legacy "is already checked out at" wording', async () => {
+    // The pre-2.45 git wording must not regress.
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    const holderPath = path.join(rootRepo, '.worktrees', '87-legacy');
+    fs.mkdirSync(holderPath, { recursive: true });
+    fs.mkdirSync(path.join(rootRepo, '.agyloop'), { recursive: true });
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --show-toplevel')) {
+          return makeResult(cmd, { stdout: `${rootRepo}\n` });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/87\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `fatal: 'task/87' is already checked out at '${holderPath}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({ taskId: '87', workspaceDir: rootRepo });
+
+    assert.strictEqual(descriptor.branch, 'task/87');
+    assert.strictEqual(descriptor.worktreePath, path.resolve(holderPath));
+    assert.strictEqual(
+      fs.lstatSync(path.join(holderPath, '.agyloop')).isSymbolicLink(),
+      true,
+      'expected .agyloop to be linked into the recovered worktree'
+    );
+  });
+
+  test('createWorktree trusts the worktree list over stale git error wording', async () => {
+    // `git worktree list --porcelain` is authoritative: even if the error text names a
+    // different path, the worktree that actually holds the branch is the one to attach to.
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    const actualHolder = path.join(rootRepo, '.worktrees', '99-actual');
+    fs.mkdirSync(actualHolder, { recursive: true });
+
+    const porcelainOutput = [
+      `worktree ${rootRepo}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${actualHolder}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/77',
+      ''
+    ].join('\n');
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/77\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: "fatal: 'task/77' is already used by worktree at '/stale/gone/path'"
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({ taskId: '77', workspaceDir: rootRepo });
+
+    assert.strictEqual(descriptor.worktreePath, path.resolve(actualHolder));
+  });
+
+  test('createWorktree still throws WorktreeCreationError for unrelated git worktree add failures', async () => {
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    fs.mkdirSync(rootRepo, { recursive: true });
+
+    const porcelainOutput = [
+      `worktree ${rootRepo}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      ''
+    ].join('\n');
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/88\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `Preparing worktree (checking out 'task/88')\nfatal: '${rootRepo}/.worktrees/88' already exists`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    let caught: unknown = null;
+    try {
+      await manager.createWorktree({ taskId: '88', workspaceDir: rootRepo });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught instanceof WorktreeCreationError, 'expected a WorktreeCreationError');
+    assert.ok(
+      (caught as Error).message.includes('already exists'),
+      `expected the git output to be surfaced, got: ${(caught as Error).message}`
+    );
+    assert.ok((caught as Error).message.includes('createWorktree'));
+  });
+
+  test('createWorktree prunes a dead worktree registration instead of returning a bogus descriptor', async () => {
+    // Regression: `git worktree list --porcelain` keeps listing a `prunable` entry
+    // (with its `branch` line) after the worktree directory was deleted behind git's
+    // back. Trusting it produced a descriptor with isIsolated: true for a path that
+    // does not exist on disk. Pruning frees the branch, so the checkout is retried.
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    const deadPath = path.join(rootRepo, '.worktrees', '91');
+    const canonicalPath = path.join(rootRepo, '.worktrees', '91');
+    fs.mkdirSync(rootRepo, { recursive: true });
+    fs.mkdirSync(path.join(rootRepo, '.agyloop'), { recursive: true });
+    assert.strictEqual(fs.existsSync(deadPath), false, 'precondition: the worktree dir must be gone');
+
+    const livePorcelain = [
+      `worktree ${rootRepo}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      ''
+    ].join('\n');
+    const prunablePorcelain = [
+      livePorcelain,
+      `worktree ${deadPath}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/91',
+      'prunable gitdir file points to non-existent location',
+      ''
+    ].join('\n');
+
+    let prunesRun = 0;
+    let addAttempts = 0;
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          const stdout = prunesRun > 0 ? livePorcelain : prunablePorcelain;
+          return makeResult(cmd, { stdout, combinedOutput: stdout });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/91\n' });
+        }
+        if (cmd.includes('git worktree prune')) {
+          prunesRun += 1;
+          return makeResult(cmd);
+        }
+        if (cmd.includes('git worktree add')) {
+          addAttempts += 1;
+          if (addAttempts === 1) {
+            return makeResult(cmd, {
+              exitCode: 128,
+              stderr: `Preparing worktree (checking out 'task/91')\nfatal: 'task/91' is already used by worktree at '${deadPath}'`
+            });
+          }
+          fs.mkdirSync(canonicalPath, { recursive: true });
+          return makeResult(cmd, { stdout: 'Preparing worktree\n' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({ taskId: '91', workspaceDir: rootRepo });
+
+    assert.strictEqual(prunesRun, 1, 'expected exactly one `git worktree prune`');
+    assert.strictEqual(addAttempts, 2, 'expected the checkout to be retried once');
+    // The descriptor points at a directory that actually exists -- never at deadPath.
+    assert.strictEqual(descriptor.worktreePath, path.resolve(canonicalPath));
+    assert.strictEqual(descriptor.branch, 'task/91');
+    assert.strictEqual(descriptor.isIsolated, true);
+    assert.strictEqual(fs.existsSync(descriptor.worktreePath), true);
+  });
+
+  test('createWorktree refuses a prunable registration that survives pruning', async () => {
+    // If the dead registration cannot be pruned away, fail loudly rather than hand
+    // back a descriptor for a path that does not exist.
+    const rootRepo = path.resolve(tmpDir, 'root-repo');
+    const deadPath = path.join(rootRepo, '.worktrees', '92');
+    fs.mkdirSync(rootRepo, { recursive: true });
+
+    const prunablePorcelain = [
+      `worktree ${rootRepo}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${deadPath}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/92',
+      'prunable gitdir file points to non-existent location',
+      ''
+    ].join('\n');
+
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: prunablePorcelain, combinedOutput: prunablePorcelain });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/92\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: `fatal: 'task/92' is already used by worktree at '${deadPath}'`
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    let caught: unknown = null;
+    try {
+      await manager.createWorktree({ taskId: '92', workspaceDir: rootRepo });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught instanceof WorktreeCreationError, 'expected a WorktreeCreationError');
+    const message = (caught as Error).message;
+    assert.ok(message.includes('missing worktree'), `expected a "missing worktree" explanation, got: ${message}`);
+    assert.ok(message.includes(path.resolve(deadPath)), `expected the dead path to be named, got: ${message}`);
+    assert.ok(message.includes('git worktree prune'), `expected remediation advice, got: ${message}`);
   });
 
   test('createWorktree throws WorktreeCreationError on unrecoverable failure', async () => {

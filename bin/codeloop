@@ -1,12 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ==============================================================================
 # codeloop - POSIX Shell Launcher
 # ==============================================================================
-set -euo pipefail
+# NOTE: `pipefail` is deliberately absent. It is not POSIX (dash < 0.5.12, BusyBox
+# < 1.36) and would abort the script at this line; there is no pipeline here anyway.
+set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-if ! command -v node &>/dev/null; then
+if ! command -v node >/dev/null 2>&1; then
   echo "Error: Node.js (>=18) is required to run the codeloop CLI." >&2
   echo "Please install Node.js or run '/agyloop' inside the Antigravity chat canvas." >&2
   exit 1

@@ -237,6 +237,7 @@ export const ERR_MILESTONE_RELEASE = 'ERR_MILESTONE_RELEASE' as const;
 export const ERR_MILESTONE_SEALED = 'ERR_MILESTONE_SEALED' as const;
 export const ERR_CIRCUIT_BREAKER_TRIPPED = 'ERR_CIRCUIT_BREAKER_TRIPPED' as const;
 export const ERR_EMERGENCY_ABORT = 'ERR_EMERGENCY_ABORT' as const;
+export const ERR_QUOTA_EXHAUSTED = 'ERR_QUOTA_EXHAUSTED' as const;
 export const HALT_TYPE_MISSING_PLAN_DIR = 'MISSING_PLAN_DIR' as const;
 
 export const ERROR_CODES = Object.freeze({
@@ -262,7 +263,8 @@ export const ERROR_CODES = Object.freeze({
   MILESTONE_SEALED: ERR_MILESTONE_SEALED,
   CIRCUIT_BREAKER_TRIPPED: ERR_CIRCUIT_BREAKER_TRIPPED,
   EMERGENCY_ABORT: ERR_EMERGENCY_ABORT,
-  PREFLIGHT_HALT_MISSING_PLAN_DIR: HALT_TYPE_MISSING_PLAN_DIR
+  PREFLIGHT_HALT_MISSING_PLAN_DIR: HALT_TYPE_MISSING_PLAN_DIR,
+  QUOTA_EXHAUSTED: ERR_QUOTA_EXHAUSTED
 });
 
 
@@ -291,6 +293,15 @@ export const CB_ACTION_ABORT = 'abort' as const;
 export const CB_ACTION_WARN = 'warn' as const;
 export const DEFAULT_CB_ACTION_ON_TRIP = CB_ACTION_PAUSE_FOR_HUMAN;
 
+/**
+ * The action set a *user* may configure for `circuitBreakers.actionOnTrip`.
+ *
+ * `CB_ACTION_FAILOVER` is deliberately absent: failover is a runner-adapter
+ * behaviour (a second runner is tried after a quota rejection), not a breaker
+ * disposition, and `actionOnTrip` has no implementation for it. Do not "fix"
+ * this by adding it — that would advertise a config value that silently does
+ * nothing.
+ */
 export const CB_ACTIONS = Object.freeze({
   PAUSE_FOR_HUMAN: CB_ACTION_PAUSE_FOR_HUMAN,
   ABORT: CB_ACTION_ABORT,
@@ -298,6 +309,13 @@ export const CB_ACTIONS = Object.freeze({
 });
 export type CircuitBreakerActionType = typeof CB_ACTIONS[keyof typeof CB_ACTIONS];
 
+/**
+ * Commands that mutate `.agyloop/state.json`.
+ *
+ * `resume` clears a persisted gate pause, so it mutates the checkpoint exactly
+ * like `reset` does — it must be listed here for the `AGY_SUBAGENT` root
+ * mutation guard to cover it.
+ */
 export const STATE_MUTATING_COMMANDS = Object.freeze([
   'transition',
   'reset',
@@ -306,6 +324,7 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   'commit',
   'yolo',
   'triage',
+  'resume',
   'release',
   'abort',
   null
@@ -1192,6 +1211,33 @@ export const LIFECYCLE_GATES = Object.freeze({
 
 export type LifecycleGateName = typeof LIFECYCLE_GATES[keyof typeof LIFECYCLE_GATES];
 
+/**
+ * Gates whose pause exists *precisely* to wait for a human decision.
+ *
+ * A stage transition must never auto-consume these:
+ * - APPROVAL / COMMIT: `TransitionStageUseCase` only transitions out of them
+ *   after the human answered, and the surviving pause is what `codeloop status`
+ *   and the lifecycle result report as "waiting on you".
+ * - TRIAGE: the run returns control to the human, who must triage the PR
+ *   review comments before the pipeline can move again.
+ *
+ * Every other gate name is a *mechanical* halt (today only
+ * `GATE_CIRCUIT_BREAKER`, raised by an exhausted retry budget or a quota
+ * rejection). Nothing about it needs a human: once the machine transitions
+ * again the blocking condition is gone, so the pause is stale by construction
+ * and `StateMachine.transition()` consumes it.
+ *
+ * Typed `readonly string[]` (not `LifecycleGateName[]`) because
+ * `StateMachine.pausedAtGate` is a plain `string` — a checkpoint persisted by an
+ * older schema may carry a gate name this build does not know, and an unknown
+ * gate must be treated as non-human (consumed) rather than kept forever.
+ */
+export const HUMAN_WAIT_GATES: readonly string[] = Object.freeze([
+  GATE_APPROVAL,
+  GATE_COMMIT,
+  GATE_TRIAGE
+]);
+
 export const NOTE_LIFECYCLE_STARTED = 'Lifecycle execution started' as const;
 export const NOTE_LIFECYCLE_COMPLETED = 'Lifecycle completed successfully' as const;
 export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const;
@@ -1409,6 +1455,151 @@ export function buildGitTokenRedirectConfig(token: string): string {
   return `-c url."${tokenUrl}".insteadOf="${GIT_SSH_URL_PREFIX}" -c url."${tokenUrl}".insteadOf="${GIT_HTTPS_URL_PREFIX}"`;
 }
 
+// Default Branch Resolution (issue #218 / AC5)
 
+/**
+ * Terminal fallback for the default/base branch. Only used when a repository exposes
+ * neither a remote HEAD, nor an attached local branch, nor any well-known candidate.
+ */
+export const DEFAULT_BASE_BRANCH = 'main' as const;
 
+/**
+ * Well-known base-branch candidates, most preferred first, probed in this exact
+ * order by both default-branch resolvers (`InitProjectUseCase.detectGit` and
+ * `GitWorktreeManager.resolveBaseBranch`). Single definition on purpose: the two
+ * resolvers must agree on precedence, so a second verbatim copy is a drift bug.
+ * `DEFAULT_BASE_BRANCH` above is only the terminal fallback when none resolve.
+ */
+export const DEFAULT_BASE_BRANCH_CANDIDATES = Object.freeze([
+  'develop',
+  'master',
+  'main',
+  'trunk'
+] as const);
 
+// OpenCode Integration Installer (issue #218 / AC1-AC3)
+
+/** XDG-style config root beneath `$HOME`. */
+export const OPENCODE_CONFIG_DIR_NAME = '.config' as const;
+
+/** OpenCode's per-application directory beneath the config root. */
+export const OPENCODE_APP_DIR_NAME = 'opencode' as const;
+
+/** Config filenames in precedence order: `.jsonc` first, plain `.json` second. */
+export const OPENCODE_CONFIG_FILENAMES = Object.freeze([
+  'opencode.jsonc',
+  'opencode.json'
+] as const);
+
+/**
+ * Filename used when no OpenCode config exists yet. Freshly created configs carry no
+ * comments, so a strict-JSON filename is the honest choice.
+ */
+export const OPENCODE_CONFIG_CREATE_FILENAME = 'opencode.json' as const;
+
+/** Suffix for the pre-rewrite snapshot of a hand-maintained OpenCode config. */
+export const OPENCODE_CONFIG_BACKUP_SUFFIX = '.codeloop.bak' as const;
+
+/** Skill directory name; must match the skill frontmatter `name`. */
+export const OPENCODE_SKILL_NAME = 'codeloop' as const;
+
+/** OpenCode scans a directory named after the skill, containing this file. */
+export const OPENCODE_SKILL_FILENAME = 'SKILL.md' as const;
+
+/** Repo-relative path of the skill asset, resolved against the workspace root. */
+export const OPENCODE_SKILL_ASSET_RELATIVE_PATH = 'integrations/opencode/codeloop-skill.md' as const;
+
+/** Repo-relative path of the slash-command payload asset. */
+export const OPENCODE_COMMAND_ASSET_RELATIVE_PATH = 'integrations/opencode/codeloop-command.json' as const;
+
+/** Legacy (never-scanned) install root left behind by pre-#218 installers. */
+export const OPENCODE_LEGACY_DIR_NAME = '.opencode' as const;
+
+/** Legacy flat filename that produced the live dangling symlink. */
+export const OPENCODE_LEGACY_SKILL_FILENAME = 'codeloop.md' as const;
+
+/** Slash-command key registered in `opencode.json(c)` under `command`. */
+export const OPENCODE_COMMAND_NAME = 'codeloop' as const;
+
+/** Compiled-in fallback used when the command asset cannot be read. */
+export const OPENCODE_COMMAND_DESCRIPTION =
+  'Run the CodeLoop multi-subagent development lifecycle' as const;
+
+/** Compiled-in fallback used when the command asset cannot be read. */
+export const OPENCODE_COMMAND_TEMPLATE =
+  'Execute the codeloop multi-subagent lifecycle pipeline for the current task: $ARGUMENTS' as const;
+
+/**
+ * `symlinkSync` error codes that justify a copy fallback. Anything else is treated as a
+ * programming/environment error and rethrown rather than silently downgraded.
+ */
+export const OPENCODE_SYMLINK_FALLBACK_CODES = Object.freeze([
+  'EEXIST',
+  'EPERM',
+  'EXDEV',
+  'ENOTSUP',
+  'ENOSYS'
+] as const);
+
+// ---- Quota exhaustion (issue #218 / AC4) ---------------------------------
+
+// ERR_QUOTA_EXHAUSTED is declared in the error-code block above (it must precede
+// ERROR_CODES) and registered as ERROR_CODES.QUOTA_EXHAUSTED there.
+
+/** The single HTTP status every provider quota rejection maps to. */
+export const QUOTA_STATUS = 429 as const;
+
+/**
+ * CLI sub-command that clears a persisted gate pause.
+ *
+ * This is the ONLY command that calls `StateMachine.resumeFromGate()` and
+ * persists the cleared checkpoint, so it is the only one that may be advertised
+ * as "the way out of a pause". `codeloop next` merely prints the next directive;
+ * it never touches `pausedAtGate`.
+ */
+export const COMMAND_RESUME = 'resume' as const;
+
+/**
+ * Fully-qualified resume command printed in every breaker/quota diagnostic.
+ *
+ * MUST name a command that actually clears the pause (see `COMMAND_RESUME`).
+ * A hint that merely *suggests* re-running a stage leaves the checkpoint marked
+ * as paused forever, which is the bug this constant used to ship.
+ */
+export const QUOTA_RESUME_COMMAND = 'codeloop resume' as const;
+
+/** One-line help string for the resume sub-command (CLI help output). */
+export const RESUME_COMMAND_HELP =
+  'Clear a persisted gate pause (e.g. CIRCUIT_BREAKER after a quota halt) and keep the pipeline checkpointed at its current stage' as const;
+
+/**
+ * Fallback reset window used when a provider rejects without a `Retry-After`
+ * header. One hour matches the dominant rolling-window quota policies.
+ */
+export const QUOTA_DEFAULT_RETRY_AFTER_SECONDS = 3600 as const;
+
+/** Max length of the raw provider output retained as quota evidence. */
+export const QUOTA_EVIDENCE_MAX_CHARS = 400 as const;
+
+/**
+ * Distinct exit code for quota-driven halts so CI can tell "provider said no"
+ * apart from an ordinary lifecycle failure. Never used for anything else.
+ *
+ * Deliberately NOT `EXIT_CODE_FAILURE`: a quota halt is a *recoverable* stop
+ * (state is checkpointed at the CIRCUIT_BREAKER gate and cleared by
+ * `QUOTA_RESUME_COMMAND`), whereas exit 1 means the run actually broke. Collapsing them makes a scheduled
+ * job retry a provider that will keep saying no until the window resets, and
+ * hides the halt from CI rules that alert on `!= 0`. Scripts that only ever
+ * handled `1` must treat any non-zero as failure — see the documented contract
+ * in `printHelp()`.
+ */
+export const EXIT_CODE_QUOTA_EXHAUSTED = 2 as const;
+
+/** Pause note emitted whenever the lifecycle halts at the circuit-breaker gate. */
+export const NOTE_PAUSED_CIRCUIT_BREAKER_GATE = 'Paused at circuit breaker gate' as const;
+
+/** Circuit-breaker action taken when a runner fails over after quota exhaustion. */
+export const CB_ACTION_FAILOVER = 'failover' as const;
+
+/** Breaker name recorded when the primary runner fails over to a fallback runner. */
+export const CB_FAILOVER_BREAKER_NAME = 'runnerFailover' as const;

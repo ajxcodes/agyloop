@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ==============================================================================
 # agyloop - Antigravity Plugin Symlink Setup
 # ==============================================================================
@@ -6,9 +6,11 @@
 # plugins directory (~/.gemini/config/plugins/agyloop).
 # ==============================================================================
 
-set -euo pipefail
+# NOTE: `pipefail` is deliberately absent. It is not POSIX (dash < 0.5.12, BusyBox
+# < 1.36) and would abort the script at this line; there is no pipeline here anyway.
+set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET_DIR="${HOME}/.gemini/config/plugins"
@@ -16,9 +18,9 @@ TARGET_LINK="${TARGET_DIR}/agyloop"
 
 resolve_path() {
   local target="$1"
-  if command -v realpath &>/dev/null; then
+  if command -v realpath >/dev/null 2>&1; then
     realpath "${target}"
-  elif command -v greadlink &>/dev/null; then
+  elif command -v greadlink >/dev/null 2>&1; then
     greadlink -f "${target}"
   else
     readlink -f "${target}" 2>/dev/null || readlink "${target}"
@@ -31,7 +33,7 @@ echo "Target symlink    : ${TARGET_LINK}"
 echo ""
 
 # Ensure manifest exists in repository
-if [[ ! -f "${REPO_ROOT}/plugin.json" ]]; then
+if [ ! -f "${REPO_ROOT}/plugin.json" ]; then
   echo "Error: plugin.json not found in ${REPO_ROOT}." >&2
   exit 1
 fi
@@ -40,9 +42,9 @@ fi
 mkdir -p "${TARGET_DIR}"
 
 # Check if target already exists
-if [[ -L "${TARGET_LINK}" ]]; then
+if [ -L "${TARGET_LINK}" ]; then
   CURRENT_DEST="$(resolve_path "${TARGET_LINK}" || true)"
-  if [[ "${CURRENT_DEST}" == "${REPO_ROOT}" ]]; then
+  if [ "${CURRENT_DEST}" = "${REPO_ROOT}" ]; then
     echo "✓ Symlink already exists and points to this repository:"
     echo "  ${TARGET_LINK} -> ${CURRENT_DEST}"
     echo "Setup complete (idempotent)."
@@ -51,7 +53,7 @@ if [[ -L "${TARGET_LINK}" ]]; then
     echo "Notice: Symlink exists but points to ${CURRENT_DEST}. Updating to ${REPO_ROOT}..."
     ln -sfn "${REPO_ROOT}" "${TARGET_LINK}"
   fi
-elif [[ -e "${TARGET_LINK}" ]]; then
+elif [ -e "${TARGET_LINK}" ]; then
   echo "Warning: Target '${TARGET_LINK}' exists and is not a symlink." >&2
   BACKUP_PATH="${TARGET_LINK}.backup.$(date +%s)"
   echo "Backing up existing directory to ${BACKUP_PATH}..."
@@ -64,7 +66,7 @@ fi
 
 # Verify resolution
 RESOLVED="$(resolve_path "${TARGET_LINK}")"
-if [[ "${RESOLVED}" == "${REPO_ROOT}" ]]; then
+if [ "${RESOLVED}" = "${REPO_ROOT}" ]; then
   echo "✓ Successfully symlinked agyloop plugin!"
   echo "  ${TARGET_LINK} -> ${RESOLVED}"
   echo ""

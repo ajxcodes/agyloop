@@ -1,6 +1,7 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert');
 const { OpenCodeAgentRunner } = require('../../dist/infrastructure/opencode-agent-runner');
+const { QuotaExhaustedError } = require('../../dist/domain');
 
 class MockCommandExecutor {
   public executedCommands: Array<{ command: string; options?: any }> = [];
@@ -140,6 +141,79 @@ describe('OpenCodeAgentRunner', () => {
         });
       },
       /OpenCode execution failed with exit code 1: Model not found/
+    );
+  });
+
+  test('throws QuotaExhaustedError when opencode CLI reports RESOURCE_EXHAUSTED', async () => {
+    const mockExecutor = new MockCommandExecutor();
+    mockExecutor.mockExitCode = 1;
+    mockExecutor.mockStderr = 'RESOURCE_EXHAUSTED: quota exceeded; retry-after: 3600';
+
+    const runner = new OpenCodeAgentRunner({ commandExecutor: mockExecutor });
+
+    await assert.rejects(
+      async () => runner.invokeSubagent({ subagentName: 'gate', prompt: 'Verify tests' }),
+      (err: any) => {
+        assert.ok(err instanceof QuotaExhaustedError, `expected QuotaExhaustedError, got ${err}`);
+        assert.strictEqual(err.signal.isQuotaExhausted, true);
+        assert.strictEqual(err.signal.retryAfterSeconds, 3600);
+        assert.strictEqual(err.runner, 'opencode');
+        assert.ok(err.message.includes('3600'), err.message);
+        return true;
+      }
+    );
+  });
+
+  test('parses Retry-After header into the quota signal', async () => {
+    const mockExecutor = new MockCommandExecutor();
+    mockExecutor.mockExitCode = 1;
+    mockExecutor.mockStderr = 'HTTP 429 Too Many Requests\nretry-after: 120';
+
+    const runner = new OpenCodeAgentRunner({ commandExecutor: mockExecutor });
+
+    await assert.rejects(
+      async () => runner.invokeSubagent({ subagentName: 'gate', prompt: 'Verify tests' }),
+      (err: any) => {
+        assert.ok(err instanceof QuotaExhaustedError);
+        assert.strictEqual(err.retryAfterSeconds, 120);
+        assert.strictEqual(err.providerCode, 429);
+        assert.strictEqual(err.quotaResetEstimated, false);
+        return true;
+      }
+    );
+  });
+
+  test('throws QuotaExhaustedError on HTTP 429 reported only on stdout', async () => {
+    const mockExecutor = new MockCommandExecutor();
+    mockExecutor.mockExitCode = 1;
+    mockExecutor.mockStderr = '';
+    mockExecutor.mockStdout = 'HTTP 429 Too Many Requests';
+
+    const runner = new OpenCodeAgentRunner({ commandExecutor: mockExecutor });
+
+    await assert.rejects(
+      async () => runner.invokeSubagent({ subagentName: 'gate', prompt: 'Verify tests' }),
+      (err: any) => {
+        assert.ok(err instanceof QuotaExhaustedError);
+        assert.strictEqual(err.signal.status, 429);
+        assert.strictEqual(err.retryAfterSeconds, null);
+        assert.strictEqual(err.quotaResetEstimated, true);
+        return true;
+      }
+    );
+  });
+
+  test('keeps the plain Error shape for non-quota failures with empty stderr', async () => {
+    const mockExecutor = new MockCommandExecutor();
+    mockExecutor.mockExitCode = 2;
+    mockExecutor.mockStderr = '';
+    mockExecutor.mockStdout = 'network unreachable';
+
+    const runner = new OpenCodeAgentRunner({ commandExecutor: mockExecutor });
+
+    await assert.rejects(
+      async () => runner.invokeSubagent({ subagentName: 'gate', prompt: 'Verify tests' }),
+      /OpenCode execution failed with exit code 2: network unreachable/
     );
   });
 });

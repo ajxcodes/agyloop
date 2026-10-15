@@ -56,6 +56,12 @@ export interface ExecuteCommitParams {
   readonly rejectionFeedback?: string | null;
   readonly rejectionReason?: string | null;
   readonly createPr?: boolean;
+  /**
+   * True only when a human can answer prompts. Defaults to true for backwards
+   * compatibility; the CLI composition root and the readline adapter both enforce
+   * TTY so a non-interactive session can never block (issue #218 AC6).
+   */
+  readonly interactive?: boolean;
 }
 
 export interface ExecuteCommitResult {
@@ -158,6 +164,11 @@ export class ExecuteCommitUseCase {
       userConfirmed = false;
     } else if (isExplicitlyConfirmed || isBypassed) {
       userConfirmed = true;
+    } else if (params.interactive === false) {
+      // Non-interactive session: never block on a prompt. Leave the commit
+      // unconfirmed so the caller's rejection path reports it as cancelled
+      // (mirrors the fail-closed `init` prompt gate).
+      userConfirmed = false;
     } else if (this.confirmationPrompt) {
       const promptQuery = `\nProposed Conventional Commit:\n  ${commitMessage.toSingleLine()}\n\nFull Message:\n${commitMessage.toFullMessage()}\n\n${PROMPT_CONFIRM_COMMIT}`;
       userConfirmed = await this.confirmationPrompt.confirm(promptQuery, false);
@@ -248,8 +259,27 @@ export class ExecuteCommitUseCase {
           addRes.stderr || addRes.stdout || 'Failed to stage working changes.'
         );
       }
-      // Defensive untrack: remove any accidentally staged symlinks (.agyloop, node_modules, artifacts)
-      await this.commandExecutor.execute('git rm --cached -rf .agyloop node_modules artifacts || true', { cwd });
+      // Defensive untrack: remove any accidentally staged symlinks (.agyloop, node_modules, artifacts).
+      //
+      // `--ignore-unmatch` is load-bearing (issue #102 regression): without it, `git rm --cached`
+      // aborts with "fatal: pathspec 'node_modules' did not match any files" as soon as ANY of the
+      // three pathspecs is untracked, which happens on a clean repo. The abort happens BEFORE the
+      // remaining pathspecs are processed, so `.agyloop` survived and got committed -- and because
+      // `.agyloop` is a symlink (mode 120000) rather than a directory, the granular `.gitignore`
+      // rules (`.agyloop/state.json`, `.agyloop/tasks/`, ...) never matched it either.
+      //
+      // Uses the argv form (no shell) so the command behaves identically on Windows and there is
+      // no `|| true` to swallow a genuine failure: exit status is checked and we fail closed.
+      const untrackRes = await this.commandExecutor.execute('git', {
+        cwd,
+        args: ['rm', '--cached', '-rf', '--ignore-unmatch', '.agyloop', 'node_modules', 'artifacts']
+      });
+      if (untrackRes.exitCode !== 0) {
+        throw new CommitExecutionError(
+          'git rm --cached',
+          untrackRes.stderr || untrackRes.stdout || 'Failed to untrack .agyloop / node_modules / artifacts.'
+        );
+      }
     }
 
     // Execute git commit
@@ -407,7 +437,7 @@ export class ExecuteCommitUseCase {
       let doTeardown = false;
       if (isExplicitlyConfirmed || isBypassed) {
         doTeardown = true;
-      } else if (this.confirmationPrompt) {
+      } else if (params.interactive !== false && this.confirmationPrompt) {
         doTeardown = await this.confirmationPrompt.confirm(
           `\nTeardown isolated git worktree at ${wtPath}?`,
           true

@@ -196,3 +196,106 @@ describe('GitWorktreeManager Branch & Release Extensions', () => {
     assert(commits[2].includes('docs: update architecture spec'));
   });
 });
+
+describe('GitWorktreeManager.resolveBaseBranch (issue #218 / AC5)', () => {
+  const branchProbes = (executedCommands: string[]): string[] =>
+    executedCommands.filter((c) => c.startsWith('git rev-parse --verify refs/heads/'));
+
+  test('returns the attached HEAD branch without probing candidates', async () => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git rev-parse --abbrev-ref HEAD') {
+          return makeResult(cmd, { stdout: 'feature/mirai\n' });
+        }
+        return makeResult(cmd, { exitCode: 1 });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    assert.strictEqual(await manager.resolveBaseBranch('/repo'), 'feature/mirai');
+    assert.strictEqual(executedCommands[0], 'git rev-parse --abbrev-ref HEAD');
+    assert.deepStrictEqual(branchProbes(executedCommands), []);
+  });
+
+  test('probes develop, master, main, trunk in order when HEAD is detached', async () => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git rev-parse --abbrev-ref HEAD') {
+          return makeResult(cmd, { stdout: 'HEAD\n' });
+        }
+        return makeResult(cmd, { exitCode: 1, stderr: 'error' });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    // Every probe fails, so the terminal DEFAULT_BASE_BRANCH stands.
+    assert.strictEqual(await manager.resolveBaseBranch('/repo'), 'main');
+    assert.deepStrictEqual(branchProbes(executedCommands), [
+      'git rev-parse --verify refs/heads/develop',
+      'git rev-parse --verify refs/heads/master',
+      'git rev-parse --verify refs/heads/main',
+      'git rev-parse --verify refs/heads/trunk'
+    ]);
+  });
+
+  test('prefers develop over master and short-circuits the remaining candidates', async () => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git rev-parse --abbrev-ref HEAD') {
+          return makeResult(cmd, { stdout: 'HEAD\n' });
+        }
+        if (cmd.includes('refs/heads/')) {
+          return makeResult(cmd, { stdout: 'abc1234\n' });
+        }
+        return makeResult(cmd, { exitCode: 1 });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    assert.strictEqual(await manager.resolveBaseBranch('/repo'), 'develop');
+    assert.deepStrictEqual(branchProbes(executedCommands), ['git rev-parse --verify refs/heads/develop']);
+  });
+
+  test('resolves trunk when it is the only well-known local candidate', async () => {
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git rev-parse --abbrev-ref HEAD') {
+          return makeResult(cmd, { stdout: 'HEAD\n' });
+        }
+        if (cmd === 'git rev-parse --verify refs/heads/trunk') {
+          return makeResult(cmd, { stdout: 'def5678\n' });
+        }
+        return makeResult(cmd, { exitCode: 1 });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    assert.strictEqual(await manager.resolveBaseBranch('/repo'), 'trunk');
+  });
+
+  test('continues to the next candidate when a probe throws', async () => {
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git rev-parse --abbrev-ref HEAD') {
+          return makeResult(cmd, { stdout: 'HEAD\n' });
+        }
+        if (cmd === 'git rev-parse --verify refs/heads/develop') {
+          throw new Error('git exploded');
+        }
+        if (cmd === 'git rev-parse --verify refs/heads/master') {
+          return makeResult(cmd, { stdout: 'aaa1111\n' });
+        }
+        return makeResult(cmd, { exitCode: 1 });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    assert.strictEqual(await manager.resolveBaseBranch('/repo'), 'master');
+  });
+});

@@ -43,9 +43,92 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # ubuntu-latest ships bash and a working git clone, which hides bash-only
+  # constructs in bin/. This leg runs the suite inside Alpine, where /bin/sh is
+  # busybox ash and no bash is installed at all, so a `#!/usr/bin/env bash`
+  # shebang or a ${BASH_SOURCE[0]} / `&>` / `[[ ]]` construct fails loudly.
+  #
+  # SOAK (non-blocking): this job is brand new and depends on a network image
+  # pull, an `apk add`, and containerisation. Until it has a few green runs on
+  # main it must not be able to block a release, so it carries
+  # `continue-on-error: true` and `tag` does NOT depend on it. Promote it by
+  # dropping `continue-on-error` here and adding `posix-shell` to `tag.needs`.
+  posix-shell:
+    name: POSIX Shell (Alpine)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+      - run: npm ci
+      # GitHub's ubuntu runners ship Docker as a managed service; rootless podman
+      # needs newuidmap//etc/subuid provisioning that is not guaranteed. Because
+      # this job bind-mounts $PWD, uid mapping is load-bearing, so prefer Docker
+      # and only fall back to podman.
+      - name: Confirm bash is genuinely absent inside the container
+        run: |
+          if command -v docker >/dev/null 2>&1; then R=docker; else R=podman; fi
+          "$R" run --rm docker.io/library/node:24-alpine sh -c \
+            'if command -v bash >/dev/null 2>&1; then echo "::error::bash unexpectedly present in image"; exit 1; fi; ls -l /bin/sh'
+      - name: Build and typecheck
+        run: |
+          if command -v docker >/dev/null 2>&1; then R=docker; else R=podman; fi
+          "$R" run --rm -v "$PWD:/work" -w /work docker.io/library/node:24-alpine \
+            sh -c 'npm run build && npm run typecheck'
+      - name: Test
+        run: |
+          if command -v docker >/dev/null 2>&1; then R=docker; else R=podman; fi
+          "$R" run --rm -v "$PWD:/work" -w /work docker.io/library/node:24-alpine \
+            sh -c 'apk add --no-cache git jq && node --test tests/*.test.ts tests/**/*.test.ts'
+      - name: Launcher smoke test under a POSIX shell
+        run: |
+          if command -v docker >/dev/null 2>&1; then R=docker; else R=podman; fi
+          # shellcheck disable=SC2016  # single quotes are deliberate: the script runs in the container, not on the runner
+          "$R" run --rm -v "$PWD:/work" -w /work docker.io/library/node:24-alpine sh -c '
+            set -e
+            for s in codeloop agyloop setup-symlink.sh verify-install.sh; do
+              sh -n "bin/$s" || { echo "::error::bin/$s is not valid POSIX shell"; exit 1; }
+            done
+            echo "all bin/ scripts pass sh -n"
+
+            ./bin/codeloop --help >/tmp/codeloop.out 2>/tmp/codeloop.err
+            grep -q "^Usage:" /tmp/codeloop.out || { echo "::error::codeloop: no Usage: on stdout"; cat /tmp/codeloop.err; exit 1; }
+            if grep -qi deprecated /tmp/codeloop.err; then
+              echo "::error::codeloop: unexpected deprecation notice"; cat /tmp/codeloop.err; exit 1
+            fi
+            echo "codeloop --help OK"
+
+            ./bin/agyloop --help >/tmp/agyloop.out 2>/tmp/agyloop.err
+            grep -q "^Usage:" /tmp/agyloop.out || { echo "::error::agyloop: no Usage: on stdout"; cat /tmp/agyloop.err; exit 1; }
+            grep -q "Warning: The .agyloop. command is deprecated. Please use .codeloop. instead." /tmp/agyloop.err \
+              || { echo "::error::agyloop: missing exact deprecation notice"; cat /tmp/agyloop.err; exit 1; }
+            echo "agyloop --help OK"
+          '
+      - name: Installer scripts under a POSIX shell
+        run: |
+          if command -v docker >/dev/null 2>&1; then R=docker; else R=podman; fi
+          # node:24-alpine ships no jq, so install it here; without it
+          # verify-install.sh silently skips steps 3-4 (JSON + manifest contract
+          # validation), which are exactly the checks this job is meant to cover.
+          # shellcheck disable=SC2016  # single quotes are deliberate: the script runs in the container, not on the runner
+          "$R" run --rm -v "$PWD:/work" -w /work docker.io/library/node:24-alpine sh -c '
+            set -e
+            apk add --no-cache jq
+            export HOME=/tmp/fakehome
+            mkdir -p "$HOME"
+            ./bin/setup-symlink.sh
+            ./bin/setup-symlink.sh
+            ./bin/verify-install.sh
+          '
+
   tag:
     name: Auto-Tag & Release
     runs-on: ubuntu-latest
+    # posix-shell is intentionally absent: it is still soaking (see above) and a
+    # container/network flake there must not block a release from main.
     needs: [lint, typecheck, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:

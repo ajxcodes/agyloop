@@ -19,7 +19,7 @@ description: >-
 > 4. Manually forcing stage transitions (e.g. `bin/agyloop transition COMMIT` or `COMPLETED`) that bypass the `QUALITY_GATE` or `REVIEW` stages. Forced transitions that skip these stages are forbidden.
 >
 > The root agent's ONLY permitted operational actions are:
-> 1. Running `bin/agyloop` CLI commands (`bin/agyloop transition ...`, `bin/agyloop next [--json]`, `bin/agyloop branch-info`, `bin/agyloop implement`, `bin/agyloop commit`).
+> 1. Running `bin/agyloop` CLI commands (`bin/agyloop transition ...`, `bin/agyloop next [--json]`, `bin/agyloop resume`, `bin/agyloop branch-info`, `bin/agyloop implement`, `bin/agyloop commit`).
 > 2. Querying pipeline next steps via `bin/agyloop next --json` to retrieve pre-configured `invoke_subagent` payloads.
 > 3. Spawning context-isolated subagents via `invoke_subagent`.
 > 4. Communicating with subagents via `send_message`.
@@ -248,7 +248,8 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `bin/agyloop triage` | Read-only: lists current PR review comments without changing state. | `--issue <id>`, `--json` |
 | `bin/agyloop commit` | Drafts Conventional Commit and prompts for interactive human approval (or commits immediately with `-y`). | `-y` / `--yes`, `-m` / `--message "<msg>"`, `-s` / `--staged`, `--keep-worktree`, `--dry-run` |
 | `bin/agyloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. | `--issue <id>`, `--commit-after`, `--no-worktree`, `--dry-run` |
-| `bin/agyloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. | `--json` |
+| `bin/agyloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. Reports a gate pause but **never clears one**. | `--json` (adds `actionable`, `pause`) |
+| `bin/agyloop resume` | Clears a persisted gate pause (`CIRCUIT_BREAKER`, `APPROVAL`, `COMMIT`, `TRIAGE`) and checkpoints the wait time. The only command that clears a pause. | `--json`, `--dry-run` |
 | `bin/agyloop branch-info [--json]` | Displays base collector branch, active task branch, worktree directory, and PR target. | `--json` |
 | `bin/agyloop status` | Displays current pipeline stage, execution mode, active issue, worktree list, and transition history. | None |
 | `bin/agyloop worktree <subcommand>` | Manages isolated git worktrees. Valid subcommands: `list`, `clean`, `prune`, `remove <id>`. | `list`, `clean`, `prune`, `remove <task-id>`, `--all`, `--subagents` |
@@ -258,6 +259,16 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `bin/agyloop reset` | Resets the `.agyloop/state.json` checkpoint for the repository. | None |
 | `bin/agyloop transition <TARGET_STAGE>` | Moves the state machine to the TARGET stage (the stage you want to enter, not the current one). Follow the sequence DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED. Calling `transition X` while already in stage `X` throws `InvalidTransitionError`. | `<TARGET_STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
 | `bin/agyloop abort` / `bin/codeloop abort` | Emergency Stop: terminates active subagents, clears git index locks, quarantines uncommitted changes, and shuts down test sandboxes. | `-f` / `--force`, `--quarantine`, `--reason "<text>"` |
+
+### Gate Pause Recovery
+
+`next` **reports** a pause; `resume` **clears** it. They are not interchangeable.
+
+1. Read `actionable` and `pause` from `bin/agyloop next --json`. When `actionable` is `false`, or `pause` is non-null, the pipeline is halted at a gate (`{ gate, pausedAt, resumeCommand, message }`) and the returned subagent payload is **not** a directive to execute.
+2. Resolve the blocking condition — e.g. wait out the provider quota window behind a `CIRCUIT_BREAKER` (exit code `2`, nothing is lost).
+3. Run `bin/agyloop resume`, then re-run `bin/agyloop next --json`.
+
+Never re-run `next` in a loop to clear a pause — it only reads the checkpoint and will keep reporting the same halt. Non-human gates (`CIRCUIT_BREAKER`) are consumed automatically once the pipeline transitions again; human gates (`APPROVAL`, `COMMIT`, `TRIAGE`) wait for the developer. `bin/agyloop status` surfaces the same state as `Paused At Gate`, `Paused At`, and a `Recovery:` hint.
 
 ---
 

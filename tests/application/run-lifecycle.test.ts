@@ -479,6 +479,37 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.executeCommitResult?.success, true);
       assert.strictEqual(result.executeCommitResult?.commitHash, 'abc1234');
     });
+
+    // --- Zero-Hang Invariant (issue #218 / AC6) ---------------------------
+
+    test('non-interactive session never opens the commit prompt and pauses at the COMMIT gate', { timeout: 5000 }, async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      sm.transition(STAGE_QUALITY_GATE);
+      sm.transition(STAGE_REVIEW);
+      sm.transition(STAGE_COMMIT);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      confirmationPrompt.answer = true;
+      confirmationPrompt.promptCalls.length = 0;
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        interactive: false,
+        interactiveCommit: true,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.deepStrictEqual(confirmationPrompt.promptCalls, []);
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.strictEqual(result.pausedAtGate, GATE_COMMIT);
+      assert.strictEqual(result.executeCommitResult, undefined);
+    });
   });
 
   describe('3. Standalone Operational Modes', () => {

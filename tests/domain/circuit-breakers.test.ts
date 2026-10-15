@@ -19,6 +19,7 @@ const {
   DEFAULT_CB_ACTION_ON_TRIP,
   CB_ACTION_PAUSE_FOR_HUMAN,
   CB_ACTION_ABORT,
+  GATE_CIRCUIT_BREAKER,
   CircuitBreakerTrippedError,
   ValidationError,
   RunLifecycleUseCase,
@@ -179,10 +180,12 @@ describe('Circuit Breakers Configuration & Tripping Protocol', () => {
       mode: MODE_YOLO,
       history: []
     };
+    let saveCallCount = 0;
 
     const mockStateRepo = {
       load: async () => currentState,
       save: async (state: any) => {
+        saveCallCount++;
         currentState = state;
       },
       reset: async () => {},
@@ -253,5 +256,12 @@ describe('Circuit Breakers Configuration & Tripping Protocol', () => {
 
     assert.strictEqual(result.success, false);
     assert.ok(result.message?.includes("Circuit breaker 'qualityGateRetries' tripped"));
+
+    // issue #218 AC4: the pause MUST be persisted, otherwise the next invocation
+    // reloads `pausedAtGate: null` and restarts the failing stage from scratch.
+    assert.strictEqual(result.pausedAtGate, GATE_CIRCUIT_BREAKER);
+    assert.ok(saveCallCount > 0, 'stateRepo.save must be called on the breaker path');
+    assert.strictEqual(currentState.pausedAtGate, GATE_CIRCUIT_BREAKER);
+    assert.ok(currentState.pausedAtTimestamp, 'persisted snapshot must carry the pause timestamp');
   });
 });

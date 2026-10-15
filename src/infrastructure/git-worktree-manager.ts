@@ -15,7 +15,9 @@ import {
   DEFAULT_TASK_BRANCH_PREFIX,
   DEFAULT_STATE_DIR,
   CODELOOP_STATE_DIR,
-  INIT_GITIGNORE_RULES
+  INIT_GITIGNORE_RULES,
+  DEFAULT_BASE_BRANCH,
+  DEFAULT_BASE_BRANCH_CANDIDATES
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -156,6 +158,8 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
   /**
    * Inspects the base branch of the current repository.
+   * Staged probe (issue #218 / AC5): attached HEAD -> well-known local candidates
+   * (develop, master, main, trunk) -> DEFAULT_BASE_BRANCH.
    */
   public async resolveBaseBranch(workspaceDir?: string): Promise<string> {
     const workspace = workspaceDir || process.cwd();
@@ -171,26 +175,20 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // Fallback below
     }
 
-    // Try detecting main or master
-    try {
-      const mainCheck = await this.commandExecutor.execute('git rev-parse --verify main', {
-        cwd: workspace
-      });
-      if (mainCheck.exitCode === 0) return 'main';
-    } catch {
-      // Continue to master
+    // Try the well-known default branch candidates before falling back to 'main'.
+    for (const candidate of DEFAULT_BASE_BRANCH_CANDIDATES) {
+      try {
+        const check = await this.commandExecutor.execute(
+          `git rev-parse --verify refs/heads/${candidate}`,
+          { cwd: workspace }
+        );
+        if (check.exitCode === 0) return candidate;
+      } catch {
+        // Continue to the next candidate.
+      }
     }
 
-    try {
-      const masterCheck = await this.commandExecutor.execute('git rev-parse --verify master', {
-        cwd: workspace
-      });
-      if (masterCheck.exitCode === 0) return 'master';
-    } catch {
-      // Fallback
-    }
-
-    return 'main';
+    return DEFAULT_BASE_BRANCH;
   }
 
   /**
@@ -263,16 +261,12 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // Non-fatal, proceed with default branch
     }
 
-    // Explicitly check if targetBranch is already checked out to avoid swallowing errors improperly
-    const rawListRes = await this.commandExecutor.execute('git worktree list --porcelain', { cwd: workspace });
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const isCheckedOut = rawListRes.stdout.includes(`branch refs/heads/${targetBranch}\n`);
-
     // 6. Execute git worktree add
     let addRes;
     if (branchAlreadyExists) {
-      // Branch exists. Reuse it without -b. If it is already checked out elsewhere,
-      // it will intentionally fail with "already checked out at" which we catch below.
+      // Branch exists. Reuse it without -b. If it is already held by another worktree,
+      // it will intentionally fail ("is already used by worktree at" on modern git,
+      // "is already checked out at" on older git) and we attach to it below.
       addRes = await this.commandExecutor.execute(
         `git worktree add "${worktreePath}" "${targetBranch}"`,
         { cwd: workspace }
@@ -287,27 +281,75 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     if (addRes.exitCode !== 0) {
       const output = addRes.stderr || addRes.stdout || '';
-      
-      // If it is 'already checked out at', we extract the path and return it
-      if (output.includes('already checked out at')) {
-        const match = output.match(/already checked out at '([^']+)'/);
-        if (match && match[1]) {
-          const checkedOutPath = path.resolve(match[1]);
-          this.linkNodeModulesIfPresent(workspace, checkedOutPath, options.linkNodeModules);
-          this.linkArtifactsIfPresent(workspace, checkedOutPath);
-          this.linkAgyloopStateIfPresent(workspace, checkedOutPath);
-          
-          return new WorktreeDescriptor({
+
+      // `git worktree add` refuses to check out a branch that another worktree already
+      // holds. Resolve which worktree holds it from `git worktree list --porcelain`
+      // (an authoritative query, independent of git's wording) and only fall back to
+      // parsing the error text, which git has changed over time.
+      const holder = await this.findWorktreeForBranch(workspace, targetBranch);
+
+      if (holder && holder.prunable) {
+        // git still has a registration for this branch, but the worktree directory was
+        // deleted behind git's back (`rm -rf .worktrees/<id>` without
+        // `git worktree remove`). Attaching to it would hand back a descriptor
+        // pointing at a path that does not exist, so drop the dead registration and
+        // check the branch out afresh instead.
+        await this.pruneWorktrees({ workspaceDir: workspace });
+        const recheck = await this.findWorktreeForBranch(workspace, targetBranch);
+
+        if (recheck && recheck.prunable) {
+          throw new WorktreeCreationError(
+            'createWorktree',
+            `Branch '${targetBranch}' is still registered to a missing worktree at ${recheck.worktreePath} after 'git worktree prune'. Delete that stale registration manually (it lives in the repository's .git/worktrees administrative directory) and retry.`,
+            { taskId, branch: targetBranch, worktreePath, baseBranch }
+          );
+        }
+
+        if (recheck) {
+          return this.adoptExistingWorktree(workspace, recheck.worktreePath, {
             taskId,
-            worktreePath: checkedOutPath,
             branch: targetBranch,
             baseBranch,
             slug,
-            isIsolated: checkedOutPath !== path.resolve(workspace)
+            linkNodeModules: options.linkNodeModules
           });
         }
+
+        // The branch is free again; check it out at the canonical path.
+        const retry = await this.commandExecutor.execute(
+          `git worktree add "${worktreePath}" "${targetBranch}"`,
+          { cwd: workspace }
+        );
+        if (retry.exitCode === 0) {
+          return this.adoptExistingWorktree(workspace, worktreePath, {
+            taskId,
+            branch: targetBranch,
+            baseBranch,
+            slug,
+            linkNodeModules: options.linkNodeModules
+          });
+        }
+
+        throw new WorktreeCreationError(
+          'createWorktree',
+          retry.stderr || retry.stdout || output,
+          { taskId, branch: targetBranch, worktreePath, baseBranch }
+        );
       }
-      
+
+      const checkedOutPath =
+        holder?.worktreePath ?? this.extractAlreadyCheckedOutPath(output);
+
+      if (checkedOutPath) {
+        return this.adoptExistingWorktree(workspace, checkedOutPath, {
+          taskId,
+          branch: targetBranch,
+          baseBranch,
+          slug,
+          linkNodeModules: options.linkNodeModules
+        });
+      }
+
       // Any other error
       throw new WorktreeCreationError(
         'createWorktree',
@@ -329,6 +371,110 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       slug,
       isIsolated: true
     });
+  }
+
+  /**
+   * Attaches to a worktree that already exists, applying the same
+   * node_modules / artifacts / .agyloop link treatment a freshly created one gets.
+   */
+  private adoptExistingWorktree(
+    workspace: string,
+    worktreePath: string,
+    fields: {
+      taskId: string;
+      branch: string;
+      baseBranch: string;
+      slug: string;
+      linkNodeModules?: boolean;
+    }
+  ): WorktreeDescriptor {
+    this.linkNodeModulesIfPresent(workspace, worktreePath, fields.linkNodeModules);
+    this.linkArtifactsIfPresent(workspace, worktreePath);
+    this.linkAgyloopStateIfPresent(workspace, worktreePath);
+
+    return new WorktreeDescriptor({
+      taskId: fields.taskId,
+      worktreePath,
+      branch: fields.branch,
+      baseBranch: fields.baseBranch,
+      slug: fields.slug,
+      isIsolated: worktreePath !== path.resolve(workspace)
+    });
+  }
+
+  /**
+   * Extracts the conflicting worktree path from a `git worktree add` failure message.
+   *
+   * Git's wording here is not a stable API: releases up to ~2.44 reported
+   * "'<branch>' is already checked out at '<path>'", while modern releases (verified on
+   * 2.53.0) report "'<branch>' is already used by worktree at '<path>'". Both are matched.
+   * Returns null when the output does not describe a branch already held by a worktree.
+   */
+  private extractAlreadyCheckedOutPath(output: string): string | null {
+    const match = output.match(/already (?:checked out|used by worktree) at '([^']+)'/);
+    return match && match[1] ? path.resolve(match[1]) : null;
+  }
+
+  /**
+   * Returns the worktree that currently holds the given branch, or null if the branch
+   * is not checked out in any worktree (or git could not be queried).
+   *
+   * `git worktree list --porcelain` always lists every worktree, external ones included,
+   * so this is the reliable way to answer "which worktree already has this branch?"
+   * without depending on the wording of a git error message.
+   *
+   * Do NOT "dedupe" this into `listWorktrees`. `listWorktrees` deliberately skips the
+   * root worktree and, unless `includeExternal` is set, every worktree outside
+   * `<root>/.worktrees`; recovery here must be able to attach to the root worktree when
+   * that is where the branch lives. Routing this through `listWorktrees` would make a
+   * branch checked out in the root silently unresolvable and break recovery.
+   *
+   * A dead registration is reported with `prunable: true` rather than filtered out:
+   * `git worktree list --porcelain` keeps listing such entries (with their `branch`
+   * line) after the worktree directory has been deleted, so dropping them silently
+   * would hide the exact case the caller has to treat differently.
+   */
+  private async findWorktreeForBranch(
+    workspaceDir: string,
+    branch: string
+  ): Promise<{ worktreePath: string; prunable: boolean } | null> {
+    try {
+      const res = await this.commandExecutor.execute('git worktree list --porcelain', {
+        cwd: workspaceDir
+      });
+      if (res.exitCode !== 0 || !res.stdout) return null;
+
+      // Porcelain emits blank-line separated blocks, each carrying `worktree <path>`
+      // first, then `branch <ref>`, and finally -- for a dead registration --
+      // `prunable <reason>`. The marker therefore only shows up *after* the branch
+      // line, so the block has to be read whole before it can be classified.
+      const wantedRef = `refs/heads/${branch}`;
+
+      for (const block of res.stdout.split(/\n\s*\n/)) {
+        let wtPath = '';
+        let branchRef = '';
+        let prunable = false;
+
+        for (const rawLine of block.split('\n')) {
+          const line = rawLine.trim();
+          if (line.startsWith('worktree ')) {
+            wtPath = line.slice('worktree '.length).trim();
+          } else if (line.startsWith('branch ')) {
+            branchRef = line.slice('branch '.length).trim();
+          } else if (line.startsWith('prunable')) {
+            prunable = true;
+          }
+        }
+
+        if (wtPath && branchRef === wantedRef) {
+          return { worktreePath: path.resolve(wtPath), prunable };
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   /**
