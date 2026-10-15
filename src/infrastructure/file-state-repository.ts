@@ -91,14 +91,13 @@ export class FileStateRepository implements StateRepository {
         return discoveredRoot;
       }
     } catch {
-      // Fall through to cwd
+      // Fall through to cwd fallback (no cache) — a transient git failure
+      // must not pin workspaceRoot to the cwd for the process lifetime.
     }
 
-    // NOTE: the cwd fallback is cached exactly like a successful probe, so a
-    // transient git failure pins this resolution for the process lifetime.
-    // It is still consumed, as the fallback root that workspaceResetTargets()
-    // derives deletion targets from, so treat `workspaceRoot` as trustworthy.
-    FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
+    // cwd fallback: return without caching so that a transient git failure
+    // does not permanently pin workspaceRoot to the cwd for the process lifetime.
+    // The root will be re-resolved on the next FileStateRepository instantiation.
     return discoveredRoot;
   }
 

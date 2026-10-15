@@ -1304,6 +1304,8 @@ export const INIT_GITIGNORE_RULES: readonly string[] = Object.freeze([
   '.codeloop/logs/',
   '.codeloop/critique-update-cache.json',
   '.codeloop/*.bak',
+  '.agyloop',        // bare entry matches the .agyloop symlink created in worktrees (git mode 120000)
+  '!.agyloop/',      // re-include the real directory so .agyloop/config.json stays trackable
   '.agyloop/state.json',
   '.agyloop/tasks/',
   '.agyloop/locks/',

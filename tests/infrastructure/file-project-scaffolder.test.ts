@@ -104,7 +104,11 @@ describe('FileProjectScaffolder', () => {
     fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\nconfig.json\n.agyloop\n.codeloop/tasks\n');
 
     const first = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
-    assert.deepStrictEqual(first.replaced, ['.agyloop']);
+    // #221: a bare `.agyloop` is now the symlink-safe form, not a blanket to swap out. It is
+    // retained and paired with `!.agyloop/` so the symlink stays ignored while config.json
+    // remains trackable. `.codeloop` has no symlink counterpart, so nothing is replaced.
+    assert.deepStrictEqual(first.replaced, []);
+    assert.ok(first.added.includes('!.agyloop/'));
     assert.ok(first.added.includes('!.codeloop/config.json'));
     assert.ok(!first.added.includes('.codeloop/tasks/'));
     const content = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
