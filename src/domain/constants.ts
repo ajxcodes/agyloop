@@ -309,6 +309,13 @@ export const CB_ACTIONS = Object.freeze({
 });
 export type CircuitBreakerActionType = typeof CB_ACTIONS[keyof typeof CB_ACTIONS];
 
+/**
+ * Commands that mutate `.agyloop/state.json`.
+ *
+ * `resume` clears a persisted gate pause, so it mutates the checkpoint exactly
+ * like `reset` does — it must be listed here for the `AGY_SUBAGENT` root
+ * mutation guard to cover it.
+ */
 export const STATE_MUTATING_COMMANDS = Object.freeze([
   'transition',
   'reset',
@@ -317,6 +324,7 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   'commit',
   'yolo',
   'triage',
+  'resume',
   'release',
   'abort',
   null
@@ -1203,6 +1211,33 @@ export const LIFECYCLE_GATES = Object.freeze({
 
 export type LifecycleGateName = typeof LIFECYCLE_GATES[keyof typeof LIFECYCLE_GATES];
 
+/**
+ * Gates whose pause exists *precisely* to wait for a human decision.
+ *
+ * A stage transition must never auto-consume these:
+ * - APPROVAL / COMMIT: `TransitionStageUseCase` only transitions out of them
+ *   after the human answered, and the surviving pause is what `codeloop status`
+ *   and the lifecycle result report as "waiting on you".
+ * - TRIAGE: the run returns control to the human, who must triage the PR
+ *   review comments before the pipeline can move again.
+ *
+ * Every other gate name is a *mechanical* halt (today only
+ * `GATE_CIRCUIT_BREAKER`, raised by an exhausted retry budget or a quota
+ * rejection). Nothing about it needs a human: once the machine transitions
+ * again the blocking condition is gone, so the pause is stale by construction
+ * and `StateMachine.transition()` consumes it.
+ *
+ * Typed `readonly string[]` (not `LifecycleGateName[]`) because
+ * `StateMachine.pausedAtGate` is a plain `string` — a checkpoint persisted by an
+ * older schema may carry a gate name this build does not know, and an unknown
+ * gate must be treated as non-human (consumed) rather than kept forever.
+ */
+export const HUMAN_WAIT_GATES: readonly string[] = Object.freeze([
+  GATE_APPROVAL,
+  GATE_COMMIT,
+  GATE_TRIAGE
+]);
+
 export const NOTE_LIFECYCLE_STARTED = 'Lifecycle execution started' as const;
 export const NOTE_LIFECYCLE_COMPLETED = 'Lifecycle completed successfully' as const;
 export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const;
@@ -1514,8 +1549,28 @@ export const OPENCODE_SYMLINK_FALLBACK_CODES = Object.freeze([
 /** The single HTTP status every provider quota rejection maps to. */
 export const QUOTA_STATUS = 429 as const;
 
-/** Command that resumes a lifecycle paused at the circuit-breaker gate. */
-export const QUOTA_RESUME_COMMAND = 'codeloop next' as const;
+/**
+ * CLI sub-command that clears a persisted gate pause.
+ *
+ * This is the ONLY command that calls `StateMachine.resumeFromGate()` and
+ * persists the cleared checkpoint, so it is the only one that may be advertised
+ * as "the way out of a pause". `codeloop next` merely prints the next directive;
+ * it never touches `pausedAtGate`.
+ */
+export const COMMAND_RESUME = 'resume' as const;
+
+/**
+ * Fully-qualified resume command printed in every breaker/quota diagnostic.
+ *
+ * MUST name a command that actually clears the pause (see `COMMAND_RESUME`).
+ * A hint that merely *suggests* re-running a stage leaves the checkpoint marked
+ * as paused forever, which is the bug this constant used to ship.
+ */
+export const QUOTA_RESUME_COMMAND = 'codeloop resume' as const;
+
+/** One-line help string for the resume sub-command (CLI help output). */
+export const RESUME_COMMAND_HELP =
+  'Clear a persisted gate pause (e.g. CIRCUIT_BREAKER after a quota halt) and keep the pipeline checkpointed at its current stage' as const;
 
 /**
  * Fallback reset window used when a provider rejects without a `Retry-After`
@@ -1531,8 +1586,8 @@ export const QUOTA_EVIDENCE_MAX_CHARS = 400 as const;
  * apart from an ordinary lifecycle failure. Never used for anything else.
  *
  * Deliberately NOT `EXIT_CODE_FAILURE`: a quota halt is a *recoverable* stop
- * (state is checkpointed at the CIRCUIT_BREAKER gate, `codeloop next` resumes),
- * whereas exit 1 means the run actually broke. Collapsing them makes a scheduled
+ * (state is checkpointed at the CIRCUIT_BREAKER gate and cleared by
+ * `QUOTA_RESUME_COMMAND`), whereas exit 1 means the run actually broke. Collapsing them makes a scheduled
  * job retry a provider that will keep saying no until the window resets, and
  * hides the halt from CI rules that alert on `!= 0`. Scripts that only ever
  * handled `1` must treat any non-zero as failure — see the documented contract

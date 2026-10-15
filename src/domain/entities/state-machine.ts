@@ -15,7 +15,8 @@ import {
   STAGE_PLAN,
   MODE_STANDARD,
   STATE_SCHEMA_VERSION,
-  EXECUTION_MODES
+  EXECUTION_MODES,
+  HUMAN_WAIT_GATES
 } from '../constants';
 import { Stage } from '../value-objects/stage';
 import { IssueNumber } from '../value-objects/issue-number';
@@ -224,15 +225,23 @@ export class StateMachine {
   }
 
   public resumeFromGate(): void {
+    // A checkpoint written by an older schema (or hand-edited) can carry a gate
+    // name with no timestamp. The pause is still a pause, so it must still be
+    // cleared — otherwise that machine is un-resumable forever. Only the time
+    // accounting needs the timestamp.
+    if (!this._pausedAtTimestamp && !this._pausedAtGate) {
+      return;
+    }
+
     if (this._pausedAtTimestamp) {
       const elapsed = Date.now() - new Date(this._pausedAtTimestamp).getTime();
       if (elapsed > 0) {
         this._totalHumanWaitMs += elapsed;
       }
-      this._pausedAtGate = null;
-      this._pausedAtTimestamp = null;
-      this._updatedAt = new Date().toISOString();
     }
+    this._pausedAtGate = null;
+    this._pausedAtTimestamp = null;
+    this._updatedAt = new Date().toISOString();
   }
 
   public activeExecutionDurationMs(referenceTime?: number | Date | string): number {
@@ -336,6 +345,20 @@ export class StateMachine {
       timestamp: now,
       metadata: Object.freeze({ ...metadata })
     });
+
+    // The machine genuinely advanced (transitions to the current stage are not
+    // allowed), so a pause at a NON-human gate is now stale: the condition that
+    // halted the run — an exhausted retry budget, a quota rejection — was
+    // resolved by this run getting further. Leaving `pausedAtGate` set would
+    // make the checkpoint claim "waiting for a human" forever, and
+    // `activeExecutionDurationMs()` would keep subtracting a pause that ended.
+    //
+    // Human gates are deliberately preserved: `TransitionStageUseCase`
+    // transitions out of APPROVAL/COMMIT only after the human answered, and
+    // TRIAGE hands control back to a human (see `HUMAN_WAIT_GATES`).
+    if (this._pausedAtGate !== null && !HUMAN_WAIT_GATES.includes(this._pausedAtGate)) {
+      this.resumeFromGate();
+    }
   }
 
   public reset(mode?: ExecutionMode, issue?: number | string | null): void {

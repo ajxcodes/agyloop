@@ -62,7 +62,8 @@ import {
   CB_ACTION_ABORT,
   CB_ACTION_WARN,
   CircuitBreakerTrippedError,
-  QuotaExhaustedError
+  QuotaExhaustedError,
+  QUOTA_RESUME_COMMAND
 } from '../domain';
 import {
   StateRepository,
@@ -121,12 +122,37 @@ export interface RunLifecycleParams {
   readonly onProgress?: (message: string) => void;
 }
 
+/**
+ * Non-blocking notice about a gate pause that was already on disk when this run
+ * started (typically a CIRCUIT_BREAKER halt persisted by a previous invocation).
+ *
+ * Typed on the result instead of `console.warn`-ed from here so the application
+ * layer stays free of I/O policy and the presentation layer owns *where* the
+ * notice goes — the breaker diagnostic is contractually stderr-only, and
+ * stdout may be parsed by `--json` consumers.
+ */
+export interface PersistedPauseAdvisory {
+  /** Gate name recorded on the loaded checkpoint. */
+  readonly gate: string;
+  /** ISO instant the pause was recorded; null for a timestamp-less checkpoint. */
+  readonly pausedAtTimestamp: string | null;
+  /** Fully-qualified command that actually clears the pause. */
+  readonly resumeCommand: string;
+  /** Operator-facing text, including gate, timestamp and the resume command. */
+  readonly message: string;
+}
+
 export interface RunLifecycleResult {
   readonly success: boolean;
   readonly mode: ExecutionMode;
   readonly currentStage: StageName;
   readonly stateMachine: StateMachine;
   readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | typeof GATE_CIRCUIT_BREAKER | null;
+  /**
+   * Set when the checkpoint loaded at the start of the run was already paused at a
+   * gate. ADVISORY ONLY — the run proceeds and the exit path is unchanged.
+   */
+  readonly persistedPauseAdvisory?: PersistedPauseAdvisory;
   /**
    * True when the halt was caused by provider quota exhaustion rather than a
    * retry-count circuit breaker. Lets the CLI pick a distinguishable exit code.
@@ -372,6 +398,13 @@ export class RunLifecycleUseCase {
       }
     }
 
+    // Advisory (never blocking) for a pause that was already persisted before this
+    // run. This is the single chokepoint every mode flows through, so one check
+    // covers `plan`, `implement`, `yolo`, `commit` and the default loop.
+    const persistedPauseAdvisory = this.buildPersistedPauseAdvisory(sm);
+    const withAdvisory = (result: RunLifecycleResult): RunLifecycleResult =>
+      persistedPauseAdvisory ? { ...result, persistedPauseAdvisory } : result;
+
     // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE
     if (
       preflightResult &&
@@ -389,38 +422,38 @@ export class RunLifecycleUseCase {
           commentsCount: preflightResult.prReviewComments?.length ?? 0
         });
       } else {
-        return {
+        return withAdvisory({
           success: false,
           mode: activeMode,
           currentStage: sm.currentStage,
           stateMachine: sm,
           message: `Cannot transition to TRIAGE from ${sm.currentStage}`
-        };
+        });
       }
       sm.pauseAtGate(GATE_TRIAGE);
       if (!params.dryRun) {
         await this.stateRepo.save(sm.toSnapshot());
       }
-      return {
+      return withAdvisory({
         success: true,
         mode: activeMode,
         currentStage: sm.currentStage,
         stateMachine: sm,
         pausedAtGate: GATE_TRIAGE,
         message: NOTE_PAUSED_TRIAGE_GATE
-      };
+      });
     }
 
     if (sm.currentStage === STAGE_TRIAGE) {
       sm.pauseAtGate(GATE_TRIAGE);
-      return {
+      return withAdvisory({
         success: true,
         mode: activeMode,
         currentStage: sm.currentStage,
         stateMachine: sm,
         pausedAtGate: GATE_TRIAGE,
         message: NOTE_PAUSED_TRIAGE_GATE
-      };
+      });
     }
 
     // 3. Dispatch based on operational mode
@@ -434,20 +467,20 @@ export class RunLifecycleUseCase {
       // try block, so the rejection would bypass the quota interception below.
       switch (activeMode) {
         case MODE_PLAN:
-          return await this.executePlanMode(sm, params, workspace);
+          return withAdvisory(await this.executePlanMode(sm, params, workspace));
 
         case MODE_IMPLEMENT:
-          return await this.executeImplementMode(sm, params, workspace, preflightResult);
+          return withAdvisory(await this.executeImplementMode(sm, params, workspace, preflightResult));
 
         case MODE_COMMIT:
-          return await this.executeCommitMode(sm, params, workspace);
+          return withAdvisory(await this.executeCommitMode(sm, params, workspace));
 
         case MODE_YOLO:
-          return await this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult);
+          return withAdvisory(await this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult));
 
         case MODE_STANDARD:
         default:
-          return await this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult);
+          return withAdvisory(await this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult));
       }
     } catch (err: unknown) {
       if (!(err instanceof QuotaExhaustedError)) {
@@ -498,6 +531,40 @@ export class RunLifecycleUseCase {
       message: isApproval
         ? NOTE_PAUSED_APPROVAL_GATE
         : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
+    };
+  }
+
+  /**
+   * Builds the "you are resuming from a paused checkpoint" notice, or undefined
+   * when the loaded checkpoint is not paused.
+   *
+   * Why this exists: `handleCircuitBreakerTrip` is only reachable from the
+   * quality-gate retry path, `GetNextActionUseCase` never reads `pausedAtGate`,
+   * and the CLI's `persistedHaltExitCode` only inspects the result of the run
+   * that *just* happened. A breaker pause persisted by an earlier invocation was
+   * therefore invisible — the next `codeloop plan` / `implement` / `yolo` / bare
+   * run silently proceeded as if nothing had ever halted.
+   *
+   * Advisory by construction: this only *reports*, it never blocks and never
+   * mutates state, so the documented resume path (`codeloop implement`) keeps
+   * working and a fresh trip keeps its existing exit code.
+   */
+  private buildPersistedPauseAdvisory(sm: StateMachine): PersistedPauseAdvisory | undefined {
+    const gate = sm.pausedAtGate;
+    if (!gate) {
+      return undefined;
+    }
+
+    const pausedAtTimestamp = sm.pausedAtTimestamp;
+    const since = pausedAtTimestamp ? ` since ${pausedAtTimestamp}` : '';
+    return {
+      gate,
+      pausedAtTimestamp,
+      resumeCommand: QUOTA_RESUME_COMMAND,
+      message:
+        `Checkpoint is paused at the ${gate} gate${since}. ` +
+        `Resolve the blocking condition, then run \`${QUOTA_RESUME_COMMAND}\` to clear the pause. ` +
+        `Continuing anyway — this notice is advisory and nothing is lost.`
     };
   }
 
