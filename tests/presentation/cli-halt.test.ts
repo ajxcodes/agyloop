@@ -396,3 +396,163 @@ describe('codeloop halt (issue #220)', () => {
     assert.strictEqual(parseArguments(['halt']).options.retryAfter, null);
   });
 });
+
+describe('codeloop halt --issue (issue #225)', () => {
+  let originalLog: any;
+  let originalError: any;
+
+  beforeEach(() => {
+    originalLog = console.log;
+    originalError = console.error;
+  });
+
+  afterEach(() => {
+    console.log = originalLog;
+    console.error = originalError;
+  });
+
+  function taskFilePath(dir: string, issue: number): string {
+    return path.join(dir, '.agyloop', 'tasks', `${issue}.json`);
+  }
+
+  function readTask(dir: string, issue: number): any {
+    try {
+      return JSON.parse(fs.readFileSync(taskFilePath(dir, issue), 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  async function runCliInSandbox(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
+    const prevCwd = process.cwd();
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-issue-'));
+    const originalEnv: any = {};
+    for (const key of Object.keys(env)) {
+      originalEnv[key] = process.env[key];
+      if (env[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = env[key];
+      }
+    }
+    const origLog = console.log;
+    const origErr = console.error;
+    let stdout = '';
+    let stderr = '';
+    try {
+      if (seed !== null) {
+        fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
+        fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(seed));
+      }
+      process.chdir(tempDir);
+      console.log = (...a: any[]) => {
+        stdout += a.map(String).join(' ') + '\n';
+      };
+      console.error = (...a: any[]) => {
+        stderr += a.map(String).join(' ') + '\n';
+      };
+      const code = await runCli(args);
+      return {
+        code,
+        stdout: stdout.replace(ANSI_ESCAPE, ''),
+        stderr: stderr.replace(ANSI_ESCAPE, ''),
+        rootState: readState(tempDir),
+        taskState: readTask(tempDir, 999)
+      };
+    } finally {
+      process.chdir(prevCwd);
+      console.log = origLog;
+      console.error = origErr;
+      for (const key of Object.keys(env)) {
+        if (originalEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalEnv[key];
+        }
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  test('AC1: halt --issue 999 writes tasks/999.json with issue:999', async () => {
+    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999'], {
+      env: { AGY_SUBAGENT: undefined }
+    });
+    assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
+    assert.ok(result.taskState, 'tasks/999.json must exist');
+    assert.strictEqual(result.taskState.issue, 999);
+    assert.strictEqual(result.taskState.pausedAtGate, GATE_CIRCUIT_BREAKER);
+    assert.strictEqual(result.rootState, null, 'root state.json must remain untouched');
+  });
+
+  test('AC2: halt --issue 999 --json includes issue in output', async () => {
+    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999', '--json'], {
+      env: { AGY_SUBAGENT: undefined }
+    });
+    assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.issue, 999);
+    assert.strictEqual(payload.pausedAtGate, GATE_CIRCUIT_BREAKER);
+  });
+
+  test('AC3: halt --issue 999 --dry-run writes nothing', async () => {
+    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--issue', '999', '--dry-run', '--json'], {
+      env: { AGY_SUBAGENT: undefined }
+    });
+    assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.persisted, false);
+    assert.strictEqual(payload.issue, 999);
+    assert.strictEqual(result.taskState, null, 'dry-run must not write tasks/999.json');
+    assert.strictEqual(result.rootState, null, 'dry-run must not write root state.json');
+  });
+
+  test('AC4: halt without --issue keeps root checkpoint with issue:null', async () => {
+    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--json'], {
+      env: { AGY_SUBAGENT: undefined }
+    });
+    assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
+    assert.ok(result.rootState, 'root state.json must exist');
+    assert.strictEqual(result.rootState.issue, null);
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.issue, null);
+  });
+
+  test('AC5: halt --issue 999 preserves first-wins pausedAtTimestamp', async () => {
+    const firstPause = '2026-10-14T12:00:00.000Z';
+    const prevCwd = process.cwd();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-issue-firstwins-'));
+    const origLog = console.log;
+    const origErr = console.error;
+    try {
+      fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+      fs.writeFileSync(
+        taskFilePath(tempDir, 999),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'IMPLEMENT',
+          mode: 'standard',
+          issue: 999,
+          createdAt: firstPause,
+          updatedAt: firstPause,
+          history: [{ stage: 'IMPLEMENT', timestamp: firstPause }],
+          pausedAtGate: GATE_CIRCUIT_BREAKER,
+          pausedAtTimestamp: firstPause
+        })
+      );
+      process.chdir(tempDir);
+      console.log = (..._a: any[]): void => {};
+      console.error = (..._a: any[]): void => {};
+      delete process.env.AGY_SUBAGENT;
+      assert.strictEqual(await runCli(['halt', '--reason', 'quota', '--issue', '999']), EXIT_CODE_QUOTA_EXHAUSTED);
+      const state = readTask(tempDir, 999);
+      assert.strictEqual(state.pausedAtTimestamp, firstPause);
+      assert.strictEqual(state.issue, 999);
+    } finally {
+      process.chdir(prevCwd);
+      console.log = origLog;
+      console.error = origErr;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
