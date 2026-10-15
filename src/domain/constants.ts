@@ -1247,6 +1247,8 @@ export const NOTE_LIFECYCLE_COMPLETED = 'Lifecycle completed successfully' as co
 export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const;
 export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as const;
 export const NOTE_PAUSED_TRIAGE_GATE = 'Paused at PR review comments triage gate' as const;
+export const NOTE_YOLO_PARKED_AT_DISCOVERY =
+  'Bug issue parked at DISCOVERY for RCA — YOLO cannot dispatch subagents inline. Run `codeloop next` to dispatch the discovery subagent, then re-run `codeloop yolo` (use `codeloop resume` first if a pause is recorded). State is checkpointed; nothing is lost.' as const;
 export const NOTE_TRIAGE_ROUTED = 'Triage completed: routed to target stage' as const;
 export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
 export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;

@@ -49,6 +49,7 @@ import {
   NOTE_PAUSED_APPROVAL_GATE,
   NOTE_PAUSED_COMMIT_GATE,
   NOTE_PAUSED_TRIAGE_GATE,
+  NOTE_YOLO_PARKED_AT_DISCOVERY,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AUTO_APPROVED_PLAN,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -616,6 +617,13 @@ export class RunLifecycleUseCase {
       if (baseBranch) {
         sm.setBaseBranch(baseBranch);
       }
+      // #234/#226: persist the descriptor immediately — from the root workspace cwd
+      // and before any worktree-scoped execution — so a crash before the next stage
+      // save can never leave an on-disk worktree paired with `worktree: null` in
+      // state (the orphan that bricks `next` via Zero Direct Root Mutation).
+      // `dryRun` returns null at the top of this helper, so this save never fires
+      // on a dry run.
+      await this.stateRepo.save(sm.toSnapshot());
       return descriptor;
     } catch {
       return null;
@@ -796,6 +804,21 @@ export class RunLifecycleUseCase {
       }
     }
 
+    // #234: bug issues are intentionally parked at DISCOVERY for RCA, and YOLO never
+    // dispatches subagents inline (`codeloop next` does). Return a checkpointed,
+    // actionable park instead of falling through to the quality gates from the wrong
+    // stage. Mirrors executeStandardMode's post-planning return (lines 963-986).
+    if (sm.currentStage === STAGE_DISCOVERY) {
+      return {
+        success: true, // deliberate halt, not a failure
+        mode: MODE_YOLO,
+        currentStage: STAGE_DISCOVERY,
+        stateMachine: sm,
+        planResult,
+        message: NOTE_YOLO_PARKED_AT_DISCOVERY
+      };
+    }
+
     // Resolve isolated worktree for implementation and verification
     const worktree = await this.resolveWorktree(sm, params, workspace);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
@@ -813,6 +836,29 @@ export class RunLifecycleUseCase {
       });
 
       sm = implResult.stateMachine;
+    }
+
+    // #234: an unattended run must never depend on RunQualityGateUseCase's
+    // InvalidTransitionError for control flow. Whitelist = exactly the source
+    // stages that use case accepts (run-quality-gate.ts:170-185).
+    const gatesAllowed =
+      sm.currentStage === STAGE_IMPLEMENT ||
+      sm.currentStage === STAGE_QUALITY_GATE ||
+      sm.currentStage === STAGE_COMMIT ||
+      sm.currentStage === STAGE_COMPLETED;
+
+    if (!gatesAllowed) {
+      await this.persistCheckpoint(sm, params.dryRun);
+      return {
+        success: false,
+        mode: MODE_YOLO,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        planResult,
+        implementationResult: implResult,
+        worktree,
+        message: `YOLO fast-path halted before quality gates: stage '${sm.currentStage}' cannot run gates (requires IMPLEMENT/QUALITY_GATE/COMMIT/COMPLETED). State is checkpointed — run \`codeloop next\` for the next directive or \`codeloop resume\` to clear a pause.`
+      };
     }
 
     // B. Quality Gates
@@ -856,6 +902,29 @@ export class RunLifecycleUseCase {
         qualityGateResult: qgResult,
         worktree,
         message: 'Quality gates failed in YOLO mode. Reverted to IMPLEMENT.'
+      };
+    }
+
+    // #234: same wrong-stage defense as the gate guard above. Whitelist = exactly
+    // the source stages RunReviewUseCase accepts (run-review.ts:216-225). After a
+    // passing gate run this is structurally unreachable; it exists so an anomalous
+    // stage checkpoints with guidance instead of throwing.
+    const reviewAllowed =
+      sm.currentStage === STAGE_QUALITY_GATE ||
+      sm.currentStage === STAGE_REVIEW ||
+      sm.currentStage === STAGE_COMPLETED;
+
+    if (!reviewAllowed) {
+      await this.persistCheckpoint(sm, params.dryRun);
+      return {
+        success: false,
+        mode: MODE_YOLO,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        planResult,
+        implementationResult: implResult,
+        worktree,
+        message: `YOLO fast-path halted before AI review: stage '${sm.currentStage}' cannot run review (requires QUALITY_GATE/REVIEW/COMPLETED). State is checkpointed — run \`codeloop next\` for the next directive or \`codeloop resume\` to clear a pause.`
       };
     }
 
