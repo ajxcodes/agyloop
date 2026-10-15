@@ -1,7 +1,11 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const {
   RunQualityGateUseCase,
+  FileBuildDetector,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
   STAGE_REVIEW,
@@ -715,5 +719,63 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     // Plan generator update reviewNote recorded failing file
     assert.strictEqual(planGenerator.updates.length, 1);
     assert.ok(planGenerator.updates[0].updateData.reviewNote?.includes('tests/domain/value-objects.test.ts:35:12'));
+  });
+
+  test('T7: dead DOCKER_HOST skips the act gate and the pipeline advances to REVIEW (Issue #232)', async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gate-232-'));
+    const savedEnv = { DOCKER_HOST: process.env.DOCKER_HOST, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR };
+    const originalExistsSync = fs.existsSync;
+    try {
+      fs.writeFileSync(path.join(workspaceDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(workspaceDir, '.github', 'workflows'), { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(workspaceDir, 'missing.sock')}`;
+      process.env.XDG_RUNTIME_DIR = path.join(workspaceDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+      // Stub only the standard docker socket for host determinism; delegate everything else
+      fs.existsSync = (p: any) => (String(p) === '/var/run/docker.sock' ? false : originalExistsSync(p));
+
+      const detector = new FileBuildDetector();
+      detector.hasActBinary = () => true;
+
+      const initialSnapshot: StateMachineSnapshot = {
+        version: '1.0.0',
+        currentStage: STAGE_IMPLEMENT,
+        mode: MODE_STANDARD,
+        issue: 20,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+      };
+
+      const stateRepo = new MockStateRepository(initialSnapshot);
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor,
+        detector
+      );
+
+      const result = await useCase.execute({ issue: 20, workspaceDir });
+
+      // Dead socket must not fail or revert the pipeline — host gates decide the verdict
+      assert.strictEqual(result.passed, true);
+      assert.strictEqual(result.currentStage, STAGE_REVIEW);
+
+      const executedCommands = commandExecutor.executed.map((e: { command: string }) => e.command);
+      assert.ok(executedCommands.some((c: string) => c === 'npm test'));
+      assert.ok(!executedCommands.some((c: string) => /^act( |$)/.test(c)));
+    } finally {
+      fs.existsSync = originalExistsSync;
+      if (savedEnv.DOCKER_HOST === undefined) delete process.env.DOCKER_HOST;
+      else process.env.DOCKER_HOST = savedEnv.DOCKER_HOST;
+      if (savedEnv.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
   });
 });
