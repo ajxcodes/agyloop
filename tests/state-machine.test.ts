@@ -331,9 +331,16 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.ok(path.isAbsolute(defaultRepo.getStateFilePath()));
   });
 
-  test('memoizes workspace root resolution avoiding duplicate child processes for identical cwd', () => {
+  test('memoizes successful workspace root resolution avoiding duplicate child processes for identical cwd', () => {
     const childProcess = require('child_process');
     FileStateRepository.clearWorkspaceRootCache();
+
+    // Use a dedicated git workspace owned by the current user so the probe succeeds
+    // regardless of host/container ownership quirks (e.g. CI containers mount the
+    // checkout as a different owner, which makes git refuse the real repo).
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-root-'));
+    childProcess.execFileSync('git', ['init', '-q'], { cwd: repoDir });
+    process.cwd = () => repoDir;
 
     let execCallCount = 0;
     const originalExecSync = childProcess.execSync;
@@ -350,6 +357,37 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
       // Second instantiation should reuse cached root without spawning child processes
       const repo2 = new FileStateRepository();
       assert.strictEqual(execCallCount, initialExecCalls, 'Second instantiation should reuse cached workspace root');
+      assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
+    } finally {
+      childProcess.execSync = originalExecSync;
+      FileStateRepository.clearWorkspaceRootCache();
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not cache the cwd fallback when both git probes fail (#221)', () => {
+    const childProcess = require('child_process');
+    FileStateRepository.clearWorkspaceRootCache();
+
+    let execCallCount = 0;
+    const originalExecSync = childProcess.execSync;
+    childProcess.execSync = function (...args: any[]) {
+      execCallCount++;
+      throw new Error('git unavailable');
+    };
+
+    try {
+      const repo1 = new FileStateRepository();
+      const afterFirst = execCallCount;
+      assert.ok(afterFirst > 0, 'First instantiation should attempt git');
+
+      // A failed resolution must NOT be memoized, otherwise a transient git failure would
+      // permanently pin workspaceRoot to the cwd for the process lifetime.
+      const repo2 = new FileStateRepository();
+      assert.ok(
+        execCallCount > afterFirst,
+        'Second instantiation must re-attempt git when the first resolution was unproven'
+      );
       assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
     } finally {
       childProcess.execSync = originalExecSync;

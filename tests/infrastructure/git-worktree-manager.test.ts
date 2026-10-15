@@ -96,11 +96,16 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       assert.ok(lines.includes(rule), `granular rule ${rule} must be retained`);
     }
 
-    // The bare entry is repo-scoped only; consumer scaffolding must stay granular so that
-    // `.agyloop/config.json` remains trackable (INIT_GITIGNORE_RULES).
+    // The bare entry is repo-scoped; consumer scaffolding now carries the symlink-safe pair
+    // (`#221`): a bare `.agyloop` (matches the mode-120000 symlink) immediately re-included by
+    // `!.agyloop/` so `.agyloop/config.json` stays trackable.
     assert.ok(
-      !INIT_GITIGNORE_RULES.includes('.agyloop'),
-      'consumer-project scaffolding must not gain a blanket .agyloop rule'
+      INIT_GITIGNORE_RULES.includes('.agyloop'),
+      'consumer-project scaffolding must ignore the .agyloop symlink'
+    );
+    assert.ok(
+      INIT_GITIGNORE_RULES.includes('!.agyloop/'),
+      'consumer-project scaffolding must re-include the .agyloop directory to keep config.json trackable'
     );
   });
 

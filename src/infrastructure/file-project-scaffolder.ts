@@ -253,9 +253,22 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
     const key = (l: string): string => l.trim().replace(/^\//, '').replace(/\/$/, '');
     const safeRules = rules.filter((r) => !/config\.json$/.test(r));
     const blanketDirs = ['.codeloop', '.agyloop'];
+    // Managed symlink-safe pairs (#221): a bare state-dir entry the rule set pairs with a
+    // `!<dir>/` re-inclusion. That bare entry is deliberate (it matches the `.agyloop`
+    // symlink git stores as mode 120000), and the negation keeps `config.json` trackable,
+    // so it must not be treated as a user blanket to swap out.
+    const pairedNegations = new Set(
+      rules
+        .map((r) => r.trim())
+        .filter((r) => r.startsWith('!') && r.endsWith('/'))
+        .map((r) => key(r))
+    );
     const isBlanket = (l: string): string | null => {
       const k = key(l).replace(/\/\*$/, '');
-      return blanketDirs.includes(k) && !l.trim().startsWith('!') && !l.trim().startsWith('#') ? k : null;
+      if (!blanketDirs.includes(k)) return null;
+      if (l.trim().startsWith('!') || l.trim().startsWith('#')) return null;
+      if (pairedNegations.has(`!${k}`)) return null;
+      return k;
     };
 
     const isIndirectIgnore = (line: string): boolean => {
@@ -314,6 +327,11 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
     const tail: string[] = [];
     if (hasIndirect) {
       for (const neg of dirNegations) {
+        // Skip a negation the managed rule set already carries: `safeRules` emits it in
+        // rule order so it lands *after* its bare `.agyloop` counterpart. Emitting it here
+        // would place it before that bare entry, which then re-excludes the directory and
+        // hides `.agyloop/config.json` again (#221).
+        if (safeRules.includes(neg)) continue;
         if (!present.has(key(neg))) {
           tail.push(neg);
           present.add(key(neg));
