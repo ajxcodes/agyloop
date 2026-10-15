@@ -94,6 +94,10 @@ export class FileStateRepository implements StateRepository {
       // Fall through to cwd
     }
 
+    // NOTE: the cwd fallback is cached exactly like a successful probe, so a
+    // transient git failure pins this resolution for the process lifetime.
+    // It is still consumed, as the fallback root that workspaceResetTargets()
+    // derives deletion targets from, so treat `workspaceRoot` as trustworthy.
     FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
     return discoveredRoot;
   }
@@ -127,7 +131,16 @@ export class FileStateRepository implements StateRepository {
     }
   }
 
-  private validateSmokeTestIsolation(operation: 'write' | 'delete'): void {
+  /**
+   * Refuses state mutations that could reach real orchestrator state.
+   *
+   * `additionalTargets` carries the extra paths an operation destroys beyond
+   * `stateFilePath` (see `workspaceResetTargets`).
+   */
+  private validateSmokeTestIsolation(
+    operation: 'write' | 'delete',
+    additionalTargets: string[] = []
+  ): void {
     const cwd = path.resolve(process.cwd());
     const isArtifactsSmoke = cwd.includes(`${path.sep}artifacts${path.sep}smoke`);
     
@@ -144,17 +157,66 @@ export class FileStateRepository implements StateRepository {
     }
 
     if (process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT)) {
-      const realRoot = this.discoverWorkspaceRoot(__dirname);
-      const realRootPath = path.join(realRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
-      const realTasksDir = path.join(realRoot, DEFAULT_STATE_DIR, DEFAULT_TASKS_STATE_DIR);
-      if (this.stateFilePath === realRootPath || this.stateFilePath.startsWith(realTasksDir + path.sep)) {
+      const unproven = [this.stateFilePath, ...additionalTargets].find(
+        (target) => !this.isProvenIsolatedFromRealState(target)
+      );
+      if (unproven !== undefined) {
         throw new StateStorageError(
-          this.stateFilePath,
+          unproven,
           operation,
           MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
         );
       }
     }
+  }
+
+  /**
+   * Fail-closed proof that `target` is provably isolated from real orchestrator state.
+   *
+   * Two conditions must BOTH hold:
+   *
+   *  1. `target` lives under the OS temp sandbox. This half is git-free and never
+   *     fails open, so it is what keeps the guard alive when git is unusable.
+   *  2. `target` is not the workspace root of this package, nor its root state
+   *     file. This half is what stops condition 1 from being self-defeating: a
+   *     checkout that lives under /tmp (or under a TMPDIR that is an ancestor of
+   *     it) has its own `.agyloop/state.json` inside the sandbox, and condition 1
+   *     alone would happily certify the real state file as isolated.
+   *
+   * `git` is consulted only as a *negative* veto in (2), never as positive proof.
+   * That asymmetry is deliberate: the old implementation needed git to produce a
+   * positive "these roots differ", and when git failed (container without a usable
+   * `.git` indirection, CI tarball, broken worktree gitdir) the two resolutions
+   * diverged and the guard silently disabled itself. Here a git failure can only
+   * *remove* refusals, never grant permission, and the unconditional condition (1)
+   * still stands -- so the guard degrades to "tempdir only", never to "off".
+   */
+  private isProvenIsolatedFromRealState(target: string): boolean {
+    const tmpRoot = path.resolve(os.tmpdir());
+    const resolved = path.resolve(target);
+
+    if (!(resolved === tmpRoot || resolved.startsWith(tmpRoot + path.sep))) {
+      return false;
+    }
+
+    const realRoot = path.resolve(this.discoverWorkspaceRoot(__dirname));
+    return (
+      resolved !== realRoot &&
+      resolved !== path.resolve(realRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE)
+    );
+  }
+
+  /**
+   * Extra paths a workspace-wide reset can destroy. `resetTask`/`resetAll`
+   * derive their deletion targets from `workspaceRoot` rather than from
+   * `stateFilePath`, so that root must be proven isolated as well.
+   */
+  private workspaceResetTargets(): string[] {
+    return [
+      this.workspaceRoot,
+      path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE),
+      path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_TASKS_STATE_DIR)
+    ];
   }
 
   private validateWorktreeIssueMatch(snapshot: StateMachineSnapshot): void {
@@ -206,7 +268,7 @@ export class FileStateRepository implements StateRepository {
   }
 
   public resetTask(issue: number | string): void {
-    this.validateSmokeTestIsolation('delete');
+    this.validateSmokeTestIsolation('delete', this.workspaceResetTargets());
     const taskFile = path.join(
       this.workspaceRoot,
       DEFAULT_STATE_DIR,
@@ -228,7 +290,7 @@ export class FileStateRepository implements StateRepository {
   }
 
   public resetAll(): void {
-    this.validateSmokeTestIsolation('delete');
+    this.validateSmokeTestIsolation('delete', this.workspaceResetTargets());
     // 1. Remove root state file
     const rootStateFile = path.join(this.workspaceRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE);
     try {
