@@ -1086,7 +1086,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const haltResult = await haltUseCase.execute({
           reason: 'quota',
           retryAfterSeconds,
-          dryRun: options.dryRun
+          dryRun: options.dryRun,
+          issue: options.issue
         });
 
         if (!haltResult.success) {
@@ -1107,6 +1108,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
                 quotaResetAt: haltResult.quotaResetAt,
                 quotaResetEstimated: haltResult.quotaResetEstimated,
                 retryAfterSeconds: haltResult.retryAfterSeconds,
+                issue: haltResult.issue,
                 message: haltResult.message
               },
               null,

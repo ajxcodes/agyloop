@@ -26,6 +26,8 @@ export interface HaltPipelineParams {
   readonly retryAfterSeconds?: number | null;
   /** When true, resolve and report the halt but never write the checkpoint. */
   readonly dryRun?: boolean;
+  /** Issue scope for per-task checkpoints. Explicit param wins; forwarded to `sm.setIssue()`. */
+  readonly issue?: number | string | null;
   /** Injected clock — keeps `quotaResetAt` deterministic under test. */
   readonly now?: Date | string | number;
 }
@@ -44,6 +46,8 @@ export interface HaltPipelineResult {
   /** True when `quotaResetAt` uses the default window, not `--retry-after`. */
   readonly quotaResetEstimated: boolean;
   readonly retryAfterSeconds: number;
+  /** Issue scope echoed for `--json` output (null for root checkpoints). */
+  readonly issue: number | null;
   readonly message: string;
 }
 
@@ -66,6 +70,7 @@ export class HaltPipelineUseCase {
         quotaResetAt: new Date().toISOString(),
         quotaResetEstimated: true,
         retryAfterSeconds: QUOTA_DEFAULT_RETRY_AFTER_SECONDS,
+        issue: null,
         message: `Error: 'halt' requires --reason quota (received ${requested}). Example: codeloop halt --reason quota [--retry-after <seconds>].`
       };
     }
@@ -79,6 +84,10 @@ export class HaltPipelineUseCase {
 
     const snapshot = await this.stateRepo.load();
     let sm = snapshot ? StateMachine.fromSnapshot(snapshot) : new StateMachine();
+
+    if (params.issue !== undefined && params.issue !== null && params.issue !== '') {
+      sm.setIssue(params.issue);
+    }
 
     const hadTimestamp = sm.pausedAtTimestamp !== null && sm.pausedAtTimestamp !== undefined;
     sm.pauseAtGate(GATE_CIRCUIT_BREAKER);
@@ -119,6 +128,7 @@ export class HaltPipelineUseCase {
       quotaResetAt,
       quotaResetEstimated: estimated,
       retryAfterSeconds,
+      issue: sm.issue,
       message
     };
   }
