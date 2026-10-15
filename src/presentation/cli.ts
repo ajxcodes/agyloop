@@ -50,8 +50,8 @@ import {
   COMMAND_RELEASE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_CRITIQUE,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   COMMAND_TRIAGE,
+  COMMAND_HALT,
   COMMAND_SYNC,
   COMMAND_INIT,
   COMMAND_RESUME,
@@ -120,7 +120,8 @@ import {
   SyncUseCase,
   AbortPipelineUseCase,
   InitProjectUseCase,
-  ResumePipelineUseCase
+  ResumePipelineUseCase,
+  HaltPipelineUseCase
 } from '../application';
 
 export interface CliOptions {
@@ -160,6 +161,7 @@ export interface CliOptions {
   createPr: boolean;
   quarantine: boolean;
   reason: string | null;
+  retryAfter: string | null;
 }
 
 export interface ParsedCliArgs {
@@ -260,6 +262,7 @@ Pipeline Management:
   prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
   reset              Reset .agyloop/state.json checkpoint (supports --issue <id> and --all)
   resume             Clear a persisted gate pause (CIRCUIT_BREAKER, APPROVAL, COMMIT, TRIAGE) and checkpoint the wait time
+  halt --reason quota [--retry-after <s>]  Record provider quota halt (429) and checkpoint at CIRCUIT_BREAKER (exits 2)
   abort              Emergency Stop: halts subagents, clears locks, quarantines worktrees, stops sandboxes
   transition <STAGE> Advance state machine to target stage
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
@@ -302,6 +305,7 @@ Exit Codes:
       Recoverable: state is checkpointed at the CIRCUIT_BREAKER gate and nothing is lost.
       Resume with '${RESUME_COMMAND}' once the quota window resets — 'codeloop next' only
       reports the pause, it does not clear it.
+      External runners report quota via 'codeloop halt --reason quota' — the in-process runner is intentionally not wired into the lifecycle.
       CI: treat 2 as failure too, but distinguish it from 1 to avoid hot-retrying a
       provider that will keep rejecting until the window reopens.
 
@@ -365,7 +369,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     messageFile: null,
     createPr: false,
     quarantine: false,
-    reason: null
+    reason: null,
+    retryAfter: null
   };
 
   const positional: string[] = [];
@@ -413,6 +418,21 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--reason=')) {
       options.reason = arg.split('=')[1] || null;
+    } else if (arg === '--retry-after') {
+      if (i + 1 < args.length) {
+        const next = args[i + 1];
+        // A negative-looking token (`-5`) is captured so the halt handler can
+        // reject it as invalid; any other flag means the value was omitted.
+        if (!next.startsWith('-') || /^-\d/.test(next)) {
+          options.retryAfter = args[++i];
+        } else {
+          options.retryAfter = null;
+        }
+      } else {
+        options.retryAfter = null;
+      }
+    } else if (arg.startsWith('--retry-after=')) {
+      options.retryAfter = arg.split('=')[1] || null;
     } else if (arg === '--base-branch') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.baseBranch = args[++i];
@@ -696,7 +716,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
 
-  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== 'triage' && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
+  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== COMMAND_TRIAGE && effectiveCommand !== COMMAND_HALT && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
     console.error('Error: Execution blocked. Subagents are not permitted to mutate global pipeline state.');
     console.error(`Command '${effectiveCommand === null ? '(default)' : effectiveCommand}' violates the Zero Direct Root Mutation invariant.`);
     return EXIT_CODE_FAILURE;
@@ -1038,6 +1058,73 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         console.error(`✗ Resume failed: ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
+    case COMMAND_HALT: {
+      // Inbound quota-halt channel (issue #220): the runner-side caller invokes
+      // this as a separate process when it observes a 429. Guarded by
+      // STATE_MUTATING_COMMANDS but carved out for subagents above, like `triage`.
+      try {
+        if (options.reason !== 'quota') {
+          console.error(`Error: 'halt' requires --reason quota. Example: codeloop halt --reason quota [--retry-after <seconds>].`);
+          return EXIT_CODE_FAILURE;
+        }
+
+        let retryAfterSeconds: number | undefined;
+        if (options.retryAfter !== null && options.retryAfter !== undefined) {
+          const raw = options.retryAfter;
+          if (!/^\d{1,6}$/.test(raw)) {
+            console.error(`Error: Invalid --retry-after '${raw}'. Expected a non-negative integer number of seconds (0-999999).`);
+            return EXIT_CODE_FAILURE;
+          }
+          retryAfterSeconds = Number(raw);
+        }
+
+        const haltUseCase = new HaltPipelineUseCase(stateRepo);
+        const haltResult = await haltUseCase.execute({
+          reason: 'quota',
+          retryAfterSeconds,
+          dryRun: options.dryRun
+        });
+
+        if (!haltResult.success) {
+          console.error(`✗ ${haltResult.message}`);
+          return EXIT_CODE_FAILURE;
+        }
+
+        if (options.json) {
+          // Single JSON document on stdout; anything diagnostic goes to stderr.
+          console.log(
+            JSON.stringify(
+              {
+                success: haltResult.success,
+                halted: haltResult.halted,
+                persisted: haltResult.persisted,
+                pausedAtGate: haltResult.pausedAtGate,
+                pausedAtTimestamp: haltResult.pausedAtTimestamp,
+                quotaResetAt: haltResult.quotaResetAt,
+                quotaResetEstimated: haltResult.quotaResetEstimated,
+                retryAfterSeconds: haltResult.retryAfterSeconds,
+                message: haltResult.message
+              },
+              null,
+              2
+            )
+          );
+          return EXIT_CODE_QUOTA_EXHAUSTED;
+        }
+
+        console.log('\n=== CodeLoop: Provider Quota Halt ===');
+        console.log(`${options.dryRun ? '[dry-run] ' : ''}✓ Quota halt recorded at the ${haltResult.pausedAtGate} gate — nothing is lost.`);
+        console.log(`  Paused At    : ${haltResult.pausedAtTimestamp ?? '(unknown)'}`);
+        console.log(`  Quota Resets : ${haltResult.quotaResetAt}${haltResult.quotaResetEstimated ? ' (estimated)' : ''}`);
+        console.log(`  Next Step    : run \`${QUOTA_RESUME_COMMAND}\` once the quota window resets.`);
+        console.log('');
+        return EXIT_CODE_QUOTA_EXHAUSTED;
+      } catch (err: unknown) {
+        console.error(`✗ Halt failed: ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
     }

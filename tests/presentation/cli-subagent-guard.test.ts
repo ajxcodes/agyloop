@@ -109,6 +109,13 @@ describe('CLI Subagent Guard', () => {
       assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
       assert.strictEqual(errorOutput.includes('Root agent is not allowed'), false);
     });
+
+    test('permits subagents to report quota via halt (issue #220 inbound channel)', async () => {
+      const exitCode = await runCli(['halt', '--reason', 'quota', '--dry-run']);
+      assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
+      assert.strictEqual(errorOutput.includes('Zero Direct Root Mutation'), false);
+      assert.strictEqual(exitCode, 2);
+    });
   });
 
   describe('When AGY_SUBAGENT is not set', () => {

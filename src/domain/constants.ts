@@ -325,6 +325,10 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   'yolo',
   'triage',
   'resume',
+  // `halt` persists a CIRCUIT_BREAKER pause like `resume` clears one — it must be
+  // listed here so the `AGY_SUBAGENT` root mutation guard covers it (with a
+  // carve-out in `cli.ts` so the runner-side caller is not blocked).
+  'halt',
   'release',
   'abort',
   null
@@ -1271,6 +1275,16 @@ export const COMMAND_SYNC = 'sync' as const;
 export const COMMAND_ABORT = 'abort' as const;
 export const COMMAND_INIT = 'init' as const;
 
+/**
+ * Inbound quota-halt channel (issue #220).
+ *
+ * An external agent runtime calls `codeloop halt --reason quota` when it
+ * observes a 429, persisting a `CIRCUIT_BREAKER` pause that `COMMAND_RESUME`
+ * (declared below) later clears. This restores reachability of the quota-halt
+ * state without wiring `AgentRunnerPort` into the lifecycle.
+ */
+export const COMMAND_HALT = 'halt' as const;
+
 export const FORGE_GITHUB = 'github' as const;
 export const FORGE_GITLAB = 'gitlab' as const;
 export const FORGE_GENERIC = 'generic' as const;
@@ -1319,7 +1333,8 @@ export const CLI_COMMANDS = Object.freeze({
   CRITIQUE: COMMAND_CRITIQUE,
   TRIAGE: COMMAND_TRIAGE,
   SYNC: COMMAND_SYNC,
-  ABORT: COMMAND_ABORT
+  ABORT: COMMAND_ABORT,
+  HALT: COMMAND_HALT
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
