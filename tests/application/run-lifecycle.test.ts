@@ -939,4 +939,188 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       );
     });
   });
+
+  describe('7. YOLO Discovery Park & Gate Guard (issue #234)', () => {
+    function buildYoloLifecycle(deps: any = {}): any {
+      return new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        buildDetector,
+        standardsRepo,
+        critique,
+        confirmationPrompt,
+        worktreeManager,
+        ...deps
+      });
+    }
+
+    function gateMustNotRun(): { useCase: any; calls: () => number } {
+      let calls = 0;
+      return {
+        useCase: {
+          execute: async () => {
+            calls++;
+            throw new Error('gate must not run');
+          }
+        },
+        calls: () => calls
+      };
+    }
+
+    function assertDiscoveryPark(result: any, gateCalls: () => number): void {
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, MODE_YOLO);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.qualityGateResult, undefined);
+      assert.strictEqual(result.worktree, undefined);
+      assert.strictEqual(gateCalls(), 0, 'quality gates must never run from DISCOVERY');
+      assert.ok(result.planResult, 'planning result must be surfaced');
+      assert.match(result.message, /codeloop next/);
+      assert.match(result.message, /codeloop resume/);
+    }
+
+    test('A1: --type discovery parks at DISCOVERY before resolveWorktree and the gates', async () => {
+      const gate = gateMustNotRun();
+      let createWorktreeCalls = 0;
+      const originalCreateWorktree = worktreeManager.createWorktree;
+      worktreeManager.createWorktree = async (params: any) => {
+        createWorktreeCalls++;
+        return originalCreateWorktree.call(worktreeManager, params);
+      };
+
+      try {
+        const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+        const result = await lifecycle.execute({
+          mode: MODE_YOLO,
+          issue: 32,
+          type: 'discovery',
+          workspaceDir: '/mock/workspace'
+        });
+
+        assertDiscoveryPark(result, gate.calls);
+        assert.strictEqual(createWorktreeCalls, 0, 'the park leg must return before resolveWorktree');
+        assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+        assert.strictEqual(stateRepo.savedSnapshot.mode, MODE_YOLO);
+      } finally {
+        worktreeManager.createWorktree = originalCreateWorktree;
+      }
+    });
+
+    test('A2: bug-family label classifies the task and parks at DISCOVERY', async () => {
+      const gate = gateMustNotRun();
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+
+      const originalFetchIssue = githubGateway.fetchIssue;
+      githubGateway.fetchIssue = async (...args: any[]) => {
+        const data = await originalFetchIssue.apply(githubGateway, args as [number]);
+        return { ...data, labels: ['bug'] };
+      };
+
+      try {
+        const result = await lifecycle.execute({
+          mode: MODE_YOLO,
+          issue: 32,
+          workspaceDir: '/mock/workspace'
+        });
+
+        assertDiscoveryPark(result, gate.calls);
+        assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+      } finally {
+        githubGateway.fetchIssue = originalFetchIssue;
+      }
+    });
+
+    test('A3: [bug]-style title parks at DISCOVERY without an issue', async () => {
+      const gate = gateMustNotRun();
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        title: '[bug] probe',
+        workspaceDir: '/mock/workspace'
+      });
+
+      assertDiscoveryPark(result, gate.calls);
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+    });
+
+    test('A4: worktree descriptor is persisted immediately after resolveWorktree (crash-safety)', async () => {
+      class HistoryStateRepository extends MockStateRepository {
+        public saved: any[] = [];
+
+        public async save(snapshot: any): Promise<void> {
+          this.saved.push(snapshot);
+          await super.save(snapshot);
+        }
+      }
+
+      const repo = new HistoryStateRepository();
+      let worktreeAtGateCall: any = undefined;
+      const crashingGate = {
+        execute: async () => {
+          worktreeAtGateCall = repo.savedSnapshot?.worktree ?? null;
+          throw new Error('simulated gate crash');
+        }
+      };
+
+      const lifecycle = new RunLifecycleUseCase({
+        stateRepo: repo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        buildDetector,
+        standardsRepo,
+        critique,
+        confirmationPrompt,
+        worktreeManager,
+        runQualityGateUseCase: crashingGate
+      });
+
+      await assert.rejects(
+        async () => {
+          await lifecycle.execute({ mode: MODE_YOLO, issue: 32, workspaceDir: '/mock/workspace' });
+        },
+        (err: unknown) => err instanceof Error && err.message === 'simulated gate crash'
+      );
+
+      assert.notStrictEqual(worktreeAtGateCall, null, 'descriptor must be persisted when the gate step runs');
+      assert.ok(
+        repo.saved.some((s: any) => s.currentStage === STAGE_PLAN && s.worktree !== null),
+        'a PLAN snapshot carrying the worktree must be saved right after resolveWorktree'
+      );
+      assert.ok(repo.savedSnapshot?.worktree?.worktreePath, 'final snapshot still carries the descriptor');
+    });
+
+    test('A5: unexpected stage at the gate step checkpoints and returns instead of throwing', async () => {
+      const gate = gateMustNotRun();
+      const implSpy = {
+        execute: async (): Promise<any> => ({
+          stateMachine: StateMachine.fromSnapshot(stateRepo.savedSnapshot)
+        })
+      };
+      const lifecycle = buildYoloLifecycle({
+        runQualityGateUseCase: gate.useCase,
+        startImplementationUseCase: implSpy
+      });
+
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.currentStage, STAGE_PLAN);
+      assert.strictEqual(gate.calls(), 0, 'gate use case must be unreachable from PLAN');
+      assert.match(result.message, /codeloop next/);
+      assert.doesNotMatch(result.message, /Cannot run quality gates from stage/);
+      assert.ok(stateRepo.savedSnapshot, 'checkpoint must be persisted');
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
+    });
+  });
 });

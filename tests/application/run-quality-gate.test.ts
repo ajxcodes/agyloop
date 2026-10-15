@@ -12,7 +12,9 @@ const {
   STAGE_COMMIT,
   STAGE_COMPLETED,
   STAGE_PLAN,
+  STAGE_DISCOVERY,
   MODE_STANDARD,
+  MODE_YOLO,
   STATUS_PASSED,
   STATUS_FAILED,
   InvalidTransitionError,
@@ -393,6 +395,42 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       }
     );
 
+  });
+
+  test('rejects execution from DISCOVERY so wrong-stage remediation stays caller-side (issue #234)', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_DISCOVERY,
+      mode: MODE_YOLO,
+      issue: 20,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor();
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor
+    );
+
+    await assert.rejects(
+      async () => {
+        await useCase.execute({ issue: 20 });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof InvalidTransitionError);
+        assert.strictEqual((err as InvalidTransitionError).code, 'ERR_INVALID_TRANSITION');
+        assert.ok((err as Error).message.includes(`Cannot run quality gates from stage 'DISCOVERY'`));
+        return true;
+      }
+    );
   });
 
   test('supports resuming from QUALITY_GATE stage', async () => {

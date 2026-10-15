@@ -69,6 +69,7 @@ import {
   MilestoneSealedError,
   QuotaExhaustedError,
   CircuitBreakerTrippedError,
+  InvalidTransitionError,
   QUOTA_RESUME_COMMAND,
   StateMachine,
   IssueNumber,
@@ -1737,6 +1738,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
+        // #234: yolo can halt before gates (bug issues parked at DISCOVERY, or the
+        // wrong-stage guard checkpoint). Surface `result.message` + standard guidance
+        // instead of falling through to the "gates and review passed" copy below.
+        if (!result.qualityGateResult && !result.reviewResult && !result.executeCommitResult) {
+          if (result.planResult?.scaffoldInfo) {
+            console.log(`📁 Initialized plan directory: artifacts/plans/${result.planResult.scaffoldInfo.folderName}/`);
+          }
+          console.log(`\n${result.success ? '⏸' : '🛑'} ${result.message ?? `YOLO fast-path halted at ${result.currentStage}.`}\n`);
+          return result.success ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
+        }
+
         if (result.planResult?.scaffoldInfo) {
           const info = result.planResult.scaffoldInfo;
           console.log(`📁 Initialized plan directory: artifacts/plans/${info.folderName}/`);
@@ -1795,6 +1807,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
         if (err instanceof MilestoneSealedError) {
           console.error(`\n🛑 ${err.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
+        // #234: a wrong-stage transition that still escapes a use case gets the
+        // standard checkpoint guidance instead of a bare `✗`.
+        if (err instanceof InvalidTransitionError) {
+          console.error(`\n🛑 ${err.message}`);
+          console.error(`State is checkpointed — run \`codeloop next\` for the next directive or \`${RESUME_COMMAND}\` to clear a pause.\n`);
           return EXIT_CODE_FAILURE;
         }
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
