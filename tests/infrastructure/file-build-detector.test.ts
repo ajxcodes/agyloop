@@ -5,6 +5,7 @@
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
+const net = require('node:net');
 const path = require('path');
 const os = require('os');
 
@@ -479,6 +480,128 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
         childProcess.spawnSync = originalSpawnSync;
         Object.defineProperty(process, 'platform', { value: originalPlatform });
       }
+    });
+  });
+
+  describe('DOCKER_HOST endpoint resolution (Issue #232)', () => {
+    const savedEnv: { DOCKER_HOST?: string; XDG_RUNTIME_DIR?: string } = {};
+
+    beforeEach(() => {
+      savedEnv.DOCKER_HOST = process.env.DOCKER_HOST;
+      savedEnv.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+      // Isolate the podman branch with an empty XDG runtime dir
+      process.env.XDG_RUNTIME_DIR = path.join(tempDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+    });
+
+    afterEach(() => {
+      if (savedEnv.DOCKER_HOST === undefined) delete process.env.DOCKER_HOST;
+      else process.env.DOCKER_HOST = savedEnv.DOCKER_HOST;
+      if (savedEnv.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
+    });
+
+    /**
+     * Runs `body` with `/var/run/docker.sock` stubbed absent (host-machine determinism)
+     * and `console.warn` captured. ALWAYS restores both in a finally block (rule: sibling
+     * tests share the same process, so stubs must never leak).
+     */
+    async function withIsolatedFs<T>(body: (warnings: string[]) => T): Promise<T> {
+      const originalExistsSync = fs.existsSync;
+      const originalWarn = console.warn;
+      const warnings: string[] = [];
+      fs.existsSync = (p: any) => (String(p) === '/var/run/docker.sock' ? false : originalExistsSync(p));
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(' '));
+      };
+      try {
+        return await body(warnings);
+      } finally {
+        fs.existsSync = originalExistsSync;
+        console.warn = originalWarn;
+      }
+    }
+
+    test('T1: dead DOCKER_HOST unix socket resolves to null with a warning', async () => {
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      await withIsolatedFs(async (warnings) => {
+        assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
+        assert.ok(warnings.some((w) => w.includes('DOCKER_HOST') && w.includes('missing socket')));
+      });
+    });
+
+    test('T2: DOCKER_HOST pointing at a non-socket path resolves to null with a warning', async () => {
+      const regularFile = path.join(tempDir, 'not-a-socket');
+      fs.writeFileSync(regularFile, 'definitely not a socket', 'utf8');
+      process.env.DOCKER_HOST = `unix://${regularFile}`;
+
+      await withIsolatedFs(async (warnings) => {
+        assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
+        assert.ok(warnings.some((w) => w.includes('DOCKER_HOST') && w.includes('not a socket')));
+      });
+    });
+
+    test('T3: live unix socket passes through verbatim with runtime docker', async () => {
+      const liveSock = path.join(tempDir, 'live.sock');
+      process.env.DOCKER_HOST = `unix://${liveSock}`;
+      const server = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(liveSock, resolve);
+      });
+      try {
+        await withIsolatedFs(async () => {
+          assert.deepStrictEqual(FileBuildDetector.resolveContainerSocket(), {
+            socketPath: `unix://${liveSock}`,
+            runtime: 'docker'
+          });
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        fs.rmSync(liveSock, { force: true });
+      }
+    });
+
+    test('T4: non-unix DOCKER_HOST schemes pass through unchanged', async () => {
+      process.env.DOCKER_HOST = 'tcp://127.0.0.1:2375';
+
+      await withIsolatedFs(async () => {
+        assert.deepStrictEqual(FileBuildDetector.resolveContainerSocket(), {
+          socketPath: 'tcp://127.0.0.1:2375',
+          runtime: 'docker'
+        });
+      });
+    });
+
+    test('T5: DOCKER_HOST unset with no local sockets resolves to null', async () => {
+      delete process.env.DOCKER_HOST;
+
+      await withIsolatedFs(async () => {
+        assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
+      });
+    });
+
+    test('T6: dead DOCKER_HOST skips the act gate and falls back to host commands', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      const detector = new FileBuildDetector();
+      detector.hasActBinary = () => true;
+      const config = {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+      };
+
+      await withIsolatedFs(async () => {
+        assert.strictEqual(detector.resolveActCommand(tempDir, config), null);
+
+        const resolved = await detector.resolveCommands(tempDir, config);
+        assert.strictEqual(resolved.length, 1);
+        assert.strictEqual(resolved[0].command, 'npm test');
+        assert.ok(resolved.every((c: { id: string }) => c.id !== CMD_ID_ACT));
+      });
     });
   });
 });

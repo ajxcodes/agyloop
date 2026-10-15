@@ -611,7 +611,13 @@ export class FileBuildDetector implements BuildDetectorPort {
    * Resolves the container daemon socket path and type.
    * Priority:
    * 1. Podman socket: unix://$XDG_RUNTIME_DIR/podman/podman.sock or /run/user/<uid>/podman/podman.sock
-   * 2. Docker socket: /var/run/docker.sock or DOCKER_HOST env
+   * 2. Docker host env: DOCKER_HOST — unix-style endpoints (`unix://…` or a bare absolute
+   *    path) are verified against the filesystem (must exist and be a socket) before being
+   *    returned; on failure a `[agyloop] Warning: …` is emitted on stderr and resolution
+   *    falls through to the /var/run/docker.sock check. Non-unix schemes (`tcp://`, `ssh://`,
+   *    `http(s)://`, …) cannot be verified via the filesystem and pass through unchanged.
+   * 3. Docker socket: /var/run/docker.sock
+   * Returns null (container gate skipped) when no verifiable socket is available.
    */
   public static resolveContainerSocket(): { socketPath: string; runtime: 'podman' | 'docker' } | null {
     // Check Podman socket
@@ -623,9 +629,28 @@ export class FileBuildDetector implements BuildDetectorPort {
       }
     }
 
-    // Check Docker Host env
-    if (process.env.DOCKER_HOST) {
-      return { socketPath: process.env.DOCKER_HOST, runtime: 'docker' };
+    // Check Docker Host env (guard unix sockets; pass through remote endpoints)
+    const dockerHost = process.env.DOCKER_HOST;
+    if (dockerHost) {
+      const unixPath = dockerHost.startsWith('unix://')
+        ? dockerHost.slice('unix://'.length)
+        : dockerHost.startsWith('/') ? dockerHost : null;
+
+      if (unixPath === null) {
+        // tcp://, ssh://, http(s):// — not verifiable via filesystem; preserve legacy pass-through
+        return { socketPath: dockerHost, runtime: 'docker' };
+      }
+
+      try {
+        const st = fs.statSync(unixPath); // statSync (not lstat) follows symlinks
+        if (st.isSocket()) {
+          return { socketPath: dockerHost, runtime: 'docker' };
+        }
+        console.warn(`[agyloop] Warning: DOCKER_HOST '${dockerHost}' exists but is not a socket; skipping container gate.`);
+      } catch {
+        console.warn(`[agyloop] Warning: DOCKER_HOST '${dockerHost}' points at a missing socket; skipping act container gate.`);
+      }
+      // fall through to /var/run/docker.sock (and ultimately null)
     }
 
     // Check standard Docker socket

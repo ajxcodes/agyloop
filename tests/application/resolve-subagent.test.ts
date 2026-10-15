@@ -6,6 +6,9 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const {
   ResolveSubagentUseCase,
@@ -14,6 +17,7 @@ const {
   MAX_INLINE_DIFF_LINES,
   ANTI_INCEPTION_GUARDRAIL
 } = require('../../dist/application');
+const { FileBuildDetector } = require('../../dist/infrastructure');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 const { RESOLVER_SOURCE_USER_DATA, RESOLVER_SOURCE_NONE } = require('../../dist/domain');
 
@@ -300,6 +304,38 @@ index 1111111..2222222 100644
       assert.ok(prompt.includes('Empirical Verification Fallback'));
       assert.ok(prompt.includes('Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing.'));
       assert.ok(!prompt.includes('Strict Container-Only Guardrail'));
+    });
+
+    test('T8: real detector with a dead DOCKER_HOST dispatches the fallback prompt (AC-5 / Issue #232)', () => {
+      const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-sub-232-'));
+      const savedEnv = { DOCKER_HOST: process.env.DOCKER_HOST, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR };
+      const originalExistsSync = fs.existsSync;
+      try {
+        process.env.DOCKER_HOST = `unix://${path.join(workspaceDir, 'missing.sock')}`;
+        process.env.XDG_RUNTIME_DIR = path.join(workspaceDir, 'xdg');
+        fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+        // Stub only the standard docker socket for host determinism; delegate everything else
+        fs.existsSync = (p: any) => (String(p) === '/var/run/docker.sock' ? false : originalExistsSync(p));
+
+        const detector = new FileBuildDetector();
+        const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, undefined, detector);
+
+        const prompt = useCase.buildDiscoveryTaskPrompt({
+          issueNumber: 119,
+          containerRuntime: 'docker'
+        });
+
+        assert.ok(prompt.includes('Empirical Verification Fallback'));
+        assert.ok(prompt.includes('Container runtime/daemon is unavailable'));
+        assert.ok(!prompt.includes('Strict Container-Only Guardrail'));
+      } finally {
+        fs.existsSync = originalExistsSync;
+        if (savedEnv.DOCKER_HOST === undefined) delete process.env.DOCKER_HOST;
+        else process.env.DOCKER_HOST = savedEnv.DOCKER_HOST;
+        if (savedEnv.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
+        else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
+        fs.rmSync(workspaceDir, { recursive: true, force: true });
+      }
     });
   });
 });
