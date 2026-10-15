@@ -585,14 +585,13 @@ new file mode 100644
       assert.strictEqual(worktreeManager.removedWorktreeOptions.worktreePath, '/mock/repo/.worktrees/48');
     });
 
-    test('executes defensive git rm --cached after git add -A to untrack symlinks', async () => {
+    test('executes defensive git rm --cached with --ignore-unmatch after git add -A to untrack symlinks', async () => {
       const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
       executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
       executor.responses['git add -A'] = { exitCode: 0 };
-      executor.responses['git rm --cached -rf .agyloop node_modules artifacts || true'] = { exitCode: 0 };
       executor.responses['git commit -m "feat(scope): defensive untrack test (#30)"'] = { exitCode: 0 };
       executor.responses['git rev-parse HEAD'] = { stdout: 'deadbeef1234\n' };
 
@@ -608,14 +607,78 @@ new file mode 100644
 
       await useCase.execute({ commitMessage: commitMsg });
 
-      // Verify git add -A was called
       assert.ok(executor.executedCommands.includes('git add -A'));
 
-      // Verify defensive git rm --cached ran after git add -A
+      // The guard must run after git add -A (otherwise it untracks nothing).
       const addIdx = executor.executedCommands.indexOf('git add -A');
-      const rmIdx = executor.executedCommands.indexOf('git rm --cached -rf .agyloop node_modules artifacts || true');
-      assert.ok(rmIdx !== -1, 'git rm --cached command should have been executed');
-      assert.ok(rmIdx > addIdx, 'git rm --cached should run after git add -A');
+      const rmCallIdx = executor.executedCommands.findIndex(
+        (cmd, i) =>
+          cmd === 'git' &&
+          Array.isArray(executor.executedOptions[i]?.args) &&
+          executor.executedOptions[i].args[0] === 'rm'
+      );
+      assert.ok(rmCallIdx !== -1, 'git rm --cached should have been executed via argv');
+      assert.ok(rmCallIdx > addIdx, 'git rm --cached should run after git add -A');
+
+      // Regression guard (#102): without --ignore-unmatch, `git rm --cached` aborts with
+      // "fatal: pathspec 'node_modules' did not match any files" on the FIRST untracked
+      // pathspec, leaving .agyloop staged. Asserted on the argv, not the command string,
+      // because the old implementation drove git through a shell string.
+      const rmArgs = executor.executedOptions[rmCallIdx].args;
+      assert.deepStrictEqual(
+        rmArgs,
+        ['rm', '--cached', '-rf', '--ignore-unmatch', '.agyloop', 'node_modules', 'artifacts'],
+        'untrack guard must pass --ignore-unmatch so unmatched pathspecs cannot abort it'
+      );
+
+      // The old guard appended `|| true`, which turned the fatal into a silent success.
+      assert.ok(
+        !executor.executedOptions[rmCallIdx].args.includes('||'),
+        'untrack guard must not rely on a shell `|| true` escape'
+      );
+    });
+
+    test('fails closed when the defensive untrack guard exits non-zero', async () => {
+      // Guards the other half of #102: the old command swallowed every failure via `|| true`,
+      // so a real error (locked index, permission denied) let the commit proceed and publish
+      // the .agyloop symlink anyway. The guard must abort the commit instead.
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      sm.setIssue(31);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git'] = {
+        exitCode: 128,
+        stderr: "fatal: Unable to create '.git/index.lock': File exists."
+      };
+
+      const prompter = new MockConfirmationPrompt(true);
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, undefined, prompter);
+
+      const commitMsg = CommitMessage.create({
+        type: 'feat',
+        scope: 'scope',
+        description: 'untrack guard failure test',
+        issueNumber: 31
+      });
+
+      await assert.rejects(
+        () => useCase.execute({ commitMessage: commitMsg }),
+        (err: any) => {
+          assert.ok(err instanceof CommitExecutionError);
+          assert.strictEqual(err.operation, 'git rm --cached');
+          return true;
+        }
+      );
+
+      // Must never reach the commit.
+      assert.ok(
+        !executor.executedCommands.includes(
+          'git commit -m "feat(scope): untrack guard failure test (#31)"'
+        ),
+        'commit must not proceed after the untrack guard fails'
+      );
     });
 
     test('pushes active task branch to remote on successful commit', async () => {

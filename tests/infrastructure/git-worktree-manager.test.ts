@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { GitWorktreeManager } = require('../../dist/infrastructure');
-const { WorktreeCreationError } = require('../../dist/domain');
+const { WorktreeCreationError, INIT_GITIGNORE_RULES } = require('../../dist/domain');
 
 import type { CommandExecutorPort, CommandExecutionResult } from '../../src/ports';
 
@@ -65,6 +65,43 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     const content = fs.readFileSync(path.join(tmpDir, '.gitignore'), 'utf8');
     assert.ok(content.includes('node_modules/'));
     assert.ok(content.includes('.worktrees'));
+  });
+
+  test('repo .gitignore keeps a bare .agyloop entry so a symlinked state dir stays ignored', () => {
+    // #102 regression: 19f00f7 (#216/#217) replaced the bare `.agyloop` entry with granular
+    // `.agyloop/...` rules. Those rules can never match a symlinked state dir -- git records it
+    // as mode 120000 (a file), so `git add -A` staged it and it landed in the open PR. A trailing
+    // slash would not help either: it matches directories only.
+    const content = fs.readFileSync(path.resolve(__dirname, '..', '..', '.gitignore'), 'utf8');
+    const lines = content.split(/\r?\n/);
+
+    assert.ok(
+      lines.includes('.agyloop'),
+      'repo .gitignore must contain a bare `.agyloop` entry (no trailing slash)'
+    );
+    assert.ok(
+      !lines.includes('.agyloop/'),
+      'a trailing-slash rule would not match a symlink and must not be the only entry'
+    );
+
+    // Granular rules are still meaningful and must be retained alongside the bare entry.
+    for (const rule of [
+      '.agyloop/state.json',
+      '.agyloop/tasks/',
+      '.agyloop/locks/',
+      '.agyloop/logs/',
+      '.agyloop/critique-update-cache.json',
+      '.agyloop/*.bak'
+    ]) {
+      assert.ok(lines.includes(rule), `granular rule ${rule} must be retained`);
+    }
+
+    // The bare entry is repo-scoped only; consumer scaffolding must stay granular so that
+    // `.agyloop/config.json` remains trackable (INIT_GITIGNORE_RULES).
+    assert.ok(
+      !INIT_GITIGNORE_RULES.includes('.agyloop'),
+      'consumer-project scaffolding must not gain a blanket .agyloop rule'
+    );
   });
 
   test('ensureGitIgnore does not re-add blanket .agyloop when granular state rules exist', async () => {
