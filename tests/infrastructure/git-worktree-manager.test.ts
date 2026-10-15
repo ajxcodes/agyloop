@@ -338,7 +338,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
-        if (cmd.includes('git branch')) {
+        if (cmd.includes('git branch -a --format')) {
           return makeResult(cmd, { stdout: 'task/87\n', combinedOutput: 'task/87' });
         }
         if (cmd.includes('git worktree list --porcelain')) {
