@@ -33,6 +33,22 @@ export const STAGES = Object.freeze({
 
 export type StageName = typeof STAGES[keyof typeof STAGES];
 
+/**
+ * Which lifecycle sources may reach which lifecycle targets.
+ *
+ * `COMPLETED` is intentionally reachable ONLY from `COMMIT` and `TRIAGE` — the two
+ * verified pipeline ends, both of which have passed `QUALITY_GATE` and `REVIEW`.
+ * The honest restore path from `COMPLETED` back to itself is
+ * `COMPLETED -> REVIEW -> COMMIT -> COMPLETED` (3 legal hops, per COMPLETED's own
+ * target list below), so an operator who genuinely completed a task can always
+ * return to a COMPLETED checkpoint without widening this table.
+ *
+ * Widening it (e.g. adding `COMPLETED` to IMPLEMENT's targets) was deliberately
+ * rejected: it would make `codeloop transition COMPLETED` a one-keystroke way to
+ * mark unverified, uncommitted work as complete, which `skills/agyloop/SKILL.md`
+ * forbids. Entering COMPLETED is bookkeeping, never a worktree teardown — see
+ * `src/application/lifecycle-reentry-policy.ts` and issue #237.
+ */
 export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[]>> = Object.freeze({
   [STAGE_INITIALIZED]: Object.freeze([STAGE_DISCOVERY, STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN, STAGE_TRIAGE]),
@@ -552,6 +568,96 @@ export const REGEX_ERROR_BANNER = /(?:FAIL|ERROR|FAILURE|✖|×)\s+(.+)/;
 export const REGEX_NOISE_NODE_INTERNAL = /(?:node:internal\/|\/node_modules\/)/;
 export const REGEX_NOISE_NPM_ERR = /^npm\s+ERR!/;
 export const REGEX_NOISE_PASSING = /^\s*(?:✔|√|PASS|ok\s+\d+)\s+/;
+
+// Markdown "bold key" bullets: `- **Key:**` (unfilled) versus `- **Key:** value`
+// (filled). Used by `DiscoveryReport` to tell an untouched template scaffold from
+// a discovery report a subagent actually wrote. Deliberately template-agnostic:
+// the predicate never names a specific section key, so it survives the repository
+// drifting its `templates/discovery-plan.md`.
+//
+// Both carry the `g` flag, so `RegExp.prototype.test()` is STATEFUL (it advances
+// `lastIndex` and would alternate true/false on repeated calls). Always use
+// `String.prototype.match()` with these — `match` on a global regex resets
+// `lastIndex` first and returns the full match array, so it is safe to call
+// repeatedly on the same instance.
+export const REGEX_MD_UNFILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+:\*\*[ \t]*$/gm;
+export const REGEX_MD_FILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+:\*\*[ \t]*\S/gm;
+
+/**
+ * The `- ` / `* ` / `+ ` list marker of a bullet, plus the whitespace after it.
+ * Split out of `DiscoveryReport` so the inline copy cannot drift from
+ * `REGEX_MD_UNFILLED_KEY_BULLET`'s own `[-*+][ \t]*` prefix.
+ */
+export const REGEX_MD_BULLET_PREFIX = /^[-*+][ \t]*/;
+
+/**
+ * The `**Key:**` header of a bold-key bullet, without the leading list marker.
+ * Paired with `REGEX_MD_BULLET_PREFIX` to recover the human-readable key name.
+ */
+export const REGEX_MD_BOLD_KEY = /^\*\*(.+?):\*\*/;
+
+/**
+ * A line that continues the bullet above it: leading whitespace, then content.
+ *
+ * Why `DiscoveryReport` needs it: planning subagents habitually write a key's
+ * value as an indented sub-list on the FOLLOWING lines —
+ *
+ *     - **Relevant Code References:**
+ *       - `src/application/start-planning.ts`
+ *
+ * — which both key-bullet regexes above (anchored to a single line) score as
+ * "unfilled". That shape is the norm, not the exception, so ignoring it parked
+ * 80% of this repository's own genuine RCA reports.
+ */
+export const REGEX_MD_INDENTED_CONTINUATION = /^[ \t]+\S/;
+
+/**
+ * A fenced code block: an opening ``` / ~~~ fence (3+ markers, optional
+ * indentation, optional info string), its payload, and a closing fence of the
+ * same marker. An unterminated fence runs to end-of-document.
+ *
+ * Why `DiscoveryReport` strips these before matching: a real discovery report
+ * routinely QUOTES the pristine template it is filling in — the report for
+ * issue 237 reproduces the empty `- **Key:**` scaffold inside a fence to show
+ * what was replaced. Matching over the raw text scored such a report
+ * "unpopulated" purely because of code it was quoting.
+ *
+ * Two non-obvious details keep it honest: the closing marker is a backreference
+ * (`\1`) so a ```` fence may contain ``` lines, and the unterminated branch is
+ * anchored with `(?![\s\S])` rather than `$` so a stray trailing fence line can
+ * never swallow the rest of the document.
+ */
+export const REGEX_MD_FENCED_CODE_BLOCK = /^[ \t]*(`{3,}|~{3,})[^\n]*(?:\r?\n[\s\S]*?\r?\n[ \t]*\1[^\n]*(?=\r?\n|(?![\s\S]))|[\s\S]*(?![\s\S]))/gm;
+
+// Content thresholds for `DiscoveryReport.isPopulated`: a document shorter than
+// DISCOVERY_REPORT_MIN_CHARS cannot be a real RCA, a report carrying fewer than
+// DISCOVERY_REPORT_MIN_FILLED_KEYS has not described the failure, and one
+// leaving more than DISCOVERY_REPORT_MAX_UNFILLED_KEYS placeholders blank is
+// still an unfinished scaffold.
+export const DISCOVERY_REPORT_MIN_CHARS = 200;
+export const DISCOVERY_REPORT_MIN_FILLED_KEYS = 3;
+/**
+ * How many unfilled placeholder keys a genuine discovery report may still carry
+ * and be accepted.
+ *
+ * The original rule was `unfilled === 0` and it was wrong: real reports
+ * routinely leave a heading unpopulated while still containing the whole
+ * analysis. A hard zero parked 80% of this repository's genuine reports and
+ * left `--skip-discovery` as the operator's only way through — exactly the
+ * bypass the RCA gate exists to keep explicit and rare.
+ *
+ * The value 2 is the OBSERVED MAXIMUM across this repository's own discovery
+ * reports (histogram over `artifacts/plans`: 20 genuine reports @ 0 blank
+ * keys, 1 @ 2, plus 48 pristine scaffolds @ 10). It is deliberately set to
+ * that maximum rather than a round number: any lower value reintroduces a
+ * false negative on a real report, and any higher one admits a scaffold that
+ * a subagent barely touched.
+ *
+ * Bounded rather than removed, so the control keeps its teeth: a pristine
+ * scaffold from `templates/discovery-plan.md` leaves all 10 placeholder keys
+ * blank and stays parked.
+ */
+export const DISCOVERY_REPORT_MAX_UNFILLED_KEYS = 2;
 
 // Ecosystem Identifiers
 export const ECOSYSTEM_NODE = 'node' as const;
@@ -1261,6 +1367,19 @@ export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as c
 export const NOTE_PAUSED_TRIAGE_GATE = 'Paused at PR review comments triage gate' as const;
 export const NOTE_YOLO_PARKED_AT_DISCOVERY =
   'Bug issue parked at DISCOVERY for RCA — YOLO cannot dispatch subagents inline. Run `codeloop next` to dispatch the discovery subagent, then re-run `codeloop yolo` (use `codeloop resume` first if a pause is recorded). State is checkpointed; nothing is lost.' as const;
+/**
+ * Re-entry park (issue #237): distinct from NOTE_YOLO_PARKED_AT_DISCOVERY because
+ * the operator DID re-run after the park, so the outstanding work is the RCA
+ * report itself rather than "dispatch the discovery subagent".
+ */
+export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
+  'Parked at DISCOVERY for RCA: the discovery report is still an unpopulated scaffold. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run (`codeloop resume` first if a pause is recorded). Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
+/**
+ * Recorded in history metadata when `codeloop next --restart` re-opens a
+ * COMPLETED checkpoint, so the destructive reset is auditable from `status`.
+ */
+export const NOTE_RESTARTED_FROM_COMPLETED =
+  'Re-opened planning from a COMPLETED checkpoint (explicit --restart)' as const;
 export const NOTE_TRIAGE_ROUTED = 'Triage completed: routed to target stage' as const;
 export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
 export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;

@@ -16,6 +16,7 @@ const {
   STAGE_COMPLETED,
   MODE_PLAN,
   MODE_STANDARD,
+  MODE_YOLO,
   PreFlightHaltError,
   SUMMARY_STAGE_DISCOVERY,
   SUMMARY_STAGE_PLAN_REVIEW,
@@ -104,9 +105,40 @@ class MockConfigRepository implements ConfigRepository {
 class MockPlanGenerator implements PlanGeneratorPort {
   public summaryUpdates: any[] = [];
   public scaffoldedParams: ScaffoldParams | null = null;
+  /**
+   * null by default: the generator cannot resolve a plan for a fresh directory.
+   * Set to a location (plus `planDocument`) to simulate a discovery report that
+   * actually exists on disk — the content evidence `resolveDiscoveryReentry`
+   * needs before it will advance a DISCOVERY checkpoint (issue #237).
+   */
+  public resolvedPlan: any = null;
+  public planDocument = '';
+  /**
+   * Optional per-path override, so a test can make the scaffold's discovery
+   * report and the file `resolvePlanFile` hands back differ — which is exactly
+   * what happens on a real bug task (see `hasPopulatedDiscoveryReport`).
+   */
+  public planDocumentByPath: Record<string, string> = {};
+  /**
+   * When set, `scaffoldPlanDirectory` reports this planDir instead of the
+   * default. Used to reproduce BLOCKER 2: a re-entry whose re-derived slug
+   * differs from the seed, so the scaffold lands in a different directory.
+   */
+  public scaffoldPlanDirOverride: string | null = null;
 
   public scaffoldPlanDirectory(params: ScaffoldParams): ScaffoldResult {
     this.scaffoldedParams = params;
+    if (this.scaffoldPlanDirOverride) {
+      const planDir = this.scaffoldPlanDirOverride;
+      return {
+        planDir,
+        folderName: planDir.split('/').pop() as string,
+        planPath: `${planDir}/[Discovery] - ${params.title ?? 'Task Plan'}.md`,
+        mirrorPath: `${planDir}/implementation_plan.md`,
+        summaryPath: `${planDir}/Summary.md`,
+        type: params.type === 'discovery' ? 'discovery' : 'implementation'
+      };
+    }
     return {
       planDir: '/fake/plans/10',
       folderName: '10',
@@ -135,11 +167,14 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 
   public resolvePlanFile(): any {
-    return null;
+    return this.resolvedPlan;
   }
 
-  public readPlanDocument(): string {
-    return '';
+  public readPlanDocument(planPath?: string): string {
+    if (planPath && Object.prototype.hasOwnProperty.call(this.planDocumentByPath, planPath)) {
+      return this.planDocumentByPath[planPath];
+    }
+    return this.planDocument;
   }
 }
 
@@ -288,6 +323,37 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
     stateRepo.savedSnapshot = sm.toSnapshot();
 
+    // A discovery subagent actually ran: the report on disk carries content.
+    // This is the evidence `resolveDiscoveryReentry` requires before it will
+    // advance a checkpoint that is already resting at DISCOVERY (issue #237).
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/10',
+      planPath: '/fake/plans/10/[Discovery] - Fix crash on login screen.md',
+      planFileName: '[Discovery] - Fix crash on login screen.md',
+      summaryPath: '/fake/plans/10/Summary.md'
+    };
+    planGenerator.planDocument = [
+      '# [Discovery] - Fix crash on login screen',
+      '',
+      '## 1. Problem Statement & Symptoms',
+      '- **Observed Behavior:** app crashes when the login button is clicked',
+      '- **Expected Behavior:** the login form renders with a validation error',
+      '- **Affected Components / Paths:** src/login.ts',
+      '',
+      '## 2. Root Cause Analysis (RCA)',
+      '- **Investigation Steps:** read src/login.ts end to end',
+      '- **Identified Failure Mode:** nil dereference of the session resolver',
+      '- **Relevant Code References:** src/login.ts:41',
+      '',
+      '## 3. Reproduction Steps & Verification Protocol',
+      '- **Local Reproduction Command:** npm test -- --grep login',
+      '- **Failing Test Target:** tests/login.test.ts',
+      '',
+      '## 4. Remediation Strategy',
+      '- **Recommended Fix Approach:** guard the resolver result before use',
+      '- **Potential Regressions / Side Effects:** none'
+    ].join('\n');
+
     const useCase = new StartPlanningUseCase(
       stateRepo,
       githubGateway,
@@ -300,6 +366,7 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     });
 
     assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_DISCOVERY), true);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
@@ -314,6 +381,206 @@ describe('StartPlanningUseCase (Application Layer)', () => {
       planGenerator.summaryUpdates.some(
         (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_IN_PROGRESS
       )
+    );
+  });
+
+  test('parks at DISCOVERY on re-entry when the discovery report is still an unpopulated scaffold', async () => {
+    githubGateway.issueToReturn = {
+      repo: 'owner/repo',
+      number: 11,
+      title: 'Fix crash on login screen',
+      body: 'App crashes when login button is clicked',
+      labels: ['bug', 'defect'],
+      comments: [],
+      state: 'OPEN'
+    };
+
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 11 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    // The generator CAN resolve a discovery file — the pristine scaffold the
+    // park is about — but its content carries no filled key bullets.
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/10',
+      planPath: '/fake/plans/10/[Discovery] - Fix crash on login screen.md',
+      planFileName: '[Discovery] - Fix crash on login screen.md',
+      summaryPath: '/fake/plans/10/Summary.md'
+    };
+    planGenerator.planDocument = [
+      '# [Discovery] - Fix crash on login screen',
+      '',
+      '## 1. Problem Statement & Symptoms',
+      '- **Observed Behavior:**',
+      '- **Expected Behavior:**',
+      '- **Affected Components / Paths:**',
+      '',
+      '## 2. Root Cause Analysis (RCA)',
+      '- **Investigation Steps:**',
+      '- **Identified Failure Mode:**',
+      '- **Relevant Code References:**'
+    ].join('\n');
+
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+
+    const result = await useCase.execute({ issue: 11, mode: MODE_YOLO });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(
+      result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN),
+      false,
+      'a parked re-entry must gain no PLAN history entry'
+    );
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+
+    // The existing summary-log leg still records Discovery / IN PROGRESS, and
+    // nothing claims the plan review started.
+    assert.ok(
+      planGenerator.summaryUpdates.some(
+        (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY && u.updateData.status === SUMMARY_STATUS_IN_PROGRESS
+      )
+    );
+    assert.ok(
+      !planGenerator.summaryUpdates.some((u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW)
+    );
+  });
+
+  test('a read failure while loading the discovery report fails closed to the park', async () => {
+    githubGateway.issueToReturn = {
+      repo: 'owner/repo',
+      number: 11,
+      title: 'Fix crash on login screen',
+      body: 'App crashes when login button is clicked',
+      labels: ['bug', 'defect'],
+      comments: [],
+      state: 'OPEN'
+    };
+
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 11 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/10',
+      planPath: '/fake/plans/10/unreadable.md',
+      planFileName: 'unreadable.md'
+    };
+    planGenerator.readPlanDocument = (): string => {
+      throw new Error('EACCES: permission denied');
+    };
+
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+
+    const result = await useCase.execute({ issue: 11, mode: MODE_YOLO });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+  });
+
+  test('the scaffolded discovery report is the evidence, not the implementation mirror the resolver returns', async () => {
+    githubGateway.issueToReturn = {
+      repo: 'owner/repo',
+      number: 11,
+      title: 'Fix crash on login screen',
+      body: 'App crashes when login button is clicked',
+      labels: ['bug', 'defect'],
+      comments: [],
+      state: 'OPEN'
+    };
+
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 11 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    // `resolvePlanFile` picks the `implementation_plan.md` alias out of the
+    // DISCOVERY candidate list, which is the PRISTINE mirror — not the RCA.
+    const populated = [
+      '# [Discovery] - Fix crash on login screen',
+      '- **Observed Behavior:** crash on login with an empty cookie jar',
+      '- **Expected Behavior:** the login form renders a validation error',
+      '- **Affected Components / Paths:** src/login.ts',
+      '- **Investigation Steps:** read src/login.ts end to end',
+      '- **Identified Failure Mode:** nil dereference of the session resolver',
+      '- **Relevant Code References:** src/login.ts:41',
+      '- **Local Reproduction Command:** npm test -- --grep login',
+      '- **Failing Test Target:** tests/login.test.ts',
+      '- **Recommended Fix Approach:** guard the resolver result',
+      '- **Potential Regressions / Side Effects:** none'
+    ].join('\n');
+    planGenerator.planDocumentByPath = {
+      // The scaffold's own discovery report (the file the discovery subagent wrote).
+      '/fake/plans/10/plan.md': populated,
+      // The pristine mirror the port's own resolution points at.
+      '/fake/plans/10/implementation_plan.md': '- **Observed Behavior:**\n- **Expected Behavior:**\n'
+    };
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/10',
+      planPath: '/fake/plans/10/implementation_plan.md',
+      planFileName: 'implementation_plan.md'
+    };
+
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+
+    const result = await useCase.execute({ issue: 11, mode: MODE_YOLO });
+
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+  });
+
+  test('skipDiscovery short-circuits DISCOVERY -> PLAN on re-entry and records the bypass', async () => {
+    githubGateway.issueToReturn = {
+      repo: 'owner/repo',
+      number: 11,
+      title: 'Fix crash on login screen',
+      body: 'App crashes when login button is clicked',
+      labels: ['bug', 'defect'],
+      comments: [],
+      state: 'OPEN'
+    };
+
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 11 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    // No report at all, and no content: only the explicit opt-in can release this.
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+
+    const result = await useCase.execute({
+      issue: 11,
+      mode: MODE_YOLO,
+      skipDiscovery: true
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
+    // The opt-in is recorded in history metadata so a bypassed RCA gate is auditable.
+    const planEntry = result.stateMachine.history.find((h: any) => h.stage === STAGE_PLAN);
+    assert.ok(planEntry, 'a PLAN history entry must exist');
+    assert.strictEqual(planEntry!.metadata?.skipDiscovery, true);
+    // No redundant DISCOVERY row is written when the RCA gate is bypassed.
+    assert.ok(
+      !planGenerator.summaryUpdates.some((u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY)
     );
   });
 
@@ -346,6 +613,153 @@ describe('StartPlanningUseCase (Application Layer)', () => {
       planGenerator.summaryUpdates.some(
         (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.planRevisionCount === 1
       )
+    );
+  });
+
+  // ---- issue #237, BLOCKER 2: the re-entry evidence check read the wrong
+  // plan directory. `scaffoldPlanDirectory` re-derives the folder slug from the
+  // issue title, so a natural re-entry (`yolo --issue 237`, no `--title`)
+  // produced a DIFFERENT slug from the one the first run seeded. The
+  // unconditional `sm.setPlanDir(scaffoldInfo.planDir)` then repointed the
+  // checkpoint at the new empty scaffold, and `hasPopulatedDiscoveryReport`
+  // — which read `sm.planDir` — was scoped to it. The operator was told their
+  // populated report "is still an unpopulated scaffold".
+  //
+  // `planGenerator` here mocks the mismatch directly: the scaffold lands in
+  // `237-task-plan` while the checkpoint already tracks
+  // `237-bug-probe-crash`.
+  /** A real discovery report in the nested sub-list shape subagents write. */
+  const POPULATED_NESTED_REPORT = [
+    '# [Discovery] - Bug: probe crash',
+    '',
+    '## 1. Problem Statement & Symptoms',
+    '- **Observed Behavior:** probe crash on login whenever the session cookie is absent',
+    '- **Expected Behavior:** the login form renders an inline validation error',
+    '- **Affected Components / Paths:**',
+    '  - `src/login.ts`',
+    '  - `src/session.ts`',
+    '',
+    '## 2. Root Cause Analysis (RCA)',
+    '- **Investigation Steps:**',
+    '  1. Read `src/login.ts` end to end.',
+    '  2. Reproduced with a cleared cookie jar.',
+    '- **Identified Failure Mode:** nil dereference of the session resolver at `src/login.ts:41`',
+    '- **Relevant Code References:**',
+    '  - `src/login.ts` (line 41)',
+    '  - `src/session.ts` (line 12)',
+    '',
+    '## 3. Reproduction Steps & Verification Protocol',
+    '- **Local Reproduction Command:**',
+    '  1. `npm test -- --grep login`',
+    '  2. Observe the crash.',
+    '- **Failing Test Target:** `tests/login.test.ts`',
+    '',
+    '## 4. Remediation Strategy',
+    '- **Recommended Fix Approach:** guard the resolver result before dereferencing',
+    '- **Potential Regressions / Side Effects:** none; the guard only adds an early return'
+  ].join('\n');
+
+  /** Seeds a DISCOVERY checkpoint that already tracks `checkpointPlanDir`. */
+  function seedCheckpointWithPlanDir(checkpointPlanDir: string): void {
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 237 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    sm.setPlanDir(checkpointPlanDir);
+    stateRepo.savedSnapshot = sm.toSnapshot();
+  }
+
+  /** Runs the re-entry and returns the use case result. */
+  async function runReentry(issue = 237) {
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+    return useCase.execute({ issue, mode: MODE_YOLO });
+  }
+
+  test('BLOCKER 2: a populated report in the CHECKPOINT directory releases the park', async () => {
+    // The exact reviewer repro: the checkpoint tracks `237-bug-probe-crash`
+    // (populated), the re-entry scaffolds the differently-slugged
+    // `237-task-plan` (empty). The park must be released, not held.
+    seedCheckpointWithPlanDir('/fake/plans/237-bug-probe-crash');
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/237-bug-probe-crash',
+      planPath: '/fake/plans/237-bug-probe-crash/[Discovery] - Bug probe crash.md',
+      planFileName: '[Discovery] - Bug probe crash.md'
+    };
+    planGenerator.planDocumentByPath = {
+      '/fake/plans/237-bug-probe-crash/[Discovery] - Bug probe crash.md': POPULATED_NESTED_REPORT,
+      // The freshly scaffolded mirror in the OTHER directory stays a scaffold.
+      '/fake/plans/237-task-plan/[Discovery] - Task Plan.md': '- **Observed Behavior:**\n- **Expected Behavior:**\n'
+    };
+
+    const result = await runReentry();
+
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+  });
+
+  test('BLOCKER 2: a re-entry never orphans an existing plan directory', async () => {
+    // Even when BOTH directories are empty scaffolds, the checkpoint must keep
+    // its own planDir: repointing it at a fresh empty directory would orphan
+    // every artifact the operator already has.
+    seedCheckpointWithPlanDir('/fake/plans/237-bug-probe-crash');
+    planGenerator.scaffoldPlanDirOverride = '/fake/plans/237-task-plan';
+
+    const result = await runReentry();
+
+    assert.strictEqual(
+      result.stateMachine.planDir,
+      '/fake/plans/237-bug-probe-crash',
+      'a re-entry must not repoint an existing planDir at a fresh scaffold'
+    );
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+  });
+
+  test('BLOCKER 2: a FIRST run still adopts the freshly scaffolded planDir', async () => {
+    // The positive control for the gate above: without it, never adopting the
+    // scaffold would also satisfy the orphan test.
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 237 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+    assert.strictEqual(stateRepo.savedSnapshot.planDir, null, 'fixture must start without a planDir');
+
+    const result = await runReentry();
+
+    assert.strictEqual(result.stateMachine.planDir, '/fake/plans/10');
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+  });
+
+  test('BLOCKER 2: progress notes go to the checkpoint log, not the discarded scaffold', async () => {
+    // The summary-log path was the other half of the fix: writing to
+    // `scaffoldInfo.summaryPath` on a re-entry stranded progress notes in the
+    // scaffold the checkpoint had just declined to adopt.
+    seedCheckpointWithPlanDir('/fake/plans/237-bug-probe-crash');
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/237-bug-probe-crash',
+      planPath: '/fake/plans/237-bug-probe-crash/[Discovery] - Bug probe crash.md',
+      planFileName: '[Discovery] - Bug probe crash.md',
+      // The checkpoint's own execution log.
+      summaryPath: '/fake/plans/237-bug-probe-crash/CodeLoop Summary.md'
+    };
+    planGenerator.planDocumentByPath = {
+      '/fake/plans/237-bug-probe-crash/[Discovery] - Bug probe crash.md': POPULATED_NESTED_REPORT
+    };
+
+    await runReentry();
+
+    assert.ok(planGenerator.summaryUpdates.length > 0, 'a progress row must be written');
+    for (const update of planGenerator.summaryUpdates) {
+      assert.strictEqual(
+        update.summaryFilePath,
+        '/fake/plans/237-bug-probe-crash/CodeLoop Summary.md',
+        'summary rows must land in the checkpoint plan directory, not the discarded scaffold'
+      );
+    }
+    assert.ok(
+      !planGenerator.summaryUpdates.some((u: any) => u.summaryFilePath === '/fake/plans/10/Summary.md'),
+      'the fresh scaffold log must not receive progress notes on a re-entry'
     );
   });
 

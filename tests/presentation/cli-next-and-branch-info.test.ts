@@ -12,6 +12,7 @@ const {
   parseArguments,
   runCli
 } = require('../../dist/presentation');
+const { NOTE_RESTARTED_FROM_COMPLETED } = require('../../dist/domain');
 
 describe('CLI Next & Branch-Info Subcommands', () => {
   describe('Argument Parsing', () => {
@@ -214,20 +215,105 @@ describe('CLI Next & Branch-Info Subcommands', () => {
       }
     });
 
-    test('runCli next --issue 51 overrides COMPLETED state and outputs DISCOVERY directive', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-override-'));
-      const stateDir = path.join(tempDir, '.agyloop');
+    test('runCli next --issue 51 on a COMPLETED checkpoint is non-destructive', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-completed-'));
+      // `next --issue <n>` resolves the TASK-scoped checkpoint
+      // (.agyloop/tasks/<n>.json), so that is where the seed must live.
+      const stateDir = path.join(tempDir, '.agyloop', 'tasks');
       fs.mkdirSync(stateDir, { recursive: true });
+      const seed = {
+        version: '1.0.0',
+        currentStage: 'COMPLETED',
+        mode: 'standard',
+        issue: 40,
+        milestoneTitle: 'Phase 6',
+        baseBranch: 'phase/6',
+        planDir: 'artifacts/plans/40-done',
+        worktree: {
+          taskId: '40',
+          worktreePath: '/repo/.worktrees/40',
+          branch: 'task/40-work',
+          baseBranch: 'phase/6',
+          createdAt: new Date().toISOString()
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        history: [
+          { stage: 'INITIALIZED', timestamp: new Date().toISOString() },
+          { stage: 'DISCOVERY', timestamp: new Date().toISOString() },
+          { stage: 'PLAN', timestamp: new Date().toISOString() },
+          { stage: 'APPROVAL', timestamp: new Date().toISOString() },
+          { stage: 'IMPLEMENT', timestamp: new Date().toISOString() },
+          { stage: 'QUALITY_GATE', timestamp: new Date().toISOString() },
+          { stage: 'REVIEW', timestamp: new Date().toISOString() },
+          { stage: 'COMMIT', timestamp: new Date().toISOString() },
+          { stage: 'COMPLETED', timestamp: new Date().toISOString() }
+        ],
+        totalHumanWaitMs: 123000,
+        planRevisionCount: 2
+      };
+      const statePath = path.join(stateDir, '40.json');
+      fs.writeFileSync(statePath, JSON.stringify(seed));
+
+      const prevCwd = process.cwd();
+      let output = '';
+      const originalLog = console.log;
+      console.log = (msg) => {
+        output += msg + '\n';
+      };
+
+      try {
+        process.chdir(tempDir);
+        const exitCode = await runCli(['next', '--issue', '40', '--json']);
+        assert.strictEqual(exitCode, 0);
+        const parsed = JSON.parse(output.trim());
+
+        // Issue #237 (Defect 2): `next` is a query. The forbidden
+        // { currentStage: "PLAN", planDir: null } snapshot is gone.
+        assert.strictEqual(parsed.currentStage, 'COMPLETED');
+        assert.strictEqual(parsed.actionType, 'completed');
+        assert.match(parsed.humanSummary, /--restart/);
+
+        const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        assert.strictEqual(persisted.currentStage, 'COMPLETED');
+        assert.strictEqual(persisted.issue, 40);
+        assert.strictEqual(persisted.planDir, seed.planDir);
+        assert.deepStrictEqual(persisted.worktree, seed.worktree);
+        assert.strictEqual(persisted.milestoneTitle, seed.milestoneTitle);
+        assert.strictEqual(persisted.baseBranch, seed.baseBranch);
+        assert.strictEqual(persisted.history.length, 9);
+        assert.strictEqual(persisted.planRevisionCount, 2);
+        assert.strictEqual(persisted.totalHumanWaitMs, 123000);
+      } finally {
+        process.chdir(prevCwd);
+        console.log = originalLog;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test('runCli next --issue 51 --restart re-opens the COMPLETED checkpoint at DISCOVERY', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-restart-'));
+      // Task-scoped checkpoint for the issue the operator is asking about.
+      const stateDir = path.join(tempDir, '.agyloop', 'tasks');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.mkdirSync(path.join(tempDir, 'artifacts', 'plans', '51-done'), { recursive: true });
       fs.writeFileSync(
-        path.join(stateDir, 'state.json'),
+        path.join(tempDir, 'artifacts', 'plans', '51-done', 'implementation-plan.md'),
+        '# Approved Technical Plan for Issue 51'
+      );
+      const statePath = path.join(stateDir, '51.json');
+      fs.writeFileSync(
+        statePath,
         JSON.stringify({
           version: '1.0.0',
           currentStage: 'COMPLETED',
           mode: 'standard',
-          issue: 40,
+          issue: 51,
+          planDir: 'artifacts/plans/51-done',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          history: []
+          history: [{ stage: 'COMPLETED', timestamp: new Date().toISOString() }],
+          planRevisionCount: 2
         })
       );
 
@@ -240,13 +326,22 @@ describe('CLI Next & Branch-Info Subcommands', () => {
 
       try {
         process.chdir(tempDir);
-        const exitCode = await runCli(['next', '--issue', '51', '--json']);
+        const exitCode = await runCli(['next', '--issue', '51', '--restart', '--json']);
         assert.strictEqual(exitCode, 0);
         const parsed = JSON.parse(output.trim());
+
         assert.strictEqual(parsed.currentStage, 'DISCOVERY');
-        assert.strictEqual(parsed.nextStage, 'PLAN');
         assert.strictEqual(parsed.actionType, 'subagent');
-        assert.ok(parsed.invocationPayload.Subagents[0].Prompt.includes('#51'));
+        assert.strictEqual(parsed.role, 'discovery');
+
+        const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        assert.strictEqual(persisted.currentStage, 'DISCOVERY');
+        // A reset seeds INITIALIZED then the DISCOVERY hop: exactly two entries,
+        // and never a PLAN entry.
+        assert.strictEqual(persisted.history.length, 2);
+        assert.ok(!persisted.history.some((h: any) => h.stage === 'PLAN'));
+        assert.strictEqual(persisted.planDir, null);
+        assert.strictEqual(persisted.history[1].metadata.note, NOTE_RESTARTED_FROM_COMPLETED);
       } finally {
         process.chdir(prevCwd);
         console.log = originalLog;

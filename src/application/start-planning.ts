@@ -28,7 +28,8 @@ import {
   SUMMARY_STATUS_COMPLETED,
   SUMMARY_STATUS_PENDING,
   IssueNumber,
-  PreFlightHaltError
+  PreFlightHaltError,
+  DiscoveryReport
 } from '../domain';
 import {
   StateRepository,
@@ -42,6 +43,7 @@ import {
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { SyncUseCase } from './sync';
+import { DiscoveryReentryDecision, resolveDiscoveryReentry } from './lifecycle-reentry-policy';
 
 export interface StartPlanningParams {
   readonly mode?: ExecutionMode;
@@ -63,6 +65,13 @@ export interface StartPlanningResult {
   readonly plannerDef: SubagentDescriptor;
   readonly planTitle: string;
   readonly planType: string;
+  /**
+   * Set only when this invocation was a re-entry into a checkpoint already
+   * resting at DISCOVERY (issue #237). Undefined on every other path, so
+   * callers can distinguish "first-run park" from "re-entry park" without
+   * re-inferring it from the stage they observe.
+   */
+  readonly discoveryReentry?: DiscoveryReentryDecision;
 }
 
 export class StartPlanningUseCase {
@@ -159,6 +168,11 @@ export class StartPlanningUseCase {
 
     // 3. Scaffold plan directory
     let scaffoldInfo: ScaffoldResult | null = null;
+    // Captured BEFORE the scaffold can repoint `sm.planDir`, because after the
+    // repoint the original value is unrecoverable: this is the plan directory
+    // the checkpoint itself tracked, which is the only record of where the
+    // discovery report for THIS run actually lives (issue #237, BLOCKER 2).
+    const checkpointPlanDir = sm.planDir;
     if (!params.dryRun) {
       scaffoldInfo = this.planGenerator.scaffoldPlanDirectory({
         projectRoot: workspace,
@@ -167,7 +181,20 @@ export class StartPlanningUseCase {
         type: planType,
         labels: planLabels
       });
-      if (scaffoldInfo && scaffoldInfo.planDir) {
+      // Only adopt the fresh scaffold when the checkpoint has no plan directory
+      // of its own.
+      //
+      // Why the gate matters: `scaffoldPlanDirectory` re-derives the folder name
+      // by slugifying the issue title, and a natural re-entry
+      // (`codeloop yolo --issue 237`, no `--title`) re-derives that slug from the
+      // issue text — which need not equal the slug the original run used.
+      // Repointing unconditionally then stranded the real directory (a populated
+      // `237-bug-probe-crash` orphaned in favour of a brand-new empty
+      // `237-task-plan`), and because `hasPopulatedDiscoveryReport` read
+      // `sm.planDir` it was scoped to the EMPTY scaffold — so the operator was
+      // told their populated report "is still an unpopulated scaffold". Failing
+      // closed is right; failing closed at the wrong directory is not.
+      if (!sm.planDir && scaffoldInfo && scaffoldInfo.planDir) {
         sm.setPlanDir(scaffoldInfo.planDir);
       }
     }
@@ -202,6 +229,9 @@ export class StartPlanningUseCase {
       scaffoldInfo?.type === 'discovery';
 
     // 5. State Machine Transitions
+    // Only set when this invocation re-enters a checkpoint already resting at
+    // DISCOVERY (issue #237); undefined on every other path.
+    let discoveryReentry: DiscoveryReentryDecision | undefined;
     if (sm.currentStage === STAGE_APPROVAL && params.userFeedback) {
       // Iterative plan redirection loop: developer requested re-planning
       sm.transition(STAGE_PLAN, {
@@ -221,16 +251,43 @@ export class StartPlanningUseCase {
         }
       }
     } else if (sm.currentStage === STAGE_DISCOVERY) {
-      sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+      // One rule, one chokepoint: the RCA gate is no longer implied by "the
+      // stage is DISCOVERY". It requires either content evidence that a
+      // discovery report was populated, or the operator's explicit
+      // --skip-discovery opt-in. Without one of those the checkpoint stays
+      // parked here and the summary-log leg below records
+      // Discovery / IN PROGRESS — the caller's park leg then returns a
+      // checkpointed, actionable message instead of streaming an unattended run
+      // out of a pristine scaffold.
+      const decision = resolveDiscoveryReentry({
+        currentStage: sm.currentStage,
+        discoveryReportPresent: this.hasPopulatedDiscoveryReport(
+          workspace,
+          sm,
+          scaffoldInfo,
+          checkpointPlanDir
+        ),
+        skipDiscovery: params.skipDiscovery === true
+      });
+      discoveryReentry = decision;
+      if (decision === 'ADVANCE_TO_PLAN') {
+        sm.transition(STAGE_PLAN, {
+          note: NOTE_GENERATING_SPECS,
+          // Auditable trail: a bypassed RCA gate is recorded in history metadata.
+          skipDiscovery: params.skipDiscovery === true
+        });
+      }
+      // PARK_AT_DISCOVERY: intentionally NO transition is issued.
     }
 
     // 6. Checkpoint state and update summary log
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
 
-      if (scaffoldInfo && scaffoldInfo.summaryPath) {
+      const summaryPath = this.resolveSummaryPath(workspace, scaffoldInfo, checkpointPlanDir);
+      if (summaryPath) {
         if (sm.currentStage === STAGE_DISCOVERY) {
-          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+          this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
             subagent: plannerDef.name,
             model: plannerDef.model,
@@ -238,14 +295,14 @@ export class StartPlanningUseCase {
           });
         } else if (sm.currentStage === STAGE_PLAN) {
           if (!params.skipDiscovery) {
-            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+            this.planGenerator.updateSummaryLog(summaryPath, {
               stage: SUMMARY_STAGE_DISCOVERY,
               subagent: plannerDef.name,
               model: plannerDef.model,
               status: SUMMARY_STATUS_COMPLETED
             });
           }
-          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+          this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,
             model: plannerDef.model,
@@ -254,14 +311,14 @@ export class StartPlanningUseCase {
           });
         } else {
           if (!params.skipDiscovery) {
-            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+            this.planGenerator.updateSummaryLog(summaryPath, {
               stage: SUMMARY_STAGE_DISCOVERY,
               subagent: plannerDef.name,
               model: plannerDef.model,
               status: SUMMARY_STATUS_COMPLETED
             });
           }
-          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+          this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             status: SUMMARY_STATUS_PENDING
           });
@@ -275,7 +332,127 @@ export class StartPlanningUseCase {
       scaffoldInfo,
       plannerDef,
       planTitle,
-      planType
+      planType,
+      discoveryReentry
     };
+  }
+
+  /**
+   * Content-based evidence that an RCA report exists for this checkpoint
+   * (issue #237).
+   *
+   * Existence is not evidence: the generator always writes the plan file when it
+   * scaffolds a fresh directory, so "a discovery file exists" is true for a
+   * pristine scaffold. Only the CONTENT distinguishes "an untouched template"
+   * from "an RCA ran".
+   *
+   * Reached exclusively through the injected `PlanGeneratorPort` — never `fs` —
+   * so the application layer stays I/O-free. Fails CLOSED on every error: a
+   * read failure must never open the RCA gate.
+   *
+   * `checkpointPlanDir` is the directory the checkpoint tracked before this run
+   * scaffolded anything. It is passed separately from `sm` because the scaffold
+   * may have repointed `sm.planDir`, and after that the original value is
+   * unrecoverable — see BLOCKER 2 below.
+   */
+  private hasPopulatedDiscoveryReport(
+    workspace: string,
+    sm: StateMachine,
+    scaffoldInfo: ScaffoldResult | null,
+    checkpointPlanDir: string | null
+  ): boolean {
+    try {
+      // Which ROOT to read is subtler than it looks, and is why this tries two
+      // rather than trusting one.
+      //
+      // `scaffoldPlanDirectory` re-derives the folder slug from the issue title,
+      // and a natural re-entry (no `--title`) re-derives it from the issue text —
+      // so the freshly scaffolded directory is frequently NOT the directory this
+      // checkpoint's discovery report lives in. Reading only it scoped the whole
+      // check to an empty scaffold, and the operator was told their populated
+      // report "is still an unpopulated scaffold" (BLOCKER 2). So the
+      // checkpoint's own directory is tried FIRST, and EITHER root releases the
+      // park: the evidence is about whether an RCA ran, not about which directory
+      // it happens to be filed under.
+      const scaffoldPlanDir = scaffoldInfo ? scaffoldInfo.planDir : null;
+      const candidateDirs = [checkpointPlanDir, scaffoldPlanDir].filter(
+        (dir): dir is string => typeof dir === 'string' && dir.length > 0
+      );
+
+      const candidates: string[] = [];
+      // The scaffold's own discovery report is read before the port's
+      // resolution: `resolvePlanFile({ stage: DISCOVERY })` selects a
+      // DISCOVERY-first candidate list, but that list contains the
+      // `implementation_plan.md` alias — and `scaffoldPlanDirectory` writes BOTH
+      // `[Discovery] - <title>.md` and an `implementation_plan.md` mirror into
+      // the same directory. On a real bug task the resolver therefore hands back
+      // the pristine implementation mirror, never the RCA. So the scaffold's own
+      // plan path — the artifact the discovery subagent actually fills in — is
+      // read first, and the port's resolution is consulted as the second
+      // candidate (it is all we have on a dry run, where no scaffold is
+      // produced).
+      if (scaffoldInfo && scaffoldInfo.planPath) {
+        candidates.push(scaffoldInfo.planPath);
+      }
+      for (const planDir of candidateDirs) {
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: sm.issue,
+          planDir,
+          // Selects the DISCOVERY-first candidate list inside the generator.
+          stage: STAGE_DISCOVERY
+        });
+        if (resolved && resolved.planPath) {
+          candidates.push(resolved.planPath);
+        }
+      }
+
+      // Every candidate lives inside one of this task's own plan directories, so
+      // a populated report in any of them is the same content evidence.
+      for (const candidate of new Set(candidates)) {
+        const markdown = this.planGenerator.readPlanDocument(candidate);
+        if (DiscoveryReport.fromMarkdown(markdown).isPopulated) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The execution log this run records its progress in.
+   *
+   * Explicit decision: on a re-entry the freshly scaffolded directory is NOT
+   * adopted (see the `setPlanDir` gate above), so `scaffoldInfo.summaryPath`
+   * points at a directory nothing tracks any more. Progress notes written there
+   * would be invisible to whoever reads the checkpoint's own log, so the
+   * checkpoint's directory is preferred and the scaffold's log is only the
+   * fallback — the case for a first run, where no checkpoint planDir exists.
+   *
+   * Read through `resolvePlanFile`, never `fs`, so the application layer stays
+   * I/O-free.
+   */
+  private resolveSummaryPath(
+    workspace: string,
+    scaffoldInfo: ScaffoldResult | null,
+    checkpointPlanDir: string | null
+  ): string | null {
+    if (checkpointPlanDir) {
+      try {
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          planDir: checkpointPlanDir
+        });
+        if (resolved && resolved.summaryPath) {
+          return resolved.summaryPath;
+        }
+      } catch {
+        // Fall through to the scaffold's own log rather than losing the update.
+      }
+    }
+    return scaffoldInfo ? scaffoldInfo.summaryPath : null;
   }
 }

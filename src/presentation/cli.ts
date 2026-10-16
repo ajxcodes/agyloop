@@ -74,6 +74,7 @@ import {
   QUOTA_RESUME_COMMAND,
   StateMachine,
   IssueNumber,
+  NOTE_DISCOVERY_PARK_AWAITING_RCA,
   STATE_MUTATING_COMMANDS
 } from '../domain';
 import type { StateRepository } from '../ports';
@@ -164,6 +165,17 @@ export interface CliOptions {
   quarantine: boolean;
   reason: string | null;
   retryAfter: string | null;
+  /**
+   * `next`-scoped explicit opt-in (issue #237): on a COMPLETED checkpoint,
+   * reset it and re-open at DISCOVERY. Plain `next` never mutates a checkpoint.
+   */
+  restart: boolean;
+  /**
+   * Explicit opt-in (issue #237): bypass the DISCOVERY RCA park. Threaded
+   * `CliOptions -> RunLifecycleParams -> StartPlanningParams` and recorded in
+   * history metadata so a bypassed RCA gate stays auditable.
+   */
+  skipDiscovery: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -256,7 +268,7 @@ Operational Modes:
   sync               Fast-forward collector branch and process merged PRs to auto-close issues
 
 Pipeline Management:
-  next               Inspect state and generate next invoke_subagent command/payload
+  next               Inspect state and generate next invoke_subagent command/payload (read-only by default; --restart is the only mutating form)
   branch-info        Display base collector branch, active task branch, and PR target
   status             Display current pipeline stage, active tasks matrix, and checkpoint history
   config             Display active configuration and model routing table
@@ -297,6 +309,8 @@ Operational Flags:
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
       --dry-run      Simulate execution without modifying state or files on disk
+      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' NEVER mutates a checkpoint.
+      --skip-discovery  Explicit opt-in: bypass the DISCOVERY RCA park (auditable in state history).
   -h, --help         Show this help message and exit
   -v, --version      Show version information and exit
 
@@ -372,7 +386,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     createPr: false,
     quarantine: false,
     reason: null,
-    retryAfter: null
+    retryAfter: null,
+    restart: false,
+    skipDiscovery: false
   };
 
   const positional: string[] = [];
@@ -461,6 +477,16 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.messageFile = arg.split('=')[1] || null;
     } else if (arg === '--create-pr') {
       options.createPr = true;
+    } else if (arg === '--restart') {
+      // `next`-scoped: only read in the `next` case, where it is the single
+      // authorisation to destroy a COMPLETED checkpoint (issue #237).
+      options.restart = true;
+    } else if (arg.startsWith('--restart=')) {
+      options.restart = arg.split('=')[1] !== 'false';
+    } else if (arg === '--skip-discovery') {
+      options.skipDiscovery = true;
+    } else if (arg.startsWith('--skip-discovery=')) {
+      options.skipDiscovery = arg.split('=')[1] !== 'false';
     } else if (arg === '--dry-run') {
       options.dryRun = true;
     } else if (arg === '--refresh') {
@@ -789,7 +815,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
-        issue: options.issue
+        issue: options.issue,
+        restart: options.restart
       });
 
       // A persisted gate pause (quota exhaustion, exhausted retries) must never be
@@ -1467,6 +1494,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           type: options.type,
           dryRun: options.dryRun,
           configPath: options.configPath,
+          skipDiscovery: options.skipDiscovery,
           interactive: promptsAllowed
         });
 
@@ -1502,6 +1530,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (result.pausedAtGate === GATE_APPROVAL) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
           console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+        } else if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
+          // Issue #237, finding 3: a parked re-entry looks exactly like a
+          // successful advance (`currentStage` is still DISCOVERY), so without
+          // this leg `codeloop plan` printed "✓ Pipeline advanced to
+          // DISCOVERY." — the precise string the plan wanted gone, and the
+          // operator was never told the outstanding work is the RCA report.
+          // `RunLifecycleUseCase.executePlanMode` already builds the message;
+          // the CLI was simply dropping it on every mode but YOLO.
+          console.log(`\n🛑 ${result.message ?? NOTE_DISCOVERY_PARK_AWAITING_RCA}\n`);
         } else {
           console.log(`\n✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
         }
@@ -1724,6 +1761,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           message: options.message,
           dryRun: options.dryRun,
           configPath: options.configPath,
+          skipDiscovery: options.skipDiscovery,
           worktree: options.noWorktree ? false : true,
           baseBranch: options.baseBranch || undefined,
           interactive: promptsAllowed
@@ -1891,6 +1929,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           interactiveCommit: promptsAllowed && !options.yes,
           dryRun: options.dryRun,
           configPath: options.configPath,
+          skipDiscovery: options.skipDiscovery,
           worktree: options.noWorktree ? false : true,
           baseBranch: options.baseBranch || undefined
         });
@@ -1902,6 +1941,16 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           }
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
           console.log(`Review artifacts and run 'agyloop implement' (or 'agyloop') to continue.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        // Issue #237, finding 3: same park, same silence as the `plan` case. A
+        // re-entry that parks at DISCOVERY leaves `currentStage === DISCOVERY`,
+        // so the "Pipeline at stage: DISCOVERY" line below reads like progress
+        // and never names the outstanding work. `RunLifecycleUseCase.
+        // executeStandardMode` builds the message; print it.
+        if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
+          console.log(`\n🛑 ${result.message ?? NOTE_DISCOVERY_PARK_AWAITING_RCA}\n`);
           return EXIT_CODE_SUCCESS;
         }
 

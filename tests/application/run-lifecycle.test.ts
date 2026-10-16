@@ -27,7 +27,9 @@ const {
   VERDICT_CHANGES_REQUESTED,
   CommitMessage,
   AiReviewReport,
-  WorktreeDescriptor
+  WorktreeDescriptor,
+  NOTE_DISCOVERY_PARK_AWAITING_RCA,
+  NOTE_YOLO_PARKED_AT_DISCOVERY
 } = require('../../dist/domain');
 
 const {
@@ -1022,6 +1024,27 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       };
     }
 
+    /** The REAL gate use case, counting invocations so the happy path stays real. */
+    function countingGate(): { useCase: any; calls: () => number } {
+      let calls = 0;
+      const real = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor,
+        buildDetector
+      );
+      return {
+        useCase: {
+          execute: async (params: any) => {
+            calls++;
+            return real.execute(params);
+          }
+        },
+        calls: () => calls
+      };
+    }
+
     function assertDiscoveryPark(result: any, gateCalls: () => number): void {
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.mode, MODE_YOLO);
@@ -1173,6 +1196,235 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.doesNotMatch(result.message, /Cannot run quality gates from stage/);
       assert.ok(stateRepo.savedSnapshot, 'checkpoint must be persisted');
       assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
+    });
+
+    // ---- issue #237: the park must hold on RE-ENTRY -----------------------
+    //
+    // The #234 park is entered from a fresh INITIALIZED checkpoint. Re-running
+    // `yolo` after that park is the single most natural operator action, and the
+    // DISCOVERY -> PLAN advance used to be unconditional — so the second run
+    // streamed out of a pristine, unpopulated `[Discovery] - ….md` scaffold and
+    // bypassed the RCA gate entirely.
+    function seedDiscoveryCheckpoint(): void {
+      const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 32 });
+      sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+      stateRepo.savedSnapshot = sm.toSnapshot();
+    }
+
+    test('B1: yolo re-entry after the DISCOVERY park parks and never runs gates', async () => {
+      seedDiscoveryCheckpoint();
+      const gate = gateMustNotRun();
+      let createWorktreeCalls = 0;
+      const originalCreateWorktree = worktreeManager.createWorktree;
+      worktreeManager.createWorktree = async (params: any) => {
+        createWorktreeCalls++;
+        return originalCreateWorktree.call(worktreeManager, params);
+      };
+
+      try {
+        const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+        const result = await lifecycle.execute({
+          mode: MODE_YOLO,
+          issue: 32,
+          workspaceDir: '/mock/workspace'
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.mode, MODE_YOLO);
+        assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+        assert.strictEqual(result.pausedAtGate, undefined);
+        assert.strictEqual(gate.calls(), 0, 'the RCA park must hold before any gate runs');
+        assert.strictEqual(createWorktreeCalls, 0, 'no worktree may be provisioned from a parked RCA');
+        assert.strictEqual(result.qualityGateResult, undefined);
+        assert.strictEqual(result.implementationResult, undefined);
+        assert.strictEqual(result.reviewResult, undefined);
+        assert.strictEqual(result.executeCommitResult, undefined);
+        // The re-entry park message names the outstanding work (the RCA report).
+        assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
+        assert.strictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
+        assert.doesNotMatch(result.message, /YOLO cannot dispatch subagents inline/);
+
+        // Stage and history are both untouched: no PLAN entry was ever written.
+        assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+        assert.strictEqual(stateRepo.savedSnapshot.history.length, 2);
+        assert.ok(
+          !stateRepo.savedSnapshot.history.some((h: any) => h.stage === STAGE_PLAN),
+          'a parked re-entry must gain no PLAN history entry'
+        );
+      } finally {
+        worktreeManager.createWorktree = originalCreateWorktree;
+      }
+    });
+
+    test('B2: yolo re-entry with a populated discovery report proceeds to the COMMIT gate', async () => {
+      seedDiscoveryCheckpoint();
+      // The discovery subagent ran: the report on disk carries real content.
+      planGenerator.planContent = [
+        '# [Discovery] - Operational Flags and Lifecycle Orchestration',
+        '',
+        '## 1. Problem Statement & Symptoms',
+        '- **Observed Behavior:** the yolo fast-path halts before the quality gates',
+        '- **Expected Behavior:** gates and review run unattended to the COMMIT gate',
+        '- **Affected Components / Paths:** src/application/run-lifecycle.ts',
+        '',
+        '## 2. Root Cause Analysis (RCA)',
+        '- **Investigation Steps:** traced the yolo leg stage guard end to end',
+        '- **Identified Failure Mode:** stage reached the gates without an approved plan',
+        '- **Relevant Code References:** src/application/run-lifecycle.ts:845',
+        '',
+        '## 3. Reproduction Steps & Verification Protocol',
+        '- **Local Reproduction Command:** npm test',
+        '- **Failing Test Target:** tests/application/run-lifecycle.test.ts',
+        '',
+        '## 4. Remediation Strategy',
+        '- **Recommended Fix Approach:** release the park on content evidence',
+        '- **Potential Regressions / Side Effects:** none'
+      ].join('\n');
+
+      const gate = countingGate();
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.strictEqual(result.planResult?.discoveryReentry, 'ADVANCE_TO_PLAN');
+      assert.strictEqual(gate.calls(), 1, 'gates must run once the RCA evidence exists');
+      assert.ok(result.qualityGateResult?.passed);
+      assert.ok(result.reviewResult?.passed);
+      assert.strictEqual(result.pausedAtGate, GATE_COMMIT);
+    });
+
+    test('B3: yolo re-entry with --skip-discovery bypasses the RCA park', async () => {
+      seedDiscoveryCheckpoint();
+      const gate = countingGate();
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        skipDiscovery: true,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.strictEqual(result.planResult?.discoveryReentry, 'ADVANCE_TO_PLAN');
+      // The bypass is recorded in history metadata so it stays auditable.
+      const planEntry = stateRepo.savedSnapshot.history.find((h: any) => h.stage === STAGE_PLAN);
+      assert.strictEqual(planEntry?.metadata?.skipDiscovery, true);
+    });
+
+    // ---- #237 finding 11: AC1 was only pinned for yolo -------------------
+    //
+    // The park rule is mode-independent (`resolveDiscoveryReentry` takes no
+    // mode), but the only re-entry-park test exercised `yolo`. `plan` and the
+    // bare `codeloop` standard run reach DISCOVERY through
+    // `executePlanMode`/`executeStandardMode`, and those two legs each build
+    // their OWN park message — the leg the CLI was dropping (finding 3).
+    test('B4: plan-mode re-entry parks and names the outstanding RCA work', async () => {
+      seedDiscoveryCheckpoint();
+      const gate = gateMustNotRun();
+
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+      const result = await lifecycle.execute({
+        mode: MODE_PLAN,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, MODE_PLAN);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined, 'a parked re-entry must not pause at APPROVAL');
+      assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
+      assert.strictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
+      assert.strictEqual(gate.calls(), 0);
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(stateRepo.savedSnapshot.history.length, 2);
+      assert.ok(
+        !stateRepo.savedSnapshot.history.some((h: any) => h.stage === STAGE_PLAN),
+        'a parked plan-mode re-entry must gain no PLAN history entry'
+      );
+    });
+
+    test('B5: standard-mode re-entry parks and names the outstanding RCA work', async () => {
+      seedDiscoveryCheckpoint();
+      const gate = gateMustNotRun();
+
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+      const result = await lifecycle.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, MODE_STANDARD);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined, 'a parked re-entry must not pause at APPROVAL');
+      assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
+      assert.strictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
+      assert.strictEqual(gate.calls(), 0);
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(stateRepo.savedSnapshot.history.length, 2);
+    });
+
+    test('B6: plan-mode and standard-mode re-entry both release on content evidence', async () => {
+      // The positive control for B4/B5: without it, a resolver that always
+      // parked outside yolo would also satisfy them.
+      seedDiscoveryCheckpoint();
+      planGenerator.planContent = [
+        '# [Discovery] - Operational Flags and Lifecycle Orchestration',
+        '',
+        '## 1. Problem Statement & Symptoms',
+        '- **Observed Behavior:** the discovery park holds on re-entry',
+        '- **Expected Behavior:** gates run once an RCA report exists',
+        '- **Affected Components / Paths:**',
+        '  - src/application/start-planning.ts',
+        '',
+        '## 2. Root Cause Analysis (RCA)',
+        '- **Investigation Steps:**',
+        '  1. Traced the DISCOVERY re-entry leg end to end.',
+        '- **Identified Failure Mode:** the park had no content evidence check',
+        '- **Relevant Code References:**',
+        '  - src/domain/value-objects/discovery-report.ts',
+        '',
+        '## 3. Reproduction Steps & Verification Protocol',
+        '- **Local Reproduction Command:** npm test',
+        '- **Failing Test Target:** tests/application/run-lifecycle.test.ts',
+        '',
+        '## 4. Remediation Strategy',
+        '- **Recommended Fix Approach:** consult resolveDiscoveryReentry',
+        '- **Potential Regressions / Side Effects:** none'
+      ].join('\n');
+
+      for (const mode of [MODE_PLAN, MODE_STANDARD]) {
+        stateRepo = new MockStateRepository();
+        seedDiscoveryCheckpoint();
+        const lifecycle = buildYoloLifecycle();
+        const result = await lifecycle.execute({
+          mode,
+          issue: 32,
+          workspaceDir: '/mock/workspace'
+        });
+
+        assert.strictEqual(result.planResult?.discoveryReentry, 'ADVANCE_TO_PLAN', `${mode} must advance`);
+        // Both legs stop right after planning and hand back to the operator:
+        // plan mode returns at PLAN, and the standard run returns at PLAN too
+        // (it does not continue into implementation from a DISCOVERY entry).
+        assert.strictEqual(result.currentStage, STAGE_PLAN, `${mode} must reach PLAN`);
+        assert.notStrictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
+        assert.strictEqual(
+          stateRepo.savedSnapshot.currentStage,
+          STAGE_PLAN,
+          `${mode} must checkpoint the advanced stage`
+        );
+      }
     });
   });
 });
