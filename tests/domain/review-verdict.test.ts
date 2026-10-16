@@ -9,6 +9,7 @@ const {
   ReviewVerdict,
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED,
   TOKEN_REVIEW_STATUS,
   TOKEN_REVIEW_SUMMARY,
   TOKEN_UNFULFILLED_AC,
@@ -33,6 +34,15 @@ describe('ReviewVerdict Value Object', () => {
     assert.strictEqual(verdict.isChangesRequested(), false);
     assert.deepStrictEqual([...verdict.unfulfilledCriteria], []);
     assert.deepStrictEqual([...verdict.remediationGuidance], []);
+  });
+
+  test('constructs a valid SKIPPED verdict (issue #236, AC2)', () => {
+    const verdict = new ReviewVerdict({ status: VERDICT_SKIPPED, summary: 'Review not performed.' });
+
+    assert.strictEqual(verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(verdict.isSkipped(), true);
+    assert.strictEqual(verdict.isApproved(), false);
+    assert.strictEqual(verdict.isChangesRequested(), false);
   });
 
   test('creates valid CHANGES_REQUESTED verdict with unfulfilled criteria & guidance', () => {
@@ -128,6 +138,35 @@ describe('ReviewVerdict Value Object', () => {
     assert.strictEqual(verdict.formatSelfCorrectionPayload(), '');
   });
 
+  test('formatSelfCorrectionPayload returns empty string when skipped (issue #236, AC3)', () => {
+    const verdict = ReviewVerdict.skipped('Critique CLI binary not found.');
+    assert.strictEqual(verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(verdict.formatSelfCorrectionPayload(), '');
+
+    // Factory defaults: actionable summary + remediation guidance
+    const defaults = ReviewVerdict.skipped();
+    assert.strictEqual(
+      defaults.summary,
+      'Review not performed: no Reviewer subagent output and no critique report was generated.'
+    );
+    assert.ok(defaults.remediationGuidance.length > 0);
+    assert.ok(
+      defaults.remediationGuidance.join(' ').includes('codeloop critique install'),
+      `expected actionable guidance, got: ${defaults.remediationGuidance.join(' | ')}`
+    );
+    assert.strictEqual(defaults.formatSelfCorrectionPayload(), '');
+  });
+
+  test('formatStructuredTokens emits REVIEW_STATUS: SKIPPED (issue #236, AC2)', () => {
+    const verdict = ReviewVerdict.skipped('Review not performed: reviewer absent.');
+    const tokens = verdict.formatStructuredTokens();
+
+    assert.ok(tokens.includes(`${TOKEN_REVIEW_STATUS}: ${VERDICT_SKIPPED}`));
+    assert.ok(tokens.includes(`${TOKEN_REVIEW_SUMMARY}: Review not performed: reviewer absent.`));
+    assert.ok(tokens.includes(`${TOKEN_UNFULFILLED_AC}:`));
+    assert.ok(tokens.includes(`${TOKEN_REMEDIATION_GUIDANCE}:`));
+  });
+
   test('parses structured APPROVED tokens from text', () => {
     const text = `
 Here is my review:
@@ -196,6 +235,26 @@ REMEDIATION_GUIDANCE: Add null check before accessing property
     );
   });
 
+  test('parse() rejects subagent-declared SKIPPED (system-origin only, issue #236, AC3)', () => {
+    // A Reviewer subagent must never be able to self-declare SKIPPED to bypass review.
+    assert.throws(
+      () => ReviewVerdict.parse('REVIEW_STATUS: SKIPPED\nREVIEW_SUMMARY: bypass'),
+      (err: any) => err instanceof ReviewerSubagentError && err.operation === 'parse'
+    );
+
+    // Fallback textual pattern must reject SKIPPED as well
+    assert.throws(
+      () => ReviewVerdict.parse('Review Status: SKIPPED'),
+      (err: any) => err instanceof ReviewerSubagentError && err.operation === 'parse'
+    );
+
+    // Constructor still rejects unknown statuses (system-origin SKIPPED excepted)
+    assert.throws(
+      () => new ReviewVerdict({ status: 'INVALID_STATUS' as any, summary: 'foo' }),
+      (err: any) => err instanceof ValidationError && err.field === 'status'
+    );
+  });
+
   test('bridges from AiReviewReport instance', () => {
     const passingReport = new AiReviewReport({
       summary: 'All automated reviewer checks passed.',
@@ -234,6 +293,22 @@ REMEDIATION_GUIDANCE: Add null check before accessing property
     assert.strictEqual(rejectedVerdict.unfulfilledCriteria.length, 1);
     assert.ok(rejectedVerdict.unfulfilledCriteria[0].includes('Potential null pointer dereference.'));
     assert.strictEqual(rejectedVerdict.remediationGuidance.length, 1);
+  });
+
+  test('bridges a non-bypassed non-passing report to CHANGES_REQUESTED (issue #236, AC3/T6e)', () => {
+    // Guards against over-broad bypass handling moved into the verdict layer:
+    // a real (non-bypassed) report that is simply not passing (low confidence)
+    // must still bridge to CHANGES_REQUESTED — never to SKIPPED.
+    const lowConfidenceReport = new AiReviewReport({
+      summary: 'Insufficient coverage for a confident verdict.',
+      confidence: ReviewConfidence.medium('Diff coverage below threshold.'),
+      findings: []
+    });
+
+    const verdict = ReviewVerdict.fromAiReviewReport(lowConfidenceReport);
+    assert.strictEqual(verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(verdict.isChangesRequested(), true);
+    assert.strictEqual(verdict.isSkipped(), false);
   });
 
   test('serializes to JSON correctly', () => {

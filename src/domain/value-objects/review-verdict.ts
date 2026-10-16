@@ -11,6 +11,7 @@
 import {
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED,
   ReviewVerdictState,
   TOKEN_REVIEW_STATUS,
   TOKEN_REVIEW_SUMMARY,
@@ -84,11 +85,15 @@ export class ReviewVerdict {
       throw new ValidationError('props', props, 'ReviewVerdict props must be an object.');
     }
 
-    if (props.status !== VERDICT_APPROVED && props.status !== VERDICT_CHANGES_REQUESTED) {
+    if (
+      props.status !== VERDICT_APPROVED &&
+      props.status !== VERDICT_CHANGES_REQUESTED &&
+      props.status !== VERDICT_SKIPPED
+    ) {
       throw new ValidationError(
         'status',
         props.status,
-        `Invalid review verdict status '${props.status}'. Must be '${VERDICT_APPROVED}' or '${VERDICT_CHANGES_REQUESTED}'.`
+        `Invalid review verdict status '${props.status}'. Must be '${VERDICT_APPROVED}', '${VERDICT_CHANGES_REQUESTED}', or '${VERDICT_SKIPPED}'.`
       );
     }
 
@@ -121,6 +126,14 @@ export class ReviewVerdict {
 
   public isChangesRequested(): boolean {
     return this.status === VERDICT_CHANGES_REQUESTED;
+  }
+
+  /**
+   * True when the review never ran (no reviewer output, no critique report).
+   * Advisory fail-open state (issue #236): does not block the pipeline.
+   */
+  public isSkipped(): boolean {
+    return this.status === VERDICT_SKIPPED;
   }
 
   public formatStructuredTokens(): string {
@@ -177,7 +190,8 @@ export class ReviewVerdict {
   }
 
   public formatSelfCorrectionPayload(): string {
-    if (this.isApproved()) {
+    // Nothing to self-correct for an approval or for a review that never ran.
+    if (this.isApproved() || this.isSkipped()) {
       return '';
     }
 
@@ -219,6 +233,28 @@ export class ReviewVerdict {
     return new ReviewVerdict(props);
   }
 
+  /**
+   * System-origin-only factory for the "review did not run" advisory (issue #236).
+   * Used by RunReviewUseCase when neither Reviewer-subagent output nor a critique
+   * report is produced. Never constructed from parsed reviewer text.
+   */
+  public static skipped(
+    summary?: string | null,
+    remediationGuidance?: readonly string[]
+  ): ReviewVerdict {
+    return new ReviewVerdict({
+      status: VERDICT_SKIPPED,
+      summary:
+        summary && summary.trim().length > 0
+          ? summary
+          : 'Review not performed: no Reviewer subagent output and no critique report was generated.',
+      remediationGuidance:
+        remediationGuidance && remediationGuidance.length > 0
+          ? remediationGuidance
+          : ['Configure critique (`codeloop critique install`) or dispatch the Reviewer subagent (`codeloop next`), then re-run the review.']
+    });
+  }
+
   public static parse(text: string | null | undefined): ReviewVerdict {
     if (!text || typeof text !== 'string') {
       throw new ReviewerSubagentError(
@@ -228,6 +264,9 @@ export class ReviewVerdict {
     }
 
     // 1. Extract status token
+    // System-origin-only invariant (issue #236): even though VERDICT_SKIPPED exists
+    // in REVIEW_VERDICTS, parse() only accepts APPROVED | CHANGES_REQUESTED so a
+    // Reviewer subagent can never emit `REVIEW_STATUS: SKIPPED` to bypass review.
     let status: ReviewVerdictState | undefined;
     const statusMatch = text.match(REGEX_REVIEW_STATUS_TOKEN);
     if (statusMatch) {

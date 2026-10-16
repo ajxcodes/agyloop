@@ -404,6 +404,7 @@ export const NOTE_GATES_FAILED = 'Quality gates failed' as const;
 export const NOTE_EXECUTING_REVIEW = 'Executing AI review' as const;
 export const NOTE_REVIEW_APPROVED = 'AI review approved: Code changes verified' as const;
 export const NOTE_REVIEW_CHANGES_REQUESTED = 'AI review requested changes: Reverting to IMPLEMENT' as const;
+export const NOTE_REVIEW_SKIPPED = 'AI review skipped: No reviewer output or critique report — proceeding without review' as const;
 export const NOTE_REOPEN_IMPLEMENTATION_COMPLETED = 'Reopening implementation from completed stage to address review findings' as const;
 export const NOTE_RERUN_GATES_COMPLETED = 'Re-executing quality gates from completed stage' as const;
 export const NOTE_IMPLICIT_APPROVAL = 'Implicitly approved by explicit implementation request' as const;
@@ -483,10 +484,17 @@ export const TOKEN_REVIEW_FINDINGS = 'REVIEW_FINDINGS' as const;
 
 export const VERDICT_APPROVED = 'APPROVED' as const;
 export const VERDICT_CHANGES_REQUESTED = 'CHANGES_REQUESTED' as const;
+/**
+ * Third verdict state (issue #236): "review did not run". Set ONLY by the system
+ * (RunReviewUseCase) when there is neither Reviewer-subagent output nor a critique
+ * report — an advisory fail-open that never reverts the pipeline.
+ */
+export const VERDICT_SKIPPED = 'SKIPPED' as const;
 
 export const REVIEW_VERDICTS = Object.freeze([
   VERDICT_APPROVED,
-  VERDICT_CHANGES_REQUESTED
+  VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED
 ] as const);
 
 export type ReviewVerdictState = typeof REVIEW_VERDICTS[number];
@@ -498,6 +506,10 @@ export const LABEL_UNFULFILLED_AC = 'Unfulfilled Acceptance Criteria' as const;
 export const LABEL_REMEDIATION_GUIDANCE = 'Remediation Guidance' as const;
 export const SECTION_REVIEW_SELF_CORRECTION_TITLE = '### Reviewer Subagent Self-Correction Remediation Guidance:' as const;
 
+// System-origin-only invariant (issue #236): the REVIEW_STATUS token contract stays
+// binary (APPROVED | CHANGES_REQUESTED) so a Reviewer subagent can never self-declare
+// `SKIPPED` to bypass review. VERDICT_SKIPPED is set exclusively by RunReviewUseCase
+// when no reviewer output / critique report exists and is never parsed from text.
 export const REGEX_REVIEW_STATUS_TOKEN = /^REVIEW_STATUS:\s*(APPROVED|CHANGES_REQUESTED)$/im;
 export const REGEX_REVIEW_SUMMARY_TOKEN = /^REVIEW_SUMMARY:\s*(.+)$/im;
 export const REGEX_UNFULFILLED_AC_TOKEN = /^UNFULFILLED_AC:\s*(.+)$/im;

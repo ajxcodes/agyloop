@@ -64,7 +64,8 @@ import {
   CB_ACTION_WARN,
   CircuitBreakerTrippedError,
   QuotaExhaustedError,
-  QUOTA_RESUME_COMMAND
+  QUOTA_RESUME_COMMAND,
+  VERDICT_SKIPPED
 } from '../domain';
 import {
   StateRepository,
@@ -1003,6 +1004,11 @@ export class RunLifecycleUseCase {
       };
     }
 
+    const yoloMessage =
+      reviewResult.verdict.status === VERDICT_SKIPPED
+        ? 'YOLO pipeline passed gates; AI review skipped (advisory). Paused at COMMIT gate.'
+        : 'YOLO pipeline passed gates and review. Paused at COMMIT gate.';
+
     return {
       success: true,
       mode: MODE_YOLO,
@@ -1014,7 +1020,7 @@ export class RunLifecycleUseCase {
       qualityGateResult: qgResult,
       reviewResult,
       worktree,
-      message: 'YOLO pipeline passed gates and review. Paused at COMMIT gate.'
+      message: yoloMessage
     };
   }
 

@@ -18,6 +18,8 @@ const {
   MODE_STANDARD,
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED,
+  NOTE_REVIEW_SKIPPED,
   ROLE_REVIEWER,
   InvalidTransitionError,
   AiReviewReport,
@@ -501,8 +503,10 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
   });
 
-  test('fails closed with CHANGES_REQUESTED when neither review output nor critique report was generated', async () => {
-    // RunReviewUseCase without CritiquePort and without reviewOutput
+  test('returns SKIPPED advisory when neither review output nor critique report was generated', async () => {
+    // Path A (issue #236 / AC1, AC2, AC4a): RunReviewUseCase without CritiquePort
+    // and without reviewOutput. The verdict must be a SKIPPED advisory — never a
+    // fabricated CHANGES_REQUESTED — and the pipeline must advance to COMMIT.
     const useCase = new RunReviewUseCase(
       stateRepo,
       configRepo,
@@ -513,19 +517,127 @@ REMEDIATION_GUIDANCE:
 
     const result = await useCase.execute();
 
-    assert.strictEqual(result.passed, false);
-    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
-    assert.strictEqual(result.verdict.isChangesRequested(), true);
-    assert.strictEqual(
-      result.verdict.summary,
-      'Review failed: Neither Reviewer subagent output nor critique report was generated.'
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.verdict.isChangesRequested(), false);
+    assert.strictEqual(result.verdict.isSkipped(), true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.notStrictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    // History records the advisory without any self-correction payload
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.stage, STAGE_COMMIT);
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual(lastEntry.metadata?.note, NOTE_REVIEW_SKIPPED);
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+
+    // Summary.md update: SKIPPED status + "Review skipped:" note
+    assert.strictEqual(planGenerator.summaryUpdates.length, 1);
+    const update = planGenerator.summaryUpdates[0].updateData;
+    assert.strictEqual(update.status, VERDICT_SKIPPED);
+    assert.ok(
+      update.reviewNote.startsWith('Review skipped:'),
+      `expected a skipped note, got: ${update.reviewNote}`
     );
-    assert.deepStrictEqual(result.verdict.unfulfilledCriteria, [
-      'Review inspection not performed: neither subagent output nor critique report was provided'
-    ]);
-    assert.deepStrictEqual(result.verdict.remediationGuidance, [
-      'Execute critique CLI or invoke Reviewer subagent to inspect diff against base branch and provide structured review output.'
-    ]);
+
+    // Checkpoint persisted at COMMIT
+    const saved = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+  });
+
+  test('bypassed critique report maps to SKIPPED, not CHANGES_REQUESTED (Path B)', async () => {
+    // Path B (production path): CliCritiqueGateway normalizes every absence
+    // condition to AiReviewReport.bypassed(...) — must map to SKIPPED (AC1, AC2).
+    critique.reportToReturn = AiReviewReport.bypassed('Critique CLI binary not found.');
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.verdict.isSkipped(), true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    // Actionable summary carries the exact absent-setup reason (AC2)
+    assert.ok(result.verdict.summary.includes('Critique CLI binary not found'));
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+  });
+
+  test('real blocking critique findings still mandate CHANGES_REQUESTED (critique-only, no reviewer output)', async () => {
+    // AC3/AC4b regression: a genuine blocking critique (Tier 1 only, no reviewer
+    // output) must still revert to IMPLEMENT with a self-correction payload.
+    critique.reportToReturn = new AiReviewReport({
+      summary: 'Automated critique found a blocking defect',
+      confidence: ReviewConfidence.high('Deep static scan'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/index.ts',
+          line: 1,
+          rule: 'blocking-defect',
+          message: 'Injected blocking defect',
+          severity: 'error'
+        })
+      ]
+    });
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.verdict.isChangesRequested(), true);
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'CHANGES_REQUESTED');
+    assert.ok(lastEntry.metadata?.selfCorrectionPayload);
+    assert.ok(
+      String(lastEntry.metadata?.selfCorrectionPayload).includes('Injected blocking defect')
+    );
+  });
+
+  test('reviewer APPROVED output wins when critique is absent (Tier 2 precedence)', async () => {
+    // T13: reviewOutput present + no CritiquePort => APPROVED, stage COMMIT.
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      undefined // No CritiquePort
+    );
+
+    const reviewOutput = `
+REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: Reviewer subagent approved the diff.
+UNFULFILLED_AC:
+- None
+REMEDIATION_GUIDANCE:
+- None
+`;
+
+    const result = await useCase.execute({ reviewOutput });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
   });
 });

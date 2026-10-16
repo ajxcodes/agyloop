@@ -307,6 +307,56 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         'Summary table should reflect updated Commit Gate row'
       );
     });
+
+    test('updateSummaryLog targets the AI Review row, not Plan Review (issue #236, AC2/T8)', () => {
+      const summaryResult = generator.generateSummaryLog({
+        targetDir: tempDir,
+        projectName: 'TestApp',
+        issueNumber: 60
+      });
+
+      const original = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(original.includes('| 2. Plan Review | Human Gate | - | APPROVED | - |'));
+      assert.ok(original.includes('| 5. AI Review | `reviewer` | `flash` | APPROVED | - |'));
+
+      // 1. 'AI Review' must land on row 5 and leave row 2 untouched
+      const updatedAi = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'AI Review',
+        status: 'SKIPPED',
+        duration: '0.1s',
+        reviewNote: 'Review skipped: no reviewer output or critique report.'
+      });
+      assert.strictEqual(updatedAi, true, 'Should find and update the AI Review row');
+
+      const afterAi = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        afterAi.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        `AI Review row should be SKIPPED, got:\n${afterAi}`
+      );
+      assert.ok(
+        afterAi.includes('| 2. Plan Review | Human Gate | - | APPROVED | - |'),
+        'Plan Review row must keep its original status'
+      );
+      assert.ok(afterAi.includes('- Review skipped: no reviewer output or critique report.'));
+
+      // 2. Regression companion: 'Plan Review' still maps to row 2 (two-pass precedence)
+      const updatedPlan = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Plan Review',
+        status: 'COMPLETED',
+        duration: '3s'
+      });
+      assert.strictEqual(updatedPlan, true, 'Should find and update the Plan Review row');
+
+      const afterPlan = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        afterPlan.includes('| 2. Plan Review | Human Gate | - | COMPLETED | 3s |'),
+        'Plan Review row should be COMPLETED'
+      );
+      assert.ok(
+        afterPlan.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        'AI Review row must keep the SKIPPED status written earlier'
+      );
+    });
   });
 
   describe('scaffoldPlanDirectory() & findPlanDirectory()', () => {

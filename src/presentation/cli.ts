@@ -40,6 +40,7 @@ import {
   ROLE_GATE,
   ROLE_REVIEWER,
   ROLE_TRIAGE,
+  VERDICT_SKIPPED,
   DEFAULT_PROMPTS_DIR,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -1769,7 +1770,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.reviewResult) {
-          console.log(`✓ AI PR Review: ${result.reviewResult.verdict.status}`);
+          if (result.reviewResult.verdict.status === VERDICT_SKIPPED) {
+            // Loud, distinct advisory (issue #236): absence of a reviewer must never
+            // masquerade as a rejection. console.error keeps it on stderr and
+            // capture-able by the existing runCli test harnesses.
+            console.error(`⚠ AI PR Review: SKIPPED — no reviewer output and no critique report. Proceeding WITHOUT AI review.`);
+            console.error(`  Enable it: \`codeloop critique install\` or dispatch the Reviewer via \`codeloop next\`.`);
+          } else {
+            console.log(`✓ AI PR Review: ${result.reviewResult.verdict.status}`);
+          }
           if (!result.reviewResult.passed) {
             console.error(`✗ AI Review requested changes in YOLO mode. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
             return EXIT_CODE_FAILURE;
@@ -1786,6 +1795,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${result.executeCommitResult.pushError}`);
           }
           console.log('');
+        } else if (result.reviewResult?.verdict.status === VERDICT_SKIPPED) {
+          console.log(`\n✓ Quality gates passed in YOLO mode. AI review SKIPPED (advisory — no reviewer output or critique report).`);
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
         } else {
           console.log(`\n✓ Quality gates and AI review passed in YOLO mode.`);
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
@@ -1907,7 +1919,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.reviewResult) {
-          console.log(`AI PR Review: ${result.reviewResult.verdict.status}`);
+          if (result.reviewResult.verdict.status === VERDICT_SKIPPED) {
+            // Loud, distinct advisory (issue #236) — same treatment as the yolo handler.
+            console.error(`⚠ AI PR Review: SKIPPED — no reviewer output and no critique report. Proceeding WITHOUT AI review.`);
+            console.error(`  Enable it: \`codeloop critique install\` or dispatch the Reviewer via \`codeloop next\`.`);
+          } else {
+            console.log(`AI PR Review: ${result.reviewResult.verdict.status}`);
+          }
           if (!result.reviewResult.passed) {
             console.error(`✗ AI Review requested changes. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
             return EXIT_CODE_FAILURE;

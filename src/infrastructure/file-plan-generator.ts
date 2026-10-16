@@ -389,6 +389,48 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         const lines = content.split('\n');
         let updated = false;
 
+        /**
+         * Two-pass row matcher (issue #236, collateral fix):
+         * Pass 1 evaluates only direct/normalized containment rules; pass 2 the
+         * synonym cross-match rules. This prevents the `'AI Review'` query from
+         * landing on the `'2. Plan Review'` row via the loose `review`/`review`
+         * cross-match (which fired first and broke before reaching `'5. AI Review'`).
+         * First-match `break` semantics are preserved within each pass.
+         */
+        const rowMatches = (rowStage: string, normRow: string): { direct: boolean; synonym: boolean } => ({
+          direct:
+            rowStage.includes(rawQuery) ||
+            rawQuery.includes(rowStage) ||
+            normRow.includes(normQuery) ||
+            normQuery.includes(normRow),
+          synonym:
+            (normQuery.includes('commit') && normRow.includes('commit')) ||
+            (normQuery.includes('quality') && normRow.includes('quality')) ||
+            (normQuery.includes('discovery') && normRow.includes('discovery')) ||
+            (normQuery.includes('plan') && normRow.includes('plan')) ||
+            (normQuery.includes('implement') && normRow.includes('implement')) ||
+            (normQuery.includes('review') && normRow.includes('review'))
+        });
+
+        const rewriteRow = (i: number, parts: string[]): void => {
+          const formatCell = (val?: string, fallback = '-'): string => {
+            if (!val) return fallback;
+            const trimmed = val.trim();
+            if (trimmed.startsWith('`') && trimmed.endsWith('`')) return trimmed;
+            if (trimmed === '-' || trimmed.toLowerCase() === 'human gate') return trimmed;
+            return `\`${trimmed}\``;
+          };
+
+          const currentSubagent = updateData.subagent ? formatCell(updateData.subagent, parts[2]) : parts[2];
+          const currentModel = updateData.model ? formatCell(updateData.model, parts[3]) : parts[3];
+          const currentStatus = updateData.status ? updateData.status.toUpperCase() : parts[4];
+          const currentDuration = updateData.duration ? updateData.duration : parts[5];
+
+          lines[i] = `| ${parts[1]} | ${currentSubagent} | ${currentModel} | ${currentStatus} | ${currentDuration} |`;
+          updated = true;
+        };
+
+        // Pass 1: direct / raw / normalized containment only.
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           if (line.startsWith('|') && !line.includes('---') && !line.includes('Stage | Subagent')) {
@@ -397,36 +439,28 @@ export class FilePlanGenerator implements PlanGeneratorPort {
               const rowStage = parts[1].toLowerCase();
               const normRow = normalize(parts[1]);
 
-              // Check direct includes, normalized includes, or cross-matching synonyms
-              const matches =
-                rowStage.includes(rawQuery) ||
-                rawQuery.includes(rowStage) ||
-                normRow.includes(normQuery) ||
-                normQuery.includes(normRow) ||
-                (normQuery.includes('commit') && normRow.includes('commit')) ||
-                (normQuery.includes('quality') && normRow.includes('quality')) ||
-                (normQuery.includes('discovery') && normRow.includes('discovery')) ||
-                (normQuery.includes('plan') && normRow.includes('plan')) ||
-                (normQuery.includes('implement') && normRow.includes('implement')) ||
-                (normQuery.includes('review') && normRow.includes('review'));
-
-              if (matches) {
-                const formatCell = (val?: string, fallback = '-'): string => {
-                  if (!val) return fallback;
-                  const trimmed = val.trim();
-                  if (trimmed.startsWith('`') && trimmed.endsWith('`')) return trimmed;
-                  if (trimmed === '-' || trimmed.toLowerCase() === 'human gate') return trimmed;
-                  return `\`${trimmed}\``;
-                };
-
-                const currentSubagent = updateData.subagent ? formatCell(updateData.subagent, parts[2]) : parts[2];
-                const currentModel = updateData.model ? formatCell(updateData.model, parts[3]) : parts[3];
-                const currentStatus = updateData.status ? updateData.status.toUpperCase() : parts[4];
-                const currentDuration = updateData.duration ? updateData.duration : parts[5];
-
-                lines[i] = `| ${parts[1]} | ${currentSubagent} | ${currentModel} | ${currentStatus} | ${currentDuration} |`;
-                updated = true;
+              if (rowMatches(rowStage, normRow).direct) {
+                rewriteRow(i, parts);
                 break;
+              }
+            }
+          }
+        }
+
+        // Pass 2 (only when no direct match): synonym cross-match rules.
+        if (!updated) {
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.startsWith('|') && !line.includes('---') && !line.includes('Stage | Subagent')) {
+              const parts = line.split('|').map((p) => p.trim());
+              if (parts.length >= 6) {
+                const rowStage = parts[1].toLowerCase();
+                const normRow = normalize(parts[1]);
+
+                if (rowMatches(rowStage, normRow).synonym) {
+                  rewriteRow(i, parts);
+                  break;
+                }
               }
             }
           }
