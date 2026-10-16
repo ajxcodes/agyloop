@@ -225,8 +225,11 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
 
     assert.strictEqual(installCalled, false);
     assert.strictEqual(result.autoInstalled, false);
-    assert.strictEqual(result.passed, false);
-    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    // Issue #236: an absent critique is an advisory SKIPPED review, not a
+    // fabricated CHANGES_REQUESTED — the run must not block the pipeline.
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, 'SKIPPED');
+    assert.strictEqual(result.verdict.isSkipped(), true);
   });
 
   it('detects outdated version and populates updateNotification banner', async () => {

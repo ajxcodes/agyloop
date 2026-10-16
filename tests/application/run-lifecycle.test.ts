@@ -398,6 +398,30 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.ok(result.reviewResult?.passed);
       assert.strictEqual(result.executeCommitResult, undefined);
     });
+
+    test('yolo with passing gates and absent critique pauses at COMMIT without reverting (issue #236, AC1)', async () => {
+      // Production absence path: gateway normalizes "critique missing" to a bypassed report.
+      critique.reviewResult = AiReviewReport.bypassed('Critique CLI binary not found.');
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_YOLO,
+        commitAfter: false,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.strictEqual(result.pausedAtGate, GATE_COMMIT);
+      assert.ok(result.qualityGateResult?.passed);
+      assert.strictEqual(result.reviewResult?.passed, true);
+      assert.strictEqual(result.reviewResult?.verdict.status, 'SKIPPED');
+      assert.strictEqual(result.executeCommitResult, undefined);
+      assert.ok(
+        !String(result.message).includes('Reverted'),
+        `message must not claim a revert, got: ${result.message}`
+      );
+    });
   });
 
   describe('2. Standard Multi-Step Lifecycle Flow with Human Approval Gates', () => {
@@ -731,6 +755,34 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
       assert.ok(result.qualityGateResult?.passed);
       assert.strictEqual(result.reviewResult?.passed, false);
+    });
+
+    test('standard mode with absent critique advances to the COMMIT gate without reverting (issue #236, AC1)', async () => {
+      critique.reviewResult = AiReviewReport.bypassed('Critique CLI binary not found.');
+
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.strictEqual(result.pausedAtGate, GATE_COMMIT);
+      assert.ok(result.qualityGateResult?.passed);
+      assert.strictEqual(result.reviewResult?.passed, true);
+      assert.strictEqual(result.reviewResult?.verdict.status, 'SKIPPED');
+      assert.ok(
+        !String(result.message).toLowerCase().includes('reverted'),
+        `message must not claim a revert, got: ${result.message}`
+      );
     });
 
     test('recovers after fix: re-running after correcting issue completes pipeline', async () => {

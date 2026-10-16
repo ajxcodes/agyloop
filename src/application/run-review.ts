@@ -11,6 +11,7 @@
  * 7. Executes review inspection and parses ReviewVerdict:
  *    - APPROVED: transitions to STAGE_COMMIT.
  *    - CHANGES_REQUESTED: loops back to STAGE_IMPLEMENT with self-correction guidance.
+ *    - SKIPPED: transitions to STAGE_COMMIT as an advisory (no reviewer/critique available).
  * 8. Updates AgyLoop Summary.md with review verdict and duration.
  * 9. Checkpoints pipeline state to StateRepository.
  */
@@ -28,9 +29,11 @@ import {
   SUMMARY_STAGE_AI_REVIEW,
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED,
   NOTE_EXECUTING_REVIEW,
   NOTE_REVIEW_APPROVED,
   NOTE_REVIEW_CHANGES_REQUESTED,
+  NOTE_REVIEW_SKIPPED,
   MS_PER_SECOND,
   ReviewVerdict,
   PublicSanitizer,
@@ -79,6 +82,11 @@ export interface RunReviewParams {
 }
 
 export interface RunReviewResult {
+  /**
+   * True when the review stage did not block the pipeline — i.e. the verdict was
+   * APPROVED, or SKIPPED as an advisory because no reviewer output or critique
+   * report was produced (issue #236). Only a genuine CHANGES_REQUESTED is false.
+   */
   readonly passed: boolean;
   readonly verdict: ReviewVerdict;
   readonly currentStage: string;
@@ -374,25 +382,28 @@ export class RunReviewUseCase {
     let verdict: ReviewVerdict;
 
     if (params.reviewOutput) {
+      // Tier 2: reviewer-subagent output (binary APPROVED | CHANGES_REQUESTED contract).
       verdict = ReviewVerdict.parse(params.reviewOutput);
-    } else if (aiReport) {
+    } else if (aiReport && !aiReport.bypassed) {
+      // Tier 1: a real critique report (bypassed reports mean "review not performed").
       verdict = ReviewVerdict.fromAiReviewReport(aiReport);
     } else {
-      verdict = new ReviewVerdict({
-        status: VERDICT_CHANGES_REQUESTED,
-        summary: 'Review failed: Neither Reviewer subagent output nor critique report was generated.',
-        unfulfilledCriteria: [
-          'Review inspection not performed: neither subagent output nor critique report was provided'
-        ],
-        remediationGuidance: [
-          'Execute critique CLI or invoke Reviewer subagent to inspect diff against base branch and provide structured review output.'
+      // Path A (no critique port / critique returned null) AND Path B (bypassed
+      // report — the production absence path): the review did not run at all.
+      // Advisory fail-open (issue #236): never fabricate CHANGES_REQUESTED.
+      verdict = ReviewVerdict.skipped(
+        aiReport && aiReport.bypassed ? aiReport.summary : undefined,
+        [
+          'Configure critique (`codeloop critique install`) or dispatch the Reviewer subagent (`codeloop next`), then re-run the review.'
         ]
-      });
+      );
     }
 
     // Two-Tier Invariant Enforcement:
-    // Any critical or error violations from critique or unfulfilled ACs mandate CHANGES_REQUESTED
-    if (aiReport && (aiReport.hasBlockingIssues() || aiReport.errorCount() > 0)) {
+    // Any critical or error violations from critique or unfulfilled ACs mandate CHANGES_REQUESTED.
+    // Bypassed reports carry zero findings, but the guard also guarantees a stray
+    // finding on a bypassed report can never overwrite SKIPPED with CHANGES_REQUESTED.
+    if (aiReport && !aiReport.bypassed && (aiReport.hasBlockingIssues() || aiReport.errorCount() > 0)) {
       const critiqueCriteria: string[] = [];
       const critiqueRemediation: string[] = [];
       for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking() || f.isError())) {
@@ -449,6 +460,14 @@ export class RunReviewUseCase {
         reviewTokens: verdict.formatStructuredTokens(),
         suggestedCommitMessage
       });
+    } else if (verdict.isSkipped()) {
+      // Advisory advance: REVIEW -> COMMIT is already legal; no self-correction
+      // payload because there is nothing to correct (issue #236).
+      sm.transition(STAGE_COMMIT, {
+        note: NOTE_REVIEW_SKIPPED,
+        reviewVerdict: VERDICT_SKIPPED,
+        reviewTokens: verdict.formatStructuredTokens()
+      });
     } else {
       sm.transition(STAGE_IMPLEMENT, {
         note: NOTE_REVIEW_CHANGES_REQUESTED,
@@ -467,7 +486,9 @@ export class RunReviewUseCase {
           ? `Review approved in ${durationStr}: ${verdict.summary}${
               suggestedCommitMessage ? `\nSuggested Commit: \`${suggestedCommitMessage}\`` : ''
             }`
-          : `Review requested changes: ${verdict.summary} Pipeline reverted to IMPLEMENT for self-correction.`;
+          : verdict.isSkipped()
+            ? `Review skipped: ${verdict.summary} Advisory proceeding to commit gate.`
+            : `Review requested changes: ${verdict.summary} Pipeline reverted to IMPLEMENT for self-correction.`;
 
         this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
           stage: SUMMARY_STAGE_AI_REVIEW,
@@ -481,7 +502,7 @@ export class RunReviewUseCase {
     }
 
     return {
-      passed: verdict.isApproved(),
+      passed: verdict.isApproved() || verdict.isSkipped(),
       verdict,
       currentStage: sm.currentStage,
       stateMachine: sm,
