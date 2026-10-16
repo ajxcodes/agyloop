@@ -34,7 +34,10 @@ import {
   ROLE_TITLE_DISCOVERY,
   MODE_YOLO,
   IssueNumber,
-  MAX_IMPLEMENT_GATE_LOOPS
+  MAX_IMPLEMENT_GATE_LOOPS,
+  GATE_TRIAGE,
+  NOTE_PAUSED_TRIAGE_GATE,
+  NOTE_RESTARTED_FROM_COMPLETED
 } from '../domain';
 import {
   StateRepository,
@@ -42,15 +45,39 @@ import {
   PlanGeneratorPort,
   GitHubGateway,
   WorktreeManagerPort,
-  BuildDetectorPort
+  BuildDetectorPort,
+  PullRequestReviewComment
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import { resolveCompletedReentry } from './lifecycle-reentry-policy';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
   readonly workspaceDir?: string;
   readonly configPath?: string | null;
   readonly issue?: number | string | null;
+  /**
+   * Explicit opt-in (issue #237). Only this flag authorises `next` to destroy a
+   * COMPLETED checkpoint: `reset()` it and re-open at DISCOVERY. Without it,
+   * `next` on a COMPLETED checkpoint is a pure read plus at most the
+   * TRIAGE route that open PR review feedback justifies.
+   */
+  readonly restart?: boolean;
+}
+
+/**
+ * Result of probing an open PR for unaddressed review feedback.
+ *
+ * Fields are `readonly` and the shape is internal to this use case: it carries
+ * only what the TRIAGE route needs, and it exists so `detectOpenReviewFeedback`
+ * can fail closed (return `null`) without a sentinel "no feedback" object that
+ * a caller could mistake for feedback.
+ */
+interface OpenReviewFeedback {
+  readonly prNumber: number | null;
+  readonly commentCount: number;
+  /** `- [author]: body` lines, same format as run-lifecycle.ts's TRIAGE route. */
+  readonly payload: string;
 }
 
 export interface SubagentInvocationItem {
@@ -147,28 +174,70 @@ export class GetNextActionUseCase {
 
     let activeIssue = explicitIssue ?? sm.issue ?? inferredIssue;
 
-    // Explicit flag ingestion / lifecycle initialization & resume:
-    // When explicit --issue <id> is provided:
-    // If state is COMPLETED or INITIALIZED with a different (or null) issue (or explicit override):
-    const isExplicit = explicitIssue !== null;
-    const shouldInitializeOrResume =
-      (isExplicit && (sm.currentStage === STAGE_COMPLETED || sm.currentStage === STAGE_INITIALIZED)) ||
-      (!isExplicit && inferredIssue !== null && sm.currentStage === STAGE_COMPLETED);
+    // ---- Read-path write contract (issue #237) ------------------------------
+    // `codeloop next` is a QUERY. Outside an explicit `--restart` it may write
+    // only context fields (issue, baseBranch) and, on a COMPLETED checkpoint
+    // with open PR review feedback, route to TRIAGE. It may NEVER advance a
+    // stage on its own initiative, and it may NEVER reset a checkpoint.
+    //
+    // The previous implementation inferred operator intent from whether
+    // `--issue` merely happened to be supplied, which destroyed COMPLETED
+    // checkpoints (planDir, worktree, history, counters) and persisted the
+    // forbidden `{ currentStage: "PLAN", planDir: null }` snapshot by reaching
+    // `Plan` straight from a reset machine — bypassing TransitionStageUseCase's
+    // planDir precondition. The decision now lives in one chokepoint and depends
+    // only on explicit intent plus evidence.
+    const restartOptIn = params.restart === true;
 
-    if (activeIssue && shouldInitializeOrResume) {
-      sm.reset(sm.mode, activeIssue);
-      const existingPlan = this.planGenerator?.resolvePlanFile({
-        projectRoot: cwd,
-        issue: activeIssue,
-        stage: sm.currentStage
+    if (sm.currentStage === STAGE_COMPLETED) {
+      // Probe the CHECKPOINT's own issue, not `activeIssue`.
+      //
+      // `activeIssue` prefers an explicit `--issue`, so `next --issue 51`
+      // against a checkpoint whose issue is 40 resolved 40's checkpoint against
+      // 51's PR feedback — routing one task's state on another task's review
+      // comments. The checkpoint's own issue is the subject of the decision;
+      // `activeIssue` is only the fallback for a task file written before the
+      // issue was recorded (`issue: null`), which cannot be resolved from the
+      // checkpoint itself.
+      const feedbackIssue = sm.issue ?? activeIssue;
+      const feedback = feedbackIssue ? await this.detectOpenReviewFeedback(feedbackIssue, cwd) : null;
+      const decision = resolveCompletedReentry({
+        currentStage: sm.currentStage,
+        restartOptIn,
+        hasOpenReviewFeedback: feedback !== null
       });
-      if (existingPlan) {
-        sm.transition(STAGE_PLAN, { note: `Resumed planning for issue #${activeIssue}` });
-      } else {
-        sm.transition(STAGE_DISCOVERY, { note: `Initialized discovery for issue #${activeIssue}` });
+
+      if (decision === 'ROUTE_TRIAGE' && feedback) {
+        // Byte-identical to RunLifecycleUseCase's TRIAGE route, now sharing one
+        // rule definition (`shouldRouteToTriage`) with it.
+        if (sm.canTransition(STAGE_TRIAGE)) {
+          sm.setTriagePayload(feedback.payload);
+          sm.transition(STAGE_TRIAGE, {
+            note: NOTE_PAUSED_TRIAGE_GATE,
+            prNumber: feedback.prNumber,
+            commentsCount: feedback.commentCount
+          });
+          // TRIAGE is in HUMAN_WAIT_GATES, so transition() preserves the pause
+          // rather than consuming it as a stale mechanical halt.
+          sm.pauseAtGate(GATE_TRIAGE);
+          await this.stateRepo.save(sm.toSnapshot());
+        }
+        // Otherwise the COMPLETED case below reports idle — no mutation at all.
+      } else if (decision === 'RESTART' && activeIssue !== null) {
+        sm.reset(sm.mode, activeIssue);
+        // DISCOVERY, never PLAN: the RCA rule (R1) requires either an opt-in or
+        // content evidence, and a freshly reset checkpoint has neither. This is
+        // why the forbidden `{ PLAN, planDir: null }` snapshot is structurally
+        // unreachable from this path, not merely discouraged by convention.
+        sm.transition(STAGE_DISCOVERY, { note: NOTE_RESTARTED_FROM_COMPLETED, restart: true });
+        await this.stateRepo.save(sm.toSnapshot());
       }
-      await this.stateRepo.save(sm.toSnapshot());
-    } else if (isExplicit && sm.issue !== explicitIssue) {
+      // REPORT_IDLE_COMPLETED: no mutation whatsoever. A RESTART with a
+      // unresolvable issue falls through to the idle report rather than
+      // resetting to a null-issue checkpoint, which is why the guard above is
+      // `activeIssue !== null`.
+    } else if (explicitIssue !== null && sm.issue !== explicitIssue) {
+      // One of the two fields the query path is always permitted to write.
       sm.setIssue(explicitIssue);
       await this.stateRepo.save(sm.toSnapshot());
     }
@@ -533,9 +602,70 @@ export class GetNextActionUseCase {
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: 'Pipeline is idle. Run "agyloop <task>" to start a new lifecycle.'
+          humanSummary:
+            'Pipeline is idle. Run "codeloop <task>" to start a new lifecycle, or "codeloop next --restart --issue <n>" to re-open a COMPLETED task.'
         };
       }
+    }
+  }
+
+  /**
+   * Probes the OPEN PR of `issue` for unaddressed review feedback.
+   *
+   * Reuses the exact optional-port method chain and the non-fatal discipline of
+   * `TriagePrCommentsUseCase` and `RunPreFlightCheckUseCase` (issue #237): a
+   * `next` invocation is a query, and an offline or rate-limited GitHub must
+   * still get an answer. Every step is individually guarded, so a gateway that
+   * throws, a missing PR, a merged/closed PR, or a gateway without either
+   * optional method all collapse to `null` — treated as "no feedback", never as
+   * "authorise a reset".
+   */
+  private async detectOpenReviewFeedback(issue: number, cwd: string): Promise<OpenReviewFeedback | null> {
+    const gateway = this.githubGateway;
+    if (!gateway?.findPullRequest) {
+      return null;
+    }
+
+    try {
+      const pr = await gateway.findPullRequest({ issueNumber: issue, cwd });
+      // Only an OPEN PR's review feedback is actionable: a merged or closed one
+      // was already resolved by whatever closed it.
+      if (!pr || pr.state !== 'OPEN' || !pr.number) {
+        return null;
+      }
+
+      let comments: readonly PullRequestReviewComment[] = [];
+      if (gateway.fetchPullRequestComments) {
+        const fetched = await gateway.fetchPullRequestComments(pr.number, { cwd });
+        if (fetched) {
+          comments = fetched;
+        }
+      }
+
+      // Same predicate as run-preflight-check.ts: an empty comment list is not
+      // feedback.
+      //
+      // The clause that used to follow — `|| comments.some(c => c.state ===
+      // 'CHANGES_REQUESTED')` — was dead: `CliGitHubGateway.fetchPullRequest
+      // Comments` only pushes a review when it has a non-empty body, so any
+      // entry carrying `state: 'CHANGES_REQUESTED'` already made the list
+      // non-empty. A CHANGES_REQUESTED verdict submitted with NO prose is
+      // therefore invisible to this port entirely — a real limitation, but not
+      // one a second operand on the same list can repair, and pretending
+      // otherwise made the predicate look stricter than it is.
+      const hasOpenReviewFeedback = comments.length > 0;
+
+      if (!hasOpenReviewFeedback) {
+        return null;
+      }
+
+      return {
+        prNumber: pr.number,
+        commentCount: comments.length,
+        payload: comments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n')
+      };
+    } catch {
+      return null;
     }
   }
 

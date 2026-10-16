@@ -50,6 +50,7 @@ import {
   NOTE_PAUSED_COMMIT_GATE,
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_YOLO_PARKED_AT_DISCOVERY,
+  NOTE_DISCOVERY_PARK_AWAITING_RCA,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AUTO_APPROVED_PLAN,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -89,6 +90,7 @@ import { ExecuteCommitUseCase, ExecuteCommitResult } from './execute-commit';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { RunPreFlightCheckUseCase } from './run-preflight-check';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import { shouldRouteToTriage } from './lifecycle-reentry-policy';
 import type { PreFlightCheckResult } from '../domain';
 
 export interface RunLifecycleParams {
@@ -121,6 +123,14 @@ export interface RunLifecycleParams {
   readonly interactive?: boolean;
   readonly worktree?: boolean;
   readonly step?: boolean;
+  /**
+   * Explicit operator opt-in that bypasses the DISCOVERY RCA park (issue #237).
+   * Threaded into `StartPlanningUseCase` and enforced by
+   * `resolveDiscoveryReentry`; recorded in history metadata so a bypassed RCA
+   * gate stays auditable. Without it, re-entering a DISCOVERY checkpoint whose
+   * report is still an unpopulated scaffold parks instead of advancing.
+   */
+  readonly skipDiscovery?: boolean;
   readonly onProgress?: (message: string) => void;
 }
 
@@ -407,13 +417,19 @@ export class RunLifecycleUseCase {
     const withAdvisory = (result: RunLifecycleResult): RunLifecycleResult =>
       persistedPauseAdvisory ? { ...result, persistedPauseAdvisory } : result;
 
-    // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE
-    if (
+    // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE.
+    // The predicate lives in the one lifecycle re-entry policy so this rule and
+    // `GetNextActionUseCase`'s COMPLETED path can never drift apart: today's
+    // condition was `isResume && (comments.length > 0 || changesRequested) && stage !== TRIAGE`,
+    // which is exactly `shouldRouteToTriage({ currentStage, hasOpenReviewFeedback })`.
+    const hasOpenReviewFeedback = Boolean(
       preflightResult &&
-      preflightResult.isResume &&
-      ((preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) || preflightResult.prHasChangesRequested) &&
-      sm.currentStage !== STAGE_TRIAGE
-    ) {
+        preflightResult.isResume &&
+        ((preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) ||
+          preflightResult.prHasChangesRequested)
+    );
+
+    if (preflightResult && shouldRouteToTriage({ currentStage: sm.currentStage, hasOpenReviewFeedback })) {
       if (sm.canTransition(STAGE_TRIAGE)) {
         if (preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) {
           sm.setTriagePayload(preflightResult.prReviewComments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n'));
@@ -519,6 +535,7 @@ export class RunLifecycleUseCase {
       type: params.type,
       dryRun: params.dryRun,
       configPath: params.configPath,
+      skipDiscovery: params.skipDiscovery,
       workspaceDir: workspace
     });
 
@@ -530,9 +547,14 @@ export class RunLifecycleUseCase {
       stateMachine: planResult.stateMachine,
       pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
       planResult,
-      message: isApproval
-        ? NOTE_PAUSED_APPROVAL_GATE
-        : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
+      message:
+        planResult.discoveryReentry === 'PARK_AT_DISCOVERY'
+          ? // Re-entry park (issue #237): the RCA never ran, so "advanced to
+            // DISCOVERY" would read like progress. Name the outstanding work.
+            NOTE_DISCOVERY_PARK_AWAITING_RCA
+          : isApproval
+            ? NOTE_PAUSED_APPROVAL_GATE
+            : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
     };
   }
 
@@ -772,6 +794,7 @@ export class RunLifecycleUseCase {
           type: params.type,
           dryRun: true,
           configPath: params.configPath,
+          skipDiscovery: params.skipDiscovery,
           workspaceDir: workspace
         });
       }
@@ -795,6 +818,7 @@ export class RunLifecycleUseCase {
         type: params.type,
         dryRun: params.dryRun,
         configPath: params.configPath,
+        skipDiscovery: params.skipDiscovery,
         workspaceDir: workspace
       });
 
@@ -809,6 +833,11 @@ export class RunLifecycleUseCase {
     // dispatches subagents inline (`codeloop next` does). Return a checkpointed,
     // actionable park instead of falling through to the quality gates from the wrong
     // stage. Mirrors executeStandardMode's post-planning return (lines 963-986).
+    //
+    // #237: the park now also holds on RE-ENTRY, when the operator re-ran `yolo`
+    // after a first-run park but the discovery report is still an unpopulated
+    // scaffold. Two distinct messages, so the operator is told the outstanding
+    // work is the RCA report itself rather than "dispatch the discovery subagent".
     if (sm.currentStage === STAGE_DISCOVERY) {
       return {
         success: true, // deliberate halt, not a failure
@@ -816,7 +845,10 @@ export class RunLifecycleUseCase {
         currentStage: STAGE_DISCOVERY,
         stateMachine: sm,
         planResult,
-        message: NOTE_YOLO_PARKED_AT_DISCOVERY
+        message:
+          planResult?.discoveryReentry === 'PARK_AT_DISCOVERY'
+            ? NOTE_DISCOVERY_PARK_AWAITING_RCA
+            : NOTE_YOLO_PARKED_AT_DISCOVERY
       };
     }
 
@@ -1043,6 +1075,7 @@ export class RunLifecycleUseCase {
         type: params.type,
         dryRun: params.dryRun,
         configPath: params.configPath,
+        skipDiscovery: params.skipDiscovery,
         workspaceDir: workspace
       });
 
@@ -1054,9 +1087,12 @@ export class RunLifecycleUseCase {
         stateMachine: planResult.stateMachine,
         pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
         planResult,
-        message: isApproval
-          ? NOTE_PAUSED_APPROVAL_GATE
-          : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
+        message:
+          planResult.discoveryReentry === 'PARK_AT_DISCOVERY'
+            ? NOTE_DISCOVERY_PARK_AWAITING_RCA
+            : isApproval
+              ? NOTE_PAUSED_APPROVAL_GATE
+              : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
       };
     }
 

@@ -15,6 +15,7 @@ const {
   STAGE_PLAN,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
+  STAGE_COMPLETED,
   MODE_STANDARD,
   MODE_YOLO,
   TIER_PRO,
@@ -65,6 +66,42 @@ describe('Domain Value Objects (Pure)', () => {
       assert.strictEqual(s1.equals(s2), true);
       assert.strictEqual(s1.equals(s3), false);
       assert.strictEqual(s1.equals(null), false);
+    });
+  });
+
+  // ---- issue #237: the yolo-only PLAN -> IMPLEMENT restriction ---------------
+  //
+  // Fixing the DISCOVERY park must not accidentally widen the approval gate.
+  // `Stage.canTransitionTo` may only allow the direct PLAN -> IMPLEMENT hop in
+  // YOLO mode, and no COMPLETED edge may be added to IMPLEMENT's targets (which
+  // would let `codeloop transition COMPLETED` mark unverified, uncommitted work
+  // as complete — exactly what skills/agyloop/SKILL.md forbids).
+  describe('Stage PLAN -> IMPLEMENT restriction (issue #237)', () => {
+    const { StateMachine, ALLOWED_TRANSITIONS, MODE_COMMIT, MODE_IMPLEMENT, MODE_PLAN } = require('../../dist/domain');
+    const NON_YOLO_MODES = Object.freeze([MODE_STANDARD, MODE_PLAN, MODE_IMPLEMENT, MODE_COMMIT] as const);
+
+    for (const mode of NON_YOLO_MODES) {
+      test(`rejects PLAN -> IMPLEMENT in '${mode}' mode`, () => {
+        const plan = new Stage(STAGE_PLAN);
+        const implement = new Stage(STAGE_IMPLEMENT);
+
+        assert.strictEqual(plan.canTransitionTo(implement, mode), false);
+        assert.strictEqual(new StateMachine({ stage: plan, mode }).canTransition(STAGE_IMPLEMENT), false);
+      });
+    }
+
+    test('accepts PLAN -> IMPLEMENT only in yolo mode', () => {
+      const plan = new Stage(STAGE_PLAN);
+      const implement = new Stage(STAGE_IMPLEMENT);
+
+      assert.strictEqual(plan.canTransitionTo(implement, MODE_YOLO), true);
+      assert.strictEqual(new StateMachine({ stage: plan, mode: MODE_YOLO }).canTransition(STAGE_IMPLEMENT), true);
+    });
+
+    test('COMPLETED is not reachable from IMPLEMENT (no unverified-work shortcut)', () => {
+      assert.ok(ALLOWED_TRANSITIONS[STAGE_IMPLEMENT]);
+      assert.strictEqual(ALLOWED_TRANSITIONS[STAGE_IMPLEMENT].includes(STAGE_COMPLETED), false);
+      assert.strictEqual(new Stage(STAGE_IMPLEMENT).canTransitionTo(new Stage(STAGE_COMPLETED), MODE_YOLO), false);
     });
   });
 

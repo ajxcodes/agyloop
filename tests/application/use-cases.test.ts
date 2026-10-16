@@ -13,7 +13,10 @@ const {
   STAGE_APPROVAL, STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
   STAGE_COMPLETED,
+  StateMachine,
   MODE_STANDARD,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   HALT_TYPE_MISSING_PLAN_DIR
@@ -364,6 +367,81 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     assert.ok(implementUpdate, 'Expected Implementation update in summary');
     assert.strictEqual(implementUpdate!.status, 'COMPLETED');
     assert.strictEqual(implementUpdate!.duration, '1m 0s');
+  });
+
+  // ---- issue #237: entering COMPLETED is bookkeeping, never a teardown -------
+  describe('TransitionStageUseCase -> COMPLETED no-teardown policy', () => {
+    const NOW = new Date().toISOString();
+    const WORKTREE = {
+      taskId: '50',
+      worktreePath: '/repo/.worktrees/50',
+      branch: 'task/50',
+      baseBranch: 'main',
+      createdAt: NOW
+    };
+
+    /**
+     * `COMMIT` and `TRIAGE` are the only legal inbound edges to COMPLETED, so
+     * both must leave the worktree descriptor exactly as it was on disk.
+     */
+    for (const sourceStage of [STAGE_COMMIT, 'TRIAGE']) {
+      test(`entering COMPLETED from ${sourceStage} issues zero removeWorktree calls`, async () => {
+        const stateRepo = new MockStateRepository();
+        let removeWorktreeCalls = 0;
+        const worktreeManager: any = {
+          createWorktree: async () => WORKTREE,
+          removeWorktree: async () => {
+            removeWorktreeCalls++;
+          }
+        };
+        stateRepo.snapshot = {
+          version: '1.0.0',
+          currentStage: sourceStage,
+          mode: MODE_STANDARD,
+          issue: 50,
+          planDir: 'artifacts/plans/50-done',
+          worktree: WORKTREE,
+          createdAt: NOW,
+          updatedAt: NOW,
+          history: [
+            { stage: 'INITIALIZED', timestamp: NOW },
+            { stage: sourceStage, timestamp: NOW }
+          ],
+          totalHumanWaitMs: 0
+        } as unknown as StateMachineSnapshot;
+
+        const transitionUseCase = new TransitionStageUseCase(
+          stateRepo,
+          worktreeManager,
+          undefined,
+          undefined
+        );
+        const sm = await transitionUseCase.execute({
+          targetStage: STAGE_COMPLETED,
+          issue: 50,
+          workspaceDir: '/repo'
+        });
+
+        assert.strictEqual(sm.currentStage, STAGE_COMPLETED);
+        assert.strictEqual(removeWorktreeCalls, 0, 'entering COMPLETED must never detach a worktree');
+        assert.ok(sm.worktree, 'the worktree descriptor must survive the transition');
+        assert.strictEqual(sm.worktree!.worktreePath, WORKTREE.worktreePath);
+      });
+    }
+
+    test('COMPLETED is not reachable from IMPLEMENT, so unverified work cannot be marked complete', () => {
+      const sm = StateMachine.fromSnapshot({
+        version: '1.0.0',
+        currentStage: STAGE_IMPLEMENT,
+        mode: MODE_STANDARD,
+        issue: 50,
+        createdAt: NOW,
+        updatedAt: NOW,
+        history: [{ stage: STAGE_IMPLEMENT, timestamp: NOW }]
+      } as unknown as StateMachineSnapshot);
+
+      assert.strictEqual(sm.canTransition(STAGE_COMPLETED), false);
+    });
   });
 
   test('GetPipelineStatusUseCase retrieves state and history from repository', async () => {
