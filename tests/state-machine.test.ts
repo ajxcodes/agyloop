@@ -323,11 +323,14 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(explicitRepo.getStateFilePath(), path.join(tempDir, '.agyloop', 'state.json'));
   });
 
-  test('resolves canonical root repo state file when instantiated without options inside worktree', () => {
+  test('resolves a worktree-local state file when instantiated without options (#244)', () => {
     const defaultRepo = new FileStateRepository();
-    // Default repo when run in git repo / worktree should resolve to a valid .agyloop/state.json path
+    // A repo built with no options resolves to an absolute <worktree-root>/.agyloop/state.json path
     assert.ok(defaultRepo.getStateFilePath().endsWith(path.join('.agyloop', 'state.json')));
-    // It should not point to an isolated task worktree folder when root discovery succeeds
+    // The root IS the caller's own worktree: state must never be redirected to another checkout (#244).
+    // NOTE: this runs under the `beforeEach` cwd stub ('/mock/repo/root', a non-git path), so it
+    // exercises the cwd-fallback branch; worktree-locality itself is proven in
+    // tests/infrastructure/file-state-repository.test.ts (#244).
     assert.ok(path.isAbsolute(defaultRepo.getStateFilePath()));
   });
 
@@ -365,7 +368,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     }
   });
 
-  test('does not cache the cwd fallback when both git probes fail (#221)', () => {
+  test('does not cache the cwd fallback when the git probe fails (#221, #244)', () => {
     const childProcess = require('child_process');
     FileStateRepository.clearWorkspaceRootCache();
 

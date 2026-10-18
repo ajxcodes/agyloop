@@ -329,8 +329,13 @@ describe('FileStateRepository', () => {
         const childProcess = require('child_process');
         const originalExecSync = childProcess.execSync;
         childProcess.execSync = (cmd: string) => {
-          if (String(cmd).includes('worktree list --porcelain')) {
-            return `worktree ${repoRoot}\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/main\n`;
+          // git rev-parse --show-toplevel is the adapter's workspace-root probe (#244);
+          // `worktree list --porcelain` is no longer consulted for state location.
+          if (String(cmd).includes('rev-parse --show-toplevel')) {
+            return `${repoRoot}\n`;
+          }
+          if (String(cmd).includes('rev-parse --path-format=absolute --git-common-dir')) {
+            return `${path.join(repoRoot, '.git')}\n`;
           }
           throw new Error(`unexpected git invocation in this test: ${cmd}`);
         };
@@ -439,6 +444,424 @@ describe('FileStateRepository', () => {
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '10.json')), false);
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '20.json')), false);
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'state.json')), false);
+    });
+  });
+
+  describe('worktree-local workspace root resolution (#244)', () => {
+    // Scratch roots created by buildWorktreeFixture. Removing them in afterEach
+    // (rather than in each caller's finally) means a failing assertion still
+    // cannot leave an `agyloop-wt-244-*` tree behind in the temp sandbox.
+    const fixtureDirs: string[] = [];
+
+    afterEach(() => {
+      for (const dir of fixtureDirs.splice(0, fixtureDirs.length)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    type WorktreeFixture = { base: string; mainPath: string; worktreePath: string };
+
+    // Builds a scratch main repo + one linked worktree whose `.agyloop` is a REAL
+    // directory (NOT the GitWorktreeManager symlink -- a symlinked `.agyloop` would
+    // make the main-root and worktree-local paths the same file and the assertions
+    // below would pass vacuously).
+    //
+    // Returns null ONLY when there is no usable git binary. The repo itself is
+    // built under os.tmpdir() and is therefore owned by the user running the
+    // tests, so git cannot refuse it for the ownership/host-mount reason described
+    // in the memoization test in state-machine.test.ts -- which is why no other
+    // failure is allowed to skip. A swallowed `worktree add` failure would make
+    // AC1/AC3 disappear from CI with no red signal at all.
+    const buildWorktreeFixture = (): WorktreeFixture | null => {
+      const childProcess = require('child_process');
+      try {
+        childProcess.execFileSync('git', ['--version'], { stdio: 'ignore' });
+      } catch {
+        return null;
+      }
+
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-'));
+      fixtureDirs.push(base);
+      const mainPath = path.join(base, 'repo');
+      const worktreePath = path.join(base, 'wt-236');
+      fs.mkdirSync(mainPath, { recursive: true });
+
+      try {
+        childProcess.execFileSync('git', ['init', '-q', '-b', 'main', mainPath], { stdio: 'ignore' });
+        childProcess.execFileSync(
+          'git',
+          ['-C', mainPath, '-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'],
+          { stdio: 'ignore' }
+        );
+        childProcess.execFileSync('git', ['-C', mainPath, 'worktree', 'add', '-q', worktreePath, 'HEAD'], { stdio: 'ignore' });
+      } catch (err) {
+        // Loud by design: the scratch repo is user-owned, so a failure here is a
+        // real environment problem, not a reason to skip the acceptance criteria.
+        fs.rmSync(base, { recursive: true, force: true });
+        fixtureDirs.pop();
+        throw err;
+      }
+
+      fs.mkdirSync(path.join(worktreePath, '.agyloop', 'tasks'), { recursive: true });
+      fs.writeFileSync(
+        path.join(worktreePath, '.agyloop', 'tasks', '236.json'),
+        JSON.stringify({ issue: 236, currentStage: 'COMPLETED', history: [] })
+      );
+      return { base, mainPath, worktreePath };
+    };
+
+    // `wt-236` deliberately does NOT match IssueNumber.inferFromPath's
+    // `\.worktrees[/\\](\d+)` pattern, so an issue-less repository resolves to
+    // `<worktree>/.agyloop/state.json` (and `validateWorktreeIssueMatch` stays out
+    // of the way) exactly as discovery's smoke harness observed.
+    const withWorktreeCwd = (worktreePath: string, fn: () => void): void => {
+      const originalCwd = process.cwd;
+      process.cwd = () => worktreePath;
+      FileStateRepository.clearWorkspaceRootCache();
+      try {
+        fn();
+      } finally {
+        process.cwd = originalCwd;
+        FileStateRepository.clearWorkspaceRootCache();
+      }
+    };
+
+    test('resolves and reads state inside the task worktree when a linked worktree exists (AC1)', (t: any) => {
+      const fixture = buildWorktreeFixture();
+      if (fixture === null) {
+        t.skip('git is unavailable in this environment');
+        return;
+      }
+      const { mainPath, worktreePath } = fixture;
+      assert.strictEqual(fs.lstatSync(path.join(worktreePath, '.agyloop')).isSymbolicLink(), false);
+
+      withWorktreeCwd(worktreePath, () => {
+        const repo = new FileStateRepository({ issue: 236 });
+        assert.strictEqual(repo.getStateFilePath(), path.join(worktreePath, '.agyloop', 'tasks', '236.json'));
+        assert.notStrictEqual(repo.getStateFilePath(), path.join(mainPath, '.agyloop', 'tasks', '236.json'));
+
+        // Read side: the worktree-local COMPLETED checkpoint must be visible.
+        assert.strictEqual(repo.load()?.currentStage, 'COMPLETED');
+      });
+    });
+
+    test('never consults `git worktree list` when resolving the local workspace root (AC2)', () => {
+      const childProcess = require('child_process');
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-order-'));
+      const localRoot = path.join(base, 'wt-236');
+      const mainRoot = path.join(base, 'repo');
+      const originalExecSync = childProcess.execSync;
+
+      // Deliberately NON-alpha and with the linked worktree NOT first, so any
+      // parse of this listing that assumed git's record ordering would answer
+      // `mainRoot` instead of `localRoot`. Nothing must read it at all.
+      const worktreeListOutput = [
+        mainRoot,
+        localRoot,
+        path.join(base, 'wt-999'),
+      ]
+        .map((p) => `worktree ${p}\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/x\n`)
+        .join('\n');
+
+      const invocations: string[] = [];
+      childProcess.execSync = (cmd: string) => {
+        const c = String(cmd);
+        invocations.push(c);
+        if (c.includes('rev-parse --show-toplevel')) {
+          return `${localRoot}\n`;
+        }
+        if (c.includes('worktree list --porcelain')) {
+          return worktreeListOutput;
+        }
+        throw new Error(`unexpected git invocation in this test: ${c}`);
+      };
+
+      try {
+        const originalCwd = process.cwd;
+        process.cwd = () => localRoot;
+        FileStateRepository.clearWorkspaceRootCache();
+        try {
+          const repo = new FileStateRepository({ issue: 7 });
+          assert.strictEqual(repo.getStateFilePath(), path.join(localRoot, '.agyloop', 'tasks', '7.json'));
+          // AC2, strongest form: nothing that decides where state lands may read
+          // the worktree list at all -- which makes the answer independent of
+          // the listing's ordering by construction.
+          assert.strictEqual(
+            invocations.some((c) => c.includes('worktree list')),
+            false,
+            'workspace root resolution must not consult `git worktree list`'
+          );
+        } finally {
+          process.cwd = originalCwd;
+          FileStateRepository.clearWorkspaceRootCache();
+        }
+      } finally {
+        childProcess.execSync = originalExecSync;
+        FileStateRepository.clearWorkspaceRootCache();
+        fs.rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    test('an issue-less run from a task worktree cannot create the main root checkpoint (AC3)', (t: any) => {
+      const fixture = buildWorktreeFixture();
+      if (fixture === null) {
+        t.skip('git is unavailable in this environment');
+        return;
+      }
+      const { mainPath, worktreePath } = fixture;
+      const rootState = path.join(mainPath, '.agyloop', 'state.json');
+      const wtState = path.join(worktreePath, '.agyloop', 'state.json');
+      assert.strictEqual(fs.existsSync(rootState), false);
+
+      const prevEnv = process.env.NODE_ENV;
+      const prevCtx = process.env.NODE_TEST_CONTEXT;
+      process.env.NODE_ENV = 'test';
+      process.env.NODE_TEST_CONTEXT = 'child-v8';
+      try {
+        withWorktreeCwd(worktreePath, () => {
+          const repo = new FileStateRepository();
+          assert.strictEqual(repo.getStateFilePath(), wtState);
+          assert.doesNotThrow(() =>
+            repo.save({ issue: null, currentStage: 'INITIALIZED', history: [] } as any)
+          );
+          assert.strictEqual(fs.existsSync(wtState), true);
+          assert.strictEqual(fs.existsSync(rootState), false, 'main root .agyloop/state.json must not be created');
+        });
+      } finally {
+        if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+        if (prevCtx === undefined) delete process.env.NODE_TEST_CONTEXT; else process.env.NODE_TEST_CONTEXT = prevCtx;
+      }
+    });
+
+    test('an issue-less run from a task worktree cannot delete the main root checkpoint (AC3)', (t: any) => {
+      const fixture = buildWorktreeFixture();
+      if (fixture === null) {
+        t.skip('git is unavailable in this environment');
+        return;
+      }
+      const { mainPath, worktreePath } = fixture;
+      const rootState = path.join(mainPath, '.agyloop', 'state.json');
+      const rootTask = path.join(mainPath, '.agyloop', 'tasks', '236.json');
+      fs.mkdirSync(path.dirname(rootTask), { recursive: true });
+      fs.writeFileSync(rootState, JSON.stringify({ issue: null, currentStage: 'COMPLETED', history: [] }));
+      fs.writeFileSync(rootTask, JSON.stringify({ issue: 236, currentStage: 'COMPLETED', history: [] }));
+
+      const prevEnv = process.env.NODE_ENV;
+      const prevCtx = process.env.NODE_TEST_CONTEXT;
+      process.env.NODE_ENV = 'test';
+      process.env.NODE_TEST_CONTEXT = 'child-v8';
+      try {
+        withWorktreeCwd(worktreePath, () => {
+          const repo = new FileStateRepository();
+          assert.doesNotThrow(() => repo.resetAll());
+          assert.doesNotThrow(() => repo.resetTask(236));
+          // The worktree's own checkpoint is the only thing that may be removed.
+          assert.strictEqual(fs.existsSync(rootState), true, 'main root .agyloop/state.json must survive');
+          assert.strictEqual(fs.existsSync(rootTask), true, 'main root .agyloop/tasks/236.json must survive');
+          assert.strictEqual(fs.existsSync(path.join(worktreePath, '.agyloop', 'tasks', '236.json')), false);
+        });
+      } finally {
+        if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+        if (prevCtx === undefined) delete process.env.NODE_TEST_CONTEXT; else process.env.NODE_TEST_CONTEXT = prevCtx;
+      }
+    });
+
+    test('still refuses the main root when local resolution narrows to a task worktree', () => {
+      // Simulates agyloop being installed *inside* a task worktree: the primary
+      // probe now narrows to <base>/wt, while the canonical main root is only
+      // discoverable via `git rev-parse --path-format=absolute --git-common-dir`.
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-veto-'));
+      const narrowedRoot = path.join(base, 'wt');
+      const mainRoot = path.join(base, 'repo');
+      const mainStateFile = path.join(mainRoot, '.agyloop', 'state.json');
+      const childProcess = require('child_process');
+      const originalExecSync = childProcess.execSync;
+      const isRootStateError = (err: any) =>
+        err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE;
+
+      childProcess.execSync = (cmd: string) => {
+        const c = String(cmd);
+        if (c.includes('rev-parse --show-toplevel')) return `${narrowedRoot}\n`;
+        if (c.includes('rev-parse --path-format=absolute --git-common-dir')) return `${path.join(mainRoot, '.git')}\n`;
+        throw new Error(`unexpected git invocation in this test: ${c}`);
+      };
+
+      const prevEnv = process.env.NODE_ENV;
+      const prevCtx = process.env.NODE_TEST_CONTEXT;
+      process.env.NODE_ENV = 'test';
+      process.env.NODE_TEST_CONTEXT = 'child-v8';
+      try {
+        FileStateRepository.clearWorkspaceRootCache();
+        const repo = new FileStateRepository({ stateFilePath: mainStateFile });
+        assert.throws(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] } as any), isRootStateError);
+        assert.throws(() => repo.reset(), isRootStateError);
+      } finally {
+        if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+        if (prevCtx === undefined) delete process.env.NODE_TEST_CONTEXT; else process.env.NODE_TEST_CONTEXT = prevCtx;
+        childProcess.execSync = originalExecSync;
+        FileStateRepository.clearWorkspaceRootCache();
+        fs.rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    test('never trusts or caches malformed `--git-common-dir` output (git < 2.31 echoes the unknown option)', () => {
+      // `--path-format` landed in git 2.31. Older git does NOT reject an unknown
+      // `--flag=value`: it echoes the argument back onto stdout and exits 0, so
+      // execSync does not throw and the probe looks successful:
+      //   $ git rev-parse --some-unknown-flag=absolute --git-common-dir
+      //   --some-unknown-flag=absolute
+      //   /repo/.git
+      // Pinning this exact shape is the whole point: the resolver must treat it
+      // as a failed probe (fall back to __dirname, uncached) instead of feeding a
+      // two-line string to path.resolve, which resolves against process.cwd() --
+      // not the `cwd:` option -- and would cache that garbage root for the
+      // process lifetime, silently deleting the main-worktree-root veto.
+      const childProcess = require('child_process');
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-echo-'));
+      fixtureDirs.push(base);
+      const narrowedRoot = path.join(base, 'wt');
+      const commonDir = path.join(base, 'repo', '.git');
+      const echoedOutput = `--path-format=absolute\n${commonDir}\n`;
+      const originalExecSync = childProcess.execSync;
+
+      const originalCwd = process.cwd;
+      process.cwd = () => base;
+
+      // What the pre-fix resolver derived from that output: `path.resolve` treats
+      // the whole two-line string as one component, so this is
+      // `<cwd>/--path-format=absolute\n<base>/repo` -- a path under the temp
+      // sandbox, i.e. one that would pass condition 1 and then be vetoed forever.
+      const garbageRoot = path.dirname(path.resolve(echoedOutput.trim()));
+      const garbageStateFile = path.join(garbageRoot, '.agyloop', 'state.json');
+      const unrelatedStateFile = path.join(base, 'unrelated', '.agyloop', 'state.json');
+
+      let commonDirProbes = 0;
+      childProcess.execSync = (cmd: string) => {
+        const c = String(cmd);
+        if (c.includes('rev-parse --show-toplevel')) return `${narrowedRoot}\n`;
+        if (c.includes('rev-parse --path-format=absolute --git-common-dir')) {
+          commonDirProbes++;
+          return echoedOutput;
+        }
+        throw new Error(`unexpected git invocation in this test: ${c}`);
+      };
+
+      const prevEnv = process.env.NODE_ENV;
+      const prevCtx = process.env.NODE_TEST_CONTEXT;
+      process.env.NODE_ENV = 'test';
+      process.env.NODE_TEST_CONTEXT = 'child-v8';
+      try {
+        FileStateRepository.clearWorkspaceRootCache();
+        // The garbage root is NOT vetoed: nothing was learned from the probe.
+        const repo = new FileStateRepository({ stateFilePath: garbageStateFile });
+        assert.doesNotThrow(() => repo.save({ issue: null, currentStage: 'PLAN', history: [] } as any));
+        assert.strictEqual(fs.existsSync(garbageStateFile), true);
+
+        // ...and the `__dirname` fallback is not cached either: a second save
+        // must re-probe rather than reuse the unusable result (#221 posture).
+        const unrelated = new FileStateRepository({ stateFilePath: unrelatedStateFile });
+        assert.doesNotThrow(() => unrelated.save({ issue: null, currentStage: 'PLAN', history: [] } as any));
+        assert.ok(
+          commonDirProbes >= 2,
+          `malformed probe output must not be cached (probes: ${commonDirProbes})`
+        );
+
+        // Control: the guard itself is still live -- a real veto target is refused.
+        const vetoed = new FileStateRepository({ stateFilePath: path.join(narrowedRoot, '.agyloop', 'state.json') });
+        assert.throws(
+          () => vetoed.save({ issue: null, currentStage: 'PLAN', history: [] } as any),
+          (err: any) => err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
+        );
+      } finally {
+        if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
+        if (prevCtx === undefined) delete process.env.NODE_TEST_CONTEXT; else process.env.NODE_TEST_CONTEXT = prevCtx;
+        childProcess.execSync = originalExecSync;
+        process.cwd = originalCwd;
+        FileStateRepository.clearWorkspaceRootCache();
+        // `base` is removed by this describe's afterEach.
+      }
+    });
+
+    test('degrades to the cwd fallback, uncached, in a non-git directory', () => {
+      const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-nogit-244-'));
+      const originalCwd = process.cwd;
+      process.cwd = () => plain;
+      FileStateRepository.clearWorkspaceRootCache();
+      try {
+        assert.strictEqual(
+          new FileStateRepository({ issue: 7 }).getStateFilePath(),
+          path.join(plain, '.agyloop', 'tasks', '7.json')
+        );
+        // The fallback must NOT be cached (#221): a second instantiation has to re-probe
+        // git rather than reuse the pinned cwd. Asserted by counting execSync
+        // invocations, because two instantiations yield the same path whether or not
+        // the fallback is cached -- a path comparison cannot distinguish the two worlds.
+        //
+        // (The load-bearing copy of this contract is tests/state-machine.test.ts ->
+        // 'does not cache the cwd fallback when the git probe fails (#221, #244)'.)
+        const childProcess = require('child_process');
+        const originalExecSync = childProcess.execSync;
+        let execCallCount = 0;
+        childProcess.execSync = function (...args: any[]) {
+          execCallCount++;
+          return originalExecSync.apply(this, args);
+        };
+        try {
+          FileStateRepository.clearWorkspaceRootCache();
+          new FileStateRepository({ issue: 7 });
+          const afterFirst = execCallCount;
+          new FileStateRepository({ issue: 7 });
+          assert.ok(
+            execCallCount > afterFirst,
+            'the cwd fallback must not be cached -- a second instantiation must re-probe (#221)'
+          );
+        } finally {
+          childProcess.execSync = originalExecSync;
+          FileStateRepository.clearWorkspaceRootCache();
+        }
+      } finally {
+        process.cwd = originalCwd;
+        FileStateRepository.clearWorkspaceRootCache();
+        fs.rmSync(plain, { recursive: true, force: true });
+      }
+    });
+
+    test('degrades to the cwd fallback, without throwing, in a bare repository', (t: any) => {
+      // Documented behaviour change: `git worktree list --porcelain` used to "succeed"
+      // in a bare repo; `--show-toplevel` fails there ("must be run in a work tree"),
+      // so a bare repo now resolves to the cwd. Harmless -- a bare repo has no
+      // .agyloop working tree -- but pinned here so it cannot regress silently.
+      const childProcess = require('child_process');
+      // Only a missing/broken git binary may skip. A failing `git init --bare` is a real
+      // environment problem and must fail loudly, so this edge case cannot silently
+      // vanish from CI (#244).
+      //
+      // The capability gate MUST run before mkdtempSync, matching
+      // buildWorktreeFixture above: node:test does not run afterEach hooks for a
+      // t.skip()-ed test, so any temp dir created before this point would never be
+      // reclaimed by the fixtureDirs sweep (#244).
+      try {
+        childProcess.execFileSync('git', ['--version'], { stdio: 'ignore' });
+      } catch {
+        t.skip('git is unavailable in this environment');
+        return;
+      }
+      const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-bare-244-'));
+      fixtureDirs.push(bare);
+      childProcess.execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'ignore' });
+      const originalCwd = process.cwd;
+      process.cwd = () => bare;
+      FileStateRepository.clearWorkspaceRootCache();
+      try {
+        assert.strictEqual(
+          new FileStateRepository({ issue: 7 }).getStateFilePath(),
+          path.join(bare, '.agyloop', 'tasks', '7.json')
+        );
+      } finally {
+        process.cwd = originalCwd;
+        FileStateRepository.clearWorkspaceRootCache();
+        fs.rmSync(bare, { recursive: true, force: true });
+      }
     });
   });
 });

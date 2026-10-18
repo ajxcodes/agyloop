@@ -22,6 +22,8 @@ import { StateRepository } from '../ports';
 
 export class FileStateRepository implements StateRepository {
   private static readonly workspaceRootCache = new Map<string, string>();
+  /** Main (canonical) worktree root of the repository owning this package. */
+  private static readonly mainWorktreeRootCache = new Map<string, string>();
   private readonly stateFilePath: string;
   private readonly workspaceRoot: string;
 
@@ -47,9 +49,29 @@ export class FileStateRepository implements StateRepository {
   }
 
   /**
-   * Resolves the primary git workspace root with memoization by cwd.
-   * When inside a linked git worktree or nested subdirectory, this ensures
-   * the canonical root repository is located rather than a localized worktree.
+   * Resolves the git worktree root that contains `cwd`, with memoization by cwd.
+   *
+   * This deliberately resolves to the LOCAL worktree root -- the checkout the
+   * caller is actually standing in -- so that state is read from and written to
+   * that worktree's own `.agyloop` directory. A command run inside a task
+   * worktree must never read or write the main repository's state.
+   *
+   * `git rev-parse --show-toplevel` is the only git probe, and it is exactly the
+   * right one: it walks up from `cwd` and returns the root of the worktree that
+   * contains `cwd`, including from nested subdirectories and from detached
+   * worktrees.
+   *
+   * `git worktree list --porcelain` is deliberately NOT consulted. Git always
+   * emits the main worktree as its first record regardless of the invoking cwd,
+   * so taking that record as "the workspace root" made the *ordering* of git's
+   * output decide where state landed -- every invocation from inside a task
+   * worktree silently resolved to the main repository. Callers that genuinely
+   * need the main worktree (e.g. GitWorktreeManager.getRepoRoot, which creates
+   * worktrees under <main>/.worktrees/<id>) keep their own `worktree list` probe.
+   *
+   * On probe failure the resolution degrades to the cwd fallback WITHOUT caching,
+   * so a transient git failure cannot pin workspaceRoot for the lifetime of the
+   * process (#221).
    */
   private discoverWorkspaceRoot(cwd: string): string {
     const resolvedCwd = path.resolve(cwd);
@@ -59,25 +81,6 @@ export class FileStateRepository implements StateRepository {
     }
 
     let discoveredRoot = resolvedCwd;
-
-    try {
-      const stdout = child_process.execSync('git worktree list --porcelain', {
-        cwd: resolvedCwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore']
-      });
-      if (stdout) {
-        const firstLine = stdout.trim().split('\n')[0] || '';
-        const match = firstLine.match(/^worktree (.+)$/);
-        if (match && match[1]) {
-          discoveredRoot = path.resolve(match[1].trim());
-          FileStateRepository.workspaceRootCache.set(resolvedCwd, discoveredRoot);
-          return discoveredRoot;
-        }
-      }
-    } catch {
-      // Fall through to git rev-parse
-    }
 
     try {
       const stdout = child_process.execSync('git rev-parse --show-toplevel', {
@@ -102,10 +105,13 @@ export class FileStateRepository implements StateRepository {
   }
 
   /**
-   * Clears the static workspace root cache (useful for testing or cache invalidation).
+   * Clears the cached workspace roots (useful for testing or cache invalidation).
+   * Clears both the per-cwd workspace root cache and this package's main worktree
+   * root cache, so no resolution can leak between tests.
    */
   public static clearWorkspaceRootCache(): void {
     FileStateRepository.workspaceRootCache.clear();
+    FileStateRepository.mainWorktreeRootCache.clear();
   }
 
   public getStateFilePath(): string {
@@ -170,14 +176,89 @@ export class FileStateRepository implements StateRepository {
   }
 
   /**
+   * Resolves the MAIN (canonical) worktree root of the repository that owns
+   * `__dirname`, with memoization.
+   *
+   * `git rev-parse --path-format=absolute --git-common-dir` returns the shared
+   * `.git` directory of the repository -- `.git` when asked from the main
+   * worktree, and that same directory when asked from any linked worktree -- so,
+   * for the standard `.git` layout, `path.dirname` of it is the main worktree
+   * root. Three layouts break that identity, so the main root is simply not
+   * discovered there:
+   *
+   *   - `git init --separate-git-dir=G W` -> `dirname` yields `parent(G)`
+   *   - a submodule checked out at `<super>/sub` -> `<super>/.git/modules`
+   *   - a bare repository at `<base>/bare` -> `<base>`, its *parent*
+   *
+   * That is bounded, not dangerous: this is a *negative* veto only, and
+   * `discoverWorkspaceRoot`'s `localRoot` veto still covers the real target.
+   *
+   * This exists solely so the isolation guard can keep vetoing the main root
+   * after `discoverWorkspaceRoot` started narrowing to the local worktree. It is
+   * never used to locate state, and it is cached separately from
+   * `workspaceRootCache` because it answers a different question and is keyed by
+   * `__dirname` rather than by cwd.
+   *
+   * On probe failure -- or on probe output that does not look like a single
+   * absolute path -- it degrades to `__dirname`, uncached, matching the
+   * fail-safe fallback posture of `discoverWorkspaceRoot`.
+   */
+  private discoverMainWorktreeRoot(): string {
+    const key = path.resolve(__dirname);
+    const cached = FileStateRepository.mainWorktreeRootCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    try {
+      const stdout = child_process.execSync('git rev-parse --path-format=absolute --git-common-dir', {
+        cwd: key,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const trimmed = stdout ? stdout.trim() : '';
+      const lines = trimmed ? trimmed.split('\n') : [];
+      // git < 2.31 does NOT reject an unknown `--flag=value`: it echoes the
+      // argument back onto stdout and exits 0, so stdout becomes a two-line
+      // string starting with `-`. Trusting it would resolve against
+      // process.cwd() (NOT the `cwd:` above) and cache that garbage for the
+      // process lifetime -- silently deleting the main-root veto this method
+      // exists to provide. Require a single absolute line; anything else is
+      // treated exactly like a failed probe.
+      if (lines.length === 1 && path.isAbsolute(lines[0])) {
+        const mainRoot = path.dirname(lines[0]);
+        FileStateRepository.mainWorktreeRootCache.set(key, mainRoot);
+        return mainRoot;
+      }
+    } catch {
+      // Git unavailable: fall back to the package-owning directory, uncached.
+      // Like malformed probe output, this only ever yields an extra veto target,
+      // never a missing one.
+    }
+
+    return key;
+  }
+
+  /**
    * Fail-closed proof that `target` is provably isolated from real orchestrator state.
    *
    * Two conditions must BOTH hold:
    *
    *  1. `target` lives under the OS temp sandbox. This half is git-free and never
    *     fails open, so it is what keeps the guard alive when git is unusable.
-   *  2. `target` is not the workspace root of this package, nor its root state
-   *     file. This half is what stops condition 1 from being self-defeating: a
+   *  2. `target` is not EITHER workspace root of this package -- the local worktree
+   *     the package is loaded from, nor the canonical main worktree of that
+   *     repository -- nor the root state file of either. The second root is
+   *     discovered independently via
+   *     `git rev-parse --path-format=absolute --git-common-dir`; it is the one
+   *     that keeps the main root refused once local resolution has narrowed to a
+   *     task worktree. Both are *negative* vetoes: adding `mainRoot` to the union
+   *     can never remove a refusal `localRoot` already makes, and it can only
+   *     narrow the accepted set, never widen it. When the git probe fails or
+   *     returns unusable output, `mainRoot` degrades to this package's own
+   *     directory, so that one veto is simply absent -- never redirected at some
+   *     unrelated path.
+   *     This half is what stops condition 1 from being self-defeating: a
    *     checkout that lives under /tmp (or under a TMPDIR that is an ancestor of
    *     it) has its own `.agyloop/state.json` inside the sandbox, and condition 1
    *     alone would happily certify the real state file as isolated.
@@ -198,11 +279,28 @@ export class FileStateRepository implements StateRepository {
       return false;
     }
 
-    const realRoot = path.resolve(this.discoverWorkspaceRoot(__dirname));
-    return (
-      resolved !== realRoot &&
-      resolved !== path.resolve(realRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE)
-    );
+    // Two roots are vetoed, not one:
+    //  - localRoot: the worktree this package is loaded from;
+    //  - mainRoot:  the canonical main worktree of that repository, which matters
+    //               when the package is loaded from inside a task worktree and the
+    //               local resolution therefore narrows to that worktree.
+    // Both comparisons are exact matches (the root itself and its root state file),
+    // so adding `mainRoot` can never remove a refusal `localRoot` already makes --
+    // it can only ever refuse, never grant permission the pre-#244 resolver
+    // withheld. The converse does NOT hold: while the main-root probe resolves
+    // (git >= 2.31, standard `.git` layout) the veto is a superset of the
+    // pre-#244 one, but if that probe fails or returns unusable output `mainRoot`
+    // degrades to this package's own directory and the main-root veto is absent.
+    const localRoot = path.resolve(this.discoverWorkspaceRoot(__dirname));
+    const mainRoot = this.discoverMainWorktreeRoot();
+
+    for (const root of new Set([localRoot, mainRoot])) {
+      if (resolved === root || resolved === path.resolve(root, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**
