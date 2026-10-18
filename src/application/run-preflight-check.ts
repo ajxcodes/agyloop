@@ -3,7 +3,7 @@
  *
  * Coordinates smart pre-flight checks before worktree provisioning:
  * 1. Anti-Duplicate: halts cleanly if task issue is CLOSED on GitHub
- * 2. Anti-Duplicate: halts cleanly if an associated PR is already MERGED
+ * 2. Anti-Duplicate: halts cleanly if an associated PR is already MERGED *and* asserts delivery (#226)
  * 3. Resume Mode: re-attaches to existing worktree/branch if an OPEN PR or branch already exists
  *
  * Strict Hexagonal Architecture: Depends exclusively on Domain and Ports. Zero direct I/O.
@@ -20,7 +20,9 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   PREFLIGHT_ACTION_PROCEED,
   IssueNumber,
-  StateMachine
+  StateMachine,
+  prAssertsIssueDelivery,
+  branchNameReferencesIssue
 } from '../domain';
 import { GitHubGateway, WorktreeManagerPort, StateRepository } from '../ports';
 
@@ -137,23 +139,38 @@ export class RunPreFlightCheckUseCase {
 
         if (pr) {
           if (pr.merged || pr.state === 'MERGED') {
-            const taskBranchPattern = new RegExp(`^(?:task|fix)/${issueId}(?:[-_/]|$)`, 'i');
-            const isMatchingTaskBranch = taskBranchPattern.test(pr.headRefName || '');
-
-            if (isMatchingTaskBranch || issueState === 'CLOSED') {
-              const base = pr.baseRefName || 'main';
-              const haltMsg = `PR for task #${issueId} is already merged into ${base}.`;
-              throw new PreFlightHaltError(haltMsg, 'MERGED', {
-                issueNumber: issueId,
-                baseBranch: base,
-                prNumber: pr.number
-              });
-            } else {
-              console.warn(
-                `[agyloop] Warning: Disregarding merged PR #${pr.number} for open task #${issueId} because head branch '${pr.headRefName}' does not match task/${issueId} or fix/${issueId} convention.`
+            if (issueState === 'CLOSED') {
+              const closedBase = pr.baseRefName || 'main';
+              throw new PreFlightHaltError(
+                `PR for task #${issueId} is already merged into ${closedBase}.`,
+                'MERGED',
+                { issueNumber: issueId, baseBranch: closedBase, prNumber: pr.number }
               );
-              pr = null;
             }
+
+            // #226: a branch name is a naming convention, not a delivery claim.
+            const assertsDelivery = prAssertsIssueDelivery(pr, issueId);
+
+            if (assertsDelivery) {
+              const base = pr.baseRefName || 'main';
+              throw new PreFlightHaltError(
+                `PR #${pr.number} for task #${issueId} merged into ${base} and asserts delivery ` +
+                `(closing keyword for #${issueId}), but the issue is still open.`,
+                'MERGED',
+                { issueNumber: issueId, baseBranch: base, prNumber: pr.number }
+              );
+            }
+
+            const how = branchNameReferencesIssue(pr.headRefName, issueId)
+              ? `was developed on branch '${pr.headRefName}'`
+              : 'references the issue number';
+            console.warn(
+              `[agyloop] Warning: merged PR #${pr.number} ('${pr.title}') ${how} but does not ` +
+              `assert delivery of #${issueId} (no "Closes/Fixes/Resolves #${issueId}" in its body).\n` +
+              `[agyloop]          Issue #${issueId} is still OPEN, so its work is treated as outstanding.\n` +
+              `[agyloop]          If that PR already delivered it, close the issue; otherwise continue.`
+            );
+            pr = null;
           }
 
           if (pr && pr.state === 'OPEN') {

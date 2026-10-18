@@ -23,6 +23,7 @@ export * from './value-objects/commit-message';
 export * from './value-objects/diff-analyzer';
 export * from './value-objects/worktree-descriptor';
 export * from './value-objects/branch-inference';
+export * from './value-objects/pr-issue-association';
 export * from './value-objects/pre-flight-check';
 export * from './value-objects/public-sanitizer';
 export * from './value-objects/discovery-report';
