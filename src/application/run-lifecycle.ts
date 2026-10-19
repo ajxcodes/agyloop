@@ -868,6 +868,11 @@ export class RunLifecycleUseCase {
         planDir: params.planDir,
         configPath: params.configPath,
         dryRun: params.dryRun,
+        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+        // across the boundary so StartImplementationUseCase's `skipWorktree`
+        // guardrail really short-circuits instead of re-provisioning through the
+        // adopt path. `resolveWorktree` (above) remains the outer layer.
+        noWorktree: params.worktree === false,
         workspaceDir: activeWorkspace,
         hasMergeConflicts: preflightResult?.hasMergeConflicts,
         mergeBaseBranch: preflightResult?.candidateBaseBranch
@@ -1115,6 +1120,11 @@ export class RunLifecycleUseCase {
         userInstructions: params.userInstructions,
         configPath: params.configPath,
         dryRun: params.dryRun,
+        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+        // across the boundary so StartImplementationUseCase's `skipWorktree`
+        // guardrail really short-circuits instead of re-provisioning through the
+        // adopt path. `resolveWorktree` (above) remains the outer layer.
+        noWorktree: params.worktree === false,
         workspaceDir: activeWorkspace,
         hasMergeConflicts: preflightResult?.hasMergeConflicts,
         mergeBaseBranch: preflightResult?.candidateBaseBranch
