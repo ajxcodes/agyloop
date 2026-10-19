@@ -313,7 +313,26 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
           return makeResult(cmd, { stdout: 'main\nfix/82-bug-fix\n', combinedOutput: 'main\nfix/82-bug-fix\n' });
         }
         if (cmd.includes('git worktree list --porcelain')) {
-          return makeResult(cmd, { stdout: `worktree ${wtPath}\nbranch refs/heads/fix/82-bug-fix\n`, combinedOutput: '' });
+          // Realistic porcelain: the main repository root is ALWAYS listed first,
+          // then the linked worktree that holds the branch (#247 fixture repair —
+          // the previous single-entry listing made getRepoRoot resolve the holder
+          // itself, which the new root-invariant adoption guard must refuse).
+          return makeResult(
+            cmd,
+            {
+              stdout: [
+                `worktree ${tmpDir}`,
+                'HEAD 1111111111111111111111111111111111111111',
+                'branch refs/heads/main',
+                '',
+                `worktree ${wtPath}`,
+                'HEAD 2222222222222222222222222222222222222222',
+                'branch refs/heads/fix/82-bug-fix',
+                ''
+              ].join('\n'),
+              combinedOutput: ''
+            },
+          );
         }
         if (cmd.includes('git worktree add')) {
           return makeResult(cmd, { exitCode: 128, stderr: `fatal: 'fix/82-bug-fix' is already checked out at '${wtPath}'`, combinedOutput: `fatal: 'fix/82-bug-fix' is already checked out at '${wtPath}'` });
@@ -924,18 +943,21 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     );
   });
 
-  test('createWorktree creates real .agyloop directory instead of symlink when resolvedRoot === resolvedTarget', async () => {
-    const existingWorktreePath = path.resolve(tmpDir, '.worktrees', '87');
+  test('createWorktree refuses root-as-worktree registration instead of treating resolvedRoot === resolvedTarget as no-worktree-active (#247)', async () => {
+    // Pre-fix, the adopt path blessed `{ worktreePath: <repoRoot>, isIsolated: false }`
+    // with a real-directory .agyloop treatment — the exact descriptor teardown
+    // later interpreted as "a worktree to delete" (issue #247). Root adoption is
+    // now refused at the boundary; a root workspace manages `.agyloop` the
+    // in-place way only outside createWorktree.
+    const rootDir = path.resolve(tmpDir, '.worktrees', '87');
+    fs.mkdirSync(rootDir, { recursive: true });
     const mockExecutor: CommandExecutorPort = {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {
-        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
-          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
-        }
         if (cmd.includes('git worktree add')) {
           return makeResult(cmd, {
             exitCode: 128,
-            stderr: `fatal: 'task/87' is already checked out at '${existingWorktreePath}'`,
-            combinedOutput: `fatal: 'task/87' is already checked out at '${existingWorktreePath}'`
+            stderr: `fatal: 'task/87' is already checked out at '${rootDir}'`,
+            combinedOutput: `fatal: 'task/87' is already checked out at '${rootDir}'`
           });
         }
         return makeResult(cmd);
@@ -943,21 +965,24 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     };
 
     const manager = new GitWorktreeManager(mockExecutor);
-    // Invoke createWorktree pointing workspaceDir to existingWorktreePath so workspace and worktreePath match
-    const descriptor = await manager.createWorktree({
-      taskId: '87',
-      workspaceDir: existingWorktreePath,
-      worktreesDir: existingWorktreePath
-    });
-
-    const agyloopPath = path.join(descriptor.worktreePath, '.agyloop');
-    assert.ok(fs.existsSync(agyloopPath));
-    const stat = fs.lstatSync(agyloopPath);
-    assert.strictEqual(stat.isDirectory(), true);
-    assert.strictEqual(stat.isSymbolicLink(), false);
+    await assert.rejects(
+      async () => {
+        await manager.createWorktree({
+          taskId: '87',
+          workspaceDir: rootDir
+        });
+      },
+      (err: unknown) => {
+        assert.ok(
+          /Refusing to adopt the repository root/.test((err as Error).message),
+          `unexpected message: ${(err as Error).message}`
+        );
+        return true;
+      }
+    );
   });
 
-  test('createWorktree heals pre-existing self-referential symlink into a real directory', async () => {
+  test('createWorktree refuses root-as-worktree adoption without consuming a pre-existing broken .agyloop symlink (#247)', async () => {
     const targetDir = path.resolve(tmpDir, 'repo-root');
     fs.mkdirSync(targetDir, { recursive: true });
 
@@ -968,9 +993,6 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
     const mockExecutor: CommandExecutorPort = {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {
-        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
-          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
-        }
         if (cmd.includes('git worktree add')) {
           return makeResult(cmd, {
             exitCode: 128,
@@ -983,16 +1005,22 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     };
 
     const manager = new GitWorktreeManager(mockExecutor);
-    const descriptor = await manager.createWorktree({
-      taskId: '87',
-      workspaceDir: targetDir,
-      worktreesDir: targetDir
-    });
+    await assert.rejects(
+      async () => {
+        await manager.createWorktree({
+          taskId: '87',
+          workspaceDir: targetDir
+        });
+      },
+      (err: unknown) => {
+        assert.ok(/Refusing to adopt the repository root/.test((err as Error).message));
+        return true;
+      }
+    );
 
-    assert.strictEqual(descriptor.worktreePath, targetDir);
-    const healedStat = fs.lstatSync(cyclicSymlinkPath);
-    assert.strictEqual(healedStat.isDirectory(), true);
-    assert.strictEqual(healedStat.isSymbolicLink(), false);
+    // The refusal fires BEFORE any link treatment: the owner's directory content
+    // (adoption target) is not consumed or rewritten by the refused attach.
+    assert.strictEqual(fs.lstatSync(cyclicSymlinkPath).isSymbolicLink(), true);
   });
 
   test('createWorktree creates symlink pointing to root .agyloop when in isolated worktree', async () => {
@@ -1156,6 +1184,282 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       executedCommands.some((c) => c.includes(`git worktree remove --force "${currentCwd}"`)),
       false
     );
+  });
+
+  describe('GitWorktreeManager Root-Invariant Teardown Guards (#247)', () => {
+    test('removeWorktree rejects the repository root before any side effect and preserves the workspace', async () => {
+      const executedCommands: string[] = [];
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          executedCommands.push(cmd);
+          return makeResult(cmd);
+        }
+      };
+
+      const sentinelPath = path.join(tmpDir, 'sentinel.txt');
+      fs.writeFileSync(sentinelPath, 'keep me alive', 'utf8');
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({
+            worktreePath: tmpDir,
+            workspaceDir: tmpDir,
+            force: true,
+            prune: true
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.ok(
+            /Refusing to remove the repository root/.test((err as Error).message),
+            `unexpected message: ${(err as Error).message}`
+          );
+          return true;
+        }
+      );
+
+      assert.strictEqual(
+        executedCommands.some((c) => c.includes('git worktree remove')),
+        false,
+        'no git worktree remove may run for the root'
+      );
+      assert.strictEqual(
+        executedCommands.some((c) => c.includes('git worktree prune')),
+        false,
+        'prune is a side effect after the guard'
+      );
+      assert.strictEqual(fs.existsSync(sentinelPath), true, 'sentinel in the root must survive');
+      assert.strictEqual(
+        fs.readFileSync(sentinelPath, 'utf8'),
+        'keep me alive',
+        'root contents must be untouched'
+      );
+    });
+
+    test('removeWorktree never rmSyncs a path that contains the workspace root (ancestor-kill guard)', async () => {
+      const executedCommands: string[] = [];
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          executedCommands.push(cmd);
+          return makeResult(cmd);
+        }
+      };
+
+      // A nested workspace root; the target is its PARENT (would delete the root).
+      const rootDir = path.join(tmpDir, 'main');
+      fs.mkdirSync(rootDir, { recursive: true });
+      fs.writeFileSync(path.join(rootDir, 'root-sentinel.txt'), 'alive', 'utf8');
+      fs.writeFileSync(path.join(tmpDir, 'host-sentinel.txt'), 'alive', 'utf8');
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({
+            worktreePath: tmpDir,
+            workspaceDir: rootDir,
+            force: true,
+            prune: false
+          });
+        },
+        (err: unknown) => {
+          assert.ok(/Refusing to remove the repository root/.test((err as Error).message));
+          return true;
+        }
+      );
+
+      assert.strictEqual(
+        executedCommands.some((c) => c.includes('git worktree remove')),
+        false
+      );
+      assert.strictEqual(fs.existsSync(path.join(rootDir, 'root-sentinel.txt')), true);
+      assert.strictEqual(fs.existsSync(path.join(tmpDir, 'host-sentinel.txt')), true);
+    });
+
+    test('removeWorktree throws on a git main-tree refusal before the rmSync fallback (failure is no longer masked)', async () => {
+      const decoyDir = path.join(tmpDir, 'decoy-main-tree');
+      fs.mkdirSync(decoyDir, { recursive: true });
+      fs.writeFileSync(path.join(decoyDir, 'decoy-sentinel.txt'), 'alive', 'utf8');
+
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          if (cmd.includes('git worktree remove --force')) {
+            return makeResult(cmd, {
+              exitCode: 1,
+              stderr: `fatal: '${decoyDir}' is a main working tree`,
+              combinedOutput: `fatal: '${decoyDir}' is a main working tree`
+            });
+          }
+          return makeResult(cmd);
+        }
+      };
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({
+            worktreePath: decoyDir,
+            workspaceDir: tmpDir,
+            force: true,
+            prune: false
+          });
+        },
+        (err: unknown) => {
+          assert.ok(/is a main working tree/.test((err as Error).message));
+          return true;
+        }
+      );
+
+      // The refusal must throw BEFORE the rmSync fallback: the decoy dir that
+      // stands in for the main tree survives (pre-fix it was force-deleted and
+      // the failure printed as success).
+      assert.strictEqual(
+        fs.existsSync(path.join(decoyDir, 'decoy-sentinel.txt')),
+        true,
+        'the main-tree decoy must survive the refusal'
+      );
+    });
+
+    test('removeWorktree still force-cleans a stale non-root folder inside .worktrees after a non-main-tree git failure (fallback whitelist intact)', async () => {
+      const staleDir = path.join(tmpDir, '.worktrees', '1');
+      fs.mkdirSync(staleDir, { recursive: true });
+      fs.writeFileSync(path.join(staleDir, 'stale.txt'), 'stale', 'utf8');
+
+      const executedCommands: string[] = [];
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          executedCommands.push(cmd);
+          if (cmd.includes('git worktree remove --force')) {
+            return makeResult(cmd, {
+              exitCode: 1,
+              stderr: 'fatal: some unrelated git failure',
+              combinedOutput: 'fatal: some unrelated git failure'
+            });
+          }
+          return makeResult(cmd);
+        }
+      };
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      await assert.doesNotReject(async () => {
+        await manager.removeWorktree({
+          worktreePath: staleDir,
+          workspaceDir: tmpDir,
+          force: true,
+          prune: false
+        });
+      });
+
+      assert.strictEqual(
+        fs.existsSync(staleDir),
+        false,
+        'a stale .worktrees/<id> folder must still be force-cleaned'
+      );
+      assert.strictEqual(executedCommands.some((c) => c.includes('git worktree remove')), true);
+    });
+
+    test('removeWorktree still removes a genuine external, disjoint worktree path (no over-restriction)', async () => {
+      // The porcelain-declared main repo root sits below the external worktree's
+      // parent so that the EXTERNAL path is fully disjoint from the root.
+      const mainRepoRoot = path.join(tmpDir, 'main');
+      fs.mkdirSync(mainRepoRoot, { recursive: true });
+      const externalPath = path.join(tmpDir, 'external-247');
+      fs.mkdirSync(externalPath, { recursive: true });
+      fs.writeFileSync(path.join(externalPath, 'external.txt'), 'external', 'utf8');
+
+      const porcelainOutput = [
+        `worktree ${mainRepoRoot}`,
+        'HEAD 1111111111111111111111111111111111111111',
+        'branch refs/heads/main',
+        '',
+        `worktree ${externalPath}`,
+        'HEAD 2222222222222222222222222222222222222222',
+        'branch refs/heads/fix/external',
+        ''
+      ].join('\n');
+
+      const executedCommands: string[] = [];
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          executedCommands.push(cmd);
+          if (cmd === 'git worktree list --porcelain') {
+            return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+          }
+          return makeResult(cmd);
+        }
+      };
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      await assert.doesNotReject(async () => {
+        await manager.removeWorktree({
+          worktreePath: externalPath,
+          workspaceDir: mainRepoRoot,
+          force: true,
+          prune: false
+        });
+      });
+
+      assert.strictEqual(
+        fs.existsSync(externalPath),
+        false,
+        'a genuine external, disjoint worktree must still be cleaned up'
+      );
+    });
+
+    test('createWorktree refuses to adopt the repository root as a task worktree', async () => {
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          if (cmd.includes('git worktree add -b')) {
+            return makeResult(cmd, {
+              exitCode: 128,
+              stderr: `fatal: 'task/247' is already checked out at '${path.resolve(tmpDir)}'`,
+              combinedOutput: `fatal: 'task/247' is already checked out at '${path.resolve(tmpDir)}'`
+            });
+          }
+          return makeResult(cmd);
+        }
+      };
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      await assert.rejects(
+        async () => {
+          await manager.createWorktree({ taskId: '247', workspaceDir: tmpDir });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.ok(
+            /Refusing to adopt the repository root/.test((err as Error).message),
+            `unexpected message: ${(err as Error).message}`
+          );
+          return true;
+        }
+      );
+    });
+
+    test('createWorktree still adopts a non-root, fully checked-out branch path (no over-restriction)', async () => {
+      const holderPath = path.join(tmpDir, 'external-holder');
+      fs.mkdirSync(holderPath, { recursive: true });
+
+      const mockExecutor: CommandExecutorPort = {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          if (cmd.includes('git worktree add -b')) {
+            return makeResult(cmd, {
+              exitCode: 128,
+              stderr: `fatal: 'task/247' is already checked out at '${holderPath}'`,
+              combinedOutput: `fatal: 'task/247' is already checked out at '${holderPath}'`
+            });
+          }
+          return makeResult(cmd);
+        }
+      };
+
+      const manager = new GitWorktreeManager(mockExecutor);
+      const descriptor = await manager.createWorktree({ taskId: '247', workspaceDir: tmpDir });
+
+      assert.strictEqual(descriptor.worktreePath, path.resolve(holderPath));
+      assert.strictEqual(descriptor.branch, 'task/247');
+      assert.strictEqual(descriptor.isIsolated, true);
+    });
   });
 });
 

@@ -278,7 +278,11 @@ class MockConfirmationPrompt {
 }
 
 class MockWorktreeManager {
+  /** Counts real provisioning attempts so "no worktree was created" is observable. */
+  public createWorktreeCallCount = 0;
+
   public async createWorktree(params: any): Promise<any> {
+    this.createWorktreeCallCount++;
     return WorktreeDescriptor.create({
       taskId: params.issueNumber || 999,
       worktreePath: `/mock/workspace/.worktrees/${params.issueNumber || 999}`,
@@ -587,6 +591,53 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.mode, MODE_IMPLEMENT);
       assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
       assert.ok(result.implementationResult);
+    });
+
+    test('mode "implement" forwards worktree:false as noWorktree into StartImplementationUseCase.execute (issue #247, AC5)', async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: 32, worktree: mockWorktree });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const lp = lifecycleUseCase as any;
+      const originalExecute = lp.startImplementationUseCase.execute.bind(lp.startImplementationUseCase);
+      const capturedParams: any[] = [];
+      lp.startImplementationUseCase.execute = async (params: any) => {
+        capturedParams.push(params);
+        return originalExecute(params);
+      };
+
+      const withNoWorktree = await lifecycleUseCase.execute({
+        mode: MODE_IMPLEMENT,
+        issue: 32,
+        worktree: false,
+        workspaceDir: '/mock/workspace'
+      });
+      assert.strictEqual(withNoWorktree.success, true);
+      assert.strictEqual(capturedParams.length, 1);
+      assert.strictEqual(
+        capturedParams[0].noWorktree,
+        true,
+        'worktree:false must cross the boundary as noWorktree:true so provisioning truly skips'
+      );
+
+      // Control: a normal run forwards noWorktree:false.
+      const smControl = StateMachine.createInitial({ mode: MODE_PLAN, issue: 33, worktree: mockWorktree });
+      smControl.transition(STAGE_DISCOVERY);
+      smControl.transition(STAGE_PLAN);
+      smControl.transition(STAGE_APPROVAL);
+      stateRepo.savedSnapshot = smControl.toSnapshot();
+
+      const withWorktree = await lifecycleUseCase.execute({
+        mode: MODE_IMPLEMENT,
+        issue: 33,
+        worktree: true,
+        workspaceDir: '/mock/workspace'
+      });
+      assert.strictEqual(withWorktree.success, true);
+      assert.strictEqual(capturedParams.length, 2);
+      assert.strictEqual(capturedParams[1].noWorktree, false);
     });
 
     test('mode "standard" from IMPLEMENT stage runs quality gates and AI PR review sequentially', async () => {
@@ -1425,6 +1476,142 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
           `${mode} must checkpoint the advanced stage`
         );
       }
+    });
+  });
+
+  describe('8. --no-worktree Forwarding Across Modes (issue #247)', () => {
+    /**
+     * Wraps the REAL StartImplementationUseCase so the params it receives are
+     * captured while its provisioning behaviour still runs. A stubbed use case
+     * would hide the very regression this block guards (the guardrail is
+     * enforced *inside* the use case, from the forwarded flag).
+     */
+    function captureImplementationParams(lifecycle: any): any[] {
+      const captured: any[] = [];
+      const lp = lifecycle as any;
+      const originalExecute = lp.startImplementationUseCase.execute.bind(lp.startImplementationUseCase);
+      lp.startImplementationUseCase.execute = async (params: any) => {
+        captured.push(params);
+        return originalExecute(params);
+      };
+      return captured;
+    }
+
+    /** Seeds an APPROVAL checkpoint with NO worktree descriptor attached. */
+    function seedApprovalCheckpoint(issue: number): void {
+      const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+    }
+
+    test('YOLO mode forwards worktree:false as noWorktree:true into StartImplementationUseCase.execute (issue #247)', async () => {
+      const capturedParams = captureImplementationParams(lifecycleUseCase);
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        worktree: false,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        capturedParams.length,
+        1,
+        'the YOLO path must call StartImplementationUseCase.execute exactly once'
+      );
+      assert.strictEqual(
+        capturedParams[0].noWorktree,
+        true,
+        'worktree:false must cross the boundary as noWorktree:true so provisioning truly skips'
+      );
+      assert.strictEqual(
+        worktreeManager.createWorktreeCallCount,
+        0,
+        '--no-worktree must not provision a worktree in YOLO mode'
+      );
+      assert.strictEqual(result.worktree, null, 'no worktree descriptor may be reported');
+    });
+
+    test('YOLO mode forwards noWorktree:false when the worktree is enabled (negative control, issue #247)', async () => {
+      const capturedParams = captureImplementationParams(lifecycleUseCase);
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        worktree: true,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(capturedParams.length, 1);
+      assert.strictEqual(
+        capturedParams[0].noWorktree,
+        false,
+        'a worktree-enabled YOLO run must not claim noWorktree'
+      );
+      assert.strictEqual(
+        worktreeManager.createWorktreeCallCount,
+        1,
+        'the worktree-enabled YOLO run must still provision exactly one worktree'
+      );
+    });
+
+    test('STANDARD mode forwards worktree:false as noWorktree:true into StartImplementationUseCase.execute (issue #247)', async () => {
+      seedApprovalCheckpoint(32);
+      const capturedParams = captureImplementationParams(lifecycleUseCase);
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        worktree: false,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        capturedParams.length,
+        1,
+        'the STANDARD path must call StartImplementationUseCase.execute exactly once'
+      );
+      assert.strictEqual(
+        capturedParams[0].noWorktree,
+        true,
+        'worktree:false must cross the boundary as noWorktree:true so provisioning truly skips'
+      );
+      assert.strictEqual(
+        worktreeManager.createWorktreeCallCount,
+        0,
+        '--no-worktree must not provision a worktree in STANDARD mode'
+      );
+      assert.strictEqual(result.worktree, null, 'no worktree descriptor may be reported');
+    });
+
+    test('STANDARD mode forwards noWorktree:false when the worktree is enabled (negative control, issue #247)', async () => {
+      seedApprovalCheckpoint(32);
+      const capturedParams = captureImplementationParams(lifecycleUseCase);
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        worktree: true,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(capturedParams.length, 1);
+      assert.strictEqual(
+        capturedParams[0].noWorktree,
+        false,
+        'a worktree-enabled STANDARD run must not claim noWorktree'
+      );
+      assert.strictEqual(
+        worktreeManager.createWorktreeCallCount,
+        1,
+        'the worktree-enabled STANDARD run must still provision exactly one worktree'
+      );
     });
   });
 });

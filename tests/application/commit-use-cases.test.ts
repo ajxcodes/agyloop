@@ -354,7 +354,10 @@ new file mode 100644
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.worktreeTornDown, true);
       assert.strictEqual(prompts.length, 2, 'commit gate then teardown gate');
-      assert.ok(prompts[1].includes('Teardown isolated git worktree'));
+      // Issue #247 (S7): the teardown prompt names the worktree without
+      // claiming isolation up front — the descriptor decides that, not the copy.
+      assert.ok(prompts[1].includes('Teardown git worktree at'));
+      assert.strictEqual(prompts[1].includes('isolated'), false);
     });
 
     test('executes git commit, advances state, updates summary, and checkpoints on user confirmation', async () => {

@@ -257,6 +257,60 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.Prompt.includes('Approved Technical Plan'), false);
   });
 
+  test('implement action root check uses the shared root-invariant predicate (#247, resolve-normalized)', async () => {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge'
+      })
+    );
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    // '/repo/.' resolves onto the workspace root ('/repo'), so the shared
+    // predicate — not a raw `===` compare — must reject it.
+    await assert.rejects(
+      async () => {
+        await useCase.execute({ workspaceDir: '/repo' });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(
+          (err as Error).message.includes("Zero Direct Root Mutation invariant violated"),
+          `unexpected message: ${(err as Error).message}`
+        );
+        assert.ok(
+          (err as Error).message.includes("root workspace '/repo'"),
+          'the resolve-normalized root (not the raw variant) is named in the message'
+        );
+        return true;
+      }
+    );
+
+    // A distinct, non-root path passes the same predicate (no over-restriction).
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge'
+      })
+    );
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'implementer');
+  });
+
   test('returns gate subagent payload for STAGE_QUALITY_GATE', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);

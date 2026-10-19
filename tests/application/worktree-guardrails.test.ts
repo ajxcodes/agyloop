@@ -4,6 +4,9 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   TransitionStageUseCase,
   StartImplementationUseCase,
@@ -555,6 +558,231 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       assert.strictEqual(result.worktreeTornDown, false);
       assert.strictEqual(removeCalled, false);
       assert.ok(result.stateMachine.worktree);
+    });
+
+    // Issue #247 (AC2, AC1): teardown must be gated on the shared root-invariant
+    // predicate — a descriptor pointing at the root workspace is never torn down,
+    // no matter how it labels itself.
+    test('skips teardown entirely for a root-workspace descriptor (isIsolated false, path === rootDir) and preserves the workspace', async () => {
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-247-root-'));
+      try {
+        const sentinelPath = path.join(rootDir, 'sentinel.txt');
+        fs.writeFileSync(sentinelPath, 'alive', 'utf8');
+
+        const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'fix/247' });
+        sm.setWorktree(
+          WorktreeDescriptor.create({
+            taskId: 247,
+            worktreePath: rootDir,
+            branch: 'fix/247-repro',
+            baseBranch: 'fix/247',
+            isIsolated: false
+          })
+        );
+        sm.transition('DISCOVERY');
+        sm.transition('PLAN');
+        sm.transition(STAGE_APPROVAL);
+        sm.transition(STAGE_IMPLEMENT);
+        sm.transition('QUALITY_GATE');
+        sm.transition('REVIEW');
+        sm.transition(STAGE_COMMIT);
+
+        const stateRepo = new MockStateRepo(sm.toSnapshot());
+        let removeCalled = false;
+
+        const mockWorktree = makeMockWorktree({
+          removeWorktree: async () => {
+            removeCalled = true;
+          }
+        });
+
+        const useCase = new ExecuteCommitUseCase(
+          stateRepo,
+          makeMockCommandExecutor(),
+          undefined,
+          makeMockPrompt(true),
+          mockWorktree
+        );
+
+        const result = await useCase.execute({
+          commitMessage: CommitMessage.create({
+            type: 'fix',
+            description: 'never delete the repo root (#247)'
+          }),
+          bypassConfirmation: true,
+          rootWorkspaceDir: rootDir
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(removeCalled, false, 'the root descriptor must never reach removeWorktree');
+        assert.ok(!result.worktreeTornDown, 'teardown is skipped');
+        assert.strictEqual(result.worktreeTornDownPath, undefined);
+        assert.strictEqual(fs.existsSync(sentinelPath), true, 'the workspace root must be preserved');
+        assert.strictEqual(fs.readFileSync(sentinelPath, 'utf8'), 'alive');
+      } finally {
+        fs.rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    test('skips teardown for an isolated-labelled descriptor whose path resolves on the root (predicate does not trust isIsolated alone)', async () => {
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-247-deceptive-'));
+      try {
+        const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'fix/247' });
+        sm.setWorktree(
+          WorktreeDescriptor.create({
+            taskId: 247,
+            worktreePath: rootDir,
+            branch: 'fix/247-repro',
+            baseBranch: 'fix/247',
+            isIsolated: true
+          })
+        );
+        sm.transition('DISCOVERY');
+        sm.transition('PLAN');
+        sm.transition(STAGE_APPROVAL);
+        sm.transition(STAGE_IMPLEMENT);
+        sm.transition('QUALITY_GATE');
+        sm.transition('REVIEW');
+        sm.transition(STAGE_COMMIT);
+
+        const stateRepo = new MockStateRepo(sm.toSnapshot());
+        let removeCalled = false;
+
+        const mockWorktree = makeMockWorktree({
+          removeWorktree: async () => {
+            removeCalled = true;
+          }
+        });
+
+        const useCase = new ExecuteCommitUseCase(
+          stateRepo,
+          makeMockCommandExecutor(),
+          undefined,
+          makeMockPrompt(true),
+          mockWorktree
+        );
+
+        const result = await useCase.execute({
+          commitMessage: CommitMessage.create({
+            type: 'fix',
+            description: 'path beats label (#247)'
+          }),
+          bypassConfirmation: true,
+          rootWorkspaceDir: rootDir
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(removeCalled, false);
+        assert.ok(!result.worktreeTornDown);
+        assert.ok(result.stateMachine.worktree, 'the lying descriptor must not be silently blessed: state keeps it');
+      } finally {
+        fs.rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    test('tears down a non-root worktree after commit when the root invariant is satisfied (anti-over-restriction)', async () => {
+      const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'main' });
+      sm.setWorktree(
+        WorktreeDescriptor.create({
+          taskId: 247,
+          worktreePath: '/repo/.worktrees/247',
+          branch: 'task/247-work',
+          baseBranch: 'main',
+          isIsolated: true
+        })
+      );
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      sm.transition('QUALITY_GATE');
+      sm.transition('REVIEW');
+      sm.transition(STAGE_COMMIT);
+
+      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const calls: RemoveWorktreeOptions[] = [];
+
+      const mockWorktree = makeMockWorktree({
+        removeWorktree: async (opts: RemoveWorktreeOptions) => {
+          calls.push(opts);
+        }
+      });
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        makeMockCommandExecutor(),
+        undefined,
+        makeMockPrompt(true),
+        mockWorktree
+      );
+
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({
+          type: 'feat',
+          description: 'isolated teardown still works (#247)'
+        }),
+        bypassConfirmation: true,
+        rootWorkspaceDir: '/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].worktreePath, '/repo/.worktrees/247');
+    });
+
+    test('reports worktreeTornDownPath (and isolated flag) on the result for a descriptor-accurate CLI message', async () => {
+      const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'main' });
+      sm.setWorktree(
+        WorktreeDescriptor.create({
+          taskId: 247,
+          worktreePath: '/repo/.worktrees/247',
+          branch: 'task/247-work',
+          baseBranch: 'main',
+          isIsolated: true
+        })
+      );
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      sm.transition('QUALITY_GATE');
+      sm.transition('REVIEW');
+      sm.transition(STAGE_COMMIT);
+
+      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const promptMessages: string[] = [];
+      const recordingPrompt = {
+        confirm: async (message: string): Promise<boolean> => {
+          promptMessages.push(message);
+          return true;
+        }
+      };
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        makeMockCommandExecutor(),
+        undefined,
+        recordingPrompt as unknown as ConfirmationPromptPort,
+        makeMockWorktree()
+      );
+
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({
+          type: 'feat',
+          description: 'accurate teardown report (#247)'
+        })
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(result.worktreeTornDownPath, '/repo/.worktrees/247');
+      assert.strictEqual(result.worktreeTornDownIsolated, true);
+      // The teardown prompt asks about the worktree; it no longer claims isolation up front.
+      const teardownMessage = promptMessages.find((m) => m.includes('Teardown'));
+      assert.ok(teardownMessage, 'a teardown confirmation prompt must have been shown');
+      assert.ok(teardownMessage!.includes('Teardown git worktree at /repo/.worktrees/247'));
+      assert.strictEqual(teardownMessage!.includes('isolated'), false);
     });
   });
 });

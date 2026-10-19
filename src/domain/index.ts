@@ -26,6 +26,7 @@ export * from './value-objects/branch-inference';
 export * from './value-objects/pr-issue-association';
 export * from './value-objects/pre-flight-check';
 export * from './value-objects/public-sanitizer';
+export * from './value-objects/root-invariant';
 export * from './value-objects/discovery-report';
 export * from './value-objects/semver-calculator';
 export * from './value-objects/version-anchor';
