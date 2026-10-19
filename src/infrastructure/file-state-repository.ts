@@ -105,6 +105,20 @@ export class FileStateRepository implements StateRepository {
   }
 
   /**
+   * Returns a repository bound to `issue`'s task checkpoint.
+   *
+   * Reuses the already-discovered workspaceRoot, so no git probe and no state
+   * write happens here; `stateFilePath` resolves through the same branch the
+   * constructor uses when an issue is known. Deliberately rooted at
+   * `this.workspaceRoot` rather than at `process.cwd()`: the checkpoint a caller
+   * is already reading must not silently move because the process changed
+   * directory between the read and the write (#226 D6).
+   */
+  public forIssue(issue: number | string): FileStateRepository {
+    return new FileStateRepository({ workspaceDir: this.workspaceRoot, issue: Number(issue) });
+  }
+
+  /**
    * Clears the cached workspace roots (useful for testing or cache invalidation).
    * Clears both the per-cwd workspace root cache and this package's main worktree
    * root cache, so no resolution can leak between tests.

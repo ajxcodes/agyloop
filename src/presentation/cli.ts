@@ -73,6 +73,7 @@ import {
   InvalidTransitionError,
   QUOTA_RESUME_COMMAND,
   StateMachine,
+  StateMachineSnapshot,
   IssueNumber,
   NOTE_DISCOVERY_PARK_AWAITING_RCA,
   STATE_MUTATING_COMMANDS
@@ -230,10 +231,19 @@ export interface PersistedGatePause {
  *
  * Never throws: a missing, unreadable or corrupt checkpoint must not take down a
  * command whose real job is to report state (issue #218 AC4).
+ *
+ * `snapshotOverride` lets a caller that has ALREADY resolved the authoritative
+ * checkpoint hand that exact snapshot in, so the pause block cannot be read from
+ * a different file than the header was built from (#226 D5). Omitted, the
+ * behaviour is unchanged and the repository is read directly — which is why all
+ * pre-existing call sites needed no edit.
  */
-export async function readPersistedGatePause(stateRepo: StateRepository): Promise<PersistedGatePause | null> {
+export async function readPersistedGatePause(
+  stateRepo: StateRepository,
+  snapshotOverride?: StateMachineSnapshot | null
+): Promise<PersistedGatePause | null> {
   try {
-    const snapshot = await stateRepo.load();
+    const snapshot = snapshotOverride !== undefined ? snapshotOverride : await stateRepo.load();
     const gate = snapshot?.pausedAtGate ?? null;
     if (!gate) {
       return null;
@@ -944,17 +954,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'status': {
       const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
-      const result = await getStatusUseCase.execute();
+      const result = await getStatusUseCase.execute({ issue: options.issue });
       console.log('\n=== CodeLoop: Pipeline Status ===');
       console.log(`Current Stage : ${formatStageBadge(result.status.currentStage)}`);
       console.log(`Execution Mode: ${result.status.mode}`);
       console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
       console.log(`Updated At    : ${result.status.updatedAt}`);
       console.log(`Checkpoint    : ${result.stateFilePath}`);
+      if (result.resolvedIssue !== null) {
+        // Without this the `Checkpoint` line read like an assertion that the run
+        // uses the root file, which is exactly what it did NOT use: the root
+        // `.agyloop/state.json` is not read or written by task runs (#226 D5).
+        console.log(`              (authoritative for issue #${result.resolvedIssue} — the root .agyloop/state.json is not used by task runs)`);
+      }
 
       // Additive: nothing else below distinguishes a live pipeline from one halted at
       // a gate, so an operator could not tell that the run was waiting on them.
-      const statusPause = await readPersistedGatePause(stateRepo);
+      // The resolved snapshot is handed in so the pause block agrees with the header.
+      const statusPause = await readPersistedGatePause(stateRepo, result.resolvedSnapshot);
       if (statusPause) {
         console.log(`Paused At Gate: ${statusPause.gate}`);
         console.log(`Paused At     : ${statusPause.pausedAt ?? '(unknown)'}`);
@@ -1059,7 +1076,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       // mutates the checkpoint exactly like `reset` does): a subagent is refused above.
       try {
         const resumeUseCase = new ResumePipelineUseCase(stateRepo);
-        const resumeResult = await resumeUseCase.execute({ dryRun: options.dryRun });
+        const resumeResult = await resumeUseCase.execute({
+          dryRun: options.dryRun,
+          issue: options.issue,            // (#226 — was never forwarded)
+        });
 
         if (options.json) {
           // Single JSON document on stdout; anything diagnostic goes to stderr.
@@ -1077,6 +1097,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         console.log('\n=== CodeLoop: Pipeline Resume ===');
         console.log(`${options.dryRun ? '[dry-run] ' : '✓ '}${resumeResult.message}`);
+        if (resumeResult.resolvedFromIssue != null) {
+          // A bare `resume` gives no hint that a task checkpoint was involved; without
+          // this the operator cannot tell WHICH task was inspected (#226 D6).
+          console.log(`  Task         : #${resumeResult.resolvedFromIssue} (${resumeResult.resolvedFromPath})`);
+        }
         console.log(`  Cleared Gate : ${resumeResult.pausedAtGate ?? '(none)'}`);
         console.log(`  Cleared At   : ${resumeResult.pausedAtTimestamp ?? '(unknown)'}`);
         console.log(`  Stage        : ${resumeResult.currentStage ?? '(no checkpoint)'}`);
@@ -1209,11 +1234,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         await transitionUseCase.execute({
           targetStage: options.stageArg as StageName,
           metadata: { note: 'Manual CLI transition' },
+          dryRun: options.dryRun,          // (#226 — was silently dropped)
           noWorktree: options.noWorktree,
           baseBranch: options.baseBranch,
           issue: options.issue
         });
-        console.log(`✓ Transitioned to ${formatStageBadge(options.stageArg)}`);
+        console.log(
+          `${options.dryRun ? '[dry-run] ' : '✓ '}Transitioned to ${formatStageBadge(options.stageArg)}`
+        );
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);

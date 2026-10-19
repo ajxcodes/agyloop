@@ -391,6 +391,54 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       await useCase.execute({ workspaceDir: '/repo', baseBranch: 'custom/override-branch' });
       assert.strictEqual(capturedParams.explicitBaseBranch, 'custom/override-branch');
     });
+
+    test('skips the worktree guardrail under dryRun, exactly as it already did under noWorktree (#226)', async () => {
+      const sm = StateMachine.createInitial({ issue: 41 });
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition('APPROVAL');
+
+      const runWith = async (params: import('../../src/application/start-implementation').StartImplementationParams) => {
+        const stateRepo = new MockStateRepo(sm.toSnapshot());
+        let createWorktreeCalls = 0;
+        const useCase = new StartImplementationUseCase(
+          stateRepo,
+          makeMockConfig(),
+          makeMockPlanGenerator(),
+          undefined,
+          undefined,
+          makeMockWorktree({
+            createWorktree: async (opts: CreateWorktreeOptions) => {
+              createWorktreeCalls++;
+              return WorktreeDescriptor.create({
+                taskId: opts.taskId,
+                worktreePath: `/repo/.worktrees/${opts.taskId}`,
+                branch: `task/${opts.taskId}-work`,
+                baseBranch: 'phase/1-bridge',
+                createdAt: new Date().toISOString()
+              });
+            }
+          })
+        );
+        const result = await useCase.execute({ workspaceDir: '/repo', ...params });
+        return { createWorktreeCalls, sm: result.stateMachine };
+      };
+
+      // Control first: a plain run must still provision, or "0" below is a dead mock.
+      const baseline = await runWith({});
+      assert.strictEqual(baseline.createWorktreeCalls, 1);
+      assert.ok(baseline.sm.worktree);
+
+      // #226: dryRun now skips the guardrail, so --dry-run leaves no orphan worktree.
+      const dryRun = await runWith({ dryRun: true });
+      assert.strictEqual(dryRun.createWorktreeCalls, 0, 'dryRun must skip the worktree guardrail');
+      assert.strictEqual(dryRun.sm.worktree, null);
+
+      // Unchanged: noWorktree already skipped it, and still does.
+      const noWorktree = await runWith({ noWorktree: true });
+      assert.strictEqual(noWorktree.createWorktreeCalls, 0, 'noWorktree behaviour must be unchanged');
+      assert.strictEqual(noWorktree.sm.worktree, null);
+    });
   });
 
   describe('ExecuteCommitUseCase Automated Teardown & PR Target', () => {

@@ -12,6 +12,7 @@ import {
   ExecutionMode,
   STAGE_INITIALIZED,
   STAGE_APPROVAL,
+  STAGE_COMPLETED,
   STAGE_PLAN,
   MODE_STANDARD,
   STATE_SCHEMA_VERSION,
@@ -356,7 +357,17 @@ export class StateMachine {
     // Human gates are deliberately preserved: `TransitionStageUseCase`
     // transitions out of APPROVAL/COMMIT only after the human answered, and
     // TRIAGE hands control back to a human (see `HUMAN_WAIT_GATES`).
-    if (this._pausedAtGate !== null && !HUMAN_WAIT_GATES.includes(this._pausedAtGate)) {
+    //
+    // COMPLETED is the exception, and it is not a special case bolted on: it is the
+    // same rule bounded by "the run finished". A machine that has reached its terminal
+    // stage is not waiting on a human, so the pause must be consumed (and its elapsed
+    // time banked into `totalHumanWaitMs`) here. Without this, `ExecuteCommitUseCase`'s
+    // `COMMIT -> COMPLETED` persisted `{ currentStage: COMPLETED, pausedAtGate: COMMIT }`
+    // and, because COMMIT is in `HUMAN_WAIT_GATES`, no later transition could ever clear
+    // it: `status` reported a finished pipeline that was also waiting on a human, and
+    // `totalHumanWaitMs` stayed 0 forever (#226).
+    const terminal = target.value === STAGE_COMPLETED;
+    if (this._pausedAtGate !== null && (terminal || !HUMAN_WAIT_GATES.includes(this._pausedAtGate))) {
       this.resumeFromGate();
     }
   }
