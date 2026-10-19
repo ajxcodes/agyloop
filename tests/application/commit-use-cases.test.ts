@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const {
   StateMachine,
   Stage,
+  GATE_COMMIT,
   STAGE_COMMIT,
   STAGE_COMPLETED,
   STAGE_REVIEW,
@@ -1097,6 +1098,61 @@ new file mode 100644
         result.prCommand,
         'echo "PR already exists for branch \'fix/170\'."; gh pr view'
       );
+    });
+
+    // --- #226: COMMIT -> COMPLETED must not strand the inherited pause -------
+    //
+    // End-to-end through the real defect path. `ExecuteCommitUseCase` calls
+    // `sm.transition(STAGE_COMPLETED)`, and before #226 that persisted
+    // `{ currentStage: COMPLETED, pausedAtGate: COMMIT }` — a finished pipeline
+    // that also claimed to be waiting on a human, with no way to clear it.
+
+    test('COMMIT -> COMPLETED persists a checkpoint with no stale COMMIT pause (#226)', async () => {
+      const pausedAt = new Date(Date.now() - 5000).toISOString();
+      // Seed through the snapshot: `pauseAtGate()` always stamps "now".
+      const sm = StateMachine.fromSnapshot({
+        ...new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree }).toSnapshot(),
+        pausedAtGate: GATE_COMMIT,
+        pausedAtTimestamp: pausedAt
+      });
+      const stateRepo = new MockStateRepository(sm);
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'deadbee\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/999\n' };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({ type: 'fix', description: 'terminal pause' });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        bypassConfirmation: true,
+        interactive: false
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMPLETED);
+
+      const saved = stateRepo.savedSnapshot;
+      assert.strictEqual(saved.currentStage, STAGE_COMPLETED);
+      assert.strictEqual(
+        saved.pausedAtGate,
+        null,
+        'a COMPLETED checkpoint must never advertise a pending human gate'
+      );
+      assert.strictEqual(saved.pausedAtTimestamp, null);
+      assert.ok(
+        saved.totalHumanWaitMs >= 4000,
+        `expected the inherited ~5s human wait to be banked, got ${saved.totalHumanWaitMs}`
+      );
+
+      const roundTripped = JSON.parse(JSON.stringify(saved));
+      assert.strictEqual(roundTripped.pausedAtGate, null, 'the clear must survive serialisation');
+
+      const reloaded = StateMachine.fromSnapshot(roundTripped);
+      assert.strictEqual(reloaded.pausedAtGate, null, 'a reloaded checkpoint must report no pause');
+      assert.strictEqual(reloaded.currentStage, STAGE_COMPLETED);
     });
   });
 });

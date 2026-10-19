@@ -41,4 +41,16 @@ export interface StateRepository {
    * Scans and returns all known task snapshots and the singleton root snapshot if present.
    */
   listAllStates?(): Promise<StateMachineSnapshot[]> | StateMachineSnapshot[];
+
+  /**
+   * Returns a repository scoped to `issue`'s task checkpoint
+   * (.agyloop/tasks/<issue>.json). The returned repository's `load`, `save` and
+   * `getStateFilePath` ALL address that file, so a caller that resolves the task
+   * first cannot read one file and write another.
+   *
+   * Optional, exactly like `resetTask` / `resetAll` / `listAllStates`: every
+   * consumer must cope with `undefined` and degrade to the repository it already
+   * holds.
+   */
+  forIssue?(issue: number | string): StateRepository;
 }

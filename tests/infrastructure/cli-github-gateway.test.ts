@@ -149,6 +149,100 @@ describe('CliGitHubGateway findPullRequest', () => {
   });
 });
 
+// #226: the PR body is where a GitHub closing keyword asserts delivery, so `gh`
+// must be asked for it and `findPullRequest` must prefer a PR that carries one.
+describe('CliGitHubGateway findPullRequest body plumbing (#226)', () => {
+  test('requests the body field for both the headBranch and issueNumber branches', () => {
+    const gateway = new CliGitHubGateway();
+    const capturedCmds: string[] = [];
+    gateway.runGh = (cmd: string) => {
+      capturedCmds.push(cmd);
+      return '[]';
+    };
+
+    gateway.findPullRequest({ headBranch: 'task/226', repo: 'org/repo' });
+    gateway.findPullRequest({ issueNumber: 226, repo: 'org/repo' });
+
+    assert.strictEqual(capturedCmds.length, 2);
+    assert.ok(capturedCmds[0].includes('number,title,body,state'), 'headBranch --json must request body');
+    assert.ok(capturedCmds[1].includes('number,title,body,state'), 'issueNumber --json must request body');
+  });
+
+  test('returns the body on GitHubPullRequestData', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () =>
+      JSON.stringify([
+        {
+          number: 9,
+          title: 'feat: implement task 75',
+          body: '## Summary\n\nCloses #75',
+          state: 'OPEN',
+          baseRefName: 'main',
+          headRefName: 'task/75-new-feature',
+          url: 'https://github.com/org/repo/pull/9',
+          mergedAt: null,
+          labels: []
+        }
+      ]);
+
+    const pr = gateway.findPullRequest({ issueNumber: 75 });
+    assert.strictEqual(pr?.body, '## Summary\n\nCloses #75');
+  });
+
+  test('defaults a missing body to an empty string', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () =>
+      JSON.stringify([
+        {
+          number: 8,
+          title: 'fix: edge case (#75)',
+          state: 'MERGED',
+          baseRefName: 'main',
+          headRefName: 'fix/75-merged',
+          url: 'https://github.com/org/repo/pull/8',
+          mergedAt: '2026-09-01T00:00:00Z',
+          labels: []
+        }
+      ]);
+
+    const pr = gateway.findPullRequest({ issueNumber: 75 });
+    assert.strictEqual(pr?.body, '');
+  });
+
+  test('Tier 1 (body asserts delivery) beats the head-branch convention (#226)', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () =>
+      JSON.stringify([
+        {
+          number: 8,
+          title: 'fix: edge case (#75)',
+          body: '',
+          state: 'MERGED',
+          baseRefName: 'main',
+          headRefName: 'fix/75-merged',
+          url: 'https://github.com/org/repo/pull/8',
+          mergedAt: '2026-09-01T00:00:00Z',
+          labels: []
+        },
+        {
+          number: 9,
+          title: 'feat: implement task 75',
+          body: 'Closes #75',
+          state: 'OPEN',
+          baseRefName: 'main',
+          headRefName: 'task/75-new-feature',
+          url: 'https://github.com/org/repo/pull/9',
+          mergedAt: null,
+          labels: []
+        }
+      ]);
+
+    const pr = gateway.findPullRequest({ issueNumber: 75 });
+    assert.strictEqual(pr?.number, 9);
+    assert.strictEqual(pr?.headRefName, 'task/75-new-feature');
+  });
+});
+
 describe('CliGitHubGateway fetchIssue', () => {
   test('invokes gh issue view requesting number,title,body,state,labels', () => {
     const gateway = new CliGitHubGateway();

@@ -198,4 +198,75 @@ describe('POSIX Shell Compatibility', () => {
       fs.rmSync(sandboxHome, { recursive: true, force: true });
     }
   });
+
+  // D7 regression (#226): with an empty $HOME there is no plugin symlink, so
+  // jq exits 2 on the absent manifest. Under `set -e`, the plain assignment
+  // `VAR="$(jq ...)"` used to abort the script with THAT exit status before
+  // the FAILED summary ran, so callers saw 2 instead of the documented 1 --
+  // and step 3 claimed "Invalid JSON syntax" about a file jq never opened.
+  // These tests pin the missing-manifest failure mode on the script's own
+  // documented terms. The happy path above must keep passing unchanged.
+  function runVerifyInstallWithHome(sandboxHome: string) {
+    return spawnSync('sh', [path.join(binDir, 'verify-install.sh')], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: sandboxHome },
+    });
+  }
+
+  test('bin/verify-install.sh exits 1, not jq exit 2, when the manifest is missing', () => {
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    try {
+      const verify = runVerifyInstallWithHome(sandboxHome);
+      // jq exits 2 for "no such file"; the script must translate that (and any
+      // other jq failure) into its own documented exit 1, never leak jq's code.
+      assert.notStrictEqual(
+        verify.status,
+        2,
+        `Expected the script's own exit 1, not jq's exit 2, got:\n${verify.stdout}\n${verify.stderr}`
+      );
+      assert.strictEqual(
+        verify.status,
+        1,
+        `Expected the documented exit 1 on a failed verification, got ${verify.status}:\n${verify.stdout}\n${verify.stderr}`
+      );
+      assert.ok(
+        verify.stdout.includes('Verification FAILED'),
+        `Expected the FAILED summary to be reachable, got:\n${verify.stdout}`
+      );
+    } finally {
+      fs.rmSync(sandboxHome, { recursive: true, force: true });
+    }
+  });
+
+  test('bin/verify-install.sh leaks no raw jq error and claims no syntax error for an absent manifest', () => {
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    try {
+      const verify = runVerifyInstallWithHome(sandboxHome);
+      assert.ok(
+        !/jq: error/.test(verify.stdout + verify.stderr),
+        `Expected no raw jq error to leak, got:\n${verify.stdout}\n${verify.stderr}`
+      );
+      // Step 2 already proved the manifest is absent; step 3 must not claim a
+      // parse bug about a file that was never opened.
+      assert.ok(
+        !verify.stdout.includes('Invalid JSON syntax'),
+        `Expected no "Invalid JSON syntax" for an absent manifest, got:\n${verify.stdout}`
+      );
+    } finally {
+      fs.rmSync(sandboxHome, { recursive: true, force: true });
+    }
+  });
+
+  test('bin/verify-install.sh prints the actionable symlink hint when the manifest is missing', () => {
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    try {
+      const verify = runVerifyInstallWithHome(sandboxHome);
+      assert.ok(
+        verify.stdout.includes("Run './bin/setup-symlink.sh'"),
+        `Expected the setup-symlink.sh hint, got:\n${verify.stdout}`
+      );
+    } finally {
+      fs.rmSync(sandboxHome, { recursive: true, force: true });
+    }
+  });
 });

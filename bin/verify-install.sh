@@ -59,9 +59,16 @@ else
 fi
 
 # 3. Check JSON validity with jq
+# The `-f` guard keeps an absent manifest from being reported as malformed: when
+# the link is missing, step 2 has already failed the run and printing "Invalid
+# JSON syntax" about a file jq never opened sent operators hunting for a parse
+# bug instead of running the one command that fixes it (#226).
 echo "3. Validating JSON syntax..."
 if command -v jq >/dev/null 2>&1; then
-  if jq empty "${PLUGIN_MANIFEST}" 2>/dev/null; then
+  if [ ! -f "${PLUGIN_MANIFEST}" ]; then
+    echo "   ! Manifest not readable at ${PLUGIN_MANIFEST}; skipping JSON syntax test."
+    echo "     Run './bin/setup-symlink.sh' to establish the link, then re-run this script."
+  elif jq empty "${PLUGIN_MANIFEST}" 2>/dev/null; then
     echo "   ✓ Valid JSON syntax."
   else
     echo "   ✗ Invalid JSON syntax in ${PLUGIN_MANIFEST}."
@@ -72,15 +79,19 @@ else
 fi
 
 # 4. Check core plugin fields
+# The `-f` guard plus `|| true` on every extraction is load-bearing: under `set -e`
+# a failed command substitution in a plain assignment aborts the script with THAT
+# command's exit status (jq returns 2 for "no such file", 4 for a parse error), so
+# callers saw `2` instead of the documented `1` and never reached the FAILED summary.
 echo "4. Validating Plugin V2 metadata & contracts..."
-if command -v jq >/dev/null 2>&1; then
-  PLUGIN_NAME="$(jq -r '.name // empty' "${PLUGIN_MANIFEST}")"
-  PLUGIN_VERSION="$(jq -r '.version // empty' "${PLUGIN_MANIFEST}")"
-  HAS_COMMAND="$(jq -r '.commands.agyloop.name // empty' "${PLUGIN_MANIFEST}")"
-  PLANNER_SUBAGENT="$(jq -r '.subagents.planner.name // empty' "${PLUGIN_MANIFEST}")"
-  IMPLEMENTER_SUBAGENT="$(jq -r '.subagents.implementer.name // empty' "${PLUGIN_MANIFEST}")"
-  GATE_SUBAGENT="$(jq -r '.subagents.gate.name // empty' "${PLUGIN_MANIFEST}")"
-  REVIEWER_SUBAGENT="$(jq -r '.subagents.reviewer.name // empty' "${PLUGIN_MANIFEST}")"
+if command -v jq >/dev/null 2>&1 && [ -f "${PLUGIN_MANIFEST}" ]; then
+  PLUGIN_NAME="$(jq -r '.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  PLUGIN_VERSION="$(jq -r '.version // empty' "${PLUGIN_MANIFEST}" || true)"
+  HAS_COMMAND="$(jq -r '.commands.agyloop.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  PLANNER_SUBAGENT="$(jq -r '.subagents.planner.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  IMPLEMENTER_SUBAGENT="$(jq -r '.subagents.implementer.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  GATE_SUBAGENT="$(jq -r '.subagents.gate.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  REVIEWER_SUBAGENT="$(jq -r '.subagents.reviewer.name // empty' "${PLUGIN_MANIFEST}" || true)"
 
   if [ "${PLUGIN_NAME}" = "agyloop" ]; then
     echo "   ✓ Plugin Name: ${PLUGIN_NAME}"
@@ -110,6 +121,8 @@ if command -v jq >/dev/null 2>&1; then
     echo "   ✗ One or more required subagents missing from manifest."
     FAILED=1
   fi
+else
+  echo "   ! Manifest unreadable; skipping metadata contract checks."
 fi
 
 # 5. Antigravity Environment Check

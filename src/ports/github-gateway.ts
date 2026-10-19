@@ -49,6 +49,8 @@ export interface GitHubIssueData {
 export interface GitHubPullRequestData {
   readonly number: number;
   readonly title: string;
+  /** PR description; the only place a GitHub closing keyword (`Closes #n`) is asserted. */
+  readonly body?: string;
   readonly state: string; // 'OPEN' | 'MERGED' | 'CLOSED'
   readonly baseRefName: string;
   readonly headRefName: string;

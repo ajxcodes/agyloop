@@ -100,9 +100,36 @@ export class TransitionStageUseCase {
       );
     }
 
-    // Guardrail: Auto-provision worktree on entering IMPLEMENT stage
+    const prevStage = sm.currentStage;
+    let gateWaitMs = 0;
+    if (sm.pausedAtGate && sm.pausedAtTimestamp) {
+      gateWaitMs = Math.max(0, Date.now() - new Date(sm.pausedAtTimestamp).getTime());
+    }
+
+    if (sm.pausedAtGate) {
+      sm.resumeFromGate();
+    }
+
+    // #226: legality FIRST. `transition()` is the single thrower of
+    // `InvalidTransitionError` (`state-machine.ts:332`), and it now runs before the
+    // worktree guardrail below, so a rejected target can no longer have created a
+    // worktree and a branch on disk. Nothing is persisted until the save below, so
+    // the on-disk checkpoint is byte-identical on the failure path either way.
+    sm.transition(params.targetStage, params.metadata || {});
+
+    if (targetStageStr === STAGE_APPROVAL || targetStageStr === STAGE_COMMIT) {
+      sm.pauseAtGate(targetStageStr);
+    }
+
+    // Guardrail: auto-provision worktree on entering IMPLEMENT stage.
+    // Only reachable once the transition is known to be legal.
     if (targetStageStr === STAGE_IMPLEMENT) {
-      const skipWorktree = params.noWorktree === true || params.metadata?.noWorktree === true;
+      // `dryRun` is part of `skipWorktree`, not just `noWorktree`: the save below
+      // is gated on `!params.dryRun`, so provisioning here would leave a real
+      // `.worktrees/<id>` + branch on disk paired with NO checkpoint referencing it —
+      // an orphan the operator had to prune by hand (#226).
+      const skipWorktree =
+        params.noWorktree === true || params.metadata?.noWorktree === true || params.dryRun === true;
 
       if (!skipWorktree) {
         // Auto-provision worktree if not yet registered in state
@@ -158,22 +185,6 @@ export class TransitionStageUseCase {
           );
         }
       }
-    }
-
-    const prevStage = sm.currentStage;
-    let gateWaitMs = 0;
-    if (sm.pausedAtGate && sm.pausedAtTimestamp) {
-      gateWaitMs = Math.max(0, Date.now() - new Date(sm.pausedAtTimestamp).getTime());
-    }
-
-    if (sm.pausedAtGate) {
-      sm.resumeFromGate();
-    }
-
-    sm.transition(params.targetStage, params.metadata || {});
-
-    if (targetStageStr === STAGE_APPROVAL || targetStageStr === STAGE_COMMIT) {
-      sm.pauseAtGate(targetStageStr);
     }
 
     if (!params.dryRun) {

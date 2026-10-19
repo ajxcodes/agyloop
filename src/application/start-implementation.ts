@@ -165,8 +165,13 @@ export class StartImplementationUseCase {
       );
     }
 
-    // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT
-    const skipWorktree = params.noWorktree === true;
+    // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT.
+    //    `dryRun` is part of `skipWorktree`, not just `noWorktree`: `resolveWorktree`
+    //    (run-lifecycle.ts:603) already returns null under `--dry-run` and the final
+    //    save below is gated on `!params.dryRun`, so provisioning here left a real
+    //    `.worktrees/<id>` + branch on disk paired with NO checkpoint referencing it —
+    //    an orphan the operator had to prune by hand (#226).
+    const skipWorktree = params.noWorktree === true || params.dryRun === true;
     if (!skipWorktree && this.worktreeManager) {
       if (!sm.worktree) {
         const taskId = activeIssue || 'adhoc';

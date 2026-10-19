@@ -11,6 +11,13 @@
  * TRIAGE pauses exist precisely to wait for a human and MUST survive a
  * transition. `TransitionStageUseCase` depends on it (it transitions out of
  * APPROVAL/COMMIT only after the human answered, then re-pauses at the target).
+ *
+ * The third clause is issue #226: the rule is bounded by "the run finished".
+ * `COMMIT -> COMPLETED` used to persist `{ currentStage: COMPLETED,
+ * pausedAtGate: COMMIT }`, and since COMMIT is a HUMAN_WAIT_GATES member, no
+ * later transition could ever clear it — `status` reported a finished pipeline
+ * that was also "waiting on a human", and `totalHumanWaitMs` stayed 0 forever.
+ * COMPLETED consumes the pause; every non-terminal target still preserves it.
  */
 
 const { test, describe } = require('node:test');
@@ -25,6 +32,7 @@ const {
   HUMAN_WAIT_GATES,
   STAGE_APPROVAL,
   STAGE_COMMIT,
+  STAGE_COMPLETED,
   STAGE_DISCOVERY,
   STAGE_IMPLEMENT,
   STAGE_PLAN,
@@ -41,6 +49,23 @@ function machineAtQualityGate(): any {
   sm.transition(STAGE_PLAN);
   sm.transition(STAGE_IMPLEMENT);
   sm.transition(STAGE_QUALITY_GATE);
+  return sm;
+}
+
+/**
+ * Drives a machine the whole way to COMMIT in standard mode — the stage
+ * `ExecuteCommitUseCase` resumes from when it finishes a run with
+ * `COMMIT -> COMPLETED`.
+ */
+function machineAtCommitGate(): any {
+  const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 1 });
+  sm.transition(STAGE_DISCOVERY);
+  sm.transition(STAGE_PLAN);
+  sm.transition(STAGE_APPROVAL);
+  sm.transition(STAGE_IMPLEMENT);
+  sm.transition(STAGE_QUALITY_GATE);
+  sm.transition(STAGE_REVIEW);
+  sm.transition(STAGE_COMMIT);
   return sm;
 }
 
@@ -225,5 +250,92 @@ describe('StateMachine gate-pause consumption on transition', () => {
 
     assert.strictEqual(sm.pausedAtGate, GATE_CIRCUIT_BREAKER);
     assert.strictEqual(sm.pausedAtTimestamp, first);
+  });
+
+  // --- #226: the terminal stage ends a pause -------------------------------
+  //
+  // Paired deliberately: the test above proves a NON-terminal target still
+  // consumes a stale pause, and the two SURVIVES guards above prove a
+  // NON-terminal target still preserves a deliberate one. These two prove the
+  // new bound is the *stage*, not a blanket "always consume".
+
+  test('entering COMPLETED consumes the inherited COMMIT pause (the run is over; nobody is waiting)', () => {
+    const sm = machineAtCommitGate();
+
+    sm.pauseAtGate(GATE_COMMIT);
+    assert.strictEqual(sm.pausedAtGate, GATE_COMMIT, 'precondition: the checkpoint is paused at COMMIT');
+
+    sm.transition(STAGE_COMPLETED);
+
+    assert.strictEqual(
+      sm.pausedAtGate,
+      null,
+      'a machine in its terminal stage is not waiting on a human — the pause must be resolved'
+    );
+    assert.strictEqual(sm.pausedAtTimestamp, null);
+    assert.strictEqual(sm.currentStage, STAGE_COMPLETED, 'the transition itself must still happen');
+  });
+
+  test('the pause cleared on entering COMPLETED reaches the PERSISTED snapshot, not just the getter', () => {
+    const sm = machineAtCommitGate();
+    sm.pauseAtGate(GATE_COMMIT);
+
+    sm.transition(STAGE_COMPLETED);
+
+    assert.strictEqual(
+      sm.toSnapshot().pausedAtGate,
+      null,
+      'the cleared pause must reach the snapshot that gets written to .agyloop/state.json'
+    );
+    assert.strictEqual(sm.toSnapshot().pausedAtTimestamp, null);
+
+    const reloaded = StateMachine.fromSnapshot(JSON.parse(JSON.stringify(sm.toSnapshot())));
+    assert.strictEqual(reloaded.pausedAtGate, null, 'a reloaded checkpoint must not resurrect the pause');
+    assert.strictEqual(reloaded.currentStage, STAGE_COMPLETED);
+  });
+
+  test('entering COMPLETED banks the human wait it inherited (and never reports a negative active duration)', () => {
+    const pausedAt = new Date(Date.now() - 5000).toISOString();
+    // Seed through the snapshot: pauseAtGate() always stamps "now", so the
+    // historical instant has to be injected.
+    const sm = StateMachine.fromSnapshot({
+      ...machineAtCommitGate().toSnapshot(),
+      pausedAtGate: GATE_COMMIT,
+      pausedAtTimestamp: pausedAt
+    });
+
+    assert.strictEqual(sm.totalHumanWaitMs, 0);
+
+    sm.transition(STAGE_COMPLETED);
+
+    assert.strictEqual(sm.pausedAtGate, null);
+    assert.ok(
+      sm.totalHumanWaitMs >= 4000,
+      `expected ~5000ms of human wait to be banked, got ${sm.totalHumanWaitMs}`
+    );
+    assert.ok(
+      sm.activeExecutionDurationMs() >= 0,
+      'active duration must stay non-negative after the pause is consumed'
+    );
+  });
+
+  test('a NON-terminal target still PRESERVES the pause (the terminal bound did not generalise)', () => {
+    const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 11 });
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+
+    sm.pauseAtGate(GATE_APPROVAL);
+    const pausedAt = sm.pausedAtTimestamp;
+
+    sm.transition(STAGE_IMPLEMENT);
+
+    assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      sm.pausedAtGate,
+      GATE_APPROVAL,
+      'only COMPLETED ends a pause; APPROVAL -> IMPLEMENT is still a mid-run human gate'
+    );
+    assert.strictEqual(sm.pausedAtTimestamp, pausedAt);
+    assert.strictEqual(sm.totalHumanWaitMs, 0, 'a surviving pause must not bank time yet');
   });
 });

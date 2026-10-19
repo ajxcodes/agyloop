@@ -20,7 +20,7 @@ import {
   CreatePullRequestOptions,
   formatIssueForPrompt
 } from '../ports';
-import { GitHubContextError } from '../domain';
+import { GitHubContextError, prAssertsIssueDelivery } from '../domain';
 
 export class CliGitHubGateway implements GitHubGateway {
   /**
@@ -171,9 +171,9 @@ export class CliGitHubGateway implements GitHubGateway {
     try {
       let cmd: string;
       if (options.headBranch) {
-        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 1`;
+        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,body,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 1`;
       } else if (options.issueNumber) {
-        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 10`;
+        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,body,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 10`;
       } else {
         return null;
       }
@@ -182,6 +182,7 @@ export class CliGitHubGateway implements GitHubGateway {
       interface RawGhPr {
         number?: number;
         title?: string;
+        body?: string;
         state?: string;
         baseRefName?: string;
         headRefName?: string;
@@ -205,10 +206,16 @@ export class CliGitHubGateway implements GitHubGateway {
           'i'
         );
 
-        // 1. Prefer head branch matching over title matching
-        pr = parsed.find((p) => branchPattern.test(p.headRefName || ''));
+        // 1. (#226) A PR whose BODY asserts delivery of this issue is authoritative:
+        // if several PRs mention the issue, this is the one that delivered it.
+        pr = parsed.find((p) => prAssertsIssueDelivery(p, numStr));
 
-        // 2. Fallback to title matching if no head branch match found
+        // 2. Prefer head branch matching over title matching
+        if (!pr) {
+          pr = parsed.find((p) => branchPattern.test(p.headRefName || ''));
+        }
+
+        // 3. Fallback to title matching if no head branch match found
         if (!pr) {
           const titlePattern = new RegExp(`(^|\\s|[\\[(])#${numStr}([\\])\\s,.:;]|$)`, 'i');
           const branchIssuePattern = /^(?:task|fix|feature|issue|bugfix)?[-_/]?(\d+)(?:[-_/]|$)/i;
@@ -244,6 +251,7 @@ export class CliGitHubGateway implements GitHubGateway {
       return {
         number: pr.number || 0,
         title: pr.title || '',
+        body: pr.body || '',
         state: isMerged ? 'MERGED' : (pr.state || 'OPEN').toUpperCase(),
         baseRefName: pr.baseRefName || '',
         headRefName: pr.headRefName || '',

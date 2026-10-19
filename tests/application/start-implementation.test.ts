@@ -19,6 +19,7 @@ const {
   MODE_YOLO,
   InvalidTransitionError,
   ValidationError,
+  WorktreeDescriptor,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   NOTE_IMPLICIT_APPROVAL
 } = require('../../dist/domain');
@@ -37,6 +38,9 @@ type GeneratePlanOptions = import('../../src').GeneratePlanOptions;
 type GeneratePlanResult = import('../../src').GeneratePlanResult;
 type GenerateSummaryLogOptions = import('../../src').GenerateSummaryLogOptions;
 type GenerateSummaryLogResult = import('../../src').GenerateSummaryLogResult;
+type WorktreeManagerPort = import('../../src').WorktreeManagerPort;
+type CreateWorktreeOptions = import('../../src').CreateWorktreeOptions;
+type RemoveWorktreeOptions = import('../../src').RemoveWorktreeOptions;
 
 class MockStateRepository implements StateRepository {
   public snapshot: StateMachineSnapshot | null = null;
@@ -197,6 +201,87 @@ class MockPlanGenerator implements PlanGeneratorPort {
 
   public readPlanDocument(planPath: string): string {
     return fs.readFileSync(planPath, 'utf8');
+  }
+}
+
+/**
+ * A `WorktreeManagerPort` double that both COUNTS `createWorktree` calls and
+ * really `mkdir`s the directory it reports.
+ *
+ * The mkdir is the point (#226): asserting "no worktree directory exists" is
+ * only meaningful if the mock would have created one. Without it the assertion
+ * would be reporting on a stub rather than on the filesystem.
+ */
+class MockWorktreeManager implements WorktreeManagerPort {
+  public createWorktreeCallCount = 0;
+  public readonly createdBranches: string[] = [];
+  private readonly root: string;
+
+  constructor(root: string) {
+    this.root = root;
+  }
+
+  public async createWorktree(options: CreateWorktreeOptions) {
+    this.createWorktreeCallCount++;
+    const worktreePath = path.join(this.root, '.worktrees', String(options.taskId));
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const branch = `task/${options.taskId}`;
+    this.createdBranches.push(branch);
+    return WorktreeDescriptor.create({
+      taskId: options.taskId,
+      worktreePath,
+      branch,
+      baseBranch: options.baseBranch || 'main',
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  public async removeWorktree(_options: RemoveWorktreeOptions): Promise<void> {
+    throw new Error('removeWorktree is not expected in StartImplementationUseCase tests');
+  }
+
+  public async resolveTaskWorktreePath(_dir: string, taskId: string | number): Promise<string> {
+    return path.join(this.root, '.worktrees', String(taskId));
+  }
+
+  public resolveTaskBranchName(taskId: string | number): string {
+    return `task/${taskId}`;
+  }
+
+  public async ensureGitIgnore(): Promise<boolean> {
+    return false;
+  }
+
+  public async resolveBaseBranch(): Promise<string> {
+    return 'main';
+  }
+
+  public async pruneWorktrees(): Promise<void> {}
+
+  public async listWorktrees(): Promise<any[]> {
+    return [];
+  }
+
+  public async cleanOrphanedWorktrees(): Promise<number> {
+    return 0;
+  }
+
+  public async listBranches(): Promise<string[]> {
+    return ['main', ...this.createdBranches];
+  }
+
+  public async createBranch(): Promise<void> {}
+
+  public async isAncestor(): Promise<boolean> {
+    return false;
+  }
+
+  public async getCommitsBetween(): Promise<any[]> {
+    return [];
+  }
+
+  public async pushBranch(): Promise<boolean> {
+    return true;
   }
 }
 
@@ -481,6 +566,92 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(stateRepo.saveCallCount, 0);
     assert.strictEqual(planGen.summaryUpdates.length, 0);
     assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+  });
+
+  // --- #226: --dry-run is a no-write contract, provisioning included ---------
+  //
+  // The use case already skipped the sync (`:113`), the checkpoint save and the
+  // summary update under `dryRun`, but NOT the worktree guardrail — so
+  // `implement --dry-run` left a real `.worktrees/<id>` + branch on disk paired
+  // with no checkpoint referencing it, an orphan the operator had to prune.
+  // The mock really `mkdir`s, so "no worktree directory exists" is a claim
+  // about the filesystem and not merely about a call counter.
+
+  test('implement --dry-run provisions no worktree directory and no branch (#226)', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      planDir: testPlanDir,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const worktreeManager = new MockWorktreeManager(tempDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new MockConfigRepository(),
+      new MockPlanGenerator(testPlanDir),
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    // Must not throw: the `WorktreeCreationError` invariant at
+    // `start-implementation.ts` is inside the skipped guardrail.
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: true });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      worktreeManager.createWorktreeCallCount,
+      0,
+      '--dry-run must not provision a worktree'
+    );
+    assert.deepStrictEqual(worktreeManager.createdBranches, [], '--dry-run must not create a branch');
+    assert.ok(
+      !fs.existsSync(path.join(tempDir, '.worktrees')),
+      'no worktree directory may exist on disk after --dry-run'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 0, '--dry-run must not checkpoint');
+    assert.strictEqual(result.stateMachine.worktree, null);
+  });
+
+  test('implement without --dry-run still provisions exactly one worktree (negative control)', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      planDir: testPlanDir,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const worktreeManager = new MockWorktreeManager(tempDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new MockConfigRepository(),
+      new MockPlanGenerator(testPlanDir),
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: false });
+
+    // Without this the --dry-run test above would pass against a dead mock.
+    assert.strictEqual(worktreeManager.createWorktreeCallCount, 1);
+    assert.deepStrictEqual(worktreeManager.createdBranches, ['task/16']);
+    assert.ok(
+      fs.existsSync(path.join(tempDir, '.worktrees', '16')),
+      'the mock must actually create the directory it reports'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+    assert.ok(result.stateMachine.worktree);
+    assert.strictEqual(result.stateMachine.worktree!.worktreePath, path.join(tempDir, '.worktrees', '16'));
   });
 
   test('ResolveSubagentUseCase resolves implementer role with custom model config', () => {

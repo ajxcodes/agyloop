@@ -433,6 +433,39 @@ describe('FileStateRepository', () => {
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'state.json')), true);
     });
 
+    test('forIssue returns a repository bound to the task checkpoint', () => {
+      const repo = new FileStateRepository({ workspaceDir: tempDir });
+
+      const scoped = repo.forIssue(226);
+
+      assert.strictEqual(scoped.getStateFilePath(), path.join(tempDir, '.agyloop', 'tasks', '226.json'));
+    });
+
+    test('forIssue accepts a numeric string and stays workspace-root-relative', () => {
+      // A repository already bound to tasks/9.json must hand back the same
+      // workspaceRoot-scoped path, NOT one re-derived from process.cwd(): the
+      // checkpoint a caller is reading cannot move because the process changed
+      // directory between the read and the write (#226 D6).
+      process.cwd = () => path.join('/home/user/project');
+      const repo = new FileStateRepository({ workspaceDir: tempDir, issue: 9 });
+
+      const scoped = repo.forIssue('226');
+
+      assert.strictEqual(scoped.getStateFilePath(), path.join(tempDir, '.agyloop', 'tasks', '226.json'));
+    });
+
+    test('forIssue writes nothing to disk merely by being called', () => {
+      // The resolver calls this before it knows whether anything will be written,
+      // so a resolver call must never be able to create a workspace.
+      const virgin = path.join(os.tmpdir(), `agyloop-fsrepo-forthissue-${process.pid}-${Date.now()}`);
+      const repo = new FileStateRepository({ workspaceDir: virgin });
+
+      const scoped = repo.forIssue(226);
+
+      assert.strictEqual(scoped.getStateFilePath(), path.join(virgin, '.agyloop', 'tasks', '226.json'));
+      assert.ok(!fs.existsSync(virgin), 'forIssue must not create the workspace');
+    });
+
     test('resetAll purges all task files and resets root state', () => {
       const repo = new FileStateRepository({ workspaceDir: tempDir });
       fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
