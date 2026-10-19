@@ -1739,7 +1739,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             console.log(`\n⚠️  Remote push failed. Worktree preserved for manual recovery.\n   Error: ${execResult.pushError}`);
           }
           if (execResult.worktreeTornDown) {
-            console.log(`✓ Isolated git worktree torn down and pruned.`);
+            // Issue #247: descriptor-accurate reporting — never claim "Isolated"
+            // for a non-isolated worktree descriptor.
+            console.log(`✓ Git worktree torn down and pruned: ${execResult.worktreeTornDownPath ?? '(unknown)'}${execResult.worktreeTornDownIsolated === true ? ' (isolated)' : ''}.`);
           }
           if (execResult.prCommand) {
             console.log(`\nNext Step (Create PR):\n  ${execResult.prCommand}`);

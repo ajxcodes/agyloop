@@ -37,7 +37,9 @@ import {
   MAX_IMPLEMENT_GATE_LOOPS,
   GATE_TRIAGE,
   NOTE_PAUSED_TRIAGE_GATE,
-  NOTE_RESTARTED_FROM_COMPLETED
+  NOTE_RESTARTED_FROM_COMPLETED,
+  assertNotRootWorkspace,
+  isRootWorkspace
 } from '../domain';
 import {
   StateRepository,
@@ -674,8 +676,12 @@ export class GetNextActionUseCase {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
     
-    if (!worktreePath || worktreePath === cwd) {
-      throw new Error(`Validation failed for field 'worktreePath': Zero Direct Root Mutation invariant violated. Pipeline must execute code modifications inside an isolated worktree, but target resolved to root workspace '${cwd}'.`);
+    // Issue #247: the implement-action root check shares the ONE domain invariant
+    // predicate (resolve-normalized) instead of a raw `===` compare, so `next`
+    // and every cleanup path agree on the same descriptor verdict (AC7). The
+    // thrown message text is single-sourced in `assertNotRootWorkspace`.
+    if (!worktreePath || isRootWorkspace(worktreePath, cwd)) {
+      assertNotRootWorkspace(worktreePath ?? cwd, cwd, 'worktreePath');
     }
 
     const taskBranch = sm.worktree?.branch || null;

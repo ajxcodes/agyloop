@@ -17,7 +17,9 @@ import {
   CODELOOP_STATE_DIR,
   INIT_GITIGNORE_RULES,
   DEFAULT_BASE_BRANCH,
-  DEFAULT_BASE_BRANCH_CANDIDATES
+  DEFAULT_BASE_BRANCH_CANDIDATES,
+  isRootWorkspace,
+  isPathInsideRoot
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -388,7 +390,21 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       linkNodeModules?: boolean;
     }
   ): WorktreeDescriptor {
+    // Issue #247 (S5): refuse to adopt the repository root as a task worktree.
+    // Adopting it registers `{ worktreePath: <repoRoot>, isIsolated: false }` into
+    // the checkpoint, which later teardown paths then treat as a removable
+    // worktree — the destructive incident behind #247. Strict resolve-normalized
+    // equality only: non-root external worktrees stay adoptable.
+    if (isRootWorkspace(worktreePath, workspace)) {
+      throw new WorktreeCreationError(
+        'adoptExistingWorktree',
+        `Refusing to adopt the repository root as a task worktree (Zero Direct Root Mutation). The target branch '${fields.branch}' is checked out at the repo root; create the task branch inside .worktrees/ or run with --no-worktree deliberately.`,
+        { taskId: fields.taskId, branch: fields.branch, worktreePath }
+      );
+    }
+
     this.linkNodeModulesIfPresent(workspace, worktreePath, fields.linkNodeModules);
+
     this.linkArtifactsIfPresent(workspace, worktreePath);
     this.linkAgyloopStateIfPresent(workspace, worktreePath);
 
@@ -486,6 +502,24 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     if (!worktreePath) return;
 
+    // Issue #247 (S3): refuse the repository root — and any path that CONTAINS the
+    // repository root — BEFORE any side effect (no symlink unlink, no git call,
+    // no rmSync). Resolve-normalized equality/containment only, never stem matching.
+    const resolvedTarget = path.resolve(worktreePath);
+    const resolvedRoot = path.resolve(workspace);
+    if (
+      isRootWorkspace(resolvedTarget, resolvedRoot) ||
+      isPathInsideRoot(resolvedRoot, resolvedTarget)
+    ) {
+      // `isPathInsideRoot(resolvedRoot, resolvedTarget)` means the root would be
+      // deleted as a descendant of the target — an ancestor-kill.
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        `Refusing to remove the repository root (or a path containing it) as a worktree: '${worktreePath}'.`,
+        { worktreePath }
+      );
+    }
+
     // Safely remove symlinks before git worktree remove
     this.unlinkSymlink(path.join(worktreePath, 'node_modules'));
     this.unlinkSymlink(path.join(worktreePath, 'artifacts'));
@@ -497,12 +531,37 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       { cwd: workspace }
     );
 
-    // If disk folder persists, clean it up forcibly
+    // Issue #247 (S4): git refuses to remove the main working tree. That refusal
+    // must surface BEFORE the destructive fallback below — pre-fix, this exact
+    // scenario ran `rmSync` on the repo root first, which made the final
+    // `existsSync` check below silently pass, so the deletion printed as success.
+    const removalOutput = [removeRes.stderr, removeRes.stdout, removeRes.combinedOutput]
+      .filter((chunk): chunk is string => typeof chunk === 'string' && chunk.length > 0)
+      .join('\n');
+    if (removeRes.exitCode !== 0 && /is a main working tree/.test(removalOutput)) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        removeRes.stderr || removeRes.stdout || `Failed to remove git worktree at ${worktreePath}`,
+        { worktreePath }
+      );
+    }
+
+    // Issue #247 (S4): the destructive rmSync fallback is demoted behind a
+    // whitelist — strictly inside the disposable `.worktrees/` directory, or a
+    // genuine external worktree fully disjoint from the repo root (not the root,
+    // not containing the root, not inside the root).
     if (fs.existsSync(worktreePath)) {
-      try {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
-      } catch {
-        // Non-fatal
+      const canForceRm =
+        isPathInsideRoot(resolvedTarget, path.resolve(resolvedRoot, DEFAULT_WORKTREES_DIR)) ||
+        (!isRootWorkspace(resolvedTarget, resolvedRoot) &&
+          !isPathInsideRoot(resolvedRoot, resolvedTarget) &&
+          !isPathInsideRoot(resolvedTarget, resolvedRoot));
+      if (canForceRm) {
+        try {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+        } catch {
+          // Non-fatal
+        }
       }
     }
 

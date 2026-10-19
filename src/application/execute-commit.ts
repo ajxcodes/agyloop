@@ -30,7 +30,8 @@ import {
   CommitExecutionError,
   InvalidTransitionError,
   PublicSanitizer,
-  buildGitTokenRedirectConfig
+  buildGitTokenRedirectConfig,
+  isRootWorkspace
 } from '../domain';
 import {
   StateRepository,
@@ -75,6 +76,8 @@ export interface ExecuteCommitResult {
   readonly prBaseBranch?: string;
   readonly prCommand?: string;
   readonly worktreeTornDown?: boolean;
+  readonly worktreeTornDownPath?: string;
+  readonly worktreeTornDownIsolated?: boolean;
   readonly pushError?: string;
   readonly fallbackUsed?: boolean;
 }
@@ -429,7 +432,21 @@ export class ExecuteCommitUseCase {
 
     // Automated Worktree Teardown
     let worktreeTornDown = false;
-    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager) && !pushFailed;
+    let worktreeTornDownPath: string | undefined = undefined;
+    let worktreeTornDownIsolated: boolean | undefined = undefined;
+    // Issue #247 (S2): never tear down a non-isolated descriptor, and never a
+    // descriptor whose path resolves onto the root workspace — the shared
+    // root-invariant predicate (`isRootWorkspace`) is authoritative; the
+    // `isIsolated` label alone is not trusted.
+    const worktree = sm.worktree;
+    const shouldTeardown =
+      !params.keepWorktree &&
+      Boolean(worktree) &&
+      Boolean(this.worktreeManager) &&
+      !pushFailed &&
+      worktree !== null &&
+      worktree.isIsolated !== false &&
+      !isRootWorkspace(worktree.worktreePath, rootDir);
 
     if (shouldTeardown && this.worktreeManager && sm.worktree) {
       const wtPath = sm.worktree.worktreePath;
@@ -439,7 +456,7 @@ export class ExecuteCommitUseCase {
         doTeardown = true;
       } else if (params.interactive !== false && this.confirmationPrompt) {
         doTeardown = await this.confirmationPrompt.confirm(
-          `\nTeardown isolated git worktree at ${wtPath}?`,
+          `\nTeardown git worktree at ${wtPath}?`,
           true
         );
       }
@@ -452,9 +469,14 @@ export class ExecuteCommitUseCase {
             force: true,
             prune: true
           });
+          // Capture the descriptor facts BEFORE the state loses the worktree, so
+          // the CLI can report the torn-down path accurately (issue #247, S7).
+          const tornDownIsIsolated = sm.worktree.isIsolated;
           sm.setWorktree(null);
           await this.stateRepo.save(sm.toSnapshot());
           worktreeTornDown = true;
+          worktreeTornDownPath = wtPath;
+          worktreeTornDownIsolated = tornDownIsIsolated;
         } catch {
           // Teardown failure non-fatal
         }
@@ -505,6 +527,8 @@ export class ExecuteCommitUseCase {
       prBaseBranch,
       prCommand,
       worktreeTornDown,
+      worktreeTornDownPath,
+      worktreeTornDownIsolated,
       pushError,
       fallbackUsed
     };

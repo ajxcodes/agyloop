@@ -589,6 +589,53 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.ok(result.implementationResult);
     });
 
+    test('mode "implement" forwards worktree:false as noWorktree into StartImplementationUseCase.execute (issue #247, AC5)', async () => {
+      const sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: 32, worktree: mockWorktree });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const lp = lifecycleUseCase as any;
+      const originalExecute = lp.startImplementationUseCase.execute.bind(lp.startImplementationUseCase);
+      const capturedParams: any[] = [];
+      lp.startImplementationUseCase.execute = async (params: any) => {
+        capturedParams.push(params);
+        return originalExecute(params);
+      };
+
+      const withNoWorktree = await lifecycleUseCase.execute({
+        mode: MODE_IMPLEMENT,
+        issue: 32,
+        worktree: false,
+        workspaceDir: '/mock/workspace'
+      });
+      assert.strictEqual(withNoWorktree.success, true);
+      assert.strictEqual(capturedParams.length, 1);
+      assert.strictEqual(
+        capturedParams[0].noWorktree,
+        true,
+        'worktree:false must cross the boundary as noWorktree:true so provisioning truly skips'
+      );
+
+      // Control: a normal run forwards noWorktree:false.
+      const smControl = StateMachine.createInitial({ mode: MODE_PLAN, issue: 33, worktree: mockWorktree });
+      smControl.transition(STAGE_DISCOVERY);
+      smControl.transition(STAGE_PLAN);
+      smControl.transition(STAGE_APPROVAL);
+      stateRepo.savedSnapshot = smControl.toSnapshot();
+
+      const withWorktree = await lifecycleUseCase.execute({
+        mode: MODE_IMPLEMENT,
+        issue: 33,
+        worktree: true,
+        workspaceDir: '/mock/workspace'
+      });
+      assert.strictEqual(withWorktree.success, true);
+      assert.strictEqual(capturedParams.length, 2);
+      assert.strictEqual(capturedParams[1].noWorktree, false);
+    });
+
     test('mode "standard" from IMPLEMENT stage runs quality gates and AI PR review sequentially', async () => {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       sm.transition(STAGE_DISCOVERY);

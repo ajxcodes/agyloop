@@ -618,6 +618,44 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(result.stateMachine.worktree, null);
   });
 
+  test('does not auto-provision a worktree when noWorktree is true (#247)', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      planDir: testPlanDir,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const worktreeManager = new MockWorktreeManager(tempDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new MockConfigRepository(),
+      new MockPlanGenerator(testPlanDir),
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, noWorktree: true });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      worktreeManager.createWorktreeCallCount,
+      0,
+      '--no-worktree must not provision a worktree'
+    );
+    assert.deepStrictEqual(worktreeManager.createdBranches, [], '--no-worktree must not create a branch');
+    assert.ok(
+      !fs.existsSync(path.join(tempDir, '.worktrees')),
+      'no worktree directory may exist on disk after --no-worktree'
+    );
+    assert.strictEqual(result.stateMachine.worktree, null);
+  });
+
   test('implement without --dry-run still provisions exactly one worktree (negative control)', async () => {
     const stateRepo = new MockStateRepository({
       version: '1.0.0',
