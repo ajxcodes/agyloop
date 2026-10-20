@@ -43,6 +43,7 @@ import {
 import {
   StateRepository,
   GitHubGateway,
+  GitHubGatewayOptions,
   PullRequestReviewComment,
   PlanGeneratorPort,
   WorktreeManagerPort,
@@ -106,6 +107,58 @@ export interface TriageDismissReport {
   /** The GitHub surfaces the dismissal actually acted on. */
   readonly surfaces: readonly string[];
 }
+
+/**
+ * The state the two dismissal jobs share.
+ *
+ * The inline-thread job WRITES the feedback keys it answered inline and the
+ * keys whose thread is already resolved; the conversation job READS both, so
+ * the same feedback is never answered twice. The two sets and the two
+ * collections are therefore shared BY REFERENCE, never copied, so an update
+ * made by one job is seen by the other.
+ */
+interface TriageDismissContext {
+  readonly gw: GitHubGateway;
+  readonly gwOptions: GitHubGatewayOptions;
+  readonly prNumber: number;
+  readonly notes: string;
+  readonly inlineComments: readonly PullRequestReviewComment[];
+  readonly conversationComments: readonly PullRequestReviewComment[];
+  readonly inlineById: ReadonlyMap<number, PullRequestReviewComment>;
+  /** The ids of the conversation comments the PR's state proves were answered. */
+  readonly answeredIds: ReadonlySet<number>;
+  /** The moment the newest dismissal answer was posted, or null. */
+  readonly newestAnswerAt: number | null;
+  /** The feedback keys of the inline comments that were answered inline. */
+  readonly answeredInlineKeys: Set<string>;
+  /** The feedback keys of the inline comments whose thread is already resolved. */
+  readonly resolvedInlineKeys: Set<string>;
+  /** The failures of both jobs, in the order they happened. */
+  readonly failures: TriageDismissFailure[];
+  /** The GitHub surfaces the dismissal acted on, in the order they were met. */
+  readonly surfaces: string[];
+}
+
+/**
+ * What the inline review-thread job achieved.
+ */
+type TriageDismissThreadOutcome = Pick<
+  TriageDismissReport,
+  'threadsReplied' | 'threadsResolved' | 'threadsSkipped'
+>;
+
+/**
+ * What the PR conversation-comment job achieved.
+ */
+type TriageDismissConversationOutcome = Pick<
+  TriageDismissReport,
+  | 'conversationsReplied'
+  | 'conversationsSkipped'
+  | 'conversationsAlreadyAnswered'
+  | 'conversationsDuplicate'
+  | 'conversationsIgnored'
+  | 'conversationsPriorAnswers'
+>;
 
 export interface TriagePrCommentsParams {
   readonly issue?: number | string | null;
@@ -564,21 +617,78 @@ export class TriagePrCommentsUseCase {
     const answeredIds = answeredConversationCommentIds(params.comments);
     const newestAnswerAt = newestDismissalAnswerAt(params.comments);
 
-    let threadsReplied = 0;
-    let threadsResolved = 0;
-    let threadsSkipped = 0;
-    let conversationsReplied = 0;
-    let conversationsSkipped = 0;
-    let conversationsAlreadyAnswered = 0;
-    let conversationsDuplicate = 0;
-    let conversationsIgnored = 0;
-    let conversationsPriorAnswers = 0;
     /** The feedback keys of the inline comments that were answered inline. */
     const answeredInlineKeys = new Set<string>();
     /** The feedback keys of the inline comments whose thread is already resolved. */
     const resolvedInlineKeys = new Set<string>();
 
-    // --- Inline review threads ------------------------------------------------
+    // The two jobs below share this context: the inline job fills the two
+    // feedback-key sets, the conversation job reads them.
+    const context: TriageDismissContext = {
+      gw,
+      gwOptions,
+      prNumber: params.prNumber,
+      notes: params.notes,
+      inlineComments,
+      conversationComments,
+      inlineById,
+      answeredIds,
+      newestAnswerAt,
+      answeredInlineKeys,
+      resolvedInlineKeys,
+      failures,
+      surfaces
+    };
+
+    const threads = await this.triageInlineThreads(context);
+    const conversations = await this.dismissConversationComments(context);
+
+    if (failures.length > 0) {
+      // The failure details are in the report; the warning keeps the
+      // long-standing "failures never block the transition" behaviour visible
+      // to a caller that only reads stderr. The detail list is truncated so a
+      // run that hit one rate limit on every thread stays readable.
+      const shown = failures.slice(0, DISMISS_FAILURE_DETAIL_LIMIT);
+      const details = shown.map((f) => `${f.scope} ${f.target}: ${f.error}`).join('; ');
+      const rest = failures.length - shown.length;
+      console.warn(
+        `Warning: failed to dismiss all feedback on PR #${params.prNumber}: ${failures.length} failure(s): ${details}${rest > 0 ? `; ... and ${rest} more` : ''}`
+      );
+    }
+
+    return {
+      attempted: true,
+      threadsReplied: threads.threadsReplied,
+      threadsResolved: threads.threadsResolved,
+      threadsSkipped: threads.threadsSkipped,
+      conversationsReplied: conversations.conversationsReplied,
+      conversationsSkipped: conversations.conversationsSkipped,
+      conversationsAlreadyAnswered: conversations.conversationsAlreadyAnswered,
+      conversationsDuplicate: conversations.conversationsDuplicate,
+      conversationsIgnored: conversations.conversationsIgnored,
+      conversationsPriorAnswers: conversations.conversationsPriorAnswers,
+      failures,
+      surfaces
+    };
+  }
+
+  /**
+   * Dismisses the INLINE review threads of the pull request.
+   *
+   * The inline surface is the only one that can be replied to AND resolved.
+   * The job records the feedback keys it answered inline and the keys whose
+   * thread an earlier run had already resolved; the conversation job reads
+   * both, so the two sets are shared by reference (see
+   * {@link TriageDismissContext}).
+   */
+  private async triageInlineThreads(
+    context: TriageDismissContext
+  ): Promise<TriageDismissThreadOutcome> {
+    const { gw, gwOptions, prNumber, notes, inlineComments, inlineById, failures, surfaces } = context;
+    let threadsReplied = 0;
+    let threadsResolved = 0;
+    let threadsSkipped = 0;
+
     const canListThreads = Boolean(gw.listReviewThreads || gw.listUnresolvedReviewThreads);
     if (canListThreads && gw.replyToThread && gw.resolveReviewThread) {
       let threads: ReviewThread[] = [];
@@ -586,9 +696,9 @@ export class TriagePrCommentsUseCase {
         if (gw.listReviewThreads) {
           // The RESOLVED threads are listed too: a resolved thread is the
           // cross-run proof that its comments were already answered.
-          threads = await gw.listReviewThreads(params.prNumber, gwOptions);
+          threads = await gw.listReviewThreads(prNumber, gwOptions);
         } else {
-          threads = (await gw.listUnresolvedReviewThreads!(params.prNumber, gwOptions)).map((t) => ({
+          threads = (await gw.listUnresolvedReviewThreads!(prNumber, gwOptions)).map((t) => ({
             ...t,
             isResolved: false
           }));
@@ -615,14 +725,14 @@ export class TriagePrCommentsUseCase {
           for (const id of matched) {
             const comment = inlineById.get(id);
             if (comment) {
-              resolvedInlineKeys.add(prFeedbackKey(comment.body));
+              context.resolvedInlineKeys.add(prFeedbackKey(comment.body));
             }
           }
           continue;
         }
 
         try {
-          await gw.replyToThread(thread.id, params.notes, gwOptions);
+          await gw.replyToThread(thread.id, notes, gwOptions);
         } catch (err: unknown) {
           // One rejected thread must not abort the batch, and the thread is
           // left open because it was never answered.
@@ -634,7 +744,7 @@ export class TriagePrCommentsUseCase {
         for (const id of matched) {
           const comment = inlineById.get(id);
           if (comment) {
-            answeredInlineKeys.add(prFeedbackKey(comment.body));
+            context.answeredInlineKeys.add(prFeedbackKey(comment.body));
           }
         }
 
@@ -657,7 +767,40 @@ export class TriagePrCommentsUseCase {
       });
     }
 
-    // --- PR conversation comments --------------------------------------------
+    return { threadsReplied, threadsResolved, threadsSkipped };
+  }
+
+  /**
+   * Dismisses the PR CONVERSATION comments.
+   *
+   * GitHub has no "resolve" for a conversation comment, so the only way to
+   * dismiss one is to answer it with a comment. The job reads the feedback
+   * keys the inline job recorded, so the same feedback is never answered
+   * twice — neither inline nor on the conversation surface.
+   */
+  private async dismissConversationComments(
+    context: TriageDismissContext
+  ): Promise<TriageDismissConversationOutcome> {
+    const {
+      gw,
+      gwOptions,
+      prNumber,
+      notes,
+      conversationComments,
+      answeredIds,
+      newestAnswerAt,
+      answeredInlineKeys,
+      resolvedInlineKeys,
+      failures,
+      surfaces
+    } = context;
+    let conversationsReplied = 0;
+    let conversationsSkipped = 0;
+    let conversationsAlreadyAnswered = 0;
+    let conversationsDuplicate = 0;
+    let conversationsIgnored = 0;
+    let conversationsPriorAnswers = 0;
+
     if (gw.replyToConversationComment) {
       for (const comment of conversationComments) {
         // The tool's own dismissal replies are not review feedback: answering
@@ -710,9 +853,9 @@ export class TriagePrCommentsUseCase {
 
         try {
           await gw.replyToConversationComment(
-            params.prNumber,
+            prNumber,
             comment.id,
-            buildConversationReply(params.notes, comment.body),
+            buildConversationReply(notes, comment.body),
             gwOptions
           );
           conversationsReplied++;
@@ -742,32 +885,13 @@ export class TriagePrCommentsUseCase {
       });
     }
 
-    if (failures.length > 0) {
-      // The failure details are in the report; the warning keeps the
-      // long-standing "failures never block the transition" behaviour visible
-      // to a caller that only reads stderr. The detail list is truncated so a
-      // run that hit one rate limit on every thread stays readable.
-      const shown = failures.slice(0, DISMISS_FAILURE_DETAIL_LIMIT);
-      const details = shown.map((f) => `${f.scope} ${f.target}: ${f.error}`).join('; ');
-      const rest = failures.length - shown.length;
-      console.warn(
-        `Warning: failed to dismiss all feedback on PR #${params.prNumber}: ${failures.length} failure(s): ${details}${rest > 0 ? `; ... and ${rest} more` : ''}`
-      );
-    }
-
     return {
-      attempted: true,
-      threadsReplied,
-      threadsResolved,
-      threadsSkipped,
       conversationsReplied,
       conversationsSkipped,
       conversationsAlreadyAnswered,
       conversationsDuplicate,
       conversationsIgnored,
-      conversationsPriorAnswers,
-      failures,
-      surfaces
+      conversationsPriorAnswers
     };
   }
 }
