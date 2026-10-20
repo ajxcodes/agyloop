@@ -7,6 +7,7 @@ export * from './errors';
 export * from './quota-exhaustion';
 export * from './value-objects/stage';
 export * from './value-objects/issue-number';
+export * from './value-objects/issue-token';
 export * from './value-objects/implementation-evidence';
 export * from './value-objects/plan-content';
 export * from './value-objects/model-tier';

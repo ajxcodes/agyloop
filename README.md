@@ -122,6 +122,37 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 bin/agyloop worktree [list | clean | prune]
 ```
 
+### ⚠️ Behaviour change (issue #250): `--issue` is strict
+
+`--issue <num>` accepts **digits only** (an optional leading `#` is allowed, so
+`--issue 250` and `--issue #250` are the same thing). A token with trailing
+garbage is **rejected** — the command exits 1 and reads or writes nothing:
+
+```
+✗ Invalid --issue '999abc'. Expected a positive integer (digits only), e.g. --issue 250.
+```
+
+**Deliberately changed behaviour.** `codeloop status --issue 999abc` and
+`codeloop resume --issue 999abc` previously *clamped* the token to issue 999
+and silently addressed `tasks/999.json`, while their sibling `halt` wrote the
+ROOT checkpoint `.agyloop/state.json`. Four parsers read the same token and
+disagreed about what it meant (clamp / root / literal file / silently ignored).
+They now all fail the same way, before any checkpoint is touched.
+
+Related, also deliberate: `codeloop reset --issue <n>` now exits **1** when
+there is no checkpoint for that issue (it used to print an unconditional
+success line for a reset it never performed), and `codeloop branch-info` is now
+read-only with respect to checkpoints — it performs **zero** checkpoint writes
+(it can still touch git, e.g. to materialise a missing base branch).
+
+Every checkpoint-touching command (`status`, `next`, `resume`, `transition`,
+`branch-info`, `halt`, `reset --issue <n>`, `commit`, `implement`, `plan`,
+`yolo`, `abort`, `triage`, `sync`) now resolves the SAME authoritative
+checkpoint, so a command that reads a task checkpoint writes that same
+checkpoint — never the root. (`reset` without `--issue` is the one exception:
+it clears the repository's OWN checkpoint — the root outside a task worktree,
+`tasks/<n>.json` inside one — and now names the file it actually cleared.)
+
 ---
 
 ## 📂 Persistent `artifacts/plans/`

@@ -556,3 +556,120 @@ describe('codeloop halt --issue (issue #225)', () => {
     }
   });
 });
+
+/**
+ * Issue #250 (AC B2): `halt` and `status` can never disagree about which
+ * checkpoint they address.
+ *
+ * `halt --issue 999abc` used to WRITE `.agyloop/state.json` (the root) while
+ * `status --issue 999abc` read `tasks/999.json` (the clamped 999). One token,
+ * four resolutions — clamp / root / literal-target / fail. The policy is now
+ * ONE: fail, before anything is read or written.
+ */
+describe('codeloop halt rejects a garbage --issue token (#250)', () => {
+  async function runCliInSandbox(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
+    const prevCwd = process.cwd();
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-garbage-'));
+    const originalEnv: any = {};
+    for (const key of Object.keys(env)) {
+      originalEnv[key] = process.env[key];
+      if (env[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = env[key];
+      }
+    }
+    const origLog = console.log;
+    const origErr = console.error;
+    let stdout = '';
+    let stderr = '';
+    try {
+      if (seed !== null) {
+        fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
+        fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(seed));
+      }
+      process.chdir(tempDir);
+      console.log = (...a: any[]) => {
+        stdout += a.map(String).join(' ') + '\n';
+      };
+      console.error = (...a: any[]) => {
+        stderr += a.map(String).join(' ') + '\n';
+      };
+      const code = await runCli(args);
+      return {
+        code,
+        stdout: stdout.replace(ANSI_ESCAPE, ''),
+        stderr: stderr.replace(ANSI_ESCAPE, ''),
+        rootState: readState(tempDir),
+        rootBytes: fs.readFileSync(stateFilePath(tempDir), 'utf8'),
+        taskExists: fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '999abc.json'))
+      };
+    } finally {
+      process.chdir(prevCwd);
+      console.log = origLog;
+      console.error = origErr;
+      for (const key of Object.keys(env)) {
+        if (originalEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalEnv[key];
+        }
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  test('T-B2: halt --issue 999abc exits 1 and writes nothing at all', async () => {
+    const seed = seedState();
+    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--issue', '999abc'], {
+      seed,
+      env: { AGY_SUBAGENT: undefined }
+    });
+
+    assert.strictEqual(result.code, EXIT_CODE_FAILURE);
+    assert.ok(result.stderr.includes('999abc'), result.stderr);
+    assert.deepStrictEqual(result.rootState, seed, 'the root checkpoint must be untouched');
+    assert.strictEqual(result.taskExists, false, 'no tasks/999abc.json may be created');
+  });
+
+  test('T-B2: status --issue 999abc exits 1 as well', async () => {
+    const result = await runCliInSandbox(['status', '--issue', '999abc'], {
+      seed: seedState(),
+      env: { AGY_SUBAGENT: undefined }
+    });
+
+    assert.strictEqual(result.code, EXIT_CODE_FAILURE);
+    assert.ok(result.stderr.includes('999abc'), result.stderr);
+  });
+
+  test('T-B2: a valid --issue 999 addresses tasks/999.json, never the root', async () => {
+    const prevCwd = process.cwd();
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-valid-'));
+    const origLog = console.log;
+    const origErr = console.error;
+    try {
+      fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+      const rootSeed = seedState();
+      fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(rootSeed));
+      process.chdir(tempDir);
+      console.log = (..._a: any[]): void => {};
+      console.error = (..._a: any[]): void => {};
+      delete process.env.AGY_SUBAGENT;
+
+      assert.strictEqual(
+        await runCli(['halt', '--reason', 'quota', '--issue', '999']),
+        EXIT_CODE_QUOTA_EXHAUSTED
+      );
+
+      const task = JSON.parse(fs.readFileSync(path.join(tempDir, '.agyloop', 'tasks', '999.json'), 'utf8'));
+      assert.strictEqual(task.pausedAtGate, GATE_CIRCUIT_BREAKER);
+      assert.strictEqual(task.issue, 999);
+      assert.deepStrictEqual(readState(tempDir), rootSeed, 'the root must be byte-identical');
+    } finally {
+      process.chdir(prevCwd);
+      console.log = origLog;
+      console.error = origErr;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

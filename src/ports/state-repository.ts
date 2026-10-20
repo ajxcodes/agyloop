@@ -24,8 +24,13 @@ export interface StateRepository {
 
   /**
    * Removes a specific task checkpoint (.agyloop/tasks/<issue>.json).
+   *
+   * The parameter is a NUMBER, not a string: a raw token must never reach a
+   * filename template (issue #250) — `tasks/999abc.json` is not an issue
+   * checkpoint. The return value reports whether a checkpoint file was ACTUALLY
+   * removed, so a caller can tell "cleared" from "there was nothing to clear".
    */
-  resetTask?(issue: number | string): Promise<void> | void;
+  resetTask?(issue: number): Promise<boolean> | boolean;
 
   /**
    * Purges root state (.agyloop/state.json) and all task checkpoints (.agyloop/tasks/*.json).

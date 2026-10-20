@@ -120,11 +120,17 @@ function checkpointLine(stdout: string): string {
  * everything (cwd, TTY flags, console) in `finally`. Recipe copied verbatim from
  * `tests/presentation/cli-gate-pause-visibility.test.ts`; `inspect` runs while the
  * sandbox still exists so on-disk assertions belong in there.
+ *
+ * `cwdSubdir` moves the cwd INSIDE the sandbox (the sandbox root stays the
+ * workspace root for `inspect`): a directory whose path looks like a task
+ * worktree (`.worktrees/<n>`) makes `FileStateRepository` infer the issue from
+ * the cwd, which is how the CLI's own checkpoint becomes `tasks/<n>.json`.
  */
 async function runCliInSandbox(
   args: readonly string[],
   seed?: (dir: string) => void,
-  inspect?: (dir: string) => void
+  inspect?: (dir: string) => void,
+  cwdSubdir?: string
 ): Promise<CaptureResult> {
   const prevCwd = process.cwd();
   const originalLog = console.log;
@@ -140,7 +146,7 @@ async function runCliInSandbox(
     if (seed) {
       seed(tempDir);
     }
-    process.chdir(tempDir);
+    process.chdir(cwdSubdir === undefined ? tempDir : path.join(tempDir, cwdSubdir));
     process.stdin.isTTY = false;
     process.stdout.isTTY = false;
     console.log = (...a: unknown[]) => {
@@ -490,6 +496,231 @@ describe('one corrupt checkpoint file does not defeat status or resume (#226 reg
     assert.ok(
       !/no pipeline checkpoint found/i.test(result.stdout + result.stderr),
       `must not claim the checkpoint is absent:\n${result.stdout}\n${result.stderr}`
+    );
+  });
+});
+
+/**
+ * #250 (AC B3): ONE token, ONE checkpoint — every command must agree.
+ *
+ * `status` and `resume` were the only two commands that went through the shared
+ * resolver (#226). `next`, `transition`, `branch-info`, `halt`, `reset` and
+ * `implement` each answered "which checkpoint?" for themselves, so a workspace
+ * whose work lived in `tasks/999.json` was reported by `status` and MUTATED by
+ * the rest — in the root.
+ *
+ * The mandated fixture: a root checkpoint at INITIALIZED plus a task checkpoint
+ * at REVIEW that is NEWER (so it wins the scan).
+ */
+describe('every command resolves one token to one checkpoint (#250)', () => {
+  /** The mandated multi-checkpoint fixture. */
+  function seedScopeFixture(dir: string): void {
+    seedRoot(dir, { stage: 'INITIALIZED', updatedAt: EARLY });
+    seedTask(dir, { issue: 999, stage: 'REVIEW', updatedAt: LATE });
+  }
+
+  /**
+   * `runCliInSandbox` with `AGY_SUBAGENT` cleared: the state-mutating commands
+   * are refused by the Zero Direct Root Mutation guard when that variable is
+   * set, and these tests are about scope, not about the guard.
+   */
+  async function runScoped(
+    args: readonly string[],
+    seed?: (dir: string) => void,
+    inspect?: (dir: string) => void,
+    cwdSubdir?: string
+  ): Promise<CaptureResult> {
+    const prevSubagent = process.env.AGY_SUBAGENT;
+    delete process.env.AGY_SUBAGENT;
+    try {
+      return await runCliInSandbox(args, seed, inspect, cwdSubdir);
+    } finally {
+      if (prevSubagent === undefined) {
+        delete process.env.AGY_SUBAGENT;
+      } else {
+        process.env.AGY_SUBAGENT = prevSubagent;
+      }
+    }
+  }
+
+  test('status advertises the task checkpoint', async () => {
+    const result = await runScoped(['status'], seedScopeFixture);
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.ok(
+      checkpointLine(result.stdout).endsWith(path.join('.agyloop', 'tasks', '999.json')),
+      `unexpected checkpoint: ${checkpointLine(result.stdout)}`
+    );
+  });
+
+  test('next reports the task checkpoint’s stage', async () => {
+    const result = await runScoped(['next', '--json'], seedScopeFixture);
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.currentStage, 'REVIEW');
+  });
+
+  test('transition mutates the task checkpoint, not the root', async () => {
+    const result = await runScoped(
+      ['transition', 'COMMIT'],
+      seedScopeFixture,
+      (dir) => {
+        const root = readJson(path.join(dir, '.agyloop', 'state.json'));
+        assert.strictEqual(root.currentStage, 'INITIALIZED', 'the root must not advance');
+        const task = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
+        assert.strictEqual(task.currentStage, 'COMMIT', 'the task checkpoint must advance');
+      }
+    );
+
+    assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  });
+
+  test('branch-info reports the task checkpoint’s branch', async () => {
+    const result = await runScoped(['branch-info', '--json'], (dir) => {
+      seedScopeFixture(dir);
+      const taskPath = path.join(dir, '.agyloop', 'tasks', '999.json');
+      const task = readJson(taskPath);
+      task.worktree = {
+        taskId: '999',
+        worktreePath: path.join(dir, '.worktrees', '999'),
+        branch: 'task/999-from-checkpoint',
+        baseBranch: 'feature/task-base',
+        createdAt: EARLY
+      };
+      fs.writeFileSync(taskPath, JSON.stringify(task));
+    });
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.taskBranch, 'task/999-from-checkpoint');
+    assert.strictEqual(parsed.baseBranch, 'phase/6-codeloop');
+  });
+
+  test('halt --issue 999 pauses the task checkpoint and leaves the root alone', async () => {
+    let rootBefore = '';
+
+    const result = await runScoped(
+      ['halt', '--reason', 'quota', '--issue', '999'],
+      (dir) => {
+        seedScopeFixture(dir);
+        rootBefore = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
+      },
+      (dir) => {
+        assert.strictEqual(
+          fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8'),
+          rootBefore,
+          'the root checkpoint must be byte-identical'
+        );
+        const task = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
+        assert.strictEqual(task.pausedAtGate, 'CIRCUIT_BREAKER');
+        assert.strictEqual(task.issue, 999);
+      }
+    );
+
+    assert.strictEqual(result.code, 2, `${result.stdout}\n${result.stderr}`);
+  });
+
+  test('reset --issue 999 deletes the task checkpoint and leaves the root alone', async () => {
+    let rootBefore = '';
+
+    const result = await runScoped(
+      ['reset', '--issue', '999'],
+      (dir) => {
+        seedScopeFixture(dir);
+        rootBefore = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
+      },
+      (dir) => {
+        assert.ok(
+          !fs.existsSync(path.join(dir, '.agyloop', 'tasks', '999.json')),
+          'the task checkpoint must be gone'
+        );
+        assert.strictEqual(
+          fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8'),
+          rootBefore,
+          'the root checkpoint must be byte-identical'
+        );
+      }
+    );
+
+    assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  });
+
+  test('resume --issue 999 clears the task checkpoint’s pause and leaves the root alone', async () => {
+    let rootBefore = '';
+
+    const result = await runScoped(
+      ['resume', '--issue', '999'],
+      (dir) => {
+        seedScopeFixture(dir);
+        const taskPath = path.join(dir, '.agyloop', 'tasks', '999.json');
+        const task = readJson(taskPath);
+        task.pausedAtGate = 'COMMIT';
+        task.pausedAtTimestamp = LONG_AGO;
+        fs.writeFileSync(taskPath, JSON.stringify(task));
+        rootBefore = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
+      },
+      (dir) => {
+        assert.strictEqual(
+          fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8'),
+          rootBefore,
+          'the root checkpoint must be byte-identical'
+        );
+        const task = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
+        assert.strictEqual(task.pausedAtGate, null, 'the task pause must be cleared');
+      }
+    );
+
+    assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  });
+
+  test('implement --issue 999 finds the task checkpoint', async () => {
+    const result = await runScoped(
+      ['implement', '--issue', '999', '--no-worktree'],
+      seedScopeFixture
+    );
+
+    assert.ok(
+      !/Cannot start implementation: No pipeline state found\./.test(result.stdout + result.stderr),
+      `implement must find the task checkpoint:\n${result.stdout}\n${result.stderr}`
+    );
+  });
+
+  test('reset without --issue names the checkpoint it actually cleared', async () => {
+    // Inside a task worktree the CLI's OWN repository is bound to
+    // `tasks/<n>.json` — the issue is inferred from the cwd — so the old
+    // hardcoded ".agyloop/state.json cleared" named a file that was never
+    // touched (issue #250, review N2). The truth is `ResetPipelineResult.path`.
+    const worktreeRel = path.join('.worktrees', '250');
+    const checkpointRel = path.join(worktreeRel, '.agyloop', 'tasks', '250.json');
+
+    const result = await runScoped(
+      ['reset'],
+      (dir) => {
+        const checkpoint = path.join(dir, checkpointRel);
+        fs.mkdirSync(path.dirname(checkpoint), { recursive: true });
+        fs.writeFileSync(
+          checkpoint,
+          JSON.stringify(taskSnapshot({ issue: 250, stage: 'COMMIT', updatedAt: LATE }))
+        );
+      },
+      (dir) => {
+        assert.ok(
+          !fs.existsSync(path.join(dir, checkpointRel)),
+          'the checkpoint the command claims to clear must actually be gone'
+        );
+      },
+      worktreeRel
+    );
+
+    assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.ok(
+      result.stdout.includes(path.join('.agyloop', 'tasks', '250.json')),
+      `the report must name the file it cleared:\n${result.stdout}`
+    );
+    assert.ok(
+      !result.stdout.includes(path.join('.agyloop', 'state.json')),
+      `the report must not claim a file it never touched:\n${result.stdout}`
     );
   });
 });

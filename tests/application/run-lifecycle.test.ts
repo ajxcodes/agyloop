@@ -2056,4 +2056,57 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       );
     });
   });
+
+  /**
+   * Issue #250 (R9): the RESOLVED checkpoint is authoritative about its own
+   * issue.
+   *
+   * With the scope applied, `sm` is the checkpoint the operator's issue (or the
+   * scan) named. A path/branch inference may only SUPPLY an issue for a
+   * checkpoint that has NONE — it must never RELABEL a resolved one, or the
+   * scoped file would be rewritten with someone else's issue number.
+   */
+  describe('the resolved checkpoint keeps its own issue (R9)', () => {
+    test('a branch-inferred issue never relabels a checkpoint that already has one', async () => {
+      const scopedRepo = new MockStateRepository({
+        version: '1.0.0',
+        currentStage: STAGE_INITIALIZED,
+        mode: MODE_STANDARD,
+        issue: 250,
+        baseBranch: 'phase/6-codeloop',
+        createdAt: '2026-10-19T09:00:00.000Z',
+        updatedAt: '2026-10-19T09:00:00.000Z',
+        history: [{ stage: STAGE_INITIALIZED, timestamp: '2026-10-19T09:00:00.000Z' }]
+      });
+
+      // The cwd/branch hint points at a DIFFERENT issue (251).
+      const branchWorktreeManager: any = new MockWorktreeManager();
+      branchWorktreeManager.resolveBaseBranch = async () => 'task/251-x';
+
+      const scopedLifecycle = new RunLifecycleUseCase({
+        stateRepo: scopedRepo,
+        configRepo: new MockConfigRepository(),
+        planGenerator: new MockPlanGenerator(),
+        githubGateway: new MockGitHubGateway(),
+        commandExecutor: new MockCommandExecutor(),
+        buildDetector: new MockBuildDetector(),
+        standardsRepo: new MockStandardsRepository(),
+        critique: new MockCritique(),
+        confirmationPrompt: new MockConfirmationPrompt(),
+        worktreeManager: branchWorktreeManager
+      });
+
+      const result = await scopedLifecycle.execute({
+        mode: MODE_STANDARD,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(
+        scopedRepo.savedSnapshot.issue,
+        250,
+        'the resolved checkpoint must keep its own issue (251 was only an inference)'
+      );
+      assert.strictEqual(result.stateMachine.issue, 250);
+    });
+  });
 });

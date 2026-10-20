@@ -15,9 +15,11 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const { selectAuthoritativeCheckpoint, resolveAuthoritativeCheckpoint, resolveCheckpointRepository } = require('../../dist/application/resolve-task-checkpoint');
-const { STAGE_COMPLETED, StateStorageError } = require('../../dist/domain');
+const { selectAuthoritativeCheckpoint, resolveAuthoritativeCheckpoint, resolveCheckpointRepository, resolveCheckpointScope } = require('../../dist/application/resolve-task-checkpoint');
+const { STAGE_COMPLETED, StateStorageError, ValidationError } = require('../../dist/domain');
 
 /**
  * Builds a candidate with only the fields the rule reads. `issue: null` is the
@@ -403,6 +405,128 @@ describe('corrupt checkpoints: throwing loads (#226 regression)', () => {
       resolveAuthoritativeCheckpoint(repo, 888),
       (err: unknown) => err instanceof StateStorageError &&
         (err as InstanceType<typeof StateStorageError>).filePath === '/repo/.agyloop/tasks/888.json'
+    );
+  });
+});
+
+/**
+ * Issue #250: `resolveCheckpointScope` is the ONE answer to "which checkpoint is
+ * authoritative, and which repository must be read AND written".
+ */
+describe('resolveCheckpointScope', () => {
+  test('agrees with resolveAuthoritativeCheckpoint on the answer', async () => {
+    const repo = memoryRepo([
+      { issue: null, snapshot: snapshot({ issue: null, stage: 'INITIALIZED', updatedAt: '2026-10-14T12:00:00.000Z' }) },
+      { issue: 999, snapshot: snapshot({ issue: 999, stage: 'IMPLEMENT', updatedAt: '2026-10-14T09:00:00.000Z' }) }
+    ]);
+
+    const scope = await resolveCheckpointScope(repo);
+    const resolved = await resolveAuthoritativeCheckpoint(repo);
+
+    assert.strictEqual(scope.issue, resolved.issue);
+    assert.strictEqual(scope.path, resolved.path);
+    assert.strictEqual(scope.snapshot, resolved.snapshot);
+    assert.deepStrictEqual(scope.candidates, resolved.candidates);
+  });
+
+  test('agrees with resolveCheckpointRepository on the repository', async () => {
+    const repo = memoryRepo([
+      { issue: 999, snapshot: snapshot({ issue: 999, stage: 'IMPLEMENT', updatedAt: '2026-10-14T12:00:00.000Z' }) }
+    ]);
+
+    const scope = await resolveCheckpointScope(repo);
+    const scoped = await resolveCheckpointRepository(repo);
+
+    // The double mints a fresh repository per `forIssue` call, so identity is
+    // not meaningful — the ADDRESSED FILE is.
+    assert.strictEqual(scope.repo.getStateFilePath(), scoped.getStateFilePath());
+    assert.strictEqual(scope.repo.getStateFilePath(), '/repo/.agyloop/tasks/999.json');
+  });
+
+  test('an explicit issue resolves to forIssue(n) even when the file does not exist', async () => {
+    // `next --issue 999` on a fresh workspace must still CREATE tasks/999.json,
+    // so the repository stays task-scoped even with no snapshot behind it.
+    const repo = memoryRepo([]);
+
+    const scope = await resolveCheckpointScope(repo, 999);
+
+    assert.strictEqual(scope.issue, 999);
+    assert.strictEqual(scope.snapshot, null);
+    assert.strictEqual(scope.repo.getStateFilePath(), '/repo/.agyloop/tasks/999.json');
+    assert.deepStrictEqual(scope.candidates, []);
+  });
+
+  test('an invalid token THROWS instead of degrading to the scan', async () => {
+    // The old `Number.parseInt` took the leading digits, so `999abc` silently
+    // became issue 999 — indistinguishable from a deliberate 999.
+    const repo = memoryRepo([
+      { issue: 999, snapshot: snapshot({ issue: 999, stage: 'IMPLEMENT', updatedAt: '2026-10-14T12:00:00.000Z' }) }
+    ]);
+
+    await assert.rejects(
+      resolveCheckpointScope(repo, '999abc'),
+      (err: unknown) => err instanceof ValidationError
+    );
+    await assert.rejects(
+      resolveAuthoritativeCheckpoint(repo, '999abc'),
+      (err: unknown) => err instanceof ValidationError
+    );
+  });
+
+  test('an empty workspace resolves to the repository itself with no snapshot', async () => {
+    const repo = memoryRepo([]);
+
+    const scope = await resolveCheckpointScope(repo);
+
+    assert.strictEqual(scope.repo, repo);
+    assert.strictEqual(scope.snapshot, null);
+    assert.strictEqual(scope.issue, null);
+    assert.strictEqual(scope.path, '/repo/.agyloop/state.json');
+  });
+
+  test('the winner’s issue re-scopes the repository', async () => {
+    const repo = memoryRepo([
+      { issue: 999, snapshot: snapshot({ issue: 999, stage: 'IMPLEMENT', updatedAt: '2026-10-14T12:00:00.000Z' }) },
+      { issue: 1000, snapshot: snapshot({ issue: 1000, stage: STAGE_COMPLETED, updatedAt: '2026-10-14T13:00:00.000Z' }) }
+    ]);
+
+    const scope = await resolveCheckpointScope(repo);
+
+    assert.strictEqual(scope.issue, 999);
+    assert.strictEqual(scope.repo.getStateFilePath(), '/repo/.agyloop/tasks/999.json');
+  });
+});
+
+/**
+ * T-A5: the resolver's header used to carry a "Deliberately NOT adopted here …
+ * tracked as follow-ups" note that named `GetNextActionUseCase` and the
+ * `branch-info` path as the remaining exceptions. Issue #250 closed that debt:
+ * every checkpoint-touching command now routes through the scope.
+ *
+ * A source-text assertion is the only way to pin a documentation AC, so it
+ * names the exact phrases.
+ */
+describe('the resolver header records that the scope is universal (AC A5)', () => {
+  const header = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'application', 'resolve-task-checkpoint.ts'),
+    'utf8'
+  );
+
+  test('the follow-up debt note is gone', () => {
+    assert.ok(
+      !header.includes('tracked as follow-ups'),
+      'the "tracked as follow-ups" debt note must be closed'
+    );
+    assert.ok(
+      !header.includes('Deliberately NOT adopted here'),
+      'the "Deliberately NOT adopted here" note must be closed'
+    );
+  });
+
+  test('the header states that every checkpoint-touching command routes through the scope', () => {
+    assert.ok(
+      /every checkpoint-touching command routes through/i.test(header),
+      'the header must state that every checkpoint-touching command routes through the scope'
     );
   });
 });

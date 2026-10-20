@@ -37,6 +37,8 @@ import {
   VERDICT_SKIPPED,
   VERDICT_CHANGES_REQUESTED,
   IssueNumber,
+  ValidationError,
+  parseIssueToken,
   MAX_IMPLEMENT_GATE_LOOPS,
   GATE_TRIAGE,
   NOTE_PAUSED_TRIAGE_GATE,
@@ -152,8 +154,15 @@ export class GetNextActionUseCase {
       cwd
     });
 
-    // Context resolution: explicit issue -> state.issue -> auto-inferred issue
-    const explicitIssue = IssueNumber.tryFrom(params.issue)?.value ?? null;
+    // Context resolution: explicit issue -> state.issue -> auto-inferred issue.
+    // The explicit token goes through the ONE shared grammar (issue #250): the
+    // old `IssueNumber.tryFrom` silently degraded a garbage token to "no issue
+    // named", which let `next` write a checkpoint for a nonsense issue.
+    const explicitToken = parseIssueToken(params.issue);
+    if (explicitToken.kind === 'invalid') {
+      throw new ValidationError('issue', explicitToken.raw, explicitToken.message);
+    }
+    const explicitIssue = explicitToken.kind === 'valid' ? explicitToken.issue : null;
     let inferredIssue: number | null = null;
 
     if (!explicitIssue && !sm.issue) {

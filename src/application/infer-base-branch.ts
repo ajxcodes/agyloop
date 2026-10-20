@@ -29,6 +29,15 @@ export interface InferBaseBranchParams {
   readonly workspaceDir?: string;
   readonly trackerRepo?: string;
   readonly milestoneTitle?: string | null;
+  /**
+   * When false, the inference is computed but NOT persisted to the checkpoint.
+   *
+   * `branch-info` is a diagnostic and must be strictly read-only (issue #250,
+   * AC A4): this use case persists the inferred base branch (and the issue) in
+   * two places, so a read-only caller has to be able to switch that off. The
+   * default is `true`, so every existing caller keeps its behaviour.
+   */
+  readonly persist?: boolean;
 }
 
 export class InferBaseBranchUseCase {
@@ -48,6 +57,9 @@ export class InferBaseBranchUseCase {
 
   public async execute(params: InferBaseBranchParams = {}): Promise<BranchInferenceResult> {
     const cwd = params.workspaceDir || process.cwd();
+    // A read-only caller (`branch-info`, issue #250) gets the INFERENCE without
+    // any checkpoint write: no load, no save.
+    const persist = params.persist !== false;
 
     // 1. If explicit base branch is supplied, honor it directly
     if (params.explicitBaseBranch && params.explicitBaseBranch.trim()) {
@@ -102,7 +114,7 @@ export class InferBaseBranchUseCase {
         rationale: `Using explicit base branch '${explicit}'.`
       };
 
-      if (this.stateRepo) {
+      if (this.stateRepo && persist) {
         try {
           const snapshot = await this.stateRepo.load();
           if (snapshot) {
@@ -238,7 +250,7 @@ export class InferBaseBranchUseCase {
     }
 
     // 8. Persist inferred base branch in pipeline state checkpoint if stateRepo is available
-    if (this.stateRepo) {
+    if (this.stateRepo && persist) {
       try {
         const snapshot = await this.stateRepo.load();
         if (snapshot) {

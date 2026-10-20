@@ -15,6 +15,9 @@ import {
   DEFAULT_STATE_FILE,
   DEFAULT_TASKS_STATE_DIR,
   IssueNumber,
+  ValidationError,
+  invalidIssueTokenMessage,
+  parseIssueToken,
   MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST,
   MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
 } from '../domain';
@@ -113,9 +116,18 @@ export class FileStateRepository implements StateRepository {
    * `this.workspaceRoot` rather than at `process.cwd()`: the checkpoint a caller
    * is already reading must not silently move because the process changed
    * directory between the read and the write (#226 D6).
+   *
+   * The argument is parsed with the ONE shared grammar (`parseIssueToken`,
+   * issue #250): a non-numeric argument used to yield `Number(issue) === NaN`
+   * and produce the file `.agyloop/tasks/NaN.json`. It now throws a
+   * `ValidationError` instead, so that path is structurally impossible.
    */
   public forIssue(issue: number | string): FileStateRepository {
-    return new FileStateRepository({ workspaceDir: this.workspaceRoot, issue: Number(issue) });
+    const parsed = parseIssueToken(issue);
+    if (parsed.kind !== 'valid') {
+      throw new ValidationError('issue', parsed.kind === 'invalid' ? parsed.raw : issue, invalidIssueTokenMessage(issue));
+    }
+    return new FileStateRepository({ workspaceDir: this.workspaceRoot, issue: parsed.issue });
   }
 
   /**
@@ -378,7 +390,16 @@ export class FileStateRepository implements StateRepository {
     }
   }
 
-  public resetTask(issue: number | string): void {
+  /**
+   * Removes the task checkpoint for `issue` and reports whether a file was
+   * ACTUALLY removed.
+   *
+   * The filename is built from a strictly parsed number, so `tasks/999abc.json`
+   * can never be constructed (issue #250). The boolean is what lets the caller
+   * distinguish "cleared" from "there was nothing to clear" — `reset` must not
+   * claim a reset it did not perform.
+   */
+  public resetTask(issue: number): boolean {
     this.validateSmokeTestIsolation('delete', this.workspaceResetTargets());
     const taskFile = path.join(
       this.workspaceRoot,
@@ -387,9 +408,11 @@ export class FileStateRepository implements StateRepository {
       `${issue}.json`
     );
     try {
-      if (fs.existsSync(taskFile)) {
-        fs.unlinkSync(taskFile);
+      if (!fs.existsSync(taskFile)) {
+        return false;
       }
+      fs.unlinkSync(taskFile);
+      return true;
     } catch (err) {
       throw new StateStorageError(
         taskFile,

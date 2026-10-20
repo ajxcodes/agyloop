@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { FileStateRepository } = require('../../dist/infrastructure/file-state-repository');
-const { StateStorageError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } = require('../../dist/domain');
+const { StateStorageError, ValidationError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } = require('../../dist/domain');
 
 describe('FileStateRepository', () => {
   let originalCwd: () => string;
@@ -477,6 +477,46 @@ describe('FileStateRepository', () => {
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '10.json')), false);
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '20.json')), false);
       assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'state.json')), false);
+    });
+
+    /**
+     * Issue #250: the adapter must be honest about what it removed, and the
+     * filename it removes must come from a STRICTLY parsed number — a raw
+     * token used to reach the template and produce `tasks/999abc.json`.
+     */
+    describe('issue #250: strict issue tokens and honest removal', () => {
+      test('forIssue rejects a non-numeric argument instead of producing tasks/NaN.json', () => {
+        const repo = new FileStateRepository({ workspaceDir: tempDir });
+
+        assert.throws(() => repo.forIssue('abc'), ValidationError);
+        assert.throws(() => repo.forIssue('999abc'), ValidationError);
+        assert.throws(() => repo.forIssue(Number.NaN), ValidationError);
+        assert.throws(() => repo.forIssue(-1), ValidationError);
+        assert.throws(() => repo.forIssue(0), ValidationError);
+      });
+
+      test('forIssue still accepts a numeric string (the port keeps number | string)', () => {
+        const repo = new FileStateRepository({ workspaceDir: tempDir });
+
+        const scoped = repo.forIssue('226');
+
+        assert.strictEqual(scoped.getStateFilePath(), path.join(tempDir, '.agyloop', 'tasks', '226.json'));
+      });
+
+      test('resetTask reports true when a checkpoint was actually removed', () => {
+        const repo = new FileStateRepository({ workspaceDir: tempDir });
+        fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+        fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
+
+        assert.strictEqual(repo.resetTask(10), true);
+        assert.strictEqual(fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '10.json')), false);
+      });
+
+      test('resetTask reports false when there was nothing to remove', () => {
+        const repo = new FileStateRepository({ workspaceDir: tempDir });
+
+        assert.strictEqual(repo.resetTask(10), false);
+      });
     });
   });
 

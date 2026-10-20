@@ -500,6 +500,14 @@ export const LABEL_FAILING_ASSERTION = 'Failing Assertion' as const;
 export const SECTION_SELF_CORRECTION_TITLE = '### Self-Correction Quality Gate Failure Diagnostics:' as const;
 export const MSG_NO_FAILURES = 'All verification commands passed without failures.' as const;
 export const MSG_COMMAND_FAILED_NO_OUTPUT = 'Command failed without output.' as const;
+/**
+ * Canonical rejection text for an invalid `--issue` token (issue #250).
+ *
+ * `{raw}` is substituted with the offending token. ONE source of truth: the CLI
+ * choke point, the checkpoint resolver, the file adapter and the reset use case
+ * all quote the operator the same sentence.
+ */
+export const ISSUE_TOKEN_INVALID_MESSAGE = "Invalid --issue '{raw}'. Expected a positive integer (digits only), e.g. --issue 250." as const;
 export const MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST = 'State mutation is forbidden within smoke test isolation directories' as const;
 export const MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE = 'Test suite is forbidden from mutating the root orchestrator state.' as const;
 export const DIVIDER_DASHED = '----------------------------------------------------------------------' as const;
