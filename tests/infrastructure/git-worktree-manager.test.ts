@@ -25,6 +25,36 @@ function makeResult(cmd: string, partial: Partial<CommandExecutionResult> = {}):
   };
 }
 
+/**
+ * `git worktree add` has exactly two forms:
+ *
+ *   git worktree add -b "<branch>" "<path>" "<base>"   -- create the branch
+ *   git worktree add "<path>" "<branch>"                -- reuse an existing branch
+ *
+ * The `-b` flag is POSITIONAL: it is the token immediately after `git worktree add `.
+ * Scanning the whole command for the substring `-b` is therefore wrong -- the command
+ * embeds the worktree path, so a path that happens to contain `-b` (e.g. the temp dir
+ * `/tmp/agyloop-test-wt-bLeg0o`, whose random suffix begins with `b`) makes the correct
+ * no-`-b` form look like the create-branch form. That is the flake that reddened CI on
+ * PR #261, so both forms are recognised by the FLAG POSITION only.
+ */
+const WORKTREE_ADD_PREFIX = 'git worktree add ';
+
+/** The `git worktree add` invocations among the executed commands. */
+function worktreeAddCommands(commands: readonly string[]): string[] {
+  return commands.filter((c) => c.startsWith(WORKTREE_ADD_PREFIX));
+}
+
+/** True for the create-branch form: the `-b` flag sits in the flag position. */
+function isCreateBranchForm(cmd: string): boolean {
+  return cmd.startsWith(`${WORKTREE_ADD_PREFIX}-b `) || cmd === `${WORKTREE_ADD_PREFIX}-b`;
+}
+
+/** True for the reuse-existing-branch form: a quoted path sits in the flag position. */
+function isReuseExistingBranchForm(cmd: string): boolean {
+  return cmd.startsWith(`${WORKTREE_ADD_PREFIX}"`);
+}
+
 describe('GitWorktreeManager (Infrastructure Layer)', () => {
   let tmpDir: string;
 
@@ -368,10 +398,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         if (cmd.includes('git worktree list --porcelain')) {
           return makeResult(cmd, { stdout: '', combinedOutput: '' }); // Not checked out
         }
-        if (cmd.includes('git worktree add -b')) {
-          return makeResult(cmd, { exitCode: 128, stderr: "fatal: a branch named 'task/87' already exists", combinedOutput: 'fatal' });
-        }
-        if (cmd.includes('git worktree add "')) {
+        if (cmd.includes('git worktree add')) {
+          // Both forms succeed on purpose: a regression to the `-b` form must surface as
+          // an assertion failure naming the offending command, not as an opaque
+          // WorktreeCreationError raised by a mocked git refusal.
           return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
         }
         return makeResult(cmd);
@@ -385,11 +415,100 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     });
 
     assert.strictEqual(descriptor.taskId, '87');
-    // We should explicitly not run with -b since the branch exists
-    assert.ok(!executedCommands.some((c) => c.includes('git worktree add -b')));
+    assert.strictEqual(descriptor.branch, 'task/87');
+
+    // The branch already exists, so the create-branch form must not be used. Both
+    // checks below look at the FLAG POSITION -- the token right after `git worktree
+    // add ` -- and never at a whole-command substring: the command embeds the
+    // worktree path, which may itself contain `-b` (a temp dir whose random suffix
+    // begins with `b`), and scanning the whole string mis-read the correct no-`-b`
+    // form as the create-branch form.
+    const addCommands = worktreeAddCommands(executedCommands);
     assert.ok(
-      executedCommands.some((c) => c.includes('git worktree add "') && !c.includes('-b')),
-      'Expected executedCommands to contain `git worktree add "` without `-b`'
+      !addCommands.some((c) => isCreateBranchForm(c)),
+      `Expected no \`git worktree add -b\` command for an existing branch, got: ${JSON.stringify(addCommands)}`
+    );
+    assert.ok(
+      addCommands.some((c) => isReuseExistingBranchForm(c)),
+      `Expected a \`git worktree add "<path>" "<branch>"\` command, got: ${JSON.stringify(addCommands)}`
+    );
+    assert.ok(
+      addCommands.some((c) => c.includes('"task/87"')),
+      `Expected the existing branch to be checked out, got: ${JSON.stringify(addCommands)}`
+    );
+  });
+
+  test('createWorktree keeps the no--b form when the worktree path itself contains -b', async () => {
+    // Regression test for the PR #261 flake. The `-b` flag of `git worktree add` is
+    // POSITIONAL (the token right after `git worktree add `), but the command embeds
+    // the worktree path. A path containing `-b` -- constructed deterministically here
+    // instead of relying on a random `mkdtemp` suffix that happens to begin with `b`
+    // -- used to make a whole-command substring scan mis-read the correct no-`-b` form
+    // as the create-branch form. The flag position decides, so this command is the
+    // reuse form and must be accepted.
+    const rootRepo = path.join(tmpDir, 'wt-b-root');
+    fs.mkdirSync(rootRepo, { recursive: true });
+
+    const porcelainOutput = [
+      `worktree ${rootRepo}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      ''
+    ].join('\n');
+
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: 'main\ntask/87\n', combinedOutput: 'main\ntask/87\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '87',
+      workspaceDir: rootRepo
+    });
+
+    const worktreePath = path.resolve(rootRepo, '.worktrees', '87');
+    assert.strictEqual(descriptor.branch, 'task/87');
+    assert.strictEqual(descriptor.worktreePath, worktreePath);
+
+    const addCommands = worktreeAddCommands(executedCommands);
+    assert.strictEqual(
+      addCommands.length,
+      1,
+      `expected exactly one \`git worktree add\` command, got: ${JSON.stringify(addCommands)}`
+    );
+
+    // Precondition: the command really does embed a path containing `-b` ...
+    assert.ok(worktreePath.includes('-b'), 'precondition: the worktree path must contain `-b`');
+    assert.ok(addCommands[0].includes('-b'), 'precondition: the command must embed the `-b` path');
+
+    // ... and the flag position still carries no `-b`, so this is the reuse form.
+    assert.ok(
+      !isCreateBranchForm(addCommands[0]),
+      `the \`-b\` flag must not sit in the flag position, got: ${addCommands[0]}`
+    );
+    assert.ok(
+      isReuseExistingBranchForm(addCommands[0]),
+      `expected \`git worktree add "<path>" "<branch>"\`, got: ${addCommands[0]}`
+    );
+    assert.ok(
+      addCommands[0].includes('"task/87"'),
+      `expected the existing branch to be checked out, got: ${addCommands[0]}`
     );
   });
 
