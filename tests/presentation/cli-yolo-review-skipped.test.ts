@@ -35,6 +35,10 @@ const { CliCritiqueGateway } = require('../../dist/infrastructure');
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const CRITIQUE_BINARY = 'critique';
 
+const SOURCE_FILE = 'src-target.js';
+const SOURCE_BASELINE = 'export function answer() { return 42; };\n';
+const SOURCE_IMPLEMENTED = 'export function answer() { return 7; };\n';
+
 function stateFilePath(dir: string): string {
   return path.join(dir, '.agyloop', 'state.json');
 }
@@ -119,8 +123,18 @@ function setupProbeRepo(tempDir: string): void {
     }),
     'utf8'
   );
+  // The source file belongs to the repository: it is COMMITTED, so a later edit
+  // to it is a TRACKED change (issue #259) rather than an untracked file.
+  fs.writeFileSync(path.join(tempDir, SOURCE_FILE), SOURCE_BASELINE, 'utf8');
   execFileSync('git', ['add', '-A'], { cwd: tempDir, stdio: 'ignore' });
   execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: tempDir, stdio: 'ignore' });
+
+  // Issue #259: the implementation the fast-path is supposed to validate.
+  // The quality gate now refuses to certify an UNCHANGED tree, so the sandbox
+  // must carry a real (tracked) source change for this run to reach the COMMIT
+  // gate and exercise the #236 SKIPPED advisory end-to-end.
+  fs.writeFileSync(path.join(tempDir, SOURCE_FILE), SOURCE_IMPLEMENTED, 'utf8');
+
   fs.mkdirSync(path.join(tempDir, '.home'), { recursive: true });
   fs.mkdirSync(path.join(tempDir, '.xdg'), { recursive: true });
 }

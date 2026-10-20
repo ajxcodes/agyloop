@@ -76,9 +76,44 @@ import {
   StateMachineSnapshot,
   IssueNumber,
   NOTE_DISCOVERY_PARK_AWAITING_RCA,
-  STATE_MUTATING_COMMANDS
+  NOTE_IMPLEMENTATION_EVIDENCE_MISSING,
+  NOTE_IMPLEMENTATION_PARK_UNCHANGED,
+  NOTE_IMPLEMENTATION_PARK_DISPATCH,
+  NOTE_IMPLEMENTATION_PARK_NEXT,
+  NOTE_IMPLEMENTATION_PLAN_EMPTY,
+  NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT,
+  // Issue #259: the VACUOUS refusal messages live in the domain. The CLI
+  // must never re-type them — a hand-typed copy is how the two drift apart.
+  NOTE_GATES_VACUOUS_YOLO,
+  NOTE_GATES_VACUOUS_STANDARD,
+  STATE_MUTATING_COMMANDS,
+  // Dismissal reporting: the dismissal route reports what it really achieved,
+  // so the CLI must render those counts instead of an unqualified success.
+  DISMISS_OUTCOME_COMPLETE,
+  DISMISS_OUTCOME_PARTIAL,
+  DISMISS_OUTCOME_FAILED,
+  DISMISS_OUTCOME_NOTHING,
+  LABEL_DISMISS_THREADS,
+  LABEL_DISMISS_CONVERSATION,
+  LABEL_DISMISS_FAILURES,
+  LABEL_DISMISS_SURFACES,
+  LABEL_DISMISS_NO_SURFACE,
+  DISMISS_FAILURE_DETAIL_LIMIT,
+  NOTE_DISMISS_DUPLICATE_FEEDBACK,
+  NOTE_DISMISS_ALREADY_ANSWERED,
+  NOTE_DISMISS_OWN_REPLY,
+  NOTE_DISMISS_PRIOR_ANSWER,
+  NOTE_DISMISS_NOTHING,
+  NOTE_DISMISS_NOTHING_HANDLED
 } from '../domain';
-import type { StateRepository } from '../ports';
+import type {
+  StateRepository,
+  ConfigRepository,
+  PlanGeneratorPort,
+  GitHubGateway,
+  WorktreeManagerPort,
+  BuildDetectorPort
+} from '../ports';
 import {
   FileStateRepository,
   CliGitHubGateway,
@@ -121,6 +156,7 @@ import {
   GetNextActionUseCase,
   TriagePrCommentsUseCase,
   TriageAction,
+  TriageDismissReport,
   SyncUseCase,
   AbortPipelineUseCase,
   InitProjectUseCase,
@@ -612,6 +648,70 @@ export function formatStageBadge(stage: string): string {
 }
 
 /**
+ * Renders what the dismissal route really achieved.
+ *
+ * A dismissal that replied to 7 of 28 threads is NOT a dismissal, so it must
+ * never be rendered with the same unqualified success line as a complete one.
+ * A dismissal that handled nothing at all is not a dismissal either — it ran,
+ * dismissed nothing, and must say so. It still reports its counters: a run
+ * over an already-dismissed PR replied to nothing BECAUSE everything was
+ * already answered, and the operator must be able to see that.
+ */
+export function printTriageDismissOutcome(report?: TriageDismissReport): void {
+  if (!report || !report.attempted) {
+    const reason = report?.skippedReason ?? NOTE_DISMISS_NOTHING;
+    console.log(`⚠ Triage Action : ${DISMISS_OUTCOME_NOTHING} — ${reason}`);
+    return;
+  }
+
+  const threadFailures = report.failures.filter((f) => f.scope === 'thread').length;
+  const conversationFailures = report.failures.filter((f) => f.scope === 'conversation').length;
+  const performed = report.threadsReplied + report.threadsResolved + report.conversationsReplied;
+
+  // The dismissal ran, but it replied to nothing, resolved nothing and
+  // answered nothing. Whatever the failure count says, a dismissal that
+  // handled zero items is not a dismissal, so it never wears the unqualified
+  // success line.
+  const nothingHandled = performed === 0 && report.failures.length === 0;
+
+  let badge = '✓';
+  let outcome: string = DISMISS_OUTCOME_COMPLETE;
+  if (nothingHandled) {
+    badge = '⚠';
+    outcome = DISMISS_OUTCOME_NOTHING;
+  } else if (report.failures.length > 0) {
+    outcome = performed > 0 ? DISMISS_OUTCOME_PARTIAL : DISMISS_OUTCOME_FAILED;
+    badge = performed > 0 ? '⚠' : '✗';
+  }
+
+  if (nothingHandled) {
+    console.log(`${badge} Triage Action : ${outcome} — ${NOTE_DISMISS_NOTHING_HANDLED}`);
+  } else {
+    console.log(`${badge} Triage Action : ${outcome}`);
+  }
+  console.log(
+    `  ${LABEL_DISMISS_THREADS}  : ${report.threadsReplied} replied, ${report.threadsResolved} resolved, ${report.threadsSkipped} skipped (${NOTE_DISMISS_ALREADY_ANSWERED}), ${threadFailures} failed`
+  );
+  console.log(
+    `  ${LABEL_DISMISS_CONVERSATION} : ${report.conversationsReplied} replied, ${report.conversationsSkipped} skipped (${report.conversationsAlreadyAnswered} ${NOTE_DISMISS_ALREADY_ANSWERED}, ${report.conversationsDuplicate} ${NOTE_DISMISS_DUPLICATE_FEEDBACK}), ${report.conversationsIgnored} ignored (${NOTE_DISMISS_OWN_REPLY}), ${report.conversationsPriorAnswers} ignored (${NOTE_DISMISS_PRIOR_ANSWER}), ${conversationFailures} failed`
+  );
+  console.log(
+    `  ${LABEL_DISMISS_SURFACES}       : ${report.surfaces.length > 0 ? report.surfaces.join(', ') : LABEL_DISMISS_NO_SURFACE}`
+  );
+
+  if (report.failures.length > 0) {
+    console.log(`  ${LABEL_DISMISS_FAILURES}        : ${report.failures.length}`);
+    const shown = report.failures.slice(0, DISMISS_FAILURE_DETAIL_LIMIT);
+    for (const failure of shown) {
+      console.log(`    - ${failure.scope} ${failure.target}: ${failure.error}`);
+    }
+    if (report.failures.length > shown.length) {
+      console.log(`    - ... and ${report.failures.length - shown.length} more failure(s)`);
+    }
+  }
+}
+
+/**
  * Shared diagnostic for lifecycle halts caused by provider quota exhaustion or a
  * tripped circuit breaker (issue #218 AC4). Returns the exit code when the error
  * was handled, or `null` so the caller keeps its existing handling.
@@ -684,6 +784,56 @@ function buildResumeJsonPayload(result: {
     issue: result.issue,
     message: result.message
   };
+}
+
+/**
+ * Prints the implementer dispatch directive for the YOLO implementation park
+ * (issue #259).
+ *
+ * The payload is produced by the SAME `GetNextActionUseCase` that
+ * `codeloop next` uses, so the two can never drift. `buildImplementAction`
+ * asserts the Zero-Direct-Root-Mutation invariant and THROWS when there is no
+ * worktree (the `--no-worktree` / no-issue case): the park still succeeds and
+ * simply omits the payload — the park message already names `codeloop next`.
+ */
+async function printImplementerDirective(
+  stateRepo: StateRepository,
+  configRepo: ConfigRepository,
+  planGenerator: PlanGeneratorPort,
+  githubGateway: GitHubGateway,
+  worktreeManager: WorktreeManagerPort,
+  buildDetector: BuildDetectorPort,
+  inferBaseBranchUseCase: InferBaseBranchUseCase,
+  options: CliOptions
+): Promise<void> {
+  try {
+    const getNextActionUseCase = new GetNextActionUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      githubGateway,
+      undefined,
+      worktreeManager,
+      buildDetector,
+      inferBaseBranchUseCase
+    );
+
+    const directive = await getNextActionUseCase.execute({
+      configPath: options.configPath,
+      issue: options.issue
+    });
+
+    if (!directive.invocationPayload) {
+      return;
+    }
+
+    console.log('--- invoke_subagent JSON Payload ---');
+    console.log(JSON.stringify(directive.invocationPayload, null, 2));
+    console.log('\nPass this payload directly to invoke_subagent or copy into chat.\n');
+  } catch {
+    // No worktree (or no directive available): the park message already names
+    // `codeloop next`, so omitting the payload keeps the park truthful.
+  }
 }
 
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
@@ -1422,7 +1572,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
-        console.log(`✓ Triage Action : ${action.toUpperCase()}`);
+        if (action === 'dismiss') {
+          // The dismissal route reports what it really achieved — a partial
+          // dismissal must never be rendered as an unqualified success.
+          printTriageDismissOutcome(result.dismissal);
+        } else {
+          console.log(`✓ Triage Action : ${action.toUpperCase()}`);
+        }
         console.log(`✓ Next Stage    : ${formatStageBadge(result.targetStage)}`);
         console.log(`✓ State Updated : Pipeline transitioned to ${result.targetStage}\n`);
         return EXIT_CODE_SUCCESS;
@@ -1814,6 +1970,36 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           if (result.planResult?.scaffoldInfo) {
             console.log(`📁 Initialized plan directory: artifacts/plans/${result.planResult.scaffoldInfo.folderName}/`);
           }
+
+          // Issue #259: the implementation park. A non-green block on stderr
+          // (the halt is NOT a success signal; stdout stays parseable), followed
+          // by the implementer dispatch directive — produced by the SAME
+          // `GetNextActionUseCase` that `codeloop next` uses, so the payload
+          // shape cannot drift.
+          if (result.implementationHalted) {
+            const baseRef = result.implementationDiff?.baseRef ?? 'main';
+            console.error(`⚠ ${NOTE_IMPLEMENTATION_EVIDENCE_MISSING}.`);
+            console.error(`   ${NOTE_IMPLEMENTATION_PARK_UNCHANGED.replace('{baseRef}', baseRef)}`);
+            console.error(`   ${NOTE_IMPLEMENTATION_PARK_DISPATCH}`);
+
+            // Issue #259 (S10): the fast-path never dispatches the PLANNER
+            // either, so its plan is the tool's own blank scaffold. A directive
+            // that points at an EMPTY plan is a false instruction — the
+            // implementer would have nothing to execute. The advisory replaces
+            // the ordinary continuation line (printing both would tell the
+            // operator to dispatch an implementer with nothing to do) and the
+            // payload is suppressed entirely.
+            if (result.implementationPlanEmpty === true) {
+              const planPath = result.implementationResult?.planPath ?? '(the scaffolded plan)';
+              console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY.replace('{planPath}', planPath)}`);
+              console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
+            } else {
+              console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
+              await printImplementerDirective(stateRepo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, inferBaseBranchUseCase, options);
+            }
+            return EXIT_CODE_SUCCESS;
+          }
+
           console.log(`\n${result.success ? '⏸' : '🛑'} ${result.message ?? `YOLO fast-path halted at ${result.currentStage}.`}\n`);
           return result.success ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
         }
@@ -1833,6 +2019,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.qualityGateResult && !result.qualityGateResult.passed) {
+          // Issue #259 (defence in depth): a VACUOUS verdict is a REFUSAL, not
+          // a failure — no gate command ran, nothing was reverted, and no gate
+          // retry was consumed. The "gates failed / reverted" copy would be a
+          // false claim.
+          if (result.qualityGateResult.vacuous === true) {
+            console.error(`⚠ ${result.message ?? NOTE_GATES_VACUOUS_YOLO}`);
+            return EXIT_CODE_SUCCESS;
+          }
           console.error(`✗ Quality gates failed in YOLO mode. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
           return EXIT_CODE_FAILURE;
         }
@@ -1993,6 +2187,18 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.qualityGateResult && !result.qualityGateResult.passed) {
+          // Issue #259: a VACUOUS verdict is a REFUSAL, not a failure. No gate
+          // command ran and nothing was reverted, so the "gates failed /
+          // reverted to IMPLEMENT" copy would be a false claim. The
+          // lifecycle's message is the truth.
+          if (result.qualityGateResult.vacuous === true) {
+            // The fallback is the domain constant with `{baseRef}` substituted
+            // from the verdict — the same source the lifecycle uses — so the
+            // message can never drift from the lifecycle's own wording.
+            const baseRef = result.implementationDiff?.baseRef ?? 'main';
+            console.error(`⚠ ${result.message ?? NOTE_GATES_VACUOUS_STANDARD.replace('{baseRef}', baseRef)}`);
+            return EXIT_CODE_SUCCESS;
+          }
           console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
           return EXIT_CODE_FAILURE;
         }

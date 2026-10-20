@@ -432,6 +432,19 @@ export const STATUS_TIMED_OUT = 'TIMED_OUT' as const;
 export const STATUS_DISPLAY_TIMED_OUT = 'TIMED OUT' as const;
 export const STATUS_SKIPPED = 'SKIPPED' as const;
 
+/**
+ * The gate verdict for "the gates refused to certify an unimplemented tree"
+ * (issue #259).
+ *
+ * A VACUOUS verdict is NOT a failure and NOT a pass: nothing was executed, so
+ * there is nothing to certify. It is deliberately NOT a member of the
+ * `GateVerdict` union (`src/domain/value-objects/gate-summary-report.ts`) —
+ * that union is the contract of the `GateSummaryReport` value object, and the
+ * VACUOUS report is deliberately built as a plain string so this issue does
+ * not change any shared contract.
+ */
+export const STATUS_VACUOUS = 'VACUOUS' as const;
+
 // Gate Commands & Thresholds
 export interface GateCommandDefinition {
   readonly id: string;
@@ -1387,6 +1400,378 @@ export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
 export const NOTE_WORKTREE_CREATED = 'Isolated git worktree provisioned' as const;
 export const NOTE_WORKTREE_REMOVED = 'Isolated git worktree detached and cleaned' as const;
 export const NOTE_WORKTREE_PRUNED = 'Dangling git worktrees pruned' as const;
+
+// ============================================================================
+// Implementation Evidence (issue #259)
+// ============================================================================
+
+/**
+ * Untracked path prefixes that are the TOOL's own bookkeeping or that are
+ * symlinked into a task worktree.
+ *
+ * They are never evidence of an implementation: `git status --porcelain`
+ * reports `?? node_modules`, `?? artifacts` and `?? .agyloop` in EVERY worktree
+ * run (the worktree manager links all three), and the plan scaffold writes
+ * `artifacts/plans/` plus the workspace `.gitignore`.
+ *
+ * The filter applies to UNTRACKED entries only. A TRACKED modification to any
+ * of these paths is a real implementation and is always counted.
+ */
+export const IMPLEMENTATION_EVIDENCE_EXCLUDED_PREFIXES: readonly string[] = Object.freeze([
+  '.agyloop/',
+  '.codeloop/',
+  'artifacts/',
+  'node_modules/',
+  '.worktrees/',
+  'dist/',
+  'build/',
+  'coverage/',
+  'prompts/',
+  'rules/',
+  'skills/',
+  'integrations/',
+  'templates/'
+]);
+
+/**
+ * Untracked files that are the tool's own bookkeeping, plus the lock files the
+ * tool already excludes from every diff (`DIFF_EXCLUDE_ARGS`).
+ */
+export const IMPLEMENTATION_EVIDENCE_EXCLUDED_FILES: readonly string[] = Object.freeze([
+  'plugin.json',
+  '.gitignore',
+  'config.default.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb'
+]);
+
+/**
+ * The short, honest reason a run refused to advance: nothing was implemented.
+ *
+ * Used in the lifecycle result message and in the operator-facing ⚠ block. It
+ * is NOT written into the state-machine history — a park performs no
+ * `transition()`, and history entries are only appended by `transition()`.
+ */
+export const NOTE_IMPLEMENTATION_EVIDENCE_MISSING =
+  'Implementation produced no changes — refusing to advance to quality gates' as const;
+
+/**
+ * The full park message for the YOLO fast-path (issue #259). `{baseRef}` is
+ * substituted with the reference the probe actually compared against.
+ */
+export const NOTE_YOLO_NO_IMPLEMENTATION =
+  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The YOLO fast-path prepares the implementation but cannot execute the plan (agyloop dispatches subagents, it does not run them): run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
+/**
+ * Continuation lines of the operator-facing park block (stderr).
+ */
+export const NOTE_IMPLEMENTATION_PARK_UNCHANGED =
+  "Working tree is unchanged relative to '{baseRef}' — no implementation was detected." as const;
+export const NOTE_IMPLEMENTATION_PARK_DISPATCH =
+  'The YOLO fast-path prepares the implementation but cannot execute the plan (agyloop dispatches subagents, it does not run them).' as const;
+export const NOTE_IMPLEMENTATION_PARK_NEXT =
+  'Next: run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`.' as const;
+
+/**
+ * The plan-empty advisory (issue #259, S10).
+ *
+ * `codeloop yolo` never dispatches the PLANNER either, so the fast-path's
+ * plan is the tool's own blank scaffold — every heading empty, every
+ * `**Step N:**` marker without a value. Dispatching the implementer with that
+ * document would hand it nothing to execute, so the park says so instead.
+ * `{planPath}` names the plan the implementer would have received.
+ */
+export const NOTE_IMPLEMENTATION_PLAN_EMPTY =
+  "The plan at '{planPath}' is still the blank scaffold — the implementer would receive an empty plan" as const;
+
+/**
+ * The continuation line of the plan-empty advisory. It REPLACES
+ * `NOTE_IMPLEMENTATION_PARK_NEXT` — printing both would tell the operator to
+ * dispatch an implementer that has nothing to execute.
+ */
+export const NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT =
+  'Next: run the Architectural Planning Subagent (or write the plan) first, then run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`.' as const;
+
+/**
+ * The full park message for a YOLO run whose plan is still the blank
+ * scaffold. `{baseRef}` is the reference the probe compared against and
+ * `{planPath}` names the empty plan.
+ */
+export const NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN =
+  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The plan at '{planPath}' is still the blank scaffold (no implementation steps), so dispatching the implementer now would give it nothing to execute: run the Architectural Planning Subagent (or write the plan) first, then run `codeloop next`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
+/**
+ * The VACUOUS gate verdict line: the gates refused to certify a tree that
+ * contains no implementation, so NO gate command was executed.
+ */
+export const MSG_GATE_VACUOUS =
+  "VACUOUS — no implementation detected (working tree unchanged relative to '{baseRef}'); quality gate commands were NOT executed." as const;
+
+/**
+ * The report label for the implementation-evidence line.
+ */
+export const LABEL_IMPLEMENTATION_EVIDENCE = 'Implementation' as const;
+
+/**
+ * The implementation-evidence line appended to a gate report that DID run:
+ * `Implementation : 3 file(s) changed relative to 'main'`.
+ */
+export const LABEL_IMPLEMENTATION_EVIDENCE_LINE =
+  "{label} : {count} file(s) changed relative to '{baseRef}'" as const;
+
+/**
+ * Lifecycle refusal messages for a VACUOUS gate verdict. A VACUOUS verdict is
+ * NOT a failure: nothing was reverted, because the stage was never advanced.
+ */
+export const NOTE_GATES_VACUOUS_STANDARD =
+  "Quality gates refused to certify an unimplemented tree (VACUOUS) — the working tree is unchanged relative to '{baseRef}'. Pipeline stays at IMPLEMENT." as const;
+export const NOTE_GATES_VACUOUS_YOLO =
+  'Quality gates refused to certify an unimplemented tree (VACUOUS) — refusing to advance.' as const;
+
+// ============================================================================
+// PR Comment Severity Markers & Dismissal Reporting
+// ============================================================================
+
+/**
+ * The categories a PR review comment can be classified into. These mirror the
+ * `PRCommentCategory` contract carried by the GitHub gateway port.
+ */
+export const PR_CATEGORY_ERROR = 'error' as const;
+export const PR_CATEGORY_SUGGESTION = 'suggestion' as const;
+export const PR_CATEGORY_QUESTION = 'question' as const;
+export const PR_CATEGORY_INFO = 'info' as const;
+export const PR_CATEGORY_GENERAL = 'general' as const;
+
+/**
+ * Every category a PR review comment can be classified into.
+ *
+ * The list lives in the domain so the classifier and the gateway port contract
+ * cannot drift apart.
+ */
+export const PR_CATEGORIES = Object.freeze([
+  PR_CATEGORY_ERROR,
+  PR_CATEGORY_SUGGESTION,
+  PR_CATEGORY_QUESTION,
+  PR_CATEGORY_INFO,
+  PR_CATEGORY_GENERAL
+] as const);
+
+export type PRCategory = typeof PR_CATEGORIES[number];
+
+/**
+ * The severity-to-category mapping the comment classifier obeys.
+ *
+ * The mapping is CONSISTENT: a severity never contradicts its category.
+ * `critical`/`error` are ERROR, `warning`/`suggestion` are SUGGESTION, and
+ * `info` is informational — INFO.
+ *
+ * Two categories sit outside the mapping on purpose: QUESTION (a comment that
+ * IS a question) and GENERAL (a comment with no marker at all — it carries
+ * the informational severity because nothing about it is blocking). An
+ * informational FINDING (`ℹ️ **INFO**`) is therefore never rendered as
+ * `[GENERAL]` — that conflation was the defect.
+ */
+export const PR_SEVERITY_CATEGORY_MAPPING: Readonly<Record<ReviewSeverity, PRCategory>> =
+  Object.freeze({
+    [SEVERITY_CRITICAL]: PR_CATEGORY_ERROR,
+    [SEVERITY_ERROR]: PR_CATEGORY_ERROR,
+    [SEVERITY_WARNING]: PR_CATEGORY_SUGGESTION,
+    [SEVERITY_SUGGESTION]: PR_CATEGORY_SUGGESTION,
+    [SEVERITY_INFO]: PR_CATEGORY_INFO
+  });
+
+/**
+ * The markers that are not severities of their own: `**QUESTION**` selects the
+ * question category, `**NIT**` is a non-blocking suggestion.
+ */
+export const PR_MARKER_QUESTION = 'question' as const;
+export const PR_MARKER_NIT = 'nit' as const;
+
+/**
+ * The markdown bold form of a marker — the form the review bots actually emit
+ * (`ℹ️ **INFO**`, `💡 **SUGGESTION**`, `**CRITICAL**`, `**ERROR**`, `**WARNING**`).
+ */
+export const PR_MARKDOWN_MARKER_TEMPLATE = '**{marker}**' as const;
+
+/**
+ * The legacy bracket form of a marker (`[error]`, `[critical]`, ...). It is
+ * still honoured so callers that rely on it keep working.
+ */
+export const PR_BRACKET_MARKER_TEMPLATE = '[{marker}]' as const;
+
+/**
+ * Operator-facing labels for the dismissal report. The dismissal route has to
+ * report what it actually achieved, so every count it prints is labelled.
+ */
+export const LABEL_DISMISS_THREADS = 'Inline threads' as const;
+export const LABEL_DISMISS_CONVERSATION = 'PR conversation' as const;
+export const LABEL_DISMISS_FAILURES = 'Failures' as const;
+export const LABEL_DISMISS_SURFACES = 'Surfaces' as const;
+
+/**
+ * What the surfaces line shows when the dismissal touched no surface at all.
+ */
+export const LABEL_DISMISS_NO_SURFACE = '(none)' as const;
+
+/**
+ * The outcome shown on the `Triage Action` line. A dismissal that only
+ * partially succeeded must never be reported as an unqualified success.
+ */
+export const DISMISS_OUTCOME_COMPLETE = 'DISMISS' as const;
+export const DISMISS_OUTCOME_PARTIAL = 'DISMISS (PARTIAL)' as const;
+export const DISMISS_OUTCOME_FAILED = 'DISMISS (FAILED)' as const;
+export const DISMISS_OUTCOME_NOTHING = 'DISMISS (NOTHING DISMISSED)' as const;
+
+/** Why the dismissal route had nothing to dismiss. */
+export const NOTE_DISMISS_NO_NOTES = 'no dismissal notes were provided (-m "<notes>")' as const;
+export const NOTE_DISMISS_NO_PR = 'no pull request was resolved for this issue' as const;
+export const NOTE_DISMISS_NO_GATEWAY = 'the GitHub gateway is unavailable' as const;
+
+/**
+ * The generic reason used when a dismissal report carries no more specific
+ * reason for having dismissed nothing.
+ */
+export const NOTE_DISMISS_NOTHING = 'nothing was dismissed' as const;
+
+/**
+ * Why a dismissal that ran answered, resolved and skipped nothing at all.
+ *
+ * The dismissal route may run and find no feedback to act on — for example
+ * when the comment fetch failed silently and the gateway listed no threads.
+ * Such a run dismissed nothing, so it must never wear the unqualified success
+ * line.
+ */
+export const NOTE_DISMISS_NOTHING_HANDLED =
+  'the dismissal ran but no review feedback was handled' as const;
+
+/**
+ * The header the review bot puts on a PR conversation summary:
+ * `**Review feedback on \`src/app.ts\` (Line 42):**`.
+ */
+export const REGEX_PR_FEEDBACK_HEADER = /^\s*\*\*Review feedback on `[^`]*`[^*]*\*\*/;
+
+/**
+ * The attribution footer the review bot appends: `*Powered by ...*`.
+ */
+export const REGEX_PR_FEEDBACK_FOOTER = /\*Powered by[^*]*\*\s*$/;
+
+/**
+ * Why the inline review threads could not be dismissed: the gateway does not
+ * implement the thread surface.
+ */
+export const MSG_DISMISS_NO_THREAD_SUPPORT =
+  'the GitHub gateway cannot list or resolve review threads' as const;
+
+/**
+ * Why a PR conversation comment could not be answered: it carries no id.
+ */
+export const MSG_DISMISS_NO_CONVERSATION_ID =
+  'the conversation comment carries no id, so it cannot be answered' as const;
+
+/**
+ * Why the PR conversation surface could not be answered: the gateway does not
+ * implement it.
+ */
+export const MSG_DISMISS_NO_CONVERSATION_SUPPORT =
+  'the GitHub gateway cannot post replies on the PR conversation surface' as const;
+
+/**
+ * How many individual failures the operator-facing output spells out. The
+ * count is always exact; only the detail list is truncated, so a run that hit
+ * one rate limit on 28 threads stays readable.
+ */
+export const DISMISS_FAILURE_DETAIL_LIMIT = 10 as const;
+
+/**
+ * Why a PR conversation comment was not answered a second time.
+ */
+export const NOTE_DISMISS_DUPLICATE_FEEDBACK = 'duplicate feedback' as const;
+
+/**
+ * Why a PR conversation comment was skipped: the PR's own state proves it was
+ * already answered (another comment references its id, or its inline review
+ * thread carries the tool's dismissal MARKER).
+ *
+ * The thread's resolution state is not that proof: the review bot
+ * auto-resolves the threads it creates, so a resolved thread can be entirely
+ * unanswered.
+ */
+export const NOTE_DISMISS_ALREADY_ANSWERED = 'already answered' as const;
+
+/**
+ * Why a PR conversation comment was ignored altogether: it is the tool's own
+ * dismissal reply, not review feedback.
+ */
+export const NOTE_DISMISS_OWN_REPLY = 'own dismissal reply' as const;
+
+/**
+ * Why an unmarked conversation comment was ignored: it is a PRIOR ANSWER the
+ * tool cannot attribute, so answering it would be a third reply to the same
+ * feedback.
+ */
+export const NOTE_DISMISS_PRIOR_ANSWER = 'unmarked prior answer' as const;
+
+/**
+ * The footer of a PR conversation dismissal reply. GitHub has no threaded
+ * reply for conversation comments, so the reply quotes the comment it answers.
+ */
+export const DISMISS_CONVERSATION_REPLY_FOOTER =
+  'Dismissing this PR conversation comment:' as const;
+
+/**
+ * The prefix of the reference a dismissal reply carries for the comment it
+ * answers. It is what makes a dismissal reply recognisable as the tool's own.
+ */
+export const DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX =
+  'Answering PR conversation comment:' as const;
+
+/**
+ * The canonical reference a dismissal reply carries for the comment it
+ * answers. `{permalink}` is substituted with the comment's permalink.
+ */
+export const DISMISS_CONVERSATION_REPLY_REFERENCE =
+  'Answering PR conversation comment: {permalink}' as const;
+
+/**
+ * The permalink of a PR conversation comment. The reference above carries it,
+ * and its `#issuecomment-<id>` fragment is what makes the reply's target
+ * machine-readable: a later run can tell WHICH comment was answered.
+ */
+export const DISMISS_CONVERSATION_PERMALINK_TEMPLATE =
+  'https://github.com/{repo}/pull/{prNumber}#issuecomment-{commentId}' as const;
+
+/**
+ * The fragment that identifies the conversation comment a dismissal reply
+ * answers. Every reference the tool posts ends with it, so the ids of the
+ * comments that were answered can be read back off the PR's conversation.
+ */
+export const REGEX_DISMISS_CONVERSATION_REFERENCE = /#issuecomment-(\d+)/g;
+
+/**
+ * The marker the tool appends to every INLINE review thread reply it posts.
+ *
+ * The thread's resolution state is NOT proof that the feedback was answered:
+ * the review bot auto-resolves the threads it creates, so a resolved thread
+ * can be completely unanswered. The marker is the only evidence that survives
+ * the process — exactly like the conversation surface's markers above — so a
+ * thread that carries it was answered, whatever its resolution state says.
+ */
+export const DISMISS_INLINE_REPLY_MARKER =
+  'Dismissing this inline review thread:' as const;
+
+/**
+ * The tool's historic signature on the dismissal notes it posts.
+ *
+ * Before the inline marker existed, the only tool-owned signal in an inline
+ * reply was the signature the notes ended with (`— CodeLoop Triage Subagent
+ * (issue #N)`). The replies already posted on PR #261 carry it and nothing
+ * else, so it must keep being read as "the tool answered this thread" —
+ * otherwise those threads would be answered a second time.
+ */
+export const DISMISS_INLINE_REPLY_SIGNATURE =
+  '— CodeLoop Triage Subagent' as const;
 
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;

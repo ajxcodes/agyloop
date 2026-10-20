@@ -10,11 +10,37 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
-export type PRCommentCategory = 'error' | 'suggestion' | 'question' | 'general';
+import { PRCategory } from '../domain';
+
+/**
+ * The categories a PR review comment can be classified into. The values live in
+ * the domain so the classifier and the port contract cannot drift apart.
+ */
+export type PRCommentCategory = PRCategory;
+
+/**
+ * The GitHub surface a PR comment was fetched from.
+ *
+ * - `conversation`: a PR conversation comment (`issues/{n}/comments`)
+ * - `review`: a submitted PR review body (`pulls/{n}/reviews`)
+ * - `inline`: an inline diff review comment (`pulls/{n}/comments`)
+ */
+export type PRCommentSurface = 'conversation' | 'review' | 'inline';
 
 export interface PullRequestReviewComment {
-  /** REST database id (inline review comments only); used to map comments to threads. */
+  /**
+   * REST database id. GitHub assigns every comment row its own database id, so
+   * the ids observed in the wild do not overlap across surfaces — but the API
+   * does not document that guarantee, so an id is only ever used within its own
+   * surface: inline ids are matched against review threads, conversation ids
+   * identify the comment a dismissal reply answers.
+   */
   readonly id?: number;
+  /**
+   * Which GitHub surface the comment came from. Absent means `inline`, the
+   * historical meaning of `id`.
+   */
+  readonly surface?: PRCommentSurface;
   readonly author: string;
   readonly body: string;
   readonly path?: string;
@@ -25,10 +51,26 @@ export interface PullRequestReviewComment {
   readonly severity?: string;
 }
 
-export interface UnresolvedReviewThread {
+/**
+ * A review thread of a pull request.
+ *
+ * The resolution state is NOT the cross-run memory of the inline surface: the
+ * review bot auto-resolves the threads it creates, so a resolved thread can
+ * be completely unanswered. The cross-run memory is the dismissal MARKER in
+ * the thread — the caller reads it off the thread's comments.
+ */
+export interface ReviewThread {
   readonly id: string;
   readonly commentIds: readonly number[];
+  /** True when the thread is already resolved (closed), whatever answered it. */
+  readonly isResolved: boolean;
 }
+
+/**
+ * @deprecated Use {@link ReviewThread}. The name survives for compatibility;
+ * a thread now carries its resolution state.
+ */
+export type UnresolvedReviewThread = ReviewThread;
 
 export interface GitHubIssueMilestone {
   readonly title: string;
@@ -145,8 +187,27 @@ export interface GitHubGateway {
   ): Promise<PullRequestReviewComment[]> | PullRequestReviewComment[];
 
   /**
+   * Lists the review threads of a pull request, RESOLVED ones included.
+   *
+   * The dismissal route needs the closed threads too: the threads that were
+   * ANSWERED carry the tool's dismissal marker, and that marker — not the
+   * resolution state — is the cross-run proof that their comments were
+   * answered. A resolved thread is only CLOSED: the review bot auto-resolves
+   * the threads it creates, so a resolved thread can be entirely unanswered,
+   * and the route must answer those.
+   */
+  listReviewThreads?(
+    prNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<ReviewThread[]> | ReviewThread[];
+
+  /**
    * Lists unresolved review threads on a pull request, with the database ids
    * of the comments each thread contains.
+   *
+   * Gateways that cannot report the closed threads keep this method; the
+   * dismissal route then sees only the OPEN threads, so it cannot read the
+   * dismissal marker off the ones that were answered and closed.
    */
   listUnresolvedReviewThreads?(
     prNumber: number,
@@ -167,6 +228,18 @@ export interface GitHubGateway {
    */
   resolveReviewThread?(
     threadId: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
+
+  /**
+   * Posts a reply on the PR conversation surface, answering one conversation
+   * comment. GitHub has no "resolve" affordance for conversation comments, so
+   * a dismissal answers them with a comment instead.
+   */
+  replyToConversationComment?(
+    prNumber: number,
+    commentId: number,
+    body: string,
     options?: GitHubGatewayOptions
   ): Promise<void> | void;
 }

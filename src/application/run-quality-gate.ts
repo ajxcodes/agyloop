@@ -29,6 +29,7 @@ import {
   SUMMARY_STATUS_FAILED,
   STATUS_PASSED,
   STATUS_FAILED,
+  STATUS_VACUOUS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_TIMED_OUT,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -67,6 +68,11 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TOKEN_FAILING_ASSERTION,
   MSG_COMMAND_FAILED_NO_OUTPUT,
+  MSG_GATE_VACUOUS,
+  LABEL_IMPLEMENTATION_EVIDENCE,
+  LABEL_IMPLEMENTATION_EVIDENCE_LINE,
+  HEADER_QUALITY_GATE_REPORT,
+  LABEL_OVERALL_VERDICT,
   InvalidTransitionError,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
@@ -81,6 +87,7 @@ import {
 } from '../ports';
 
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import type { ImplementationDiff } from './detect-implementation-diff';
 
 export interface GateCommandReport {
   readonly id: string;
@@ -104,6 +111,18 @@ export interface QualityGateRunParams {
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
   readonly workspaceDir?: string;
+  /**
+   * The implementation-evidence verdict (issue #259).
+   *
+   * This is an INJECTED verdict, not a probe: the gate use case runs no git
+   * command of its own. That is deliberate — the lifecycle owns the probe, and
+   * a probe inside the gate would silently consume a queued gate command in
+   * every consumer that drives this use case with a response queue.
+   *
+   * When it is present and reports an UNCHANGED tree, the gate refuses to
+   * certify: no gate command is executed and the verdict is VACUOUS.
+   */
+  readonly implementationDiff?: ImplementationDiff | null;
 }
 
 export interface QualityGateRunResult {
@@ -119,6 +138,14 @@ export interface QualityGateRunResult {
   readonly detectedEcosystems?: readonly string[];
   readonly gateReport?: GateSummaryReport;
   readonly diagnosticSnippet?: DiagnosticSnippet | null;
+  /**
+   * True when the gate refused to certify an unimplemented tree (issue #259).
+   * A VACUOUS verdict is NOT a failure: nothing was executed and nothing was
+   * reverted — the stage was never advanced.
+   */
+  readonly vacuous?: boolean;
+  /** The implementation-evidence verdict this run was given (when any). */
+  readonly implementationDiff?: ImplementationDiff | null;
 }
 
 export class RunQualityGateUseCase {
@@ -164,6 +191,23 @@ export class RunQualityGateUseCase {
     const activeIssue = params.issue || sm.issue;
     if (activeIssue) {
       sm.setIssue(activeIssue);
+    }
+
+    // 1b. Issue #259: the gate refuses to certify an unimplemented tree.
+    //
+    // A passing suite over an UNCHANGED tree is positive evidence of nothing:
+    // the pre-existing tests still pass when no implementation was produced.
+    // The gate therefore refuses to certify such a tree — it executes NO gate
+    // command, does not transition, does not touch the retry counter, and
+    // reports the VACUOUS verdict instead of PASSED.
+    //
+    // A verdict that carries a `probeError` is NOT a verdict: the probe could
+    // not read the tree at all (no git, not a repository, an unreadable
+    // directory). There is nothing to certify against, so the gate keeps its
+    // pre-existing behaviour instead of inventing a refusal.
+    const injectedDiff = params.implementationDiff ?? null;
+    if (injectedDiff && injectedDiff.probeError === null && !injectedDiff.hasChanges) {
+      return this.buildVacuousResult(sm, injectedDiff);
     }
 
     // 2. Enforce lifecycle transition rules
@@ -373,10 +417,19 @@ export class RunQualityGateUseCase {
     }
 
     // 8. Generate concise token-minimized summary report
-    const summaryReport = gateReport.formatTextReport({
+    const rawSummaryReport = gateReport.formatTextReport({
       nextStage: sm.currentStage,
       summaryPath: resolvedPlan?.summaryPath
     });
+
+    // 8b. Issue #259: make "the suite passed" and "the suite passed ON A TREE
+    // THAT CONTAINS THE IMPLEMENTATION" two different statements. The line is
+    // purely additive: when no verdict was injected (legacy callers) the
+    // report is byte-identical to what it always was.
+    const summaryReport =
+      injectedDiff && injectedDiff.hasChanges
+        ? this.withImplementationEvidence(rawSummaryReport, injectedDiff)
+        : rawSummaryReport;
 
     return {
       passed: allPassed,
@@ -390,8 +443,93 @@ export class RunQualityGateUseCase {
       buildSystem: primaryEcosystemName,
       detectedEcosystems: detectedEcosystemNames,
       gateReport,
-      diagnosticSnippet: primaryDiagnostic
+      diagnosticSnippet: primaryDiagnostic,
+      vacuous: false,
+      implementationDiff: injectedDiff
     };
+  }
+
+  /**
+   * Builds the VACUOUS verdict: the gate refused to certify a tree that
+   * contains no implementation.
+   *
+   * No gate command ran, no transition happened, the retry counter is
+   * untouched, and the summary log is NOT written (nothing ran, so there is
+   * nothing to log). The verdict line is VACUOUS — never PASSED — so the
+   * operator can tell "refused" from "failed".
+   *
+   * The report is built as a plain string on purpose: a `GateSummaryReport`
+   * would have to widen the `GateVerdict` union, and this issue must not
+   * change any shared contract.
+   *
+   * `buildStatus` / `testsStatus` carry `STATUS_VACUOUS`, not `STATUS_FAILED`:
+   * no build and no test ran, so there is no outcome to report — only the
+   * refusal to certify.
+   */
+  private buildVacuousResult(
+    sm: StateMachine,
+    implementationDiff: ImplementationDiff
+  ): QualityGateRunResult {
+    const baseRef = implementationDiff.baseRef;
+    const changedFileCount =
+      implementationDiff.trackedChangedFiles.length + implementationDiff.untrackedFiles.length;
+
+    let summaryReport = `${HEADER_QUALITY_GATE_REPORT}\n`;
+    summaryReport += `${LABEL_OVERALL_VERDICT.padEnd(16)}: ${STATUS_VACUOUS}\n`;
+    summaryReport += `  ⚠ ${MSG_GATE_VACUOUS.replace('{baseRef}', baseRef)}\n`;
+    summaryReport += `  ${LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace('{label}', LABEL_IMPLEMENTATION_EVIDENCE).replace('{count}', String(changedFileCount)).replace('{baseRef}', baseRef)}`;
+
+    return {
+      passed: false,
+      vacuous: true,
+      currentStage: sm.currentStage,
+      stateMachine: sm,
+      reports: [],
+      totalDurationMs: 0,
+      summaryReport,
+      // Issue #259: a VACUOUS verdict is neither a pass nor a failure — NO
+      // gate command ran, so there is no build and no test outcome to record.
+      // `STATUS_FAILED` would claim a failure for an event that never
+      // happened (the same false-claim class this issue removes); the honest
+      // token is the refusal itself.
+      buildStatus: STATUS_VACUOUS,
+      testsStatus: STATUS_VACUOUS,
+      gateReport: undefined,
+      diagnosticSnippet: null,
+      implementationDiff
+    };
+  }
+
+  /**
+   * Inserts the implementation-evidence line into a gate report that DID run:
+   * `Implementation : 3 file(s) changed relative to 'main'`.
+   *
+   * The line is placed directly under the verdict so the reader sees, in one
+   * glance, that the suite was executed against a tree that actually contains
+   * the implementation.
+   */
+  private withImplementationEvidence(
+    summaryReport: string,
+    implementationDiff: ImplementationDiff
+  ): string {
+    const changedFileCount =
+      implementationDiff.trackedChangedFiles.length + implementationDiff.untrackedFiles.length;
+    const evidenceLine = LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace(
+      '{label}',
+      LABEL_IMPLEMENTATION_EVIDENCE
+    )
+      .replace('{count}', String(changedFileCount))
+      .replace('{baseRef}', implementationDiff.baseRef);
+
+    const lines = summaryReport.split('\n');
+    const verdictIndex = lines.findIndex((line) => line.startsWith(LABEL_OVERALL_VERDICT));
+
+    if (verdictIndex === -1) {
+      return `${summaryReport}\n${evidenceLine}`;
+    }
+
+    lines.splice(verdictIndex + 1, 0, evidenceLine);
+    return lines.join('\n');
   }
 
   private resolveCommands(
