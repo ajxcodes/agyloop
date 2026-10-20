@@ -13,6 +13,7 @@ import {
   GitHubGatewayOptions,
   GitHubIssueData,
   GitHubComment,
+  PRCommentCategory,
   PullRequestReviewComment,
   UnresolvedReviewThread,
   GitHubPullRequestData,
@@ -20,7 +21,211 @@ import {
   CreatePullRequestOptions,
   formatIssueForPrompt
 } from '../ports';
-import { GitHubContextError, prAssertsIssueDelivery } from '../domain';
+import {
+  GitHubContextError,
+  prAssertsIssueDelivery,
+  PR_CATEGORY_ERROR,
+  PR_CATEGORY_SUGGESTION,
+  PR_CATEGORY_QUESTION,
+  PR_CATEGORY_GENERAL,
+  PR_MARKER_QUESTION,
+  PR_MARKER_NIT,
+  PR_MARKDOWN_MARKER_TEMPLATE,
+  PR_BRACKET_MARKER_TEMPLATE,
+  SEVERITY_CRITICAL,
+  SEVERITY_ERROR,
+  SEVERITY_WARNING,
+  SEVERITY_SUGGESTION,
+  SEVERITY_INFO,
+  SEVERITY_ICON_CRITICAL,
+  SEVERITY_ICON_WARNING,
+  SEVERITY_ICON_SUGGESTION,
+  SEVERITY_ICON_INFO,
+  ReviewSeverity,
+  DISMISS_CONVERSATION_REPLY_REFERENCE
+} from '../domain';
+
+/**
+ * The severity classification of a single PR comment.
+ */
+export interface PrCommentClassification {
+  readonly category: PRCommentCategory;
+  readonly severity: ReviewSeverity;
+}
+
+/**
+ * Builds the markdown bold form of a marker: `**CRITICAL**`.
+ */
+function markdownMarker(marker: string): string {
+  return PR_MARKDOWN_MARKER_TEMPLATE.replace('{marker}', marker.toLowerCase());
+}
+
+/**
+ * Builds the legacy bracket form of a marker: `[error]`.
+ */
+function bracketMarker(marker: string): string {
+  return PR_BRACKET_MARKER_TEMPLATE.replace('{marker}', marker.toLowerCase());
+}
+
+/**
+ * Whether a body carries a marker — in the markdown form the review bots emit
+ * (`**CRITICAL**`) or in the legacy bracket form (`[critical]`).
+ */
+function hasMarker(lowerBody: string, marker: string): boolean {
+  return (
+    lowerBody.includes(markdownMarker(marker)) || lowerBody.includes(bracketMarker(marker))
+  );
+}
+
+/**
+ * The headline of a comment — its first non-empty line. Severity markers are
+ * emitted on the headline (`ℹ️ **INFO**: ...`), so the headline is where the
+ * emoji form of a marker is looked for.
+ */
+function headlineOf(body: string): string {
+  for (const line of (body || '').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
+/**
+ * Classifies a PR review comment by severity.
+ *
+ * The review bots emit markdown markers (`ℹ️ **INFO**`, `💡 **SUGGESTION**`,
+ * `**CRITICAL**`, `**ERROR**`, `**WARNING**`); the legacy bracket forms
+ * (`[error]`, `[critical]`, ...) are still honoured. A `CHANGES_REQUESTED`
+ * review is a blocking verdict regardless of its body.
+ *
+ * A bare `?` in prose is NOT a question marker: only an explicit question
+ * marker, or a comment whose headline is itself a question, is a question.
+ */
+export function classifyPrCommentSeverity(
+  body: string,
+  reviewState?: string
+): PrCommentClassification {
+  const text = body || '';
+  const lower = text.toLowerCase();
+
+  if ((reviewState || '').toUpperCase() === 'CHANGES_REQUESTED') {
+    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_ERROR };
+  }
+
+  // The markers are matched most severe first, and BOTH forms count for every
+  // severity: the markdown form the review bots emit (`**CRITICAL**`) and the
+  // legacy bracket form (`[error]`). A blocking marker therefore always wins,
+  // whatever else the body carries.
+  if (hasMarker(lower, SEVERITY_CRITICAL)) {
+    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_CRITICAL };
+  }
+  if (hasMarker(lower, SEVERITY_ERROR)) {
+    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_ERROR };
+  }
+  if (hasMarker(lower, SEVERITY_WARNING)) {
+    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_WARNING };
+  }
+  if (hasMarker(lower, SEVERITY_SUGGESTION)) {
+    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_SUGGESTION };
+  }
+  if (hasMarker(lower, PR_MARKER_NIT)) {
+    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_SUGGESTION };
+  }
+  if (hasMarker(lower, PR_MARKER_QUESTION)) {
+    return { category: PR_CATEGORY_QUESTION, severity: SEVERITY_INFO };
+  }
+  if (hasMarker(lower, SEVERITY_INFO)) {
+    return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
+  }
+
+  // The emoji form of a marker, looked for on the headline only.
+  const headline = headlineOf(text);
+  if (headline.startsWith(SEVERITY_ICON_CRITICAL)) {
+    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_CRITICAL };
+  }
+  if (headline.startsWith(SEVERITY_ICON_WARNING)) {
+    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_WARNING };
+  }
+  if (headline.startsWith(SEVERITY_ICON_SUGGESTION)) {
+    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_SUGGESTION };
+  }
+  if (headline.startsWith(SEVERITY_ICON_INFO)) {
+    return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
+  }
+
+  // A comment is a question when it IS a question — not when its prose merely
+  // contains a question mark.
+  if (headline.endsWith('?')) {
+    return { category: PR_CATEGORY_QUESTION, severity: SEVERITY_INFO };
+  }
+
+  return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
+}
+
+/**
+ * Parses the payload of a paginated `gh api` call.
+ *
+ * `gh api --paginate` returns every page of a REST list endpoint. Depending on
+ * the `gh` version the pages arrive either merged into a single JSON array or
+ * as consecutive JSON arrays, so both shapes are accepted and merged.
+ */
+export function parsePaginatedJsonArray(raw: string): unknown[] {
+  const text = (raw || '').trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // Fall through: the payload is a sequence of JSON arrays.
+  }
+
+  const merged: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '[') {
+      if (depth === 0) start = i;
+      depth++;
+      continue;
+    }
+    if (ch === ']') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try {
+          const page = JSON.parse(text.slice(start, i + 1));
+          if (Array.isArray(page)) merged.push(...page);
+        } catch {
+          // A page that is not valid JSON contributes nothing.
+        }
+        start = -1;
+      }
+    }
+  }
+
+  return merged;
+}
+
 
 export class CliGitHubGateway implements GitHubGateway {
   /**
@@ -326,6 +531,33 @@ export class CliGitHubGateway implements GitHubGateway {
     );
   }
 
+  public replyToConversationComment(
+    prNumber: number,
+    commentId: number,
+    body: string,
+    options: GitHubGatewayOptions = {}
+  ): void {
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    if (!repo || !prNumber || prNumber <= 0) return;
+
+    // GitHub has no threaded reply for PR conversation comments: the dismissal
+    // is posted as a conversation comment that references the one it answers.
+    const permalink = `https://github.com/${repo}/pull/${prNumber}#issuecomment-${commentId}`;
+    const payload = `${body}\n\n${DISMISS_CONVERSATION_REPLY_REFERENCE.replace('{permalink}', permalink)}`;
+
+    this.runGhArgs(
+      [
+        'api',
+        '--method',
+        'POST',
+        `repos/${repo}/issues/${prNumber}/comments`,
+        '-f',
+        `body=${payload}`
+      ],
+      { cwd: options.cwd }
+    );
+  }
+
   public fetchPullRequestComments(
     prNumber: number,
     options: GitHubGatewayOptions = {}
@@ -342,37 +574,37 @@ export class CliGitHubGateway implements GitHubGateway {
       const repoPath = repo || this.getCurrentRepo(options.cwd);
       if (!repoPath) return [];
 
-      const issueCommentsRaw = this.runGh(`api repos/${repoPath}/issues/${prNumber}/comments`, { cwd: options.cwd });
-      const reviewsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/reviews`, { cwd: options.cwd });
-      const reviewCommentsRaw = this.runGh(`api repos/${repoPath}/pulls/${prNumber}/comments`, { cwd: options.cwd });
+      // `--paginate` is mandatory: without it every surface is truncated at the
+      // first page (30 records), so the triage silently misses most of the PR's
+      // feedback — including a `CHANGES_REQUESTED` review verdict.
+      const issueCommentsRaw = this.runGh(
+        `api repos/${repoPath}/issues/${prNumber}/comments --paginate`,
+        { cwd: options.cwd }
+      );
+      const reviewsRaw = this.runGh(
+        `api repos/${repoPath}/pulls/${prNumber}/reviews --paginate`,
+        { cwd: options.cwd }
+      );
+      const reviewCommentsRaw = this.runGh(
+        `api repos/${repoPath}/pulls/${prNumber}/comments --paginate`,
+        { cwd: options.cwd }
+      );
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parsedComments = JSON.parse(issueCommentsRaw) as Array<any>;
+      const parsedComments = parsePaginatedJsonArray(issueCommentsRaw) as Array<any>;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parsedReviews = JSON.parse(reviewsRaw) as Array<any>;
+      const parsedReviews = parsePaginatedJsonArray(reviewsRaw) as Array<any>;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parsedReviewComments = JSON.parse(reviewCommentsRaw) as Array<any>;
+      const parsedReviewComments = parsePaginatedJsonArray(reviewCommentsRaw) as Array<any>;
 
       const results: PullRequestReviewComment[] = [];
 
-      const parseCategory = (body: string, reviewState?: string): { category: 'error' | 'suggestion' | 'question' | 'general'; severity?: string } => {
-        const lower = body.toLowerCase();
-        if ((reviewState || '').toUpperCase() === 'CHANGES_REQUESTED' || lower.includes('[error]') || lower.includes('[critical]')) {
-          return { category: 'error', severity: 'error' };
-        }
-        if (lower.includes('[suggestion]') || lower.includes('[warning]') || lower.includes('[nit]')) {
-          return { category: 'suggestion', severity: 'suggestion' };
-        }
-        if (lower.includes('[question]') || lower.includes('?')) {
-          return { category: 'question', severity: 'info' };
-        }
-        return { category: 'general', severity: 'info' };
-      };
-
       for (const c of parsedComments) {
         if (c.body && c.body.trim()) {
-          const cat = parseCategory(c.body);
+          const cat = classifyPrCommentSeverity(c.body);
           results.push({
+            id: typeof c.id === 'number' ? c.id : undefined,
+            surface: 'conversation',
             author: (c.user && c.user.login) || 'unknown',
             body: c.body,
             createdAt: c.created_at,
@@ -384,8 +616,10 @@ export class CliGitHubGateway implements GitHubGateway {
 
       for (const r of parsedReviews) {
         if (r.body && r.body.trim()) {
-          const cat = parseCategory(r.body, r.state);
+          const cat = classifyPrCommentSeverity(r.body, r.state);
           results.push({
+            id: typeof r.id === 'number' ? r.id : undefined,
+            surface: 'review',
             author: (r.user && r.user.login) || 'unknown',
             body: r.body,
             state: r.state,
@@ -401,9 +635,10 @@ export class CliGitHubGateway implements GitHubGateway {
           const parentReview = parsedReviews.find(r => r.id === rc.pull_request_review_id);
           const reviewState = parentReview ? parentReview.state : undefined;
 
-          const cat = parseCategory(rc.body, reviewState);
+          const cat = classifyPrCommentSeverity(rc.body, reviewState);
           results.push({
             id: rc.id,
+            surface: 'inline',
             author: (rc.user && rc.user.login) || 'unknown',
             body: rc.body,
             path: rc.path,

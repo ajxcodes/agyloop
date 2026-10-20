@@ -86,7 +86,23 @@ import {
   // must never re-type them — a hand-typed copy is how the two drift apart.
   NOTE_GATES_VACUOUS_YOLO,
   NOTE_GATES_VACUOUS_STANDARD,
-  STATE_MUTATING_COMMANDS
+  STATE_MUTATING_COMMANDS,
+  // Dismissal reporting: the dismissal route reports what it really achieved,
+  // so the CLI must render those counts instead of an unqualified success.
+  DISMISS_OUTCOME_COMPLETE,
+  DISMISS_OUTCOME_PARTIAL,
+  DISMISS_OUTCOME_FAILED,
+  DISMISS_OUTCOME_NOTHING,
+  LABEL_DISMISS_THREADS,
+  LABEL_DISMISS_CONVERSATION,
+  LABEL_DISMISS_FAILURES,
+  LABEL_DISMISS_SURFACES,
+  LABEL_DISMISS_NO_SURFACE,
+  DISMISS_FAILURE_DETAIL_LIMIT,
+  NOTE_DISMISS_DUPLICATE_FEEDBACK,
+  NOTE_DISMISS_OWN_REPLY,
+  NOTE_DISMISS_NOTHING,
+  NOTE_DISMISS_NOTHING_HANDLED
 } from '../domain';
 import type {
   StateRepository,
@@ -138,6 +154,7 @@ import {
   GetNextActionUseCase,
   TriagePrCommentsUseCase,
   TriageAction,
+  TriageDismissReport,
   SyncUseCase,
   AbortPipelineUseCase,
   InitProjectUseCase,
@@ -626,6 +643,64 @@ export function formatStageBadge(stage: string): string {
   const reset = '\x1b[0m';
   const color = colors[stage] || '';
   return `${color}[${stage}]${reset}`;
+}
+
+/**
+ * Renders what the dismissal route really achieved.
+ *
+ * A dismissal that replied to 7 of 28 threads is NOT a dismissal, so it must
+ * never be rendered with the same unqualified success line as a complete one.
+ * A dismissal that handled nothing at all is not a dismissal either — it ran,
+ * dismissed nothing, and must say so.
+ */
+export function printTriageDismissOutcome(report?: TriageDismissReport): void {
+  if (!report || !report.attempted) {
+    const reason = report?.skippedReason ?? NOTE_DISMISS_NOTHING;
+    console.log(`⚠ Triage Action : ${DISMISS_OUTCOME_NOTHING} — ${reason}`);
+    return;
+  }
+
+  const threadFailures = report.failures.filter((f) => f.scope === 'thread').length;
+  const conversationFailures = report.failures.filter((f) => f.scope === 'conversation').length;
+  const performed = report.threadsReplied + report.threadsResolved + report.conversationsReplied;
+
+  // The dismissal ran, but it replied to nothing, resolved nothing and
+  // answered nothing. Whatever the failure count says, a dismissal that
+  // handled zero items is not a dismissal, so it never wears the unqualified
+  // success line.
+  if (performed === 0 && report.failures.length === 0) {
+    console.log(`⚠ Triage Action : ${DISMISS_OUTCOME_NOTHING} — ${NOTE_DISMISS_NOTHING_HANDLED}`);
+    return;
+  }
+
+  let badge = '✓';
+  let outcome: string = DISMISS_OUTCOME_COMPLETE;
+  if (report.failures.length > 0) {
+    outcome = performed > 0 ? DISMISS_OUTCOME_PARTIAL : DISMISS_OUTCOME_FAILED;
+    badge = performed > 0 ? '⚠' : '✗';
+  }
+
+  console.log(`${badge} Triage Action : ${outcome}`);
+  console.log(
+    `  ${LABEL_DISMISS_THREADS}  : ${report.threadsReplied} replied, ${report.threadsResolved} resolved, ${threadFailures} failed`
+  );
+  console.log(
+    `  ${LABEL_DISMISS_CONVERSATION} : ${report.conversationsReplied} replied, ${report.conversationsSkipped} skipped (${NOTE_DISMISS_DUPLICATE_FEEDBACK}), ${report.conversationsIgnored} ignored (${NOTE_DISMISS_OWN_REPLY}), ${conversationFailures} failed`
+  );
+  console.log(
+    `  ${LABEL_DISMISS_SURFACES}       : ${report.surfaces.length > 0 ? report.surfaces.join(', ') : LABEL_DISMISS_NO_SURFACE}`
+  );
+
+  if (report.failures.length > 0) {
+    console.log(`  ${LABEL_DISMISS_FAILURES}        : ${report.failures.length}`);
+    const shown = report.failures.slice(0, DISMISS_FAILURE_DETAIL_LIMIT);
+    for (const failure of shown) {
+      console.log(`    - ${failure.scope} ${failure.target}: ${failure.error}`);
+    }
+    if (report.failures.length > shown.length) {
+      console.log(`    - ... and ${report.failures.length - shown.length} more failure(s)`);
+    }
+  }
 }
 
 /**
@@ -1489,7 +1564,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
-        console.log(`✓ Triage Action : ${action.toUpperCase()}`);
+        if (action === 'dismiss') {
+          // The dismissal route reports what it really achieved — a partial
+          // dismissal must never be rendered as an unqualified success.
+          printTriageDismissOutcome(result.dismissal);
+        } else {
+          console.log(`✓ Triage Action : ${action.toUpperCase()}`);
+        }
         console.log(`✓ Next Stage    : ${formatStageBadge(result.targetStage)}`);
         console.log(`✓ State Updated : Pipeline transitioned to ${result.targetStage}\n`);
         return EXIT_CODE_SUCCESS;

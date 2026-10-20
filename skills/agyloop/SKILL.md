@@ -156,7 +156,7 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
   - `bin/agyloop triage implement`: Directs to `IMPLEMENT` with comments context.
   - `bin/agyloop triage plan`: Directs to `PLAN` for structural plan revision.
   - `bin/agyloop triage discovery`: Directs to `DISCOVERY` for investigative RCA.
-  - `bin/agyloop triage dismiss`: Directs to `COMPLETED` dismissing comments. With `-m "<notes>"`, replies to and resolves only the unresolved review threads containing the triaged comments (other threads are untouched); failures are logged as warnings and never block the transition.
+  - `bin/agyloop triage dismiss`: Directs to `COMPLETED` dismissing comments. With `-m "<notes>"`, replies to and resolves only the unresolved review threads containing the triaged comments (other threads are untouched), and answers the triaged PR conversation comments. A conversation comment is skipped only when its normalised feedback key matches an inline comment that was actually replied to in the same run — a paraphrase of the same feedback at a different line is a different key and is answered again. Failures never block the transition: the CLI reports how many threads and conversation comments were replied to and resolved, how many failed, and the failure details — a partial dismissal is reported as `DISMISS (PARTIAL)`, never as an unqualified success.
 
 ### 3. Planning Subagent (`PLAN`)
 - Launch the read-only **`planner`** subagent via `invoke_subagent`.

@@ -1530,6 +1530,146 @@ export const NOTE_GATES_VACUOUS_STANDARD =
 export const NOTE_GATES_VACUOUS_YOLO =
   'Quality gates refused to certify an unimplemented tree (VACUOUS) — refusing to advance.' as const;
 
+// ============================================================================
+// PR Comment Severity Markers & Dismissal Reporting
+// ============================================================================
+
+/**
+ * The categories a PR review comment can be classified into. These mirror the
+ * `PRCommentCategory` contract carried by the GitHub gateway port.
+ */
+export const PR_CATEGORY_ERROR = 'error' as const;
+export const PR_CATEGORY_SUGGESTION = 'suggestion' as const;
+export const PR_CATEGORY_QUESTION = 'question' as const;
+export const PR_CATEGORY_GENERAL = 'general' as const;
+
+/**
+ * The markers that are not severities of their own: `**QUESTION**` selects the
+ * question category, `**NIT**` is a non-blocking suggestion.
+ */
+export const PR_MARKER_QUESTION = 'question' as const;
+export const PR_MARKER_NIT = 'nit' as const;
+
+/**
+ * The markdown bold form of a marker — the form the review bots actually emit
+ * (`ℹ️ **INFO**`, `💡 **SUGGESTION**`, `**CRITICAL**`, `**ERROR**`, `**WARNING**`).
+ */
+export const PR_MARKDOWN_MARKER_TEMPLATE = '**{marker}**' as const;
+
+/**
+ * The legacy bracket form of a marker (`[error]`, `[critical]`, ...). It is
+ * still honoured so callers that rely on it keep working.
+ */
+export const PR_BRACKET_MARKER_TEMPLATE = '[{marker}]' as const;
+
+/**
+ * Operator-facing labels for the dismissal report. The dismissal route has to
+ * report what it actually achieved, so every count it prints is labelled.
+ */
+export const LABEL_DISMISS_THREADS = 'Inline threads' as const;
+export const LABEL_DISMISS_CONVERSATION = 'PR conversation' as const;
+export const LABEL_DISMISS_FAILURES = 'Failures' as const;
+export const LABEL_DISMISS_SURFACES = 'Surfaces' as const;
+
+/**
+ * What the surfaces line shows when the dismissal touched no surface at all.
+ */
+export const LABEL_DISMISS_NO_SURFACE = '(none)' as const;
+
+/**
+ * The outcome shown on the `Triage Action` line. A dismissal that only
+ * partially succeeded must never be reported as an unqualified success.
+ */
+export const DISMISS_OUTCOME_COMPLETE = 'DISMISS' as const;
+export const DISMISS_OUTCOME_PARTIAL = 'DISMISS (PARTIAL)' as const;
+export const DISMISS_OUTCOME_FAILED = 'DISMISS (FAILED)' as const;
+export const DISMISS_OUTCOME_NOTHING = 'DISMISS (NOTHING DISMISSED)' as const;
+
+/** Why the dismissal route had nothing to dismiss. */
+export const NOTE_DISMISS_NO_NOTES = 'no dismissal notes were provided (-m "<notes>")' as const;
+export const NOTE_DISMISS_NO_PR = 'no pull request was resolved for this issue' as const;
+export const NOTE_DISMISS_NO_GATEWAY = 'the GitHub gateway is unavailable' as const;
+
+/**
+ * The generic reason used when a dismissal report carries no more specific
+ * reason for having dismissed nothing.
+ */
+export const NOTE_DISMISS_NOTHING = 'nothing was dismissed' as const;
+
+/**
+ * Why a dismissal that ran answered, resolved and skipped nothing at all.
+ *
+ * The dismissal route may run and find no feedback to act on — for example
+ * when the comment fetch failed silently and the gateway listed no threads.
+ * Such a run dismissed nothing, so it must never wear the unqualified success
+ * line.
+ */
+export const NOTE_DISMISS_NOTHING_HANDLED =
+  'the dismissal ran but no review feedback was handled' as const;
+
+/**
+ * The header the review bot puts on a PR conversation summary:
+ * `**Review feedback on \`src/app.ts\` (Line 42):**`.
+ */
+export const REGEX_PR_FEEDBACK_HEADER = /^\s*\*\*Review feedback on `[^`]*`[^*]*\*\*/;
+
+/**
+ * The attribution footer the review bot appends: `*Powered by ...*`.
+ */
+export const REGEX_PR_FEEDBACK_FOOTER = /\*Powered by[^*]*\*\s*$/;
+
+/**
+ * Why the inline review threads could not be dismissed: the gateway does not
+ * implement the thread surface.
+ */
+export const MSG_DISMISS_NO_THREAD_SUPPORT =
+  'the GitHub gateway cannot list or resolve review threads' as const;
+
+/**
+ * Why a PR conversation comment could not be answered: it carries no id.
+ */
+export const MSG_DISMISS_NO_CONVERSATION_ID =
+  'the conversation comment carries no id, so it cannot be answered' as const;
+
+/**
+ * Why the PR conversation surface could not be answered: the gateway does not
+ * implement it.
+ */
+export const MSG_DISMISS_NO_CONVERSATION_SUPPORT =
+  'the GitHub gateway cannot post replies on the PR conversation surface' as const;
+
+/**
+ * How many individual failures the operator-facing output spells out. The
+ * count is always exact; only the detail list is truncated, so a run that hit
+ * one rate limit on 28 threads stays readable.
+ */
+export const DISMISS_FAILURE_DETAIL_LIMIT = 10 as const;
+
+/**
+ * Why a PR conversation comment was not answered a second time.
+ */
+export const NOTE_DISMISS_DUPLICATE_FEEDBACK = 'duplicate feedback' as const;
+
+/**
+ * Why a PR conversation comment was ignored altogether: it is the tool's own
+ * dismissal reply, not review feedback.
+ */
+export const NOTE_DISMISS_OWN_REPLY = 'own dismissal reply' as const;
+
+/**
+ * The footer of a PR conversation dismissal reply. GitHub has no threaded
+ * reply for conversation comments, so the reply quotes the comment it answers.
+ */
+export const DISMISS_CONVERSATION_REPLY_FOOTER =
+  'Dismissing this PR conversation comment:' as const;
+
+/**
+ * The canonical reference a dismissal reply carries for the comment it
+ * answers. `{permalink}` is substituted with the comment's permalink.
+ */
+export const DISMISS_CONVERSATION_REPLY_REFERENCE =
+  'Answering PR conversation comment: {permalink}' as const;
+
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;
 export const COMMAND_GATES = 'gates' as const;

@@ -10,11 +10,46 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
-export type PRCommentCategory = 'error' | 'suggestion' | 'question' | 'general';
+import {
+  PR_CATEGORY_ERROR,
+  PR_CATEGORY_SUGGESTION,
+  PR_CATEGORY_QUESTION,
+  PR_CATEGORY_GENERAL
+} from '../domain';
+
+/**
+ * The categories a PR review comment can be classified into. The values live in
+ * the domain so the classifier and the port contract cannot drift apart.
+ */
+export type PRCommentCategory =
+  | typeof PR_CATEGORY_ERROR
+  | typeof PR_CATEGORY_SUGGESTION
+  | typeof PR_CATEGORY_QUESTION
+  | typeof PR_CATEGORY_GENERAL;
+
+/**
+ * The GitHub surface a PR comment was fetched from.
+ *
+ * - `conversation`: a PR conversation comment (`issues/{n}/comments`)
+ * - `review`: a submitted PR review body (`pulls/{n}/reviews`)
+ * - `inline`: an inline diff review comment (`pulls/{n}/comments`)
+ */
+export type PRCommentSurface = 'conversation' | 'review' | 'inline';
 
 export interface PullRequestReviewComment {
-  /** REST database id (inline review comments only); used to map comments to threads. */
+  /**
+   * REST database id. GitHub assigns every comment row its own database id, so
+   * the ids observed in the wild do not overlap across surfaces — but the API
+   * does not document that guarantee, so an id is only ever used within its own
+   * surface: inline ids are matched against review threads, conversation ids
+   * identify the comment a dismissal reply answers.
+   */
   readonly id?: number;
+  /**
+   * Which GitHub surface the comment came from. Absent means `inline`, the
+   * historical meaning of `id`.
+   */
+  readonly surface?: PRCommentSurface;
   readonly author: string;
   readonly body: string;
   readonly path?: string;
@@ -167,6 +202,18 @@ export interface GitHubGateway {
    */
   resolveReviewThread?(
     threadId: string,
+    options?: GitHubGatewayOptions
+  ): Promise<void> | void;
+
+  /**
+   * Posts a reply on the PR conversation surface, answering one conversation
+   * comment. GitHub has no "resolve" affordance for conversation comments, so
+   * a dismissal answers them with a comment instead.
+   */
+  replyToConversationComment?(
+    prNumber: number,
+    commentId: number,
+    body: string,
     options?: GitHubGatewayOptions
   ): Promise<void> | void;
 }
