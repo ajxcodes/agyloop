@@ -196,7 +196,8 @@ export class DetectImplementationDiffUseCase {
 
   /**
    * Runs one `git diff --name-only` probe. Returns null when the reference
-   * could not be resolved (non-zero exit).
+   * could not be resolved (non-zero exit) — an expected outcome, not an error:
+   * the caller retries against `HEAD`.
    */
   private async runDiff(workspaceDir: string, baseRef: string): Promise<string[] | null> {
     let result;
@@ -206,10 +207,13 @@ export class DetectImplementationDiffUseCase {
         { cwd: workspaceDir }
       );
     } catch {
+      // The probe could not run at all: handled exactly like an unresolved reference.
       return null;
     }
 
     if (!result || result.exitCode !== 0) {
+      // Not an error: the base ref may not exist in this repository. The caller
+      // falls back to HEAD rather than failing hard.
       return null;
     }
 
