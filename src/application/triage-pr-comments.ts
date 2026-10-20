@@ -28,11 +28,14 @@ import {
   NOTE_DISMISS_NO_PR,
   NOTE_DISMISS_NO_GATEWAY,
   DISMISS_CONVERSATION_REPLY_FOOTER,
+  DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX,
   DISMISS_FAILURE_DETAIL_LIMIT,
   LABEL_DISMISS_THREADS,
   LABEL_DISMISS_CONVERSATION,
+  PR_CATEGORY_GENERAL,
   REGEX_PR_FEEDBACK_HEADER,
   REGEX_PR_FEEDBACK_FOOTER,
+  REGEX_DISMISS_CONVERSATION_REFERENCE,
   MSG_DISMISS_NO_THREAD_SUPPORT,
   MSG_DISMISS_NO_CONVERSATION_ID,
   MSG_DISMISS_NO_CONVERSATION_SUPPORT
@@ -43,7 +46,7 @@ import {
   PullRequestReviewComment,
   PlanGeneratorPort,
   WorktreeManagerPort,
-  UnresolvedReviewThread
+  ReviewThread
 } from '../ports';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 
@@ -75,11 +78,30 @@ export interface TriageDismissReport {
   readonly skippedReason?: string;
   readonly threadsReplied: number;
   readonly threadsResolved: number;
+  /** Inline threads skipped because an earlier run already resolved them. */
+  readonly threadsSkipped: number;
   readonly conversationsReplied: number;
-  /** Conversation comments skipped because the same feedback was answered inline. */
+  /** Conversation comments that were not answered because they were answered already. */
   readonly conversationsSkipped: number;
+  /**
+   * The subset of `conversationsSkipped` the PR's own state proves were
+   * answered: another comment references their id, or their inline review
+   * thread is already resolved.
+   */
+  readonly conversationsAlreadyAnswered: number;
+  /**
+   * The subset of `conversationsSkipped` whose feedback was answered inline in
+   * THIS run.
+   */
+  readonly conversationsDuplicate: number;
   /** Conversation comments ignored because they are the tool's own dismissal replies. */
   readonly conversationsIgnored: number;
+  /**
+   * Conversation comments ignored because they are prior answers the tool
+   * cannot attribute (they carry neither the tool's footer nor its reference).
+   * They are reported rather than silently dropped.
+   */
+  readonly conversationsPriorAnswers: number;
   readonly failures: readonly TriageDismissFailure[];
   /** The GitHub surfaces the dismissal actually acted on. */
   readonly surfaces: readonly string[];
@@ -138,6 +160,130 @@ function feedbackHeadline(body: string): string {
  */
 function buildConversationReply(notes: string, body: string): string {
   return `${notes}\n\n${DISMISS_CONVERSATION_REPLY_FOOTER}\n> ${feedbackHeadline(body)}`;
+}
+
+/**
+ * Whether a comment is a reply the TOOL posted.
+ *
+ * The tool posts as the same account as the human operator, so the AUTHOR
+ * cannot tell the tool's own replies from the operator's own notes — only the
+ * tool's marker can. The marker is either the footer or the id-bearing
+ * reference; both are posted by the tool and by nothing else.
+ */
+export function isDismissalReply(body: string): boolean {
+  const text = body || '';
+  return (
+    text.includes(DISMISS_CONVERSATION_REPLY_FOOTER) ||
+    text.includes(DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX)
+  );
+}
+
+/**
+ * The ids of the conversation comments the PR's conversation already answers.
+ *
+ * Every dismissal reply the tool posts carries a reference to the comment it
+ * answers (`...#issuecomment-<id>`), so the ids of the comments that were
+ * answered can be read back off the PR. This is the dismissal route's ONLY
+ * cross-run memory on the conversation surface: it survives the process,
+ * because it is derived from the PR's current state.
+ */
+export function answeredConversationCommentIds(
+  comments: readonly PullRequestReviewComment[]
+): Set<number> {
+  const answered = new Set<number>();
+  for (const comment of comments) {
+    for (const match of (comment.body || '').matchAll(REGEX_DISMISS_CONVERSATION_REFERENCE)) {
+      const id = Number.parseInt(match[1], 10);
+      if (Number.isFinite(id)) {
+        answered.add(id);
+      }
+    }
+  }
+  return answered;
+}
+
+/**
+ * The moment a comment was posted, or null when it cannot be determined.
+ */
+function timestampOf(createdAt?: string): number | null {
+  if (!createdAt) {
+    return null;
+  }
+  const parsed = Date.parse(createdAt);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * The moment the newest dismissal answer on the PR was posted.
+ *
+ * A dismissal answer is a reply the TOOL posted: it carries the tool's own
+ * marker. Replies posted before the tool carried a marker carry none, so they
+ * cannot be recognised as answers — see {@link isUnattributablePriorAnswer}.
+ */
+function newestDismissalAnswerAt(comments: readonly PullRequestReviewComment[]): number | null {
+  let newest: number | null = null;
+  for (const comment of comments) {
+    if (!isDismissalReply(comment.body)) {
+      continue;
+    }
+    const at = timestampOf(comment.createdAt);
+    if (at === null) {
+      continue;
+    }
+    if (newest === null || at > newest) {
+      newest = at;
+    }
+  }
+  return newest;
+}
+
+/**
+ * Whether a comment carries review feedback.
+ *
+ * The gateway classifies every comment it fetches; a comment that carries no
+ * review marker at all is classified as GENERAL. Such a comment is not review
+ * feedback — it is a note in the conversation.
+ */
+function carriesReviewFeedback(comment: PullRequestReviewComment): boolean {
+  return comment.category !== undefined && comment.category !== PR_CATEGORY_GENERAL;
+}
+
+/**
+ * Whether a conversation comment is an UNATTRIBUTABLE PRIOR ANSWER.
+ *
+ * The tool posts as the same account as the human operator, so neither the
+ * author nor the content can separate "the tool's own earlier answer" from
+ * "the operator's own note". The only reliable discriminator is the tool's
+ * marker — and an answer posted before the tool carried one carries none (the
+ * 24 replies of the pre-`b36de99` build on PR #261 are exactly that).
+ *
+ * Such a comment is therefore treated as a PRIOR ANSWER: it is not answered
+ * again, because answering it would be a third reply to the same feedback.
+ * The rule stays SAFE for genuine human feedback:
+ *
+ * - it only applies to comments that PREDATE the newest dismissal answer on
+ *   the PR — a comment posted after it is new feedback and is answered;
+ * - before the tool has dismissed anything on a PR, there is no dismissal
+ *   answer to compare against, so every comment is answered;
+ * - a comment whose position in time cannot be determined is answered.
+ *
+ * Every prior answer is reported, so nothing disappears silently.
+ */
+function isUnattributablePriorAnswer(
+  comment: PullRequestReviewComment,
+  newestAnswerAt: number | null
+): boolean {
+  if (newestAnswerAt === null) {
+    return false;
+  }
+  if (carriesReviewFeedback(comment)) {
+    return false;
+  }
+  const at = timestampOf(comment.createdAt);
+  if (at === null) {
+    return false;
+  }
+  return at < newestAnswerAt;
 }
 
 function failureMessage(err: unknown): string {
@@ -350,6 +496,16 @@ export class TriagePrCommentsUseCase {
    * answered with a comment — GitHub has no "resolve" for them). Both are
    * handled, and each failure is isolated so one rejected comment cannot abort
    * the batch: the report says what was really achieved.
+   *
+   * The route has NO memory of its own between runs — the in-run set of
+   * answered inline comments died with the process, so every run re-answered
+   * everything. What the route remembers is therefore derived from the PR's
+   * CURRENT state, which survives the process:
+   *
+   * - an inline comment whose review thread is RESOLVED was answered by an
+   *   earlier run, so it is skipped;
+   * - a conversation comment whose id another comment REFERENCES was answered
+   *   by an earlier run, so it is skipped.
    */
   private async performDismissal(params: {
     prNumber: number | null;
@@ -363,9 +519,13 @@ export class TriagePrCommentsUseCase {
       skippedReason,
       threadsReplied: 0,
       threadsResolved: 0,
+      threadsSkipped: 0,
       conversationsReplied: 0,
       conversationsSkipped: 0,
+      conversationsAlreadyAnswered: 0,
+      conversationsDuplicate: 0,
       conversationsIgnored: 0,
+      conversationsPriorAnswers: 0,
       failures: [],
       surfaces: []
     });
@@ -397,23 +557,46 @@ export class TriagePrCommentsUseCase {
       }
     }
 
+    // --- The PR's current state: what has already been answered --------------
+    // Every dismissal reply the tool posts on the conversation surface carries
+    // a reference to the comment it answers, so the ids of the comments that
+    // were answered can be read back off the PR.
+    const answeredIds = answeredConversationCommentIds(params.comments);
+    const newestAnswerAt = newestDismissalAnswerAt(params.comments);
+
     let threadsReplied = 0;
     let threadsResolved = 0;
+    let threadsSkipped = 0;
     let conversationsReplied = 0;
     let conversationsSkipped = 0;
+    let conversationsAlreadyAnswered = 0;
+    let conversationsDuplicate = 0;
     let conversationsIgnored = 0;
+    let conversationsPriorAnswers = 0;
     /** The feedback keys of the inline comments that were answered inline. */
     const answeredInlineKeys = new Set<string>();
+    /** The feedback keys of the inline comments whose thread is already resolved. */
+    const resolvedInlineKeys = new Set<string>();
 
     // --- Inline review threads ------------------------------------------------
-    if (gw.listUnresolvedReviewThreads && gw.replyToThread && gw.resolveReviewThread) {
-      let threads: UnresolvedReviewThread[] = [];
+    const canListThreads = Boolean(gw.listReviewThreads || gw.listUnresolvedReviewThreads);
+    if (canListThreads && gw.replyToThread && gw.resolveReviewThread) {
+      let threads: ReviewThread[] = [];
       try {
-        threads = await gw.listUnresolvedReviewThreads(params.prNumber, gwOptions);
+        if (gw.listReviewThreads) {
+          // The RESOLVED threads are listed too: a resolved thread is the
+          // cross-run proof that its comments were already answered.
+          threads = await gw.listReviewThreads(params.prNumber, gwOptions);
+        } else {
+          threads = (await gw.listUnresolvedReviewThreads!(params.prNumber, gwOptions)).map((t) => ({
+            ...t,
+            isResolved: false
+          }));
+        }
       } catch (err: unknown) {
         failures.push({
           scope: 'thread',
-          target: 'unresolved-review-threads',
+          target: 'review-threads',
           error: failureMessage(err)
         });
       }
@@ -422,6 +605,19 @@ export class TriagePrCommentsUseCase {
         const matched = thread.commentIds.filter((id) => inlineById.has(id));
         if (matched.length === 0) {
           // Not part of the triaged feedback: the thread stays untouched.
+          continue;
+        }
+
+        if (thread.isResolved) {
+          // An earlier run already answered this thread: no reply, no second
+          // resolve — the feedback is dismissed, not dismissed twice.
+          threadsSkipped++;
+          for (const id of matched) {
+            const comment = inlineById.get(id);
+            if (comment) {
+              resolvedInlineKeys.add(prFeedbackKey(comment.body));
+            }
+          }
           continue;
         }
 
@@ -466,7 +662,7 @@ export class TriagePrCommentsUseCase {
       for (const comment of conversationComments) {
         // The tool's own dismissal replies are not review feedback: answering
         // them would make the tool talk to itself.
-        if (comment.body.includes(DISMISS_CONVERSATION_REPLY_FOOTER)) {
+        if (isDismissalReply(comment.body)) {
           conversationsIgnored++;
           continue;
         }
@@ -480,11 +676,35 @@ export class TriagePrCommentsUseCase {
           continue;
         }
 
+        // The PR's state proves this comment was already answered: another
+        // comment on the PR references its id.
+        if (answeredIds.has(comment.id)) {
+          conversationsAlreadyAnswered++;
+          conversationsSkipped++;
+          continue;
+        }
+
         // The review bot posts the same feedback inline AND as a conversation
         // summary. Answering it twice would be noise, so a conversation comment
-        // whose feedback was already answered inline is skipped.
-        if (answeredInlineKeys.has(prFeedbackKey(comment.body))) {
+        // whose feedback was already answered inline is skipped — by an
+        // earlier run (its thread is resolved) or by this one.
+        const feedbackKey = prFeedbackKey(comment.body);
+        if (resolvedInlineKeys.has(feedbackKey)) {
+          conversationsAlreadyAnswered++;
           conversationsSkipped++;
+          continue;
+        }
+        if (answeredInlineKeys.has(feedbackKey)) {
+          conversationsDuplicate++;
+          conversationsSkipped++;
+          continue;
+        }
+
+        // A prior answer the tool cannot attribute (it carries neither the
+        // tool's footer nor its reference). Answering it again would be a
+        // third reply to the same feedback.
+        if (isUnattributablePriorAnswer(comment, newestAnswerAt)) {
+          conversationsPriorAnswers++;
           continue;
         }
 
@@ -509,6 +729,7 @@ export class TriagePrCommentsUseCase {
         conversationsReplied > 0 ||
         conversationsSkipped > 0 ||
         conversationsIgnored > 0 ||
+        conversationsPriorAnswers > 0 ||
         failures.some((f) => f.scope === 'conversation')
       ) {
         surfaces.push(LABEL_DISMISS_CONVERSATION);
@@ -538,9 +759,13 @@ export class TriagePrCommentsUseCase {
       attempted: true,
       threadsReplied,
       threadsResolved,
+      threadsSkipped,
       conversationsReplied,
       conversationsSkipped,
+      conversationsAlreadyAnswered,
+      conversationsDuplicate,
       conversationsIgnored,
+      conversationsPriorAnswers,
       failures,
       surfaces
     };

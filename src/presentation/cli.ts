@@ -100,7 +100,9 @@ import {
   LABEL_DISMISS_NO_SURFACE,
   DISMISS_FAILURE_DETAIL_LIMIT,
   NOTE_DISMISS_DUPLICATE_FEEDBACK,
+  NOTE_DISMISS_ALREADY_ANSWERED,
   NOTE_DISMISS_OWN_REPLY,
+  NOTE_DISMISS_PRIOR_ANSWER,
   NOTE_DISMISS_NOTHING,
   NOTE_DISMISS_NOTHING_HANDLED
 } from '../domain';
@@ -651,7 +653,9 @@ export function formatStageBadge(stage: string): string {
  * A dismissal that replied to 7 of 28 threads is NOT a dismissal, so it must
  * never be rendered with the same unqualified success line as a complete one.
  * A dismissal that handled nothing at all is not a dismissal either — it ran,
- * dismissed nothing, and must say so.
+ * dismissed nothing, and must say so. It still reports its counters: a run
+ * over an already-dismissed PR replied to nothing BECAUSE everything was
+ * already answered, and the operator must be able to see that.
  */
 export function printTriageDismissOutcome(report?: TriageDismissReport): void {
   if (!report || !report.attempted) {
@@ -668,24 +672,28 @@ export function printTriageDismissOutcome(report?: TriageDismissReport): void {
   // answered nothing. Whatever the failure count says, a dismissal that
   // handled zero items is not a dismissal, so it never wears the unqualified
   // success line.
-  if (performed === 0 && report.failures.length === 0) {
-    console.log(`⚠ Triage Action : ${DISMISS_OUTCOME_NOTHING} — ${NOTE_DISMISS_NOTHING_HANDLED}`);
-    return;
-  }
+  const nothingHandled = performed === 0 && report.failures.length === 0;
 
   let badge = '✓';
   let outcome: string = DISMISS_OUTCOME_COMPLETE;
-  if (report.failures.length > 0) {
+  if (nothingHandled) {
+    badge = '⚠';
+    outcome = DISMISS_OUTCOME_NOTHING;
+  } else if (report.failures.length > 0) {
     outcome = performed > 0 ? DISMISS_OUTCOME_PARTIAL : DISMISS_OUTCOME_FAILED;
     badge = performed > 0 ? '⚠' : '✗';
   }
 
-  console.log(`${badge} Triage Action : ${outcome}`);
+  if (nothingHandled) {
+    console.log(`${badge} Triage Action : ${outcome} — ${NOTE_DISMISS_NOTHING_HANDLED}`);
+  } else {
+    console.log(`${badge} Triage Action : ${outcome}`);
+  }
   console.log(
-    `  ${LABEL_DISMISS_THREADS}  : ${report.threadsReplied} replied, ${report.threadsResolved} resolved, ${threadFailures} failed`
+    `  ${LABEL_DISMISS_THREADS}  : ${report.threadsReplied} replied, ${report.threadsResolved} resolved, ${report.threadsSkipped} skipped (${NOTE_DISMISS_ALREADY_ANSWERED}), ${threadFailures} failed`
   );
   console.log(
-    `  ${LABEL_DISMISS_CONVERSATION} : ${report.conversationsReplied} replied, ${report.conversationsSkipped} skipped (${NOTE_DISMISS_DUPLICATE_FEEDBACK}), ${report.conversationsIgnored} ignored (${NOTE_DISMISS_OWN_REPLY}), ${conversationFailures} failed`
+    `  ${LABEL_DISMISS_CONVERSATION} : ${report.conversationsReplied} replied, ${report.conversationsSkipped} skipped (${report.conversationsAlreadyAnswered} ${NOTE_DISMISS_ALREADY_ANSWERED}, ${report.conversationsDuplicate} ${NOTE_DISMISS_DUPLICATE_FEEDBACK}), ${report.conversationsIgnored} ignored (${NOTE_DISMISS_OWN_REPLY}), ${report.conversationsPriorAnswers} ignored (${NOTE_DISMISS_PRIOR_ANSWER}), ${conversationFailures} failed`
   );
   console.log(
     `  ${LABEL_DISMISS_SURFACES}       : ${report.surfaces.length > 0 ? report.surfaces.join(', ') : LABEL_DISMISS_NO_SURFACE}`

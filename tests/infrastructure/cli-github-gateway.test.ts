@@ -390,8 +390,14 @@ describe('CliGitHubGateway PR comment severity classification', () => {
       category: 'suggestion',
       severity: 'suggestion'
     });
+    // An INFO finding is not a GENERAL one: the category must not conflate
+    // "informational" with "nothing detected".
     assert.deepStrictEqual(classifyPrCommentSeverity('ℹ️ **INFO**: nice work'), {
-      category: 'general',
+      category: 'info',
+      severity: 'info'
+    });
+    assert.deepStrictEqual(classifyPrCommentSeverity('**INFO**: nice work'), {
+      category: 'info',
       severity: 'info'
     });
   });
@@ -421,6 +427,10 @@ describe('CliGitHubGateway PR comment severity classification', () => {
       category: 'question',
       severity: 'info'
     });
+    assert.deepStrictEqual(classifyPrCommentSeverity('[info] fyi'), {
+      category: 'info',
+      severity: 'info'
+    });
   });
 
   test('a bare question mark in prose is not a question', () => {
@@ -428,7 +438,7 @@ describe('CliGitHubGateway PR comment severity classification', () => {
     assert.strictEqual(classifyPrCommentSeverity(suggestion).category, 'suggestion');
 
     const info = 'ℹ️ **INFO**: The `lastReviewVerdict` method scans the history backwards.';
-    assert.strictEqual(classifyPrCommentSeverity(info).category, 'general');
+    assert.strictEqual(classifyPrCommentSeverity(info).category, 'info');
 
     const prose = 'This reads oddly, does it not? The helper is called twice.';
     assert.strictEqual(classifyPrCommentSeverity(prose).category, 'general');
@@ -438,10 +448,72 @@ describe('CliGitHubGateway PR comment severity classification', () => {
     assert.strictEqual(classifyPrCommentSeverity('Can you clarify this?').category, 'question');
   });
 
-  test('a blocking marker wins even when the body also carries an informational marker', () => {
-    assert.strictEqual(classifyPrCommentSeverity('ℹ️ **INFO**: see also [error]').category, 'error');
-    assert.strictEqual(classifyPrCommentSeverity('ℹ️ **INFO**: see also **CRITICAL**').category, 'error');
-    assert.strictEqual(classifyPrCommentSeverity('ℹ️ **INFO**: see also **CRITICAL**').severity, 'critical');
+  /**
+   * The marker is read from the LEADING position of the headline, so a marker
+   * that is merely quoted anywhere else classifies nothing.
+   */
+  test('a marker quoted in the body does not classify the comment', () => {
+    assert.deepStrictEqual(classifyPrCommentSeverity('ℹ️ **INFO**: see also [error]'), {
+      category: 'info',
+      severity: 'info'
+    });
+    assert.deepStrictEqual(classifyPrCommentSeverity('ℹ️ **INFO**: see also **CRITICAL**'), {
+      category: 'info',
+      severity: 'info'
+    });
+    assert.deepStrictEqual(classifyPrCommentSeverity('the `**error**` path is not covered'), {
+      category: 'general',
+      severity: 'info'
+    });
+    assert.deepStrictEqual(classifyPrCommentSeverity('fix this [critical] today'), {
+      category: 'general',
+      severity: 'info'
+    });
+  });
+
+  /**
+   * The run summary of a review bot lists the markers of the comments it
+   * added. It quotes them — it is not one of them. Observed live on PR #261:
+   * the run summary was classified SUGGESTION purely because its body quoted
+   * `- `[suggestion]``.
+   */
+  test('a run summary that lists the markers it saw is not classified by them', () => {
+    const runSummary = [
+      '### 🤖 Critique AI Review Run Summary',
+      '',
+      '- **Confidence Level**: **High**',
+      '',
+      '#### 📝 New Comments Added (3)',
+      '- `[suggestion]` `src/application/detect-implementation-diff.ts` (Line 150)',
+      '- `[info]` `src/application/triage-pr-comments.ts` (Line 180)',
+      '',
+      '*Powered by Critique AI*'
+    ].join('\n');
+
+    assert.deepStrictEqual(classifyPrCommentSeverity(runSummary), {
+      category: 'general',
+      severity: 'info'
+    });
+  });
+
+  /**
+   * The review bot posts its findings as a conversation summary that carries a
+   * `**Review feedback on ...**` header; the finding itself is on the next
+   * line, and that is where the marker leads.
+   */
+  test('the marker under the review-feedback header still classifies the comment', () => {
+    const summary = [
+      '**Review feedback on `src/application/run-lifecycle.ts` (Line 178):**',
+      '',
+      'ℹ️ **INFO**: The new `implementationHalted` field provides diagnostics.',
+      '',
+      '*Powered by Critique AI (gemini-2.5-flash)*'
+    ].join('\n');
+
+    assert.deepStrictEqual(classifyPrCommentSeverity(summary), {
+      category: 'info',
+      severity: 'info'
+    });
   });
 
   test('a CHANGES_REQUESTED review is a blocking error whatever its body says', () => {
@@ -449,6 +521,40 @@ describe('CliGitHubGateway PR comment severity classification', () => {
       category: 'error',
       severity: 'error'
     });
+  });
+
+  test('the severity never contradicts the category', () => {
+    const bodies = [
+      '**CRITICAL**: boom',
+      '🔴 **ERROR**: boom',
+      '⚠️ **WARNING**: careful',
+      '💡 **SUGGESTION**: consider',
+      'ℹ️ **INFO**: fine',
+      '[nit] small thing',
+      '[question] why?',
+      'Can you clarify this?',
+      'plain prose without a marker'
+    ];
+
+    for (const body of bodies) {
+      const { category, severity } = classifyPrCommentSeverity(body);
+      if (severity === 'critical' || severity === 'error') {
+        assert.strictEqual(category, 'error', `"${body}" must not contradict its severity`);
+      } else if (severity === 'warning' || severity === 'suggestion') {
+        assert.strictEqual(category, 'suggestion', `"${body}" must not contradict its severity`);
+      } else {
+        assert.notStrictEqual(
+          category,
+          'error',
+          `an informational comment must never be rendered as an error: "${body}"`
+        );
+        assert.notStrictEqual(
+          category,
+          'suggestion',
+          `an informational comment must never be rendered as a suggestion: "${body}"`
+        );
+      }
+    }
   });
 });
 
@@ -526,6 +632,27 @@ describe('CliGitHubGateway argv-based thread methods (#136)', () => {
         ] } } } }
       });
     const out = gateway.listUnresolvedReviewThreads(7, { repo: 'o/r' });
-    assert.deepStrictEqual(out, [{ id: 'A', commentIds: [1, 2] }]);
+    assert.deepStrictEqual(out, [{ id: 'A', isResolved: false, commentIds: [1, 2] }]);
+  });
+
+  /**
+   * The RESOLVED threads are the dismissal route's cross-run memory on the
+   * inline surface: a thread that an earlier run resolved must be visible, or
+   * the route cannot tell that its comments were already answered.
+   */
+  test('listReviewThreads returns the resolved threads too', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGhArgs = () =>
+      JSON.stringify({
+        data: { repository: { pullRequest: { reviewThreads: { nodes: [
+          { id: 'A', isResolved: false, comments: { nodes: [{ databaseId: 1 }, { databaseId: 2 }] } },
+          { id: 'B', isResolved: true, comments: { nodes: [{ databaseId: 3 }] } }
+        ] } } } }
+      });
+    const out = gateway.listReviewThreads(7, { repo: 'o/r' });
+    assert.deepStrictEqual(out, [
+      { id: 'A', isResolved: false, commentIds: [1, 2] },
+      { id: 'B', isResolved: true, commentIds: [3] }
+    ]);
   });
 });

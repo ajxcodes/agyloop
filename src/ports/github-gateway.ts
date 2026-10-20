@@ -10,22 +10,13 @@ export interface GitHubComment {
   readonly createdAt?: string;
 }
 
-import {
-  PR_CATEGORY_ERROR,
-  PR_CATEGORY_SUGGESTION,
-  PR_CATEGORY_QUESTION,
-  PR_CATEGORY_GENERAL
-} from '../domain';
+import { PRCategory } from '../domain';
 
 /**
  * The categories a PR review comment can be classified into. The values live in
  * the domain so the classifier and the port contract cannot drift apart.
  */
-export type PRCommentCategory =
-  | typeof PR_CATEGORY_ERROR
-  | typeof PR_CATEGORY_SUGGESTION
-  | typeof PR_CATEGORY_QUESTION
-  | typeof PR_CATEGORY_GENERAL;
+export type PRCommentCategory = PRCategory;
 
 /**
  * The GitHub surface a PR comment was fetched from.
@@ -60,10 +51,25 @@ export interface PullRequestReviewComment {
   readonly severity?: string;
 }
 
-export interface UnresolvedReviewThread {
+/**
+ * A review thread of a pull request.
+ *
+ * The resolution state is the ONLY cross-run memory the inline surface has:
+ * a thread that is already resolved was answered by an earlier run, so its
+ * comments must never be answered (or resolved) again.
+ */
+export interface ReviewThread {
   readonly id: string;
   readonly commentIds: readonly number[];
+  /** True when the thread is already resolved. */
+  readonly isResolved: boolean;
 }
+
+/**
+ * @deprecated Use {@link ReviewThread}. The name survives for compatibility;
+ * a thread now carries its resolution state.
+ */
+export type UnresolvedReviewThread = ReviewThread;
 
 export interface GitHubIssueMilestone {
   readonly title: string;
@@ -180,8 +186,23 @@ export interface GitHubGateway {
   ): Promise<PullRequestReviewComment[]> | PullRequestReviewComment[];
 
   /**
+   * Lists the review threads of a pull request, RESOLVED ones included.
+   *
+   * The dismissal route needs the resolved threads: a thread that an earlier
+   * run already resolved is the cross-run proof that its comments were
+   * answered, so the route must not answer them again.
+   */
+  listReviewThreads?(
+    prNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<ReviewThread[]> | ReviewThread[];
+
+  /**
    * Lists unresolved review threads on a pull request, with the database ids
    * of the comments each thread contains.
+   *
+   * Gateways that cannot report the resolved threads keep this method; the
+   * dismissal route then has no cross-run memory for the inline surface.
    */
   listUnresolvedReviewThreads?(
     prNumber: number,

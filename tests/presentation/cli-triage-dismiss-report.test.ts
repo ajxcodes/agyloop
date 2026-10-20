@@ -59,16 +59,20 @@ describe('CLI triage dismissal reporting', () => {
         attempted: true,
         threadsReplied: 28,
         threadsResolved: 28,
+        threadsSkipped: 0,
         conversationsReplied: 24,
         conversationsSkipped: 0,
+        conversationsAlreadyAnswered: 0,
+        conversationsDuplicate: 0,
         conversationsIgnored: 0,
+        conversationsPriorAnswers: 0,
         failures: [],
         surfaces: ['Inline threads', 'PR conversation']
       })
     );
 
     assert.strictEqual(actionLine(output), `✓ Triage Action : ${DISMISS_OUTCOME_COMPLETE}`);
-    assert.ok(output.includes('Inline threads  : 28 replied, 28 resolved, 0 failed'));
+    assert.ok(output.includes('Inline threads  : 28 replied, 28 resolved, 0 skipped'));
     assert.ok(output.includes('PR conversation : 24 replied, 0 skipped'));
     assert.ok(!output.includes('PARTIAL'));
     assert.ok(!output.includes('Failures'));
@@ -80,9 +84,13 @@ describe('CLI triage dismissal reporting', () => {
         attempted: true,
         threadsReplied: 7,
         threadsResolved: 7,
+        threadsSkipped: 0,
         conversationsReplied: 18,
         conversationsSkipped: 3,
+        conversationsAlreadyAnswered: 2,
+        conversationsDuplicate: 1,
         conversationsIgnored: 0,
+        conversationsPriorAnswers: 0,
         failures: [
           { scope: 'thread', target: 'PRRT_abc', error: 'secondary rate limit' },
           { scope: 'conversation', target: '6293879014', error: 'secondary rate limit' }
@@ -93,7 +101,7 @@ describe('CLI triage dismissal reporting', () => {
 
     assert.strictEqual(actionLine(output), `⚠ Triage Action : ${DISMISS_OUTCOME_PARTIAL}`);
     assert.ok(!output.includes('✓ Triage Action : DISMISS\n'));
-    assert.ok(output.includes('Inline threads  : 7 replied, 7 resolved, 1 failed'));
+    assert.ok(output.includes('Inline threads  : 7 replied, 7 resolved, 0 skipped'));
     assert.ok(output.includes('PR conversation : 18 replied, 3 skipped'));
     assert.ok(output.includes('Failures        : 2'));
     assert.ok(output.includes('- thread PRRT_abc: secondary rate limit'));
@@ -106,9 +114,13 @@ describe('CLI triage dismissal reporting', () => {
         attempted: true,
         threadsReplied: 0,
         threadsResolved: 0,
+        threadsSkipped: 0,
         conversationsReplied: 0,
         conversationsSkipped: 0,
+        conversationsAlreadyAnswered: 0,
+        conversationsDuplicate: 0,
         conversationsIgnored: 0,
+        conversationsPriorAnswers: 0,
         failures: [{ scope: 'thread', target: 'PRRT_abc', error: 'secondary rate limit' }],
         surfaces: ['Inline threads']
       })
@@ -130,9 +142,13 @@ describe('CLI triage dismissal reporting', () => {
         attempted: true,
         threadsReplied: 0,
         threadsResolved: 0,
+        threadsSkipped: 0,
         conversationsReplied: 0,
         conversationsSkipped: 0,
+        conversationsAlreadyAnswered: 0,
+        conversationsDuplicate: 0,
         conversationsIgnored: 0,
+        conversationsPriorAnswers: 0,
         failures: [],
         surfaces: []
       })
@@ -144,6 +160,50 @@ describe('CLI triage dismissal reporting', () => {
     assert.ok(line.includes(DISMISS_OUTCOME_NOTHING), `the outcome must be "nothing dismissed": ${line}`);
   });
 
+  /**
+   * A run over an already-dismissed PR replies to nothing BECAUSE everything
+   * was already answered. The counters must show that, or the operator reads
+   * "nothing dismissed" as a failure of the route.
+   */
+  test('a run where everything was already answered shows the skips', () => {
+    const output = captureOutput(() =>
+      printTriageDismissOutcome({
+        attempted: true,
+        threadsReplied: 0,
+        threadsResolved: 0,
+        threadsSkipped: 4,
+        conversationsReplied: 0,
+        conversationsSkipped: 26,
+        conversationsAlreadyAnswered: 26,
+        conversationsDuplicate: 0,
+        conversationsIgnored: 26,
+        conversationsPriorAnswers: 24,
+        failures: [],
+        surfaces: ['PR conversation']
+      })
+    );
+
+    const line = actionLine(output);
+    assert.ok(!line.startsWith('✓'), `an already-answered PR must not be a green dismissal: ${line}`);
+    assert.ok(line.includes(DISMISS_OUTCOME_NOTHING), `the outcome must be "nothing dismissed": ${line}`);
+    assert.ok(
+      output.includes('Inline threads  : 0 replied, 0 resolved, 4 skipped (already answered)'),
+      `the resolved threads must be reported as skipped:\n${output}`
+    );
+    assert.ok(
+      output.includes('PR conversation : 0 replied, 26 skipped (26 already answered, 0 duplicate feedback)'),
+      `the already-answered comments must be reported as skipped:\n${output}`
+    );
+    assert.ok(
+      output.includes('26 ignored (own dismissal reply)'),
+      `the tool's own replies must be reported as ignored:\n${output}`
+    );
+    assert.ok(
+      output.includes('24 ignored (unmarked prior answer)'),
+      `the unattributable prior answers must be reported:\n${output}`
+    );
+  });
+
   test('a dismissal that never ran says why', () => {
     const output = captureOutput(() =>
       printTriageDismissOutcome({
@@ -151,9 +211,13 @@ describe('CLI triage dismissal reporting', () => {
         skippedReason: 'no dismissal notes were provided (-m "<notes>")',
         threadsReplied: 0,
         threadsResolved: 0,
+        threadsSkipped: 0,
         conversationsReplied: 0,
         conversationsSkipped: 0,
+        conversationsAlreadyAnswered: 0,
+        conversationsDuplicate: 0,
         conversationsIgnored: 0,
+        conversationsPriorAnswers: 0,
         failures: [],
         surfaces: []
       })
@@ -170,9 +234,13 @@ describe('CLI triage dismissal reporting', () => {
         attempted: true,
         threadsReplied: 2,
         threadsResolved: 2,
+        threadsSkipped: 0,
         conversationsReplied: 1,
         conversationsSkipped: 0,
+        conversationsAlreadyAnswered: 0,
+        conversationsDuplicate: 0,
         conversationsIgnored: 0,
+        conversationsPriorAnswers: 0,
         failures: [],
         surfaces: ['Inline threads', 'PR conversation']
       })

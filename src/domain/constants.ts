@@ -1541,7 +1541,46 @@ export const NOTE_GATES_VACUOUS_YOLO =
 export const PR_CATEGORY_ERROR = 'error' as const;
 export const PR_CATEGORY_SUGGESTION = 'suggestion' as const;
 export const PR_CATEGORY_QUESTION = 'question' as const;
+export const PR_CATEGORY_INFO = 'info' as const;
 export const PR_CATEGORY_GENERAL = 'general' as const;
+
+/**
+ * Every category a PR review comment can be classified into.
+ *
+ * The list lives in the domain so the classifier and the gateway port contract
+ * cannot drift apart.
+ */
+export const PR_CATEGORIES = Object.freeze([
+  PR_CATEGORY_ERROR,
+  PR_CATEGORY_SUGGESTION,
+  PR_CATEGORY_QUESTION,
+  PR_CATEGORY_INFO,
+  PR_CATEGORY_GENERAL
+] as const);
+
+export type PRCategory = typeof PR_CATEGORIES[number];
+
+/**
+ * The severity-to-category mapping the comment classifier obeys.
+ *
+ * The mapping is CONSISTENT: a severity never contradicts its category.
+ * `critical`/`error` are ERROR, `warning`/`suggestion` are SUGGESTION, and
+ * `info` is informational — INFO.
+ *
+ * Two categories sit outside the mapping on purpose: QUESTION (a comment that
+ * IS a question) and GENERAL (a comment with no marker at all — it carries
+ * the informational severity because nothing about it is blocking). An
+ * informational FINDING (`ℹ️ **INFO**`) is therefore never rendered as
+ * `[GENERAL]` — that conflation was the defect.
+ */
+export const PR_SEVERITY_CATEGORY_MAPPING: Readonly<Record<ReviewSeverity, PRCategory>> =
+  Object.freeze({
+    [SEVERITY_CRITICAL]: PR_CATEGORY_ERROR,
+    [SEVERITY_ERROR]: PR_CATEGORY_ERROR,
+    [SEVERITY_WARNING]: PR_CATEGORY_SUGGESTION,
+    [SEVERITY_SUGGESTION]: PR_CATEGORY_SUGGESTION,
+    [SEVERITY_INFO]: PR_CATEGORY_INFO
+  });
 
 /**
  * The markers that are not severities of their own: `**QUESTION**` selects the
@@ -1651,10 +1690,24 @@ export const DISMISS_FAILURE_DETAIL_LIMIT = 10 as const;
 export const NOTE_DISMISS_DUPLICATE_FEEDBACK = 'duplicate feedback' as const;
 
 /**
+ * Why a PR conversation comment was skipped: the PR's own state proves it was
+ * already answered (another comment references its id, or its inline review
+ * thread is resolved).
+ */
+export const NOTE_DISMISS_ALREADY_ANSWERED = 'already answered' as const;
+
+/**
  * Why a PR conversation comment was ignored altogether: it is the tool's own
  * dismissal reply, not review feedback.
  */
 export const NOTE_DISMISS_OWN_REPLY = 'own dismissal reply' as const;
+
+/**
+ * Why an unmarked conversation comment was ignored: it is a PRIOR ANSWER the
+ * tool cannot attribute, so answering it would be a third reply to the same
+ * feedback.
+ */
+export const NOTE_DISMISS_PRIOR_ANSWER = 'unmarked prior answer' as const;
 
 /**
  * The footer of a PR conversation dismissal reply. GitHub has no threaded
@@ -1664,11 +1717,33 @@ export const DISMISS_CONVERSATION_REPLY_FOOTER =
   'Dismissing this PR conversation comment:' as const;
 
 /**
+ * The prefix of the reference a dismissal reply carries for the comment it
+ * answers. It is what makes a dismissal reply recognisable as the tool's own.
+ */
+export const DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX =
+  'Answering PR conversation comment:' as const;
+
+/**
  * The canonical reference a dismissal reply carries for the comment it
  * answers. `{permalink}` is substituted with the comment's permalink.
  */
 export const DISMISS_CONVERSATION_REPLY_REFERENCE =
   'Answering PR conversation comment: {permalink}' as const;
+
+/**
+ * The permalink of a PR conversation comment. The reference above carries it,
+ * and its `#issuecomment-<id>` fragment is what makes the reply's target
+ * machine-readable: a later run can tell WHICH comment was answered.
+ */
+export const DISMISS_CONVERSATION_PERMALINK_TEMPLATE =
+  'https://github.com/{repo}/pull/{prNumber}#issuecomment-{commentId}' as const;
+
+/**
+ * The fragment that identifies the conversation comment a dismissal reply
+ * answers. Every reference the tool posts ends with it, so the ids of the
+ * comments that were answered can be read back off the PR's conversation.
+ */
+export const REGEX_DISMISS_CONVERSATION_REFERENCE = /#issuecomment-(\d+)/g;
 
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;

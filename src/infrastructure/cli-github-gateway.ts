@@ -15,6 +15,7 @@ import {
   GitHubComment,
   PRCommentCategory,
   PullRequestReviewComment,
+  ReviewThread,
   UnresolvedReviewThread,
   GitHubPullRequestData,
   FindPullRequestOptions,
@@ -25,13 +26,14 @@ import {
   GitHubContextError,
   prAssertsIssueDelivery,
   PR_CATEGORY_ERROR,
-  PR_CATEGORY_SUGGESTION,
   PR_CATEGORY_QUESTION,
   PR_CATEGORY_GENERAL,
+  PR_SEVERITY_CATEGORY_MAPPING,
   PR_MARKER_QUESTION,
   PR_MARKER_NIT,
   PR_MARKDOWN_MARKER_TEMPLATE,
   PR_BRACKET_MARKER_TEMPLATE,
+  REGEX_PR_FEEDBACK_HEADER,
   SEVERITY_CRITICAL,
   SEVERITY_ERROR,
   SEVERITY_WARNING,
@@ -42,7 +44,8 @@ import {
   SEVERITY_ICON_SUGGESTION,
   SEVERITY_ICON_INFO,
   ReviewSeverity,
-  DISMISS_CONVERSATION_REPLY_REFERENCE
+  DISMISS_CONVERSATION_REPLY_REFERENCE,
+  DISMISS_CONVERSATION_PERMALINK_TEMPLATE
 } from '../domain';
 
 /**
@@ -68,26 +71,124 @@ function bracketMarker(marker: string): string {
 }
 
 /**
- * Whether a body carries a marker — in the markdown form the review bots emit
- * (`**CRITICAL**`) or in the legacy bracket form (`[critical]`).
+ * The markers that may LEAD a comment's headline, most severe first.
+ *
+ * The markdown form the review bots emit (`**CRITICAL**`) and the legacy
+ * bracket form (`[critical]`) are both honoured, but only at the head of the
+ * headline — see {@link leadingMarkerOf}.
  */
-function hasMarker(lowerBody: string, marker: string): boolean {
-  return (
-    lowerBody.includes(markdownMarker(marker)) || lowerBody.includes(bracketMarker(marker))
-  );
-}
+const LEADING_MARKERS: readonly string[] = Object.freeze([
+  SEVERITY_CRITICAL,
+  SEVERITY_ERROR,
+  SEVERITY_WARNING,
+  SEVERITY_SUGGESTION,
+  PR_MARKER_NIT,
+  PR_MARKER_QUESTION,
+  SEVERITY_INFO
+]);
 
 /**
- * The headline of a comment — its first non-empty line. Severity markers are
- * emitted on the headline (`ℹ️ **INFO**: ...`), so the headline is where the
- * emoji form of a marker is looked for.
+ * The severity icons a headline may lead with.
+ */
+const LEADING_SEVERITY_ICONS: readonly string[] = Object.freeze([
+  SEVERITY_ICON_CRITICAL,
+  SEVERITY_ICON_WARNING,
+  SEVERITY_ICON_SUGGESTION,
+  SEVERITY_ICON_INFO
+]);
+
+/**
+ * The headline of a comment — the line a reader recognises it by.
+ *
+ * The review bot's `**Review feedback on ...**` line is a HEADER, not the
+ * headline: the finding itself follows on the next line, and that is where
+ * the severity marker sits (`ℹ️ **INFO**: ...`).
  */
 function headlineOf(body: string): string {
-  for (const line of (body || '').split('\n')) {
+  const withoutHeader = (body || '').replace(REGEX_PR_FEEDBACK_HEADER, '');
+  for (const line of withoutHeader.split('\n')) {
     const trimmed = line.trim();
     if (trimmed) return trimmed;
   }
   return '';
+}
+
+/**
+ * Strips a leading severity icon (`ℹ️`, `💡`, …) from a headline.
+ */
+function stripLeadingSeverityIcon(headline: string): string {
+  for (const icon of LEADING_SEVERITY_ICONS) {
+    if (headline.startsWith(icon)) {
+      return headline.slice(icon.length).trimStart();
+    }
+  }
+  return headline;
+}
+
+/**
+ * The marker a comment LEADS with, or null when it leads with none.
+ *
+ * The marker is anchored to the START of the headline (after an optional
+ * severity icon). A body that merely QUOTES a marker — a run summary that
+ * lists the markers it saw, a dismissal reply that quotes the feedback it
+ * answers, prose that mentions "the `**error**` path" — is not classified by
+ * the quoted marker: the marker says what the comment is ABOUT, and only the
+ * leading one does.
+ */
+function leadingMarkerOf(headline: string): string | null {
+  const candidate = stripLeadingSeverityIcon(headline).toLowerCase();
+  for (const marker of LEADING_MARKERS) {
+    if (
+      candidate.startsWith(markdownMarker(marker)) ||
+      candidate.startsWith(bracketMarker(marker))
+    ) {
+      return marker;
+    }
+  }
+  return null;
+}
+
+/**
+ * The classification a leading marker implies.
+ *
+ * The CATEGORY is derived from the SEVERITY through the domain's mapping, so
+ * the two can never disagree: a critical/error finding is ERROR, a
+ * warning/suggestion is SUGGESTION, an informational one is INFO.
+ *
+ * Two categories sit outside the mapping on purpose: QUESTION (a comment that
+ * IS a question) and GENERAL (a comment with no marker at all).
+ */
+function classificationOfMarker(marker: string): PrCommentClassification {
+  switch (marker) {
+    case SEVERITY_CRITICAL:
+      return {
+        category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_CRITICAL],
+        severity: SEVERITY_CRITICAL
+      };
+    case SEVERITY_ERROR:
+      return { category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_ERROR], severity: SEVERITY_ERROR };
+    case SEVERITY_WARNING:
+      return {
+        category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_WARNING],
+        severity: SEVERITY_WARNING
+      };
+    case SEVERITY_SUGGESTION:
+      return {
+        category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_SUGGESTION],
+        severity: SEVERITY_SUGGESTION
+      };
+    case PR_MARKER_NIT:
+      return {
+        category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_SUGGESTION],
+        severity: SEVERITY_SUGGESTION
+      };
+    case PR_MARKER_QUESTION:
+      return { category: PR_CATEGORY_QUESTION, severity: SEVERITY_INFO };
+    case SEVERITY_INFO:
+      return { category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_INFO], severity: SEVERITY_INFO };
+    default:
+      return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
+  }
 }
 
 /**
@@ -98,6 +199,12 @@ function headlineOf(body: string): string {
  * (`[error]`, `[critical]`, ...) are still honoured. A `CHANGES_REQUESTED`
  * review is a blocking verdict regardless of its body.
  *
+ * The marker is read from the LEADING position of the comment's headline —
+ * the same anchoring the emoji form has always used. A marker quoted
+ * anywhere else in the body classifies nothing: a run summary that lists the
+ * markers it saw is not a suggestion, and prose that mentions "the
+ * `**error**` path" is not an error.
+ *
  * A bare `?` in prose is NOT a question marker: only an explicit question
  * marker, or a comment whose headline is itself a question, is a question.
  */
@@ -106,51 +213,40 @@ export function classifyPrCommentSeverity(
   reviewState?: string
 ): PrCommentClassification {
   const text = body || '';
-  const lower = text.toLowerCase();
 
   if ((reviewState || '').toUpperCase() === 'CHANGES_REQUESTED') {
     return { category: PR_CATEGORY_ERROR, severity: SEVERITY_ERROR };
   }
 
-  // The markers are matched most severe first, and BOTH forms count for every
-  // severity: the markdown form the review bots emit (`**CRITICAL**`) and the
-  // legacy bracket form (`[error]`). A blocking marker therefore always wins,
-  // whatever else the body carries.
-  if (hasMarker(lower, SEVERITY_CRITICAL)) {
-    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_CRITICAL };
-  }
-  if (hasMarker(lower, SEVERITY_ERROR)) {
-    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_ERROR };
-  }
-  if (hasMarker(lower, SEVERITY_WARNING)) {
-    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_WARNING };
-  }
-  if (hasMarker(lower, SEVERITY_SUGGESTION)) {
-    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_SUGGESTION };
-  }
-  if (hasMarker(lower, PR_MARKER_NIT)) {
-    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_SUGGESTION };
-  }
-  if (hasMarker(lower, PR_MARKER_QUESTION)) {
-    return { category: PR_CATEGORY_QUESTION, severity: SEVERITY_INFO };
-  }
-  if (hasMarker(lower, SEVERITY_INFO)) {
-    return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
+  const headline = headlineOf(text);
+
+  // The leading marker of the headline decides the severity.
+  const marker = leadingMarkerOf(headline);
+  if (marker) {
+    return classificationOfMarker(marker);
   }
 
-  // The emoji form of a marker, looked for on the headline only.
-  const headline = headlineOf(text);
+  // A headline that is only a severity icon carries that icon's severity.
   if (headline.startsWith(SEVERITY_ICON_CRITICAL)) {
-    return { category: PR_CATEGORY_ERROR, severity: SEVERITY_CRITICAL };
+    return {
+      category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_CRITICAL],
+      severity: SEVERITY_CRITICAL
+    };
   }
   if (headline.startsWith(SEVERITY_ICON_WARNING)) {
-    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_WARNING };
+    return {
+      category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_WARNING],
+      severity: SEVERITY_WARNING
+    };
   }
   if (headline.startsWith(SEVERITY_ICON_SUGGESTION)) {
-    return { category: PR_CATEGORY_SUGGESTION, severity: SEVERITY_SUGGESTION };
+    return {
+      category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_SUGGESTION],
+      severity: SEVERITY_SUGGESTION
+    };
   }
   if (headline.startsWith(SEVERITY_ICON_INFO)) {
-    return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
+    return { category: PR_SEVERITY_CATEGORY_MAPPING[SEVERITY_INFO], severity: SEVERITY_INFO };
   }
 
   // A comment is a question when it IS a question — not when its prose merely
@@ -159,6 +255,7 @@ export function classifyPrCommentSeverity(
     return { category: PR_CATEGORY_QUESTION, severity: SEVERITY_INFO };
   }
 
+  // Nothing was detected: the comment carries no review marker at all.
   return { category: PR_CATEGORY_GENERAL, severity: SEVERITY_INFO };
 }
 
@@ -483,10 +580,16 @@ export class CliGitHubGateway implements GitHubGateway {
     }
   }
 
-  public listUnresolvedReviewThreads(
+  /**
+   * Lists the review threads of a pull request, RESOLVED ones included.
+   *
+   * The resolution state is the cross-run memory of the inline surface: a
+   * thread that is already resolved was answered by an earlier run.
+   */
+  public listReviewThreads(
     prNumber: number,
     options: GitHubGatewayOptions = {}
-  ): UnresolvedReviewThread[] {
+  ): ReviewThread[] {
     const repo = options.repo || this.getCurrentRepo(options.cwd);
     if (!repo || !prNumber || prNumber <= 0) return [];
     const [owner, name] = repo.split('/');
@@ -498,14 +601,20 @@ export class CliGitHubGateway implements GitHubGateway {
     const parsed = JSON.parse(raw);
     const nodes: Array<{ id: string; isResolved: boolean; comments?: { nodes?: Array<{ databaseId?: number }> } }> =
       parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes || [];
-    return nodes
-      .filter((n) => !n.isResolved)
-      .map((n) => ({
-        id: n.id,
-        commentIds: (n.comments?.nodes || [])
-          .map((c) => c.databaseId)
-          .filter((x): x is number => typeof x === 'number')
-      }));
+    return nodes.map((n) => ({
+      id: n.id,
+      isResolved: Boolean(n.isResolved),
+      commentIds: (n.comments?.nodes || [])
+        .map((c) => c.databaseId)
+        .filter((x): x is number => typeof x === 'number')
+    }));
+  }
+
+  public listUnresolvedReviewThreads(
+    prNumber: number,
+    options: GitHubGatewayOptions = {}
+  ): UnresolvedReviewThread[] {
+    return this.listReviewThreads(prNumber, options).filter((t) => !t.isResolved);
   }
 
   public replyToThread(
@@ -542,7 +651,14 @@ export class CliGitHubGateway implements GitHubGateway {
 
     // GitHub has no threaded reply for PR conversation comments: the dismissal
     // is posted as a conversation comment that references the one it answers.
-    const permalink = `https://github.com/${repo}/pull/${prNumber}#issuecomment-${commentId}`;
+    // The reference is what gives a LATER run the cross-run memory: it can
+    // read the id of the comment that was already answered off the PR.
+    const permalink = DISMISS_CONVERSATION_PERMALINK_TEMPLATE.replace(
+      '{repo}',
+      repo
+    )
+      .replace('{prNumber}', String(prNumber))
+      .replace('{commentId}', String(commentId));
     const payload = `${body}\n\n${DISMISS_CONVERSATION_REPLY_REFERENCE.replace('{permalink}', permalink)}`;
 
     this.runGhArgs(

@@ -520,3 +520,366 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
     assert.notStrictEqual(prFeedbackKey(conversationBody), prFeedbackKey('ℹ️ **INFO**: another finding'));
   });
 });
+
+/**
+ * The dismissal route has NO memory of its own between runs: the set of
+ * answered inline comments was a local of `performDismissal`, so it died with
+ * the process and every run re-answered everything on the PR. On PR #261 that
+ * produced 51 replies to 53 conversation comments, 49 of them redundant.
+ *
+ * The route must therefore derive "already answered" from the PR's CURRENT
+ * state, which survives the process:
+ *
+ * - an inline comment whose review thread is RESOLVED was answered by an
+ *   earlier run;
+ * - a conversation comment whose id another comment REFERENCES was answered by
+ *   an earlier run.
+ *
+ * The fake PR below keeps that state between two runs: the replies the route
+ * posts land on the conversation (carrying the reference the infrastructure
+ * appends), and the threads it resolves stay resolved.
+ */
+describe('Triage dismissal cross-run memory (issue #259)', () => {
+  const {
+    DISMISS_CONVERSATION_REPLY_REFERENCE
+  } = require('../../dist/domain');
+
+  const REPO = 'ajxcodes/agyloop';
+  const PR = 261;
+
+  interface FakeComment {
+    id: number;
+    surface: 'inline' | 'conversation';
+    author: string;
+    body: string;
+    category: string;
+    createdAt: string;
+  }
+
+  interface FakeThread {
+    id: string;
+    isResolved: boolean;
+    commentIds: number[];
+  }
+
+  function makeFakePr(options: { comments: FakeComment[]; threads: FakeThread[] }) {
+    const state = {
+      comments: options.comments.map((c) => ({ ...c })),
+      threads: options.threads.map((t) => ({ ...t })),
+      threadReplies: [] as Array<[string, string]>,
+      conversationReplies: [] as Array<[number, string]>,
+      nextId: 99000
+    };
+
+    const gateway = {
+      listReviewThreads: async () =>
+        state.threads.map((t) => ({ ...t, commentIds: [...t.commentIds] })),
+      // The subset a gateway that cannot report the resolved threads exposes.
+      listUnresolvedReviewThreads: async () =>
+        state.threads
+          .filter((t) => !t.isResolved)
+          .map((t) => ({ ...t, commentIds: [...t.commentIds] })),
+      replyToThread: async (id: string, body: string) => {
+        state.threadReplies.push([id, body]);
+      },
+      resolveReviewThread: async (id: string) => {
+        const thread = state.threads.find((t) => t.id === id);
+        if (thread) {
+          thread.isResolved = true;
+        }
+      },
+      replyToConversationComment: async (_prNumber: number, commentId: number, body: string) => {
+        state.conversationReplies.push([commentId, body]);
+        // The infrastructure appends the id-bearing reference; the PR keeps
+        // it, exactly as GitHub would.
+        const permalink = `https://github.com/${REPO}/pull/${PR}#issuecomment-${commentId}`;
+        state.comments.push({
+          id: state.nextId++,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body: `${body}\n\n${DISMISS_CONVERSATION_REPLY_REFERENCE.replace('{permalink}', permalink)}`,
+          category: 'general',
+          createdAt: '2026-10-20T18:00:00Z'
+        });
+      }
+    };
+
+    return { state, gateway };
+  }
+
+  function dismissStateRepo() {
+    const sm = StateMachine.createInitial({ issue: 83 });
+    sm.transition(STAGE_TRIAGE);
+    return makeMockStateRepo(sm.toSnapshot());
+  }
+
+  test('a second dismiss run over the same PR state replies to nothing', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [
+        { id: 'T1', isResolved: false, commentIds: [101] },
+        { id: 'T2', isResolved: false, commentIds: [202] }
+      ],
+      comments: [
+        {
+          id: 101,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: 'ℹ️ **INFO**: the inline finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:03Z'
+        },
+        {
+          id: 202,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: '💡 **SUGGESTION**: the other inline finding',
+          category: 'suggestion',
+          createdAt: '2026-10-20T14:58:04Z'
+        },
+        {
+          id: 9001,
+          surface: 'conversation',
+          author: 'github-actions[bot]',
+          body: '**Review feedback on `src/a.ts` (Line 1):**\n\nℹ️ **INFO**: the conversation finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:05Z'
+        },
+        {
+          id: 9002,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body: 'please rebase and double check the tests',
+          category: 'general',
+          createdAt: '2026-10-20T14:58:06Z'
+        }
+      ]
+    });
+
+    const stateRepo = dismissStateRepo();
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any, gateway as any);
+
+    const first = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(first.dismissal?.threadsReplied, 2, 'the first run answers the open threads');
+    assert.strictEqual(first.dismissal?.threadsResolved, 2);
+    assert.strictEqual(first.dismissal?.conversationsReplied, 2, 'the first run answers the feedback');
+    assert.ok(
+      state.conversationReplies.some(([id]) => id === 9002),
+      'a human comment must never be swallowed'
+    );
+
+    // --- the second run over the SAME PR state ------------------------------
+    const second = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(second.dismissal?.attempted, true);
+    const secondReplies =
+      (second.dismissal?.threadsReplied ?? 0) + (second.dismissal?.conversationsReplied ?? 0);
+    assert.strictEqual(secondReplies, 0, 'the second run must reply to nothing');
+    assert.strictEqual(second.dismissal?.threadsReplied, 0, 'the second run must reply to no thread');
+    assert.strictEqual(second.dismissal?.threadsResolved, 0, 'a resolved thread must not be resolved again');
+    assert.strictEqual(second.dismissal?.threadsSkipped, 2, 'the resolved threads must be reported as skipped');
+    assert.strictEqual(second.dismissal?.conversationsReplied, 0, 'the second run must answer nothing');
+    assert.strictEqual(
+      second.dismissal?.conversationsSkipped,
+      2,
+      'the already-answered comments must be counted as SKIPPED'
+    );
+    assert.strictEqual(second.dismissal?.conversationsAlreadyAnswered, 2);
+    assert.strictEqual(
+      second.dismissal?.conversationsIgnored,
+      2,
+      "the tool's own replies must be ignored, not answered"
+    );
+
+    assert.strictEqual(state.threadReplies.length, 2, 'no thread may be replied to twice');
+    assert.strictEqual(state.conversationReplies.length, 2, 'no comment may be answered twice');
+  });
+
+  test('a thread that an earlier run resolved is skipped, not answered again', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [{ id: 'T1', isResolved: true, commentIds: [101] }],
+      comments: [
+        {
+          id: 101,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: 'ℹ️ **INFO**: the inline finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:03Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.threadsReplied, 0);
+    assert.strictEqual(result.dismissal?.threadsResolved, 0);
+    assert.strictEqual(result.dismissal?.threadsSkipped, 1);
+    assert.strictEqual(state.threadReplies.length, 0, 'a resolved thread must not be replied to');
+  });
+
+  test('a conversation comment whose feedback was answered inline in an earlier run is already answered', async () => {
+    const inlineBody = 'ℹ️ **INFO**: The `lastReviewVerdict` method scans the history backwards.';
+    const { state, gateway } = makeFakePr({
+      threads: [{ id: 'T1', isResolved: true, commentIds: [500] }],
+      comments: [
+        {
+          id: 500,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: inlineBody,
+          category: 'info',
+          createdAt: '2026-10-20T14:58:03Z'
+        },
+        {
+          id: 9001,
+          surface: 'conversation',
+          author: 'github-actions[bot]',
+          body: '**Review feedback on `src/a.ts` (Line 1):**\n\n' + inlineBody,
+          category: 'info',
+          createdAt: '2026-10-20T14:58:04Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.conversationsReplied, 0, 'the same feedback must not be answered twice');
+    assert.strictEqual(result.dismissal?.conversationsAlreadyAnswered, 1);
+    assert.strictEqual(state.conversationReplies.length, 0);
+  });
+
+  /**
+   * The 24 replies of the pre-`b36de99` build on PR #261 carry neither the
+   * tool's footer nor its reference: no rule can prove they were tool answers.
+   * They are therefore treated as prior answers — answering them again would
+   * be a THIRD reply to the same feedback — but only when they predate the
+   * newest dismissal answer, so a human comment posted afterwards is still
+   * answered.
+   */
+  test('an unmarked prior answer is not answered again, but a comment posted after it is', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [],
+      comments: [
+        {
+          id: 9101,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body:
+            'not applicable\n\nDismissing this PR conversation comment:\n> ℹ️ **INFO**: the finding\n\n' +
+            DISMISS_CONVERSATION_REPLY_REFERENCE.replace(
+              '{permalink}',
+              `https://github.com/${REPO}/pull/${PR}#issuecomment-9001`
+            ),
+          category: 'general',
+          createdAt: '2026-10-20T17:02:37Z'
+        },
+        {
+          id: 9100,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body:
+            'Reviewed — the backward scan of the history is exactly what keeps the COMMIT gate description current.\n\nConfirmed as intended; no change required.',
+          category: 'general',
+          createdAt: '2026-10-20T15:27:27Z'
+        },
+        {
+          id: 9200,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body: 'please rebase onto main',
+          category: 'general',
+          createdAt: '2026-10-20T18:30:00Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(
+      result.dismissal?.conversationsPriorAnswers,
+      1,
+      'the legacy answer must not be answered a third time'
+    );
+    assert.strictEqual(
+      result.dismissal?.conversationsReplied,
+      1,
+      'a comment posted after the newest dismissal answer is new feedback'
+    );
+    assert.deepStrictEqual(
+      state.conversationReplies.map(([id]) => id),
+      [9200],
+      'only the new comment may be answered'
+    );
+    assert.strictEqual(result.dismissal?.conversationsIgnored, 1, "the tool's own reply is ignored");
+  });
+
+  test('on a PR the tool has never dismissed, every comment is answered', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [],
+      comments: [
+        {
+          id: 9001,
+          surface: 'conversation',
+          author: 'github-actions[bot]',
+          body: '**Review feedback on `src/a.ts` (Line 1):**\n\nℹ️ **INFO**: the finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:05Z'
+        },
+        {
+          id: 9002,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body: 'please rebase and double check the tests',
+          category: 'general',
+          createdAt: '2026-10-20T14:58:06Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.conversationsReplied, 2);
+    assert.strictEqual(result.dismissal?.conversationsPriorAnswers, 0);
+  });
+});

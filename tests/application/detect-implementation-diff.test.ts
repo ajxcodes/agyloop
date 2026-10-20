@@ -252,6 +252,49 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
     assert.strictEqual(result.qualityGateResult.passed, true, 'the gate must keep its pre-existing behaviour');
     assert.strictEqual(result.currentStage, STAGE_COMMIT, 'the run must keep its pre-existing behaviour');
   });
+
+  /**
+   * A DELETED tracked file is an implementation: the porcelain loop has no
+   * status filter for tracked entries, so ` D` (deleted in the working tree)
+   * and `D ` (deleted and staged) both fall through to the tracked branch.
+   *
+   * Nothing pinned that, so a future "skip deletions" change would silently
+   * make a deletion-only tree look unimplemented — and the gate would then
+   * refuse to certify a tree that really was implemented.
+   */
+  test('D9: a deleted tracked file (unstaged) yields hasChanges === true and the file is listed', async () => {
+    const executor = new MockCommandExecutor([
+      ok('git status --porcelain', ' D src/removed.ts\n'),
+      ok('git diff --name-only main -- .', '')
+    ]);
+    const useCase = new DetectImplementationDiffUseCase(executor);
+
+    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+
+    assert.strictEqual(diff.hasChanges, true, 'a deletion is an implementation');
+    assert.strictEqual(diff.probeError, null);
+    assert.ok(
+      diff.trackedChangedFiles.includes('src/removed.ts'),
+      `expected 'src/removed.ts' to be listed, got: ${JSON.stringify(diff.trackedChangedFiles)}`
+    );
+  });
+
+  test('D10: a deleted tracked file (staged) yields hasChanges === true and the file is listed', async () => {
+    const executor = new MockCommandExecutor([
+      ok('git status --porcelain', 'D  src/removed.ts\n'),
+      ok('git diff --name-only main -- .', '')
+    ]);
+    const useCase = new DetectImplementationDiffUseCase(executor);
+
+    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+
+    assert.strictEqual(diff.hasChanges, true, 'a staged deletion is an implementation');
+    assert.strictEqual(diff.probeError, null);
+    assert.ok(
+      diff.trackedChangedFiles.includes('src/removed.ts'),
+      `expected 'src/removed.ts' to be listed, got: ${JSON.stringify(diff.trackedChangedFiles)}`
+    );
+  });
 });
 
 /* ------------------------------------------------------------------------- *
