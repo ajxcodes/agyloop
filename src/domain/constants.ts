@@ -432,6 +432,19 @@ export const STATUS_TIMED_OUT = 'TIMED_OUT' as const;
 export const STATUS_DISPLAY_TIMED_OUT = 'TIMED OUT' as const;
 export const STATUS_SKIPPED = 'SKIPPED' as const;
 
+/**
+ * The gate verdict for "the gates refused to certify an unimplemented tree"
+ * (issue #259).
+ *
+ * A VACUOUS verdict is NOT a failure and NOT a pass: nothing was executed, so
+ * there is nothing to certify. It is deliberately NOT a member of the
+ * `GateVerdict` union (`src/domain/value-objects/gate-summary-report.ts`) —
+ * that union is the contract of the `GateSummaryReport` value object, and the
+ * VACUOUS report is deliberately built as a plain string so this issue does
+ * not change any shared contract.
+ */
+export const STATUS_VACUOUS = 'VACUOUS' as const;
+
 // Gate Commands & Thresholds
 export interface GateCommandDefinition {
   readonly id: string;
@@ -1387,6 +1400,135 @@ export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
 export const NOTE_WORKTREE_CREATED = 'Isolated git worktree provisioned' as const;
 export const NOTE_WORKTREE_REMOVED = 'Isolated git worktree detached and cleaned' as const;
 export const NOTE_WORKTREE_PRUNED = 'Dangling git worktrees pruned' as const;
+
+// ============================================================================
+// Implementation Evidence (issue #259)
+// ============================================================================
+
+/**
+ * Untracked path prefixes that are the TOOL's own bookkeeping or that are
+ * symlinked into a task worktree.
+ *
+ * They are never evidence of an implementation: `git status --porcelain`
+ * reports `?? node_modules`, `?? artifacts` and `?? .agyloop` in EVERY worktree
+ * run (the worktree manager links all three), and the plan scaffold writes
+ * `artifacts/plans/` plus the workspace `.gitignore`.
+ *
+ * The filter applies to UNTRACKED entries only. A TRACKED modification to any
+ * of these paths is a real implementation and is always counted.
+ */
+export const IMPLEMENTATION_EVIDENCE_EXCLUDED_PREFIXES: readonly string[] = Object.freeze([
+  '.agyloop/',
+  '.codeloop/',
+  'artifacts/',
+  'node_modules/',
+  '.worktrees/',
+  'dist/',
+  'build/',
+  'coverage/',
+  'prompts/',
+  'rules/',
+  'skills/',
+  'integrations/',
+  'templates/'
+]);
+
+/**
+ * Untracked files that are the tool's own bookkeeping, plus the lock files the
+ * tool already excludes from every diff (`DIFF_EXCLUDE_ARGS`).
+ */
+export const IMPLEMENTATION_EVIDENCE_EXCLUDED_FILES: readonly string[] = Object.freeze([
+  'plugin.json',
+  '.gitignore',
+  'config.default.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb'
+]);
+
+/**
+ * The short, honest reason a run refused to advance: nothing was implemented.
+ *
+ * Used in the lifecycle result message and in the operator-facing ⚠ block. It
+ * is NOT written into the state-machine history — a park performs no
+ * `transition()`, and history entries are only appended by `transition()`.
+ */
+export const NOTE_IMPLEMENTATION_EVIDENCE_MISSING =
+  'Implementation produced no changes — refusing to advance to quality gates' as const;
+
+/**
+ * The full park message for the YOLO fast-path (issue #259). `{baseRef}` is
+ * substituted with the reference the probe actually compared against.
+ */
+export const NOTE_YOLO_NO_IMPLEMENTATION =
+  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The YOLO fast-path prepares the implementation but cannot execute the plan (agyloop dispatches subagents, it does not run them): run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
+/**
+ * Continuation lines of the operator-facing park block (stderr).
+ */
+export const NOTE_IMPLEMENTATION_PARK_UNCHANGED =
+  "Working tree is unchanged relative to '{baseRef}' — no implementation was detected." as const;
+export const NOTE_IMPLEMENTATION_PARK_DISPATCH =
+  'The YOLO fast-path prepares the implementation but cannot execute the plan (agyloop dispatches subagents, it does not run them).' as const;
+export const NOTE_IMPLEMENTATION_PARK_NEXT =
+  'Next: run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`.' as const;
+
+/**
+ * The plan-empty advisory (issue #259, S10).
+ *
+ * `codeloop yolo` never dispatches the PLANNER either, so the fast-path's
+ * plan is the tool's own blank scaffold — every heading empty, every
+ * `**Step N:**` marker without a value. Dispatching the implementer with that
+ * document would hand it nothing to execute, so the park says so instead.
+ * `{planPath}` names the plan the implementer would have received.
+ */
+export const NOTE_IMPLEMENTATION_PLAN_EMPTY =
+  "The plan at '{planPath}' is still the blank scaffold — the implementer would receive an empty plan" as const;
+
+/**
+ * The continuation line of the plan-empty advisory. It REPLACES
+ * `NOTE_IMPLEMENTATION_PARK_NEXT` — printing both would tell the operator to
+ * dispatch an implementer that has nothing to execute.
+ */
+export const NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT =
+  'Next: run the Architectural Planning Subagent (or write the plan) first, then run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`.' as const;
+
+/**
+ * The full park message for a YOLO run whose plan is still the blank
+ * scaffold. `{baseRef}` is the reference the probe compared against and
+ * `{planPath}` names the empty plan.
+ */
+export const NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN =
+  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The plan at '{planPath}' is still the blank scaffold (no implementation steps), so dispatching the implementer now would give it nothing to execute: run the Architectural Planning Subagent (or write the plan) first, then run `codeloop next`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
+/**
+ * The VACUOUS gate verdict line: the gates refused to certify a tree that
+ * contains no implementation, so NO gate command was executed.
+ */
+export const MSG_GATE_VACUOUS =
+  "VACUOUS — no implementation detected (working tree unchanged relative to '{baseRef}'); quality gate commands were NOT executed." as const;
+
+/**
+ * The report label for the implementation-evidence line.
+ */
+export const LABEL_IMPLEMENTATION_EVIDENCE = 'Implementation' as const;
+
+/**
+ * The implementation-evidence line appended to a gate report that DID run:
+ * `Implementation : 3 file(s) changed relative to 'main'`.
+ */
+export const LABEL_IMPLEMENTATION_EVIDENCE_LINE =
+  "{label} : {count} file(s) changed relative to '{baseRef}'" as const;
+
+/**
+ * Lifecycle refusal messages for a VACUOUS gate verdict. A VACUOUS verdict is
+ * NOT a failure: nothing was reverted, because the stage was never advanced.
+ */
+export const NOTE_GATES_VACUOUS_STANDARD =
+  "Quality gates refused to certify an unimplemented tree (VACUOUS) — the working tree is unchanged relative to '{baseRef}'. Pipeline stays at IMPLEMENT." as const;
+export const NOTE_GATES_VACUOUS_YOLO =
+  'Quality gates refused to certify an unimplemented tree (VACUOUS) — refusing to advance.' as const;
 
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;

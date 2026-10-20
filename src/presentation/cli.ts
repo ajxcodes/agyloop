@@ -76,9 +76,26 @@ import {
   StateMachineSnapshot,
   IssueNumber,
   NOTE_DISCOVERY_PARK_AWAITING_RCA,
+  NOTE_IMPLEMENTATION_EVIDENCE_MISSING,
+  NOTE_IMPLEMENTATION_PARK_UNCHANGED,
+  NOTE_IMPLEMENTATION_PARK_DISPATCH,
+  NOTE_IMPLEMENTATION_PARK_NEXT,
+  NOTE_IMPLEMENTATION_PLAN_EMPTY,
+  NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT,
+  // Issue #259: the VACUOUS refusal messages live in the domain. The CLI
+  // must never re-type them — a hand-typed copy is how the two drift apart.
+  NOTE_GATES_VACUOUS_YOLO,
+  NOTE_GATES_VACUOUS_STANDARD,
   STATE_MUTATING_COMMANDS
 } from '../domain';
-import type { StateRepository } from '../ports';
+import type {
+  StateRepository,
+  ConfigRepository,
+  PlanGeneratorPort,
+  GitHubGateway,
+  WorktreeManagerPort,
+  BuildDetectorPort
+} from '../ports';
 import {
   FileStateRepository,
   CliGitHubGateway,
@@ -684,6 +701,56 @@ function buildResumeJsonPayload(result: {
     issue: result.issue,
     message: result.message
   };
+}
+
+/**
+ * Prints the implementer dispatch directive for the YOLO implementation park
+ * (issue #259).
+ *
+ * The payload is produced by the SAME `GetNextActionUseCase` that
+ * `codeloop next` uses, so the two can never drift. `buildImplementAction`
+ * asserts the Zero-Direct-Root-Mutation invariant and THROWS when there is no
+ * worktree (the `--no-worktree` / no-issue case): the park still succeeds and
+ * simply omits the payload — the park message already names `codeloop next`.
+ */
+async function printImplementerDirective(
+  stateRepo: StateRepository,
+  configRepo: ConfigRepository,
+  planGenerator: PlanGeneratorPort,
+  githubGateway: GitHubGateway,
+  worktreeManager: WorktreeManagerPort,
+  buildDetector: BuildDetectorPort,
+  inferBaseBranchUseCase: InferBaseBranchUseCase,
+  options: CliOptions
+): Promise<void> {
+  try {
+    const getNextActionUseCase = new GetNextActionUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      githubGateway,
+      undefined,
+      worktreeManager,
+      buildDetector,
+      inferBaseBranchUseCase
+    );
+
+    const directive = await getNextActionUseCase.execute({
+      configPath: options.configPath,
+      issue: options.issue
+    });
+
+    if (!directive.invocationPayload) {
+      return;
+    }
+
+    console.log('--- invoke_subagent JSON Payload ---');
+    console.log(JSON.stringify(directive.invocationPayload, null, 2));
+    console.log('\nPass this payload directly to invoke_subagent or copy into chat.\n');
+  } catch {
+    // No worktree (or no directive available): the park message already names
+    // `codeloop next`, so omitting the payload keeps the park truthful.
+  }
 }
 
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
@@ -1814,6 +1881,36 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           if (result.planResult?.scaffoldInfo) {
             console.log(`📁 Initialized plan directory: artifacts/plans/${result.planResult.scaffoldInfo.folderName}/`);
           }
+
+          // Issue #259: the implementation park. A non-green block on stderr
+          // (the halt is NOT a success signal; stdout stays parseable), followed
+          // by the implementer dispatch directive — produced by the SAME
+          // `GetNextActionUseCase` that `codeloop next` uses, so the payload
+          // shape cannot drift.
+          if (result.implementationHalted) {
+            const baseRef = result.implementationDiff?.baseRef ?? 'main';
+            console.error(`⚠ ${NOTE_IMPLEMENTATION_EVIDENCE_MISSING}.`);
+            console.error(`   ${NOTE_IMPLEMENTATION_PARK_UNCHANGED.replace('{baseRef}', baseRef)}`);
+            console.error(`   ${NOTE_IMPLEMENTATION_PARK_DISPATCH}`);
+
+            // Issue #259 (S10): the fast-path never dispatches the PLANNER
+            // either, so its plan is the tool's own blank scaffold. A directive
+            // that points at an EMPTY plan is a false instruction — the
+            // implementer would have nothing to execute. The advisory replaces
+            // the ordinary continuation line (printing both would tell the
+            // operator to dispatch an implementer with nothing to do) and the
+            // payload is suppressed entirely.
+            if (result.implementationPlanEmpty === true) {
+              const planPath = result.implementationResult?.planPath ?? '(the scaffolded plan)';
+              console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY.replace('{planPath}', planPath)}`);
+              console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
+            } else {
+              console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
+              await printImplementerDirective(stateRepo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, inferBaseBranchUseCase, options);
+            }
+            return EXIT_CODE_SUCCESS;
+          }
+
           console.log(`\n${result.success ? '⏸' : '🛑'} ${result.message ?? `YOLO fast-path halted at ${result.currentStage}.`}\n`);
           return result.success ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
         }
@@ -1833,6 +1930,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.qualityGateResult && !result.qualityGateResult.passed) {
+          // Issue #259 (defence in depth): a VACUOUS verdict is a REFUSAL, not
+          // a failure — no gate command ran, nothing was reverted, and no gate
+          // retry was consumed. The "gates failed / reverted" copy would be a
+          // false claim.
+          if (result.qualityGateResult.vacuous === true) {
+            console.error(`⚠ ${result.message ?? NOTE_GATES_VACUOUS_YOLO}`);
+            return EXIT_CODE_SUCCESS;
+          }
           console.error(`✗ Quality gates failed in YOLO mode. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
           return EXIT_CODE_FAILURE;
         }
@@ -1993,6 +2098,18 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.qualityGateResult && !result.qualityGateResult.passed) {
+          // Issue #259: a VACUOUS verdict is a REFUSAL, not a failure. No gate
+          // command ran and nothing was reverted, so the "gates failed /
+          // reverted to IMPLEMENT" copy would be a false claim. The
+          // lifecycle's message is the truth.
+          if (result.qualityGateResult.vacuous === true) {
+            // The fallback is the domain constant with `{baseRef}` substituted
+            // from the verdict — the same source the lifecycle uses — so the
+            // message can never drift from the lifecycle's own wording.
+            const baseRef = result.implementationDiff?.baseRef ?? 'main';
+            console.error(`⚠ ${result.message ?? NOTE_GATES_VACUOUS_STANDARD.replace('{baseRef}', baseRef)}`);
+            return EXIT_CODE_SUCCESS;
+          }
           console.error(`✗ Quality gates failed. Pipeline reverted to ${formatStageBadge(result.currentStage)}.`);
           return EXIT_CODE_FAILURE;
         }

@@ -17,9 +17,21 @@ const {
   MODE_YOLO,
   STATUS_PASSED,
   STATUS_FAILED,
+  // Issue #259: the verdict token of a refused certification. It is NOT a
+  // member of the `GateVerdict` union — the VACUOUS report is built as a
+  // plain string — but it IS the honest status of the VACUOUS result.
+  STATUS_VACUOUS,
   InvalidTransitionError,
   Ecosystem,
-  ECOSYSTEM_NODE
+  ECOSYSTEM_NODE,
+  // Issue #259: the operator-facing strings of the VACUOUS verdict and of the
+  // implementation-evidence line. Imported, never re-typed, so the assertions
+  // cannot drift from the shipped wording.
+  MSG_GATE_VACUOUS,
+  LABEL_IMPLEMENTATION_EVIDENCE,
+  LABEL_IMPLEMENTATION_EVIDENCE_LINE,
+  HEADER_QUALITY_GATE_REPORT,
+  LABEL_OVERALL_VERDICT
 } = require('../../dist');
 
 type StateRepository = import('../../src').StateRepository;
@@ -41,6 +53,7 @@ type CommandExecutionOptions = import('../../src').CommandExecutionOptions;
 type CommandExecutionResult = import('../../src').CommandExecutionResult;
 type ModelTierName = import('../../src').ModelTierName;
 type InvalidTransitionError = import('../../src').InvalidTransitionError;
+type ImplementationDiff = import('../../src').ImplementationDiff;
 
 
 class MockStateRepository implements StateRepository {
@@ -815,5 +828,204 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
       else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }
+  });
+
+  // ----------------------------------------------------------------------
+  // Issue #259 (AC3): the gate refuses to certify an unimplemented tree.
+  //
+  // A passing suite over an UNCHANGED tree is positive evidence of nothing:
+  // the pre-existing tests still pass when no implementation was produced.
+  // The verdict is INJECTED (`implementationDiff`) — the gate use case runs no
+  // git command of its own — so the response-queue mock stays authoritative
+  // for "which gate command ran".
+  // ----------------------------------------------------------------------
+  describe('Implementation evidence: the gate refuses to certify an unchanged tree (issue #259)', () => {
+    /** The verdict of a tree that was read and carries NO implementation. */
+    function unchangedDiff(baseRef = 'main'): ImplementationDiff {
+      return {
+        hasChanges: false,
+        baseRef,
+        trackedChangedFiles: [],
+        untrackedFiles: [],
+        probeError: null,
+        rawStatus: ''
+      };
+    }
+
+    /** The verdict of a tree that carries a real implementation. */
+    function changedDiff(baseRef = 'main', tracked: readonly string[] = ['src/index.ts']): ImplementationDiff {
+      return {
+        hasChanges: true,
+        baseRef,
+        trackedChangedFiles: tracked,
+        untrackedFiles: [],
+        probeError: null,
+        rawStatus: 'M  src/index.ts\n'
+      };
+    }
+
+    /** The `Implementation : N file(s) changed relative to '<baseRef>'` line. */
+    function evidenceLine(count: number, baseRef: string): string {
+      return LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace('{label}', LABEL_IMPLEMENTATION_EVIDENCE)
+        .replace('{count}', String(count))
+        .replace('{baseRef}', baseRef);
+    }
+
+    function implementSnapshot(): StateMachineSnapshot {
+      return {
+        version: '1.0.0',
+        currentStage: STAGE_IMPLEMENT,
+        mode: MODE_STANDARD,
+        issue: 20,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+      };
+    }
+
+    test('V1 (AC3): an injected unchanged-tree diff yields passed === false, vacuous === true, and NO gate command is executed', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const result = await useCase.execute({
+        issue: 20,
+        implementationDiff: unchangedDiff('main')
+      });
+
+      assert.strictEqual(result.passed, false, 'an unchanged tree must never be certified');
+      assert.strictEqual(result.vacuous, true);
+      assert.strictEqual(
+        commandExecutor.executed.length,
+        0,
+        `no gate command may run over an unimplemented tree, got: ${commandExecutor.executed
+          .map((e: { command: string }) => e.command)
+          .join(', ')}`
+      );
+      assert.deepStrictEqual(result.reports, []);
+      assert.strictEqual(result.totalDurationMs, 0);
+      assert.strictEqual(result.gateReport, undefined, 'no gate report may be produced');
+
+      // The stage was never advanced and the retry counter was never touched.
+      assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+      assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+      assert.strictEqual(result.stateMachine.implementToGateLoops, 0);
+
+      // Nothing ran, so there is nothing to log.
+      assert.strictEqual(planGenerator.updates.length, 0);
+
+      // The verdict is surfaced for the operator-facing diagnostic.
+      assert.ok(result.implementationDiff);
+      assert.strictEqual(result.implementationDiff.hasChanges, false);
+      assert.strictEqual(result.implementationDiff.baseRef, 'main');
+
+      // Issue #259: a VACUOUS verdict records the REFUSAL, not a failure. NO
+      // gate command ran, so there is no build outcome and no test outcome to
+      // report — `STATUS_FAILED` would claim a failure for an event that never
+      // happened (the same false-claim class this issue removes).
+      assert.strictEqual(
+        result.buildStatus,
+        STATUS_VACUOUS,
+        'the build status of a VACUOUS verdict must be the refusal, not a failure'
+      );
+      assert.strictEqual(
+        result.testsStatus,
+        STATUS_VACUOUS,
+        'the test status of a VACUOUS verdict must be the refusal, not a failure'
+      );
+      assert.notStrictEqual(
+        result.buildStatus,
+        STATUS_FAILED,
+        'a VACUOUS verdict must never claim that the build FAILED'
+      );
+      assert.notStrictEqual(
+        result.testsStatus,
+        STATUS_FAILED,
+        'a VACUOUS verdict must never claim that the tests FAILED'
+      );
+    });
+
+    test('V2 (AC3): the VACUOUS summary report says "Overall Verdict : VACUOUS" and never "PASSED"', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const result = await useCase.execute({
+        issue: 20,
+        implementationDiff: unchangedDiff('main')
+      });
+
+      assert.ok(
+        result.summaryReport.startsWith(HEADER_QUALITY_GATE_REPORT),
+        `the refusal must still be a gate report, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        result.summaryReport.includes(`${LABEL_OVERALL_VERDICT} : VACUOUS`),
+        `the verdict must be VACUOUS, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        !result.summaryReport.includes('PASSED'),
+        `an unimplemented tree must never be reported as PASSED, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        result.summaryReport.includes(MSG_GATE_VACUOUS.replace('{baseRef}', 'main')),
+        `the refusal line must explain itself, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        result.summaryReport.includes(evidenceLine(0, 'main')),
+        `the report must carry the implementation-evidence line, got:\n${result.summaryReport}`
+      );
+    });
+
+    test('V3 (AC3): an injected changed-tree diff runs the gates and the report carries the "Implementation : N file(s) changed" line', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const result = await useCase.execute({
+        issue: 20,
+        implementationDiff: changedDiff('main', ['src/index.ts', 'src/other.ts'])
+      });
+
+      assert.strictEqual(result.passed, true);
+      assert.strictEqual(result.vacuous, false);
+      assert.ok(
+        commandExecutor.executed.length > 0,
+        'the gates must actually run over a tree that carries the implementation'
+      );
+      assert.strictEqual(result.currentStage, STAGE_REVIEW);
+      assert.ok(
+        result.summaryReport.includes('PASSED'),
+        `the gates must still report PASSED over an implemented tree, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        result.summaryReport.includes(evidenceLine(2, 'main')),
+        `the report must carry the implementation-evidence line, got:\n${result.summaryReport}`
+      );
+    });
   });
 });

@@ -29,7 +29,18 @@ const {
   AiReviewReport,
   WorktreeDescriptor,
   NOTE_DISCOVERY_PARK_AWAITING_RCA,
-  NOTE_YOLO_PARKED_AT_DISCOVERY
+  NOTE_YOLO_PARKED_AT_DISCOVERY,
+  // Issue #259: the operator-facing strings of the VACUOUS refusal and of the
+  // implementation-evidence line. Imported, never re-typed.
+  NOTE_GATES_VACUOUS_STANDARD,
+  NOTE_GATES_VACUOUS_YOLO,
+  DEFAULT_CB_MAX_GATE_RETRIES,
+  GATE_CIRCUIT_BREAKER,
+  STATUS_FAILED,
+  HEADER_QUALITY_GATE_REPORT,
+  LABEL_OVERALL_VERDICT,
+  LABEL_IMPLEMENTATION_EVIDENCE,
+  LABEL_IMPLEMENTATION_EVIDENCE_LINE
 } = require('../../dist/domain');
 
 const {
@@ -296,6 +307,24 @@ class MockWorktreeManager {
   public async resolveTaskBranchName(): Promise<string> { return 'task/999'; }
 }
 
+/**
+ * The implementation-evidence probe (issue #259). Injected so the verdict is
+ * deterministic — no real git repository is involved.
+ */
+class MockDetectImplementationDiffUseCase {
+  public verdict: any;
+  public calls: any[] = [];
+
+  constructor(verdict: any) {
+    this.verdict = verdict;
+  }
+
+  public async execute(params: any): Promise<any> {
+    this.calls.push(params);
+    return this.verdict;
+  }
+}
+
 describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
   const mockWorktree = WorktreeDescriptor.create({
     taskId: 999,
@@ -342,9 +371,63 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
   });
 
+  /**
+   * The verdict of a tree that carries a real implementation (issue #259,
+   * S11). The cases that are ABOUT the fast-path over an implemented tree
+   * inject it explicitly, so the precondition is a statement of the test
+   * instead of an accident of the mock's `git status` answer.
+   */
+  const IMPLEMENTATION_PRESENT_VERDICT = {
+    hasChanges: true,
+    baseRef: 'main',
+    trackedChangedFiles: ['src/index.ts'],
+    untrackedFiles: [],
+    probeError: null,
+    rawStatus: 'M  src/index.ts\n'
+  };
+
+  /**
+   * The verdict of a tree that was read and carries NO implementation
+   * (issue #259, S11).
+   */
+  const NO_IMPLEMENTATION_VERDICT = {
+    hasChanges: false,
+    baseRef: 'main',
+    trackedChangedFiles: [],
+    untrackedFiles: [],
+    probeError: null,
+    rawStatus: ''
+  };
+
+  /**
+   * A lifecycle whose implementation-evidence probe returns an EXPLICIT
+   * verdict (issue #259, S11). The shared fixture in `beforeEach` is
+   * untouched: the migration is per case.
+   */
+  function buildLifecycleWithProbe(verdict: any): any {
+    return new RunLifecycleUseCase({
+      stateRepo,
+      configRepo,
+      planGenerator,
+      githubGateway,
+      commandExecutor,
+      buildDetector,
+      standardsRepo,
+      critique,
+      confirmationPrompt,
+      worktreeManager,
+      detectImplementationDiffUseCase: new MockDetectImplementationDiffUseCase(verdict)
+    });
+  }
+
   describe('1. Full Unattended Fast-Path Loop (yolo --commit-after)', () => {
-    test('executes entire continuous lifecycle in single run to COMPLETED', async () => {
-      const result = await lifecycleUseCase.execute({
+    test('executes entire continuous lifecycle in single run to COMPLETED when the injected probe reports an implementation', async () => {
+      // Issue #259 (S11): the implementation-evidence verdict is INJECTED, so
+      // "an implementation exists" is a statement of this case and not an
+      // accident of the mock's `git status` answer.
+      const lifecycle = buildLifecycleWithProbe(IMPLEMENTATION_PRESENT_VERDICT);
+
+      const result = await lifecycle.execute({
         mode: MODE_YOLO,
         commitAfter: true,
         issue: 32,
@@ -389,8 +472,13 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       ]);
     });
 
-    test('yolo mode without commitAfter pauses at COMMIT gate', async () => {
-      const result = await lifecycleUseCase.execute({
+    test('yolo mode without commitAfter pauses at COMMIT gate when the injected probe reports an implementation', async () => {
+      // Issue #259 (S11): the implementation-evidence verdict is INJECTED, so
+      // "an implementation exists" is a statement of this case and not an
+      // accident of the mock's `git status` answer.
+      const lifecycle = buildLifecycleWithProbe(IMPLEMENTATION_PRESENT_VERDICT);
+
+      const result = await lifecycle.execute({
         mode: MODE_YOLO,
         commitAfter: false,
         issue: 32,
@@ -405,11 +493,16 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.executeCommitResult, undefined);
     });
 
-    test('yolo with passing gates and absent critique pauses at COMMIT without reverting (issue #236, AC1)', async () => {
+    test('yolo with passing gates and absent critique pauses at COMMIT without reverting when the injected probe reports an implementation (issue #236, AC1)', async () => {
       // Production absence path: gateway normalizes "critique missing" to a bypassed report.
       critique.reviewResult = AiReviewReport.bypassed('Critique CLI binary not found.');
 
-      const result = await lifecycleUseCase.execute({
+      // Issue #259 (S11): the implementation-evidence verdict is INJECTED, so
+      // "an implementation exists" is a statement of this case and not an
+      // accident of the mock's `git status` answer.
+      const lifecycle = buildLifecycleWithProbe(IMPLEMENTATION_PRESENT_VERDICT);
+
+      const result = await lifecycle.execute({
         mode: MODE_YOLO,
         commitAfter: false,
         issue: 32,
@@ -427,6 +520,46 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         !String(result.message).includes('Reverted'),
         `message must not claim a revert, got: ${result.message}`
       );
+    });
+
+    test('yolo parks at IMPLEMENT and never reaches the COMMIT gate when the injected probe reports no implementation (issue #259)', async () => {
+      // Issue #259 (S11): the explicit negative case the file did not have.
+      // The implementation-evidence verdict is INJECTED, so "no
+      // implementation" is a statement of this case and not an accident of the
+      // mock's `git status` answer.
+      const lifecycle = buildLifecycleWithProbe(NO_IMPLEMENTATION_VERDICT);
+
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        commitAfter: false,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      // A park is a deliberate, checkpointed halt — not a failure.
+      assert.strictEqual(result.success, true, `the park must succeed, got: ${result.message}`);
+      assert.strictEqual(result.currentStage, STAGE_IMPLEMENT, 'the stage must stay at IMPLEMENT');
+      assert.strictEqual(result.implementationHalted, true);
+
+      // Nothing was certified, reviewed or published.
+      assert.strictEqual(result.qualityGateResult, undefined, 'the gates must not certify an unimplemented tree');
+      assert.strictEqual(result.reviewResult, undefined, 'the review must not run over an unimplemented tree');
+      assert.strictEqual(result.executeCommitResult, undefined, 'no commit may be published');
+      assert.strictEqual(result.pausedAtGate, undefined, 'a park is not a human gate');
+
+      // No gate command ran over the unimplemented tree.
+      for (const gateCommand of ['npm run build', 'npm run typecheck', 'npm test']) {
+        assert.ok(
+          !commandExecutor.executedCommands.includes(gateCommand),
+          `no gate command may run, got: ${commandExecutor.executedCommands.join(', ')}`
+        );
+      }
+
+      // The checkpoint records the park.
+      assert.ok(stateRepo.savedSnapshot, 'a checkpoint must be persisted');
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_IMPLEMENT);
+      assert.notStrictEqual(stateRepo.savedSnapshot.currentStage, STAGE_COMMIT);
+      assert.notStrictEqual(stateRepo.savedSnapshot.currentStage, STAGE_COMPLETED);
     });
   });
 
@@ -591,6 +724,51 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.mode, MODE_IMPLEMENT);
       assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
       assert.ok(result.implementationResult);
+    });
+
+    test('implement mode stops at IMPLEMENT on an unchanged tree — it runs no gate command and never reaches the COMMIT gate (issue #259 cross-mode invariant)', async () => {
+      // Issue #259 (S9/Q11): the CROSS-MODE invariant — no lifecycle path may
+      // advance past IMPLEMENT to QUALITY_GATE without positive evidence that
+      // the implementation exists. `codeloop implement` already satisfies it:
+      // it PREPARES and STOPS, handing the operator the next step. This case
+      // pins that honest stop, so a future change cannot quietly make the
+      // implement path advance past IMPLEMENT and re-open the defect.
+      const sm = StateMachine.createInitial({ mode: MODE_PLAN, issue: 32, worktree: mockWorktree });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      sm.transition(STAGE_APPROVAL);
+      stateRepo.savedSnapshot = sm.toSnapshot();
+
+      const probe = new MockDetectImplementationDiffUseCase(NO_IMPLEMENTATION_VERDICT);
+      const lifecycle = buildLifecycleWithProbe(NO_IMPLEMENTATION_VERDICT);
+
+      const result = await lifecycle.execute({
+        mode: MODE_IMPLEMENT,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, MODE_IMPLEMENT);
+      assert.strictEqual(result.currentStage, STAGE_IMPLEMENT, 'the implement path must stop at IMPLEMENT');
+      assert.notStrictEqual(result.currentStage, STAGE_COMMIT);
+      assert.ok(result.implementationResult, 'the implementation must be prepared');
+
+      // The evidence half of the invariant: nothing was certified or reviewed.
+      assert.strictEqual(result.qualityGateResult, undefined, 'the implement path must run no gate');
+      assert.strictEqual(result.reviewResult, undefined, 'the implement path must run no review');
+      assert.strictEqual(result.executeCommitResult, undefined, 'the implement path must publish no commit');
+
+      for (const gateCommand of ['npm run build', 'npm run typecheck', 'npm test']) {
+        assert.ok(
+          !commandExecutor.executedCommands.includes(gateCommand),
+          `no gate command may run, got: ${commandExecutor.executedCommands.join(', ')}`
+        );
+      }
+
+      // The implement path never advances past IMPLEMENT, so it needs no
+      // evidence check at all.
+      assert.strictEqual(probe.calls.length, 0, 'the implement path must not probe the tree');
     });
 
     test('mode "implement" forwards worktree:false as noWorktree into StartImplementationUseCase.execute (issue #247, AC5)', async () => {
@@ -1611,6 +1789,270 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         worktreeManager.createWorktreeCallCount,
         1,
         'the worktree-enabled STANDARD run must still provision exactly one worktree'
+      );
+    });
+  });
+
+  // ------------------------------------------------------------------------
+  // Issue #259 (AC2): the VACUOUS gate verdict reaches BOTH gate-failure
+  // branches, and in neither of them is it a failure.
+  //
+  //   - the STANDARD loop must not start failing on an unchanged tree
+  //     (it reports the refusal truthfully and returns success === true);
+  //   - the STANDARD loop must not lose its gates over an implemented tree
+  //     (the commands still run and the report still says PASSED);
+  //   - the YOLO branch must treat a VACUOUS verdict as a refusal, so it
+  //     consumes NO gate retry and never trips the circuit breaker.
+  //
+  // The verdict is driven deterministically by injecting the probe.
+  // ------------------------------------------------------------------------
+  describe('9. Implementation evidence in the lifecycle (issue #259)', () => {
+    /** The verdict of a tree that was read and carries NO implementation. */
+    function unchangedVerdict(baseRef = 'main'): any {
+      return {
+        hasChanges: false,
+        baseRef,
+        trackedChangedFiles: [],
+        untrackedFiles: [],
+        probeError: null,
+        rawStatus: ''
+      };
+    }
+
+    /** The verdict of a tree that carries a real implementation. */
+    function changedVerdict(baseRef = 'main'): any {
+      return {
+        hasChanges: true,
+        baseRef,
+        trackedChangedFiles: ['src/index.ts'],
+        untrackedFiles: [],
+        probeError: null,
+        rawStatus: 'M  src/index.ts\n'
+      };
+    }
+
+    /** The `Implementation : N file(s) changed relative to '<baseRef>'` line. */
+    function evidenceLine(count: number, baseRef: string): string {
+      return LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace('{label}', LABEL_IMPLEMENTATION_EVIDENCE)
+        .replace('{count}', String(count))
+        .replace('{baseRef}', baseRef);
+    }
+
+    /** Seeds a checkpoint at IMPLEMENT — the IMPLEMENT -> QUALITY_GATE boundary. */
+    function seedImplementCheckpoint(mode: string, gateRetries = 0): void {
+      const sm = StateMachine.createInitial({ mode, issue: 32, worktree: mockWorktree });
+      sm.transition(STAGE_DISCOVERY);
+      sm.transition(STAGE_PLAN);
+      if (mode === MODE_STANDARD) {
+        // The standard loop reaches IMPLEMENT through the APPROVAL gate.
+        sm.transition(STAGE_APPROVAL);
+      }
+      sm.transition(STAGE_IMPLEMENT);
+      stateRepo.savedSnapshot = { ...sm.toSnapshot(), implementToGateLoops: gateRetries };
+    }
+
+    /** The lifecycle with the shared mocks plus the injected probe. */
+    function buildLifecycle(verdict: any, extraDeps: any = {}): any {
+      return new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        buildDetector,
+        standardsRepo,
+        critique,
+        confirmationPrompt,
+        worktreeManager,
+        detectImplementationDiffUseCase: new MockDetectImplementationDiffUseCase(verdict),
+        ...extraDeps
+      });
+    }
+
+    test('V4 (AC2, standard mode): a standard-mode run on an unchanged tree reports the VACUOUS refusal with success === true and never "Quality gates failed" or "reverted to IMPLEMENT"', async () => {
+      seedImplementCheckpoint(MODE_STANDARD);
+      const probe = new MockDetectImplementationDiffUseCase(unchangedVerdict('main'));
+      const lifecycle = buildLifecycle(unchangedVerdict('main'), {
+        detectImplementationDiffUseCase: probe
+      });
+
+      const result = await lifecycle.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(
+        result.success,
+        true,
+        `a VACUOUS verdict is a refusal, not a failure; got: ${result.message}`
+      );
+      assert.ok(result.qualityGateResult, 'the gate result must be surfaced');
+      assert.strictEqual(result.qualityGateResult.passed, false);
+      assert.strictEqual(result.qualityGateResult.vacuous, true);
+      assert.strictEqual(
+        result.currentStage,
+        STAGE_IMPLEMENT,
+        'the stage was never advanced, so nothing was reverted'
+      );
+      assert.strictEqual(result.pausedAtGate, undefined, 'a refusal is not a human gate');
+
+      assert.strictEqual(result.message, NOTE_GATES_VACUOUS_STANDARD.replace('{baseRef}', 'main'));
+      assert.ok(
+        !String(result.message).includes('Quality gates failed'),
+        `the refusal must not claim the gates failed, got: ${result.message}`
+      );
+      assert.ok(
+        !/reverted/i.test(String(result.message)),
+        `the refusal must not claim a revert, got: ${result.message}`
+      );
+
+      // No gate command ran over the unimplemented tree.
+      assert.ok(
+        !commandExecutor.executedCommands.includes('npm test'),
+        `no gate command may run, got: ${commandExecutor.executedCommands.join(', ')}`
+      );
+
+      // The retry counter is untouched: a refusal must never consume a retry.
+      assert.strictEqual(result.stateMachine.implementToGateLoops, 0);
+
+      // The probe ran exactly once, at the IMPLEMENT -> QUALITY_GATE boundary.
+      assert.strictEqual(probe.calls.length, 1);
+    });
+
+    test('V5 (AC2, standard mode): a standard-mode run on a tree that contains the implementation still executes the gate commands and reports PASSED', async () => {
+      seedImplementCheckpoint(MODE_STANDARD);
+      const lifecycle = buildLifecycle(changedVerdict('main'));
+
+      const result = await lifecycle.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.qualityGateResult, 'the gate result must be surfaced');
+      assert.strictEqual(result.qualityGateResult.passed, true);
+      assert.strictEqual(result.qualityGateResult.vacuous, false);
+
+      // The gates really ran.
+      assert.ok(
+        commandExecutor.executedCommands.includes('npm test'),
+        `the gate commands must still run over an implemented tree, got: ${commandExecutor.executedCommands.join(', ')}`
+      );
+      assert.ok(
+        result.qualityGateResult.summaryReport.includes('PASSED'),
+        `the gates must still report PASSED, got:\n${result.qualityGateResult.summaryReport}`
+      );
+      assert.ok(
+        result.qualityGateResult.summaryReport.includes(evidenceLine(1, 'main')),
+        `the report must carry the implementation-evidence line, got:\n${result.qualityGateResult.summaryReport}`
+      );
+
+      // The standard loop is not degraded: it still advances past the gates.
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    });
+
+    test('V6 (AC2, YOLO defence-in-depth): a VACUOUS gate verdict reaching the YOLO gate-failure branch returns success === true, consumes no gate retry, and does not trip the circuit breaker', async () => {
+      // The gate-retry counter starts AT the circuit-breaker limit: a genuine
+      // gate failure would trip the breaker here, so a VACUOUS verdict that
+      // does NOT trip it is proven to be exempt from the breaker.
+      seedImplementCheckpoint(MODE_YOLO, DEFAULT_CB_MAX_GATE_RETRIES);
+
+      const vacuousGate = {
+        execute: async (params: any) => ({
+          passed: false,
+          vacuous: true,
+          currentStage: STAGE_IMPLEMENT,
+          stateMachine: StateMachine.fromSnapshot(stateRepo.savedSnapshot),
+          reports: [],
+          totalDurationMs: 0,
+          summaryReport: `${HEADER_QUALITY_GATE_REPORT}\n${LABEL_OVERALL_VERDICT} : VACUOUS\n`,
+          buildStatus: STATUS_FAILED,
+          testsStatus: STATUS_FAILED,
+          gateReport: undefined,
+          diagnosticSnippet: null,
+          implementationDiff: params.implementationDiff
+        })
+      };
+
+      const lifecycle = buildLifecycle(changedVerdict('main'), {
+        runQualityGateUseCase: vacuousGate
+      });
+
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(
+        result.success,
+        true,
+        `a VACUOUS verdict is a refusal, not a failure; got: ${result.message}`
+      );
+      assert.ok(result.qualityGateResult);
+      assert.strictEqual(result.qualityGateResult.vacuous, true);
+      assert.strictEqual(result.message, NOTE_GATES_VACUOUS_YOLO);
+      assert.ok(
+        !String(result.message).includes('Quality gates failed'),
+        `the refusal must not claim the gates failed, got: ${result.message}`
+      );
+      assert.ok(
+        !/reverted/i.test(String(result.message)),
+        `the refusal must not claim a revert, got: ${result.message}`
+      );
+
+      // The circuit breaker did not trip.
+      assert.notStrictEqual(result.pausedAtGate, GATE_CIRCUIT_BREAKER);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.notStrictEqual(
+        stateRepo.savedSnapshot?.pausedAtGate,
+        GATE_CIRCUIT_BREAKER,
+        'no breaker pause may be persisted'
+      );
+
+      // No gate retry was consumed.
+      assert.strictEqual(
+        result.stateMachine.implementToGateLoops,
+        DEFAULT_CB_MAX_GATE_RETRIES,
+        'a VACUOUS verdict must not consume a gate retry'
+      );
+
+      // Control: the SAME scenario with a genuine (non-VACUOUS) gate failure
+      // DOES trip the breaker — so the assertions above are meaningful.
+      seedImplementCheckpoint(MODE_YOLO, DEFAULT_CB_MAX_GATE_RETRIES);
+      const failingGate = {
+        execute: async (params: any) => ({
+          passed: false,
+          vacuous: false,
+          currentStage: STAGE_IMPLEMENT,
+          stateMachine: StateMachine.fromSnapshot(stateRepo.savedSnapshot),
+          reports: [],
+          totalDurationMs: 0,
+          summaryReport: `${HEADER_QUALITY_GATE_REPORT}\n${LABEL_OVERALL_VERDICT} : FAILED\n`,
+          buildStatus: STATUS_FAILED,
+          testsStatus: STATUS_FAILED,
+          gateReport: undefined,
+          diagnosticSnippet: null,
+          implementationDiff: params.implementationDiff
+        })
+      };
+      const controlLifecycle = buildLifecycle(changedVerdict('main'), {
+        runQualityGateUseCase: failingGate
+      });
+
+      const control = await controlLifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(control.success, false);
+      assert.strictEqual(
+        control.pausedAtGate,
+        GATE_CIRCUIT_BREAKER,
+        'a genuine gate failure at the retry limit must still trip the breaker'
       );
     });
   });

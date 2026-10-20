@@ -15,6 +15,7 @@ export * from './run-quality-gate';
 export * from './run-review';
 export * from './manage-critique';
 export * from './draft-commit';
+export * from './detect-implementation-diff';
 export * from './execute-commit';
 export * from './run-lifecycle';
 export * from './manage-worktree';

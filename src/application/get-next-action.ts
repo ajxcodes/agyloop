@@ -33,6 +33,9 @@ import {
   ROLE_TITLE_TRIAGE,
   ROLE_TITLE_DISCOVERY,
   MODE_YOLO,
+  VERDICT_APPROVED,
+  VERDICT_SKIPPED,
+  VERDICT_CHANGES_REQUESTED,
   IssueNumber,
   MAX_IMPLEMENT_GATE_LOOPS,
   GATE_TRIAGE,
@@ -544,7 +547,9 @@ export class GetNextActionUseCase {
           nextStage: STAGE_COMPLETED,
           actionType: 'human_gate',
           title: 'Conventional Commit & Teardown Gate',
-          description: 'Review passed. Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.',
+          // Issue #259 (AC4): the verdict is read from the recorded history
+          // metadata — a SKIPPED review must never be described as a pass.
+          description: this.buildCommitGateDescription(this.lastReviewVerdict(sm)),
           baseBranch,
           taskBranch,
           worktreePath,
@@ -669,6 +674,55 @@ export class GetNextActionUseCase {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Reads the MOST RECENT recorded AI-review verdict from the checkpoint
+   * history (issue #259).
+   *
+   * `RunReviewUseCase` records the verdict in the metadata of the history
+   * entry it writes (`reviewVerdict`), so the COMMIT gate can describe what
+   * actually happened instead of hard-coding "Review passed". The history is
+   * scanned backwards: the last verdict is the one that produced this
+   * checkpoint.
+   */
+  private lastReviewVerdict(sm: StateMachine): string | null {
+    const history = sm.history;
+
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const verdict = history[index].metadata?.reviewVerdict;
+      if (typeof verdict === 'string' && verdict.length > 0) {
+        return verdict;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Builds the COMMIT-gate description for the recorded review verdict.
+   *
+   * The approved path keeps its original wording; every other verdict says
+   * what actually happened. A skipped review is advisory, never a pass — the
+   * #236 fail-open is preserved, only the WORDING at this gate changes.
+   */
+  private buildCommitGateDescription(reviewVerdict: string | null): string {
+    const commitInstructions =
+      'Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.';
+
+    if (reviewVerdict === VERDICT_APPROVED) {
+      return `Review passed. ${commitInstructions}`;
+    }
+
+    if (reviewVerdict === VERDICT_SKIPPED) {
+      return `AI review was SKIPPED (no reviewer output, no critique report) — advisory, not a pass. ${commitInstructions}`;
+    }
+
+    if (reviewVerdict === VERDICT_CHANGES_REQUESTED) {
+      return `AI review requested changes — this checkpoint should not be at the COMMIT gate. ${commitInstructions}`;
+    }
+
+    return `No AI review verdict is recorded for this task. ${commitInstructions}`;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -7,8 +7,18 @@ const {
   FilePlanGenerator,
   parseArguments,
   TEMPLATE_FILES,
-  FALLBACK_TEMPLATES
+  FALLBACK_TEMPLATES,
+  // Issue #259 (S7b): the placeholder status of a stage that has not run.
+  // Imported, never re-typed, so the assertions cannot drift from the domain.
+  SUMMARY_STATUS_PENDING
 } = require('../dist');
+
+/**
+ * The on-disk scaffold template. The embedded fallback in
+ * `FALLBACK_TEMPLATES` is a second, hand-maintained copy of this file — the
+ * drift guard (`G4`) compares the two so they cannot diverge silently.
+ */
+const SUMMARY_TEMPLATE_PATH = path.resolve(__dirname, '..', 'templates', 'summary-log.md');
 
 describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
   let tempDir: string;
@@ -316,8 +326,10 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       });
 
       const original = fs.readFileSync(summaryResult.summaryPath, 'utf8');
-      assert.ok(original.includes('| 2. Plan Review | Human Gate | - | APPROVED | - |'));
-      assert.ok(original.includes('| 5. AI Review | `reviewer` | `flash` | APPROVED | - |'));
+      // Issue #259 (S7b): the scaffolded placeholders are PENDING for every
+      // stage that has not run — they no longer pre-claim APPROVED.
+      assert.ok(original.includes('| 2. Plan Review | Human Gate | - | PENDING | - |'));
+      assert.ok(original.includes('| 5. AI Review | `reviewer` | `flash` | PENDING | - |'));
 
       // 1. 'AI Review' must land on row 5 and leave row 2 untouched
       const updatedAi = generator.updateSummaryLog(summaryResult.summaryPath, {
@@ -334,7 +346,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         `AI Review row should be SKIPPED, got:\n${afterAi}`
       );
       assert.ok(
-        afterAi.includes('| 2. Plan Review | Human Gate | - | APPROVED | - |'),
+        afterAi.includes('| 2. Plan Review | Human Gate | - | PENDING | - |'),
         'Plan Review row must keep its original status'
       );
       assert.ok(afterAi.includes('- Review skipped: no reviewer output or critique report.'));
@@ -355,6 +367,366 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.ok(
         afterPlan.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
         'AI Review row must keep the SKIPPED status written earlier'
+      );
+    });
+
+    // ------------------------------------------------------------------
+    // Issue #259 (S7b, AC4b): the scaffolded execution summary must not
+    // pre-claim green rows for stages that have not run.
+    // ------------------------------------------------------------------
+
+    /** The rows of the scaffolded summary, keyed by their stage label. */
+    function stageRows(content: string): Map<string, string> {
+      const rows = new Map<string, string>();
+      for (const line of content.split('\n')) {
+        if (!line.startsWith('|') || line.includes('---') || line.includes('Stage | Subagent')) {
+          continue;
+        }
+        const parts = line.split('|').map((p) => p.trim());
+        if (parts.length >= 6) {
+          rows.set(parts[1], line);
+        }
+      }
+      return rows;
+    }
+
+    /**
+     * The STATUS CELL of every lifecycle row, keyed by the stage label.
+     *
+     * The comparison is deliberately on the cell and never on raw bytes: the
+     * on-disk template carries trailing double-spaces for markdown hard line
+     * breaks, and the embedded fallback must not be sensitive to that.
+     */
+    function rowStatusCells(content: string): Map<string, string> {
+      const statuses = new Map<string, string>();
+      for (const line of content.split('\n')) {
+        if (!line.startsWith('|') || line.includes('---') || line.includes('Stage | Subagent')) {
+          continue;
+        }
+        const parts = line.split('|').map((p) => p.trim());
+        if (parts.length >= 6) {
+          statuses.set(parts[1], parts[4]);
+        }
+      }
+      return statuses;
+    }
+
+    /**
+     * EVERY lifecycle row, keyed by the stage label, with the trimmed CELLS of
+     * the row (stage, subagent, model, status, duration).
+     *
+     * The comparison is on the cells and never on raw bytes: the on-disk
+     * template carries trailing double-spaces for markdown hard line breaks,
+     * and the embedded fallback must not be sensitive to that.
+     */
+    function lifecycleRows(content: string): Map<string, string[]> {
+      const rows = new Map<string, string[]>();
+      for (const line of content.split('\n')) {
+        if (!line.startsWith('|') || line.includes('---')) {
+          continue;
+        }
+        const parts = line.split('|').map((p) => p.trim());
+        if (parts.length < 6 || parts[1] === 'Stage') {
+          continue;
+        }
+        rows.set(parts[1], parts.slice(1, 6));
+      }
+      return rows;
+    }
+
+    /**
+     * The body lines of the `## Review Notes` block.
+     */
+    function reviewNotesBody(content: string): string[] {
+      const lines = content.split('\n');
+      const start = lines.findIndex((l) => l.trim() === '## Review Notes');
+      assert.ok(start >= 0, `the content must carry a Review Notes block, got:\n${content}`);
+      const body: string[] = [];
+      for (const line of lines.slice(start + 1)) {
+        if (line.trimStart().startsWith('## ')) break;
+        const trimmed = line.trim();
+        if (trimmed.length > 0) body.push(trimmed);
+      }
+      return body;
+    }
+
+    /**
+     * The `**Key:** value` pairs of the `## Quality Gate Metrics` block,
+     * keyed by the metric name.
+     */
+    function metricsPairs(content: string): Map<string, string> {
+      const pairs = new Map<string, string>();
+      const lines = content.split('\n');
+      const start = lines.findIndex((l) => l.trim() === '## Quality Gate Metrics');
+      assert.ok(start >= 0, `the content must carry a Quality Gate Metrics block, got:\n${content}`);
+      for (const line of lines.slice(start + 1)) {
+        if (line.trimStart().startsWith('## ')) break;
+        const match = /^-\s+\*\*(.+?):\*\*\s*(.*)$/.exec(line);
+        if (match) {
+          pairs.set(match[1].trim(), match[2].trim());
+        }
+      }
+      return pairs;
+    }
+
+    test('G1 (AC4b): a freshly scaffolded CodeLoop Summary.md shows PENDING for every stage that has not run and never asserts COMPLETED / PASSED / APPROVED', () => {
+      const summaryResult = generator.generateSummaryLog({
+        targetDir: tempDir,
+        projectName: 'TestApp',
+        issueNumber: 70
+      });
+
+      const content = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      const rows = stageRows(content);
+
+      // Every stage that has not run is PENDING.
+      const notRunStages = [
+        '2. Plan Review',
+        '3. Implementation',
+        '4. Quality Gate',
+        '5. AI Review',
+        '6. Commit Gate'
+      ];
+      for (const stage of notRunStages) {
+        const row = rows.get(stage) ?? '';
+        assert.ok(row, `the summary must carry the '${stage}' row, got:\n${content}`);
+        assert.ok(
+          row.includes(`| ${SUMMARY_STATUS_PENDING} |`),
+          `the '${stage}' row must be ${SUMMARY_STATUS_PENDING}, got: ${row}`
+        );
+      }
+
+      // The metrics of the stages that have not run are honest too.
+      assert.ok(
+        content.includes(`- **Build Status:** ${SUMMARY_STATUS_PENDING}`),
+        `the build status must not pre-claim a verdict, got:\n${content}`
+      );
+      assert.ok(
+        content.includes('- **Tests:** -'),
+        `the tests metric must not pre-claim a result, got:\n${content}`
+      );
+
+      // No stage may pre-claim a green outcome.
+      assert.ok(
+        !content.includes('APPROVED'),
+        `a scaffolded summary must not claim an approval, got:\n${content}`
+      );
+      assert.ok(
+        !content.includes('PASSED'),
+        `a scaffolded summary must not claim a pass, got:\n${content}`
+      );
+      for (const stage of notRunStages) {
+        assert.ok(
+          !String(rows.get(stage)).includes('COMPLETED'),
+          `the '${stage}' row must not claim the stage ran, got: ${rows.get(stage)}`
+        );
+      }
+    });
+
+    test('G2 (AC4b): updateSummaryLog still overwrites a PENDING row with the real status (the PENDING placeholder does not break the existing rewrite path)', () => {
+      const summaryResult = generator.generateSummaryLog({
+        targetDir: tempDir,
+        projectName: 'TestApp',
+        issueNumber: 71
+      });
+
+      const before = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        before.includes('| 4. Quality Gate | `gate` | `flash_lite` | PENDING | - |'),
+        `the Quality Gate row must start as PENDING, got:\n${before}`
+      );
+
+      const updated = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Quality Gates',
+        subagent: 'gate',
+        model: 'flash_lite',
+        status: 'PASSED',
+        duration: '12s',
+        buildStatus: 'PASSED',
+        testsStatus: '10/10 passing'
+      });
+      assert.strictEqual(updated, true, 'the PENDING row must still be rewritten');
+
+      const after = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        after.includes('| 4. Quality Gate | `gate` | `flash_lite` | PASSED | 12s |'),
+        `the real status must replace the placeholder, got:\n${after}`
+      );
+      assert.ok(
+        !after.includes('| 4. Quality Gate | `gate` | `flash_lite` | PENDING | - |'),
+        `the placeholder must be gone, got:\n${after}`
+      );
+      assert.ok(after.includes('- **Build Status:** PASSED'));
+      assert.ok(after.includes('- **Tests:** 10/10 passing'));
+    });
+
+    test('G3 (AC4b, regression): the pre-update placeholder rows are PENDING and the post-update assertions still hold', () => {
+      const summaryResult = generator.generateSummaryLog({
+        targetDir: tempDir,
+        projectName: 'TestApp',
+        issueNumber: 72
+      });
+
+      // The two placeholders that the scaffold used to fill with APPROVED.
+      const original = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        original.includes('| 2. Plan Review | Human Gate | - | PENDING | - |'),
+        `the Plan Review placeholder must be PENDING, got:\n${original}`
+      );
+      assert.ok(
+        original.includes('| 5. AI Review | `reviewer` | `flash` | PENDING | - |'),
+        `the AI Review placeholder must be PENDING, got:\n${original}`
+      );
+
+      // The post-update assertion: the row the tool wrote carries its own value.
+      const updatedAi = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'AI Review',
+        status: 'SKIPPED',
+        duration: '0.1s'
+      });
+      assert.strictEqual(updatedAi, true, 'Should find and update the AI Review row');
+
+      const afterAi = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        afterAi.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        `AI Review row should be SKIPPED, got:\n${afterAi}`
+      );
+      assert.ok(
+        afterAi.includes('| 2. Plan Review | Human Gate | - | PENDING | - |'),
+        'Plan Review row must keep its original status'
+      );
+
+      // The second post-update assertion: the Plan Review row keeps its value.
+      const updatedPlan = generator.updateSummaryLog(summaryResult.summaryPath, {
+        stage: 'Plan Review',
+        status: 'COMPLETED',
+        duration: '3s'
+      });
+      assert.strictEqual(updatedPlan, true, 'Should find and update the Plan Review row');
+
+      const afterPlan = fs.readFileSync(summaryResult.summaryPath, 'utf8');
+      assert.ok(
+        afterPlan.includes('| 2. Plan Review | Human Gate | - | COMPLETED | 3s |'),
+        'Plan Review row should be COMPLETED'
+      );
+      assert.ok(
+        afterPlan.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        'AI Review row must keep the SKIPPED status written earlier'
+      );
+    });
+
+    test('G4 (AC4b, regression): the embedded SUMMARY fallback agrees with templates/summary-log.md on EVERY lifecycle row, every metric and the review notes — and never pre-claims a green stage', () => {
+      // The two copies of the scaffold — the on-disk template and the embedded
+      // fallback used when the template file cannot be read — are maintained by
+      // hand, so nothing but this guard keeps them in step. Before the guard,
+      // the fallback still carried the pre-S7b false claims (COMPLETED /
+      // PASSED / APPROVED) while the on-disk template did not.
+      const fallback = FALLBACK_TEMPLATES[TEMPLATE_FILES.SUMMARY];
+      const onDisk = fs.readFileSync(SUMMARY_TEMPLATE_PATH, 'utf8');
+
+      const fallbackStatuses = rowStatusCells(fallback);
+      const onDiskStatuses = rowStatusCells(onDisk);
+
+      const notRunStages = [
+        '2. Plan Review',
+        '3. Implementation',
+        '4. Quality Gate',
+        '5. AI Review',
+        '6. Commit Gate'
+      ];
+
+      for (const stage of notRunStages) {
+        const fallbackStatus = fallbackStatuses.get(stage);
+        const onDiskStatus = onDiskStatuses.get(stage);
+        assert.ok(fallbackStatus, `the fallback must carry the '${stage}' row, got:\n${fallback}`);
+        assert.ok(
+          onDiskStatus,
+          `templates/summary-log.md must carry the '${stage}' row, got:\n${onDisk}`
+        );
+        assert.strictEqual(
+          fallbackStatus,
+          SUMMARY_STATUS_PENDING,
+          `the fallback's '${stage}' row must be ${SUMMARY_STATUS_PENDING}, got: ${fallbackStatus}`
+        );
+        assert.strictEqual(
+          onDiskStatus,
+          SUMMARY_STATUS_PENDING,
+          `templates/summary-log.md's '${stage}' row must be ${SUMMARY_STATUS_PENDING}, got: ${onDiskStatus}`
+        );
+        assert.strictEqual(
+          fallbackStatus,
+          onDiskStatus,
+          `the fallback and templates/summary-log.md disagree on the '${stage}' status`
+        );
+      }
+
+      // EVERY lifecycle row — 1 to 6, and every CELL of it (subagent, model,
+      // status, duration) — must agree, not just the status cell of rows 2-6.
+      // A divergence in row 1 or in a non-status column is a drift too.
+      const fallbackRows = lifecycleRows(fallback);
+      const onDiskRows = lifecycleRows(onDisk);
+      const allStages = [
+        '1. Discovery',
+        '2. Plan Review',
+        '3. Implementation',
+        '4. Quality Gate',
+        '5. AI Review',
+        '6. Commit Gate'
+      ];
+
+      assert.deepStrictEqual(
+        [...fallbackRows.keys()],
+        allStages,
+        `the fallback must carry exactly the six lifecycle rows, got:\n${fallback}`
+      );
+      assert.deepStrictEqual(
+        [...onDiskRows.keys()],
+        allStages,
+        `templates/summary-log.md must carry exactly the six lifecycle rows, got:\n${onDisk}`
+      );
+
+      for (const stage of allStages) {
+        assert.deepStrictEqual(
+          fallbackRows.get(stage),
+          onDiskRows.get(stage),
+          `the fallback and templates/summary-log.md disagree on the '${stage}' row`
+        );
+      }
+
+      // The metrics block agrees too — and claims no verdict.
+      const fallbackMetrics = metricsPairs(fallback);
+      const onDiskMetrics = metricsPairs(onDisk);
+      assert.deepStrictEqual(
+        [...fallbackMetrics.entries()].sort(),
+        [...onDiskMetrics.entries()].sort(),
+        'the fallback and templates/summary-log.md must carry the same metrics'
+      );
+      assert.strictEqual(fallbackMetrics.get('Build Status'), SUMMARY_STATUS_PENDING);
+      assert.strictEqual(fallbackMetrics.get('Tests'), '-');
+
+      // The review notes agree too.
+      assert.deepStrictEqual(
+        reviewNotesBody(fallback),
+        reviewNotesBody(onDisk),
+        'the fallback and templates/summary-log.md must carry the same review notes'
+      );
+
+      // The fallback carries no false claim of its own.
+      assert.ok(
+        !fallback.includes('| PASSED |'),
+        `the fallback must not claim a pass, got:\n${fallback}`
+      );
+      assert.ok(
+        !fallback.includes('| APPROVED |'),
+        `the fallback must not claim an approval, got:\n${fallback}`
+      );
+      assert.ok(
+        !fallback.includes('100% passing'),
+        `the fallback must not claim a test result, got:\n${fallback}`
+      );
+      assert.ok(
+        !fallback.includes('Build Status:** PASSED'),
+        `the fallback must not claim a build verdict, got:\n${fallback}`
       );
     });
   });

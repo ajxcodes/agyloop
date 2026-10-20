@@ -35,6 +35,16 @@ import {
 
 export const LEGACY_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
 
+/**
+ * The embedded copies of the scaffold templates, used when the on-disk file
+ * cannot be read (a broken or custom install).
+ *
+ * The `TEMPLATE_SUMMARY` entry MIRRORS `templates/summary-log.md` and must not
+ * pre-claim a stage that has not run: every not-yet-run row is `PENDING` and
+ * the metrics block carries no verdict. The two copies are kept in step by the
+ * drift guard in `tests/generator.test.ts` (case `G4`) — change one, change
+ * the other.
+ */
 export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freeze({
   [TEMPLATE_DISCOVERY]: `# [Discovery] - {Title}
 
@@ -108,18 +118,18 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 | Stage | Subagent | Model | Status | Duration |
 |---|---|---|---|---|
 | 1. Discovery | \`planner\` | \`pro\` | COMPLETED | - |
-| 2. Plan Review | Human Gate | - | APPROVED | - |
-| 3. Implementation | \`implementer\` | \`inherit\` | COMPLETED | - |
-| 4. Quality Gate | \`gate\` | \`flash_lite\` | PASSED | - |
-| 5. AI Review | \`reviewer\` | \`flash\` | APPROVED | - |
+| 2. Plan Review | Human Gate | - | PENDING | - |
+| 3. Implementation | \`implementer\` | \`inherit\` | PENDING | - |
+| 4. Quality Gate | \`gate\` | \`flash_lite\` | PENDING | - |
+| 5. AI Review | \`reviewer\` | \`flash\` | PENDING | - |
 | 6. Commit Gate | Human Gate | - | PENDING | - |
 
 ## Quality Gate Metrics
-- **Build Status:** PASSED
-- **Tests:** 100% passing
+- **Build Status:** PENDING
+- **Tests:** -
 
 ## Review Notes
-- Standards compliance verified against repository rules.
+-
 `
 });
 

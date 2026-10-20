@@ -16,6 +16,29 @@
  * - commitAfter: Automatically drafts and executes commit upon green gates and review.
  * - yolo + commitAfter: 100% end-to-end unattended continuous loop.
  *
+ * THE CROSS-MODE INVARIANT (issue #259, S9):
+ *
+ *   No lifecycle path may advance past IMPLEMENT to QUALITY_GATE without
+ *   positive evidence that the implementation exists in the active workspace.
+ *
+ * The invariant is deliberately phrased as an EVIDENCE rule and not as a
+ * DISPATCH rule. agyloop is a dispatcher, not an executor: no path in this
+ * repository ever runs a subagent (`codeloop next` hands an
+ * `actionType: 'subagent'` payload to an EXTERNAL orchestrator), and
+ * `AgentRunnerPort` is deliberately not wired into the lifecycle
+ * (`src/application/halt-pipeline.ts`). `codeloop implement` and
+ * `codeloop yolo` are therefore EQUALLY incapable of dispatching — the
+ * difference is that `implement` STOPS at IMPLEMENT and hands the operator a
+ * next step, while `yolo` used to CONTINUE into verification over a tree that
+ * nothing had changed.
+ *
+ * | Path                  | Advances past IMPLEMENT? | What enforces the invariant |
+ * |-----------------------|--------------------------|-----------------------------|
+ * | `codeloop yolo`       | yes (gates + review)     | the implementation-evidence probe at the IMPLEMENT -> QUALITY_GATE boundary, which PARKS when the tree carries no implementation |
+ * | `codeloop implement`  | no — prepares and stops  | already satisfied: it never calls the gate or the review |
+ * | `codeloop` (standard) | yes (gates + review)     | the same probe, injected into the gate, which returns VACUOUS and stops the loop before the review |
+ * | `codeloop gates` / `codeloop commit` | no implementation stage | not in scope of the invariant |
+ *
  * Strict Hexagonal Architecture: Zero direct I/O, zero Node.js built-ins.
  */
 
@@ -57,6 +80,11 @@ import {
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
   NOTE_PAUSED_CIRCUIT_BREAKER_GATE,
+  NOTE_YOLO_NO_IMPLEMENTATION,
+  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN,
+  isPlanContentSubstantive,
+  NOTE_GATES_VACUOUS_STANDARD,
+  NOTE_GATES_VACUOUS_YOLO,
   GateCommandDefinition,
   WorktreeDescriptor,
   DEFAULT_CB_MAX_GATE_RETRIES,
@@ -84,6 +112,7 @@ import {
 import { StartPlanningUseCase, StartPlanningResult } from './start-planning';
 import { StartImplementationUseCase, StartImplementationResult } from './start-implementation';
 import { RunQualityGateUseCase, QualityGateRunResult } from './run-quality-gate';
+import { DetectImplementationDiffUseCase, ImplementationDiff } from './detect-implementation-diff';
 import { RunReviewUseCase, RunReviewResult } from './run-review';
 import { DraftCommitUseCase, DraftCommitResult } from './draft-commit';
 import { ExecuteCommitUseCase, ExecuteCommitResult } from './execute-commit';
@@ -178,6 +207,26 @@ export interface RunLifecycleResult {
   readonly executeCommitResult?: ExecuteCommitResult;
   readonly worktree?: WorktreeDescriptor | null;
   readonly message?: string;
+  /**
+   * True when the run parked because NO implementation was detected (issue
+   * #259). The stage stayed at IMPLEMENT: no transition happened, nothing was
+   * reverted, and no gate command was executed.
+   */
+  readonly implementationHalted?: boolean;
+  /**
+   * The implementation-evidence verdict the run was given (issue #259). It is
+   * the operator-facing diagnostic for the park and the `--json` payload for
+   * machine consumers.
+   */
+  readonly implementationDiff?: ImplementationDiff | null;
+  /**
+   * True when the plan the run was given carries NO implementation steps —
+   * the tool's own blank scaffold (issue #259, S10). The fast-path never
+   * dispatches the planner, so its plan IS the scaffold; a directive that
+   * points at an empty plan is a false instruction, so the park suppresses it
+   * and names the plan instead.
+   */
+  readonly implementationPlanEmpty?: boolean;
 }
 
 export interface RunLifecycleDependencies {
@@ -201,6 +250,11 @@ export interface RunLifecycleDependencies {
   readonly worktreeManager?: WorktreeManagerPort;
   readonly runPreFlightCheckUseCase?: RunPreFlightCheckUseCase;
   readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  /**
+   * The implementation-evidence probe (issue #259). Injectable so a caller can
+   * drive the park deterministically without a real git repository.
+   */
+  readonly detectImplementationDiffUseCase?: DetectImplementationDiffUseCase;
 }
 
 export class RunLifecycleUseCase {
@@ -223,6 +277,7 @@ export class RunLifecycleUseCase {
   private readonly executeCommitUseCase: ExecuteCommitUseCase;
   private readonly runPreFlightCheckUseCase: RunPreFlightCheckUseCase;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  private readonly detectImplementationDiffUseCase: DetectImplementationDiffUseCase;
 
   constructor(deps: RunLifecycleDependencies) {
     this.stateRepo = deps.stateRepo;
@@ -314,6 +369,10 @@ export class RunLifecycleUseCase {
     this.runPreFlightCheckUseCase =
       deps.runPreFlightCheckUseCase ??
       new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager, this.stateRepo);
+
+    this.detectImplementationDiffUseCase =
+      deps.detectImplementationDiffUseCase ??
+      new DetectImplementationDiffUseCase(this.commandExecutor);
   }
 
   public async execute(params: RunLifecycleParams = {}): Promise<RunLifecycleResult> {
@@ -654,6 +713,25 @@ export class RunLifecycleUseCase {
   }
 
   /**
+   * Measures the working tree against the base branch (issue #259).
+   *
+   * The base reference follows the same fallback chain the review path uses:
+   * an explicit ref -> the inferred base branch -> 'main'.
+   */
+  private async probeImplementationDiff(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    workspace: string
+  ): Promise<ImplementationDiff> {
+    const baseRef = params.baseRef ?? params.baseBranch ?? sm.baseBranch ?? 'main';
+
+    return this.detectImplementationDiffUseCase.execute({
+      workspaceDir: workspace,
+      baseRef
+    });
+  }
+
+  /**
    * Helper: detaches and removes an isolated worktree upon task completion.
    */
   private async teardownWorktree(
@@ -881,6 +959,69 @@ export class RunLifecycleUseCase {
       sm = implResult.stateMachine;
     }
 
+    // Issue #259: the YOLO fast-path PREPARES an implementation but never
+    // dispatches the implementer subagent, so the gates used to certify the
+    // untouched baseline and the pipeline advanced to COMMIT with an empty
+    // diff. Measure the working tree BEFORE the gates run: when it contains no
+    // implementation, park at IMPLEMENT instead of certifying nothing.
+    //
+    // The probe answers exactly one question — "is there an implementation?" —
+    // and that question is only meaningful at the IMPLEMENT -> QUALITY_GATE
+    // boundary. A re-run of the gates from QUALITY_GATE/COMMIT/COMPLETED
+    // answers it implicitly: the pipeline only got there over a tree that
+    // carried an implementation. So the probe runs exactly where its answer
+    // can change the outcome, and nowhere else.
+    const implementationDiff =
+      sm.currentStage === STAGE_IMPLEMENT
+        ? await this.probeImplementationDiff(sm, params, activeWorkspace)
+        : null;
+
+    // A verdict that carries a `probeError` is NOT a verdict: the probe could
+    // not read the tree (no git, not a repository, an unreadable directory).
+    // The run then keeps its pre-existing behaviour instead of parking on an
+    // absence of information.
+    const implementationVerdict =
+      implementationDiff !== null && implementationDiff.probeError === null
+        ? implementationDiff
+        : null;
+
+    if (implementationVerdict && !implementationVerdict.hasChanges) {
+      // A park performs NO `StateMachine.transition()`: `IMPLEMENT -> IMPLEMENT`
+      // is not a legal transition, and the stage was never advanced, so nothing
+      // was reverted. The park reason lives in the result message and in the
+      // returned verdict; the persisted stage + `updatedAt` record the halt.
+
+      // Issue #259 (S10): the plan the fast-path actually implements. The
+      // planner is never dispatched either, so the plan IS the tool's own
+      // blank scaffold — and an implementer directive that points at an empty
+      // plan is a false instruction. An ABSENT implementation result is not a
+      // verdict (the same rule as `probeError`): never refuse on absent
+      // information.
+      const planIsEmpty = implResult ? !isPlanContentSubstantive(implResult.planContent) : false;
+      const planPath = implResult?.planPath || '(the scaffolded plan)';
+
+      await this.persistCheckpoint(sm, params.dryRun);
+
+      return {
+        success: true, // a deliberate, checkpointed park — exactly like the DISCOVERY park
+        mode: MODE_YOLO,
+        currentStage: STAGE_IMPLEMENT,
+        stateMachine: sm,
+        planResult,
+        implementationResult: implResult,
+        worktree,
+        implementationHalted: true,
+        implementationDiff,
+        implementationPlanEmpty: planIsEmpty,
+        message: planIsEmpty
+          ? NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN.replace('{baseRef}', implementationVerdict.baseRef).replace(
+              '{planPath}',
+              planPath
+            )
+          : NOTE_YOLO_NO_IMPLEMENTATION.replace('{baseRef}', implementationVerdict.baseRef)
+      };
+    }
+
     // #234: an unattended run must never depend on RunQualityGateUseCase's
     // InvalidTransitionError for control flow. Whitelist = exactly the source
     // stages that use case accepts (run-quality-gate.ts:170-185).
@@ -913,12 +1054,33 @@ export class RunLifecycleUseCase {
       timeoutSeconds: params.timeoutSeconds,
       dryRun: params.dryRun,
       configPath: params.configPath,
-      workspaceDir: activeWorkspace
+      workspaceDir: activeWorkspace,
+      implementationDiff: implementationVerdict
     });
 
     sm = qgResult.stateMachine;
 
     if (!qgResult.passed) {
+      // Issue #259 (defence in depth): a VACUOUS verdict is a REFUSAL, not a
+      // failure. Nothing was executed, nothing was reverted (the stage was
+      // never advanced), and the verdict must NEVER consume a gate retry —
+      // least of all trip the circuit breaker. This branch therefore precedes
+      // the breaker check below.
+      if (qgResult.vacuous === true) {
+        return {
+          success: true,
+          mode: MODE_YOLO,
+          currentStage: sm.currentStage,
+          stateMachine: sm,
+          planResult,
+          implementationResult: implResult,
+          qualityGateResult: qgResult,
+          worktree,
+          implementationDiff: qgResult.implementationDiff ?? implementationDiff,
+          message: NOTE_GATES_VACUOUS_YOLO
+        };
+      }
+
       const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
       const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
       const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
@@ -1136,6 +1298,18 @@ export class RunLifecycleUseCase {
     // 3. If at IMPLEMENT: run quality gates
     let qgResult: QualityGateRunResult | undefined;
     if (sm.currentStage === STAGE_IMPLEMENT) {
+      // Issue #259: the standard loop does NOT park — the operator may
+      // legitimately run the gates on a tree they have not committed — but the
+      // gate still receives the implementation-evidence verdict, so a gate
+      // over an unchanged tree is reported as VACUOUS instead of certifying
+      // the untouched baseline.
+      //
+      // A verdict that carries a `probeError` is NOT a verdict (the tree could
+      // not be read), so the gate keeps its pre-existing behaviour.
+      const implementationDiff = await this.probeImplementationDiff(sm, params, activeWorkspace);
+      const implementationVerdict =
+        implementationDiff.probeError === null ? implementationDiff : null;
+
       qgResult = await this.runQualityGateUseCase.execute({
         issue: sm.issue,
         planPath: params.planPath,
@@ -1144,12 +1318,34 @@ export class RunLifecycleUseCase {
         timeoutSeconds: params.timeoutSeconds,
         dryRun: params.dryRun,
         configPath: params.configPath,
-        workspaceDir: activeWorkspace
+        workspaceDir: activeWorkspace,
+        implementationDiff: implementationVerdict
       });
 
       sm = qgResult.stateMachine;
 
       if (!qgResult.passed) {
+        // Issue #259: a VACUOUS verdict is NOT a failure. The standard loop
+        // must not start failing on an unchanged tree, and it must never
+        // claim "Quality gates failed" / "reverted to IMPLEMENT" — nothing
+        // ran and nothing was reverted.
+        if (qgResult.vacuous === true) {
+          return {
+            success: true,
+            mode: MODE_STANDARD,
+            currentStage: sm.currentStage,
+            stateMachine: sm,
+            implementationResult: implResult,
+            qualityGateResult: qgResult,
+            worktree,
+            implementationDiff: qgResult.implementationDiff ?? implementationDiff,
+            message: NOTE_GATES_VACUOUS_STANDARD.replace(
+              '{baseRef}',
+              (qgResult.implementationDiff ?? implementationDiff).baseRef
+            )
+          };
+        }
+
         const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
         const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
         const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
