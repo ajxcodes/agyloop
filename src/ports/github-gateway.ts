@@ -54,14 +54,15 @@ export interface PullRequestReviewComment {
 /**
  * A review thread of a pull request.
  *
- * The resolution state is the ONLY cross-run memory the inline surface has:
- * a thread that is already resolved was answered by an earlier run, so its
- * comments must never be answered (or resolved) again.
+ * The resolution state is NOT the cross-run memory of the inline surface: the
+ * review bot auto-resolves the threads it creates, so a resolved thread can
+ * be completely unanswered. The cross-run memory is the dismissal MARKER in
+ * the thread — the caller reads it off the thread's comments.
  */
 export interface ReviewThread {
   readonly id: string;
   readonly commentIds: readonly number[];
-  /** True when the thread is already resolved. */
+  /** True when the thread is already resolved (closed), whatever answered it. */
   readonly isResolved: boolean;
 }
 
@@ -188,9 +189,12 @@ export interface GitHubGateway {
   /**
    * Lists the review threads of a pull request, RESOLVED ones included.
    *
-   * The dismissal route needs the resolved threads: a thread that an earlier
-   * run already resolved is the cross-run proof that its comments were
-   * answered, so the route must not answer them again.
+   * The dismissal route needs the closed threads too: the threads that were
+   * ANSWERED carry the tool's dismissal marker, and that marker — not the
+   * resolution state — is the cross-run proof that their comments were
+   * answered. A resolved thread is only CLOSED: the review bot auto-resolves
+   * the threads it creates, so a resolved thread can be entirely unanswered,
+   * and the route must answer those.
    */
   listReviewThreads?(
     prNumber: number,
@@ -201,8 +205,9 @@ export interface GitHubGateway {
    * Lists unresolved review threads on a pull request, with the database ids
    * of the comments each thread contains.
    *
-   * Gateways that cannot report the resolved threads keep this method; the
-   * dismissal route then has no cross-run memory for the inline surface.
+   * Gateways that cannot report the closed threads keep this method; the
+   * dismissal route then sees only the OPEN threads, so it cannot read the
+   * dismissal marker off the ones that were answered and closed.
    */
   listUnresolvedReviewThreads?(
     prNumber: number,

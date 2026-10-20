@@ -583,8 +583,10 @@ export class CliGitHubGateway implements GitHubGateway {
   /**
    * Lists the review threads of a pull request, RESOLVED ones included.
    *
-   * The resolution state is the cross-run memory of the inline surface: a
-   * thread that is already resolved was answered by an earlier run.
+   * The resolution state is NOT the cross-run memory of the inline surface: a
+   * thread can be resolved without anybody having answered it (the review bot
+   * auto-resolves the threads it creates). The caller reads the dismissal
+   * marker off the thread's comments instead.
    */
   public listReviewThreads(
     prNumber: number,

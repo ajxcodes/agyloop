@@ -29,6 +29,8 @@ import {
   NOTE_DISMISS_NO_GATEWAY,
   DISMISS_CONVERSATION_REPLY_FOOTER,
   DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX,
+  DISMISS_INLINE_REPLY_MARKER,
+  DISMISS_INLINE_REPLY_SIGNATURE,
   DISMISS_FAILURE_DETAIL_LIMIT,
   LABEL_DISMISS_THREADS,
   LABEL_DISMISS_CONVERSATION,
@@ -79,7 +81,7 @@ export interface TriageDismissReport {
   readonly skippedReason?: string;
   readonly threadsReplied: number;
   readonly threadsResolved: number;
-  /** Inline threads skipped because an earlier run already resolved them. */
+  /** Inline threads skipped because the tool's own dismissal reply is already in them. */
   readonly threadsSkipped: number;
   readonly conversationsReplied: number;
   /** Conversation comments that were not answered because they were answered already. */
@@ -87,7 +89,9 @@ export interface TriageDismissReport {
   /**
    * The subset of `conversationsSkipped` the PR's own state proves were
    * answered: another comment references their id, or their inline review
-   * thread is already resolved.
+   * thread carries the tool's dismissal MARKER. A resolved thread is only
+   * closed — the review bot auto-resolves the threads it creates — so its
+   * resolution state is not that proof.
    */
   readonly conversationsAlreadyAnswered: number;
   /**
@@ -112,10 +116,11 @@ export interface TriageDismissReport {
  * The state the two dismissal jobs share.
  *
  * The inline-thread job WRITES the feedback keys it answered inline and the
- * keys whose thread is already resolved; the conversation job READS both, so
- * the same feedback is never answered twice. The two sets and the two
- * collections are therefore shared BY REFERENCE, never copied, so an update
- * made by one job is seen by the other.
+ * keys whose thread needs no further answer (the ones that already carry the
+ * tool's dismissal marker); the conversation job READS both, so the same
+ * feedback is never answered twice. The two sets and the two collections are
+ * therefore shared BY REFERENCE, never copied, so an update made by one job
+ * is seen by the other.
  */
 interface TriageDismissContext {
   readonly gw: GitHubGateway;
@@ -129,9 +134,13 @@ interface TriageDismissContext {
   readonly answeredIds: ReadonlySet<number>;
   /** The moment the newest dismissal answer was posted, or null. */
   readonly newestAnswerAt: number | null;
-  /** The feedback keys of the inline comments that were answered inline. */
+  /** The feedback keys of the inline comments that were answered inline in this run. */
   readonly answeredInlineKeys: Set<string>;
-  /** The feedback keys of the inline comments whose thread is already resolved. */
+  /**
+   * The feedback keys of the inline comments whose thread needs no further
+   * answer: the thread carries the tool's dismissal marker, so the feedback
+   * was answered — whatever the thread's resolution state says.
+   */
   readonly resolvedInlineKeys: Set<string>;
   /** The failures of both jobs, in the order they happened. */
   readonly failures: TriageDismissFailure[];
@@ -228,6 +237,38 @@ export function isDismissalReply(body: string): boolean {
   return (
     text.includes(DISMISS_CONVERSATION_REPLY_FOOTER) ||
     text.includes(DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX)
+  );
+}
+
+/**
+ * The reply posted on an INLINE review thread.
+ *
+ * It carries the tool's marker: the thread's resolution state is not proof
+ * that the feedback was answered (the review bot auto-resolves the threads it
+ * creates), so the marker is the only evidence that survives the process.
+ */
+function buildInlineReply(notes: string): string {
+  return `${notes}\n\n${DISMISS_INLINE_REPLY_MARKER}`;
+}
+
+/**
+ * Whether an INLINE comment is a reply the TOOL posted.
+ *
+ * The tool posts as the same account as the human operator, so the AUTHOR
+ * cannot tell the tool's own replies from the operator's own notes — only the
+ * tool's marker can. Three forms count as the tool's own mark:
+ *
+ * - the marker the tool appends to every inline reply it posts;
+ * - the conversation markers, for a reply that quotes one;
+ * - the tool's historic signature, which is the only tool-owned signal the
+ *   replies already posted on PR #261 carry.
+ */
+export function isInlineDismissalReply(body: string): boolean {
+  const text = body || '';
+  return (
+    text.includes(DISMISS_INLINE_REPLY_MARKER) ||
+    text.includes(DISMISS_INLINE_REPLY_SIGNATURE) ||
+    isDismissalReply(text)
   );
 }
 
@@ -555,8 +596,10 @@ export class TriagePrCommentsUseCase {
    * everything. What the route remembers is therefore derived from the PR's
    * CURRENT state, which survives the process:
    *
-   * - an inline comment whose review thread is RESOLVED was answered by an
-   *   earlier run, so it is skipped;
+   * - an inline comment whose review thread already carries a DISMISSAL MARKER
+   *   was answered by an earlier run, so it is skipped. The thread's
+   *   resolution state is NOT that proof: the review bot auto-resolves the
+   *   threads it creates, so a resolved thread can be unanswered;
    * - a conversation comment whose id another comment REFERENCES was answered
    *   by an earlier run, so it is skipped.
    */
@@ -619,7 +662,7 @@ export class TriagePrCommentsUseCase {
 
     /** The feedback keys of the inline comments that were answered inline. */
     const answeredInlineKeys = new Set<string>();
-    /** The feedback keys of the inline comments whose thread is already resolved. */
+    /** The feedback keys of the inline comments whose thread needs no further answer. */
     const resolvedInlineKeys = new Set<string>();
 
     // The two jobs below share this context: the inline job fills the two
@@ -676,10 +719,17 @@ export class TriagePrCommentsUseCase {
    * Dismisses the INLINE review threads of the pull request.
    *
    * The inline surface is the only one that can be replied to AND resolved.
+   *
+   * "Already answered" is decided by EVIDENCE THAT A REPLY WAS MADE — a
+   * dismissal marker in the thread — and NEVER by the thread's resolution
+   * state: the review bot auto-resolves the threads it creates, so on PR #261
+   * 34 of the 64 resolved threads had never been answered by anyone. A
+   * resolved thread without a marker is therefore UNANSWERED: it is replied
+   * to, and it is not resolved again (it is already closed).
+   *
    * The job records the feedback keys it answered inline and the keys whose
-   * thread an earlier run had already resolved; the conversation job reads
-   * both, so the two sets are shared by reference (see
-   * {@link TriageDismissContext}).
+   * thread was already answered; the conversation job reads both, so the two
+   * sets are shared by reference (see {@link TriageDismissContext}).
    */
   private async triageInlineThreads(
     context: TriageDismissContext
@@ -694,8 +744,8 @@ export class TriagePrCommentsUseCase {
       let threads: ReviewThread[] = [];
       try {
         if (gw.listReviewThreads) {
-          // The RESOLVED threads are listed too: a resolved thread is the
-          // cross-run proof that its comments were already answered.
+          // The RESOLVED threads are listed too: a resolved thread that
+          // nobody answered still needs its reply.
           threads = await gw.listReviewThreads(prNumber, gwOptions);
         } else {
           threads = (await gw.listUnresolvedReviewThreads!(prNumber, gwOptions)).map((t) => ({
@@ -718,11 +768,19 @@ export class TriagePrCommentsUseCase {
           continue;
         }
 
-        if (thread.isResolved) {
-          // An earlier run already answered this thread: no reply, no second
-          // resolve — the feedback is dismissed, not dismissed twice.
+        // The tool's own replies are EVIDENCE, not feedback: they are never
+        // answered, and they never contribute a feedback key.
+        const ownReplies = matched.filter((id) =>
+          isInlineDismissalReply(inlineById.get(id)?.body || '')
+        );
+        const feedback = matched.filter((id) => !ownReplies.includes(id));
+
+        if (ownReplies.length > 0) {
+          // A reply the TOOL posted is the proof that the feedback was
+          // answered — no reply, no resolve: the feedback is dismissed, not
+          // dismissed twice.
           threadsSkipped++;
-          for (const id of matched) {
+          for (const id of feedback) {
             const comment = inlineById.get(id);
             if (comment) {
               context.resolvedInlineKeys.add(prFeedbackKey(comment.body));
@@ -732,7 +790,7 @@ export class TriagePrCommentsUseCase {
         }
 
         try {
-          await gw.replyToThread(thread.id, notes, gwOptions);
+          await gw.replyToThread(thread.id, buildInlineReply(notes), gwOptions);
         } catch (err: unknown) {
           // One rejected thread must not abort the batch, and the thread is
           // left open because it was never answered.
@@ -741,11 +799,23 @@ export class TriagePrCommentsUseCase {
         }
 
         threadsReplied++;
-        for (const id of matched) {
+        for (const id of feedback) {
           const comment = inlineById.get(id);
           if (comment) {
             context.answeredInlineKeys.add(prFeedbackKey(comment.body));
+            if (thread.isResolved) {
+              // The thread is already closed: a reply was what was missing,
+              // not a resolve.
+              context.resolvedInlineKeys.add(prFeedbackKey(comment.body));
+            }
           }
+        }
+
+        if (thread.isResolved) {
+          // Already resolved by whoever closed it: resolving it again is not
+          // required, and the counter must not claim a resolve that did not
+          // happen.
+          continue;
         }
 
         try {
@@ -830,7 +900,8 @@ export class TriagePrCommentsUseCase {
         // The review bot posts the same feedback inline AND as a conversation
         // summary. Answering it twice would be noise, so a conversation comment
         // whose feedback was already answered inline is skipped — by an
-        // earlier run (its thread is resolved) or by this one.
+        // earlier run (its thread carries the tool's dismissal marker) or by
+        // this one.
         const feedbackKey = prFeedbackKey(comment.body);
         if (resolvedInlineKeys.has(feedbackKey)) {
           conversationsAlreadyAnswered++;

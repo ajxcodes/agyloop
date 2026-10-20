@@ -1692,7 +1692,11 @@ export const NOTE_DISMISS_DUPLICATE_FEEDBACK = 'duplicate feedback' as const;
 /**
  * Why a PR conversation comment was skipped: the PR's own state proves it was
  * already answered (another comment references its id, or its inline review
- * thread is resolved).
+ * thread carries the tool's dismissal MARKER).
+ *
+ * The thread's resolution state is not that proof: the review bot
+ * auto-resolves the threads it creates, so a resolved thread can be entirely
+ * unanswered.
  */
 export const NOTE_DISMISS_ALREADY_ANSWERED = 'already answered' as const;
 
@@ -1744,6 +1748,30 @@ export const DISMISS_CONVERSATION_PERMALINK_TEMPLATE =
  * comments that were answered can be read back off the PR's conversation.
  */
 export const REGEX_DISMISS_CONVERSATION_REFERENCE = /#issuecomment-(\d+)/g;
+
+/**
+ * The marker the tool appends to every INLINE review thread reply it posts.
+ *
+ * The thread's resolution state is NOT proof that the feedback was answered:
+ * the review bot auto-resolves the threads it creates, so a resolved thread
+ * can be completely unanswered. The marker is the only evidence that survives
+ * the process — exactly like the conversation surface's markers above — so a
+ * thread that carries it was answered, whatever its resolution state says.
+ */
+export const DISMISS_INLINE_REPLY_MARKER =
+  'Dismissing this inline review thread:' as const;
+
+/**
+ * The tool's historic signature on the dismissal notes it posts.
+ *
+ * Before the inline marker existed, the only tool-owned signal in an inline
+ * reply was the signature the notes ended with (`— CodeLoop Triage Subagent
+ * (issue #N)`). The replies already posted on PR #261 carry it and nothing
+ * else, so it must keep being read as "the tool answered this thread" —
+ * otherwise those threads would be answered a second time.
+ */
+export const DISMISS_INLINE_REPLY_SIGNATURE =
+  '— CodeLoop Triage Subagent' as const;
 
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;

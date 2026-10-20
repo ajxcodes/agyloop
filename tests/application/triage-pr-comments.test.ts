@@ -20,8 +20,19 @@ const {
   STAGE_COMPLETED,
   STAGE_INITIALIZED,
   GATE_TRIAGE,
-  StateMachine
+  StateMachine,
+  DISMISS_INLINE_REPLY_MARKER,
+  DISMISS_INLINE_REPLY_SIGNATURE
 } = require('../../dist/domain');
+
+/**
+ * The body the tool posts on an inline review thread: the operator's notes
+ * plus the tool's own marker, which is what makes the reply recognisable as
+ * the tool's on a later run.
+ */
+function inlineReplyBody(notes: string): string {
+  return `${notes}\n\n${DISMISS_INLINE_REPLY_MARKER}`;
+}
 
 function makeMockStateRepo(initialSnapshot: any = null) {
   let current = initialSnapshot;
@@ -253,7 +264,10 @@ describe('Issue #136 hardening', () => {
       ]
     });
     assert.strictEqual(result.stateMachine.currentStage, STAGE_COMPLETED);
-    assert.deepStrictEqual(replies, [['T1', 'Not applicable'], ['T2', 'Not applicable']]);
+    assert.deepStrictEqual(replies, [
+      ['T1', inlineReplyBody('Not applicable')],
+      ['T2', inlineReplyBody('Not applicable')]
+    ]);
     assert.deepStrictEqual(resolved, ['T1', 'T2']);
   });
 
@@ -342,7 +356,10 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
     });
 
     // The failed thread is skipped, the other two are still answered.
-    assert.deepStrictEqual(replies, [['T2', 'not applicable'], ['T3', 'not applicable']]);
+    assert.deepStrictEqual(replies, [
+      ['T2', inlineReplyBody('not applicable')],
+      ['T3', inlineReplyBody('not applicable')]
+    ]);
     assert.deepStrictEqual(resolved, ['T2', 'T3']);
     assert.strictEqual(result.dismissal?.attempted, true);
     assert.strictEqual(result.dismissal?.threadsReplied, 2);
@@ -448,7 +465,7 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
       });
     });
 
-    assert.deepStrictEqual(replies, [['T1', 'not applicable']]);
+    assert.deepStrictEqual(replies, [['T1', inlineReplyBody('not applicable')]]);
     assert.deepStrictEqual(resolved, ['T1']);
     assert.strictEqual(conversationReplies.length, 0, 'the same feedback must not be answered twice');
     assert.strictEqual(result.dismissal?.conversationsSkipped, 1);
@@ -530,14 +547,19 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
  * The route must therefore derive "already answered" from the PR's CURRENT
  * state, which survives the process:
  *
- * - an inline comment whose review thread is RESOLVED was answered by an
- *   earlier run;
+ * - an inline comment whose review thread carries the tool's DISMISSAL MARKER
+ *   was answered by an earlier run;
  * - a conversation comment whose id another comment REFERENCES was answered by
  *   an earlier run.
  *
+ * The thread's RESOLUTION state is NOT that proof: the review bot
+ * auto-resolves the threads it creates, so on PR #261 34 of the 64 resolved
+ * threads had never been answered by anyone — and they were skipped as if
+ * they had.
+ *
  * The fake PR below keeps that state between two runs: the replies the route
- * posts land on the conversation (carrying the reference the infrastructure
- * appends), and the threads it resolves stay resolved.
+ * posts land on the PR (carrying the marker the route appends), and the
+ * threads it resolves stay resolved.
  */
 describe('Triage dismissal cross-run memory (issue #259)', () => {
   const {
@@ -581,6 +603,22 @@ describe('Triage dismissal cross-run memory (issue #259)', () => {
           .map((t) => ({ ...t, commentIds: [...t.commentIds] })),
       replyToThread: async (id: string, body: string) => {
         state.threadReplies.push([id, body]);
+        // GitHub keeps the reply ON the PR: it comes back on the next run as
+        // an inline comment of the thread. That reply — and the marker it
+        // carries — is the cross-run memory of the inline surface.
+        const thread = state.threads.find((t) => t.id === id);
+        const replyId = state.nextId++;
+        state.comments.push({
+          id: replyId,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body,
+          category: 'general',
+          createdAt: '2026-10-20T19:00:00Z'
+        });
+        if (thread) {
+          thread.commentIds.push(replyId);
+        }
       },
       resolveReviewThread: async (id: string) => {
         const thread = state.threads.find((t) => t.id === id);
@@ -707,7 +745,14 @@ describe('Triage dismissal cross-run memory (issue #259)', () => {
     assert.strictEqual(state.conversationReplies.length, 2, 'no comment may be answered twice');
   });
 
-  test('a thread that an earlier run resolved is skipped, not answered again', async () => {
+  /**
+   * A RESOLVED thread is NOT proof that the feedback was answered: the
+   * review bot auto-resolves the threads it creates (on PR #261, 34 of the 64
+   * resolved threads had never been answered by anyone). A resolved thread
+   * without the tool's dismissal marker is therefore UNANSWERED: it is
+   * replied to, and it is not resolved again — it is already closed.
+   */
+  test('a resolved thread without a dismissal reply is answered, not skipped', async () => {
     const { state, gateway } = makeFakePr({
       threads: [{ id: 'T1', isResolved: true, commentIds: [101] }],
       comments: [
@@ -731,16 +776,263 @@ describe('Triage dismissal cross-run memory (issue #259)', () => {
       comments: state.comments
     });
 
-    assert.strictEqual(result.dismissal?.threadsReplied, 0);
+    assert.strictEqual(result.dismissal?.threadsReplied, 1, 'the unanswered thread must be replied to');
+    assert.strictEqual(result.dismissal?.threadsSkipped, 0, 'it must not be counted as skipped');
+    assert.strictEqual(
+      result.dismissal?.threadsResolved,
+      0,
+      'an already-resolved thread must not be resolved again'
+    );
+    assert.strictEqual(state.threadReplies.length, 1, 'the thread must be replied to');
+    assert.ok(
+      state.threadReplies[0][1].includes(DISMISS_INLINE_REPLY_MARKER),
+      'the reply must carry the tool\'s marker'
+    );
+  });
+
+  /**
+   * The cross-run memory still works when the tool's marker is in the thread:
+   * a thread that carries a dismissal reply was answered, whatever its
+   * resolution state says.
+   */
+  test('a resolved thread that carries the tool\'s dismissal marker is skipped, not answered again', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [{ id: 'T1', isResolved: true, commentIds: [101, 900] }],
+      comments: [
+        {
+          id: 101,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: 'ℹ️ **INFO**: the inline finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:03Z'
+        },
+        {
+          id: 900,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body: inlineReplyBody('not applicable'),
+          category: 'general',
+          createdAt: '2026-10-20T19:00:00Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.threadsReplied, 0, 'an answered thread must not be replied to');
+    assert.strictEqual(result.dismissal?.threadsSkipped, 1, 'an answered thread must be reported as skipped');
     assert.strictEqual(result.dismissal?.threadsResolved, 0);
-    assert.strictEqual(result.dismissal?.threadsSkipped, 1);
-    assert.strictEqual(state.threadReplies.length, 0, 'a resolved thread must not be replied to');
+    assert.strictEqual(state.threadReplies.length, 0, 'an answered thread must not be replied to');
+  });
+
+  test('an unresolved thread that carries the tool\'s dismissal marker is not answered twice', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [{ id: 'T1', isResolved: false, commentIds: [101, 900] }],
+      comments: [
+        {
+          id: 101,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: 'ℹ️ **INFO**: the inline finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:03Z'
+        },
+        {
+          id: 900,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body: inlineReplyBody('not applicable'),
+          category: 'general',
+          createdAt: '2026-10-20T19:00:00Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.threadsReplied, 0, 'an answered thread must not be replied to');
+    assert.strictEqual(result.dismissal?.threadsSkipped, 1, 'an answered thread must be reported as skipped');
+    assert.strictEqual(state.threadReplies.length, 0, 'an answered thread must not be replied to');
+  });
+
+  /**
+   * The tool posts as the same account as the human operator, so its own
+   * replies are recognisable ONLY by their marker. They are evidence, not
+   * feedback: they are never answered, and they never create a feedback key.
+   */
+  test('the tool\'s own dismissal reply is never answered as feedback', async () => {
+    const ownReply = inlineReplyBody('not applicable');
+    const { state, gateway } = makeFakePr({
+      threads: [{ id: 'T1', isResolved: false, commentIds: [900] }],
+      comments: [
+        {
+          id: 900,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body: ownReply,
+          category: 'general',
+          createdAt: '2026-10-20T19:00:00Z'
+        },
+        {
+          id: 9001,
+          surface: 'conversation',
+          author: 'ajxcodes',
+          body: ownReply,
+          category: 'general',
+          createdAt: '2026-10-20T19:00:00Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.threadsReplied, 0, 'the tool must not answer its own reply');
+    assert.strictEqual(result.dismissal?.threadsSkipped, 1, 'the thread it already answered is skipped');
+    assert.strictEqual(state.threadReplies.length, 0, 'the tool must not answer its own reply');
+    assert.strictEqual(
+      result.dismissal?.conversationsAlreadyAnswered,
+      0,
+      "the tool's own reply must not create a feedback key"
+    );
+    assert.strictEqual(
+      result.dismissal?.conversationsSkipped,
+      0,
+      "the tool's own reply must not silence the conversation surface"
+    );
+  });
+
+  /**
+   * The 30 replies the tool already posted on PR #261 carry its historic
+   * signature and nothing else — the marker did not exist yet. They must keep
+   * being read as answers, or those threads would be answered a second time.
+   */
+  test('a thread answered by the tool\'s historic signature is recognised as answered', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [{ id: 'T1', isResolved: true, commentIds: [101, 900] }],
+      comments: [
+        {
+          id: 101,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: 'ℹ️ **INFO**: the inline finding',
+          category: 'info',
+          createdAt: '2026-10-20T14:58:03Z'
+        },
+        {
+          id: 900,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body: `Reviewed — the finding is correct.\n\n${DISMISS_INLINE_REPLY_SIGNATURE} (issue #259)`,
+          category: 'general',
+          createdAt: '2026-10-20T19:11:03Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.threadsReplied, 0, 'the historic answer must not be repeated');
+    assert.strictEqual(result.dismissal?.threadsSkipped, 1, 'the historic answer must be read as an answer');
+    assert.strictEqual(state.threadReplies.length, 0, 'the historic answer must not be repeated');
+  });
+
+  /**
+   * The state PR #261 was left in: the review bot resolved 34 threads nobody
+   * ever answered, and the tool answered 30 others itself. The 34 must be
+   * answered; the 30 must be left alone.
+   */
+  test('PR #261\'s state: the threads nobody answered are answered, the ones the tool answered are skipped', async () => {
+    const { state, gateway } = makeFakePr({
+      threads: [
+        // Resolved by the review bot, never answered.
+        { id: 'T-unanswered', isResolved: true, commentIds: [101] },
+        // Answered by the tool itself, with its historic signature.
+        { id: 'T-answered', isResolved: true, commentIds: [202, 900] }
+      ],
+      comments: [
+        {
+          id: 101,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: '💡 **SUGGESTION**: the suggestion nobody answered',
+          category: 'suggestion',
+          createdAt: '2026-10-20T18:08:42Z'
+        },
+        {
+          id: 202,
+          surface: 'inline',
+          author: 'github-actions[bot]',
+          body: 'ℹ️ **INFO**: the finding the tool answered',
+          category: 'info',
+          createdAt: '2026-10-20T18:08:41Z'
+        },
+        {
+          id: 900,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body: `Reviewed — the finding is correct.\n\n${DISMISS_INLINE_REPLY_SIGNATURE} (issue #259)`,
+          category: 'general',
+          createdAt: '2026-10-20T19:11:03Z'
+        }
+      ]
+    });
+
+    const useCase = new TriagePrCommentsUseCase(dismissStateRepo() as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 83,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'not applicable',
+      comments: state.comments
+    });
+
+    assert.strictEqual(result.dismissal?.threadsReplied, 1, 'the thread nobody answered must be answered');
+    assert.strictEqual(result.dismissal?.threadsSkipped, 1, 'the thread the tool answered must be skipped');
+    assert.strictEqual(
+      result.dismissal?.threadsResolved,
+      0,
+      'a thread that is already closed must not be resolved again'
+    );
+    assert.deepStrictEqual(
+      state.threadReplies.map(([id]) => id),
+      ['T-unanswered'],
+      'only the thread nobody answered may be replied to'
+    );
   });
 
   test('a conversation comment whose feedback was answered inline in an earlier run is already answered', async () => {
     const inlineBody = 'ℹ️ **INFO**: The `lastReviewVerdict` method scans the history backwards.';
     const { state, gateway } = makeFakePr({
-      threads: [{ id: 'T1', isResolved: true, commentIds: [500] }],
+      threads: [{ id: 'T1', isResolved: true, commentIds: [500, 501] }],
       comments: [
         {
           id: 500,
@@ -749,6 +1041,16 @@ describe('Triage dismissal cross-run memory (issue #259)', () => {
           body: inlineBody,
           category: 'info',
           createdAt: '2026-10-20T14:58:03Z'
+        },
+        {
+          // The reply an earlier run posted on the thread: the marker it
+          // carries is what proves the feedback was answered.
+          id: 501,
+          surface: 'inline',
+          author: 'ajxcodes',
+          body: inlineReplyBody('not applicable'),
+          category: 'general',
+          createdAt: '2026-10-20T19:00:00Z'
         },
         {
           id: 9001,
