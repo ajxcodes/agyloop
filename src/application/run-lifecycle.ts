@@ -461,7 +461,14 @@ export class RunLifecycleUseCase {
       }
     }
 
-    const finalIssue = params.issue ?? effectiveIssue;
+    // The RESOLVED checkpoint is authoritative about its own issue (issue #250).
+    //
+    // With the scope applied, `sm` is the checkpoint the operator's issue (or
+    // the scan) named — e.g. `.agyloop/tasks/250.json` while the current branch
+    // is `task/251-x`. A path/branch inference may only SUPPLY an issue for a
+    // checkpoint that has none; it must never RELABEL a resolved one, or the
+    // scoped file would be rewritten with someone else's issue number.
+    const finalIssue = params.issue ?? sm.issue ?? effectiveIssue;
     if (finalIssue && !isNewIssue && sm.issue !== Number(finalIssue)) {
       sm.setIssue(finalIssue);
       if (!params.dryRun) {

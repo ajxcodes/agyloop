@@ -24,6 +24,8 @@ import {
   NOTE_TRIAGE_ROUTED,
   StageName,
   IssueNumber,
+  ValidationError,
+  parseIssueToken,
   NOTE_DISMISS_NO_NOTES,
   NOTE_DISMISS_NO_PR,
   NOTE_DISMISS_NO_GATEWAY,
@@ -410,7 +412,14 @@ export class TriagePrCommentsUseCase {
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
 
-    const explicitIssue = IssueNumber.tryFrom(params.issue)?.value ?? null;
+    // The ONE shared grammar (issue #250). The lenient `IssueNumber.tryFrom`
+    // silently degraded a garbage token to "no issue named", which is how a
+    // bad `--issue` could end up routing a DIFFERENT task's PR feedback.
+    const explicitToken = parseIssueToken(params.issue);
+    if (explicitToken.kind === 'invalid') {
+      throw new ValidationError('issue', explicitToken.raw, explicitToken.message);
+    }
+    const explicitIssue = explicitToken.kind === 'valid' ? explicitToken.issue : null;
     let inferredIssue = sm.issue;
     if (!explicitIssue && !inferredIssue) {
       inferredIssue = IssueNumber.inferFromPath(cwd);

@@ -467,9 +467,14 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     };
 
     const resetUseCase = new ResetPipelineUseCase(stateRepo);
-    const sm = await resetUseCase.execute();
+    // Issue #250: the use case now REPORTS what it did — the state machine is
+    // one field of the result, alongside the scope it addressed.
+    const result = await resetUseCase.execute();
 
-    assert.strictEqual(sm.currentStage, STAGE_INITIALIZED);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_INITIALIZED);
+    assert.strictEqual(result.scope, 'root');
+    assert.strictEqual(result.issue, null);
+    assert.strictEqual(result.removed, true);
     assert.strictEqual(stateRepo.snapshot, null);
     assert.strictEqual(stateRepo.resetCallCount, 1);
   });

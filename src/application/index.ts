@@ -3,6 +3,7 @@
  */
 
 export * from './resolve-subagent';
+export * from './resolve-task-checkpoint';
 export * from './start-planning';
 export * from './transition-stage';
 export * from './get-pipeline-status';

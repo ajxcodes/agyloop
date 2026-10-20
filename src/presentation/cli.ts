@@ -75,6 +75,7 @@ import {
   StateMachine,
   StateMachineSnapshot,
   IssueNumber,
+  parseIssueToken,
   NOTE_DISCOVERY_PARK_AWAITING_RCA,
   NOTE_IMPLEMENTATION_EVIDENCE_MISSING,
   NOTE_IMPLEMENTATION_PARK_UNCHANGED,
@@ -161,7 +162,9 @@ import {
   AbortPipelineUseCase,
   InitProjectUseCase,
   ResumePipelineUseCase,
-  HaltPipelineUseCase
+  HaltPipelineUseCase,
+  resolveCheckpointScope,
+  CheckpointScope
 } from '../application';
 
 export interface CliOptions {
@@ -341,7 +344,7 @@ Operational Flags:
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
       --quarantine   Quarantine uncommitted changes to a dedicated branch during abort
-      --issue <num>  Associate execution with GitHub issue number
+      --issue <num>  Associate execution with GitHub issue number (digits only; e.g. --issue 250)
       --title <text> Specify plan title for persistent artifact scaffolding
       --type <type>  Specify plan type (discovery | implementation | auto)
       --config <path> Path to custom configuration file (.agyloop.json)
@@ -795,6 +798,9 @@ function buildResumeJsonPayload(result: {
  * asserts the Zero-Direct-Root-Mutation invariant and THROWS when there is no
  * worktree (the `--no-worktree` / no-issue case): the park still succeeds and
  * simply omits the payload — the park message already names `codeloop next`.
+ *
+ * `issue` is the ALREADY-PARSED issue number (issue #250): the raw `--issue`
+ * token never reaches a use case.
  */
 async function printImplementerDirective(
   stateRepo: StateRepository,
@@ -804,7 +810,8 @@ async function printImplementerDirective(
   worktreeManager: WorktreeManagerPort,
   buildDetector: BuildDetectorPort,
   inferBaseBranchUseCase: InferBaseBranchUseCase,
-  options: CliOptions
+  configPath: string | null,
+  issue: number | undefined
 ): Promise<void> {
   try {
     const getNextActionUseCase = new GetNextActionUseCase(
@@ -819,8 +826,8 @@ async function printImplementerDirective(
     );
 
     const directive = await getNextActionUseCase.execute({
-      configPath: options.configPath,
-      issue: options.issue
+      configPath,
+      issue
     });
 
     if (!directive.invocationPayload) {
@@ -833,6 +840,69 @@ async function printImplementerDirective(
   } catch {
     // No worktree (or no directive available): the park message already names
     // `codeloop next`, so omitting the payload keeps the park truthful.
+  }
+}
+
+/**
+ * Resolves the authoritative checkpoint for a command and returns the scope.
+ *
+ * CHOKEPOINT 2 (issue #250, Scope A): ONE answer to "which checkpoint is
+ * authoritative, and which repository must be read AND written".
+ *
+ * The scope is ALWAYS resolved from the SAME repository the CLI constructed —
+ * never from a repository that a previous scope already narrowed. Resolving a
+ * scope from an already-scoped repository drops the ROOT from the candidate set
+ * and can select a DIFFERENT file than `status`/`resume` select, which is
+ * exactly the disagreement this issue removes. `scope.repo` is therefore only
+ * ever a WRITE target; it is never re-resolved.
+ */
+async function resolveScope(
+  stateRepo: StateRepository,
+  issue: number | undefined
+): Promise<CheckpointScope> {
+  return resolveCheckpointScope(stateRepo, issue);
+}
+
+/**
+ * Resolves the scope for a command whose WORK must not depend on the
+ * checkpoint being readable, and reports the failure instead of throwing it.
+ *
+ * `abort` is the emergency teardown, and a corrupt `tasks/<n>.json` is
+ * PRECISELY the state an operator aborts FROM — the resolver's own note says
+ * saves use a plain `writeFileSync`, so a crash mid-write leaves a truncated
+ * file. The strict resolver deliberately lets an unreadable NAMED checkpoint
+ * throw, which is right for a command that must READ the snapshot, and wrong
+ * for the one command whose job is to clean up after a broken state: the
+ * teardown (process termination, `.git/index.lock` clearing, worktree
+ * quarantine, container termination) must still run.
+ *
+ * The scope is still resolved when it CAN be, so `abort --issue 999` addresses
+ * `tasks/999.json`; when it cannot, the repository bound to the SAME issue is
+ * used. The abort use case only reads the checkpoint for an OPTIONAL audit log,
+ * and that read is already wrapped in a try/catch of its own.
+ */
+async function resolveScopeTolerantly(
+  stateRepo: StateRepository,
+  issue: number | undefined
+): Promise<{ repo: StateRepository; error: unknown }> {
+  // `error` is `unknown`, NOT `unknown | null` — the latter collapses to
+  // `unknown` and loses the fact that `null` is the "no failure" sentinel. The
+  // caller MUST therefore test `error !== null` explicitly: a truthiness test
+  // would silently swallow a thrown `undefined`/`0`/`''` as "no failure".
+  try {
+    return { repo: (await resolveScope(stateRepo, issue)).repo, error: null };
+  } catch (error) {
+    let repo = stateRepo;
+    if (issue !== undefined && stateRepo.forIssue) {
+      try {
+        repo = stateRepo.forIssue(issue);
+      } catch {
+        // The issue itself is unusable — the unscoped repository is the last
+        // resort, and the abort use case tolerates an unreadable checkpoint.
+        repo = stateRepo;
+      }
+    }
+    return { repo, error };
   }
 }
 
@@ -849,7 +919,21 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     return EXIT_CODE_SUCCESS;
   }
 
-  const issueValue = IssueNumber.tryFrom(options.issue)?.value;
+  // CHOKEPOINT 1 (issue #250, Scope B). ONE grammar for the `--issue` token,
+  // applied before any command runs and before any checkpoint is read or
+  // written. A token with trailing garbage is REJECTED, never clamped: the
+  // four competing parsers this replaces disagreed about what `999abc` meant
+  // (999 / the root / the literal file `tasks/999abc.json` / silently ignored),
+  // which is how `status` came to read `tasks/999.json` while `halt` wrote
+  // `.agyloop/state.json`.
+  const issueToken = parseIssueToken(options.issue);
+  if (issueToken.kind === 'invalid') {
+    // stderr: stdout stays parseable for `--json` consumers.
+    console.error(`✗ ${issueToken.message}`);
+    return EXIT_CODE_FAILURE;
+  }
+  const issueValue: number | undefined = issueToken.kind === 'valid' ? issueToken.issue : undefined;
+
   const stateRepo = new FileStateRepository({ workspaceDir: options.workspaceDir, issue: issueValue });
   const githubGateway = new CliGitHubGateway();
   const configRepo = new FileConfigRepository();
@@ -883,23 +967,30 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     commandExecutor
   });
 
-  const lifecycleUseCase = new RunLifecycleUseCase({
-    stateRepo,
-    configRepo,
-    planGenerator,
-    githubGateway,
-    commandExecutor,
-    buildDetector,
-    standardsRepo,
-    critique,
-    critiqueInstaller,
-    confirmationPrompt,
-    worktreeManager
-  });
+  // Factories (issue #250): the lifecycle and the branch inference must be built
+  // against the RESOLVED repository, so a task-scoped command writes the task
+  // checkpoint and never the root. The previous single top-level instance was
+  // bound to the unscoped repository, so `transition` wrote the root while
+  // `status` read the task file.
+  const makeLifecycleUseCase = (repo: StateRepository): RunLifecycleUseCase =>
+    new RunLifecycleUseCase({
+      stateRepo: repo,
+      configRepo,
+      planGenerator,
+      githubGateway,
+      commandExecutor,
+      buildDetector,
+      standardsRepo,
+      critique,
+      critiqueInstaller,
+      confirmationPrompt,
+      worktreeManager
+    });
+
+  const makeInferBaseBranchUseCase = (repo: StateRepository): InferBaseBranchUseCase =>
+    new InferBaseBranchUseCase(worktreeManager, githubGateway, repo);
 
   const manageCritiqueUseCase = new ManageCritiqueUseCase(critique, critiqueInstaller);
-
-  const inferBaseBranchUseCase = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
 
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
@@ -963,19 +1054,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'next': {
+      // The scope is resolved from the CLI's own repository, and the use case
+      // reads AND writes through `scope.repo` — so `next` can no longer
+      // contradict `status` about which checkpoint is live, and the context
+      // write lands in the resolved checkpoint instead of the root (#250).
+      const scope = await resolveScope(stateRepo, issueValue);
       const getNextActionUseCase = new GetNextActionUseCase(
-        stateRepo,
+        scope.repo,
         configRepo,
         planGenerator,
         githubGateway,
         undefined,
         worktreeManager,
         buildDetector,
-        inferBaseBranchUseCase
+        makeInferBaseBranchUseCase(scope.repo)
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
-        issue: options.issue,
+        issue: issueValue,
         restart: options.restart
       });
 
@@ -983,7 +1079,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       // mistaken for a runnable directive. It is read BEFORE the `--json` branch
       // because that command is what the agent harness runs (skills/agyloop/SKILL.md),
       // and a pause it cannot see is a pause it will happily execute through.
-      const pause = await readPersistedGatePause(stateRepo);
+      //
+      // The pause is RE-READ from `scope.repo` AFTER the use case ran (no
+      // snapshot override): a TRIAGE pause that `next` itself just wrote must
+      // still be reported (#250, R7).
+      const pause = await readPersistedGatePause(scope.repo);
       const pausedAtBreakerGate = pause?.gate === GATE_CIRCUIT_BREAKER;
 
       if (options.json) {
@@ -1037,32 +1137,31 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'branch-info': {
-      const snapshot = await stateRepo.load();
+      // `branch-info` is a DIAGNOSTIC: it must perform ZERO checkpoint writes
+      // (issue #250, AC A4). It used to write the inferred issue back into the
+      // checkpoint AND let the base-branch inference persist its own result —
+      // two hidden writes that made a read-only command mutate state (and made
+      // the behaviour depend on the cwd, because the `/tmp` guard swallows the
+      // write there).
+      const scope = await resolveScope(stateRepo, issueValue);
+      const snapshot = scope.snapshot;
       const currentBranch = await worktreeManager.resolveBaseBranch();
       const defaultBranch = 'main';
 
-      let issue = options.issue ? Number(options.issue) : snapshot?.issue || null;
+      let issue = scope.issue ?? snapshot?.issue ?? null;
       if (!issue) {
+        // Inference only — the result is REPORTED, never written back.
         issue =
           IssueNumber.inferFromPath(snapshot?.worktree?.worktreePath as string | undefined) ??
           IssueNumber.inferFromPath(process.cwd()) ??
           IssueNumber.inferFromBranch(currentBranch);
-        if (issue && snapshot && !snapshot.issue) {
-          try {
-            const sm = StateMachine.fromSnapshot(snapshot);
-            sm.setIssue(issue);
-            await stateRepo.save(sm.toSnapshot());
-          } catch {
-            // Non-fatal persistence
-          }
-        }
       }
 
       let baseBranch = snapshot?.baseBranch || null;
       if (!baseBranch && issue) {
         try {
-          const infer = new InferBaseBranchUseCase(worktreeManager, githubGateway, stateRepo);
-          const res = await infer.execute({ issueNumber: issue });
+          const infer = makeInferBaseBranchUseCase(scope.repo);
+          const res = await infer.execute({ issueNumber: issue, persist: false });
           baseBranch = res.baseBranch;
         } catch {
           baseBranch = null;
@@ -1081,7 +1180,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               taskBranch: activeTaskBranch,
               worktreePath: snapshot?.worktree?.worktreePath || null,
               prBaseTarget: prTarget,
-              milestoneTarget: defaultBranch
+              milestoneTarget: defaultBranch,
+              // Additive: the checkpoint this report was derived from (#250).
+              checkpoint: scope.path
             },
             null,
             2
@@ -1103,8 +1204,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'status': {
+      // UNCHANGED except for the parsed issue: `status` resolves internally and
+      // MUST keep the SAME repository the CLI constructed — re-resolving an
+      // already-scoped repository would re-run the scan and could select a
+      // different file (#250, R13).
       const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
-      const result = await getStatusUseCase.execute({ issue: options.issue });
+      const result = await getStatusUseCase.execute({ issue: issueValue });
       console.log('\n=== CodeLoop: Pipeline Status ===');
       console.log(`Current Stage : ${formatStageBadge(result.status.currentStage)}`);
       console.log(`Execution Mode: ${result.status.mode}`);
@@ -1206,18 +1311,40 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'reset': {
+      // The repository the CLI constructed: `resetTask` derives the task path
+      // from the workspace root, so the repository's own binding does not
+      // matter for `reset --issue <n>` (#250). For a ROOT reset the binding
+      // DOES matter — it names the file that is deleted — which is why the
+      // report prints `result.path` (the truth) instead of a literal.
       const resetUseCase = new ResetPipelineUseCase(stateRepo);
-      await resetUseCase.execute({
-        issue: options.issue,
+      const result = await resetUseCase.execute({
+        issue: issueValue,
         all: options.all
       });
-      if (options.all) {
+
+      if (result.scope === 'all') {
         console.log('✓ CodeLoop pipeline state reset. .agyloop/state.json and all task checkpoints purged.');
-      } else if (options.issue) {
-        console.log(`✓ CodeLoop task state reset. Checkpoint for issue #${options.issue} cleared.`);
-      } else {
-        console.log('✓ CodeLoop pipeline state reset. .agyloop/state.json cleared.');
+        return EXIT_CODE_SUCCESS;
       }
+
+      if (result.scope === 'task') {
+        if (result.removed) {
+          console.log(`✓ CodeLoop task state reset. Checkpoint for issue #${result.issue} cleared (${result.path}).`);
+          return EXIT_CODE_SUCCESS;
+        }
+        // AC B4 (issue #250): the unconditional success line is GONE. A reset
+        // that addressed a checkpoint which did not exist must not claim it
+        // cleared one.
+        console.error(`✗ No checkpoint found for issue #${result.issue} (${result.path}). Nothing was cleared.`);
+        return EXIT_CODE_FAILURE;
+      }
+
+      // The TRUTH, not a literal: `resetRoot()` deletes `stateRepo.reset()`,
+      // which is `stateRepo.getStateFilePath()`. Inside a task worktree the
+      // CLI's repository is bound to `tasks/<n>.json`, so the old hardcoded
+      // ".agyloop/state.json" named a file that was never touched (issue #250,
+      // review N2).
+      console.log(`✓ CodeLoop pipeline state reset. ${result.path} cleared.`);
       return EXIT_CODE_SUCCESS;
     }
 
@@ -1228,7 +1355,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const resumeUseCase = new ResumePipelineUseCase(stateRepo);
         const resumeResult = await resumeUseCase.execute({
           dryRun: options.dryRun,
-          issue: options.issue,            // (#226 — was never forwarded)
+          issue: issueValue,              // (#226 — was never forwarded)
         });
 
         if (options.json) {
@@ -1286,12 +1413,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           retryAfterSeconds = Number(raw);
         }
 
-        const haltUseCase = new HaltPipelineUseCase(stateRepo);
+        // The scope decides the FILE. `halt` used to write `.agyloop/state.json`
+        // while its sibling `status` read `tasks/999.json` (#250, AC B2).
+        const scope = await resolveScope(stateRepo, issueValue);
+        const haltUseCase = new HaltPipelineUseCase(scope.repo);
         const haltResult = await haltUseCase.execute({
           reason: 'quota',
           retryAfterSeconds,
           dryRun: options.dryRun,
-          issue: options.issue
+          issue: issueValue
         });
 
         if (!haltResult.success) {
@@ -1337,8 +1467,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'abort': {
       console.log('\n🛑 CodeLoop: Initiating Emergency Abort Protocol...');
+      // The teardown must run even when the checkpoint is UNREADABLE: a corrupt
+      // `tasks/<n>.json` is precisely the state an operator aborts FROM (issue
+      // #250, review B1). Before #250 the checkpoint was read only in the
+      // use case's LAST step — inside a try/catch, AFTER the teardown — so a
+      // corrupt file could never stop the teardown. Resolving the scope before
+      // the use case must not reintroduce that failure mode.
+      const scope = await resolveScopeTolerantly(stateRepo, issueValue);
+      if (scope.error !== null) {
+        // `⚠`, not `✗`: the abort itself SUCCEEDS — only the optional audit
+        // checkpoint was unreadable.
+        console.error(
+          `⚠ Could not read the checkpoint (${scope.repo.getStateFilePath()}): ` +
+          `${scope.error instanceof Error ? scope.error.message : String(scope.error)}. ` +
+          'Continuing the teardown.'
+        );
+      }
       const abortUseCase = new AbortPipelineUseCase({
-        stateRepo,
+        stateRepo: scope.repo,
         commandExecutor,
         worktreeManager,
         planGenerator
@@ -1346,7 +1492,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       const abortResult = await abortUseCase.execute({
         workspaceDir: options.workspaceDir,
-        issue: options.issue,
+        issue: issueValue,
         force: options.force,
         quarantine: options.quarantine
       });
@@ -1375,10 +1521,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         return EXIT_CODE_FAILURE;
       }
       try {
+        // The scope decides the FILE and the MODE: `transition` used to act on
+        // the ROOT checkpoint's stage/mode while `status` reported the task
+        // checkpoint's (#250, AC A3).
+        const scope = await resolveScope(stateRepo, issueValue);
         const transitionUseCase = new TransitionStageUseCase(
-          stateRepo,
+          scope.repo,
           worktreeManager,
-          inferBaseBranchUseCase,
+          makeInferBaseBranchUseCase(scope.repo),
           planGenerator
         );
         await transitionUseCase.execute({
@@ -1387,7 +1537,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,          // (#226 — was silently dropped)
           noWorktree: options.noWorktree,
           baseBranch: options.baseBranch,
-          issue: options.issue
+          issue: issueValue
         });
         console.log(
           `${options.dryRun ? '[dry-run] ' : '✓ '}Transitioned to ${formatStageBadge(options.stageArg)}`
@@ -1517,14 +1667,6 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'triage': {
-      const triageUseCase = new TriagePrCommentsUseCase(
-        stateRepo,
-        githubGateway,
-        planGenerator,
-        worktreeManager,
-        inferBaseBranchUseCase
-      );
-
       const rawAction = options.triageAction ? options.triageAction.toLowerCase() : null;
       const validActions = ['implement', 'plan', 'discovery', 'dismiss', 'completed'];
       if (rawAction && !validActions.includes(rawAction)) {
@@ -1541,8 +1683,22 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       console.log('\n=== CodeLoop: PR Review Comments Triage ===');
       try {
+        // The scope resolution lives INSIDE the try (issue #250, review N1): an
+        // unreadable NAMED checkpoint must be REPORTED as a triage failure,
+        // not thrown out of `runCli` as a raw stack. Before #250 the checkpoint
+        // was read inside the use case, i.e. inside this try — that contract is
+        // restored here.
+        const scope = await resolveScope(stateRepo, issueValue);
+        const triageUseCase = new TriagePrCommentsUseCase(
+          scope.repo,
+          githubGateway,
+          planGenerator,
+          worktreeManager,
+          makeInferBaseBranchUseCase(scope.repo)
+        );
+
         const result = await triageUseCase.execute({
-          issue: options.issue,
+          issue: issueValue,
           action,
           notes: options.message || undefined,
           workspaceDir: process.cwd()
@@ -1671,9 +1827,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'plan': {
       console.log(`\n🚀 Starting CodeLoop [PLAN-ONLY] Mode`);
       try {
-        const result = await lifecycleUseCase.execute({
+        const scope = await resolveScope(stateRepo, issueValue);
+        const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_PLAN,
-          issue: options.issue,
+          issue: issueValue,
           title: options.title,
           type: options.type,
           dryRun: options.dryRun,
@@ -1748,9 +1905,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'implement': {
       console.log(`\n🚀 Resuming CodeLoop Implementation`);
       try {
-        const result = await lifecycleUseCase.execute({
+        const scope = await resolveScope(stateRepo, issueValue);
+        const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_IMPLEMENT,
-          issue: options.issue,
+          issue: issueValue,
           configPath: options.configPath,
           dryRun: options.dryRun,
           worktree: options.noWorktree ? false : true,
@@ -1806,7 +1964,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'commit': {
       console.log(`\n📦 CodeLoop: Semantic Conventional Commit Gate`);
       try {
-        const snapshot = await stateRepo.load();
+        // The scope decides the FILE: `commit` used to read the root checkpoint
+        // and refuse with "Cannot draft commit: Pipeline is at '<other stage>'"
+        // while the live run sat in `tasks/<n>.json` (#250, Scope A).
+        const scope = await resolveScope(stateRepo, issueValue);
+        const snapshot = scope.snapshot;
         const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : null;
         const rootWorkspaceDir = options.workspaceDir || process.cwd();
         const effectiveWorkspaceDir = sm?.worktree?.worktreePath || rootWorkspaceDir;
@@ -1817,14 +1979,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         const draftCommitUseCase = new DraftCommitUseCase(
-          stateRepo,
+          scope.repo,
           commandExecutor,
           githubGateway,
           planGenerator
         );
 
         const draftResult = await draftCommitUseCase.execute({
-          issue: options.issue,
+          issue: issueValue,
           staged: options.staged,
           userMessage: finalMessage,
           workspaceDir: effectiveWorkspaceDir
@@ -1861,7 +2023,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         const executeCommitUseCase = new ExecuteCommitUseCase(
-          stateRepo,
+          scope.repo,
           commandExecutor,
           planGenerator,
           confirmationPrompt,
@@ -1878,7 +2040,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           interactive: promptsAllowed,
           staged: options.staged,
           dryRun: options.dryRun,
-          issue: options.issue,
+          issue: issueValue,
           keepWorktree: options.keepWorktree,
           workspaceDir: effectiveWorkspaceDir,
           rootWorkspaceDir: rootWorkspaceDir,
@@ -1918,18 +2080,29 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case COMMAND_SYNC: {
       console.log(`\n🔄 CodeLoop: Synchronizing Remote Collector Branch & Merged PRs`);
-      const syncUseCase = new SyncUseCase(
-        commandExecutor,
-        githubGateway,
-        stateRepo,
-        worktreeManager
-      );
-      const res = await syncUseCase.execute({ workspaceDir: process.cwd() });
-      if (res.success) {
-        console.log(`✓ ${res.message}\n`);
-        return EXIT_CODE_SUCCESS;
-      } else {
-        console.error(`✗ ${res.message}\n`);
+      try {
+        // The scope resolution lives INSIDE the try (issue #250, review N2): an
+        // unreadable NAMED checkpoint must be REPORTED as a sync failure, not
+        // thrown out of `runCli` as a raw stack. Before #250 the checkpoint was
+        // read inside `SyncUseCase.execute` — which catches its own errors and
+        // returns `Sync failed: …` — so that contract is restored here.
+        const scope = await resolveScope(stateRepo, issueValue);
+        const syncUseCase = new SyncUseCase(
+          commandExecutor,
+          githubGateway,
+          scope.repo,
+          worktreeManager
+        );
+        const res = await syncUseCase.execute({ workspaceDir: process.cwd() });
+        if (res.success) {
+          console.log(`✓ ${res.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        } else {
+          console.error(`✗ ${res.message}\n`);
+          return EXIT_CODE_FAILURE;
+        }
+      } catch (err: unknown) {
+        console.error(`✗ Sync failed: ${err instanceof Error ? err.message : String(err)}\n`);
         return EXIT_CODE_FAILURE;
       }
     }
@@ -1937,9 +2110,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     case 'yolo': {
       console.log(`\n⚡ Starting CodeLoop [YOLO] Fast-Path Mode`);
       try {
-        const result = await lifecycleUseCase.execute({
+        const scope = await resolveScope(stateRepo, issueValue);
+        const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_YOLO,
-          issue: options.issue,
+          issue: issueValue,
           title: options.title,
           type: options.type,
           commitAfter: options.commitAfter,
@@ -1995,7 +2169,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
             } else {
               console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
-              await printImplementerDirective(stateRepo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, inferBaseBranchUseCase, options);
+              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), options.configPath, issueValue);
             }
             return EXIT_CODE_SUCCESS;
           }
@@ -2140,9 +2314,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       // Default execution: Continuous Lifecycle Orchestration
       console.log(`\n🔄 CodeLoop Continuous Development Lifecycle`);
       try {
-        const result = await lifecycleUseCase.execute({
+        const scope = await resolveScope(stateRepo, issueValue);
+        const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_STANDARD,
-          issue: options.issue,
+          issue: issueValue,
           title: options.title,
           type: options.type,
           commitAfter: options.commitAfter,
@@ -2289,7 +2464,8 @@ export async function main(): Promise<void> {
     isAborting = true;
     console.error(`\n[${signal}] Received emergency termination signal. Invoking abort protocol...`);
     try {
-      const issueValue = parsedOptions?.issue ? IssueNumber.tryFrom(parsedOptions.issue)?.value : undefined;
+      const parsedToken = parseIssueToken(parsedOptions?.issue);
+      const issueValue = parsedToken.kind === 'valid' ? parsedToken.issue : undefined;
       const stateRepo = new FileStateRepository({
         workspaceDir: parsedOptions?.workspaceDir,
         issue: issueValue

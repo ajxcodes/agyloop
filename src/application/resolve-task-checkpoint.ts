@@ -18,10 +18,13 @@
  * `issue` and routed to `stateRepo.resetTask(issue)` — that is the precedent, and
  * this module generalises it to *reading* as well.
  *
- * Deliberately NOT adopted here: `GetNextActionUseCase` (its read/write contract is
- * pinned by #237's tests and its `--restart` policy already owns issue resolution)
- * and the diagnostic-only `branch-info` path. Both remain known, adjacent
- * inconsistencies, tracked as follow-ups.
+ * Since #250 this module is the ONE answer to "which checkpoint is
+ * authoritative, and which repository must be read AND written".
+ * Every checkpoint-touching command routes through `resolveCheckpointScope`:
+ * `status` and `resume` resolve internally, and `next`, `branch-info`,
+ * `transition`, `halt`, `reset`, `implement`, `plan`, `yolo`, `commit`, `abort`,
+ * `triage` and `sync` resolve the scope in the CLI and hand `scope.repo` to
+ * their use cases. There is no longer a "diagnostic-only" exception.
  *
  * Purity: this module imports only `../domain` and `../ports`. It never touches
  * `fs`, `path` or `process.cwd()`; all filesystem knowledge is delegated through
@@ -29,7 +32,7 @@
  * enforces that statically.
  */
 
-import { StateMachineSnapshot, STAGE_COMPLETED } from '../domain';
+import { StateMachineSnapshot, STAGE_COMPLETED, ValidationError, parseIssueToken } from '../domain';
 import { StateRepository } from '../ports';
 
 export interface CheckpointCandidate {
@@ -47,6 +50,28 @@ export interface ResolvedCheckpoint {
   readonly snapshot: StateMachineSnapshot;
   readonly issue: number | null;
   readonly path: string;
+  readonly candidates: readonly CheckpointCandidate[];
+}
+
+/**
+ * The ONE answer to "which checkpoint is authoritative, and which repository must
+ * be read AND written" (issue #250).
+ *
+ * `repo` is the repository a caller must use for BOTH the read and the write.
+ * Handing a use case the UNSCOPED repository while rendering the resolved path
+ * is the defect in a new shape: `status` would advertise `tasks/999.json` while
+ * `halt` wrote `.agyloop/state.json`.
+ */
+export interface CheckpointScope {
+  /** The repository to use for BOTH reads and writes. */
+  readonly repo: StateRepository;
+  /** The authoritative snapshot, or null when no checkpoint exists. */
+  readonly snapshot: StateMachineSnapshot | null;
+  /** The issue the scope belongs to; null = the root checkpoint. */
+  readonly issue: number | null;
+  /** The absolute path of the resolved checkpoint. */
+  readonly path: string;
+  /** Every candidate the scan considered (empty for an explicit issue). */
   readonly candidates: readonly CheckpointCandidate[];
 }
 
@@ -118,51 +143,89 @@ function outranks(candidate: CheckpointCandidate, incumbent: CheckpointCandidate
 
 /**
  * Normalises an explicit `issue` parameter to a positive integer, or `null` when
- * the caller did not name one (or named something that is not an issue number).
+ * the caller did not name one.
  *
- * `null` means "the operator did not choose", which is what routes the caller into
- * the scan-based branch below rather than at a bogus task file.
+ * `null` means "the operator did not choose", which is what routes the caller
+ * into the scan-based branch below rather than at a bogus task file.
+ *
+ * The grammar is the ONE shared grammar (`parseIssueToken`, issue #250). The
+ * lenient `Number.parseInt` this replaced took the LEADING digits of a token, so
+ * `999abc` silently became issue 999 — indistinguishable from a deliberate
+ * `999`, and the reason `status` read `tasks/999.json` while `halt` wrote the
+ * root. An invalid token now THROWS (`ValidationError`) instead of degrading to
+ * the scan; the CLI rejects such a token before it can reach here, so this is
+ * defence in depth for direct use-case callers.
  */
 function explicitIssue(issue: number | string | null | undefined): number | null {
-  if (issue === null || issue === undefined || issue === '') {
-    return null;
+  const parsed = parseIssueToken(issue);
+  if (parsed.kind === 'invalid') {
+    throw new ValidationError('issue', parsed.raw, parsed.message);
   }
-  const parsed = typeof issue === 'number' ? issue : Number.parseInt(issue.trim(), 10);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  return parsed.kind === 'valid' ? parsed.issue : null;
 }
 
 /**
- * Collects the checkpoint this call is allowed to treat as authoritative.
+ * The ONE resolution: which checkpoint is authoritative, and which repository
+ * must be read AND written (issue #250).
  *
- * - **Explicit issue** → `stateRepo.forIssue?.(n)` if available, else `stateRepo`
- *   (which is *already* issue-scoped when the CLI constructed it with `--issue`,
- *   `cli.ts:693`); `load()` from it; `path` from `getStateFilePath()`;
- *   `candidates: []` — no scan needed, the operator named the task.
- * - **No issue** → every checkpoint the workspace holds, ranked by
- *   `selectAuthoritativeCheckpoint`.
+ * | Input | `repo` | `snapshot` | `issue` | `path` |
+ * |---|---|---|---|---|
+ * | explicit issue `n` | `forIssue(n)` (or the repository itself when the adapter has no `forIssue`) | `await repo.load()` — UNWRAPPED | `n` | `repo.getStateFilePath()` |
+ * | no issue, workspace non-empty | `forIssue(winner.issue)` when the winner is a task, else the repository | the winning snapshot | the winner's issue | the winner's path |
+ * | no issue, empty workspace | the repository | `null` | `null` | `stateRepo.getStateFilePath()` |
  *
- * Returns `null` when nothing readable exists, which callers must still render
- * (an empty repository has to produce a status, not an error).
+ * An explicit issue whose file does not exist still yields a TASK-SCOPED
+ * repository with a `null` snapshot: `next --issue 999` on a fresh workspace
+ * must CREATE `tasks/999.json`, exactly as before.
+ *
+ * > #### ⚠️ INVARIANT (a trap — read before implementing)
+ * >
+ * > **Every scope MUST be resolved from the SAME repository the CLI
+ * > constructed.**
+ * >
+ * > `collectCandidates` adds the repository's *own* path to the candidate set,
+ * > and the ROOT checkpoint is only a candidate when the repository IS the root.
+ * > A repository already bound to `tasks/999.json` therefore yields the
+ * > candidate set `{tasks/999} ∪ {tasks}` — **the root drops out** — while a
+ * > root-bound repository yields `{root} ∪ {tasks}`. The two sets can rank
+ * > differently (a newer root vs. an older in-flight task), so resolving a scope
+ * > from an *already-scoped* repository can select a **different file** than
+ * > `status`/`resume` select — reintroducing exactly the disagreement this
+ * > issue removes.
+ * >
+ * > The repository the CLI constructs is root-capable only OUTSIDE a task
+ * > worktree: `FileStateRepository` infers the issue from the cwd, so inside
+ * > `.worktrees/<n>` it is bound to `tasks/<n>.json` and the root drops out of
+ * > the candidate set for every command alike. That is a property of the ONE
+ * > repository, not a disagreement between commands — which is exactly what the
+ * > invariant below guarantees.
+ * >
+ * > Consequences, all mandatory:
+ * > 1. `status` and `resume` keep receiving the **same** repository (they
+ * >    resolve internally — re-resolving a scoped repository would re-run the
+ * >    scan).
+ * > 2. Every other command resolves its scope from the **same** `stateRepo` the
+ * >    CLI constructs, and then hands `scope.repo` to its use cases.
+ * > 3. `scope.repo` is only ever a **write** target; the scope is never
+ * >    re-resolved from `scope.repo`.
  */
-export async function resolveAuthoritativeCheckpoint(
+export async function resolveCheckpointScope(
   stateRepo: StateRepository,
   issue?: number | string | null
-): Promise<ResolvedCheckpoint | null> {
+): Promise<CheckpointScope> {
   const requested = explicitIssue(issue);
 
   if (requested !== null) {
     const repo = stateRepo.forIssue ? stateRepo.forIssue(requested) : stateRepo;
-    // An operator who NAMED the issue asked about THAT one file. A load that THROWS
-    // here (`StateStorageError` from a corrupt parse — saves use a plain
+    // An operator who NAMED the issue asked about THAT one file. A load that
+    // THROWS here (`StateStorageError` from a corrupt parse — saves use a plain
     // `writeFileSync`, so a crash mid-write leaves a truncated file) must surface,
     // not be swallowed into a synthesized snapshot that pretends the stage is
     // something it is not. The error already carries the file path, so this load
     // is deliberately UNwrapped: let it propagate to the caller.
     const snapshot = await repo.load();
-    if (!snapshot) {
-      return null;
-    }
     return {
+      repo,
       snapshot,
       issue: requested,
       path: repo.getStateFilePath(),
@@ -173,14 +236,51 @@ export async function resolveAuthoritativeCheckpoint(
   const candidates = await collectCandidates(stateRepo);
   const winner = selectAuthoritativeCheckpoint(candidates);
   if (!winner) {
-    return null;
+    // An empty workspace still needs an answer: the repository itself, no
+    // snapshot, and the repository's own path (the root checkpoint's path).
+    return {
+      repo: stateRepo,
+      snapshot: null,
+      issue: null,
+      path: stateRepo.getStateFilePath(),
+      candidates
+    };
   }
 
+  const repo =
+    winner.issue !== null && stateRepo.forIssue ? stateRepo.forIssue(winner.issue) : stateRepo;
+
   return {
+    repo,
     snapshot: winner.snapshot,
     issue: winner.issue,
     path: winner.path,
     candidates
+  };
+}
+
+/**
+ * Collects the checkpoint this call is allowed to treat as authoritative.
+ *
+ * A thin wrapper over `resolveCheckpointScope`, kept for the callers that only
+ * need the ANSWER (which file, which snapshot) and not the repository to write
+ * through. Its contract is unchanged: `null` when nothing readable exists,
+ * which callers must still render (an empty repository has to produce a status,
+ * not an error).
+ */
+export async function resolveAuthoritativeCheckpoint(
+  stateRepo: StateRepository,
+  issue?: number | string | null
+): Promise<ResolvedCheckpoint | null> {
+  const scope = await resolveCheckpointScope(stateRepo, issue);
+  if (scope.snapshot === null) {
+    return null;
+  }
+  return {
+    snapshot: scope.snapshot,
+    issue: scope.issue,
+    path: scope.path,
+    candidates: scope.candidates
   };
 }
 
@@ -190,28 +290,18 @@ export async function resolveAuthoritativeCheckpoint(
  * would write the cleared pause back to `.agyloop/state.json` and leave
  * `tasks/<n>.json` paused — the defect in a new shape.
  *
- * Explicit issue → `forIssue`; otherwise the authoritative winner is re-scoped via
- * `forIssue(resolved.issue)` when it has an issue and `forIssue` exists; a root
- * winner, a missing `forIssue`, or an empty workspace all degrade to `stateRepo`,
- * which is already correct for a root checkpoint.
+ * A thin wrapper over `resolveCheckpointScope`: explicit issue → `forIssue`;
+ * otherwise the authoritative winner is re-scoped via `forIssue(resolved.issue)`
+ * when it has an issue and `forIssue` exists; a root winner, a missing
+ * `forIssue`, or an empty workspace all degrade to `stateRepo`, which is
+ * already correct for a root checkpoint.
  */
 export async function resolveCheckpointRepository(
   stateRepo: StateRepository,
   issue?: number | string | null
 ): Promise<StateRepository> {
-  const requested = explicitIssue(issue);
-  if (requested !== null) {
-    return stateRepo.forIssue ? stateRepo.forIssue(requested) : stateRepo;
-  }
-
-  if (typeof stateRepo.forIssue === 'function') {
-    const resolved = await resolveAuthoritativeCheckpoint(stateRepo);
-    if (resolved && resolved.issue !== null) {
-      return stateRepo.forIssue(resolved.issue);
-    }
-  }
-
-  return stateRepo;
+  const scope = await resolveCheckpointScope(stateRepo, issue);
+  return scope.repo;
 }
 
 /**
