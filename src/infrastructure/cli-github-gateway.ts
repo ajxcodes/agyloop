@@ -45,7 +45,8 @@ import {
   SEVERITY_ICON_INFO,
   ReviewSeverity,
   DISMISS_CONVERSATION_REPLY_REFERENCE,
-  DISMISS_CONVERSATION_PERMALINK_TEMPLATE
+  DISMISS_CONVERSATION_PERMALINK_TEMPLATE,
+  shellQuote
 } from '../domain';
 
 /**
@@ -260,6 +261,35 @@ export function classifyPrCommentSeverity(
 }
 
 /**
+ * The maximum number of characters a SINGLE argv element may contribute to an
+ * error message before it is truncated.
+ */
+const MAX_ERROR_ARG_CHARS = 200;
+
+/**
+ * The maximum number of characters the whole rendered argv may contribute to an
+ * error message before it is truncated.
+ */
+const MAX_ERROR_ARGV_CHARS = 600;
+
+/**
+ * Renders an argv for an error message.
+ *
+ * The argv is the only diagnosis the argv path has: `runGh` embeds the whole
+ * command in its error, so the argv path must carry enough of it to stay
+ * diagnosable — without letting an arbitrarily long comment body flood the
+ * message.
+ */
+function formatArgvForError(args: readonly string[]): string {
+  const rendered = args
+    .map((arg) => (arg.length > MAX_ERROR_ARG_CHARS ? `${arg.slice(0, MAX_ERROR_ARG_CHARS)}…` : arg))
+    .join(' ');
+  return rendered.length > MAX_ERROR_ARGV_CHARS
+    ? `${rendered.slice(0, MAX_ERROR_ARGV_CHARS)}…`
+    : rendered;
+}
+
+/**
  * Parses the payload of a paginated `gh api` call.
  *
  * `gh api --paginate` returns every page of a REST list endpoint. Depending on
@@ -362,7 +392,7 @@ export class CliGitHubGateway implements GitHubGateway {
         env: { ...process.env, GITHUB_TOKEN: '' }
       }).trim();
     } catch (err: unknown) {
-      throw new GitHubContextError(`runGhArgs: ${args[0] ?? ''}`, { cwd }, err);
+      throw new GitHubContextError(`runGhArgs: ${formatArgvForError(args)}`, { cwd }, err);
     }
   }
 
@@ -415,7 +445,7 @@ export class CliGitHubGateway implements GitHubGateway {
     }
 
     const repo = options.repo || this.getCurrentRepo(options.cwd);
-    const repoFlag = repo ? `--repo ${repo}` : '';
+    const repoFlag = repo ? `--repo ${shellQuote(repo)}` : '';
 
     try {
       const rawJson = this.runGh(
@@ -467,20 +497,30 @@ export class CliGitHubGateway implements GitHubGateway {
 
   public findPullRequest(options: FindPullRequestOptions): GitHubPullRequestData | null {
     const repo = options.repo || this.getCurrentRepo(options.cwd);
-    const repoFlag = repo ? `--repo ${repo}` : '';
     const state = options.state || 'all';
 
     try {
-      let cmd: string;
+      const jsonFields =
+        'number,title,body,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable';
+
+      const args: string[] = ['pr', 'list'];
+      if (repo) args.push('--repo', repo);
+
       if (options.headBranch) {
-        cmd = `pr list ${repoFlag} --head "${options.headBranch}" --state ${state} --json number,title,body,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 1`;
+        args.push('--head', options.headBranch);
+        args.push('--state', state);
+        args.push('--json', jsonFields);
+        args.push('--limit', '1');
       } else if (options.issueNumber) {
-        cmd = `pr list ${repoFlag} --search "${options.issueNumber}" --state ${state} --json number,title,body,state,baseRefName,headRefName,url,mergedAt,labels,mergeStateStatus,mergeable --limit 10`;
+        args.push('--search', String(options.issueNumber));
+        args.push('--state', state);
+        args.push('--json', jsonFields);
+        args.push('--limit', '10');
       } else {
         return null;
       }
 
-      const raw = this.runGh(cmd, { cwd: options.cwd });
+      const raw = this.runGhArgs(args, { cwd: options.cwd });
       interface RawGhPr {
         number?: number;
         title?: string;
@@ -686,7 +726,7 @@ export class CliGitHubGateway implements GitHubGateway {
 
     const repo = options.repo || this.getCurrentRepo(options.cwd);
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const repoFlag = repo ? `--repo ${repo}` : '';
+    const repoFlag = repo ? `--repo ${shellQuote(repo)}` : '';
 
     try {
       const repoPath = repo || this.getCurrentRepo(options.cwd);
@@ -696,15 +736,15 @@ export class CliGitHubGateway implements GitHubGateway {
       // first page (30 records), so the triage silently misses most of the PR's
       // feedback — including a `CHANGES_REQUESTED` review verdict.
       const issueCommentsRaw = this.runGh(
-        `api repos/${repoPath}/issues/${prNumber}/comments --paginate`,
+        `api ${shellQuote(`repos/${repoPath}/issues/${prNumber}/comments`)} --paginate`,
         { cwd: options.cwd }
       );
       const reviewsRaw = this.runGh(
-        `api repos/${repoPath}/pulls/${prNumber}/reviews --paginate`,
+        `api ${shellQuote(`repos/${repoPath}/pulls/${prNumber}/reviews`)} --paginate`,
         { cwd: options.cwd }
       );
       const reviewCommentsRaw = this.runGh(
-        `api repos/${repoPath}/pulls/${prNumber}/comments --paginate`,
+        `api ${shellQuote(`repos/${repoPath}/pulls/${prNumber}/comments`)} --paginate`,
         { cwd: options.cwd }
       );
 
@@ -775,21 +815,25 @@ export class CliGitHubGateway implements GitHubGateway {
     }
   }
 
+  /**
+   * Opens a pull request.
+   *
+   * The title, the body and the branch names are passed to `gh` as ARGV
+   * elements — a PR title is free text and must never reach a shell parser.
+   */
   public createPullRequest(options: CreatePullRequestOptions): GitHubPullRequestData {
     const repo = options.repo || this.getCurrentRepo(options.cwd);
-    const repoFlag = repo ? `--repo ${repo}` : '';
-    const draftFlag = options.draft ? '--draft' : '';
-    const labelsFlag =
-      options.labels && options.labels.length > 0
-        ? `--label "${options.labels.join(',')}"`
-        : '';
 
-    const titleEscaped = options.title.replace(/"/g, '\\"');
-    const bodyEscaped = options.body.replace(/"/g, '\\"');
+    const args: string[] = ['pr', 'create'];
+    if (repo) args.push('--repo', repo);
+    args.push('--base', options.baseBranch);
+    args.push('--head', options.headBranch);
+    args.push('--title', options.title);
+    args.push('--body', options.body);
+    if (options.draft) args.push('--draft');
+    if (options.labels && options.labels.length > 0) args.push('--label', options.labels.join(','));
 
-    const cmd = `pr create ${repoFlag} --base "${options.baseBranch}" --head "${options.headBranch}" --title "${titleEscaped}" --body "${bodyEscaped}" ${draftFlag} ${labelsFlag}`;
-
-    const url = this.runGh(cmd, { cwd: options.cwd });
+    const url = this.runGhArgs(args, { cwd: options.cwd });
 
     // Parse PR number from created URL if available (e.g. .../pull/42)
     const match = url.match(/\/pull\/(\d+)/);
@@ -807,6 +851,12 @@ export class CliGitHubGateway implements GitHubGateway {
     };
   }
 
+  /**
+   * Adds labels to an issue or pull request.
+   *
+   * Each label is passed to `gh` as its own ARGV element, so a label that
+   * carries shell metacharacters is a LABEL, never a command.
+   */
   public applyLabels(
     targetNumber: number,
     labels: readonly string[],
@@ -814,12 +864,21 @@ export class CliGitHubGateway implements GitHubGateway {
   ): void {
     if (!labels || labels.length === 0 || !targetNumber) return;
     const repo = options.repo || this.getCurrentRepo(options.cwd);
-    const repoFlag = repo ? `--repo ${repo}` : '';
-    const labelArgs = labels.map((l) => `--add-label "${l}"`).join(' ');
 
-    this.runGh(`issue edit ${targetNumber} ${repoFlag} ${labelArgs}`, { cwd: options.cwd });
+    const args: string[] = ['issue', 'edit', String(targetNumber)];
+    if (repo) args.push('--repo', repo);
+    for (const label of labels) args.push('--add-label', label);
+
+    this.runGhArgs(args, { cwd: options.cwd });
   }
 
+  /**
+   * Posts a comment on an issue.
+   *
+   * The body is passed to `gh` as an ARGV element and never interpolated into a
+   * shell string: a body that carries backticks, `$(…)`, `;`, `&&` or `|` must
+   * reach GitHub VERBATIM, and must never be executed by a shell.
+   */
   public commentOnIssue(
     issueNumber: number,
     comment: string,
@@ -827,12 +886,12 @@ export class CliGitHubGateway implements GitHubGateway {
   ): void {
     if (!issueNumber || !comment) return;
     const repo = options.repo || this.getCurrentRepo(options.cwd);
-    const repoFlag = repo ? `--repo ${repo}` : '';
-    const commentEscaped = comment.replace(/"/g, '\\"');
 
-    this.runGh(`issue comment ${issueNumber} ${repoFlag} --body "${commentEscaped}"`, {
-      cwd: options.cwd
-    });
+    const args: string[] = ['issue', 'comment', String(issueNumber)];
+    if (repo) args.push('--repo', repo);
+    args.push('--body', comment);
+
+    this.runGhArgs(args, { cwd: options.cwd });
   }
 
   public closeIssue(
@@ -841,7 +900,7 @@ export class CliGitHubGateway implements GitHubGateway {
   ): void {
     if (!issueNumber) return;
     const repo = options.repo || this.getCurrentRepo(options.cwd);
-    const repoFlag = repo ? `--repo ${repo}` : '';
+    const repoFlag = repo ? `--repo ${shellQuote(repo)}` : '';
 
     this.runGh(`issue close ${issueNumber} ${repoFlag}`, { cwd: options.cwd });
   }

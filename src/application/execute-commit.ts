@@ -31,6 +31,7 @@ import {
   InvalidTransitionError,
   PublicSanitizer,
   buildGitTokenRedirectConfig,
+  escapeShellQuote,
   isRootWorkspace
 } from '../domain';
 import {
@@ -323,8 +324,6 @@ export class ExecuteCommitUseCase {
     // Resolve milestone and issue for PR generation
     const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
     const issueId = params.issue || sm.issue;
-
-    const escapeShellQuote = (str: string) => str.replace(/'/g, "'\\''");
 
     // Check if PR already exists for the active branch
     let prExists = false;
