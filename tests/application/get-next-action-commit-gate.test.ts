@@ -14,6 +14,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 
 const { GetNextActionUseCase } = require('../../dist/application');
+const { RunReviewUseCase } = require('../../dist/application');
 const {
   StateMachine,
   STAGE_DISCOVERY,
@@ -173,6 +174,58 @@ describe('GetNextActionUseCase COMMIT-gate description (issue #259, AC4)', () =>
     assert.ok(
       description.includes(COMMIT_INSTRUCTIONS),
       `the commit instructions must be preserved, got: ${description}`
+    );
+  });
+});
+
+/**
+ * C4 (issue #269, AC2.4): after a dispatched Reviewer subagent's verdict is
+ * RECORDED through the production path, the COMMIT gate reports the ACTUAL
+ * verdict — never "No AI review verdict is recorded for this task".
+ */
+describe('GetNextActionUseCase COMMIT-gate description after a recorded reviewer verdict (issue #269)', () => {
+  test('C4: a recorded reviewer APPROVED verdict is reported as "Review passed."', async () => {
+    const sm = StateMachine.createInitial({ issue: 269, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+
+    // The production recording path: `RunReviewUseCase` with a reviewer
+    // subagent's verdict block (what `codeloop review --verdict-file` does).
+    const reviewUseCase = new RunReviewUseCase(
+      stateRepo,
+      makeMockConfig(),
+      {
+        resolvePlanFile: () => null,
+        readPlanDocument: () => '',
+        updateSummaryLog: () => true
+      } as any,
+      undefined,
+      undefined
+    );
+    const review = await reviewUseCase.execute({
+      reviewOutput: 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: All good.\nUNFULFILLED_AC:\n- None\n'
+    });
+    assert.strictEqual(review.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(review.currentStage, STAGE_COMMIT);
+
+    // Now the COMMIT gate must describe what ACTUALLY happened.
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.ok(
+      result.description.startsWith('Review passed.'),
+      `the recorded APPROVED verdict must read as a pass, got: ${result.description}`
+    );
+    assert.ok(
+      !result.description.includes('No AI review verdict is recorded'),
+      `the gate must not claim the verdict is missing, got: ${result.description}`
     );
   });
 });

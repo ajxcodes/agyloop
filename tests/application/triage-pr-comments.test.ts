@@ -1185,3 +1185,124 @@ describe('Triage dismissal cross-run memory (issue #259)', () => {
     assert.strictEqual(result.dismissal?.conversationsPriorAnswers, 0);
   });
 });
+
+/**
+ * Issue #269 (Defect 1): the recorded TRIAGE DISPOSITION.
+ *
+ * The disposition is what turns the TRIAGE livelock into a one-shot gate: the
+ * detector consults it before routing, so without it `codeloop next` re-routes
+ * the very same feedback forever.
+ */
+describe('TriagePrCommentsUseCase disposition recording (issue #269)', () => {
+  const PR = 7;
+
+  const ACTIONABLE_COMMENT = {
+    id: 101,
+    surface: 'conversation',
+    author: 'reviewer',
+    body: 'Please fix the nil dereference in resolve-subagent.ts',
+    category: 'error',
+    createdAt: '2026-10-21T11:00:00Z'
+  };
+
+  const SUMMARY_COMMENT = {
+    id: 102,
+    surface: 'conversation',
+    author: 'github-actions[bot]',
+    body: '## Critique AI Review Run Summary\n\nNo findings.',
+    category: 'general',
+    createdAt: '2026-10-21T11:30:00Z'
+  };
+
+  test('TP1: `triage completed` records a disposition for the PR', async () => {
+    const sm = StateMachine.createInitial({ issue: 900 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const result = await useCase.execute({
+      issue: 900,
+      prNumber: PR,
+      action: 'completed',
+      comments: [ACTIONABLE_COMMENT]
+    });
+
+    assert.strictEqual(result.dispositionRecorded, true);
+    assert.ok(result.disposition, 'the result must carry the disposition');
+    assert.strictEqual(result.disposition!.prNumber, PR);
+    assert.strictEqual(result.disposition!.action, 'completed');
+    assert.deepStrictEqual([...result.disposition!.feedbackKeys], ['id:101']);
+    assert.ok(result.disposition!.recordedAt, 'the disposition must be timestamped');
+  });
+
+  test('TP2: `triage implement` records a disposition too', async () => {
+    const sm = StateMachine.createInitial({ issue: 900 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const result = await useCase.execute({
+      issue: 900,
+      prNumber: PR,
+      action: 'implement',
+      comments: [ACTIONABLE_COMMENT]
+    });
+
+    assert.strictEqual(result.dispositionRecorded, true);
+    assert.strictEqual(result.disposition!.action, 'implement');
+    assert.strictEqual(result.disposition!.prNumber, PR);
+  });
+
+  test('TP3: when no PR feedback could be read, NO disposition is recorded', async () => {
+    const sm = StateMachine.createInitial({ issue: 900 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const result = await useCase.execute({
+      issue: 900,
+      prNumber: PR,
+      action: 'completed',
+      comments: []
+    });
+
+    assert.strictEqual(result.dispositionRecorded, false);
+    assert.strictEqual(result.disposition, null);
+    // The checkpoint must NOT carry a disposition either: an empty key set must
+    // never masquerade as "everything was dispositioned".
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.triageDisposition, null);
+  });
+
+  test('TP4: the disposition is persisted in the snapshot', async () => {
+    const sm = StateMachine.createInitial({ issue: 900 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    await useCase.execute({
+      issue: 900,
+      prNumber: PR,
+      action: 'completed',
+      comments: [ACTIONABLE_COMMENT, SUMMARY_COMMENT]
+    });
+
+    const saved: any = await stateRepo.load();
+    assert.ok(saved.triageDisposition, 'the snapshot must carry the disposition');
+    assert.strictEqual(saved.triageDisposition.prNumber, PR);
+    assert.strictEqual(saved.triageDisposition.action, 'completed');
+    // The repository's own automated summary is NOT feedback, so it is not a
+    // dispositioned feedback key.
+    assert.deepStrictEqual([...saved.triageDisposition.feedbackKeys], ['id:101']);
+
+    // The history records THAT a disposition was taken.
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.metadata.triageDisposition, true);
+    assert.ok(
+      last.metadata.dispositionNote.includes('Triage disposition recorded: completed'),
+      `the history note must name the disposition, got: ${JSON.stringify(last.metadata.dispositionNote)}`
+    );
+    assert.ok(last.metadata.dispositionNote.includes('PR #7'));
+    assert.ok(last.metadata.dispositionNote.includes('1 feedback item(s)'));
+  });
+});

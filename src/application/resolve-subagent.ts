@@ -935,6 +935,16 @@ export class ResolveSubagentUseCase {
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
     prompt += `\`\`\`\n\n`;
 
+    // Issue #269: the verdict block is the ONLY record of this review, and
+    // there must be a channel for it to reach the checkpoint. The reviewer
+    // subagent is read-only (no write tools), so the channel is a COMMAND the
+    // orchestrator runs with the block.
+    prompt += `The verdict block above is the ONLY record of this review. The orchestrator files it with:\n`;
+    prompt += `    codeloop review --issue <n> --verdict-file <path>\n`;
+    prompt += `(or \`--review-output "<block>"\`, or by piping the block into \`codeloop review --verdict-stdin\`).\n`;
+    prompt += `Emit the block verbatim as the LAST thing in your response. Do not wrap the \`REVIEW_STATUS:\` line\n`;
+    prompt += `in anything else.\n\n`;
+
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();

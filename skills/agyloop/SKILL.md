@@ -204,6 +204,7 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
   - When deep Acceptance Criteria auditing or isolated evaluation is requested, spawns the read-only **`reviewer`** subagent via `invoke_subagent` (payload from `bin/agyloop next --json`).
   - Supplied with raw `critique` diagnostics, `git diff`, repo standards, and approved plan Acceptance Criteria.
   - Reviewer verifies criteria fulfillment and emits structured verdict: `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`.
+  - **Filing the verdict**: the reviewer subagent is read-only, so its verdict block travels back through the CLI — write the block to a file and run `bin/agyloop review --issue <n> --verdict-file <path>` (equivalently `bin/codeloop review --issue <n> --verdict-file <path>`), pipe it in with `bin/agyloop review --issue <n> --verdict-stdin`, or pass it inline with `--review-output "<block>"`. The recorded verdict is the reviewer's own: `APPROVED` advances to the COMMIT gate, `CHANGES_REQUESTED` reverts to `IMPLEMENT` (exit code `1`). `bin/agyloop review` with no verdict flag runs the Tier 1 critique review instead.
 - **Optional `--commit-after` Behavior**:
   - Passing `--commit-after` to `bin/agyloop yolo` instructs the runner to automatically draft and execute the conventional commit upon clean quality gates and review approval, seamlessly advancing to `COMPLETED`.
 - **Mandatory Critique & Review Failure Loop**:

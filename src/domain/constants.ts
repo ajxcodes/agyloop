@@ -347,6 +347,11 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   'halt',
   'release',
   'abort',
+  // `review` records the dispatched reviewer subagent's verdict into the
+  // checkpoint, so it mutates it exactly like `triage` does — it must be listed
+  // here for the `AGY_SUBAGENT` root mutation guard to cover it (with a
+  // carve-out in `cli.ts` so the REVIEWER subagent can file its own verdict).
+  'review',
   null
 ] as const);
 
@@ -1402,6 +1407,18 @@ export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
 export const NOTE_RESTARTED_FROM_COMPLETED =
   'Re-opened planning from a COMPLETED checkpoint (explicit --restart)' as const;
 export const NOTE_TRIAGE_ROUTED = 'Triage completed: routed to target stage' as const;
+/**
+ * Recorded when a dispatched reviewer's verdict arrives while the pipeline
+ * already rests at the COMMIT gate (issue #269).
+ *
+ * The commit gate is where the live defect was observed: the gate reported
+ * "No AI review verdict is recorded for this task" while the reviewer was
+ * holding a genuine APPROVED verdict that had no channel to reach the
+ * checkpoint. The review is therefore re-opened through the legal route
+ * `COMMIT -> QUALITY_GATE -> REVIEW` — the transition table is NOT widened.
+ */
+export const NOTE_REVIEW_REOPENED_FROM_COMMIT =
+  'Review re-opened to record the dispatched Reviewer Subagent verdict' as const;
 export const NOTE_AUTO_APPROVED_PLAN = 'Plan auto-approved in YOLO mode' as const;
 export const NOTE_COMMIT_AFTER_EXECUTED = 'Commit automatically executed via --commit-after' as const;
 export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
@@ -1781,6 +1798,129 @@ export const DISMISS_INLINE_REPLY_MARKER =
 export const DISMISS_INLINE_REPLY_SIGNATURE =
   '— CodeLoop Triage Subagent' as const;
 
+// ============================================================================
+// Triage Disposition (issue #269, Defect 1)
+// ============================================================================
+
+/**
+ * The titles of the repository's OWN automated review summaries.
+ *
+ * The detector used to count EVERY comment on an OPEN PR as review feedback,
+ * so the repository's own `critique.yml` status post — a summary that by
+ * construction reports zero findings — was routed to the TRIAGE gate. The
+ * subagent was then asked to dispose of a comment that said there was nothing
+ * to dispose of, and the disposition was never recorded, so `codeloop next`
+ * routed to TRIAGE again (the livelock).
+ *
+ * The predicate is a case-insensitive SUBSTRING match on the comment body, and
+ * the marker list is deliberately EXPLICIT: a bot's inline findings are
+ * actionable and must still route. Excluding a STATUS POST does not blind the
+ * tool; excluding "bot comments" wholesale would.
+ */
+export const PR_AUTOMATED_SUMMARY_MARKERS: readonly string[] = Object.freeze([
+  'Critique AI Review Run Summary',
+  'Critique Review Summary',
+  'CodeLoop AI Review Run Summary'
+]);
+
+/**
+ * The actions a triage disposition can record.
+ *
+ * This is the SINGLE definition of the triage action set: the application
+ * layer's `TriageAction` is re-typed as an alias of it, so the CLI, the
+ * checkpoint and the disposition can never disagree about the vocabulary.
+ */
+export const TRIAGE_DISPOSITION_ACTIONS = Object.freeze([
+  'implement',
+  'plan',
+  'discovery',
+  'completed',
+  'dismiss'
+] as const);
+
+export type TriageDispositionAction = (typeof TRIAGE_DISPOSITION_ACTIONS)[number];
+
+/**
+ * The cap on the number of feedback keys a single disposition may carry.
+ *
+ * The disposition lives in the checkpoint's snapshot, so an unbounded key set
+ * would grow the state file without limit. The OLDEST keys are dropped first:
+ * a disposition records what was disposed of, and the most recent feedback is
+ * the one that matters for the next triage.
+ */
+export const MAX_TRIAGE_DISPOSITION_FEEDBACK_KEYS = 200 as const;
+
+/**
+ * The history/summary note for a recorded triage disposition.
+ */
+export const NOTE_TRIAGE_DISPOSITION_RECORDED =
+  'Triage disposition recorded: {action} (PR #{prNumber}, {count} feedback item(s) at {recordedAt})' as const;
+
+/**
+ * Why NO disposition was recorded.
+ *
+ * An empty key set must never masquerade as "everything was dispositioned":
+ * if no feedback could be read, the tool knows nothing about what was disposed
+ * of, and the next triage must see the PR afresh.
+ */
+export const NOTE_TRIAGE_DISPOSITION_NOT_RECORDED =
+  'no triage disposition recorded — no PR review feedback could be read' as const;
+
+/**
+ * The exit condition of the TRIAGE gate, stated in the tool's own output.
+ *
+ * The gate re-opens on every `codeloop next` while the PR is open, so the
+ * operator must be told what ENDS it: a recorded disposition, or the PR being
+ * merged/closed.
+ */
+export const NOTE_TRIAGE_GATE_EXIT_CONDITION =
+  "This gate ends when the feedback is dispositioned (the disposition is recorded in the checkpoint) or when the PR is merged/closed. Until then 'codeloop next' reports this gate again." as const;
+
+/**
+ * The operator-facing label of the triage disposition line.
+ */
+export const LABEL_TRIAGE_DISPOSITION = 'Triage Disposition' as const;
+
+/**
+ * The surfaces the triage disposition line is rendered for (issue #269, R5).
+ *
+ * ONE renderer, THREE surfaces: the CLI's triage output, the idle report and
+ * the checkpoint history note each used to hand-render the SAME facts, so the
+ * wording could drift apart. The frames live here, beside the note they
+ * belong to, and the renderer in `value-objects/triage-disposition.ts` is the
+ * single place that fills them.
+ */
+export const TRIAGE_DISPOSITION_SURFACES = Object.freeze([
+  'history-note',
+  'idle-report',
+  'triage-cli'
+] as const);
+
+export type TriageDispositionSurface = (typeof TRIAGE_DISPOSITION_SURFACES)[number];
+
+/**
+ * The operator-facing disposition line, per surface (issue #269, R5).
+ *
+ * Placeholders:
+ *
+ * - `{action}` — the disposition action, as recorded (`completed`);
+ * - `{actionUpper}` — the same action, upper-cased (`COMPLETED`);
+ * - `{prNumber}` — the pull request the disposition applies to;
+ * - `{count}` — the number of dispositioned feedback items;
+ * - `{recordedAt}` — the instant the disposition was recorded;
+ * - `{label}` — the operator-facing label of the line.
+ *
+ * The history note IS `NOTE_TRIAGE_DISPOSITION_RECORDED` — the domain constant
+ * that already existed and was used for exactly one surface.
+ */
+export const TRIAGE_DISPOSITION_LINE_TEMPLATES = Object.freeze({
+  'history-note': NOTE_TRIAGE_DISPOSITION_RECORDED,
+  'idle-report':
+    'Triage disposition recorded: action={action}, PR #{prNumber}, {count} feedback item(s), at {recordedAt}.',
+  'triage-cli':
+    '{label} : recorded (action={actionUpper}, PR #{prNumber}, {count} feedback item(s), at {recordedAt})'
+} as const);
+
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;
 export const COMMAND_GATES = 'gates' as const;
@@ -1810,6 +1950,131 @@ export const COMMAND_INIT = 'init' as const;
  * state without wiring `AgentRunnerPort` into the lifecycle.
  */
 export const COMMAND_HALT = 'halt' as const;
+
+/**
+ * The inbound channel for a dispatched reviewer subagent's verdict (issue #269).
+ *
+ * The reviewer subagent produces a `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`
+ * block, and `RunReviewParams.reviewOutput` is the domain's chosen seam for
+ * it — but no command ever supplied it, so the verdict was structurally
+ * unrecordable. This command IS that producer.
+ */
+export const COMMAND_REVIEW = 'review' as const;
+
+/**
+ * The flags that carry a dispatched reviewer verdict to the checkpoint.
+ */
+export const FLAG_VERDICT_FILE = '--verdict-file' as const;
+export const FLAG_REVIEW_OUTPUT = '--review-output' as const;
+export const FLAG_VERDICT_STDIN = '--verdict-stdin' as const;
+
+/**
+ * The operator-facing source of an INLINE reviewer verdict.
+ *
+ * The verdict-file source is the path itself; the stdin source is
+ * `VERDICT_INPUT_SOURCE_STDIN`.
+ */
+export const VERDICT_INPUT_SOURCE_STDIN = 'stdin' as const;
+
+/**
+ * The diagnostic for a verdict flag that was PRESENT but carried no value
+ * (issue #269, R1).
+ *
+ * A verdict that was never read must fail LOUDLY. Falling through to the
+ * critique path would record a `SKIPPED` verdict — a silent downgrade of the
+ * reviewer's real verdict, and the exact defect this channel exists to
+ * remove.
+ */
+export const NOTE_VERDICT_INPUT_MISSING =
+  '{flag} was provided without a reviewer verdict. No verdict was recorded and the review did NOT run: a verdict that was never read must fail loudly, never fall through to the critique path. {hint}' as const;
+
+/**
+ * How to supply the verdict the `--verdict-file` flag asked for.
+ */
+export const HINT_VERDICT_FILE_INPUT =
+  'Pass the path of the file that carries the verdict block, e.g. `codeloop review --issue 269 --verdict-file verdict.md`.' as const;
+
+/**
+ * How to supply the verdict the `--review-output` flag asked for.
+ */
+export const HINT_REVIEW_OUTPUT_INPUT =
+  'Pass the verdict block inline, e.g. `codeloop review --issue 269 --review-output "REVIEW_STATUS: APPROVED"`, or pipe it in with --verdict-stdin.' as const;
+
+/**
+ * How to supply the verdict the `--verdict-stdin` flag asked for.
+ */
+export const HINT_VERDICT_STDIN_INPUT =
+  'Pipe the verdict block into the command, e.g. `cat verdict.md | codeloop review --issue 269 --verdict-stdin`.' as const;
+
+/**
+ * WHERE the recorded verdict came from (issue #269).
+ *
+ * The source is part of the RECORD: a consumer must never read "the reviewer
+ * said CHANGES_REQUESTED" when the reviewer said APPROVED and the Tier 1
+ * critique report escalated the verdict.
+ *
+ * - `reviewer-output` — the dispatched Reviewer subagent's verdict block
+ *   (Tier 2), filed through `codeloop review --verdict-file`.
+ * - `critique-report` — the critique CLI's report (Tier 1).
+ * - `skipped` — the advisory fail-open: no reviewer output and no critique
+ *   report (issue #236).
+ * - `reviewer-output+critique-escalation` — the reviewer APPROVED, but the
+ *   TWO-TIER INVARIANT escalated the verdict to CHANGES_REQUESTED because the
+ *   critique report carried a blocking/error finding. The source names BOTH
+ *   contributors: plain `reviewer-output` would claim that the reviewer asked
+ *   for changes the reviewer never asked for.
+ */
+export const REVIEW_SOURCE_REVIEWER_OUTPUT = 'reviewer-output' as const;
+export const REVIEW_SOURCE_CRITIQUE_REPORT = 'critique-report' as const;
+export const REVIEW_SOURCE_SKIPPED = 'skipped' as const;
+export const REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED = 'reviewer-output+critique-escalation' as const;
+
+export type ReviewSource =
+  | (typeof REVIEW_SOURCE_REVIEWER_OUTPUT)
+  | (typeof REVIEW_SOURCE_CRITIQUE_REPORT)
+  | (typeof REVIEW_SOURCE_SKIPPED)
+  | (typeof REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED);
+
+/**
+ * The DOCUMENTED command set of the CLI (issue #269, AC2.2).
+ *
+ * The OpenCode skill documents a set of commands; this list is the contract
+ * the skill↔CLI test asserts against, so the skill and the CLI can never
+ * disagree about a command that does not exist.
+ *
+ * `gate` / `gates` are deliberately ABSENT: they were removed commands whose
+ * case only prints "use `agyloop next` instead", and they are not documented
+ * commands.
+ *
+ * Named `CLI_DOCUMENTED_COMMANDS` rather than `CLI_COMMANDS`: the latter is
+ * already the command-NAME map (`CLI_COMMANDS.HALT`, ...), and renaming it
+ * would break every existing consumer.
+ */
+export const CLI_DOCUMENTED_COMMANDS: readonly string[] = Object.freeze([
+  'init',
+  'plan',
+  'implement',
+  'commit',
+  'release',
+  'sync',
+  'next',
+  'branch-info',
+  'status',
+  'config',
+  'models',
+  'prompt',
+  'reset',
+  'resume',
+  'halt',
+  'abort',
+  'transition',
+  'worktree',
+  'critique',
+  'opencode',
+  'triage',
+  'review',
+  'yolo'
+]);
 
 export const FORGE_GITHUB = 'github' as const;
 export const FORGE_GITLAB = 'gitlab' as const;
@@ -1862,7 +2127,8 @@ export const CLI_COMMANDS = Object.freeze({
   TRIAGE: COMMAND_TRIAGE,
   SYNC: COMMAND_SYNC,
   ABORT: COMMAND_ABORT,
-  HALT: COMMAND_HALT
+  HALT: COMMAND_HALT,
+  REVIEW: COMMAND_REVIEW
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];

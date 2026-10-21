@@ -43,6 +43,9 @@ import {
   GATE_TRIAGE,
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_RESTARTED_FROM_COMPLETED,
+  NOTE_TRIAGE_GATE_EXIT_CONDITION,
+  TriageDisposition,
+  formatTriageDispositionLine,
   assertNotRootWorkspace,
   isRootWorkspace
 } from '../domain';
@@ -57,6 +60,7 @@ import {
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveCompletedReentry } from './lifecycle-reentry-policy';
+import { classifyPrFeedback, feedbackKeysOf } from './triage-feedback';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
@@ -214,7 +218,9 @@ export class GetNextActionUseCase {
       // issue was recorded (`issue: null`), which cannot be resolved from the
       // checkpoint itself.
       const feedbackIssue = sm.issue ?? activeIssue;
-      const feedback = feedbackIssue ? await this.detectOpenReviewFeedback(feedbackIssue, cwd) : null;
+      const feedback = feedbackIssue
+        ? await this.detectOpenReviewFeedback(feedbackIssue, cwd, sm.triageDisposition)
+        : null;
       const decision = resolveCompletedReentry({
         currentStage: sm.currentStage,
         restartOptIn,
@@ -598,17 +604,29 @@ export class GetNextActionUseCase {
           actionType: 'subagent',
           role: ROLE_TRIAGE,
           title: 'Invoke Triage Subagent',
-          description: 'Open PR contains review comments requiring triage and pipeline routing.',
+          // The exit condition is stated here (issue #269): this gate re-opens
+          // on every read while the pull request is open, so the operator must
+          // be told what ENDS it.
+          description: `Open PR contains review comments requiring triage and pipeline routing. ${NOTE_TRIAGE_GATE_EXIT_CONDITION}`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke Triage Subagent with Model '${subagent.model}' to categorize comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED.`
+          humanSummary: `Invoke Triage Subagent with Model '${subagent.model}' to categorize comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED. ${NOTE_TRIAGE_GATE_EXIT_CONDITION}`
         };
       }
 
       case STAGE_COMPLETED:
       default: {
+        // The recorded disposition is named here (issue #269): the operator
+        // must be able to see that the feedback WAS disposed of — otherwise the
+        // idle report reads like "nothing happened" and the gate looks like it
+        // will re-open forever. The line is rendered by the ONE shared
+        // renderer (issue #269, R5).
+        const disposition = sm.triageDisposition;
+        const dispositionLine = disposition
+          ? ` ${formatTriageDispositionLine(disposition, 'idle-report')}`
+          : '';
         return {
           currentStage: sm.currentStage,
           nextStage: STAGE_INITIALIZED,
@@ -619,7 +637,8 @@ export class GetNextActionUseCase {
           taskBranch,
           worktreePath,
           humanSummary:
-            'Pipeline is idle. Run "codeloop <task>" to start a new lifecycle, or "codeloop next --restart --issue <n>" to re-open a COMPLETED task.'
+            'Pipeline is idle. Run "codeloop <task>" to start a new lifecycle, or "codeloop next --restart --issue <n>" to re-open a COMPLETED task.' +
+            dispositionLine
         };
       }
     }
@@ -635,8 +654,22 @@ export class GetNextActionUseCase {
    * throws, a missing PR, a merged/closed PR, or a gateway without either
    * optional method all collapse to `null` — treated as "no feedback", never as
    * "authorise a reset".
+   *
+   * The detector CLASSIFIES the comments (issue #269) instead of counting
+   * them:
+   *
+   * - the tool's OWN replies are excluded, so dismissing feedback cannot
+   *   increase the detected count;
+   * - the repository's own automated summaries are excluded, because a status
+   *   post is not review feedback;
+   * - feedback already covered by the recorded triage DISPOSITION is excluded,
+   *   which is what turns the TRIAGE livelock into a one-shot gate.
    */
-  private async detectOpenReviewFeedback(issue: number, cwd: string): Promise<OpenReviewFeedback | null> {
+  private async detectOpenReviewFeedback(
+    issue: number,
+    cwd: string,
+    disposition: TriageDisposition | null
+  ): Promise<OpenReviewFeedback | null> {
     const gateway = this.githubGateway;
     if (!gateway?.findPullRequest) {
       return null;
@@ -669,16 +702,38 @@ export class GetNextActionUseCase {
       // therefore invisible to this port entirely — a real limitation, but not
       // one a second operand on the same list can repair, and pretending
       // otherwise made the predicate look stricter than it is.
-      const hasOpenReviewFeedback = comments.length > 0;
+      if (comments.length === 0) {
+        return null;
+      }
 
-      if (!hasOpenReviewFeedback) {
+      // The ACTIONABLE comments are the only ones that can route the pipeline
+      // (issue #269): the tool's own replies and the repository's automated
+      // summaries are not feedback.
+      const classified = classifyPrFeedback(comments);
+      if (classified.actionable.length === 0) {
+        return null;
+      }
+
+      // The recorded disposition covers the feedback that was already
+      // disposed of. A NEW comment (a key the disposition does not cover) still
+      // routes — the tool does not go blind.
+      //
+      // The disposition applies to ONE pull request (issue #269, R4): a
+      // disposition recorded for PR #7 must never suppress feedback on PR #8.
+      // The check is cheap defence in depth — REST comment ids are globally
+      // unique today, and `TriageDisposition.merge` replaces the disposition
+      // when the PR changes — but the rule "for that PR" is explicit, and a
+      // disposition for another PR leaves the feedback undispositioned, so it
+      // routes to TRIAGE exactly as it would without any disposition.
+      const keys = feedbackKeysOf(classified.actionable);
+      if (disposition && disposition.prNumber === pr.number && disposition.coversAll(keys)) {
         return null;
       }
 
       return {
         prNumber: pr.number,
-        commentCount: comments.length,
-        payload: comments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n')
+        commentCount: classified.actionable.length,
+        payload: classified.actionable.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n')
       };
     } catch {
       return null;

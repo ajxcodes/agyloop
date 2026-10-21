@@ -143,6 +143,15 @@ export interface RunLifecycleParams {
   readonly planPath?: string | null;
   readonly planDir?: string | null;
   readonly userInstructions?: string | null;
+  /**
+   * The dispatched Reviewer subagent's verdict block (issue #269).
+   *
+   * Forwarded to `RunReviewUseCase` as `reviewOutput` — the domain's chosen
+   * seam for "the reviewer's verdict". Omitted, the behaviour is byte-identical
+   * to today (the critique-based Tier 1 review, or the #236 advisory
+   * fail-open).
+   */
+  readonly reviewOutput?: string | null;
   readonly interactiveCommit?: boolean;
   /**
    * False when no human can answer prompts (non-TTY, `--json`). Threaded into the
@@ -1148,6 +1157,7 @@ export class RunLifecycleUseCase {
       standardsPath: params.standardsPath,
       userInstructions: params.userInstructions,
       workingDiff: params.workingDiff,
+      reviewOutput: params.reviewOutput,
       staged: params.staged,
       baseRef: params.baseRef,
       dryRun: params.dryRun,
@@ -1392,6 +1402,7 @@ export class RunLifecycleUseCase {
         standardsPath: params.standardsPath,
         userInstructions: params.userInstructions,
         workingDiff: params.workingDiff,
+        reviewOutput: params.reviewOutput,
         staged: params.staged,
         baseRef: params.baseRef,
         dryRun: params.dryRun,

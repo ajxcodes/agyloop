@@ -465,6 +465,12 @@ REMEDIATION_GUIDANCE:
   });
 
   test('enforces CHANGES_REQUESTED when critique reports critical/error findings even if reviewer LLM outputs APPROVED', async () => {
+    // Issue #269 (R2): the recording path does NOT EXECUTE the critique CLI
+    // when the reviewer's verdict is supplied — that is a network round-trip,
+    // a latency cost and an interactive install prompt on a path that must
+    // never block. The critique REPORT the reviewer already saw is still
+    // honoured when it is SUPPLIED (`priorCritiqueReport`), and the TWO-TIER
+    // INVARIANT still escalates the verdict from it.
     critique.reportToReturn = new AiReviewReport({
       summary: 'Automated critique found critical flaw',
       confidence: ReviewConfidence.high('Security scan'),
@@ -496,11 +502,17 @@ REMEDIATION_GUIDANCE:
 - None
 `;
 
-    const result = await useCase.execute({ reviewOutput });
+    const result = await useCase.execute({
+      reviewOutput,
+      priorCritiqueReport: critique.reportToReturn
+    });
 
     assert.strictEqual(result.passed, false);
     assert.strictEqual(result.verdict.isChangesRequested(), true);
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    // Issue #269 (R3): the source must NOT claim the reviewer requested the
+    // changes — the critique report escalated the verdict, not the reviewer.
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
   });
 
   test('returns SKIPPED advisory when neither review output nor critique report was generated', async () => {

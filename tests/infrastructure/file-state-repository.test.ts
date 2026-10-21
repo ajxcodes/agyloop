@@ -389,6 +389,33 @@ describe('FileStateRepository', () => {
       assert.strictEqual(loaded?.currentStage, 'PLAN');
     });
 
+    test('a snapshot carrying a triageDisposition survives save -> load byte-for-byte (issue #269)', () => {
+      process.cwd = () => path.join('/home/user/project');
+      const repo = new FileStateRepository({ workspaceDir: tempDir, issue: 269 });
+
+      const disposition = {
+        prNumber: 7,
+        action: 'completed',
+        recordedAt: '2026-10-21T12:00:00.000Z',
+        feedbackKeys: ['id:101', 'id:102']
+      };
+
+      repo.save({
+        issue: 269,
+        currentStage: 'COMPLETED',
+        history: [],
+        triageDisposition: disposition
+      } as any);
+
+      const loaded = repo.load();
+      assert.ok(loaded, 'the checkpoint must be readable');
+      assert.deepStrictEqual(
+        (loaded as any).triageDisposition,
+        disposition,
+        'the recorded triage disposition must survive the file round-trip unchanged'
+      );
+    });
+
     test('listAllStates reads root state and multiple task states, ignoring corrupt JSON and non-JSON files', () => {
       const repo = new FileStateRepository({ workspaceDir: tempDir });
 

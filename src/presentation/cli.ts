@@ -53,9 +53,18 @@ import {
   COMMAND_CRITIQUE,
   COMMAND_TRIAGE,
   COMMAND_HALT,
+  COMMAND_REVIEW,
   COMMAND_SYNC,
   COMMAND_INIT,
   COMMAND_RESUME,
+  FLAG_VERDICT_FILE,
+  FLAG_REVIEW_OUTPUT,
+  FLAG_VERDICT_STDIN,
+  VERDICT_INPUT_SOURCE_STDIN,
+  NOTE_VERDICT_INPUT_MISSING,
+  HINT_VERDICT_FILE_INPUT,
+  HINT_REVIEW_OUTPUT_INPUT,
+  HINT_VERDICT_STDIN_INPUT,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -105,7 +114,16 @@ import {
   NOTE_DISMISS_OWN_REPLY,
   NOTE_DISMISS_PRIOR_ANSWER,
   NOTE_DISMISS_NOTHING,
-  NOTE_DISMISS_NOTHING_HANDLED
+  NOTE_DISMISS_NOTHING_HANDLED,
+  // Issue #269: the TRIAGE gate's exit condition and the disposition line.
+  NOTE_TRIAGE_GATE_EXIT_CONDITION,
+  NOTE_TRIAGE_DISPOSITION_NOT_RECORDED,
+  LABEL_TRIAGE_DISPOSITION,
+  // Issue #269 (R5): the ONE renderer for the operator-facing disposition
+  // line. The CLI must not hand-render it.
+  formatTriageDispositionLine,
+  ReviewVerdict,
+  ReviewerSubagentError
 } from '../domain';
 import type {
   StateRepository,
@@ -146,7 +164,6 @@ import {
   StartImplementationUseCase,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   RunQualityGateUseCase,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   RunReviewUseCase,
   ManageCritiqueUseCase,
   DraftCommitUseCase,
@@ -216,6 +233,36 @@ export interface CliOptions {
    * history metadata so a bypassed RCA gate stays auditable.
    */
   skipDiscovery: boolean;
+  /**
+   * The path of the file carrying the dispatched Reviewer subagent's verdict
+   * block (issue #269). Read by `codeloop review`.
+   */
+  verdictFile: string | null;
+  /**
+   * The dispatched Reviewer subagent's verdict block, inline (issue #269).
+   */
+  reviewOutput: string | null;
+  /**
+   * True when `--verdict-file` was PRESENT on the command line, whether or
+   * not it carried a value (issue #269, R1).
+   *
+   * A present-but-valueless verdict flag is a LOUD failure, never a
+   * fall-through to the critique path: the fall-through records a `SKIPPED`
+   * verdict, which silently downgrades the reviewer's real one. The marker is
+   * what makes "the flag was there but its value was missing" distinguishable
+   * from "the flag was never given".
+   */
+  verdictFileRequested: boolean;
+  /**
+   * True when `--review-output` was PRESENT on the command line, whether or
+   * not it carried a value (issue #269, R1).
+   */
+  reviewOutputRequested: boolean;
+  /**
+   * Read the dispatched Reviewer subagent's verdict block from stdin
+   * (issue #269).
+   */
+  verdictStdin: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -332,6 +379,7 @@ Pipeline Management:
   critique [cmd]     Manage Critique CLI installation (status | install | update)
   opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
   triage [action]    Triage PR review comments and route pipeline (implement|plan|discovery|dismiss)
+  review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin); with no verdict it runs the critique-based review
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
@@ -340,6 +388,9 @@ Operational Flags:
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
       --message-file <path> Read commit message from file
+      --verdict-file <path> Read an AI Reviewer Subagent's verdict block from a file (codeloop review)
+      --review-output <text> Pass an AI Reviewer Subagent's verdict block inline (codeloop review)
+      --verdict-stdin   Read an AI Reviewer Subagent's verdict block from stdin (codeloop review)
       --create-pr    Automatically create a PR after commit
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
@@ -437,7 +488,12 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     reason: null,
     retryAfter: null,
     restart: false,
-    skipDiscovery: false
+    skipDiscovery: false,
+    verdictFile: null,
+    reviewOutput: null,
+    verdictFileRequested: false,
+    reviewOutputRequested: false,
+    verdictStdin: false
   };
 
   const positional: string[] = [];
@@ -524,6 +580,35 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--message-file=')) {
       options.messageFile = arg.split('=')[1] || null;
+    } else if (arg === FLAG_VERDICT_FILE) {
+      // A flag whose value is missing sets the option to `null` — never a
+      // silent default (issue #269): a verdict that was never read must fail
+      // loudly, not fall through to the critique path. The `...Requested`
+      // marker records that the flag WAS given, so the review command can
+      // tell "no value" apart from "no flag" (issue #269, R1).
+      options.verdictFileRequested = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.verdictFile = args[++i];
+      } else {
+        options.verdictFile = null;
+      }
+    } else if (arg.startsWith(`${FLAG_VERDICT_FILE}=`)) {
+      options.verdictFileRequested = true;
+      options.verdictFile = arg.split('=')[1] || null;
+    } else if (arg === FLAG_REVIEW_OUTPUT) {
+      options.reviewOutputRequested = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.reviewOutput = args[++i];
+      } else {
+        options.reviewOutput = null;
+      }
+    } else if (arg.startsWith(`${FLAG_REVIEW_OUTPUT}=`)) {
+      options.reviewOutputRequested = true;
+      options.reviewOutput = arg.split('=')[1] || null;
+    } else if (arg === FLAG_VERDICT_STDIN) {
+      options.verdictStdin = true;
+    } else if (arg.startsWith(`${FLAG_VERDICT_STDIN}=`)) {
+      options.verdictStdin = arg.split('=')[1] !== 'false';
     } else if (arg === '--create-pr') {
       options.createPr = true;
     } else if (arg === '--restart') {
@@ -630,6 +715,18 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
   }
 
   return { command, options };
+}
+
+/**
+ * Renders the diagnostic for a verdict flag that carried no value
+ * (issue #269, R1).
+ *
+ * The message names the offending flag and states the two facts the operator
+ * needs: NOTHING was recorded, and the review did NOT run (so the pipeline
+ * was not advanced by a verdict the reviewer never gave).
+ */
+export function formatVerdictInputMissing(flag: string, hint: string): string {
+  return NOTE_VERDICT_INPUT_MISSING.replace('{flag}', flag).replace('{hint}', hint);
 }
 
 export function formatStageBadge(stage: string): string {
@@ -995,7 +1092,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   // Treat 'yolo' subcommand or --yolo flag as YOLO execution
   const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
 
-  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== COMMAND_TRIAGE && effectiveCommand !== COMMAND_HALT && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
+  // Issue #269: `review` is carved out for the same reason `triage` and `halt`
+  // are — the REVIEWER subagent is the PRODUCER of the verdict, and `review` is
+  // the channel that files it. It IS listed in `STATE_MUTATING_COMMANDS` (it
+  // mutates the checkpoint), and the carve-out is what keeps the channel open.
+  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== COMMAND_TRIAGE && effectiveCommand !== COMMAND_HALT && effectiveCommand !== COMMAND_REVIEW && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
     console.error('Error: Execution blocked. Subagents are not permitted to mutate global pipeline state.');
     console.error(`Command '${effectiveCommand === null ? '(default)' : effectiveCommand}' violates the Zero Direct Root Mutation invariant.`);
     return EXIT_CODE_FAILURE;
@@ -1737,9 +1838,165 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
         console.log(`✓ Next Stage    : ${formatStageBadge(result.targetStage)}`);
         console.log(`✓ State Updated : Pipeline transitioned to ${result.targetStage}\n`);
+
+        // Issue #269: the disposition line and the exit condition. The gate
+        // re-opens on every read while the PR is open, so the operator must be
+        // told what was recorded and what ends the loop. The line itself is
+        // rendered by the ONE shared renderer (issue #269, R5).
+        if (result.dispositionRecorded && result.disposition) {
+          console.log(`✓ ${formatTriageDispositionLine(result.disposition, 'triage-cli')}`);
+        } else {
+          console.log(`⚠ ${LABEL_TRIAGE_DISPOSITION} : ${NOTE_TRIAGE_DISPOSITION_NOT_RECORDED}`);
+        }
+        console.log(`  ${NOTE_TRIAGE_GATE_EXIT_CONDITION}\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         console.error(`✗ Triage failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
+    case COMMAND_REVIEW: {
+      // The INBOUND CHANNEL for a dispatched Reviewer subagent's verdict
+      // (issue #269). The reviewer produces a `REVIEW_STATUS: APPROVED |
+      // CHANGES_REQUESTED` block; `RunReviewParams.reviewOutput` is the
+      // domain's chosen seam for it — and until now NO command supplied it, so
+      // the verdict was structurally unrecordable.
+
+      // A verdict was REQUESTED but its value never arrived (issue #269, R1).
+      //
+      // This is checked BEFORE anything else — before the scope is resolved
+      // and long before the use case runs — so nothing is read, nothing is
+      // written and NO checkpoint is touched. Falling through to the critique
+      // path would record a `SKIPPED` verdict: a SILENT downgrade of the
+      // reviewer's real verdict, which is exactly what this channel exists to
+      // prevent.
+      if (options.verdictFileRequested && options.verdictFile === null) {
+        console.error(`✗ ${formatVerdictInputMissing(FLAG_VERDICT_FILE, HINT_VERDICT_FILE_INPUT)}`);
+        return EXIT_CODE_FAILURE;
+      }
+      if (options.reviewOutputRequested && options.reviewOutput === null) {
+        console.error(`✗ ${formatVerdictInputMissing(FLAG_REVIEW_OUTPUT, HINT_REVIEW_OUTPUT_INPUT)}`);
+        return EXIT_CODE_FAILURE;
+      }
+
+      try {
+        const scope = await resolveScope(stateRepo, issueValue);
+        const resolveSubagentUseCase = new ResolveSubagentUseCase(configRepo, githubGateway, promptRepo);
+        const reviewUseCase = new RunReviewUseCase(
+          scope.repo,
+          configRepo,
+          planGenerator,
+          standardsRepo,
+          critique,
+          commandExecutor,
+          resolveSubagentUseCase,
+          critiqueInstaller,
+          confirmationPrompt
+        );
+
+        // Resolve the reviewer's verdict text (the inbound channel).
+        let reviewOutput: string | null = null;
+        let reviewOutputSource: string | null = null;
+        try {
+          if (options.reviewOutput !== null) {
+            reviewOutput = options.reviewOutput;
+            reviewOutputSource = FLAG_REVIEW_OUTPUT;
+          } else if (options.verdictFile !== null) {
+            reviewOutput = fs.readFileSync(options.verdictFile, 'utf8');
+            reviewOutputSource = options.verdictFile;
+          } else if (options.verdictStdin) {
+            reviewOutput = fs.readFileSync(0, 'utf8');
+            reviewOutputSource = VERDICT_INPUT_SOURCE_STDIN;
+            // A verdict was REQUESTED on stdin but stdin carried none
+            // (issue #269, R1): the same silent-SKIPPED hole as a
+            // present-but-valueless flag, so it fails loudly too.
+            if (reviewOutput.trim().length === 0) {
+              console.error(`✗ ${formatVerdictInputMissing(FLAG_VERDICT_STDIN, HINT_VERDICT_STDIN_INPUT)}`);
+              return EXIT_CODE_FAILURE;
+            }
+          }
+        } catch (err: unknown) {
+          console.error(
+            `✗ Could not read the reviewer verdict: ${err instanceof Error ? err.message : String(err)}`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+
+        // A parse failure is a HARD failure (issue #269), and it is detected
+        // BEFORE anything else: an unreadable verdict is the more actionable
+        // diagnostic, and the use case's own stage guard would otherwise mask
+        // it with "Cannot run review from stage ...". `ReviewVerdict.parse` is
+        // the ONE parser — the use case parses the same text again, so the
+        // recorded verdict is the reviewer's verdict or nothing.
+        if (reviewOutput !== null) {
+          try {
+            ReviewVerdict.parse(reviewOutput);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`✗ Reviewer verdict could not be parsed: ${message}`);
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
+        const result = await reviewUseCase.execute({
+          issue: issueValue,
+          reviewOutput,
+          baseRef: options.baseBranch || undefined,
+          configPath: options.configPath,
+          dryRun: options.dryRun,
+          interactive: promptsAllowed,
+          workspaceDir: options.workspaceDir || process.cwd()
+        });
+
+        if (options.json) {
+          // A SINGLE JSON document on stdout; warnings go to stderr so stdout
+          // stays parseable.
+          console.log(
+            JSON.stringify(
+              {
+                verdict: result.verdict.toJSON(),
+                verdictSource: result.reviewSource,
+                passed: result.passed,
+                currentStage: result.currentStage,
+                reviewVerdict: result.verdict.status
+              },
+              null,
+              2
+            )
+          );
+          if (!result.passed) {
+            console.error('✗ AI Review requested changes. Pipeline reverted to IMPLEMENT.');
+          }
+          return result.passed ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
+        }
+
+        console.log('\n=== CodeLoop: AI Review Verdict ===');
+        console.log(result.verdict.formatReportText());
+        console.log('');
+        console.log(`Verdict Source : ${result.reviewSource ?? 'unknown'}`);
+        if (reviewOutputSource) {
+          console.log(`Verdict Input  : ${reviewOutputSource}`);
+        }
+        console.log(`Next Stage     : ${formatStageBadge(result.currentStage)}`);
+
+        if (!result.passed) {
+          console.error('✗ AI Review requested changes. Pipeline reverted to IMPLEMENT.');
+          return EXIT_CODE_FAILURE;
+        }
+
+        console.log('\n✓ AI Review recorded.');
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        // A parse failure is a HARD failure (issue #269): the verdict block
+        // could not be parsed, so NOTHING is recorded. The command must never
+        // re-run the review without the reviewer's output — that would
+        // silently downgrade a CHANGES_REQUESTED to a SKIPPED.
+        if (err instanceof ReviewerSubagentError) {
+          console.error(`✗ Reviewer verdict could not be parsed: ${err.message}`);
+          return EXIT_CODE_FAILURE;
+        }
+        console.error(`✗ Review failed: ${err instanceof Error ? err.message : String(err)}`);
         return EXIT_CODE_FAILURE;
       }
     }

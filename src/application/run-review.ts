@@ -34,10 +34,18 @@ import {
   NOTE_REVIEW_APPROVED,
   NOTE_REVIEW_CHANGES_REQUESTED,
   NOTE_REVIEW_SKIPPED,
+  NOTE_REVIEW_REOPENED_FROM_COMMIT,
+  GATE_COMMIT,
   MS_PER_SECOND,
   ReviewVerdict,
+  ReviewSource,
+  REVIEW_SOURCE_REVIEWER_OUTPUT,
+  REVIEW_SOURCE_CRITIQUE_REPORT,
+  REVIEW_SOURCE_SKIPPED,
+  REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED,
   PublicSanitizer,
   InvalidTransitionError,
+  ReviewerSubagentError,
   AiReviewReport,
   AiReviewFinding,
   DIFF_EXCLUDE_ARGS,
@@ -65,6 +73,16 @@ export interface RunReviewParams {
   readonly userInstructions?: string | null;
   readonly workingDiff?: string | null;
   readonly reviewOutput?: string | null;
+  /**
+   * A Tier 1 critique report that was produced ELSEWHERE (issue #269, R2/R3).
+   *
+   * The recording path does NOT execute the critique CLI — no network call,
+   * no latency cost, no interactive install prompt on a path that must never
+   * block or mutate the machine. A report that ALREADY exists is still
+   * honoured: it informs the reviewer prompt and it still drives the
+   * TWO-TIER INVARIANT (see `applyTwoTierInvariant`).
+   */
+  readonly priorCritiqueReport?: AiReviewReport | null;
   readonly critiqueReport?: string | null;
   readonly staged?: boolean;
   readonly baseRef?: string;
@@ -89,6 +107,21 @@ export interface RunReviewResult {
    */
   readonly passed: boolean;
   readonly verdict: ReviewVerdict;
+  /**
+   * WHERE the recorded verdict came from (issue #269).
+   *
+   * - `reviewer-output` — the dispatched Reviewer subagent's verdict block
+   *   (Tier 2), filed through `codeloop review --verdict-file`.
+   * - `critique-report` — the critique CLI's report (Tier 1).
+   * - `skipped` — the advisory fail-open: no reviewer output and no critique
+   *   report (issue #236).
+   * - `reviewer-output+critique-escalation` — the reviewer APPROVED and the
+   *   TWO-TIER INVARIANT escalated the verdict because the critique report
+   *   carried a blocking/error finding. The source names BOTH contributors so
+   *   it can never claim the reviewer asked for changes the reviewer never
+   *   asked for (issue #269, R3).
+   */
+  readonly reviewSource?: ReviewSource;
   readonly currentStage: string;
   readonly stateMachine: StateMachine;
   readonly reviewerDef: SubagentDescriptor;
@@ -108,6 +141,86 @@ function cleanBulletLine(rawLine: string): string {
     .replace(/^\d+\.\s+/, '')
     .replace(/^\[[ xX]\]\s+/, '')
     .trim();
+}
+
+/**
+ * What escalated a verdict, if anything (issue #269, R3).
+ *
+ * - `critique` — a Tier 1 critique report carried a blocking/error finding;
+ * - `unfulfilled-criteria` — the verdict block itself listed unfulfilled
+ *   Acceptance Criteria.
+ */
+export type ReviewEscalation = 'critique' | 'unfulfilled-criteria';
+
+/**
+ * The outcome of the TWO-TIER INVARIANT.
+ */
+export interface TwoTierInvariantOutcome {
+  readonly verdict: ReviewVerdict;
+  /**
+   * What escalated the verdict, or `null` when nothing did. The recorded
+   * SOURCE is derived from it, so the source can never claim the reviewer
+   * produced a status the reviewer did not produce.
+   */
+  readonly escalatedBy: ReviewEscalation | null;
+}
+
+/**
+ * The TWO-TIER INVARIANT: a Tier 1 critique report may ESCALATE a verdict to
+ * CHANGES_REQUESTED (issue #269, R3).
+ *
+ * Any critical or error violation from critique, or an APPROVED verdict whose
+ * own block lists unfulfilled Acceptance Criteria, mandates CHANGES_REQUESTED.
+ * Bypassed reports carry zero findings, but the guard also guarantees a stray
+ * finding on a bypassed report can never overwrite SKIPPED with
+ * CHANGES_REQUESTED.
+ *
+ * Extracted as a PURE function so the escalation is testable on its own and
+ * so the recorded verdict and the recorded source can never drift apart: the
+ * caller derives the source from `escalatedBy`, not from a guess.
+ */
+export function applyTwoTierInvariant(
+  verdict: ReviewVerdict,
+  aiReport: AiReviewReport | null
+): TwoTierInvariantOutcome {
+  if (aiReport && !aiReport.bypassed && (aiReport.hasBlockingIssues() || aiReport.errorCount() > 0)) {
+    const critiqueCriteria: string[] = [];
+    const critiqueRemediation: string[] = [];
+    for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking() || f.isError())) {
+      critiqueCriteria.push(`[Critique ${finding.severity.toUpperCase()}] ${finding.path}:${finding.line} - ${finding.body}`);
+      critiqueRemediation.push(`Fix ${finding.severity} in ${finding.path}:${finding.line}: ${finding.body}`);
+    }
+    return {
+      escalatedBy: 'critique',
+      verdict: new ReviewVerdict({
+        status: VERDICT_CHANGES_REQUESTED,
+        summary: `Review failed: Automated critique detected ${aiReport.errorCount() + (aiReport.hasBlockingIssues() ? 1 : 0)} blocking/error violation(s). ${verdict.summary}`,
+        unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...critiqueCriteria],
+        remediationGuidance: [...verdict.remediationGuidance, ...critiqueRemediation],
+        confidenceLevel: aiReport.confidence.level,
+        findings: [...verdict.findings, ...aiReport.findings]
+      })
+    };
+  }
+
+  if (verdict.unfulfilledCriteria.length > 0 && verdict.isApproved()) {
+    return {
+      escalatedBy: 'unfulfilled-criteria',
+      verdict: new ReviewVerdict({
+        status: VERDICT_CHANGES_REQUESTED,
+        summary: `Review requested changes: Unfulfilled Acceptance Criteria detected. ${verdict.summary}`,
+        unfulfilledCriteria: verdict.unfulfilledCriteria,
+        remediationGuidance:
+          verdict.remediationGuidance.length > 0
+            ? verdict.remediationGuidance
+            : verdict.unfulfilledCriteria.map((ac) => `Fulfill acceptance criterion: ${ac}`),
+        confidenceLevel: verdict.confidenceLevel,
+        findings: verdict.findings
+      })
+    };
+  }
+
+  return { escalatedBy: null, verdict };
 }
 
 export function extractAcceptanceCriteria(planContent: string | null | undefined): readonly string[] {
@@ -203,6 +316,33 @@ export class RunReviewUseCase {
     const workspace = params.workspaceDir || process.cwd();
     const startTime = Date.now();
 
+    // A verdict was REQUESTED but arrived EMPTY (issue #269, R1). The
+    // operator asked for the reviewer's verdict, so the verdict was never
+    // read — and the only safe answer is a LOUD failure. Falling through to
+    // the critique path would record a `SKIPPED` verdict, which is a silent
+    // downgrade of the reviewer's real one.
+    if (
+      params.reviewOutput !== undefined &&
+      params.reviewOutput !== null &&
+      params.reviewOutput.trim().length === 0
+    ) {
+      throw new ReviewerSubagentError(
+        'parse',
+        'Reviewer verdict output is empty: a verdict that was never read must fail loudly.'
+      );
+    }
+
+    /**
+     * Whether the dispatched reviewer's verdict was supplied (issue #269, R2).
+     *
+     * When it was, the Tier 1 critique CLI is NOT executed: the reviewer's
+     * verdict is authoritative, the critique run is a network round-trip and
+     * a latency cost, and its auto-install prompt is an INTERACTIVE side
+     * effect on a path that must never block or mutate the machine.
+     */
+    const reviewerVerdictSupplied =
+      typeof params.reviewOutput === 'string' && params.reviewOutput.trim().length > 0;
+
     // 1. Load active pipeline state checkpoint
     const snapshot = await this.stateRepo.load();
     if (!snapshot) {
@@ -216,6 +356,11 @@ export class RunReviewUseCase {
 
     const sm = StateMachine.fromSnapshot(snapshot);
     const activeIssue = params.issue || sm.issue;
+    /**
+     * Whether the COMMIT pause must be restored after the verdict is recorded.
+     * Only set when the review was re-opened from the COMMIT gate.
+     */
+    let reopenRestorePauseAtCommit = false;
     if (activeIssue) {
       sm.setIssue(activeIssue);
     }
@@ -227,6 +372,32 @@ export class RunReviewUseCase {
       // Re-running review in REVIEW stage
     } else if (sm.currentStage === STAGE_COMPLETED) {
       sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
+    } else if (sm.currentStage === STAGE_COMMIT) {
+      // A dispatched reviewer's verdict can arrive while the pipeline ALREADY
+      // rests at the COMMIT gate (issue #269). That is precisely the live
+      // defect: the commit gate reported "No AI review verdict is recorded for
+      // this task" while the reviewer was holding a genuine APPROVED verdict
+      // that had NO channel to reach the checkpoint. The verdict is the
+      // reviewer's own record of the review, so it must still be recordable —
+      // and it must still be able to FAIL the gate.
+      //
+      // `COMMIT -> REVIEW` is not a legal transition and the transition table
+      // is NOT widened (issue #269 invariant 1), so the machine is re-opened
+      // through the legal route `COMMIT -> QUALITY_GATE -> REVIEW`. The quality
+      // gate had already run — reaching the COMMIT gate requires it — so this
+      // is a bookkeeping re-entry, not a re-run.
+      //
+      // The stale COMMIT pause is consumed here: the human wait at the commit
+      // gate is over (a verdict arrived), so it must not keep claiming
+      // "waiting for a human" while the machine sits at REVIEW. It is
+      // restored below when the verdict leaves the machine at COMMIT.
+      const wasPausedAtCommit = sm.pausedAtGate === GATE_COMMIT;
+      if (sm.pausedAtGate) {
+        sm.resumeFromGate();
+      }
+      sm.transition(STAGE_QUALITY_GATE, { note: NOTE_REVIEW_REOPENED_FROM_COMMIT });
+      sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
+      reopenRestorePauseAtCommit = wasPausedAtCommit;
     } else {
       throw new InvalidTransitionError(
         sm.currentStage,
@@ -285,11 +456,16 @@ export class RunReviewUseCase {
     let autoInstalled = false;
 
     // Tier 1: Execute Automated Critique Diagnostics (if CritiquePort available)
+    //
+    // The critique CLI is only EXECUTED when the reviewer's verdict was NOT
+    // supplied: the recording path must not pay for a network round-trip, a
+    // latency cost and an interactive install prompt it does not need
+    // (issue #269, R2).
     let aiReport: AiReviewReport | null = null;
     let critiqueReportText: string | null = params.critiqueReport || null;
     let critiqueResolution: CritiqueResolution | null = null;
 
-    if (this.critique) {
+    if (this.critique && !reviewerVerdictSupplied) {
       const prompt = params.confirmationPrompt ?? this.confirmationPrompt;
       const installer = params.critiqueInstaller ?? this.critiqueInstaller;
 
@@ -348,6 +524,14 @@ export class RunReviewUseCase {
       }
     }
 
+    // A report that was produced ELSEWHERE is the fallback: it still informs
+    // the reviewer prompt and it still drives the TWO-TIER INVARIANT below,
+    // even though the CLI was not executed for it (issue #269, R2/R3).
+    if (!aiReport && params.priorCritiqueReport) {
+      aiReport = params.priorCritiqueReport;
+      critiqueReportText = aiReport.formatMarkdownReport();
+    }
+
     let workingDiff = params.workingDiff;
     if (workingDiff === undefined && this.commandExecutor) {
       try {
@@ -380,13 +564,23 @@ export class RunReviewUseCase {
 
     // Evaluate ReviewVerdict
     let verdict: ReviewVerdict;
+    let reviewSource: ReviewSource;
 
     if (params.reviewOutput) {
       // Tier 2: reviewer-subagent output (binary APPROVED | CHANGES_REQUESTED contract).
+      //
+      // This branch is reachable ONLY through the `codeloop review` path
+      // (issue #269): the CLI reads the dispatched Reviewer subagent's verdict
+      // block and hands it in here. `ReviewVerdict.parse` refuses a block that
+      // carries no `REVIEW_STATUS: APPROVED|CHANGES_REQUESTED` token — and
+      // refuses a self-declared `SKIPPED` outright (issue #236's invariant) —
+      // so the recorded verdict is the reviewer's or nothing.
       verdict = ReviewVerdict.parse(params.reviewOutput);
+      reviewSource = REVIEW_SOURCE_REVIEWER_OUTPUT;
     } else if (aiReport && !aiReport.bypassed) {
       // Tier 1: a real critique report (bypassed reports mean "review not performed").
       verdict = ReviewVerdict.fromAiReviewReport(aiReport);
+      reviewSource = REVIEW_SOURCE_CRITIQUE_REPORT;
     } else {
       // Path A (no critique port / critique returned null) AND Path B (bypassed
       // report — the production absence path): the review did not run at all.
@@ -397,39 +591,24 @@ export class RunReviewUseCase {
           'Configure critique (`codeloop critique install`) or dispatch the Reviewer subagent (`codeloop next`), then re-run the review.'
         ]
       );
+      reviewSource = REVIEW_SOURCE_SKIPPED;
     }
 
     // Two-Tier Invariant Enforcement:
     // Any critical or error violations from critique or unfulfilled ACs mandate CHANGES_REQUESTED.
     // Bypassed reports carry zero findings, but the guard also guarantees a stray
     // finding on a bypassed report can never overwrite SKIPPED with CHANGES_REQUESTED.
-    if (aiReport && !aiReport.bypassed && (aiReport.hasBlockingIssues() || aiReport.errorCount() > 0)) {
-      const critiqueCriteria: string[] = [];
-      const critiqueRemediation: string[] = [];
-      for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking() || f.isError())) {
-        critiqueCriteria.push(`[Critique ${finding.severity.toUpperCase()}] ${finding.path}:${finding.line} - ${finding.body}`);
-        critiqueRemediation.push(`Fix ${finding.severity} in ${finding.path}:${finding.line}: ${finding.body}`);
-      }
-      verdict = new ReviewVerdict({
-        status: VERDICT_CHANGES_REQUESTED,
-        summary: `Review failed: Automated critique detected ${aiReport.errorCount() + (aiReport.hasBlockingIssues() ? 1 : 0)} blocking/error violation(s). ${verdict.summary}`,
-        unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...critiqueCriteria],
-        remediationGuidance: [...verdict.remediationGuidance, ...critiqueRemediation],
-        confidenceLevel: aiReport.confidence.level,
-        findings: [...verdict.findings, ...aiReport.findings]
-      });
-    } else if (verdict.unfulfilledCriteria.length > 0 && verdict.isApproved()) {
-      verdict = new ReviewVerdict({
-        status: VERDICT_CHANGES_REQUESTED,
-        summary: `Review requested changes: Unfulfilled Acceptance Criteria detected. ${verdict.summary}`,
-        unfulfilledCriteria: verdict.unfulfilledCriteria,
-        remediationGuidance:
-          verdict.remediationGuidance.length > 0
-            ? verdict.remediationGuidance
-            : verdict.unfulfilledCriteria.map((ac) => `Fulfill acceptance criterion: ${ac}`),
-        confidenceLevel: verdict.confidenceLevel,
-        findings: verdict.findings
-      });
+    //
+    // The escalation is applied by the ONE pure helper, and the recorded
+    // SOURCE is derived from what escalated it (issue #269, R3): a critique
+    // escalation on a reviewer's verdict must never be reported as plain
+    // `reviewer-output`, because that would claim the reviewer asked for
+    // changes the reviewer never asked for.
+    const invariant = applyTwoTierInvariant(verdict, aiReport);
+    verdict = invariant.verdict;
+
+    if (invariant.escalatedBy === 'critique' && reviewSource === REVIEW_SOURCE_REVIEWER_OUTPUT) {
+      reviewSource = REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED;
     }
 
     const durationMs = Date.now() - startTime;
@@ -477,6 +656,14 @@ export class RunReviewUseCase {
       });
     }
 
+    // The commit gate's human wait is restored when the verdict leaves the
+    // machine at COMMIT (issue #269): the operator is still waiting there to
+    // run the commit. A verdict that reverted the machine to IMPLEMENT leaves
+    // the pause consumed — it is not waiting at the commit gate any more.
+    if (reopenRestorePauseAtCommit && sm.currentStage === STAGE_COMMIT) {
+      sm.pauseAtGate(GATE_COMMIT);
+    }
+
     // 9. Update AgyLoop Summary.md & State Checkpoint
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
@@ -504,6 +691,7 @@ export class RunReviewUseCase {
     return {
       passed: verdict.isApproved() || verdict.isSkipped(),
       verdict,
+      reviewSource,
       currentStage: sm.currentStage,
       stateMachine: sm,
       reviewerDef,
