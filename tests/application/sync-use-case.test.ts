@@ -64,7 +64,7 @@ describe('SyncUseCase', () => {
     worktree.baseBranch = 'phase/123';
     
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
-    executor.responses['gh pr list --base phase/123 --state merged --json number,title,body'] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
       stdout: JSON.stringify([
         { number: 42, title: 'Fix bug', body: 'Closes #10' }
       ])
@@ -77,10 +77,20 @@ describe('SyncUseCase', () => {
 
     assert.strictEqual(result.success, true);
     assert.ok(executor.executedCommands.includes('git fetch origin'));
-    assert.ok(executor.executedCommands.includes('git pull --ff-only origin phase/123'));
-    
+    assert.ok(executor.executedCommands.includes("git pull --ff-only origin 'phase/123'"));
+
     assert.ok(github.closedIssues.includes(10));
-    assert.ok(github.comments.some(c => c.issueId === 10 && c.body.includes('PR #42')));
+    // (#262) The auto-close comment names the collector branch — the backticks
+    // and the branch name must both survive the trip to GitHub.
+    assert.ok(
+      github.comments.some(
+        (c: { issueId: number; body: string }) =>
+          c.issueId === 10 &&
+          c.body ===
+            'Automatically closed by agyloop sync. Implemented and merged via PR #42 into `phase/123`.'
+      ),
+      `the auto-close comment must carry the collector branch verbatim, got: ${JSON.stringify(github.comments)}`
+    );
     assert.ok(result.logs !== undefined, 'Result should include logs metadata');
     assert.ok(result.logs.some((l: string) => l.includes('Closed issue #10')));
   });
@@ -94,7 +104,7 @@ describe('SyncUseCase', () => {
     worktree.baseBranch = 'phase/123';
     
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/456' };
-    executor.responses['gh pr list --base phase/123 --state merged --json number,title,body'] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
       stdout: '[]'
     };
 
@@ -102,7 +112,7 @@ describe('SyncUseCase', () => {
     const result = await useCase.execute({ workspaceDir: '/tmp' });
 
     assert.strictEqual(result.success, true);
-    assert.ok(executor.executedCommands.includes('git fetch origin phase/123:phase/123'));
+    assert.ok(executor.executedCommands.includes("git fetch origin 'phase/123:phase/123'"));
   });
 
   it('returns warnings in result metadata if an operation fails', async () => {

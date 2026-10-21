@@ -1,4 +1,5 @@
 import { CommandExecutorPort, GitHubGateway, StateRepository, WorktreeManagerPort } from '../ports';
+import { shellQuote } from '../domain';
 
 export interface SyncParams {
   readonly workspaceDir?: string;
@@ -62,10 +63,10 @@ export class SyncUseCase {
         const headBranch = headBranchRes.stdout.trim();
         
         if (headBranch === collectorBranch) {
-          await this.commandExecutor.execute('git pull --ff-only origin ' + collectorBranch, { cwd });
+          await this.commandExecutor.execute(`git pull --ff-only origin ${shellQuote(collectorBranch)}`, { cwd });
         } else {
           // Fast-forward the local branch without checking it out
-          await this.commandExecutor.execute(`git fetch origin ${collectorBranch}:${collectorBranch}`, { cwd });
+          await this.commandExecutor.execute(`git fetch origin ${shellQuote(`${collectorBranch}:${collectorBranch}`)}`, { cwd });
         }
       } catch (e) {
         warnings.push(`Failed to fast-forward collector branch ${collectorBranch}: ${e instanceof Error ? e.message : String(e)}`);
@@ -74,7 +75,7 @@ export class SyncUseCase {
       // 3. Close issues whose PRs merged into the collector branch
       if (collectorBranch !== 'main') {
         try {
-          const prsRes = await this.commandExecutor.execute(`gh pr list --base ${collectorBranch} --state merged --json number,title,body`, { cwd });
+          const prsRes = await this.commandExecutor.execute(`gh pr list --base ${shellQuote(collectorBranch)} --state merged --json number,title,body`, { cwd });
           const prs = JSON.parse(prsRes.stdout);
           
           for (const pr of prs) {

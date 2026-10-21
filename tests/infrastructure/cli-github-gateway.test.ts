@@ -9,7 +9,7 @@ const { CliGitHubGateway } = require('../../dist/infrastructure/cli-github-gatew
 describe('CliGitHubGateway findPullRequest', () => {
   test('prefers head branch matching over title matching when both are returned in search', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () => {
+    gateway.runGhArgs = () => {
       return JSON.stringify([
         {
           number: 35,
@@ -42,7 +42,7 @@ describe('CliGitHubGateway findPullRequest', () => {
 
   test('rejects title match if headRefName points to a different issue number', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () => {
+    gateway.runGhArgs = () => {
       return JSON.stringify([
         {
           number: 35,
@@ -63,7 +63,7 @@ describe('CliGitHubGateway findPullRequest', () => {
 
   test('rejects title match when headRefName uses task/ or fix/ prefix with different issue number', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () => {
+    gateway.runGhArgs = () => {
       return JSON.stringify([
         {
           number: 40,
@@ -84,7 +84,7 @@ describe('CliGitHubGateway findPullRequest', () => {
 
   test('accepts title match when headRefName does not conflict with another issue number', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () => {
+    gateway.runGhArgs = () => {
       return JSON.stringify([
         {
           number: 99,
@@ -119,7 +119,7 @@ describe('CliGitHubGateway findPullRequest', () => {
     ];
 
     for (const headRefName of branchNames) {
-      gateway.runGh = () => {
+      gateway.runGhArgs = () => {
         return JSON.stringify([
           {
             number: 101,
@@ -142,7 +142,7 @@ describe('CliGitHubGateway findPullRequest', () => {
 
   test('returns null when gh pr list returns empty array', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () => '[]';
+    gateway.runGhArgs = () => '[]';
 
     const pr = gateway.findPullRequest({ issueNumber: 77 });
     assert.strictEqual(pr, null);
@@ -154,23 +154,29 @@ describe('CliGitHubGateway findPullRequest', () => {
 describe('CliGitHubGateway findPullRequest body plumbing (#226)', () => {
   test('requests the body field for both the headBranch and issueNumber branches', () => {
     const gateway = new CliGitHubGateway();
-    const capturedCmds: string[] = [];
-    gateway.runGh = (cmd: string) => {
-      capturedCmds.push(cmd);
+    const capturedArgs: string[][] = [];
+    gateway.runGhArgs = (args: string[]) => {
+      capturedArgs.push(args);
       return '[]';
     };
 
     gateway.findPullRequest({ headBranch: 'task/226', repo: 'org/repo' });
     gateway.findPullRequest({ issueNumber: 226, repo: 'org/repo' });
 
-    assert.strictEqual(capturedCmds.length, 2);
-    assert.ok(capturedCmds[0].includes('number,title,body,state'), 'headBranch --json must request body');
-    assert.ok(capturedCmds[1].includes('number,title,body,state'), 'issueNumber --json must request body');
+    assert.strictEqual(capturedArgs.length, 2);
+    assert.ok(
+      capturedArgs[0].some((a: string) => a.startsWith('number,title,body,state')),
+      'headBranch --json must request body'
+    );
+    assert.ok(
+      capturedArgs[1].some((a: string) => a.startsWith('number,title,body,state')),
+      'issueNumber --json must request body'
+    );
   });
 
   test('returns the body on GitHubPullRequestData', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () =>
+    gateway.runGhArgs = () =>
       JSON.stringify([
         {
           number: 9,
@@ -191,7 +197,7 @@ describe('CliGitHubGateway findPullRequest body plumbing (#226)', () => {
 
   test('defaults a missing body to an empty string', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () =>
+    gateway.runGhArgs = () =>
       JSON.stringify([
         {
           number: 8,
@@ -211,7 +217,7 @@ describe('CliGitHubGateway findPullRequest body plumbing (#226)', () => {
 
   test('Tier 1 (body asserts delivery) beats the head-branch convention (#226)', () => {
     const gateway = new CliGitHubGateway();
-    gateway.runGh = () =>
+    gateway.runGhArgs = () =>
       JSON.stringify([
         {
           number: 8,
@@ -261,7 +267,7 @@ describe('CliGitHubGateway fetchIssue', () => {
     const issue = gateway.fetchIssue(59, { repo: 'ajxcodes/agyloop' });
     assert.strictEqual(
       capturedCmd,
-      'issue view 59 --repo ajxcodes/agyloop --json number,title,body,state,labels'
+      "issue view 59 --repo 'ajxcodes/agyloop' --json number,title,body,state,labels"
     );
     assert.strictEqual(issue?.number, 59);
     assert.strictEqual(issue?.title, 'Issue 59 title');
@@ -294,9 +300,9 @@ describe('CliGitHubGateway fetchPullRequestComments', () => {
     const comments = gateway.fetchPullRequestComments(59, { repo: 'ajxcodes/agyloop' });
     
     assert.strictEqual(capturedCmds.length, 3);
-    assert.ok(capturedCmds[0].includes('api repos/ajxcodes/agyloop/issues/59/comments'));
-    assert.ok(capturedCmds[1].includes('api repos/ajxcodes/agyloop/pulls/59/reviews'));
-    assert.ok(capturedCmds[2].includes('api repos/ajxcodes/agyloop/pulls/59/comments'));
+    assert.ok(capturedCmds[0].includes("'repos/ajxcodes/agyloop/issues/59/comments'"));
+    assert.ok(capturedCmds[1].includes("'repos/ajxcodes/agyloop/pulls/59/reviews'"));
+    assert.ok(capturedCmds[2].includes("'repos/ajxcodes/agyloop/pulls/59/comments'"));
     
     assert.strictEqual(comments.length, 3);
     assert.strictEqual(comments[0].body, 'issue comment');
