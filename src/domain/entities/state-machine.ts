@@ -22,6 +22,7 @@ import {
 import { Stage } from '../value-objects/stage';
 import { IssueNumber } from '../value-objects/issue-number';
 import { WorktreeDescriptor } from '../value-objects/worktree-descriptor';
+import { TriageDisposition, TriageDispositionSerialized } from '../value-objects/triage-disposition';
 import { InvalidTransitionError, ValidationError } from '../errors';
 
 export interface StateHistoryEntry {
@@ -40,6 +41,12 @@ export interface StateMachineSnapshot {
   readonly worktree?: Record<string, unknown> | null;
   readonly planDir?: string | null;
   readonly triagePayload?: string | null;
+  /**
+   * The recorded triage disposition (issue #269). Its ABSENCE is meaningful:
+   * a checkpoint without one has never dispositioned any feedback, so the
+   * TRIAGE detector must see the pull request's feedback afresh.
+   */
+  readonly triageDisposition?: TriageDispositionSerialized | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -59,6 +66,7 @@ export interface StateStatusSummary {
   readonly worktree?: WorktreeDescriptor | null;
   readonly planDir?: string | null;
   readonly triagePayload?: string | null;
+  readonly triageDisposition?: TriageDispositionSerialized | null;
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -78,6 +86,7 @@ export class StateMachine {
   private _worktree: WorktreeDescriptor | null;
   private _planDir: string | null;
   private _triagePayload: string | null;
+  private _triageDisposition: TriageDisposition | null;
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
@@ -96,6 +105,7 @@ export class StateMachine {
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
     triagePayload?: string | null;
+    triageDisposition?: TriageDisposition | null;
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
@@ -113,6 +123,7 @@ export class StateMachine {
     this._worktree = options.worktree || null;
     this._planDir = options.planDir || null;
     this._triagePayload = options.triagePayload || null;
+    this._triageDisposition = options.triageDisposition || null;
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
@@ -173,6 +184,13 @@ export class StateMachine {
 
   public get triagePayload(): string | null {
     return this._triagePayload;
+  }
+
+  /**
+   * The recorded triage disposition, or `null` when none was ever taken.
+   */
+  public get triageDisposition(): TriageDisposition | null {
+    return this._triageDisposition;
   }
 
   public get createdAt(): string {
@@ -310,6 +328,18 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  /**
+   * Records the triage disposition (issue #269).
+   *
+   * The disposition is a FACT, not a gate: no pause is set by it. It is what
+   * makes returning to the TRIAGE gate unnecessary, because the detector
+   * consults it before routing.
+   */
+  public setTriageDisposition(disposition: TriageDisposition | null): void {
+    this._triageDisposition = disposition || null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setMode(mode: ExecutionMode): void {
     if (!Object.values(EXECUTION_MODES).includes(mode)) {
       throw new ValidationError('mode', mode, `Invalid execution mode: ${mode}`);
@@ -384,6 +414,9 @@ export class StateMachine {
     this._worktree = null;
     this._planDir = null;
     this._triagePayload = null;
+    // A re-opened task starts with NO disposition: the tool must see the
+    // pull request's feedback again, because the task is being REDONE.
+    this._triageDisposition = null;
     this._pausedAtGate = null;
     this._pausedAtTimestamp = null;
     this._totalHumanWaitMs = 0;
@@ -409,6 +442,7 @@ export class StateMachine {
       worktree: this._worktree,
       planDir: this._planDir,
       triagePayload: this._triagePayload,
+      triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       stepCount: this._history.length,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
@@ -431,6 +465,7 @@ export class StateMachine {
       worktree: this._worktree ? this._worktree.toJSON() : null,
       planDir: this._planDir,
       triagePayload: this._triagePayload,
+      triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       history: Object.freeze([...this._history]),
@@ -468,6 +503,9 @@ export class StateMachine {
     const baseBranch = snapshot.baseBranch || null;
     const planDir = snapshot.planDir || null;
     const triagePayload = snapshot.triagePayload || null;
+    // A legacy checkpoint (no `triageDisposition` key) and a malformed one
+    // both load as `null` — `fromJSON` never throws.
+    const triageDisposition = TriageDisposition.fromJSON(snapshot.triageDisposition);
 
     return new StateMachine({
       stage,
@@ -478,6 +516,7 @@ export class StateMachine {
       worktree,
       planDir,
       triagePayload,
+      triageDisposition,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       history: snapshot.history || [],

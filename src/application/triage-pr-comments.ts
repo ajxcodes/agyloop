@@ -22,6 +22,9 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   GATE_TRIAGE,
   NOTE_TRIAGE_ROUTED,
+  // Issue #269 (R5): the history note is rendered by the ONE shared
+  // renderer, exactly like the operator-facing lines.
+  formatTriageDispositionLine,
   StageName,
   IssueNumber,
   ValidationError,
@@ -30,19 +33,18 @@ import {
   NOTE_DISMISS_NO_PR,
   NOTE_DISMISS_NO_GATEWAY,
   DISMISS_CONVERSATION_REPLY_FOOTER,
-  DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX,
   DISMISS_INLINE_REPLY_MARKER,
-  DISMISS_INLINE_REPLY_SIGNATURE,
   DISMISS_FAILURE_DETAIL_LIMIT,
   LABEL_DISMISS_THREADS,
   LABEL_DISMISS_CONVERSATION,
   PR_CATEGORY_GENERAL,
-  REGEX_PR_FEEDBACK_HEADER,
-  REGEX_PR_FEEDBACK_FOOTER,
   REGEX_DISMISS_CONVERSATION_REFERENCE,
   MSG_DISMISS_NO_THREAD_SUPPORT,
   MSG_DISMISS_NO_CONVERSATION_ID,
-  MSG_DISMISS_NO_CONVERSATION_SUPPORT
+  MSG_DISMISS_NO_CONVERSATION_SUPPORT,
+  TriageDisposition,
+  TriageDispositionAction,
+  TriageDispositionSerialized
 } from '../domain';
 import {
   StateRepository,
@@ -54,8 +56,21 @@ import {
   ReviewThread
 } from '../ports';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
+import {
+  classifyPrFeedback,
+  feedbackKeysOf,
+  prFeedbackKey,
+  isDismissalReply,
+  isInlineDismissalReply
+} from './triage-feedback';
 
-export type TriageAction = 'implement' | 'plan' | 'discovery' | 'completed' | 'dismiss';
+/**
+ * The three helpers were MOVED to `./triage-feedback` (issue #269). They are
+ * re-exported here so `dist/application` keeps its public API.
+ */
+export { prFeedbackKey, isDismissalReply, isInlineDismissalReply } from './triage-feedback';
+
+export type TriageAction = TriageDispositionAction;
 
 /**
  * Which GitHub surface a dismissal failure happened on.
@@ -190,21 +205,16 @@ export interface TriagePrCommentsResult {
   readonly message: string;
   /** Present for the `dismiss` action: what the dismissal really achieved. */
   readonly dismissal?: TriageDismissReport;
-}
-
-/**
- * The identity of a piece of review feedback.
- *
- * The review bot posts the SAME feedback twice: once as an inline review
- * comment and once as a PR conversation summary (the conversation body carries
- * an extra `**Review feedback on ...**` header). Both bodies must therefore
- * reduce to the same key, otherwise the dismissal answers the same feedback
- * twice.
- */
-export function prFeedbackKey(body: string): string {
-  const withoutHeader = (body || '').replace(REGEX_PR_FEEDBACK_HEADER, '');
-  const withoutFooter = withoutHeader.replace(REGEX_PR_FEEDBACK_FOOTER, '');
-  return withoutFooter.replace(/\s+/g, ' ').trim().toLowerCase();
+  /**
+   * The recorded triage disposition (issue #269), or `null` when none was
+   * recorded (no PR feedback could be read).
+   */
+  readonly disposition?: TriageDispositionSerialized | null;
+  /**
+   * Whether a disposition was recorded. `false` means the feedback could not
+   * be read — the reason is in the CLI's output.
+   */
+  readonly dispositionRecorded?: boolean;
 }
 
 /**
@@ -229,18 +239,8 @@ function buildConversationReply(notes: string, body: string): string {
 /**
  * Whether a comment is a reply the TOOL posted.
  *
- * The tool posts as the same account as the human operator, so the AUTHOR
- * cannot tell the tool's own replies from the operator's own notes — only the
- * tool's marker can. The marker is either the footer or the id-bearing
- * reference; both are posted by the tool and by nothing else.
+ * MOVED to `./triage-feedback` (issue #269) and re-exported above.
  */
-export function isDismissalReply(body: string): boolean {
-  const text = body || '';
-  return (
-    text.includes(DISMISS_CONVERSATION_REPLY_FOOTER) ||
-    text.includes(DISMISS_CONVERSATION_REPLY_REFERENCE_PREFIX)
-  );
-}
 
 /**
  * The reply posted on an INLINE review thread.
@@ -251,27 +251,6 @@ export function isDismissalReply(body: string): boolean {
  */
 function buildInlineReply(notes: string): string {
   return `${notes}\n\n${DISMISS_INLINE_REPLY_MARKER}`;
-}
-
-/**
- * Whether an INLINE comment is a reply the TOOL posted.
- *
- * The tool posts as the same account as the human operator, so the AUTHOR
- * cannot tell the tool's own replies from the operator's own notes — only the
- * tool's marker can. Three forms count as the tool's own mark:
- *
- * - the marker the tool appends to every inline reply it posts;
- * - the conversation markers, for a reply that quotes one;
- * - the tool's historic signature, which is the only tool-owned signal the
- *   replies already posted on PR #261 carry.
- */
-export function isInlineDismissalReply(body: string): boolean {
-  const text = body || '';
-  return (
-    text.includes(DISMISS_INLINE_REPLY_MARKER) ||
-    text.includes(DISMISS_INLINE_REPLY_SIGNATURE) ||
-    isDismissalReply(text)
-  );
 }
 
 /**
@@ -535,6 +514,28 @@ export class TriagePrCommentsUseCase {
       sm.resumeFromGate();
     }
 
+    // The DISPOSITION (issue #269): the fact that this pull request's feedback
+    // was disposed of. Without it the TRIAGE detector re-detects the very same
+    // comments on the next read and routes to TRIAGE again — the livelock.
+    //
+    // It is recorded for EVERY routing action (the feedback was triaged in all
+    // of them), and it is NOT recorded at all when no feedback could be read:
+    // an empty key set must never masquerade as "everything was dispositioned".
+    let disposition: TriageDisposition | null = null;
+    let dispositionRecorded = false;
+
+    if (prNumber !== null && comments.length > 0) {
+      const classified = classifyPrFeedback(comments);
+      const keys = feedbackKeysOf(classified.actionable);
+      disposition = TriageDisposition.merge(sm.triageDisposition, {
+        prNumber,
+        action: selectedAction,
+        recordedAt: new Date().toISOString(),
+        feedbackKeys: keys
+      });
+      dispositionRecorded = true;
+    }
+
     // Transition from STAGE_TRIAGE to targetStage
     if (sm.canTransition(targetStage)) {
       if (targetStage === STAGE_IMPLEMENT && this.worktreeManager) {
@@ -574,8 +575,20 @@ export class TriagePrCommentsUseCase {
         note: params.notes || NOTE_TRIAGE_ROUTED,
         prNumber,
         triageAction: selectedAction,
-        commentCount: comments.length
+        commentCount: comments.length,
+        // Data only: the history records THAT a disposition was taken, and the
+        // note says which one. The authoritative copy is the snapshot field.
+        ...(dispositionRecorded && disposition
+          ? {
+              triageDisposition: true,
+              dispositionNote: formatTriageDispositionLine(disposition, 'history-note')
+            }
+          : {})
       });
+    }
+
+    if (disposition) {
+      sm.setTriageDisposition(disposition);
     }
 
     await this.stateRepo.save(sm.toSnapshot());
@@ -587,6 +600,8 @@ export class TriagePrCommentsUseCase {
       prNumber,
       comments,
       dismissal,
+      disposition: disposition ? disposition.toJSON() : null,
+      dispositionRecorded,
       message: `Triage complete: routed to ${targetStage} with ${comments.length} comment(s).`
     };
   }

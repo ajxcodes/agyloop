@@ -116,6 +116,26 @@ describe('CLI Subagent Guard', () => {
       assert.strictEqual(errorOutput.includes('Zero Direct Root Mutation'), false);
       assert.strictEqual(exitCode, 2);
     });
+
+    test('permits subagents to file their review verdict via review (issue #269 inbound channel)', async () => {
+      // The REVIEWER subagent is the PRODUCER of the verdict; `review` is the
+      // channel that files it. The guard must not close that channel.
+      const verdictFile = path.join(tempDir, 'verdict.md');
+      fs.writeFileSync(verdictFile, 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n', 'utf8');
+
+      await runCli(['review', '--verdict-file', verdictFile]);
+
+      assert.strictEqual(
+        errorOutput.includes('Subagents are not permitted'),
+        false,
+        `the review channel must be open for a subagent, got:\n${errorOutput}`
+      );
+      assert.strictEqual(
+        errorOutput.includes('Zero Direct Root Mutation'),
+        false,
+        `the review channel must be open for a subagent, got:\n${errorOutput}`
+      );
+    });
   });
 
   describe('When AGY_SUBAGENT is not set', () => {

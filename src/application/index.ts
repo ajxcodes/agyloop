@@ -27,6 +27,18 @@ export * from './manage-issue-migration';
 export * from './get-next-action';
 export * from './lifecycle-reentry-policy';
 export * from './triage-pr-comments';
+// The feedback classifier (issue #269). EXPLICIT named exports — never
+// `export *` — because the three helpers that moved out of
+// `./triage-pr-comments` are already exported by it, and a wildcard here
+// would collide with them (and with `./domain` in `src/index.ts`).
+export {
+  classifyPrFeedback,
+  feedbackKeyOf,
+  feedbackKeysOf,
+  isAutomatedSummaryPost,
+  isToolOwnedPrReply
+} from './triage-feedback';
+export type { PrFeedbackClassification, PrFeedbackLike } from './triage-feedback';
 export * from './sync';
 export * from './abort-pipeline';
 export * from './init-project';
