@@ -1555,6 +1555,38 @@ export const NOTE_GATES_VACUOUS_STANDARD =
 export const NOTE_GATES_VACUOUS_YOLO =
   'Quality gates refused to certify an unimplemented tree (VACUOUS) — refusing to advance.' as const;
 
+/**
+ * The label of the base-freshness line in the gate report (issue #263).
+ */
+export const LABEL_BASE_FRESHNESS = 'Base freshness' as const;
+
+/**
+ * `Base freshness : 2 commit(s) behind 'main' (this branch owns 1; branch point 1823dbf)`
+ *
+ * `{ahead}` counts commits the base ref has since the branch point; `{own}` counts the
+ * branch's own commits; `{mergeBase}` is the first 7 characters of the branch point SHA.
+ * The base ref is the LOCAL ref (no `git fetch`), so a base that moved only on the remote
+ * is not detected.
+ */
+export const LABEL_BASE_FRESHNESS_LINE =
+  "{label} : {ahead} commit(s) behind '{baseRef}' (this branch owns {own}; branch point {mergeBase})" as const;
+
+/** The gate-report warning for an unmeasurable branch diff (issue #263). */
+export const MSG_GATE_UNMEASURABLE =
+  "Could not measure this branch's own changes: {error}. The implementation count above comes from 'git status' only." as const;
+
+/** The stale-worktree advisory (issue #263). `{mergeBase}` is the short branch point. */
+export const NOTE_IMPLEMENTATION_STALE_WORKTREE =
+  "Stale worktree — this branch is {ahead} commit(s) behind '{baseRef}' (branch point {mergeBase}); the gate would validate a build the base branch no longer contains." as const;
+
+/** The CLI's second line when the branch diff could not be measured (issue #263). */
+export const NOTE_IMPLEMENTATION_UNMEASURABLE =
+  "This branch's own changes could not be measured against '{baseRef}' ({error}) — 'git status' found no implementation, so the tree cannot be certified." as const;
+
+/** The full YOLO park message when the branch diff could not be measured (issue #263). */
+export const NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE =
+  "Implementation produced no changes — refusing to advance to quality gates. 'git status' found no implementation and this branch's own changes could not be measured against '{baseRef}' ({error}), so the tree cannot be certified. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
 // ============================================================================
 // PR Comment Severity Markers & Dismissal Reporting
 // ============================================================================

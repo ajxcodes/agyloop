@@ -1,5 +1,6 @@
 /**
- * agyloop - DetectImplementationDiffUseCase Unit Tests (issue #259, D1-D8)
+ * agyloop - DetectImplementationDiffUseCase Unit Tests (issue #259, D1-D10;
+ * issue #263, P1-P8)
  *
  * The ONE implementation-evidence probe. It answers a single question before
  * the quality gates run: "does the working tree contain an implementation?".
@@ -11,6 +12,11 @@
  * phase: a verdict that carries a `probeError` is "no verdict", not "no
  * changes". The probe fails closed; its CONSUMERS keep their pre-existing
  * behaviour instead of parking on an absence of information.
+ *
+ * Issue #263: the executor is a ROUTER, not a replay queue. Each command shape
+ * has its own route and an unlisted command throws — so a two-dot
+ * `git diff --name-only <ref> -- .` is an unexpected command, and the suite
+ * cannot silently regress into the defect it was written to catch.
  */
 
 const { test, describe } = require('node:test');
@@ -28,6 +34,11 @@ const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 type CommandExecutorPort = import('../../src').CommandExecutorPort;
 type CommandExecutionOptions = import('../../src').CommandExecutionOptions;
 type CommandExecutionResult = import('../../src').CommandExecutionResult;
+
+/** The branch point every routing fixture resolves to. */
+const MERGE_BASE_SHA = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
+/** A second, realistic branch point (the #250 live instance). */
+const MERGE_BASE_SHA_1823DBF = '1823dbf0123456789abcdef0123456789abcdef0';
 
 /** A successful command result. */
 function ok(command: string, stdout: string): CommandExecutionResult {
@@ -55,17 +66,25 @@ function fail(command: string, exitCode: number, stderr = ''): CommandExecutionR
   };
 }
 
-/**
- * A mock executor that replays a queue of responses and records every call
- * together with the options it received (so the forwarded `cwd` is
- * observable).
- */
-class MockCommandExecutor implements CommandExecutorPort {
-  public executed: Array<{ command: string; options?: CommandExecutionOptions }> = [];
-  public responses: CommandExecutionResult[];
+interface Route {
+  match: RegExp;
+  result?: CommandExecutionResult;
+  /** When true, the executor throws instead of returning a result. */
+  throws?: boolean;
+}
 
-  constructor(responses: CommandExecutionResult[] = []) {
-    this.responses = [...responses];
+/**
+ * A routing executor: each command shape has exactly one route, so the test
+ * declares WHAT every command means instead of the order it arrives in. A
+ * command with no route is a test failure — the probe cannot run a command
+ * the suite does not know about.
+ */
+class RoutingCommandExecutor implements CommandExecutorPort {
+  public executed: Array<{ command: string; options?: CommandExecutionOptions }> = [];
+  private readonly routes: Route[];
+
+  constructor(routes: Route[]) {
+    this.routes = routes;
   }
 
   public async execute(
@@ -73,22 +92,82 @@ class MockCommandExecutor implements CommandExecutorPort {
     options?: CommandExecutionOptions
   ): Promise<CommandExecutionResult> {
     this.executed.push({ command, options });
-    if (this.responses.length > 0) {
-      return this.responses.shift()!;
+    const route = this.routes.find((candidate) => candidate.match.test(command));
+    if (!route) {
+      throw new Error(`unexpected command: ${command}`);
     }
-    return ok(command, '');
+    if (route.throws) {
+      throw new Error(`routing executor threw for: ${command}`);
+    }
+    return route.result!;
   }
+}
+
+interface ProbeFixture {
+  status?: CommandExecutionResult;
+  mergeBase?: CommandExecutionResult;
+  diff?: CommandExecutionResult;
+  /** Overrides the route itself — used to make a supplementary command throw. */
+  ownCommits?: CommandExecutionResult | { throws: true };
+  baseAheadCommits?: CommandExecutionResult;
+}
+
+/** Builds one route, letting a fixture override the route's outcome. */
+function route(
+  match: RegExp,
+  override: CommandExecutionResult | { throws: true } | undefined,
+  fallback: CommandExecutionResult
+): Route {
+  if (override && 'throws' in override) {
+    return { match, throws: true };
+  }
+  return { match, result: override ?? fallback };
+}
+
+/**
+ * The five routes of the corrected probe (issue #263 §2.3). Defaults describe
+ * a clean, up-to-date tree: resolvable branch point, empty diff, zero commits.
+ */
+function probeRoutes(fixture: ProbeFixture = {}): Route[] {
+  return [
+    route(/^git status --porcelain$/, fixture.status, ok('git status --porcelain', '')),
+    route(/^git merge-base HEAD /, fixture.mergeBase, ok('git merge-base HEAD', `${MERGE_BASE_SHA}\n`)),
+    route(
+      /^git diff --name-only [0-9a-f]{7,64} -- \.$/,
+      fixture.diff,
+      ok('git diff --name-only', '')
+    ),
+    route(
+      /^git rev-list --count [0-9a-f]{7,64}\.\.HEAD$/,
+      fixture.ownCommits,
+      ok('git rev-list --count', '0\n')
+    ),
+    route(
+      /^git rev-list --count [0-9a-f]{7,64}\.\.'.*'$/,
+      fixture.baseAheadCommits,
+      ok('git rev-list --count', '0\n')
+    )
+  ];
+}
+
+/** Runs the probe over one routing fixture. */
+async function runProbe(
+  fixture: ProbeFixture = {},
+  params: { workspaceDir?: string; baseRef?: string } = {}
+): Promise<{ diff: any; executor: RoutingCommandExecutor }> {
+  const executor = new RoutingCommandExecutor(probeRoutes(fixture));
+  const useCase = new DetectImplementationDiffUseCase(executor);
+  const diff = await useCase.execute({
+    workspaceDir: '/mock/workspace',
+    baseRef: 'main',
+    ...params
+  });
+  return { diff, executor };
 }
 
 describe('DetectImplementationDiffUseCase (issue #259)', () => {
   test('D1: an empty git status yields hasChanges === false', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', ''),
-      ok('git diff --name-only main -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+    const { diff } = await runProbe();
 
     assert.strictEqual(diff.hasChanges, false);
     assert.strictEqual(diff.probeError, null);
@@ -98,13 +177,10 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
   });
 
   test('D2: a tracked modification yields hasChanges === true and the file is listed', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', 'M  src/index.ts\n'),
-      ok('git diff --name-only main -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+    const { diff } = await runProbe({
+      status: ok('git status --porcelain', 'M  src/index.ts\n'),
+      diff: ok('git diff --name-only', 'src/index.ts\n')
+    });
 
     assert.strictEqual(diff.hasChanges, true);
     assert.strictEqual(diff.probeError, null);
@@ -115,8 +191,8 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
   });
 
   test('D3: only lifecycle noise in git status yields hasChanges === false', async () => {
-    const executor = new MockCommandExecutor([
-      ok(
+    const { diff } = await runProbe({
+      status: ok(
         'git status --porcelain',
         [
           '?? .agyloop/',
@@ -128,12 +204,8 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
           '?? prompts/',
           ''
         ].join('\n')
-      ),
-      ok('git diff --name-only main -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+      )
+    });
 
     assert.strictEqual(diff.hasChanges, false);
     assert.strictEqual(diff.probeError, null);
@@ -142,13 +214,9 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
   });
 
   test('D4: an untracked source file yields hasChanges === true', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', '?? src/new.ts\n'),
-      ok('git diff --name-only main -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+    const { diff } = await runProbe({
+      status: ok('git status --porcelain', '?? src/new.ts\n')
+    });
 
     assert.strictEqual(diff.hasChanges, true);
     assert.strictEqual(diff.probeError, null);
@@ -159,12 +227,9 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
   });
 
   test('D5: a non-zero exit from git status sets probeError and fails closed (hasChanges === false)', async () => {
-    const executor = new MockCommandExecutor([
-      fail('git status --porcelain', 128, 'fatal: not a git repository')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+    const { diff } = await runProbe({
+      status: fail('git status --porcelain', 128, 'fatal: not a git repository')
+    });
 
     assert.notStrictEqual(diff.probeError, null, 'a failed probe must report an error');
     assert.ok(
@@ -174,37 +239,40 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
     assert.strictEqual(diff.hasChanges, false, 'the probe fails closed');
     assert.deepStrictEqual(diff.trackedChangedFiles, []);
     assert.deepStrictEqual(diff.untrackedFiles, []);
+    assert.strictEqual(diff.measurementError, null);
+    assert.strictEqual(diff.mergeBase, null);
+    assert.strictEqual(diff.baseAheadCommits, null);
+    assert.strictEqual(diff.ownCommits, null);
   });
 
-  test('D6: a non-zero exit from git diff (unknown base ref) is not an error and falls back to HEAD', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', ''),
-      fail('git diff --name-only main -- .', 128, "fatal: ambiguous argument 'main'"),
-      ok('git diff --name-only HEAD -- .', 'src/committed.ts\n')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
+  test('D6 (AC7): an unresolvable base ref is a measurement error — the base is never relabelled "HEAD (fallback)" and no diff is fabricated', async () => {
+    const { diff, executor } = await runProbe({
+      mergeBase: fail('git merge-base HEAD', 128, "fatal: Not a valid object name main")
+    });
 
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
-
-    assert.strictEqual(diff.probeError, null, 'an unknown base ref is not a probe error');
-    assert.strictEqual(diff.baseRef, 'HEAD (fallback)');
-    assert.strictEqual(diff.hasChanges, true);
+    assert.strictEqual(diff.probeError, null, 'the tree WAS readable');
+    assert.notStrictEqual(diff.measurementError, null, 'the branch diff could NOT be measured');
     assert.ok(
-      diff.trackedChangedFiles.includes('src/committed.ts'),
-      `the HEAD fallback must still report the committed work, got: ${JSON.stringify(diff.trackedChangedFiles)}`
+      diff.measurementError!.includes('git merge-base HEAD'),
+      `the error must name the failed command, got: ${diff.measurementError}`
+    );
+    assert.strictEqual(diff.mergeBase, null);
+    assert.strictEqual(diff.baseAheadCommits, null);
+    assert.strictEqual(diff.ownCommits, null);
+    assert.strictEqual(diff.baseRef, 'main', 'the requested ref is reported, never a fallback label');
+    assert.strictEqual(diff.hasChanges, false, 'hasChanges reflects git status only');
+    assert.ok(
+      !executor.executed.some((call) => call.command.startsWith('git diff --name-only')),
+      `no diff may be attempted without a branch point, got: ${executor.executed
+        .map((call) => call.command)
+        .join(', ')}`
     );
   });
 
   test('D7: the probe runs in the supplied workspaceDir (cwd is forwarded to the executor)', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', ''),
-      ok('git diff --name-only develop -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
+    const { executor } = await runProbe({}, { workspaceDir: '/mock/workspace-x', baseRef: 'develop' });
 
-    await useCase.execute({ workspaceDir: '/mock/workspace-x', baseRef: 'develop' });
-
-    assert.strictEqual(executor.executed.length, 2);
+    assert.strictEqual(executor.executed.length, 5);
     for (const call of executor.executed) {
       assert.strictEqual(
         call.options?.cwd,
@@ -220,12 +288,11 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
 
   test('D8 (AC2): a probeError verdict is "no verdict", not "no changes" — the YOLO run does NOT park and the gate does NOT report VACUOUS', async () => {
     // --- 1. the probe itself fails closed -----------------------------------
-    const probeExecutor = new MockCommandExecutor([
-      fail('git status --porcelain', 128, 'fatal: not a git repository')
-    ]);
-    const probe = await new DetectImplementationDiffUseCase(probeExecutor).execute({
-      workspaceDir: '/mock/workspace'
-    });
+    const probe = await new DetectImplementationDiffUseCase(
+      new RoutingCommandExecutor(probeRoutes({
+        status: fail('git status --porcelain', 128, 'fatal: not a git repository')
+      }))
+    ).execute({ workspaceDir: '/mock/workspace' });
 
     assert.notStrictEqual(probe.probeError, null, 'the verdict must carry a probeError');
     assert.strictEqual(probe.hasChanges, false, 'the probe fails closed');
@@ -263,13 +330,10 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
    * refuse to certify a tree that really was implemented.
    */
   test('D9: a deleted tracked file (unstaged) yields hasChanges === true and the file is listed', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', ' D src/removed.ts\n'),
-      ok('git diff --name-only main -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+    const { diff } = await runProbe({
+      status: ok('git status --porcelain', ' D src/removed.ts\n'),
+      diff: ok('git diff --name-only', 'src/removed.ts\n')
+    });
 
     assert.strictEqual(diff.hasChanges, true, 'a deletion is an implementation');
     assert.strictEqual(diff.probeError, null);
@@ -280,13 +344,10 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
   });
 
   test('D10: a deleted tracked file (staged) yields hasChanges === true and the file is listed', async () => {
-    const executor = new MockCommandExecutor([
-      ok('git status --porcelain', 'D  src/removed.ts\n'),
-      ok('git diff --name-only main -- .', '')
-    ]);
-    const useCase = new DetectImplementationDiffUseCase(executor);
-
-    const diff = await useCase.execute({ workspaceDir: '/mock/workspace' });
+    const { diff } = await runProbe({
+      status: ok('git status --porcelain', 'D  src/removed.ts\n'),
+      diff: ok('git diff --name-only', 'src/removed.ts\n')
+    });
 
     assert.strictEqual(diff.hasChanges, true, 'a staged deletion is an implementation');
     assert.strictEqual(diff.probeError, null);
@@ -294,6 +355,140 @@ describe('DetectImplementationDiffUseCase (issue #259)', () => {
       diff.trackedChangedFiles.includes('src/removed.ts'),
       `expected 'src/removed.ts' to be listed, got: ${JSON.stringify(diff.trackedChangedFiles)}`
     );
+  });
+});
+
+describe('DetectImplementationDiffUseCase — merge-base-relative measurement (issue #263)', () => {
+  test('P1 (AC1, AC2): a clean worktree whose base advanced reports ZERO changed files, not the base\'s N', async () => {
+    const { diff, executor } = await runProbe({
+      baseAheadCommits: ok('git rev-list --count', '3\n')
+    });
+
+    assert.strictEqual(diff.hasChanges, false);
+    assert.deepStrictEqual(diff.trackedChangedFiles, []);
+    assert.strictEqual(diff.baseAheadCommits, 3);
+    assert.strictEqual(diff.ownCommits, 0);
+
+    const diffCommands = executor.executed.filter((call) =>
+      call.command.startsWith('git diff --name-only')
+    );
+    assert.strictEqual(diffCommands.length, 1, 'exactly one diff command may run');
+    assert.ok(
+      diffCommands[0].command.includes(MERGE_BASE_SHA),
+      `the diff must be merge-base-relative, got: ${diffCommands[0].command}`
+    );
+    assert.ok(
+      !executor.executed.some((call) => /^git diff --name-only main/.test(call.command)),
+      `the base ref's TIP must never be the diff target, got: ${executor.executed
+        .map((call) => call.command)
+        .join(', ')}`
+    );
+  });
+
+  test('P2 (AC1, AC3): a branch with its own commit reports ONLY its own file when the base advanced', async () => {
+    const { diff } = await runProbe({
+      diff: ok('git diff --name-only', 'src/impl.ts\n'),
+      ownCommits: ok('git rev-list --count', '1\n'),
+      baseAheadCommits: ok('git rev-list --count', '2\n')
+    });
+
+    assert.deepStrictEqual(diff.trackedChangedFiles, ['src/impl.ts']);
+    assert.strictEqual(diff.hasChanges, true);
+  });
+
+  test('P3 (AC4): the committed and uncommitted signals reconcile into one de-duplicated list', async () => {
+    const { diff } = await runProbe({
+      status: ok('git status --porcelain', ' M src/index.ts\n?? src/new.ts\n'),
+      diff: ok('git diff --name-only', 'src/index.ts\n')
+    });
+
+    assert.deepStrictEqual(diff.trackedChangedFiles, ['src/index.ts']);
+    assert.deepStrictEqual(diff.untrackedFiles, ['src/new.ts']);
+    assert.strictEqual(
+      diff.trackedChangedFiles.length + diff.untrackedFiles.length,
+      2,
+      'a file present in both signals must be counted once'
+    );
+  });
+
+  test('P4 (AC6): the verdict carries the branch point and both commit counts', async () => {
+    const { diff } = await runProbe({
+      mergeBase: ok('git merge-base HEAD', `${MERGE_BASE_SHA_1823DBF}\n`),
+      diff: ok('git diff --name-only', 'src/impl.ts\n'),
+      ownCommits: ok('git rev-list --count', '1\n'),
+      baseAheadCommits: ok('git rev-list --count', '2\n')
+    });
+
+    assert.strictEqual(diff.baseAheadCommits, 2);
+    assert.strictEqual(diff.ownCommits, 1);
+    assert.strictEqual(diff.mergeBase, MERGE_BASE_SHA_1823DBF);
+    assert.strictEqual(diff.measurementError, null);
+  });
+
+  test('P5 (AC6, negative): an up-to-date branch reports baseAheadCommits === 0 and its verdict is unchanged', async () => {
+    const { diff } = await runProbe({
+      diff: ok('git diff --name-only', 'src/impl.ts\n'),
+      ownCommits: ok('git rev-list --count', '4\n'),
+      baseAheadCommits: ok('git rev-list --count', '0\n')
+    });
+
+    assert.strictEqual(diff.baseAheadCommits, 0);
+    assert.strictEqual(diff.hasChanges, true);
+    assert.deepStrictEqual(diff.trackedChangedFiles, ['src/impl.ts']);
+  });
+
+  test('P6 (AC6): an absent commit count is null (unknown), never 0, and is NOT a measurement error', async () => {
+    const { diff } = await runProbe({
+      ownCommits: { throws: true },
+      baseAheadCommits: ok('git rev-list --count', '')
+    });
+
+    assert.strictEqual(diff.ownCommits, null);
+    assert.strictEqual(diff.baseAheadCommits, null);
+    assert.strictEqual(diff.measurementError, null);
+    assert.strictEqual(diff.hasChanges, false);
+    assert.notStrictEqual(diff.mergeBase, null, 'the measurement itself succeeded');
+  });
+
+  test('P7 (AC2, AC7, RV2): an empty or garbage merge-base never builds a diff command', async () => {
+    for (const mergeBase of ['', 'All 10 tests passing\n']) {
+      const { diff, executor } = await runProbe({
+        mergeBase: ok('git merge-base HEAD', mergeBase)
+      });
+
+      assert.notStrictEqual(diff.measurementError, null, `merge-base '${mergeBase}' must not be accepted`);
+      assert.strictEqual(diff.mergeBase, null);
+      assert.ok(
+        !executor.executed.some((call) => call.command.startsWith('git diff --name-only')),
+        'no diff command may be emitted without a validated SHA'
+      );
+      for (const call of executor.executed) {
+        assert.ok(
+          !call.command.includes('--name-only  --') && !call.command.includes('--name-only --'),
+          `an empty SHA was interpolated: ${call.command}`
+        );
+      }
+    }
+  });
+
+  test('P8 (hardening): the base ref is shell-quoted, so shell metacharacters never reach the command raw', async () => {
+    const payload = 'main; touch /tmp/pwned';
+    const quoted = `'${payload}'`;
+    const { executor } = await runProbe({}, { baseRef: payload });
+
+    for (const call of executor.executed) {
+      if (!call.command.includes('pwned')) {
+        continue;
+      }
+      assert.ok(
+        call.command.includes(quoted),
+        `the payload must appear quoted, got: ${call.command}`
+      );
+      assert.ok(
+        !call.command.split(quoted).join('').includes('pwned'),
+        `the raw payload leaked into the command: ${call.command}`
+      );
+    }
   });
 });
 

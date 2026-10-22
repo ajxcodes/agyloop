@@ -28,8 +28,11 @@ const {
   // implementation-evidence line. Imported, never re-typed, so the assertions
   // cannot drift from the shipped wording.
   MSG_GATE_VACUOUS,
+  MSG_GATE_UNMEASURABLE,
   LABEL_IMPLEMENTATION_EVIDENCE,
   LABEL_IMPLEMENTATION_EVIDENCE_LINE,
+  LABEL_BASE_FRESHNESS,
+  LABEL_BASE_FRESHNESS_LINE,
   HEADER_QUALITY_GATE_REPORT,
   LABEL_OVERALL_VERDICT
 } = require('../../dist');
@@ -871,6 +874,62 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
         .replace('{baseRef}', baseRef);
     }
 
+    /** The `Base freshness : …` advisory line (issue #263). */
+    function freshnessLine(
+      ahead: number,
+      own: number,
+      mergeBase: string,
+      baseRef = 'main'
+    ): string {
+      return LABEL_BASE_FRESHNESS_LINE.replace('{label}', LABEL_BASE_FRESHNESS)
+        .replace('{ahead}', String(ahead))
+        .replace('{baseRef}', baseRef)
+        .replace('{own}', String(own))
+        .replace('{mergeBase}', mergeBase.slice(0, 7));
+    }
+
+    /** A measured verdict carrying explicit branch-relative counts (issue #263). */
+    function measuredDiff(params: {
+      baseRef?: string;
+      tracked?: readonly string[];
+      untracked?: readonly string[];
+      ahead?: number | null;
+      own?: number | null;
+      mergeBase?: string | null;
+    } = {}): ImplementationDiff {
+      const tracked = params.tracked ?? [];
+      const untracked = params.untracked ?? [];
+      return {
+        hasChanges: tracked.length + untracked.length > 0,
+        baseRef: params.baseRef ?? 'main',
+        trackedChangedFiles: tracked,
+        untrackedFiles: untracked,
+        probeError: null,
+        measurementError: null,
+        mergeBase: params.mergeBase === undefined ? 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0' : params.mergeBase,
+        baseAheadCommits: params.ahead === undefined ? 0 : params.ahead,
+        ownCommits: params.own === undefined ? 0 : params.own,
+        rawStatus: ''
+      };
+    }
+
+    /** An unmeasurable verdict: the tree was read, the branch diff was not (issue #263). */
+    function unmeasurableDiff(params: { tracked?: readonly string[]; error?: string } = {}): ImplementationDiff {
+      const tracked = params.tracked ?? [];
+      return {
+        hasChanges: tracked.length > 0,
+        baseRef: 'main',
+        trackedChangedFiles: tracked,
+        untrackedFiles: [],
+        probeError: null,
+        measurementError: params.error ?? "git merge-base HEAD 'main' could not resolve the branch point for 'main'",
+        mergeBase: null,
+        baseAheadCommits: null,
+        ownCommits: null,
+        rawStatus: ''
+      };
+    }
+
     function implementSnapshot(): StateMachineSnapshot {
       return {
         version: '1.0.0',
@@ -1025,6 +1084,135 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
       assert.ok(
         result.summaryReport.includes(evidenceLine(2, 'main')),
         `the report must carry the implementation-evidence line, got:\n${result.summaryReport}`
+      );
+    });
+
+    test('V4 (AC5): the gate reports the merge-base-relative count AND the base-freshness advisory', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const verdict = measuredDiff({
+        tracked: ['a.ts', 'b.ts'],
+        untracked: ['c.ts'],
+        ahead: 2,
+        own: 1
+      });
+
+      const result = await useCase.execute({ issue: 20, implementationDiff: verdict });
+
+      assert.strictEqual(result.passed, true);
+      assert.strictEqual(result.currentStage, STAGE_REVIEW);
+      assert.ok(
+        result.summaryReport.includes(evidenceLine(3, 'main')),
+        `the count must be exactly what the probe measured, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        result.summaryReport.includes(
+          freshnessLine(2, 1, verdict.mergeBase!)
+        ),
+        `the report must carry the freshness line, got:\n${result.summaryReport}`
+      );
+    });
+
+    test('V5 (AC6): a stale-but-measured tree still PASSES — staleness is advisory, never a block', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const verdict = measuredDiff({ tracked: ['src/index.ts'], ahead: 4, own: 2 });
+      const result = await useCase.execute({ issue: 20, implementationDiff: verdict });
+
+      assert.strictEqual(result.passed, true, 'the gate must not block on staleness alone');
+      assert.strictEqual(result.vacuous, false);
+      assert.ok(result.summaryReport.includes(evidenceLine(1, 'main')));
+      assert.ok(
+        result.summaryReport.includes(freshnessLine(4, 2, verdict.mergeBase!)),
+        `the freshness advisory must be surfaced, got:\n${result.summaryReport}`
+      );
+    });
+
+    test('V6 (AC6): a VACUOUS report over a stale tree carries the Base freshness line and runs no gate command', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const verdict = measuredDiff({ ahead: 2, own: 0 });
+      const result = await useCase.execute({ issue: 20, implementationDiff: verdict });
+
+      assert.strictEqual(result.vacuous, true);
+      assert.strictEqual(
+        commandExecutor.executed.length,
+        0,
+        'no gate command may run over an unimplemented tree'
+      );
+      assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+      assert.strictEqual(result.stateMachine.implementToGateLoops, 0);
+      assert.ok(
+        result.summaryReport.includes(freshnessLine(2, 0, verdict.mergeBase!)),
+        `the refusal must explain the staleness, got:\n${result.summaryReport}`
+      );
+    });
+
+    test('V7 (AC7, RV4): an unmeasurable branch diff is NOT a VACUOUS refusal — the gates run and the report says why', async () => {
+      const stateRepo = new MockStateRepository(implementSnapshot());
+      const configRepo = new MockConfigRepository();
+      const planGenerator = new MockPlanGenerator();
+      const commandExecutor = new MockCommandExecutor();
+
+      const useCase = new RunQualityGateUseCase(
+        stateRepo,
+        configRepo,
+        planGenerator,
+        commandExecutor
+      );
+
+      const error = "git merge-base HEAD 'main' could not resolve the branch point for 'main'";
+      const result = await useCase.execute({
+        issue: 20,
+        implementationDiff: unmeasurableDiff({ error })
+      });
+
+      assert.notStrictEqual(result.vacuous, true, 'an unmeasurable diff is not a measured empty tree');
+      assert.ok(
+        commandExecutor.executed.length > 0,
+        'the gate keeps its pre-existing behaviour when the branch cannot be measured'
+      );
+      assert.ok(
+        result.summaryReport.includes(MSG_GATE_UNMEASURABLE.replace('{error}', error)),
+        `the report must explain the unmeasurable diff, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        !result.summaryReport.includes(MSG_GATE_VACUOUS.replace('{baseRef}', 'main')),
+        `the report must not claim VACUOUS, got:\n${result.summaryReport}`
+      );
+      assert.ok(
+        !result.summaryReport.includes('VACUOUS'),
+        `no surface may print VACUOUS for an unmeasurable diff, got:\n${result.summaryReport}`
       );
     });
   });
