@@ -162,6 +162,56 @@ describe('WorktreeDescriptor Value Object', () => {
     });
   });
 
+  test('reusedBranchCommit descriptor field: serialises, round-trips through fromJSON, and stays off fresh branches (#264)', () => {
+    // (a) A descriptor that reports a reused branch carries the commit through
+    // toJSON and back through fromJSON.
+    const reused = new WorktreeDescriptor({
+      taskId: '264',
+      worktreePath: '/repo/.worktrees/264',
+      branch: 'fix/264',
+      baseBranch: 'main',
+      reusedBranchCommit: '  b542e58deadbeefdeadbeefdeadbeefdeadbeef  '
+    });
+    assert.strictEqual(reused.reusedBranchCommit, 'b542e58deadbeefdeadbeefdeadbeefdeadbeef');
+
+    const json = reused.toJSON();
+    assert.strictEqual(json.reusedBranchCommit, reused.reusedBranchCommit);
+
+    const roundTripped = WorktreeDescriptor.fromJSON(json);
+    assert.strictEqual(roundTripped.reusedBranchCommit, reused.reusedBranchCommit);
+    assert.strictEqual(roundTripped.branch, reused.branch);
+
+    // A blank reuse commit is not trace metadata: it is dropped, not kept as ''.
+    const blank = new WorktreeDescriptor({
+      taskId: '264',
+      worktreePath: '/repo/.worktrees/264',
+      branch: 'fix/264',
+      baseBranch: 'main',
+      reusedBranchCommit: '   '
+    });
+    assert.strictEqual(blank.reusedBranchCommit, undefined);
+
+    // (b) A descriptor WITHOUT the field produces exactly the pre-change toJSON
+    // key set (the reuse trace metadata must not leak into non-reusing payloads).
+    const fresh = new WorktreeDescriptor({
+      taskId: '87',
+      worktreePath: '/repo/.worktrees/87',
+      branch: 'task/87-slug',
+      baseBranch: 'main',
+      slug: 'slug'
+    });
+    assert.deepStrictEqual(Object.keys(fresh.toJSON()).sort(), [
+      'baseBranch',
+      'branch',
+      'isIsolated',
+      'slug',
+      'taskId',
+      'worktreePath'
+    ]);
+    assert.strictEqual('reusedBranchCommit' in fresh.toJSON(), false);
+    assert.strictEqual(WorktreeDescriptor.fromJSON({ ...fresh.toJSON(), reusedBranchCommit: undefined }).reusedBranchCommit, undefined);
+  });
+
   test('Worktree errors preserve codes and cause details', () => {
     const err = new WorktreeCreationError('createWorktree', 'git index lock found', { taskId: '87' });
     assert.strictEqual(err.code, ERR_WORKTREE);

@@ -15,6 +15,12 @@ export interface WorktreeDescriptorProps {
   readonly baseBranch: string;
   readonly slug?: string;
   readonly isIsolated?: boolean;
+  /**
+   * Tip commit of a pre-existing local branch that was reused when the worktree
+   * was created (#264). Presence of the field IS the reuse signal; undefined on
+   * a freshly created branch.
+   */
+  readonly reusedBranchCommit?: string;
 }
 
 export class WorktreeDescriptor {
@@ -24,6 +30,7 @@ export class WorktreeDescriptor {
   public readonly baseBranch: string;
   public readonly slug: string;
   public readonly isIsolated: boolean;
+  public readonly reusedBranchCommit: string | undefined;
 
   constructor(props: WorktreeDescriptorProps) {
     if (!props.taskId && props.taskId !== 0) {
@@ -55,6 +62,8 @@ export class WorktreeDescriptor {
     this.baseBranch = cleanBase;
     this.slug = props.slug !== undefined ? props.slug.trim() : WorktreeDescriptor.extractSlugFromBranch(cleanBranch, cleanTaskId);
     this.isIsolated = props.isIsolated ?? true;
+    const cleanReusedCommit = props.reusedBranchCommit ? props.reusedBranchCommit.trim() : '';
+    this.reusedBranchCommit = cleanReusedCommit ? cleanReusedCommit : undefined;
 
     Object.freeze(this);
   }
@@ -128,7 +137,10 @@ export class WorktreeDescriptor {
       branch: this.branch,
       baseBranch: this.baseBranch,
       slug: this.slug,
-      isIsolated: this.isIsolated
+      isIsolated: this.isIsolated,
+      // Trace metadata: included only when a pre-existing local branch was reused,
+      // so the key set of a non-reusing descriptor stays exactly as before (#264).
+      ...(this.reusedBranchCommit !== undefined ? { reusedBranchCommit: this.reusedBranchCommit } : {})
     };
   }
 
@@ -140,6 +152,10 @@ export class WorktreeDescriptor {
     const pathStr = typeof json.worktreePath === 'string' ? json.worktreePath : '';
     const match = pathStr.match(/\.worktrees[/\\](\d+)(?:[/\\]|$)/);
     const inferredId = match && match[1] ? match[1] : 'adhoc';
+    const reusedCommit =
+      typeof json.reusedBranchCommit === 'string' && json.reusedBranchCommit.trim()
+        ? json.reusedBranchCommit.trim()
+        : undefined;
 
     return new WorktreeDescriptor({
       taskId: json.taskId !== undefined && json.taskId !== null && json.taskId !== '' ? json.taskId : inferredId,
@@ -147,7 +163,8 @@ export class WorktreeDescriptor {
       branch: json.branch,
       baseBranch: json.baseBranch,
       slug: json.slug,
-      isIsolated: json.isIsolated
+      isIsolated: json.isIsolated,
+      reusedBranchCommit: reusedCommit
     });
   }
 }

@@ -55,6 +55,71 @@ function isReuseExistingBranchForm(cmd: string): boolean {
   return cmd.startsWith(`${WORKTREE_ADD_PREFIX}"`);
 }
 
+/**
+ * #264: the branch-existence check in `listBranches` runs `git branch [--format]`
+ * (local only) versus the legacy `git branch -a --format` (local + remote). Both
+ * shapes are accepted by the fake so a remote-inclusive regression would surface
+ * as an assertion failure rather than as an empty branch list.
+ */
+function isBranchListingCommand(cmd: string): boolean {
+  return cmd.startsWith('git branch') && cmd.includes('--format');
+}
+
+/** The local-only listing form (no `-a`): the discriminator #264 hinges on. */
+function isLocalBranchListingCommand(cmd: string): boolean {
+  return isBranchListingCommand(cmd) && !cmd.includes('-a ');
+}
+
+/** A deterministic 40-char sha used to make start-point verification succeed. */
+const VERIFIED_SHA = 'a'.repeat(40);
+
+/**
+ * The start-point verification commands are `git -C "<worktreePath>" rev-parse …`
+ * (`#264`): distinguishing them from `resolveBaseBranch`'s cwd-scoped
+ * `git rev-parse --abbrev-ref HEAD` by a whole-command `includes('rev-parse')`
+ * alone would mis-route that command, so the `git -C ` prefix at the START of
+ * the command decides.
+ */
+function isWorktreeScopedRevParse(cmd: string): boolean {
+  return cmd.startsWith('git -C ') && cmd.includes('rev-parse');
+}
+
+/**
+ * Structural shape of the descriptor `createWorktree` resolves to. The manager
+ * class is `any` at runtime (a plain `require` of the built `dist/` module), so
+ * an explicit structural annotation keeps the strict typecheck honest without
+ * depending on `dist` types.
+ */
+interface CreatedWorktree {
+  readonly taskId: string;
+  readonly branch: string;
+  readonly baseBranch: string;
+  readonly worktreePath: string;
+  readonly slug: string;
+  readonly isIsolated: boolean;
+  readonly reusedBranchCommit?: string;
+}
+
+/**
+ * Captures console.warn emissions for the duration of an async operation
+ * (#264: the reuse / merged-branch / unverifiable-start-point notices are
+ * console-based). console.warn is always restored, including when `fn`
+ * throws, so an intra-capture assertion failure still surfaces normally.
+ */
+async function captureConsoleWarn<T = CreatedWorktree>(fn: () => Promise<T>): Promise<{ warnings: string[]; result: T }> {
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (msg: unknown): void => {
+    warnings.push(String(msg));
+  };
+  try {
+    const result = await fn();
+    return { warnings, result };
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 describe('GitWorktreeManager (Infrastructure Layer)', () => {
   let tmpDir: string;
 
@@ -218,6 +283,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
+        if (isWorktreeScopedRevParse(cmd)) {
+          // Start-point verification (#264): worktree HEAD and base tip agree.
+          return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
+        }
         if (cmd.includes('git branch')) {
           return makeResult(cmd, { stdout: '', combinedOutput: '' });
         }
@@ -263,6 +332,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isWorktreeScopedRevParse(cmd)) {
+          // Start-point verification (#264): worktree HEAD and base tip agree.
+          return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
         }
         if (cmd.includes('git worktree add')) {
           // Simulate git worktree creating the folder
@@ -392,7 +465,11 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
         }
-        if (cmd.includes('git branch -a --format')) {
+        if (isBranchListingCommand(cmd)) {
+          // #264: the widened fake accepts both the legacy remote-inclusive form
+          // (`git branch -a --format`) and the current local-only form
+          // (`git branch  --format`, flag empty). It must NOT be kept green by
+          // re-adding `-a` at the call site instead.
           return makeResult(cmd, { stdout: 'task/87\n', combinedOutput: 'task/87' });
         }
         if (cmd.includes('git worktree list --porcelain')) {
@@ -510,6 +587,287 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       addCommands[0].includes('"task/87"'),
       `expected the existing branch to be checked out, got: ${addCommands[0]}`
     );
+  });
+
+  test('createWorktree ignores a remote-only fix/<id> branch and creates the task branch from the current base (#264)', async () => {
+    // T1 (AC1, AC2, AC6): `origin/fix/264` — the leftover of a merged PR — must NOT
+    // make the worktree reuse arm fire. The existence check lists LOCAL branches
+    // only, so the same-named remote branch falls through to the fresh `-b` create
+    // from the current base branch: the task branch cannot start at the remote's
+    // (stale) commit via git's DWIM rule.
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isBranchListingCommand(cmd)) {
+          if (cmd.includes('-a ')) {
+            // What a remote-inclusive listing (a regression to `-a`) would return:
+            // the merged PR's remote-only branch, prefix-stripped to `fix/264`.
+            return makeResult(cmd, {
+              stdout: 'main\norigin/fix/264\n',
+              combinedOutput: 'main\norigin/fix/264\n'
+            });
+          }
+          // The local-only listing truth: no local fix/264 exists.
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main\n' });
+        }
+        if (isWorktreeScopedRevParse(cmd)) {
+          // Start-point verification: worktree HEAD and base tip agree.
+          return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const descriptor = await manager.createWorktree({
+      taskId: '264',
+      workspaceDir: tmpDir,
+      branchPrefix: 'fix/'
+    });
+
+    // (i) The branch listing was emitted in its LOCAL-ONLY form: no `-a` anywhere.
+    const branchCommands = executedCommands.filter(isBranchListingCommand);
+    assert.strictEqual(branchCommands.length, 1, `expected exactly one branch listing, got: ${JSON.stringify(branchCommands)}`);
+    assert.ok(
+      isLocalBranchListingCommand(branchCommands[0]),
+      `expected the local-only listing form, got: ${branchCommands[0]}`
+    );
+
+    // (ii) The add is the create-branch form, starting from the current base.
+    const addCommands = worktreeAddCommands(executedCommands);
+    assert.ok(
+      addCommands.some(isCreateBranchForm),
+      `expected a \`git worktree add -b\` command, got: ${JSON.stringify(addCommands)}`
+    );
+    assert.ok(
+      addCommands.every((c) => !isReuseExistingBranchForm(c)),
+      `a remote-only branch must not trigger the reuse form, got: ${JSON.stringify(addCommands)}`
+    );
+    const createCommand = addCommands.find(isCreateBranchForm);
+    assert.ok(
+      createCommand?.includes('-b "fix/264"'),
+      `expected the task branch to be created, got: ${createCommand}`
+    );
+    assert.ok(
+      createCommand?.endsWith('"main"'),
+      `expected the current base branch as the start point, got: ${createCommand}`
+    );
+
+    // (iv) The descriptor records the fresh create, not a reuse.
+    assert.strictEqual(descriptor.branch, 'fix/264');
+    assert.strictEqual(descriptor.baseBranch, 'main');
+    assert.strictEqual(descriptor.reusedBranchCommit, undefined);
+
+    // (v) Start-point verification ran and its SHAs agreed (worktree HEAD = base tip).
+    const verifyCommands = executedCommands.filter(isWorktreeScopedRevParse);
+    assert.strictEqual(verifyCommands.length, 2, `expected both verification reads, got: ${JSON.stringify(verifyCommands)}`);
+    assert.ok(verifyCommands.some((c) => c.includes('rev-parse HEAD')));
+    assert.ok(verifyCommands.some((c) => c.includes('rev-parse "main"')));
+  });
+
+  test('createWorktree reports reusing a local fix/<id> branch with its tip commit (#264)', async () => {
+    // T2 (AC3, AC7): a genuinely LOCAL fix/<id> is still reused without -b, and the run
+    // says so — the reuse warning names the branch and the commit it reused, and the
+    // descriptor carries that commit programmatically.
+    const FIXTIP = 'b'.repeat(40);
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isBranchListingCommand(cmd)) {
+          // A LOCAL fix/264 (this same listing command is local-only, so a
+          // remote-only branch could never have been returned by it).
+          return makeResult(cmd, { stdout: 'main\nfix/264\n', combinedOutput: 'main\nfix/264\n' });
+        }
+        if (cmd.includes('rev-parse "fix/264"')) {
+          return makeResult(cmd, { stdout: `${FIXTIP}\n`, combinedOutput: FIXTIP });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const { warnings, result: descriptor } = await captureConsoleWarn<CreatedWorktree>(() =>
+      manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' })
+    );
+
+    // The add is the reuse form.
+    const addCommands = worktreeAddCommands(executedCommands);
+    assert.ok(
+      addCommands.some(isReuseExistingBranchForm),
+      `expected \`git worktree add "<path>" "<branch>"\`, got: ${JSON.stringify(addCommands)}`
+    );
+    assert.ok(
+      addCommands.every((c) => !isCreateBranchForm(c)),
+      `a matching local branch must be reused without -b, got: ${JSON.stringify(addCommands)}`
+    );
+    assert.ok(
+      addCommands.some((c) => c.includes('"fix/264"')),
+      `expected the existing branch to be checked out, got: ${JSON.stringify(addCommands)}`
+    );
+
+    // The run reports the reuse, naming branch AND commit.
+    const reuseWarning = warnings.find((w) => w.includes('reusing existing local branch "fix/264"'));
+    assert.ok(
+      reuseWarning && reuseWarning.includes(FIXTIP),
+      `the reuse warning must name the reused commit, got: ${JSON.stringify(warnings)}`
+    );
+
+    // The descriptor exposes the reuse programmatically.
+    assert.strictEqual(descriptor.branch, 'fix/264');
+    assert.strictEqual(descriptor.reusedBranchCommit, FIXTIP);
+
+    // No start-point HEAD assertion on the reuse arm: the verification is scoped to
+    // the fresh-create path.
+    assert.strictEqual(
+      executedCommands.some(isWorktreeScopedRevParse),
+      false,
+      'verification must not run on the reuse arm'
+    );
+  });
+
+  test('createWorktree throws WorktreeCreationError when the fresh worktree starts off the base tip (#264)', async () => {
+    // T3 (AC5): a start-point MISMATCH is a hard error carrying both SHAs — never a
+    // silent success (this is the stale-start defect class, #264).
+    const ACTUAL_SHA = 'c'.repeat(40);
+    const EXPECTED_SHA = 'd'.repeat(40);
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isWorktreeScopedRevParse(cmd)) {
+          if (cmd.includes('rev-parse HEAD')) {
+            return makeResult(cmd, { stdout: `${ACTUAL_SHA}\n`, combinedOutput: ACTUAL_SHA });
+          }
+          return makeResult(cmd, { stdout: `${EXPECTED_SHA}\n`, combinedOutput: EXPECTED_SHA });
+        }
+        if (isBranchListingCommand(cmd)) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    let caught: unknown = null;
+    try {
+      await manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught instanceof WorktreeCreationError, `expected a WorktreeCreationError, got: ${caught}`);
+    const message = (caught as Error).message;
+    assert.ok(message.includes('did not start from the base branch'), `expected a stale-start explanation, got: ${message}`);
+    assert.ok(message.includes(EXPECTED_SHA), `expected expectedSha in the message, got: ${message}`);
+    assert.ok(message.includes(ACTUAL_SHA), `expected actualSha in the message, got: ${message}`);
+    assert.ok(message.includes('reflog show'), `expected the DWIM-origin pointer, got: ${message}`);
+
+    const details = (caught as { details?: Record<string, unknown> }).details;
+    assert.strictEqual(details?.expectedSha, EXPECTED_SHA);
+    assert.strictEqual(details?.actualSha, ACTUAL_SHA);
+  });
+
+  test('createWorktree warns but proceeds when the worktree start point cannot be verified (#264)', async () => {
+    // T4: an UNREADABLE start point (either rev-parse fails or comes back empty) is not
+    // a mismatch — loud-but-lenient: warn, and let the successfully created worktree
+    // through.
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isWorktreeScopedRevParse(cmd)) {
+          if (cmd.includes('rev-parse HEAD')) {
+            // The worktree HEAD read fails.
+            return makeResult(cmd, { exitCode: 1, stderr: 'fatal: invalid object', combinedOutput: 'fatal' });
+          }
+          return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
+        }
+        if (isBranchListingCommand(cmd)) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main\n' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const { warnings, result: descriptor } = await captureConsoleWarn<CreatedWorktree>(() =>
+      manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' })
+    );
+
+    assert.ok(descriptor, 'expected a descriptor despite the unverifiable start point');
+    assert.strictEqual(descriptor.branch, 'fix/264');
+
+    const warning = warnings.find((w) => w.includes('unable to verify worktree start point'));
+    assert.ok(warning, `expected an unverifiable-start-point warning, got: ${JSON.stringify(warnings)}`);
+  });
+
+  test('createWorktree warns non-blocking when a reused local branch is already merged into the base (#264)', async () => {
+    // T5 (D4): a once-merged local branch is still reusable (the policy decision is a
+    // follow-up), but the run surfaces the fact explicitly and does NOT fail.
+    const FIXTIP = 'b'.repeat(40);
+    const MAIN_SHA = 'e'.repeat(40);
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isBranchListingCommand(cmd)) {
+          return makeResult(cmd, { stdout: 'main\nfix/264\n', combinedOutput: 'main\nfix/264\n' });
+        }
+        if (cmd.includes('rev-parse "fix/264"')) {
+          return makeResult(cmd, { stdout: `${FIXTIP}\n`, combinedOutput: FIXTIP });
+        }
+        if (cmd.includes('rev-parse "main^{commit}"')) {
+          return makeResult(cmd, { stdout: `${MAIN_SHA}\n`, combinedOutput: MAIN_SHA });
+        }
+        if (cmd.includes('merge-base --is-ancestor')) {
+          // Ancestor check exits 0: the branch IS merged into the base.
+          return makeResult(cmd, { stdout: '', combinedOutput: '' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const { warnings, result: descriptor } = await captureConsoleWarn<CreatedWorktree>(() =>
+      manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' })
+    );
+
+    assert.ok(descriptor, 'expected a descriptor despite the merged-branch warning');
+    assert.strictEqual(descriptor.branch, 'fix/264');
+
+    const mergedWarning = warnings.find((w) =>
+      w.includes('already merged into base "main"') && w.includes('recreating it from the base branch is recommended')
+    );
+    assert.ok(mergedWarning, `expected the merged-branch policy warning, got: ${JSON.stringify(warnings)}`);
+
+    const reuseWarning = warnings.find((w) => w.includes('reusing existing local branch "fix/264"'));
+    assert.ok(reuseWarning, `expected the reuse notice alongside the policy warning, got: ${JSON.stringify(warnings)}`);
   });
 
   test('createWorktree idempotently returns existing descriptor when branch is already checked out', async () => {
@@ -1156,6 +1514,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         }
         if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
           return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isWorktreeScopedRevParse(cmd)) {
+          // Start-point verification (#264): worktree HEAD and base tip agree.
+          return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
         }
         if (cmd.includes('git worktree add')) {
           fs.mkdirSync(wtPath, { recursive: true });
