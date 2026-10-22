@@ -90,6 +90,8 @@ import {
   NOTE_IMPLEMENTATION_PARK_UNCHANGED,
   NOTE_IMPLEMENTATION_PARK_DISPATCH,
   NOTE_IMPLEMENTATION_PARK_NEXT,
+  NOTE_IMPLEMENTATION_UNMEASURABLE,
+  NOTE_IMPLEMENTATION_STALE_WORKTREE,
   NOTE_IMPLEMENTATION_PLAN_EMPTY,
   NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT,
   // Issue #259: the VACUOUS refusal messages live in the domain. The CLI
@@ -2409,8 +2411,37 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // shape cannot drift.
           if (result.implementationHalted) {
             const baseRef = result.implementationDiff?.baseRef ?? 'main';
+            const measurementError = result.implementationDiff?.measurementError ?? null;
+            const baseAheadCommits = result.implementationDiff?.baseAheadCommits ?? 0;
+            const mergeBase = result.implementationDiff?.mergeBase ?? null;
+
             console.error(`⚠ ${NOTE_IMPLEMENTATION_EVIDENCE_MISSING}.`);
-            console.error(`   ${NOTE_IMPLEMENTATION_PARK_UNCHANGED.replace('{baseRef}', baseRef)}`);
+            if (measurementError !== null) {
+              // Issue #263: the branch's own changes could not be measured, so
+              // "the working tree is unchanged" would be a claim the probe
+              // cannot support. Say what actually happened instead.
+              console.error(
+                `   ${NOTE_IMPLEMENTATION_UNMEASURABLE.replace('{baseRef}', baseRef).replace(
+                  '{error}',
+                  measurementError
+                )}`
+              );
+            } else {
+              console.error(`   ${NOTE_IMPLEMENTATION_PARK_UNCHANGED.replace('{baseRef}', baseRef)}`);
+              if (baseAheadCommits > 0 && mergeBase !== null) {
+                // Issue #263: staleness is advisory — the corrected measurement
+                // is the enforcement — but the operator should know that the
+                // build about to be gated is behind the base branch.
+                console.error(
+                  `   ⚠ ${NOTE_IMPLEMENTATION_STALE_WORKTREE.replace(
+                    '{ahead}',
+                    String(baseAheadCommits)
+                  )
+                    .replace('{baseRef}', baseRef)
+                    .replace('{mergeBase}', mergeBase.slice(0, 7))}`
+                );
+              }
+            }
             console.error(`   ${NOTE_IMPLEMENTATION_PARK_DISPATCH}`);
 
             // Issue #259 (S10): the fast-path never dispatches the PLANNER
@@ -2420,7 +2451,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             // the ordinary continuation line (printing both would tell the
             // operator to dispatch an implementer with nothing to do) and the
             // payload is suppressed entirely.
-            if (result.implementationPlanEmpty === true) {
+            //
+            // Issue #263: the plan-empty advisory is tied to the MEASURED case
+            // only — when the tree could not be measured, the first problem is
+            // that the tree cannot be certified.
+            if (measurementError === null && result.implementationPlanEmpty === true) {
               const planPath = result.implementationResult?.planPath ?? '(the scaffolded plan)';
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY.replace('{planPath}', planPath)}`);
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);

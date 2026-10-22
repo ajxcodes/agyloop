@@ -69,8 +69,11 @@ import {
   TOKEN_FAILING_ASSERTION,
   MSG_COMMAND_FAILED_NO_OUTPUT,
   MSG_GATE_VACUOUS,
+  MSG_GATE_UNMEASURABLE,
   LABEL_IMPLEMENTATION_EVIDENCE,
   LABEL_IMPLEMENTATION_EVIDENCE_LINE,
+  LABEL_BASE_FRESHNESS,
+  LABEL_BASE_FRESHNESS_LINE,
   HEADER_QUALITY_GATE_REPORT,
   LABEL_OVERALL_VERDICT,
   InvalidTransitionError,
@@ -206,8 +209,16 @@ export class RunQualityGateUseCase {
     // directory). There is nothing to certify against, so the gate keeps its
     // pre-existing behaviour instead of inventing a refusal.
     const injectedDiff = params.implementationDiff ?? null;
-    if (injectedDiff && injectedDiff.probeError === null && !injectedDiff.hasChanges) {
-      return this.buildVacuousResult(sm, injectedDiff);
+    // Issue #263: only a MEASURED branch diff can support a branch verdict. A
+    // `measurementError` means the branch's own changes could not be measured
+    // (no merge-base, the diff failed) — that is not "no changes", so the gate
+    // must not report VACUOUS on it.
+    const measuredDiff =
+      injectedDiff && injectedDiff.probeError === null && (injectedDiff.measurementError ?? null) === null
+        ? injectedDiff
+        : null;
+    if (measuredDiff && !measuredDiff.hasChanges) {
+      return this.buildVacuousResult(sm, measuredDiff);
     }
 
     // 2. Enforce lifecycle transition rules
@@ -423,13 +434,13 @@ export class RunQualityGateUseCase {
     });
 
     // 8b. Issue #259: make "the suite passed" and "the suite passed ON A TREE
-    // THAT CONTAINS THE IMPLEMENTATION" two different statements. The line is
-    // purely additive: when no verdict was injected (legacy callers) the
-    // report is byte-identical to what it always was.
-    const summaryReport =
-      injectedDiff && injectedDiff.hasChanges
-        ? this.withImplementationEvidence(rawSummaryReport, injectedDiff)
-        : rawSummaryReport;
+    // THAT CONTAINS THE IMPLEMENTATION" two different statements. Issue #263
+    // adds the base-freshness advisory and the unmeasurable-branch warning to
+    // the same block. The block is purely additive: when there is nothing to
+    // add, the report is byte-identical to what it always was.
+    const summaryReport = injectedDiff
+      ? this.withImplementationEvidence(rawSummaryReport, injectedDiff)
+      : rawSummaryReport;
 
     return {
       passed: allPassed,
@@ -471,13 +482,17 @@ export class RunQualityGateUseCase {
     implementationDiff: ImplementationDiff
   ): QualityGateRunResult {
     const baseRef = implementationDiff.baseRef;
-    const changedFileCount =
-      implementationDiff.trackedChangedFiles.length + implementationDiff.untrackedFiles.length;
 
     let summaryReport = `${HEADER_QUALITY_GATE_REPORT}\n`;
     summaryReport += `${LABEL_OVERALL_VERDICT.padEnd(16)}: ${STATUS_VACUOUS}\n`;
     summaryReport += `  ⚠ ${MSG_GATE_VACUOUS.replace('{baseRef}', baseRef)}\n`;
-    summaryReport += `  ${LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace('{label}', LABEL_IMPLEMENTATION_EVIDENCE).replace('{count}', String(changedFileCount)).replace('{baseRef}', baseRef)}`;
+    // The evidence line is always part of a VACUOUS report (it states the
+    // measured count of 0); the freshness advisory follows it when the base
+    // branch has advanced (issue #263).
+    summaryReport += this.buildEvidenceLines(implementationDiff, {
+      evidenceIndent: '  ',
+      alwaysIncludeEvidenceLine: true
+    }).join('\n');
 
     return {
       passed: false,
@@ -501,35 +516,85 @@ export class RunQualityGateUseCase {
   }
 
   /**
-   * Inserts the implementation-evidence line into a gate report that DID run:
-   * `Implementation : 3 file(s) changed relative to 'main'`.
-   *
-   * The line is placed directly under the verdict so the reader sees, in one
+   * Inserts the implementation-evidence block into a gate report that DID run.
+   * The block sits directly under the verdict so the reader sees, in one
    * glance, that the suite was executed against a tree that actually contains
-   * the implementation.
+   * the implementation — and, when the base branch has advanced, how far
+   * behind that tree is (issue #263).
+   *
+   * Returns the report unchanged when the block is empty, so a measured,
+   * up-to-date tree produces exactly the pre-#263 text.
    */
   private withImplementationEvidence(
     summaryReport: string,
     implementationDiff: ImplementationDiff
   ): string {
-    const changedFileCount =
-      implementationDiff.trackedChangedFiles.length + implementationDiff.untrackedFiles.length;
-    const evidenceLine = LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace(
-      '{label}',
-      LABEL_IMPLEMENTATION_EVIDENCE
-    )
-      .replace('{count}', String(changedFileCount))
-      .replace('{baseRef}', implementationDiff.baseRef);
+    const addedLines = this.buildEvidenceLines(implementationDiff);
+    if (addedLines.length === 0) {
+      return summaryReport;
+    }
 
     const lines = summaryReport.split('\n');
     const verdictIndex = lines.findIndex((line) => line.startsWith(LABEL_OVERALL_VERDICT));
 
     if (verdictIndex === -1) {
-      return `${summaryReport}\n${evidenceLine}`;
+      return `${summaryReport}\n${addedLines.join('\n')}`;
     }
 
-    lines.splice(verdictIndex + 1, 0, evidenceLine);
+    lines.splice(verdictIndex + 1, 0, ...addedLines);
     return lines.join('\n');
+  }
+
+  /**
+   * Builds the evidence block shared by the running-gate report and the
+   * VACUOUS report (so the two cannot drift):
+   *
+   *   1. `Implementation : N file(s) changed relative to '<baseRef>'`;
+   *   2. `Base freshness : …` when the base ref has advanced since the branch
+   *      point (advisory — never blocks a pass);
+   *   3. the `⚠ Could not measure …` warning when the branch diff is
+   *      unmeasurable (issue #263).
+   *
+   * The count is computed from the same two arrays the probe measured, so the
+   * printed number and the measured number cannot disagree (AC5).
+   */
+  private buildEvidenceLines(
+    implementationDiff: ImplementationDiff,
+    options: { evidenceIndent?: string; alwaysIncludeEvidenceLine?: boolean } = {}
+  ): string[] {
+    const lines: string[] = [];
+    const indent = options.evidenceIndent ?? '';
+
+    if (options.alwaysIncludeEvidenceLine || implementationDiff.hasChanges) {
+      const changedFileCount =
+        implementationDiff.trackedChangedFiles.length + implementationDiff.untrackedFiles.length;
+      lines.push(
+        `${indent}${LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace('{label}', LABEL_IMPLEMENTATION_EVIDENCE)
+          .replace('{count}', String(changedFileCount))
+          .replace('{baseRef}', implementationDiff.baseRef)}`
+      );
+    }
+
+    const baseAheadCommits = implementationDiff.baseAheadCommits ?? 0;
+    const mergeBase = implementationDiff.mergeBase ?? null;
+    if (baseAheadCommits > 0 && mergeBase !== null) {
+      // The LOCAL ref only (no `git fetch`): a base that moved only on the
+      // remote is not detected.
+      lines.push(
+        `  ${LABEL_BASE_FRESHNESS_LINE.replace('{label}', LABEL_BASE_FRESHNESS)
+          .replace('{ahead}', String(baseAheadCommits))
+          .replace('{baseRef}', implementationDiff.baseRef)
+          .replace('{own}', String(implementationDiff.ownCommits ?? 0))
+          .replace('{mergeBase}', mergeBase.slice(0, 7))}`
+      );
+    }
+
+    const measurementError = implementationDiff.measurementError ?? null;
+    if (measurementError !== null) {
+      lines.push(`  ⚠ ${MSG_GATE_UNMEASURABLE.replace('{error}', measurementError)}`);
+    }
+
+    return lines;
   }
 
   private resolveCommands(

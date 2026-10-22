@@ -12,27 +12,53 @@
  * "does the working tree contain an implementation?". It is deliberately a
  * *probe*, not a policy: it reports what it found and never blocks.
  *
+ * Issue #263: the branch-relative signal measures the **merge-base** (the
+ * branch point), never the base ref's current tip. `git diff <baseRef>` is a
+ * two-dot diff: in a worktree branched at X whose base has since advanced to
+ * Y, it reports the base's own new commits — reversed — as an implementation.
+ * The branch point is what "what this branch added" means, and it covers both
+ * committed and uncommitted tracked changes in one measurement.
+ *
+ * The probe distinguishes two failure states:
+ * - `probeError`   — the tree could not be READ (`git status` failed);
+ * - `measurementError` — the branch's own changes could not be MEASURED
+ *   (no merge-base, the diff failed). Never fabricated into "0 changes".
+ *
  * Strict Hexagonal Architecture: zero direct I/O — the git calls go through
  * `CommandExecutorPort`.
  */
 
-import { isImplementationEvidencePath } from '../domain';
-import { CommandExecutorPort } from '../ports';
+import { isImplementationEvidencePath, shellQuote } from '../domain';
+import { CommandExecutionResult, CommandExecutorPort } from '../ports';
 
 /**
  * The verdict of the implementation-evidence probe.
  */
 export interface ImplementationDiff {
-  /** True when at least one non-noise change exists relative to the base branch. */
+  /** True when at least one non-noise change exists relative to the branch point. */
   readonly hasChanges: boolean;
-  /** The base reference the comparison was made against ('main', 'HEAD (fallback)', …). */
+  /** The base reference the measurement was made against ('main', …). */
   readonly baseRef: string;
-  /** Tracked modifications relative to the base branch (git diff --name-only). */
+  /** Tracked modifications relative to the branch point (committed + uncommitted). */
   readonly trackedChangedFiles: readonly string[];
   /** Untracked, non-ignored files that survived the noise filter. */
   readonly untrackedFiles: readonly string[];
   /** Human-readable reason the probe could not produce a verdict (null = ok). */
   readonly probeError: string | null;
+  /**
+   * The branch's own changes could not be MEASURED: the merge-base could not
+   * be resolved, or the merge-base-relative diff failed. This is NOT the same
+   * fact as `probeError` — the tree was readable, but the branch-relative
+   * comparison is unavailable, so no "unchanged relative to the base" claim
+   * may be made. `undefined` is identical to `null` (unknown).
+   */
+  readonly measurementError?: string | null;
+  /** The resolved branch point (full SHA); null when unresolved. */
+  readonly mergeBase?: string | null;
+  /** Commits on the base ref since the branch point (0 = up to date); null = unknown. */
+  readonly baseAheadCommits?: number | null;
+  /** Commits on HEAD since the branch point (the branch's own work); null = unknown. */
+  readonly ownCommits?: number | null;
   /** The raw probe output, for the operator-facing diagnostic block. */
   readonly rawStatus: string;
 }
@@ -40,8 +66,48 @@ export interface ImplementationDiff {
 /** The reference used when the caller supplies none. */
 const DEFAULT_BASE_REF = 'main';
 
-/** The reported reference when the requested base ref could not be resolved. */
-const HEAD_FALLBACK_REF = 'HEAD (fallback)';
+/**
+ * A resolved branch point must be a commit SHA. An empty or non-SHA value is
+ * NEVER interpolated: `git diff --name-only  -- .` (the empty interpolation)
+ * SUCCEEDS and silently compares the index against the working tree.
+ */
+const MERGE_BASE_SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
+
+/** The result of measuring the branch's own changes against its branch point. */
+interface BranchMeasurement {
+  /** Tracked paths that differ between the branch point and the working tree. */
+  files: string[];
+  /** The resolved branch point SHA, or null when it could not be resolved. */
+  mergeBase: string | null;
+  /** Commits on the base ref since the branch point; null = unknown. */
+  baseAheadCommits: number | null;
+  /** Commits on HEAD since the branch point; null = unknown. */
+  ownCommits: number | null;
+  /** Human-readable reason the branch diff could not be measured (null = ok). */
+  error: string | null;
+}
+
+/** Returns the first line of a command's stdout, or '' when there is none. */
+function firstLine(stdout: string | undefined): string {
+  if (typeof stdout !== 'string') {
+    return '';
+  }
+  return stdout.split('\n')[0].replace(/\r$/, '');
+}
+
+/**
+ * Parses `git rev-list --count` output.
+ *
+ * A count that cannot be read is `null` (unknown) — never `0`, which would
+ * claim the branch is up to date on absent information.
+ */
+function parseCount(stdout: string | undefined): number | null {
+  const trimmed = typeof stdout === 'string' ? stdout.trim() : '';
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  return Number(trimmed);
+}
 
 /**
  * Normalizes a path as `git status --porcelain` reports it:
@@ -152,75 +218,77 @@ export class DetectImplementationDiffUseCase {
       }
     }
 
-    // Probe 2 — the supplementary signal: work COMMITTED on the task branch.
-    const trackedFromDiff = await this.collectCommittedChanges(workspaceDir, requestedBaseRef);
+    // Probe 2 — the branch-relative signal: the branch's own changes,
+    // committed AND uncommitted, measured from the BRANCH POINT (issue #263).
+    const measurement = await this.measureBranchChanges(workspaceDir, requestedBaseRef);
 
-    const trackedChangedFiles = this.mergePaths(trackedFromStatus, trackedFromDiff.files);
+    const trackedChangedFiles = this.mergePaths(trackedFromStatus, measurement.files);
     const untracked = this.mergePaths([], untrackedFiles);
 
     return {
       hasChanges: trackedChangedFiles.length > 0 || untracked.length > 0,
-      baseRef: trackedFromDiff.baseRef,
+      // Never a fabricated label: when the branch diff is unmeasurable the
+      // requested ref is still the truth about what was asked for, and
+      // `measurementError` explains why it could not be measured.
+      baseRef: requestedBaseRef,
       trackedChangedFiles,
       untrackedFiles: untracked,
       probeError: null,
+      measurementError: measurement.error,
+      mergeBase: measurement.mergeBase,
+      baseAheadCommits: measurement.baseAheadCommits,
+      ownCommits: measurement.ownCommits,
       rawStatus
     };
   }
 
   /**
-   * Runs `git diff --name-only <baseRef> -- .`.
+   * Measures the branch's own changes against its branch point (issue #263).
    *
-   * A non-zero exit is NOT an error: the base ref may simply not exist in this
-   * repository (a `master`-defaulted repo asked for `main`). A second attempt
-   * with `HEAD` then keeps the probe useful, and the effective reference is
-   * reported back to the caller.
+   * The command sequence is fixed:
+   *   1. `git merge-base HEAD <baseRef>`       → the branch point (validated SHA)
+   *   2. `git diff --name-only <sha> -- .`     → committed + uncommitted tracked
+   *   3. `git rev-list --count <sha>..HEAD`    → ownCommits
+   *   4. `git rev-list --count <sha>..<baseRef>` → baseAheadCommits
+   *
+   * Steps 3-4 are supplementary: a failure there is an unknown count, not a
+   * measurement error. Step 1 failing means the branch diff CANNOT be
+   * measured — steps 2-4 are never attempted, because no honest comparison
+   * exists without a branch point.
    */
-  private async collectCommittedChanges(
+  private async measureBranchChanges(
     workspaceDir: string,
     baseRef: string
-  ): Promise<{ baseRef: string; files: string[] }> {
-    const requested = await this.runDiff(workspaceDir, baseRef);
-    if (requested !== null) {
-      return { baseRef, files: requested };
+  ): Promise<BranchMeasurement> {
+    const quoted = shellQuote(baseRef);
+    const mergeBaseCommand = `git merge-base HEAD ${quoted}`;
+    const mergeBaseResult = await this.executeGit(mergeBaseCommand, workspaceDir);
+    const mergeBase = mergeBaseResult ? firstLine(mergeBaseResult.stdout).trim() : '';
+
+    if (!MERGE_BASE_SHA_PATTERN.test(mergeBase)) {
+      return {
+        files: [],
+        mergeBase: null,
+        baseAheadCommits: null,
+        ownCommits: null,
+        error: `${mergeBaseCommand} could not resolve the branch point for '${baseRef}'`
+      };
     }
 
-    const fallback = await this.runDiff(workspaceDir, 'HEAD');
-    if (fallback !== null) {
-      return { baseRef: HEAD_FALLBACK_REF, files: fallback };
+    const diffCommand = `git diff --name-only ${mergeBase} -- .`;
+    const diffResult = await this.executeGit(diffCommand, workspaceDir);
+    if (!diffResult) {
+      return {
+        files: [],
+        mergeBase,
+        baseAheadCommits: null,
+        ownCommits: null,
+        error: `${diffCommand} could not measure the branch's own changes`
+      };
     }
 
-    // Neither reference resolved: no signal, and no error either.
-    return { baseRef, files: [] };
-  }
-
-  /**
-   * Runs one `git diff --name-only` probe. Returns null when the reference
-   * could not be resolved (non-zero exit) — an expected outcome, not an error:
-   * the caller retries against `HEAD`.
-   */
-  private async runDiff(workspaceDir: string, baseRef: string): Promise<string[] | null> {
-    let result;
-    try {
-      result = await this.commandExecutor.execute(
-        `git diff --name-only ${baseRef} -- .`,
-        { cwd: workspaceDir }
-      );
-    } catch {
-      // The probe could not run at all: handled exactly like an unresolved reference.
-      return null;
-    }
-
-    if (!result || result.exitCode !== 0) {
-      // Not an error: the base ref may not exist in this repository. The caller
-      // falls back to HEAD rather than failing hard.
-      return null;
-    }
-
-    const stdout = typeof result.stdout === 'string' ? result.stdout : '';
     const files: string[] = [];
-
-    for (const rawLine of stdout.split('\n')) {
+    for (const rawLine of diffResult.stdout.split('\n')) {
       const line = rawLine.replace(/\r$/, '').trim();
       if (!isDiffPathLine(line)) {
         continue;
@@ -231,7 +299,44 @@ export class DetectImplementationDiffUseCase {
       }
     }
 
-    return files;
+    const ownCommitsResult = await this.executeGit(
+      `git rev-list --count ${mergeBase}..HEAD`,
+      workspaceDir
+    );
+    const baseAheadResult = await this.executeGit(
+      `git rev-list --count ${mergeBase}..${quoted}`,
+      workspaceDir
+    );
+
+    return {
+      files,
+      mergeBase,
+      ownCommits: ownCommitsResult ? parseCount(ownCommitsResult.stdout) : null,
+      baseAheadCommits: baseAheadResult ? parseCount(baseAheadResult.stdout) : null,
+      error: null
+    };
+  }
+
+  /**
+   * Runs one git command. Returns null when the executor threw OR the command
+   * exited non-zero — the caller decides whether that is an expected outcome.
+   */
+  private async executeGit(
+    command: string,
+    workspaceDir: string
+  ): Promise<CommandExecutionResult | null> {
+    let result: CommandExecutionResult;
+    try {
+      result = await this.commandExecutor.execute(command, { cwd: workspaceDir });
+    } catch {
+      return null;
+    }
+
+    if (!result || result.exitCode !== 0) {
+      return null;
+    }
+
+    return result;
   }
 
   /** Merges two path lists, preserving order and dropping duplicates. */
@@ -258,6 +363,10 @@ export class DetectImplementationDiffUseCase {
       trackedChangedFiles: [],
       untrackedFiles: [],
       probeError,
+      measurementError: null,
+      mergeBase: null,
+      baseAheadCommits: null,
+      ownCommits: null,
       rawStatus
     };
   }

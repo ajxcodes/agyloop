@@ -40,7 +40,9 @@ const {
   HEADER_QUALITY_GATE_REPORT,
   LABEL_OVERALL_VERDICT,
   LABEL_IMPLEMENTATION_EVIDENCE,
-  LABEL_IMPLEMENTATION_EVIDENCE_LINE
+  LABEL_IMPLEMENTATION_EVIDENCE_LINE,
+  LABEL_BASE_FRESHNESS,
+  LABEL_BASE_FRESHNESS_LINE
 } = require('../../dist/domain');
 
 const {
@@ -1838,6 +1840,15 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         .replace('{baseRef}', baseRef);
     }
 
+    /** The `Base freshness : …` advisory line (issue #263). */
+    function freshnessLine(ahead: number, own: number, mergeBase: string, baseRef = 'main'): string {
+      return LABEL_BASE_FRESHNESS_LINE.replace('{label}', LABEL_BASE_FRESHNESS)
+        .replace('{ahead}', String(ahead))
+        .replace('{baseRef}', baseRef)
+        .replace('{own}', String(own))
+        .replace('{mergeBase}', mergeBase.slice(0, 7));
+    }
+
     /** Seeds a checkpoint at IMPLEMENT — the IMPLEMENT -> QUALITY_GATE boundary. */
     function seedImplementCheckpoint(mode: string, gateRetries = 0): void {
       const sm = StateMachine.createInitial({ mode, issue: 32, worktree: mockWorktree });
@@ -2053,6 +2064,67 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         control.pausedAtGate,
         GATE_CIRCUIT_BREAKER,
         'a genuine gate failure at the retry limit must still trip the breaker'
+      );
+    });
+
+    test('L2 (AC5): the lifecycle gate report prints exactly the merge-base-relative count the probe measured', async () => {
+      seedImplementCheckpoint(MODE_STANDARD);
+      const verdict = {
+        ...changedVerdict('main'),
+        trackedChangedFiles: ['src/a.ts', 'src/b.ts'],
+        untrackedFiles: ['src/c.ts'],
+        measurementError: null,
+        mergeBase: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+        baseAheadCommits: 0,
+        ownCommits: 1
+      };
+      const lifecycle = buildLifecycle(verdict);
+
+      const result = await lifecycle.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.ok(result.qualityGateResult);
+      assert.ok(
+        result.qualityGateResult.summaryReport.includes(evidenceLine(3, 'main')),
+        `2 tracked + 1 untracked must print as 3, got:\n${result.qualityGateResult.summaryReport}`
+      );
+      assert.ok(
+        !result.qualityGateResult.summaryReport.includes(LABEL_BASE_FRESHNESS),
+        `an up-to-date branch must not print a freshness line, got:\n${result.qualityGateResult.summaryReport}`
+      );
+    });
+
+    test('L3 (AC6): an advanced base branch makes the lifecycle gate report carry the freshness numbers without blocking the run', async () => {
+      seedImplementCheckpoint(MODE_STANDARD);
+      const verdict = {
+        ...changedVerdict('main'),
+        measurementError: null,
+        mergeBase: '1823dbf0123456789abcdef0123456789abcdef0',
+        baseAheadCommits: 2,
+        ownCommits: 1
+      };
+      const lifecycle = buildLifecycle(verdict);
+
+      const result = await lifecycle.execute({
+        mode: MODE_STANDARD,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.ok(result.qualityGateResult);
+      assert.ok(
+        result.qualityGateResult.summaryReport.includes(
+          freshnessLine(2, 1, '1823dbf0123456789abcdef0123456789abcdef0')
+        ),
+        `the freshness line must carry the exact numbers, got:\n${result.qualityGateResult.summaryReport}`
+      );
+      assert.strictEqual(
+        result.currentStage,
+        STAGE_COMMIT,
+        'staleness is advisory — the run must still advance'
       );
     });
   });

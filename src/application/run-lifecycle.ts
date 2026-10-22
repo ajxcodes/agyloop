@@ -82,6 +82,7 @@ import {
   NOTE_PAUSED_CIRCUIT_BREAKER_GATE,
   NOTE_YOLO_NO_IMPLEMENTATION,
   NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN,
+  NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE,
   isPlanContentSubstantive,
   NOTE_GATES_VACUOUS_STANDARD,
   NOTE_GATES_VACUOUS_YOLO,
@@ -1013,6 +1014,13 @@ export class RunLifecycleUseCase {
       // plan is a false instruction. An ABSENT implementation result is not a
       // verdict (the same rule as `probeError`): never refuse on absent
       // information.
+      //
+      // Issue #263: when the branch's own changes could not be MEASURED, the
+      // park must say that — never "the working tree is unchanged relative to
+      // <base>", which would be a claim the probe cannot support. The
+      // plan-empty advisory belongs to the measured case only; the operator's
+      // first problem is that the tree cannot be certified.
+      const unmeasurable = (implementationVerdict.measurementError ?? null) !== null;
       const planIsEmpty = implResult ? !isPlanContentSubstantive(implResult.planContent) : false;
       const planPath = implResult?.planPath || '(the scaffolded plan)';
 
@@ -1028,13 +1036,18 @@ export class RunLifecycleUseCase {
         worktree,
         implementationHalted: true,
         implementationDiff,
-        implementationPlanEmpty: planIsEmpty,
-        message: planIsEmpty
-          ? NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN.replace('{baseRef}', implementationVerdict.baseRef).replace(
-              '{planPath}',
-              planPath
-            )
-          : NOTE_YOLO_NO_IMPLEMENTATION.replace('{baseRef}', implementationVerdict.baseRef)
+        implementationPlanEmpty: unmeasurable ? false : planIsEmpty,
+        message: unmeasurable
+          ? NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE.replace(
+              '{baseRef}',
+              implementationVerdict.baseRef
+            ).replace('{error}', implementationVerdict.measurementError!)
+          : planIsEmpty
+            ? NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN.replace('{baseRef}', implementationVerdict.baseRef).replace(
+                '{planPath}',
+                planPath
+              )
+            : NOTE_YOLO_NO_IMPLEMENTATION.replace('{baseRef}', implementationVerdict.baseRef)
       };
     }
 

@@ -38,7 +38,8 @@ const {
   WorktreeDescriptor,
   AiReviewReport,
   NOTE_YOLO_NO_IMPLEMENTATION,
-  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN
+  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN,
+  NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE
 } = require('../../dist/domain');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
@@ -179,14 +180,22 @@ class MockGitHubGateway {
 }
 
 /**
- * The shared command executor. `git status --porcelain` and
- * `git diff --name-only <ref> -- .` are the probe's two commands; everything
- * else (the gate commands) succeeds.
+ * The shared command executor. It answers the real probe's five commands
+ * (issue #263): `git status --porcelain`, `git merge-base HEAD <ref>`,
+ * `git diff --name-only <sha> -- .`, and the two `git rev-list --count`
+ * queries — everything else (the gate commands) succeeds.
+ *
+ * Without a resolvable merge-base the REAL probe (Y6) would report a
+ * `measurementError` by accident, so the branch-point routes must be real.
  */
 class MockCommandExecutor implements CommandExecutorPort {
   public executedCommands: string[] = [];
   public statusStdout = '';
   public diffStdout = '';
+  /** A valid 40-hex branch point. */
+  public mergeBaseSha = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
+  public ownCommitsStdout = '0';
+  public baseAheadCommitsStdout = '0';
 
   public async execute(
     command: string,
@@ -198,8 +207,20 @@ class MockCommandExecutor implements CommandExecutorPort {
       return this.result(command, this.statusStdout);
     }
 
+    if (command.startsWith('git merge-base HEAD ')) {
+      return this.result(command, `${this.mergeBaseSha}\n`);
+    }
+
     if (command.startsWith('git diff --name-only')) {
       return this.result(command, this.diffStdout);
+    }
+
+    if (command.startsWith('git rev-list --count') && command.endsWith('..HEAD')) {
+      return this.result(command, `${this.ownCommitsStdout}\n`);
+    }
+
+    if (command.startsWith('git rev-list --count')) {
+      return this.result(command, `${this.baseAheadCommitsStdout}\n`);
     }
 
     return this.result(command, 'All 10 tests passing\nBuild completed successfully');
@@ -730,5 +751,75 @@ describe('YOLO implementation park — the empty-plan guard (issue #259, S10)', 
     assert.strictEqual(directive.actionType, 'subagent');
     assert.strictEqual(directive.role, 'implementer');
     assert.ok(directive.invocationPayload, 'the directive must carry an invocation payload');
+  });
+
+  test('L1 (AC6): a stale, unimplemented worktree parks and surfaces baseAheadCommits for the CLI advisory', async () => {
+    const staleVerdict = {
+      ...unchangedVerdict('main'),
+      measurementError: null,
+      mergeBase: '1823dbf0123456789abcdef0123456789abcdef0',
+      baseAheadCommits: 2,
+      ownCommits: 0
+    };
+    const harness = buildHarness(staleVerdict, () => ({
+      runQualityGateUseCase: gateMustNotRun().useCase
+    }));
+
+    const result = await harness.lifecycle.execute({
+      mode: MODE_YOLO,
+      issue: 32,
+      workspaceDir: '/mock/workspace'
+    });
+
+    assert.strictEqual(result.implementationHalted, true);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.qualityGateResult, undefined, 'no gate summary may be produced');
+    assert.ok(result.implementationDiff, 'the verdict must be surfaced');
+    assert.strictEqual(
+      result.implementationDiff.baseAheadCommits,
+      2,
+      'the CLI reads this field to print the staleness advisory'
+    );
+    assert.strictEqual(
+      result.implementationDiff.mergeBase,
+      '1823dbf0123456789abcdef0123456789abcdef0'
+    );
+  });
+
+  test('L4 (AC7, RV3): an unmeasurable branch diff parks with the truthful message and never claims the tree is unchanged', async () => {
+    const error = "git merge-base HEAD 'main' could not resolve the branch point for 'main'";
+    const unmeasurableVerdict = {
+      ...unchangedVerdict('main'),
+      measurementError: error,
+      mergeBase: null,
+      baseAheadCommits: null,
+      ownCommits: null
+    };
+    const harness = buildHarness(unmeasurableVerdict, () => ({
+      runQualityGateUseCase: gateMustNotRun().useCase
+    }));
+
+    const result = await harness.lifecycle.execute({
+      mode: MODE_YOLO,
+      issue: 32,
+      workspaceDir: '/mock/workspace'
+    });
+
+    assert.strictEqual(result.implementationHalted, true, 'an uncertifiable tree must still park');
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      result.implementationPlanEmpty,
+      false,
+      'the plan-empty advisory would hide the real cause'
+    );
+    assert.strictEqual(
+      result.message,
+      NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE.replace('{baseRef}', 'main').replace('{error}', error),
+      'the park must say the branch could not be measured'
+    );
+    assert.ok(
+      !result.message.includes('unchanged relative to'),
+      `the park must not claim the tree is unchanged, got: ${result.message}`
+    );
   });
 });
