@@ -247,12 +247,18 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       fs.mkdirSync(parentDir, { recursive: true });
     }
 
-    // 5. Check if an existing branch matching task/<id> or fix/<id> already exists
+    // 5. Check if an existing LOCAL branch matching task/<id> or fix/<id> already exists.
+    // The check must answer "is there already LOCAL work in progress for this task?":
+    // it lists local branches only (ListBranchesOptions.remote = false). A branch that
+    // exists only on the remote — the ordinary leftover of a merged PR — does not
+    // count as "in progress", because reusing it would make
+    // `git worktree add <path> <branch>` fall into git's DWIM rule and start the task
+    // branch at the REMOTE's commit instead of the current base branch (#264).
     let targetBranch = branch;
     let branchAlreadyExists = false;
 
     try {
-      const existingBranches = await this.listBranches({ workspaceDir: workspace });
+      const existingBranches = await this.listBranches({ workspaceDir: workspace, remote: false });
       const branchPattern = new RegExp(`^(task|fix)/${taskId}([-_/]|$)`, 'i');
       const matched = existingBranches.find((b) => branchPattern.test(b));
       if (matched) {
@@ -260,7 +266,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         branchAlreadyExists = true;
       }
     } catch {
-      // Non-fatal, proceed with default branch
+      // Non-fatal, proceed with default branch. If the branch list itself cannot be
+      // read, the fresh `-b` create below starts from baseBranch (the correct
+      // direction for this defect class) and the start-point verification is the
+      // independent backstop.
     }
 
     // 6. Execute git worktree add
@@ -323,6 +332,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
           { cwd: workspace }
         );
         if (retry.exitCode === 0) {
+          // The branch pre-existed locally, so this re-add reuses it: report the
+          // reuse (branch + tip, merged-branch policy notice) so a stale local
+          // branch is visible rather than silent (#264).
+          await this.reportBranchReuse(workspace, targetBranch, baseBranch);
           return this.adoptExistingWorktree(workspace, worktreePath, {
             taskId,
             branch: targetBranch,
@@ -360,7 +373,28 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       );
     }
 
-    // 7. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
+    // 7. Verify the worktree's start point on the fresh-create path: git checked
+    // out baseBranch for us, so the worktree HEAD must equal the base branch's tip.
+    // A mismatch means the task branch did not start from the base — exactly the
+    // stale-start defect this verification exists to catch (#264) — and is a hard
+    // error rather than a silent success. The reuse arm intentionally gets
+    // visibility (reportBranchReuse), not a HEAD assertion: a reused branch with
+    // real work on it legitimately sits past the merge-base, and the worktree
+    // necessarily starts at the branch tip.
+    if (!branchAlreadyExists) {
+      await this.verifyWorktreeStartPoint(workspace, worktreePath, baseBranch, {
+        taskId,
+        branch: targetBranch
+      });
+    }
+
+    // 8. Report the reuse of a pre-existing LOCAL branch (visibility, not
+    // enforcement), so a stale local branch is seen instead of silently reused.
+    const reusedBranchCommit = branchAlreadyExists
+      ? await this.reportBranchReuse(workspace, targetBranch, baseBranch)
+      : undefined;
+
+    // 9. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
     this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
     this.linkArtifactsIfPresent(workspace, worktreePath);
     this.linkAgyloopStateIfPresent(workspace, worktreePath);
@@ -371,8 +405,112 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       branch: targetBranch,
       baseBranch,
       slug,
-      isIsolated: true
+      isIsolated: true,
+      reusedBranchCommit
     });
+  }
+
+  /**
+   * Verifies that a freshly created worktree actually started from the base
+   * branch: its HEAD must equal the base branch's tip. A mismatch is a hard
+   * error; an unreadable start point (either rev-parse fails or is empty) is
+   * reported loud-but-lenient — the `git worktree add` itself succeeded, so
+   * failing the run because a base ref cannot be resolved would be a false
+   * positive.
+   */
+  private async verifyWorktreeStartPoint(
+    workspace: string,
+    worktreePath: string,
+    baseBranch: string,
+    context: { taskId: string; branch: string }
+  ): Promise<void> {
+    const headRes = await this.commandExecutor.execute(`git -C "${worktreePath}" rev-parse HEAD`, {
+      cwd: workspace
+    });
+    const baseRes = await this.commandExecutor.execute(
+      `git -C "${worktreePath}" rev-parse "${baseBranch}"`,
+      { cwd: workspace }
+    );
+
+    const actualSha = (headRes.exitCode === 0 ? headRes.stdout || '' : '').trim();
+    const expectedSha = (baseRes.exitCode === 0 ? baseRes.stdout || '' : '').trim();
+
+    if (!actualSha || !expectedSha) {
+      console.warn(
+        `[agyloop] createWorktree: unable to verify worktree start point for branch '${context.branch}' at ${worktreePath} (worktree HEAD or base branch '${baseBranch}' could not be read); proceeding without start-point verification.`
+      );
+      return;
+    }
+
+    if (actualSha !== expectedSha) {
+      throw new WorktreeCreationError(
+        'createWorktree',
+        `Worktree at ${worktreePath} did not start from the base branch: worktree HEAD is ${actualSha} but base branch '${baseBranch}' is at ${expectedSha} (expectedSha=${expectedSha}, actualSha=${actualSha}). Inspect how the branch was created with \`git -C ${worktreePath} reflog show ${context.branch}\` for its DWIM origin.`,
+        {
+          taskId: context.taskId,
+          branch: context.branch,
+          worktreePath,
+          baseBranch,
+          expectedSha,
+          actualSha
+        }
+      );
+    }
+  }
+
+  /**
+   * Reports the reuse of a pre-existing local branch: the branch is always named,
+   * with its tip commit when it can be read, plus a non-blocking warning when the
+   * branch is already merged into the base (a policy signal for the operator —
+   * recreating such a branch from the base is recommended).
+   *
+   * Returns the branch tip commit, or undefined when it could not be read, so the
+   * caller can attach it to the descriptor as `reusedBranchCommit`.
+   */
+  private async reportBranchReuse(
+    workspace: string,
+    branchName: string,
+    baseBranch: string
+  ): Promise<string | undefined> {
+    let tipSha: string | undefined;
+    try {
+      const tipRes = await this.commandExecutor.execute(`git rev-parse "${branchName}"`, {
+        cwd: workspace
+      });
+      const sha = (tipRes.exitCode === 0 ? tipRes.stdout || '' : '').trim();
+      if (sha) {
+        tipSha = sha;
+      }
+    } catch {
+      // Degrade gracefully to a branch-only notice.
+    }
+
+    if (tipSha) {
+      console.warn(
+        `[agyloop] createWorktree: reusing existing local branch "${branchName}" at commit ${tipSha} (base: "${baseBranch}")`
+      );
+    } else {
+      console.warn(
+        `[agyloop] createWorktree: reusing existing local branch "${branchName}" (base: "${baseBranch}")`
+      );
+    }
+
+    try {
+      const merged = await this.isAncestor({
+        ancestorBranch: branchName,
+        descendantBranch: baseBranch,
+        workspaceDir: workspace
+      });
+      if (merged) {
+        console.warn(
+          `[agyloop] createWorktree: branch "${branchName}" is already merged into base "${baseBranch}"; recreating it from the base branch is recommended.`
+        );
+      }
+    } catch {
+      // Non-fatal: the policy notice is advisory only.
+    }
+
+    return tipSha;
   }
 
   /**
