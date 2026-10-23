@@ -1425,6 +1425,48 @@ export const NOTE_ALREADY_COMPLETED = 'Pipeline already completed' as const;
 export const NOTE_WORKTREE_CREATED = 'Isolated git worktree provisioned' as const;
 export const NOTE_WORKTREE_REMOVED = 'Isolated git worktree detached and cleaned' as const;
 export const NOTE_WORKTREE_PRUNED = 'Dangling git worktrees pruned' as const;
+/**
+ * Removal post-condition notes (issue #282).
+ *
+ * `codeloop worktree remove` used to delete the directory and say nothing about
+ * the checkpoint, so the tool kept advertising a worktree that was gone
+ * (absorbed #273). The removal now REPORTS which of the three descriptor
+ * outcomes it reached, single-sourced here so no call site invents its own
+ * wording. No emoji: the CLI owns the `✓` / `✗` / `⚠` prefix.
+ */
+export const NOTE_WORKTREE_CHECKPOINT_CLEARED =
+  'checkpoint descriptor cleared (this task no longer records a worktree)' as const;
+/**
+ * The same post-condition when the checkpoint that named the removed path was
+ * NOT the operator's task checkpoint (e.g. a root `.agyloop/state.json` written
+ * by an older build). "This task no longer records a worktree" would be a lie
+ * in that case, so the scope is stated instead (#282 review).
+ */
+export const NOTE_WORKTREE_CHECKPOINT_CLEARED_SCOPE =
+  'checkpoint descriptor cleared (a checkpoint that named the removed path no longer records it)' as const;
+export const NOTE_WORKTREE_CHECKPOINT_UNCHANGED =
+  'checkpoint descriptor unchanged (it did not point at the removed path)' as const;
+export const NOTE_WORKTREE_CHECKPOINT_UNREADABLE =
+  'checkpoint descriptor could not be read or updated, so it was left as it was' as const;
+/**
+ * Reported when the operator asks to repair a stale descriptor
+ * (`worktree remove <id> --prune-stale`) without a live worktree directory.
+ */
+export const NOTE_WORKTREE_STALE_PRUNED = 'Stale worktree descriptor pruned' as const;
+export const NOTE_WORKTREE_STALE_ABSENT =
+  'No checkpoint recorded a worktree at the requested path' as const;
+/**
+ * Reported by the READ-ONLY diagnostics (`branch-info`, `next`) when a
+ * checkpoint advertises a worktree whose directory is gone. Naming the
+ * remediation keeps the operator from hand-editing the checkpoint — and the
+ * remediation MUST be a command that actually succeeds for a missing directory,
+ * which is why it carries `--prune-stale`: the plain removal correctly refuses
+ * a path that does not exist (#282 AC-2, review iteration 2).
+ *
+ * `{id}` is substituted by the presentation layer, which knows the task token.
+ */
+export const NOTE_WORKTREE_STALE =
+  'stale descriptor — the worktree directory does not exist; run `codeloop worktree remove {id} --prune-stale` to clear it' as const;
 
 // ============================================================================
 // Implementation Evidence (issue #259)

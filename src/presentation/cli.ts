@@ -117,6 +117,9 @@ import {
   NOTE_DISMISS_PRIOR_ANSWER,
   NOTE_DISMISS_NOTHING,
   NOTE_DISMISS_NOTHING_HANDLED,
+  // Issue #282: a read-only diagnostic reports a dead descriptor as STALE
+  // instead of advertising a directory that is gone.
+  NOTE_WORKTREE_STALE,
   // Issue #269: the TRIAGE gate's exit condition and the disposition line.
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
   NOTE_TRIAGE_DISPOSITION_NOT_RECORDED,
@@ -211,6 +214,13 @@ export interface CliOptions {
   phaseBranch: string | null;
   worktreeSubcommand: string | null;
   worktreeTarget: string | null;
+  /**
+   * `worktree remove`-scoped opt-in (#282): clear a checkpoint descriptor whose
+   * worktree directory is already gone. The plain command keeps refusing a
+   * missing path (AC-2); this is the remediation the stale-descriptor
+   * diagnostics print, and it never touches the filesystem.
+   */
+  pruneStale: boolean;
   subagents: boolean;
   all: boolean;
   critiqueSubcommand: string | null;
@@ -407,6 +417,7 @@ Operational Flags:
       --keep-worktree Keep git worktree after commit completion (prevent auto-teardown)
       --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
       --all          Include/prune all worktrees (used with worktree list/prune/clean)
+      --prune-stale  Clear the checkpoint descriptor of a worktree whose directory no longer exists (used with worktree remove <id>)
       --json         Output machine-readable JSON for scripting and piping
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
@@ -476,6 +487,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     phaseBranch: null,
     worktreeSubcommand: null,
     worktreeTarget: null,
+    pruneStale: false,
     subagents: false,
     all: false,
     critiqueSubcommand: null,
@@ -529,6 +541,10 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.subagents = true;
     } else if (arg === '--all') {
       options.all = true;
+    } else if (arg === '--prune-stale') {
+      options.pruneStale = true;
+    } else if (arg.startsWith('--prune-stale=')) {
+      options.pruneStale = arg.split('=')[1] !== 'false';
     } else if (arg === '--json') {
       options.json = true;
     } else if (arg === '--force' || arg === '-f') {
@@ -1005,6 +1021,95 @@ async function resolveScopeTolerantly(
   }
 }
 
+/**
+ * Separates a checkpoint's recorded worktree path into LIVE vs STALE
+ * (issue #282, absorbed #273).
+ *
+ * A removal that cleared the descriptor is the repair, but a descriptor written
+ * by an older build — or one whose directory was deleted out of band — is still
+ * on disk. The read-only diagnostics must therefore check existence before
+ * advertising a path, and say "stale" instead of printing a directory that is
+ * gone. They never write: repairing the checkpoint remains the operator's
+ * `codeloop worktree remove <id> --prune-stale` job (#250, AC A4).
+ */
+function describeWorktreeTruth(worktreePath: string | null | undefined): {
+  livePath: string | null;
+  stalePath: string | null;
+} {
+  if (!worktreePath) return { livePath: null, stalePath: null };
+  try {
+    if (fs.statSync(worktreePath).isDirectory()) {
+      return { livePath: worktreePath, stalePath: null };
+    }
+  } catch {
+    // Missing or unreadable -> stale.
+  }
+  return { livePath: null, stalePath: worktreePath };
+}
+
+/** Stands in for a dead path wherever a directive would otherwise hand it to a subagent. */
+const STALE_WORKTREE_PLACEHOLDER = '<stale worktree — path no longer exists>';
+
+/**
+ * Builds the stale-descriptor remediation with the REAL task token.
+ *
+ * `NOTE_WORKTREE_STALE` carries `{id}` because the constant cannot know which
+ * task is being reported. The placeholder is filled from `--issue` when known,
+ * otherwise from the last segment of the recorded path (`.worktrees/42` -> 42),
+ * so the printed command is one the operator can paste and run (#282 review
+ * iteration 2: the old text named a command guaranteed to fail for a missing
+ * directory).
+ */
+function formatStaleWorktreeNote(worktreePath: string, issue?: number | null): string {
+  const segments = worktreePath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  const id =
+    issue !== undefined && issue !== null
+      ? String(issue)
+      : segments.length > 0
+        ? segments[segments.length - 1]
+        : '<id>';
+  return NOTE_WORKTREE_STALE.replace('{id}', id);
+}
+
+/**
+ * Removes a stale worktree path from a `next` directive (#282 review).
+ *
+ * `GetNextActionUseCase` builds its stage-specific prompts and summary from the
+ * raw descriptor and cannot check existence (no `fs` in the application layer).
+ * Presenting that dead path as `Cwd:` would dispatch a subagent into a
+ * directory that is gone, so the PRESENTATION layer redacts it and names the
+ * repair instead. Live paths are returned untouched.
+ */
+function redactStaleWorktreeArtifacts<
+  T extends {
+    humanSummary: string;
+    invocationPayload?: {
+      Subagents: ReadonlyArray<{ Prompt: string; Workspace?: string }>;
+    } | null;
+  }
+>(result: T, stalePath: string | null, remediation: string): T {
+  if (!stalePath) return result;
+  const replacement = `${STALE_WORKTREE_PLACEHOLDER}; ${remediation}`;
+  const redact = (text: string): string => text.split(stalePath).join(replacement);
+
+  const payload = result.invocationPayload
+    ? {
+        ...result.invocationPayload,
+        Subagents: result.invocationPayload.Subagents.map((item) => ({
+          ...item,
+          Prompt: redact(item.Prompt),
+          ...(typeof item.Workspace === 'string' ? { Workspace: redact(item.Workspace) } : {})
+        }))
+      }
+    : result.invocationPayload;
+
+  return {
+    ...result,
+    humanSummary: redact(result.humanSummary),
+    invocationPayload: payload
+  } as T;
+}
+
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
   const { command, options } = parseArguments(rawArgs);
 
@@ -1189,6 +1294,22 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const pause = await readPersistedGatePause(scope.repo);
       const pausedAtBreakerGate = pause?.gate === GATE_CIRCUIT_BREAKER;
 
+      // Issue #282: a checkpoint can carry a worktree descriptor whose
+      // directory is gone. The directive's top-level `worktreePath` must be
+      // truthful about that — suppressed when stale, reported alongside — and
+      // the checkpoint is NOT repaired here (see `describeWorktreeTruth`).
+      const worktreeTruth = describeWorktreeTruth(res.worktreePath);
+      const staleRemediation = worktreeTruth.stalePath
+        ? formatStaleWorktreeNote(worktreeTruth.stalePath, issueValue)
+        : '';
+      // A dead path must not travel inside `humanSummary` or a subagent prompt
+      // as if it were a usable Cwd: redact it and name the repair (#282 review).
+      const truthful = redactStaleWorktreeArtifacts(
+        res,
+        worktreeTruth.stalePath,
+        staleRemediation
+      );
+
       if (options.json) {
         // Machine-readable output stays a single JSON document: the pause travels as
         // data, never as prose on stdout. `actionable` is the single boolean a harness
@@ -1196,7 +1317,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(
           JSON.stringify(
             {
-              ...res,
+              ...truthful,
+              worktreePath: worktreeTruth.livePath,
+              worktreeStale: worktreeTruth.stalePath !== null,
+              staleWorktreePath: worktreeTruth.stalePath,
               actionable: pause === null,
               pause
             },
@@ -1208,32 +1332,40 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // Warnings go to stderr so stdout stays parseable.
           console.error(`🛑 ${pause.message}`);
         }
+        if (worktreeTruth.stalePath) {
+          console.error(`⚠ ${worktreeTruth.stalePath}: ${staleRemediation}`);
+        }
         return EXIT_CODE_SUCCESS;
       }
 
       console.log('\n=== CodeLoop: Next Subagent Directive ===');
       if (pausedAtBreakerGate) {
-        console.log(`Status       : 🛑 ${GATE_CIRCUIT_BREAKER} — ${res.humanSummary}`);
+        console.log(`Status       : 🛑 ${GATE_CIRCUIT_BREAKER} — ${truthful.humanSummary}`);
         console.log('Resolve the blocking condition (e.g. wait for the provider quota window),');
         console.log(`then re-run \`${RESUME_COMMAND}\`. State is checkpointed; nothing is lost.\n`);
       }
-      console.log(`Current Stage : ${formatStageBadge(res.currentStage)}`);
-      console.log(`Next Action   : ${res.title}`);
-      if (res.baseBranch) {
-        console.log(`Base Branch   : ${res.baseBranch}`);
+      console.log(`Current Stage : ${formatStageBadge(truthful.currentStage)}`);
+      console.log(`Next Action   : ${truthful.title}`);
+      if (truthful.baseBranch) {
+        console.log(`Base Branch   : ${truthful.baseBranch}`);
       }
-      if (res.taskBranch) {
-        console.log(`Task Branch   : ${res.taskBranch}`);
+      if (truthful.taskBranch) {
+        console.log(`Task Branch   : ${truthful.taskBranch}`);
       }
-      if (res.worktreePath) {
-        console.log(`Target Cwd    : ${res.worktreePath}`);
+      if (worktreeTruth.livePath) {
+        console.log(`Target Cwd    : ${worktreeTruth.livePath}`);
       }
-      console.log(`Description   : ${res.description}`);
-      console.log(`Summary       : ${res.humanSummary}\n`);
+      if (worktreeTruth.stalePath) {
+        // One warning, on stderr: stdout stays parseable, and the operator is
+        // told how to repair the descriptor instead of being handed a dead path.
+        console.error(`⚠ ${worktreeTruth.stalePath}: ${staleRemediation}`);
+      }
+      console.log(`Description   : ${truthful.description}`);
+      console.log(`Summary       : ${truthful.humanSummary}\n`);
 
-      if (res.invocationPayload) {
+      if (truthful.invocationPayload) {
         console.log('--- invoke_subagent JSON Payload ---');
-        console.log(JSON.stringify(res.invocationPayload, null, 2));
+        console.log(JSON.stringify(truthful.invocationPayload, null, 2));
         console.log('\nPass this payload directly to invoke_subagent or copy into chat.\n');
       }
       return EXIT_CODE_SUCCESS;
@@ -1275,13 +1407,22 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const collectorBranch = baseBranch || (currentBranch.startsWith('phase/') || currentBranch.startsWith('feature/') ? currentBranch : null);
       const prTarget = collectorBranch || defaultBranch;
 
+      // Issue #282: report a dead descriptor as stale; never advertise the path
+      // as a live worktree, and never repair it here (AC A4, #250).
+      const worktreeTruth = describeWorktreeTruth(
+        (snapshot?.worktree?.worktreePath as string | undefined) || null
+      );
+
       if (options.json) {
         console.log(
           JSON.stringify(
             {
               baseBranch: collectorBranch,
               taskBranch: activeTaskBranch,
-              worktreePath: snapshot?.worktree?.worktreePath || null,
+              worktreePath: worktreeTruth.livePath,
+              // Additive (#282): `worktreePath` is null for a stale descriptor.
+              worktreeStale: worktreeTruth.stalePath !== null,
+              staleWorktreePath: worktreeTruth.stalePath,
               prBaseTarget: prTarget,
               milestoneTarget: defaultBranch,
               // Additive: the checkpoint this report was derived from (#250).
@@ -1299,8 +1440,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.log(`Active Task Branch    : ${activeTaskBranch ? activeTaskBranch : '(none - worktree not active)'}`);
       console.log(`Milestone Target      : ${defaultBranch}`);
       console.log(`PR Creation Target    : ${prTarget}`);
-      if (snapshot?.worktree?.worktreePath) {
-        console.log(`Isolated Worktree     : ${snapshot.worktree.worktreePath}`);
+      if (worktreeTruth.livePath) {
+        console.log(`Isolated Worktree     : ${worktreeTruth.livePath}`);
+      } else if (worktreeTruth.stalePath) {
+        console.log(
+          `Isolated Worktree     : ${worktreeTruth.stalePath} (MISSING — ${formatStaleWorktreeNote(
+            worktreeTruth.stalePath,
+            issue
+          )})`
+        );
       }
       console.log('');
       return EXIT_CODE_SUCCESS;
@@ -1653,7 +1801,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'worktree': {
-      const manageWorktreeUseCase = new ManageWorktreeUseCase(worktreeManager);
+      const manageWorktreeUseCase = new ManageWorktreeUseCase(worktreeManager, stateRepo);
       const sub = options.worktreeSubcommand || 'list';
 
       if (sub === 'list') {
@@ -1693,11 +1841,75 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.error('Error: Please specify task ID or worktree path to remove. Example: agyloop worktree remove 87');
           return EXIT_CODE_FAILURE;
         }
-        const targetPath = await worktreeManager.resolveTaskWorktreePath(process.cwd(), options.worktreeTarget);
-        console.log(`Removing worktree at ${targetPath}...`);
-        const res = await manageWorktreeUseCase.teardown({ worktreePath: targetPath });
-        console.log(`✓ ${res.message}\n`);
-        return EXIT_CODE_SUCCESS;
+
+        // Issue #282: resolve FIRST (the resolver validates the target and
+        // proves it stays inside `<root>/.worktrees`) and never print a success
+        // line for something that was not removed. Any refusal — absolute
+        // path, `..`, separator, symlink, missing, unregistered — lands in the
+        // catch and exits non-zero with the reason on stderr.
+        const workspaceDir = options.workspaceDir || process.cwd();
+        try {
+          const targetPath = await worktreeManager.resolveTaskWorktreePath(
+            workspaceDir,
+            options.worktreeTarget
+          );
+          console.log(`Removing worktree at ${targetPath}...`);
+
+          // Descriptor scope uses the SAME issue grammar as every other
+          // command (#250): an explicit `--issue` wins, else a purely numeric
+          // target scopes the task checkpoint; anything else leaves it absent
+          // and the path-matched scan decides.
+          const parsedTarget = parseIssueToken(options.worktreeTarget);
+          const targetIssue =
+            issueValue ?? (parsedTarget.kind === 'valid' ? parsedTarget.issue : null);
+
+          // `--prune-stale` is the supported repair for a descriptor whose
+          // directory is gone (#282 review iteration 2). The plain command must
+          // keep refusing a missing path (AC-2), so this opt-in is the only
+          // path that clears a descriptor without a live worktree — and it
+          // touches the checkpoint only, never the filesystem.
+          if (options.pruneStale) {
+            if (fs.existsSync(targetPath)) {
+              console.error(
+                `✗ Worktree directory still exists at ${targetPath}; run without --prune-stale to remove it normally.`
+              );
+              return EXIT_CODE_FAILURE;
+            }
+
+            const pruned = await manageWorktreeUseCase.clearStaleDescriptor({
+              worktreePath: targetPath,
+              issue: targetIssue
+            });
+
+            if (!pruned.success) {
+              console.error(`✗ ${pruned.message}`);
+              return EXIT_CODE_FAILURE;
+            }
+
+            console.log(`✓ ${pruned.message}\n`);
+            return EXIT_CODE_SUCCESS;
+          }
+
+          const res = await manageWorktreeUseCase.teardown({
+            worktreePath: targetPath,
+            workspaceDir,
+            taskId: options.worktreeTarget,
+            issue: targetIssue
+          });
+
+          // Belt-and-braces over the manager's own post-condition: never print
+          // `✓` for a path that still exists.
+          if (fs.existsSync(targetPath)) {
+            console.error(`✗ Worktree still exists after removal: ${targetPath}`);
+            return EXIT_CODE_FAILURE;
+          }
+
+          console.log(`✓ ${res.message}\n`);
+          return EXIT_CODE_SUCCESS;
+        } catch (err: unknown) {
+          console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+          return EXIT_CODE_FAILURE;
+        }
       }
 
       console.error(`Unknown worktree subcommand: '${sub}'. Valid subcommands: list, clean, prune, remove <task-id>\n`);

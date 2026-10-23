@@ -764,7 +764,11 @@ export class RunLifecycleUseCase {
         worktreePath: worktree.worktreePath,
         workspaceDir: rootWorkspace,
         force: true,
-        prune: true
+        prune: true,
+        // Internal teardown (#282): a worktree deleted out of band must not
+        // fail the run, and an adopted worktree may live outside `.worktrees`.
+        tolerateMissing: true,
+        allowExternal: true
       });
     } catch {
       // Non-fatal

@@ -18,8 +18,10 @@ import {
   INIT_GITIGNORE_RULES,
   DEFAULT_BASE_BRANCH,
   DEFAULT_BASE_BRANCH_CANDIDATES,
+  ValidationError,
   isRootWorkspace,
-  isPathInsideRoot
+  isPathInsideRoot,
+  isSamePath
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -83,18 +85,157 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
-   * Resolves absolute or relative worktree path for a given task ID.
+   * Resolves the worktree path for a task ID inside `<repo>/<worktreesDir>`.
+   *
+   * Issue #282: the target used to be joined blindly with
+   * `path.resolve(root, '.worktrees', target)`. `path.resolve` DISCARDS the
+   * base when the argument is absolute, so `worktree remove /tmp/victim`
+   * resolved to `/tmp/victim` and the removal path then deleted it. The
+   * segment is now validated and the result is proven to be a strict
+   * descendant of the worktrees directory BEFORE it is returned:
+   *
+   *   - one path segment only, `[A-Za-z0-9._-]+`, never `.` / `..` / `-...`;
+   *   - absolute inputs and separators are refused;
+   *   - an existing symlink is refused (and a symlink that escapes the
+   *     worktrees directory via its parents is refused by the realpath check).
    */
   public async resolveTaskWorktreePath(
     workspaceDir: string,
     taskId: string | number,
     worktreesDir?: string
   ): Promise<string> {
-    const root = await this.getRepoRoot(workspaceDir);
+    const segment = String(taskId ?? '').trim();
     const targetWorktreesDir = worktreesDir || DEFAULT_WORKTREES_DIR;
-    return path.isAbsolute(targetWorktreesDir)
-      ? path.resolve(targetWorktreesDir, String(taskId).trim())
-      : path.resolve(root, targetWorktreesDir, String(taskId).trim());
+
+    if (!segment) {
+      throw new ValidationError(
+        'taskId',
+        taskId,
+        'Task ID is required to resolve a worktree path inside the worktrees directory.'
+      );
+    }
+
+    if (path.isAbsolute(segment)) {
+      throw new ValidationError(
+        'taskId',
+        segment,
+        `Refusing absolute worktree target '${segment}': a task ID must be a single path segment inside '<repo>/${targetWorktreesDir}', never an absolute path.`
+      );
+    }
+
+    if (segment.includes('/') || segment.includes('\\') || segment !== path.basename(segment)) {
+      throw new ValidationError(
+        'taskId',
+        segment,
+        `Refusing worktree target '${segment}': a task ID must be a single path segment inside '<repo>/${targetWorktreesDir}' (path separators are not accepted).`
+      );
+    }
+
+    if (
+      segment === '.' ||
+      segment === '..' ||
+      segment.startsWith('-') ||
+      !/^[A-Za-z0-9._-]+$/.test(segment)
+    ) {
+      throw new ValidationError(
+        'taskId',
+        segment,
+        `Refusing worktree target '${segment}': a task ID must be a single path segment inside '<repo>/${targetWorktreesDir}' (allowed characters: letters, digits, '.', '_', '-').`
+      );
+    }
+
+    if (path.isAbsolute(targetWorktreesDir)) {
+      throw new ValidationError(
+        'worktreesDir',
+        targetWorktreesDir,
+        `worktreesDir must be repository-relative, got the absolute path '${targetWorktreesDir}'.`
+      );
+    }
+
+    const root = await this.getRepoRoot(workspaceDir);
+    const worktreesRoot = path.resolve(root, targetWorktreesDir);
+
+    // Issue #282: a REPOSITORY-RELATIVE value can still escape
+    // (`../escape-dir`), so the worktrees root itself must be a strict
+    // descendant of the repository root before any target is resolved into it.
+    const worktreesRelative = path.relative(path.resolve(root), worktreesRoot);
+    if (
+      worktreesRelative === '' ||
+      worktreesRelative === '..' ||
+      worktreesRelative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(worktreesRelative)
+    ) {
+      throw new ValidationError(
+        'worktreesDir',
+        targetWorktreesDir,
+        `worktreesDir must stay inside the repository root '${root}', got '${targetWorktreesDir}'.`
+      );
+    }
+
+    const candidate = path.resolve(worktreesRoot, segment);
+
+    const relative = path.relative(worktreesRoot, candidate);
+    if (
+      relative === '' ||
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      throw new ValidationError(
+        'taskId',
+        segment,
+        `Refusing worktree target '${segment}': it resolves outside '${worktreesRoot}'.`
+      );
+    }
+
+    // `lstat` (not `stat`) so a BROKEN symlink is still detected. A symlink at
+    // the target is refused outright: `worktree remove` follows it, and the
+    // containment guarantee below is about real locations, not names.
+    let targetStat: fs.Stats | null = null;
+    try {
+      targetStat = fs.lstatSync(candidate);
+    } catch {
+      // Not present (or unreadable): nothing to inspect.
+    }
+
+    if (targetStat?.isSymbolicLink()) {
+      throw new ValidationError(
+        'taskId',
+        segment,
+        `Refusing worktree target '${segment}': '${candidate}' is a symbolic link, not a worktree directory.`
+      );
+    }
+
+    if (targetStat) {
+      try {
+        const realCandidate = fs.realpathSync(candidate);
+        const realWorktreesRoot = fs.existsSync(worktreesRoot)
+          ? fs.realpathSync(worktreesRoot)
+          : worktreesRoot;
+        const realRelative = path.relative(realWorktreesRoot, realCandidate);
+        if (
+          realRelative === '' ||
+          realRelative === '..' ||
+          realRelative.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(realRelative)
+        ) {
+          throw new ValidationError(
+            'taskId',
+            segment,
+            `Refusing worktree target '${segment}': '${candidate}' resolves outside '${worktreesRoot}'.`
+          );
+        }
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        throw new ValidationError(
+          'taskId',
+          segment,
+          `Refusing worktree target '${segment}': '${candidate}' could not be resolved safely (${err instanceof Error ? err.message : String(err)}).`
+        );
+      }
+    }
+
+    return candidate;
   }
 
   /**
@@ -235,7 +376,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // If directory exists but git does not recognize it, prune and remove orphaned folder
       await this.pruneWorktrees({ workspaceDir: workspace });
       try {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
+        // Defence in depth (#282): the hardened resolver already refuses a
+        // symlinked target, and this recursive delete must never follow one.
+        if (!fs.lstatSync(worktreePath).isSymbolicLink()) {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+        }
       } catch {
         // Continue to add
       }
@@ -633,18 +778,42 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
   /**
    * Detaches and removes worktree directory and cleans up metadata.
+   *
+   * Issue #282: this is the only destructive command in the operator surface,
+   * and it used to have no target validation, no ownership check and no
+   * post-condition. Pre-fix, `path.resolve` had already discarded the base for
+   * an absolute target, the #247 guard only blacklisted the root/ancestors, and
+   * the "external and disjoint" branch of the fallback then deleted ANY
+   * disjoint directory recursively — with a success message. A missing target
+   * printed the success constant too, because the failure check was gated on
+   * the same `existsSync` as the fallback.
+   *
+   * The ordering below is the contract: VALIDATE -> REFUSE -> ACT. Every check
+   * completes before the first side effect (the symlink unlinks are mutations
+   * too), and `fs.rmSync` is reachable ONLY for a registered worktree strictly
+   * inside `<root>/.worktrees` — never for an external path, registered or not.
    */
   public async removeWorktree(options: RemoveWorktreeOptions): Promise<void> {
     const workspace = await this.getRepoRoot(options.workspaceDir);
-    const worktreePath = options.worktreePath;
+    const rawTarget = String(options.worktreePath ?? '').trim();
 
-    if (!worktreePath) return;
+    // 0. An empty target is a caller bug, not a silent no-op (pre-fix: return).
+    if (!rawTarget) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        'A worktree path is required to remove a worktree.',
+        { worktreePath: options.worktreePath }
+      );
+    }
 
-    // Issue #247 (S3): refuse the repository root — and any path that CONTAINS the
+    const resolvedTarget = path.resolve(rawTarget);
+    const resolvedRoot = path.resolve(workspace);
+    const worktreesDir = path.resolve(resolvedRoot, DEFAULT_WORKTREES_DIR);
+    const insideWorktrees = isPathInsideRoot(resolvedTarget, worktreesDir);
+
+    // 1. Issue #247 (S3): refuse the repository root — and any path that CONTAINS the
     // repository root — BEFORE any side effect (no symlink unlink, no git call,
     // no rmSync). Resolve-normalized equality/containment only, never stem matching.
-    const resolvedTarget = path.resolve(worktreePath);
-    const resolvedRoot = path.resolve(workspace);
     if (
       isRootWorkspace(resolvedTarget, resolvedRoot) ||
       isPathInsideRoot(resolvedRoot, resolvedTarget)
@@ -653,67 +822,219 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // deleted as a descendant of the target — an ancestor-kill.
       throw new WorktreeCleanupError(
         'removeWorktree',
-        `Refusing to remove the repository root (or a path containing it) as a worktree: '${worktreePath}'.`,
-        { worktreePath }
+        `Refusing to remove the repository root (or a path containing it) as a worktree: '${rawTarget}'.`,
+        { worktreePath: rawTarget }
       );
     }
 
+    // 2. Containment (#282): the operator command is scoped to
+    // `<root>/.worktrees/<id>`. Anything else is refused unless the caller
+    // explicitly opted into an external path — and even then, step 5 proves it
+    // is registered to THIS repository. The old "external and disjoint"
+    // whitelist is gone.
+    if (!insideWorktrees && !options.allowExternal) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        `Refusing to remove '${resolvedTarget}': it is outside the worktrees directory '${worktreesDir}'. Only worktrees this repository provisioned under that directory may be removed.`,
+        { worktreePath: resolvedTarget }
+      );
+    }
+
+    // 3. Existence (#282): a missing target is a FAILURE, never a success
+    // message. Internal teardown may tolerate an already-deleted directory
+    // (the commit gate / lifecycle teardown of a worktree removed out of band).
+    if (!fs.existsSync(resolvedTarget)) {
+      if (options.tolerateMissing) {
+        if (options.prune !== false) {
+          await this.pruneWorktrees({ workspaceDir: workspace });
+        }
+        return;
+      }
+
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        `Worktree path does not exist: '${resolvedTarget}' (it is not a live worktree of '${resolvedRoot}'). If it is still registered as a prunable worktree, run \`git worktree prune\` to drop the stale registration.`,
+        { worktreePath: resolvedTarget }
+      );
+    }
+
+    // 4. Symlink refusal (#282): `git worktree remove` and the recursive
+    // delete both follow a symlink, so a link is never a worktree directory.
+    let targetStat: fs.Stats | null = null;
+    try {
+      targetStat = fs.lstatSync(resolvedTarget);
+    } catch {
+      // The existence check above already succeeded; an unreadable entry is
+      // treated as "not a symlink" and the ownership check below decides.
+    }
+
+    if (targetStat?.isSymbolicLink()) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        `Refusing to remove '${resolvedTarget}': it is a symbolic link, not a worktree directory.`,
+        { worktreePath: resolvedTarget }
+      );
+    }
+
+    if (insideWorktrees) {
+      try {
+        const realTarget = fs.realpathSync(resolvedTarget);
+        const realWorktreesDir = fs.existsSync(worktreesDir)
+          ? fs.realpathSync(worktreesDir)
+          : worktreesDir;
+        if (!isPathInsideRoot(realTarget, realWorktreesDir)) {
+          throw new WorktreeCleanupError(
+            'removeWorktree',
+            `Refusing to remove '${resolvedTarget}': it resolves outside the worktrees directory '${worktreesDir}' (symlink escape).`,
+            { worktreePath: resolvedTarget }
+          );
+        }
+      } catch (err) {
+        if (err instanceof WorktreeCleanupError) throw err;
+        throw new WorktreeCleanupError(
+          'removeWorktree',
+          `Refusing to remove '${resolvedTarget}': its real path could not be verified (${err instanceof Error ? err.message : String(err)}).`,
+          { worktreePath: resolvedTarget }
+        );
+      }
+    }
+
+    // 5. Ownership (#282): only a path `git worktree list --porcelain` reports
+    // — queried in THIS repository — may be deleted. One query, one answer:
+    // a same-named worktree of another repository can never match.
+    const registration = await this.findRegisteredWorktree(resolvedRoot, resolvedTarget);
+    if (!registration.registered) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        `Refusing to remove '${resolvedTarget}': it is not a registered git worktree of '${resolvedRoot}'. Use \`codeloop worktree clean\` for unregistered folders inside .worktrees.`,
+        { worktreePath: resolvedTarget }
+      );
+    }
+    if (registration.prunable) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        `Refusing to remove '${resolvedTarget}': its registration is prunable. Run \`git worktree prune\` to drop the stale registration, then retry.`,
+        { worktreePath: resolvedTarget }
+      );
+    }
+
+    // 6. Side effects — only now.
     // Safely remove symlinks before git worktree remove
-    this.unlinkSymlink(path.join(worktreePath, 'node_modules'));
-    this.unlinkSymlink(path.join(worktreePath, 'artifacts'));
-    this.unlinkSymlink(path.join(worktreePath, DEFAULT_STATE_DIR));
+    this.unlinkSymlink(path.join(resolvedTarget, 'node_modules'));
+    this.unlinkSymlink(path.join(resolvedTarget, 'artifacts'));
+    this.unlinkSymlink(path.join(resolvedTarget, DEFAULT_STATE_DIR));
 
     // Execute git worktree remove --force
     const removeRes = await this.commandExecutor.execute(
-      `git worktree remove --force "${worktreePath}"`,
+      `git worktree remove --force "${resolvedTarget}"`,
       { cwd: workspace }
     );
 
     // Issue #247 (S4): git refuses to remove the main working tree. That refusal
-    // must surface BEFORE the destructive fallback below — pre-fix, this exact
-    // scenario ran `rmSync` on the repo root first, which made the final
-    // `existsSync` check below silently pass, so the deletion printed as success.
+    // must surface BEFORE the fallback below — pre-fix, this exact scenario ran
+    // `rmSync` on the repo root first, which made the final `existsSync` check
+    // silently pass, so the deletion printed as success.
     const removalOutput = [removeRes.stderr, removeRes.stdout, removeRes.combinedOutput]
       .filter((chunk): chunk is string => typeof chunk === 'string' && chunk.length > 0)
       .join('\n');
     if (removeRes.exitCode !== 0 && /is a main working tree/.test(removalOutput)) {
       throw new WorktreeCleanupError(
         'removeWorktree',
-        removeRes.stderr || removeRes.stdout || `Failed to remove git worktree at ${worktreePath}`,
-        { worktreePath }
+        removeRes.stderr || removeRes.stdout || `Failed to remove git worktree at ${resolvedTarget}`,
+        { worktreePath: resolvedTarget }
       );
     }
 
-    // Issue #247 (S4): the destructive rmSync fallback is demoted behind a
-    // whitelist — strictly inside the disposable `.worktrees/` directory, or a
-    // genuine external worktree fully disjoint from the repo root (not the root,
-    // not containing the root, not inside the root).
-    if (fs.existsSync(worktreePath)) {
-      const canForceRm =
-        isPathInsideRoot(resolvedTarget, path.resolve(resolvedRoot, DEFAULT_WORKTREES_DIR)) ||
-        (!isRootWorkspace(resolvedTarget, resolvedRoot) &&
-          !isPathInsideRoot(resolvedRoot, resolvedTarget) &&
-          !isPathInsideRoot(resolvedTarget, resolvedRoot));
-      if (canForceRm) {
-        try {
-          fs.rmSync(worktreePath, { recursive: true, force: true });
-        } catch {
-          // Non-fatal
-        }
+    // 7. Failure handling (#282): decided from `removed`, captured immediately
+    // after git — never from an `existsSync` that a deletion we just performed
+    // would make pass. The `rmSync` fallback exists only for a REGISTERED
+    // in-`.worktrees` worktree git could not detach; it is unreachable for any
+    // external path (AC-10).
+    let removed = !fs.existsSync(resolvedTarget);
+    if (removeRes.exitCode !== 0 && insideWorktrees && !removed) {
+      try {
+        fs.rmSync(resolvedTarget, { recursive: true, force: true });
+      } catch {
+        // Surfaced by the post-condition below.
       }
+      removed = !fs.existsSync(resolvedTarget);
+    }
+
+    if (!removed) {
+      throw new WorktreeCleanupError(
+        'removeWorktree',
+        removalOutput || `Failed to remove git worktree at ${resolvedTarget}`,
+        { worktreePath: resolvedTarget }
+      );
     }
 
     // Prune dangling references
     if (options.prune !== false) {
       await this.pruneWorktrees({ workspaceDir: workspace });
     }
+  }
 
-    if (removeRes.exitCode !== 0 && fs.existsSync(worktreePath)) {
-      throw new WorktreeCleanupError(
-        'removeWorktree',
-        removeRes.stderr || removeRes.stdout || `Failed to remove git worktree at ${worktreePath}`,
-        { worktreePath }
-      );
+  /**
+   * Answers "does THIS repository register `target` as a worktree, and is that
+   * registration prunable?" from ONE `git worktree list --porcelain` run in
+   * `workspace` (#282, the ownership check).
+   *
+   * Not routed through `listWorktrees`: that method filters the root out and,
+   * unless asked, every external worktree — the ownership check must be able to
+   * match any registered path, and must not depend on the filters.
+   */
+  private async findRegisteredWorktree(
+    workspace: string,
+    target: string
+  ): Promise<{ registered: boolean; prunable: boolean }> {
+    try {
+      const res = await this.commandExecutor.execute('git worktree list --porcelain', {
+        cwd: workspace
+      });
+      if (res.exitCode !== 0 || !res.stdout) return { registered: false, prunable: false };
+
+      const resolvedTarget = path.resolve(target);
+      let realTarget: string | null = null;
+      try {
+        realTarget = fs.realpathSync(resolvedTarget);
+      } catch {
+        realTarget = null;
+      }
+
+      for (const block of res.stdout.split(/\n\s*\n/)) {
+        let wtPath = '';
+        let prunable = false;
+
+        for (const rawLine of block.split('\n')) {
+          const line = rawLine.trim();
+          if (line.startsWith('worktree ')) {
+            wtPath = line.slice('worktree '.length).trim();
+          } else if (line.startsWith('prunable')) {
+            prunable = true;
+          }
+        }
+
+        if (!wtPath) continue;
+        const resolvedWtPath = path.resolve(wtPath);
+
+        let matches = isSamePath(resolvedWtPath, resolvedTarget);
+        if (!matches && realTarget) {
+          try {
+            matches = isSamePath(fs.realpathSync(resolvedWtPath), realTarget);
+          } catch {
+            matches = false;
+          }
+        }
+
+        if (matches) {
+          return { registered: true, prunable };
+        }
+      }
+
+      return { registered: false, prunable: false };
+    } catch {
+      // An unreadable registry is a REFUSAL, never a licence to delete.
+      return { registered: false, prunable: false };
     }
   }
 
@@ -852,7 +1173,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
               worktreePath: normalizedWtPath,
               workspaceDir: workspace,
               force: true,
-              prune: true
+              prune: true,
+              // These are REGISTERED external subagent worktrees (they came
+              // from `git worktree list`), so the containment default must be
+              // waived for them — but only for them (#282).
+              allowExternal: true
             });
             cleaned++;
           } catch {

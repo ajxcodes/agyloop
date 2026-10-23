@@ -25,6 +25,23 @@ export interface RemoveWorktreeOptions {
   readonly workspaceDir?: string;
   readonly force?: boolean;
   readonly prune?: boolean;
+  /**
+   * Resolve successfully when the directory is already gone (internal
+   * teardown of a worktree that was deleted out of band). Operator commands
+   * MUST leave this false: a missing target is a failure, not a success (#282).
+   *
+   * Default `false`.
+   */
+  readonly tolerateMissing?: boolean;
+  /**
+   * Permit a target OUTSIDE `<repo>/.worktrees` — only for a worktree
+   * REGISTERED to THIS repository (internal teardown of an adopted/external
+   * worktree). The operator command never opts in: an unvetted path is refused
+   * before any side effect (#282).
+   *
+   * Default `false`.
+   */
+  readonly allowExternal?: boolean;
 }
 
 export interface PruneWorktreesOptions {
@@ -80,7 +97,16 @@ export interface PushBranchOptions {
 
 export interface WorktreeManagerPort {
   /**
-   * Resolves the relative or absolute worktree path for a given task ID.
+   * Resolves the worktree path for a task ID inside `<repo>/.worktrees`.
+   *
+   * `taskId` is a SINGLE PATH SEGMENT matching `[A-Za-z0-9._-]+`, and never
+   * `.`, `..` or a leading `-`. Absolute paths, separators and anything else
+   * that could escape the container are REJECTED (issue #282) instead of being
+   * joined: `path.resolve(root, '.worktrees', absoluteTarget)` would otherwise
+   * discard the base and hand back the caller's arbitrary path.
+   *
+   * `worktreesDir` is repository-relative (default `.worktrees`); an absolute
+   * value is rejected.
    */
   resolveTaskWorktreePath(
     workspaceDir: string,
