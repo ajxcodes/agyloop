@@ -466,7 +466,13 @@ export class ExecuteCommitUseCase {
             worktreePath: wtPath,
             workspaceDir: rootDir,
             force: true,
-            prune: true
+            prune: true,
+            // Internal teardown: the worktree may already be gone (removed out
+            // of band) and/or registered outside `.worktrees` (an adopted
+            // worktree). Both are legitimate here; neither waives the
+            // registration check, and no external path is ever rmSync'ed (#282).
+            tolerateMissing: true,
+            allowExternal: true
           });
           // Capture the descriptor facts BEFORE the state loses the worktree, so
           // the CLI can report the torn-down path accurately (issue #247, S7).

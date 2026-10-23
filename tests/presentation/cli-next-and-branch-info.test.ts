@@ -137,6 +137,9 @@ function seedTask(
  */
 function seedMultiCheckpoint(dir: string): void {
   seedRoot(dir);
+  // #282: the descriptor must point at a REAL directory, otherwise the truthful
+  // staleness rule would (correctly) report it stale and null the path.
+  fs.mkdirSync(path.join(dir, '.worktrees', '999'), { recursive: true });
   seedTask(dir, 999, {
     worktree: {
       taskId: '999',
@@ -270,6 +273,10 @@ describe('CLI Next & Branch-Info Subcommands', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-branch-test-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
+      // A LIVE worktree (#282): the fixture must exist on disk or the truthful
+      // staleness rule reports it as MISSING.
+      const worktreeDir = path.join(tempDir, '.worktrees', '41');
+      fs.mkdirSync(worktreeDir, { recursive: true });
       fs.writeFileSync(
         path.join(stateDir, 'state.json'),
         JSON.stringify({
@@ -279,7 +286,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
           issue: 41,
           baseBranch: 'phase/1-bridge',
           worktree: {
-            worktreePath: '/repo/.worktrees/41',
+            worktreePath: worktreeDir,
             branch: 'task/41-work',
             baseBranch: 'phase/1-bridge',
             createdAt: new Date().toISOString()
@@ -304,6 +311,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
         assert.ok(output.includes('Branch Lifecycle & Target Diagnostics'));
         assert.ok(output.includes('phase/1-bridge'));
         assert.ok(output.includes('task/41-work'));
+        assert.ok(output.includes(`Isolated Worktree     : ${worktreeDir}`));
       } finally {
         process.chdir(prevCwd);
         console.log = originalLog;
@@ -315,6 +323,8 @@ describe('CLI Next & Branch-Info Subcommands', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-branch-json-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
+      const worktreeDir = path.join(tempDir, '.worktrees', '41');
+      fs.mkdirSync(worktreeDir, { recursive: true });
       fs.writeFileSync(
         path.join(stateDir, 'state.json'),
         JSON.stringify({
@@ -324,7 +334,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
           issue: 41,
           baseBranch: 'phase/1-bridge',
           worktree: {
-            worktreePath: '/repo/.worktrees/41',
+            worktreePath: worktreeDir,
             branch: 'task/41-work',
             baseBranch: 'phase/1-bridge',
             createdAt: new Date().toISOString()
@@ -349,7 +359,9 @@ describe('CLI Next & Branch-Info Subcommands', () => {
         const parsed = JSON.parse(output.trim());
         assert.strictEqual(parsed.baseBranch, 'phase/1-bridge');
         assert.strictEqual(parsed.taskBranch, 'task/41-work');
-        assert.strictEqual(parsed.worktreePath, '/repo/.worktrees/41');
+        assert.strictEqual(parsed.worktreePath, worktreeDir);
+        assert.strictEqual(parsed.worktreeStale, false);
+        assert.strictEqual(parsed.staleWorktreePath, null);
         assert.strictEqual(parsed.prBaseTarget, 'phase/1-bridge');
       } finally {
         process.chdir(prevCwd);
@@ -904,6 +916,141 @@ describe('a garbage --issue token is rejected by every command (#250)', () => {
     assert.ok(
       checkpointLine(result.stdout).endsWith(path.join('.agyloop', 'tasks', '999.json')),
       `unexpected checkpoint: ${checkpointLine(result.stdout)}`
+    );
+  });
+});
+
+/**
+ * Issue #282 — truthful worktree reporting.
+ *
+ * A LIVE descriptor keeps its path (guard against over-suppression); a STALE
+ * one is reported as stale in both JSON and human output, and the read-only
+ * commands never repair it.
+ */
+describe('worktree truth in read-only reporting (#282)', () => {
+  let liveWorktreePath = '';
+
+  function seedLiveWorktree(dir: string): void {
+    liveWorktreePath = path.join(dir, '.worktrees', '77');
+    fs.mkdirSync(liveWorktreePath, { recursive: true });
+    seedRoot(dir);
+    seedTask(dir, 77, {
+      currentStage: 'IMPLEMENT',
+      worktree: {
+        taskId: '77',
+        worktreePath: liveWorktreePath,
+        branch: 'task/77-live',
+        baseBranch: 'feature/task-base',
+        createdAt: EARLY
+      }
+    });
+  }
+
+  test('T-P8a: next --json with a live worktree keeps worktreePath', async () => {
+    const result = await runCliInSandbox(['next', '--issue', '77', '--json'], seedLiveWorktree);
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.worktreePath, liveWorktreePath);
+    assert.strictEqual(parsed.worktreeStale, false);
+    assert.strictEqual(parsed.staleWorktreePath, null);
+    assert.strictEqual(result.stderr.includes('stale'), false, result.stderr);
+  });
+
+  test('T-P7: branch-info reports a stale descriptor as stale without writing (AC-9)', async () => {
+    let taskBefore = '';
+    let stalePath = '';
+
+    const seed = (dir: string): void => {
+      stalePath = path.join(dir, '.worktrees', '42');
+      seedRoot(dir);
+      seedTask(dir, 42, {
+        currentStage: 'IMPLEMENT',
+        worktree: {
+          taskId: '42',
+          worktreePath: stalePath,
+          branch: 'task/42-stale',
+          baseBranch: 'feature/task-base',
+          createdAt: EARLY
+        }
+      });
+      taskBefore = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '42.json'), 'utf8');
+    };
+
+    const text = await runCliInSandbox(['branch-info', '--issue', '42'], seed);
+    assert.strictEqual(text.code, 0, text.stderr);
+    assert.ok(/MISSING|stale/i.test(text.stdout), text.stdout);
+    assert.ok(
+      text.stdout.includes('worktree remove 42 --prune-stale'),
+      `the remediation must be executable: ${text.stdout}`
+    );
+
+    const json = await runCliInSandbox(
+      ['branch-info', '--issue', '42', '--json'],
+      seed,
+      (dir) => {
+        assert.strictEqual(
+          fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '42.json'), 'utf8'),
+          taskBefore,
+          'branch-info must not repair or rewrite the checkpoint'
+        );
+      }
+    );
+    assert.strictEqual(json.code, 0, json.stderr);
+    const parsed = JSON.parse(json.stdout);
+    assert.strictEqual(parsed.worktreePath, null);
+    assert.strictEqual(parsed.worktreeStale, true);
+    assert.ok(parsed.staleWorktreePath.endsWith(path.join('.worktrees', '42')));
+  });
+
+  test('T-P8: next reports a stale descriptor truthfully without writing (AC-9)', async () => {
+    let taskBefore = '';
+
+    const result = await runCliInSandbox(
+      ['next', '--issue', '42', '--json'],
+      (dir) => {
+        seedRoot(dir);
+        seedTask(dir, 42, {
+          currentStage: 'IMPLEMENT',
+          worktree: {
+            taskId: '42',
+            worktreePath: path.join(dir, '.worktrees', '42'),
+            branch: 'task/42-stale',
+            baseBranch: 'feature/task-base',
+            createdAt: EARLY
+          }
+        });
+        taskBefore = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '42.json'), 'utf8');
+      },
+      (dir) => {
+        assert.strictEqual(
+          fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '42.json'), 'utf8'),
+          taskBefore,
+          'next must not rewrite a stale descriptor'
+        );
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.worktreePath, null);
+    assert.strictEqual(parsed.worktreeStale, true);
+    assert.ok(parsed.staleWorktreePath.endsWith(path.join('.worktrees', '42')));
+    assert.ok(/stale/i.test(result.stderr), `expected a remediation warning, got: ${result.stderr}`);
+    assert.ok(
+      result.stderr.includes('--prune-stale'),
+      `the remediation must name the supported repair: ${result.stderr}`
+    );
+    // A dead path must not reach a subagent as if it were a usable Cwd.
+    assert.strictEqual(
+      String(parsed.humanSummary).includes(parsed.staleWorktreePath),
+      false,
+      `humanSummary must not embed the dead path: ${parsed.humanSummary}`
+    );
+    assert.strictEqual(
+      JSON.stringify(parsed.invocationPayload ?? {}).includes(parsed.staleWorktreePath),
+      false,
+      'invocationPayload must not embed the dead path'
     );
   });
 });

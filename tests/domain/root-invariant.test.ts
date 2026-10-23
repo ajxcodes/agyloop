@@ -11,6 +11,7 @@ const path = require('path');
 const {
   isRootWorkspace,
   isPathInsideRoot,
+  isSamePath,
   assertNotRootWorkspace,
   ZERO_DIRECT_ROOT_MUTATION_MESSAGE
 } = require('../../dist/domain');
@@ -75,6 +76,24 @@ describe('Root-Invariant Value Object (#247)', () => {
     test('is false for paths that merely share a stem prefix (no over-restriction)', () => {
       assert.strictEqual(isPathInsideRoot('/repo-alt', '/repo'), false);
       assert.strictEqual(isPathInsideRoot('/repository', '/repo'), false);
+    });
+  });
+
+  describe('isSamePath', () => {
+    // T-D1 (#282): the application layer's path comparison. Pure and
+    // resolve-normalized; never stem matching, never relative-vs-absolute.
+    test('compares resolve-normalized paths and never conflates relative with absolute', () => {
+      assert.strictEqual(isSamePath('/repo/.worktrees/87', '/repo/.worktrees/./87'), true);
+      assert.strictEqual(isSamePath('/repo/.worktrees/87', '/repo/.worktrees/87/'), true);
+      assert.strictEqual(isSamePath('/repo/.worktrees/87', '/repo/x/../.worktrees/87'), true);
+      assert.strictEqual(isSamePath('/repo/.worktrees/87', '/repo/.worktrees/88'), false);
+      assert.strictEqual(isSamePath('', ''), false);
+      assert.strictEqual(isSamePath('a', '/a'), false);
+      assert.strictEqual(
+        isSamePath('/repo/.worktrees/87', '/repo/.worktrees/870'),
+        false,
+        'no stem/prefix matching'
+      );
     });
   });
 

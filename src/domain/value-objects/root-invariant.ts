@@ -187,6 +187,23 @@ export function isPathInsideRoot(candidatePath: string, rootDir: string): boolea
 }
 
 /**
+ * True when both arguments denote exactly the same location.
+ *
+ * A pure, resolve-normalized STRING comparison — no `fs`, so the application
+ * layer (which may not import `path` or `fs`) can compare a checkpoint's
+ * descriptor against the path it just removed (issue #282).
+ *
+ * Both sides are compared as absolute paths: a relative path is NEVER equal to
+ * an absolute one, because the relative side has no anchor here. Callers must
+ * pass resolved paths. An empty argument is never equal to anything, including
+ * another empty argument — "no path" is not a location.
+ */
+export function isSamePath(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return samePath(canonicalize(a), canonicalize(b));
+}
+
+/**
  * Throws the single-sourced invariant message when `worktreePath` resolves to
  * the root workspace. `context` mirrors the ValidationError wording prefix
  * (`Validation failed for field '<context>': ...`) so existing consumers of the

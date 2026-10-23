@@ -337,6 +337,30 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
           // Start-point verification (#264): worktree HEAD and base tip agree.
           return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
         }
+        if (cmd === 'git worktree list --porcelain') {
+          // #282: a removal only proceeds for a REGISTERED worktree.
+          const wtPath = path.resolve(tmpDir, '.worktrees', '87');
+          return makeResult(cmd, {
+            stdout: [
+              `worktree ${tmpDir}`,
+              'HEAD 1111111111111111111111111111111111111111',
+              'branch refs/heads/main',
+              '',
+              `worktree ${wtPath}`,
+              'HEAD 2222222222222222222222222222222222222222',
+              'branch refs/heads/task/87-git-worktree-isolation',
+              ''
+            ].join('\n')
+          });
+        }
+        if (cmd.includes('git worktree remove --force')) {
+          // Simulate git removing the directory, so the #282 post-condition holds.
+          const match = cmd.match(/"([^"]+)"/);
+          if (match && match[1]) {
+            fs.rmSync(match[1], { recursive: true, force: true });
+          }
+          return makeResult(cmd);
+        }
         if (cmd.includes('git worktree add')) {
           // Simulate git worktree creating the folder
           const wtPath = path.resolve(tmpDir, '.worktrees', '87');
@@ -1290,15 +1314,32 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
   test('removeWorktree executes git worktree remove --force and git worktree prune', async () => {
     const executedCommands: string[] = [];
+    const wtPath = path.join(tmpDir, '.worktrees', '87');
     const mockExecutor: CommandExecutorPort = {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {
         executedCommands.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, {
+            stdout: [
+              `worktree ${tmpDir}`,
+              'HEAD 1111111111111111111111111111111111111111',
+              'branch refs/heads/main',
+              '',
+              `worktree ${wtPath}`,
+              'HEAD 2222222222222222222222222222222222222222',
+              'branch refs/heads/task/87',
+              ''
+            ].join('\n')
+          });
+        }
+        if (cmd.includes('git worktree remove --force')) {
+          fs.rmSync(wtPath, { recursive: true, force: true });
+        }
         return makeResult(cmd);
       }
     };
 
     const manager = new GitWorktreeManager(mockExecutor);
-    const wtPath = path.join(tmpDir, '.worktrees', '87');
     fs.mkdirSync(wtPath, { recursive: true });
 
     await manager.removeWorktree({
@@ -1310,6 +1351,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
     assert.ok(executedCommands.some((c) => c.includes('git worktree remove --force')));
     assert.ok(executedCommands.some((c) => c === 'git worktree prune'));
+    assert.strictEqual(fs.existsSync(wtPath), false, 'the registered worktree must be gone');
   });
 
   test('listWorktrees parses git worktree list --porcelain and filters out root workspace', async () => {
@@ -1597,8 +1639,30 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   test('cleanOrphanedWorktrees with subagents: true prunes external subagent worktrees while safeguarding process.cwd', async () => {
     const executedCommands: string[] = [];
     const currentCwd = path.resolve(process.cwd());
-    const subagentPath1 = '/home/user/.gemini/antigravity/brain/abc-123/.system_generated/worktrees/subagent-1';
-    const subagentPath2 = '/home/user/.gemini/antigravity/brain/def-456/.system_generated/worktrees/subagent-2';
+    // Real directories (#282): a removal now proves ownership and existence, so
+    // a fake path would be refused before `git worktree remove` ever ran.
+    const subagentPath1 = path.join(
+      tmpDir,
+      '.gemini',
+      'antigravity',
+      'brain',
+      'abc-123',
+      '.system_generated',
+      'worktrees',
+      'subagent-1'
+    );
+    const subagentPath2 = path.join(
+      tmpDir,
+      '.gemini',
+      'antigravity',
+      'brain',
+      'def-456',
+      '.system_generated',
+      'worktrees',
+      'subagent-2'
+    );
+    fs.mkdirSync(subagentPath1, { recursive: true });
+    fs.mkdirSync(subagentPath2, { recursive: true });
 
     let removeCount = 0;
     const mockExecutor: CommandExecutorPort = {
@@ -1606,6 +1670,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         executedCommands.push(cmd);
         if (cmd.includes('git worktree remove')) {
           removeCount++;
+          const match = cmd.match(/"([^"]+)"/);
+          if (match && match[1]) {
+            fs.rmSync(match[1], { recursive: true, force: true });
+          }
           return makeResult(cmd);
         }
         if (cmd === 'git worktree list --porcelain') {
@@ -1764,6 +1832,22 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
       const mockExecutor: CommandExecutorPort = {
         execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          if (cmd === 'git worktree list --porcelain') {
+            // #282: the ownership check runs before git, so the decoy must be a
+            // REGISTERED worktree of this repository for the test to reach git.
+            return makeResult(cmd, {
+              stdout: [
+                `worktree ${tmpDir}`,
+                'HEAD 1111111111111111111111111111111111111111',
+                'branch refs/heads/main',
+                '',
+                `worktree ${decoyDir}`,
+                'HEAD 2222222222222222222222222222222222222222',
+                'branch refs/heads/fix/decoy',
+                ''
+              ].join('\n')
+            });
+          }
           if (cmd.includes('git worktree remove --force')) {
             return makeResult(cmd, {
               exitCode: 1,
@@ -1782,7 +1866,11 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
             worktreePath: decoyDir,
             workspaceDir: tmpDir,
             force: true,
-            prune: false
+            prune: false,
+            // The decoy is outside `.worktrees`, so the containment default would
+            // refuse it before git. Opt in explicitly so this test still reaches
+            // the `is a main working tree` refusal it pins (#282).
+            allowExternal: true
           });
         },
         (err: unknown) => {
@@ -1798,92 +1886,6 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         fs.existsSync(path.join(decoyDir, 'decoy-sentinel.txt')),
         true,
         'the main-tree decoy must survive the refusal'
-      );
-    });
-
-    test('removeWorktree still force-cleans a stale non-root folder inside .worktrees after a non-main-tree git failure (fallback whitelist intact)', async () => {
-      const staleDir = path.join(tmpDir, '.worktrees', '1');
-      fs.mkdirSync(staleDir, { recursive: true });
-      fs.writeFileSync(path.join(staleDir, 'stale.txt'), 'stale', 'utf8');
-
-      const executedCommands: string[] = [];
-      const mockExecutor: CommandExecutorPort = {
-        execute: async (cmd: string): Promise<CommandExecutionResult> => {
-          executedCommands.push(cmd);
-          if (cmd.includes('git worktree remove --force')) {
-            return makeResult(cmd, {
-              exitCode: 1,
-              stderr: 'fatal: some unrelated git failure',
-              combinedOutput: 'fatal: some unrelated git failure'
-            });
-          }
-          return makeResult(cmd);
-        }
-      };
-
-      const manager = new GitWorktreeManager(mockExecutor);
-      await assert.doesNotReject(async () => {
-        await manager.removeWorktree({
-          worktreePath: staleDir,
-          workspaceDir: tmpDir,
-          force: true,
-          prune: false
-        });
-      });
-
-      assert.strictEqual(
-        fs.existsSync(staleDir),
-        false,
-        'a stale .worktrees/<id> folder must still be force-cleaned'
-      );
-      assert.strictEqual(executedCommands.some((c) => c.includes('git worktree remove')), true);
-    });
-
-    test('removeWorktree still removes a genuine external, disjoint worktree path (no over-restriction)', async () => {
-      // The porcelain-declared main repo root sits below the external worktree's
-      // parent so that the EXTERNAL path is fully disjoint from the root.
-      const mainRepoRoot = path.join(tmpDir, 'main');
-      fs.mkdirSync(mainRepoRoot, { recursive: true });
-      const externalPath = path.join(tmpDir, 'external-247');
-      fs.mkdirSync(externalPath, { recursive: true });
-      fs.writeFileSync(path.join(externalPath, 'external.txt'), 'external', 'utf8');
-
-      const porcelainOutput = [
-        `worktree ${mainRepoRoot}`,
-        'HEAD 1111111111111111111111111111111111111111',
-        'branch refs/heads/main',
-        '',
-        `worktree ${externalPath}`,
-        'HEAD 2222222222222222222222222222222222222222',
-        'branch refs/heads/fix/external',
-        ''
-      ].join('\n');
-
-      const executedCommands: string[] = [];
-      const mockExecutor: CommandExecutorPort = {
-        execute: async (cmd: string): Promise<CommandExecutionResult> => {
-          executedCommands.push(cmd);
-          if (cmd === 'git worktree list --porcelain') {
-            return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
-          }
-          return makeResult(cmd);
-        }
-      };
-
-      const manager = new GitWorktreeManager(mockExecutor);
-      await assert.doesNotReject(async () => {
-        await manager.removeWorktree({
-          worktreePath: externalPath,
-          workspaceDir: mainRepoRoot,
-          force: true,
-          prune: false
-        });
-      });
-
-      assert.strictEqual(
-        fs.existsSync(externalPath),
-        false,
-        'a genuine external, disjoint worktree must still be cleaned up'
       );
     });
 
@@ -1941,6 +1943,475 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       assert.strictEqual(descriptor.branch, 'task/247');
       assert.strictEqual(descriptor.isIsolated, true);
     });
+  });
+});
+
+/**
+ * Issue #282 — `worktree remove` is the only destructive operator command.
+ *
+ * These tests pin the VALIDATE -> REFUSE -> ACT contract: nothing is deleted
+ * unless it is a path this repository registers as a worktree (and, for the
+ * operator surface, lies strictly inside `<root>/.worktrees`). Every refusal
+ * happens before the first side effect, and no failure is reported as success.
+ */
+describe('removeWorktree containment, ownership and post-conditions (#282)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt282-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  /** Blank-line separated porcelain blocks for the given worktree paths. */
+  function porcelainFor(rootDir: string, worktrees: readonly string[]): string {
+    const blocks = [
+      [`worktree ${rootDir}`, 'HEAD 1111111111111111111111111111111111111111', 'branch refs/heads/main'].join('\n'),
+      ...worktrees.map((wt, index) =>
+        [
+          `worktree ${wt}`,
+          `HEAD ${String(index + 2).repeat(40).slice(0, 40)}`,
+          `branch refs/heads/task/${path.basename(wt)}`
+        ].join('\n')
+      )
+    ];
+    return `${blocks.join('\n\n')}\n`;
+  }
+
+  function executor(options: {
+    porcelain?: string;
+    onRemove?: (cmd: string) => CommandExecutionResult;
+    commands?: string[];
+  }): CommandExecutorPort {
+    return {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        options.commands?.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: options.porcelain || '' });
+        }
+        if (cmd.includes('git worktree remove --force') && options.onRemove) {
+          return options.onRemove(cmd);
+        }
+        return makeResult(cmd);
+      }
+    };
+  }
+
+  /** Records every path passed to `fs.rmSync` for the duration of `fn`. */
+  async function recordRmSync<T>(fn: () => Promise<T>): Promise<{ result: T; paths: string[] }> {
+    const original = fs.rmSync;
+    const paths: string[] = [];
+    fs.rmSync = ((target: any, rmOptions?: any) => {
+      paths.push(String(target));
+      return original(target, rmOptions);
+    }) as typeof fs.rmSync;
+    try {
+      const result = await fn();
+      return { result, paths };
+    } finally {
+      fs.rmSync = original;
+    }
+  }
+
+  test('T-I1 rejects an external target before any side effect (AC-1)', async () => {
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim282-'));
+    const decoyTarget = path.join(tmpDir, 'node-modules-target');
+    fs.mkdirSync(decoyTarget, { recursive: true });
+    fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
+    fs.symlinkSync(decoyTarget, path.join(victim, 'node_modules'), 'dir');
+
+    const commands: string[] = [];
+    try {
+      const manager = new GitWorktreeManager(executor({ commands }));
+
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({ worktreePath: victim, workspaceDir: tmpDir });
+        },
+        (err: unknown) => {
+          assert.ok(/outside .*\.worktrees/i.test((err as Error).message), (err as Error).message);
+          return true;
+        }
+      );
+
+      assert.strictEqual(
+        commands.some((c) => c.includes('git worktree remove')),
+        false,
+        'no git worktree remove may run for an external target'
+      );
+      assert.strictEqual(fs.readFileSync(path.join(victim, 'data'), 'utf8'), 'keep');
+      assert.strictEqual(fs.lstatSync(path.join(victim, 'node_modules')).isSymbolicLink(), true);
+    } finally {
+      fs.rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
+  test('T-I2 never calls fs.rmSync for an external target (AC-1, AC-10)', async () => {
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim282-rm-'));
+    fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
+
+    try {
+      const manager = new GitWorktreeManager(executor({}));
+      const { paths } = await recordRmSync(async () => {
+        await assert.rejects(async () => {
+          await manager.removeWorktree({ worktreePath: victim, workspaceDir: tmpDir });
+        });
+      });
+
+      assert.strictEqual(
+        paths.some((p) => p === victim || p.startsWith(victim + path.sep)),
+        false,
+        `fs.rmSync must never run for the external victim; saw: ${paths.join(', ')}`
+      );
+      assert.strictEqual(fs.existsSync(path.join(victim, 'data')), true);
+    } finally {
+      fs.rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
+  test("T-I3 resolveTaskWorktreePath rejects absolute, '..', multi-segment and unsafe ids (AC-2)", async () => {
+    const manager = new GitWorktreeManager(executor({}));
+
+    for (const bad of ['/tmp/x', '..', 'a/b', 'a\\b', '.', '-x', 'x;rm', '   ']) {
+      await assert.rejects(
+        async () => {
+          await manager.resolveTaskWorktreePath(tmpDir, bad);
+        },
+        (err: unknown) => {
+          assert.ok(
+            /Refusing|required/i.test((err as Error).message),
+            `segment '${bad}' produced: ${(err as Error).message}`
+          );
+          return true;
+        }
+      );
+    }
+
+    await assert.rejects(async () => {
+      await manager.resolveTaskWorktreePath(tmpDir, '87', path.join(tmpDir, 'absolute-worktrees'));
+    });
+
+    // Minor (#282 review): a REPOSITORY-RELATIVE worktreesDir must not escape
+    // either — `../escape-dir` would otherwise place the container outside.
+    for (const escapingDir of ['../escape-dir', path.join('nested', '..', '..', 'escape-dir')]) {
+      await assert.rejects(
+        async () => {
+          await manager.resolveTaskWorktreePath(tmpDir, '87', escapingDir);
+        },
+        (err: unknown) => {
+          assert.ok(
+            /worktreesDir|inside the repository root/i.test((err as Error).message),
+            `worktreesDir '${escapingDir}' produced: ${(err as Error).message}`
+          );
+          return true;
+        }
+      );
+    }
+
+    for (const good of ['87', 'adhoc', 'orphan-task-1']) {
+      const resolved = await manager.resolveTaskWorktreePath(tmpDir, good);
+      assert.strictEqual(resolved, path.resolve(tmpDir, '.worktrees', good));
+    }
+  });
+
+  test('T-I4 refuses a .worktrees symlink that escapes and leaves the victim intact (AC-3)', async () => {
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim282-link-'));
+    fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
+    const linkDir = path.join(tmpDir, '.worktrees');
+    fs.mkdirSync(linkDir, { recursive: true });
+    const linkPath = path.join(linkDir, '666');
+    fs.symlinkSync(victim, linkPath, 'dir');
+
+    const commands: string[] = [];
+    try {
+      const manager = new GitWorktreeManager(executor({ commands }));
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({ worktreePath: linkPath, workspaceDir: tmpDir });
+        },
+        (err: unknown) => {
+          assert.ok(/symbolic link|outside/i.test((err as Error).message), (err as Error).message);
+          return true;
+        }
+      );
+
+      assert.strictEqual(commands.some((c) => c.includes('git worktree remove')), false);
+      assert.strictEqual(fs.readFileSync(path.join(victim, 'data'), 'utf8'), 'keep');
+      assert.strictEqual(fs.lstatSync(linkPath).isSymbolicLink(), true);
+    } finally {
+      fs.rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
+  test('T-I5 refuses a missing target with a clear error instead of reporting success (AC-4)', async () => {
+    const commands: string[] = [];
+    const manager = new GitWorktreeManager(
+      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+    );
+
+    await assert.rejects(
+      async () => {
+        await manager.removeWorktree({
+          worktreePath: path.join(tmpDir, '.worktrees', '999'),
+          workspaceDir: tmpDir
+        });
+      },
+      (err: unknown) => {
+        assert.ok(
+          /does not exist|not a registered/i.test((err as Error).message),
+          (err as Error).message
+        );
+        return true;
+      }
+    );
+
+    assert.strictEqual(commands.some((c) => c.includes('git worktree remove')), false);
+    assert.strictEqual(commands.some((c) => c.includes('git worktree prune')), false);
+  });
+
+  test('T-I6 refuses an unregistered external directory (AC-5)', async () => {
+    const externalDir = path.join(tmpDir, 'external-unregistered');
+    fs.mkdirSync(externalDir, { recursive: true });
+    fs.writeFileSync(path.join(externalDir, 'sentinel'), 'keep', 'utf8');
+
+    const commands: string[] = [];
+    const manager = new GitWorktreeManager(
+      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+    );
+
+    const { paths } = await recordRmSync(async () => {
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({
+            worktreePath: externalDir,
+            workspaceDir: tmpDir,
+            allowExternal: true
+          });
+        },
+        (err: unknown) => {
+          assert.ok(/not a registered/i.test((err as Error).message), (err as Error).message);
+          return true;
+        }
+      );
+    });
+
+    assert.strictEqual(fs.readFileSync(path.join(externalDir, 'sentinel'), 'utf8'), 'keep');
+    assert.strictEqual(paths.includes(externalDir), false);
+    assert.strictEqual(commands.some((c) => c.includes('git worktree remove')), false);
+  });
+
+  test('T-I7 refuses an unregistered folder inside .worktrees instead of force-deleting it (AC-5)', async () => {
+    const unregistered = path.join(tmpDir, '.worktrees', '777');
+    fs.mkdirSync(unregistered, { recursive: true });
+    fs.writeFileSync(path.join(unregistered, 'sentinel'), 'keep', 'utf8');
+
+    const commands: string[] = [];
+    const manager = new GitWorktreeManager(
+      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+    );
+
+    await assert.rejects(
+      async () => {
+        await manager.removeWorktree({ worktreePath: unregistered, workspaceDir: tmpDir });
+      },
+      (err: unknown) => {
+        assert.ok(/not a registered/i.test((err as Error).message), (err as Error).message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(fs.readFileSync(path.join(unregistered, 'sentinel'), 'utf8'), 'keep');
+    assert.strictEqual(commands.some((c) => c.includes('git worktree remove')), false);
+  });
+
+  test('T-I8 removes a registered worktree, prunes, and does not fall back (AC-6)', async () => {
+    const wtPath = path.join(tmpDir, '.worktrees', '87');
+    fs.mkdirSync(wtPath, { recursive: true });
+
+    const commands: string[] = [];
+    const manager = new GitWorktreeManager(
+      executor({
+        commands,
+        porcelain: porcelainFor(tmpDir, [wtPath]),
+        onRemove: (cmd) => {
+          // Simulate git detaching the worktree (empty dir -> rmdir, so the
+          // rmSync recorder below can only observe a real fallback call).
+          try {
+            fs.rmdirSync(wtPath);
+          } catch {
+            // Ignore
+          }
+          return makeResult(cmd);
+        }
+      })
+    );
+
+    const { paths } = await recordRmSync(async () => {
+      await manager.removeWorktree({ worktreePath: wtPath, workspaceDir: tmpDir, prune: true });
+    });
+
+    assert.strictEqual(fs.existsSync(wtPath), false);
+    assert.ok(commands.some((c) => c.includes(`git worktree remove --force "${wtPath}"`)));
+    assert.ok(commands.some((c) => c === 'git worktree prune'));
+    assert.strictEqual(paths.includes(wtPath), false, 'no rmSync fallback for a successful git removal');
+  });
+
+  test('T-I9 a registered external worktree with allowExternal is removed by git only (AC-10)', async () => {
+    const mainRepoRoot = path.join(tmpDir, 'main');
+    fs.mkdirSync(mainRepoRoot, { recursive: true });
+    const externalPath = path.join(tmpDir, 'external-282');
+    fs.mkdirSync(externalPath, { recursive: true });
+
+    const manager = new GitWorktreeManager(
+      executor({
+        porcelain: porcelainFor(mainRepoRoot, [externalPath]),
+        onRemove: (cmd) => {
+          try {
+            fs.rmdirSync(externalPath);
+          } catch {
+            // Ignore
+          }
+          return makeResult(cmd);
+        }
+      })
+    );
+
+    const { paths } = await recordRmSync(async () => {
+      await manager.removeWorktree({
+        worktreePath: externalPath,
+        workspaceDir: mainRepoRoot,
+        allowExternal: true,
+        prune: false
+      });
+    });
+
+    assert.strictEqual(fs.existsSync(externalPath), false);
+    assert.strictEqual(paths.includes(externalPath), false, 'git alone must delete an external worktree');
+  });
+
+  test('T-I10 a registered external worktree without allowExternal is refused (AC-10)', async () => {
+    const mainRepoRoot = path.join(tmpDir, 'main');
+    fs.mkdirSync(mainRepoRoot, { recursive: true });
+    const externalPath = path.join(tmpDir, 'external-282-refused');
+    fs.mkdirSync(externalPath, { recursive: true });
+    fs.writeFileSync(path.join(externalPath, 'sentinel'), 'keep', 'utf8');
+
+    const commands: string[] = [];
+    const manager = new GitWorktreeManager(
+      executor({ commands, porcelain: porcelainFor(mainRepoRoot, [externalPath]) })
+    );
+
+    await assert.rejects(
+      async () => {
+        await manager.removeWorktree({
+          worktreePath: externalPath,
+          workspaceDir: mainRepoRoot,
+          prune: false
+        });
+      },
+      (err: unknown) => {
+        assert.ok(/outside .*\.worktrees/i.test((err as Error).message), (err as Error).message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(fs.readFileSync(path.join(externalPath, 'sentinel'), 'utf8'), 'keep');
+    assert.strictEqual(commands.some((c) => c.includes('git worktree remove')), false);
+  });
+
+  test('T-I12 tolerateMissing resolves and prunes when the directory is already gone (AC-12)', async () => {
+    const commands: string[] = [];
+    const manager = new GitWorktreeManager(
+      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+    );
+
+    await assert.doesNotReject(async () => {
+      await manager.removeWorktree({
+        worktreePath: path.join(tmpDir, '.worktrees', '555'),
+        workspaceDir: tmpDir,
+        tolerateMissing: true
+      });
+    });
+
+    assert.ok(commands.some((c) => c === 'git worktree prune'));
+  });
+
+  test('T-I13 surfaces a git failure for a registered in-.worktrees worktree when the fallback cannot delete it (AC-5)', async () => {
+    const wtPath = path.join(tmpDir, '.worktrees', '88');
+    fs.mkdirSync(wtPath, { recursive: true });
+    fs.writeFileSync(path.join(wtPath, 'sentinel'), 'keep', 'utf8');
+
+    const manager = new GitWorktreeManager(
+      executor({
+        porcelain: porcelainFor(tmpDir, [wtPath]),
+        onRemove: (cmd) =>
+          makeResult(cmd, {
+            exitCode: 1,
+            stderr: 'fatal: worktree is dirty',
+            combinedOutput: 'fatal: worktree is dirty'
+          })
+      })
+    );
+
+    const originalRmSync = fs.rmSync;
+    // Make the in-.worktrees fallback a no-op: the failure must be decided by
+    // git's exit code, not by a post-deletion `existsSync`.
+    fs.rmSync = (() => undefined) as typeof fs.rmSync;
+    try {
+      await assert.rejects(
+        async () => {
+          await manager.removeWorktree({ worktreePath: wtPath, workspaceDir: tmpDir, prune: false });
+        },
+        (err: unknown) => {
+          assert.ok(/worktree is dirty/.test((err as Error).message), (err as Error).message);
+          return true;
+        }
+      );
+    } finally {
+      fs.rmSync = originalRmSync;
+    }
+
+    assert.strictEqual(fs.readFileSync(path.join(wtPath, 'sentinel'), 'utf8'), 'keep');
+  });
+
+  test('T-I14 prunable registrations are refused with remediation (AC-5)', async () => {
+    const wtPath = path.join(tmpDir, '.worktrees', '89');
+    const prunablePorcelain = `${porcelainFor(tmpDir, [wtPath]).trimEnd()}\nprunable gitdir file points to non-existent location\n`;
+
+    const commands: string[] = [];
+    const refusing = new GitWorktreeManager(executor({ commands, porcelain: prunablePorcelain }));
+
+    await assert.rejects(
+      async () => {
+        await refusing.removeWorktree({ worktreePath: wtPath, workspaceDir: tmpDir });
+      },
+      (err: unknown) => {
+        assert.ok(
+          /prunable|worktree prune/i.test((err as Error).message),
+          (err as Error).message
+        );
+        return true;
+      }
+    );
+    assert.strictEqual(commands.some((c) => c.includes('git worktree remove')), false);
+
+    // With `tolerateMissing` the internal teardown still resolves and prunes.
+    const tolerantCommands: string[] = [];
+    const tolerant = new GitWorktreeManager(
+      executor({ commands: tolerantCommands, porcelain: prunablePorcelain })
+    );
+    await assert.doesNotReject(async () => {
+      await tolerant.removeWorktree({
+        worktreePath: wtPath,
+        workspaceDir: tmpDir,
+        tolerateMissing: true
+      });
+    });
+    assert.ok(tolerantCommands.some((c) => c === 'git worktree prune'));
   });
 });
 
