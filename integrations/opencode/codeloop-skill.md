@@ -42,6 +42,24 @@ The Reviewer subagent runs read-only, so its verdict block travels back through 
 
 A verdict block that cannot be parsed is a hard failure: the review is recorded or the run fails — a `CHANGES_REQUESTED` is never silently downgraded to a skip.
 
+## Triaging PR Review Comments
+
+When `codeloop next --json` reports the pipeline is at the **TRIAGE** gate, dispatch the triage subagent (its prompt names the same command):
+
+```
+codeloop triage <action> --issue <id>
+```
+
+Valid actions (all five, each with its side effect):
+
+- `implement` — routes to `IMPLEMENT` with the review comments as context.
+- `plan` — routes to `PLAN` for structural plan revision.
+- `discovery` — routes to `DISCOVERY` for investigative root-cause analysis.
+- `completed` — records a disposition and posts nothing to the PR (the non-destructive exit).
+- `dismiss` — records a disposition and replies to/resolves the PR threads (writes to GitHub).
+
+A routing action requires the checkpoint to be at the **TRIAGE** gate: run `codeloop next --json` first. List mode (`codeloop triage` with no action) is read-only and never mutates state.
+
 ## Recovering From a Gate Pause
 
 `codeloop next --json` returns `actionable: false` plus a `pause` object (`{ gate, pausedAt, resumeCommand, message }`) when the pipeline is halted. The most common cause is a provider quota rejection (HTTP 429 / `RESOURCE_EXHAUSTED`, exit code `2`), which is checkpointed — nothing is lost.

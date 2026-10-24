@@ -26,6 +26,7 @@ const {
 } = require('../../dist/presentation/cli');
 const {
   CLI_DOCUMENTED_COMMANDS,
+  CLI_COMMANDS,
   STATE_MUTATING_COMMANDS,
   COMMAND_TRIAGE,
   COMMAND_HALT,
@@ -176,5 +177,34 @@ describe('Skill <-> CLI command contract (issue #269)', () => {
       !skill.includes('`codeloop review`: Perform AI standards verification'),
       'the stale description of the non-existent command must be gone'
     );
+  });
+
+  test('SK5: the two command registries are reconciled and derived from one another (issue #276)', () => {
+    const documented = [...CLI_DOCUMENTED_COMMANDS];
+    const mapped = Object.values(CLI_COMMANDS) as string[];
+
+    assert.deepStrictEqual(
+      [...documented].sort(),
+      [...mapped].sort(),
+      'CLI_DOCUMENTED_COMMANDS must be the values of CLI_COMMANDS'
+    );
+    assert.deepStrictEqual(
+      documented,
+      mapped,
+      'CLI_DOCUMENTED_COMMANDS must be Object.values(CLI_COMMANDS)'
+    );
+
+    assert.strictEqual(
+      documented.includes('gates'),
+      false,
+      'the removed `gates` command must not be documented'
+    );
+    assert.strictEqual(
+      documented.includes('gate'),
+      false,
+      'the removed `gate` command must not be documented'
+    );
+    assert.ok(documented.includes('resume'), '`resume` must be in the reconciled registry');
+    assert.ok(documented.includes('opencode'), '`opencode` must be in the reconciled registry');
   });
 });

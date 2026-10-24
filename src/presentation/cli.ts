@@ -24,7 +24,6 @@ import {
   STAGE_DISCOVERY,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_PLAN,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_TRIAGE,
   GATE_APPROVAL,
   GATE_COMMIT,
@@ -124,6 +123,15 @@ import {
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
   NOTE_TRIAGE_DISPOSITION_NOT_RECORDED,
   LABEL_TRIAGE_DISPOSITION,
+  // Issue #241 (D1/D4): ONE action vocabulary + ONE formatter for the parser,
+  // the error text, `--help`, the read-only hint and the stage precondition.
+  TRIAGE_DISPOSITION_ACTIONS,
+  formatTriageActionList,
+  formatTriageActionSideEffects,
+  MSG_TRIAGE_ROUTING_REQUIRES_GATE,
+  // Issue #272: the additive `status` line for the REVIEW re-dispatch record.
+  LABEL_REVIEW_DISPATCHES,
+  COMMAND_OPENCODE,
   // Issue #269 (R5): the ONE renderer for the operator-facing disposition
   // line. The CLI must not hand-render it.
   formatTriageDispositionLine,
@@ -390,7 +398,7 @@ Pipeline Management:
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
   opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
-  triage [action]    Triage PR review comments and route pipeline (implement|plan|discovery|dismiss)
+  triage [action]    Triage PR review comments and route pipeline (${formatTriageActionList('|')}); ${formatTriageActionSideEffects()}
   review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin); with no verdict it runs the critique-based review
 
 Operational Flags:
@@ -1487,6 +1495,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
       }
 
+      // Additive (issue #272): a REVIEW round that has been re-dispatched is
+      // observable in `status`, not only in the checkpoint file.
+      if (result.status.reviewDispatchCount > 0) {
+        console.log(`${LABEL_REVIEW_DISPATCHES} : ${result.status.reviewDispatchCount}`);
+      }
+
       if (result.activeTasks && result.activeTasks.length > 0) {
         console.log(`\nActive Tasks Matrix (${result.activeTasks.length}):`);
         console.log('--------------------------------------------------------------------------------');
@@ -1983,18 +1997,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'triage': {
       const rawAction = options.triageAction ? options.triageAction.toLowerCase() : null;
-      const validActions = ['implement', 'plan', 'discovery', 'dismiss', 'completed'];
-      if (rawAction && !validActions.includes(rawAction)) {
-        console.error(`Error: Unrecognized triage action '${options.triageAction}'. Available: implement, plan, discovery, dismiss, completed.`);
+      // ONE source: the parser validates against the same frozen action list the
+      // prompts, the help text and the hint render (issue #241, D4).
+      const validActions: readonly TriageAction[] = TRIAGE_DISPOSITION_ACTIONS;
+      if (rawAction && !(validActions as readonly string[]).includes(rawAction)) {
+        console.error(`Error: Unrecognized triage action '${options.triageAction}'. Available: ${formatTriageActionList(', ')}.`);
         return EXIT_CODE_FAILURE;
       }
       const action = (rawAction || undefined) as TriageAction | undefined;
-
-      if (action && process.env.AGY_SUBAGENT !== '1') {
-        console.error('Error: Execution blocked. Root agent is not allowed to run pipeline routing triage actions.');
-        console.error('You must invoke the dedicated Triage Subagent to handle PR review categorization.');
-        return EXIT_CODE_FAILURE;
-      }
 
       console.log('\n=== CodeLoop: PR Review Comments Triage ===');
       try {
@@ -2004,6 +2014,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // was read inside the use case, i.e. inside this try — that contract is
         // restored here.
         const scope = await resolveScope(stateRepo, issueValue);
+
+        // The replacement protection for the removed `AGY_SUBAGENT` marker
+        // (issue #241, §4.1): a routing action may only route a checkpoint that
+        // is actually AT the TRIAGE gate. This prevents routing the WRONG
+        // checkpoint; it is not a claim that a root actor is distinguishable
+        // from a subagent. List mode is unaffected.
+        if (action && scope.snapshot?.currentStage !== STAGE_TRIAGE) {
+          console.error(MSG_TRIAGE_ROUTING_REQUIRES_GATE);
+          return EXIT_CODE_FAILURE;
+        }
+
         const triageUseCase = new TriagePrCommentsUseCase(
           scope.repo,
           githubGateway,
@@ -2039,7 +2060,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (!action) {
-          console.log('(Read-only list mode: no state changes. Provide an action: implement|plan|discovery|dismiss.)\n');
+          console.log(`(Read-only list mode: no state changes. Provide an action: ${formatTriageActionList('|')}.)`);
+          console.log(`  ${formatTriageActionSideEffects()}.\n`);
           return EXIT_CODE_SUCCESS;
         }
 
@@ -2778,7 +2800,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.error('error: `gate`/`gates` subcommands have been removed. Use `agyloop next` to invoke the gate subagent.');
       return EXIT_CODE_FAILURE;
 
-    case 'opencode': {
+    case COMMAND_OPENCODE: {
       const subcmd = options.opencodeSubcommand || 'install';
       if (subcmd === 'install') {
         try {

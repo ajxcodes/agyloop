@@ -14,6 +14,7 @@ import {
   STAGE_APPROVAL,
   STAGE_COMPLETED,
   STAGE_PLAN,
+  STAGE_REVIEW,
   MODE_STANDARD,
   STATE_SCHEMA_VERSION,
   EXECUTION_MODES,
@@ -55,6 +56,12 @@ export interface StateMachineSnapshot {
   readonly totalHumanWaitMs?: number;
   readonly planRevisionCount?: number;
   readonly implementToGateLoops?: number;
+  /**
+   * How many times the current REVIEW round has dispatched the reviewer
+   * without a verdict being filed (issue #272). Optional: a checkpoint written
+   * before this field loads as `0`.
+   */
+  readonly reviewDispatchCount?: number;
 }
 
 export interface StateStatusSummary {
@@ -75,6 +82,7 @@ export interface StateStatusSummary {
   readonly activeExecutionDurationMs: number;
   readonly planRevisionCount: number;
   readonly implementToGateLoops: number;
+  readonly reviewDispatchCount: number;
 }
 
 export class StateMachine {
@@ -95,6 +103,7 @@ export class StateMachine {
   private _totalHumanWaitMs: number;
   private _planRevisionCount: number;
   private _implementToGateLoops: number;
+  private _reviewDispatchCount: number;
 
   constructor(options: {
     stage?: Stage;
@@ -114,6 +123,7 @@ export class StateMachine {
     totalHumanWaitMs?: number;
     planRevisionCount?: number;
     implementToGateLoops?: number;
+    reviewDispatchCount?: number;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -132,6 +142,7 @@ export class StateMachine {
     this._totalHumanWaitMs = typeof options.totalHumanWaitMs === 'number' ? options.totalHumanWaitMs : 0;
     this._planRevisionCount = typeof options.planRevisionCount === 'number' ? options.planRevisionCount : 0;
     this._implementToGateLoops = typeof options.implementToGateLoops === 'number' ? options.implementToGateLoops : 0;
+    this._reviewDispatchCount = typeof options.reviewDispatchCount === 'number' ? options.reviewDispatchCount : 0;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -227,6 +238,26 @@ export class StateMachine {
 
   public incrementImplementGateLoop(): void {
     this._implementToGateLoops++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get reviewDispatchCount(): number {
+    return this._reviewDispatchCount;
+  }
+
+  /**
+   * Records one reviewer dispatch in the current REVIEW round (issue #272).
+   *
+   * Mirrors `incrementImplementGateLoop`: the counter is a context field, so
+   * `next` may record it without advancing a stage.
+   */
+  public recordReviewDispatch(): void {
+    this._reviewDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public resetReviewDispatchCount(): void {
+    this._reviewDispatchCount = 0;
     this._updatedAt = new Date().toISOString();
   }
 
@@ -371,6 +402,11 @@ export class StateMachine {
     const now = new Date().toISOString();
     this._stage = target;
     this._updatedAt = now;
+    // A transition INTO REVIEW starts a fresh review round, so the dispatch
+    // record of the previous round must not leak into it (issue #272).
+    if (target.value === STAGE_REVIEW) {
+      this._reviewDispatchCount = 0;
+    }
     this._history.push({
       stage: target.value,
       timestamp: now,
@@ -422,6 +458,7 @@ export class StateMachine {
     this._totalHumanWaitMs = 0;
     this._planRevisionCount = 0;
     this._implementToGateLoops = 0;
+    this._reviewDispatchCount = 0;
     this._updatedAt = now;
     this._history = [
       {
@@ -450,7 +487,8 @@ export class StateMachine {
       totalHumanWaitMs: this._totalHumanWaitMs,
       activeExecutionDurationMs: this.activeExecutionDurationMs(),
       planRevisionCount: this._planRevisionCount,
-      implementToGateLoops: this._implementToGateLoops
+      implementToGateLoops: this._implementToGateLoops,
+      reviewDispatchCount: this._reviewDispatchCount
     };
   }
 
@@ -473,7 +511,8 @@ export class StateMachine {
       pausedAtTimestamp: this._pausedAtTimestamp,
       totalHumanWaitMs: this._totalHumanWaitMs,
       planRevisionCount: this._planRevisionCount,
-      implementToGateLoops: this._implementToGateLoops
+      implementToGateLoops: this._implementToGateLoops,
+      reviewDispatchCount: this._reviewDispatchCount
     };
   }
 
@@ -524,7 +563,8 @@ export class StateMachine {
       pausedAtTimestamp: snapshot.pausedAtTimestamp || null,
       totalHumanWaitMs: typeof snapshot.totalHumanWaitMs === 'number' ? snapshot.totalHumanWaitMs : 0,
       planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0,
-      implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0
+      implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0,
+      reviewDispatchCount: typeof snapshot.reviewDispatchCount === 'number' ? snapshot.reviewDispatchCount : 0
     });
   }
 

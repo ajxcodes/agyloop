@@ -51,7 +51,21 @@ import {
   MAX_INLINE_DIFF_LINES,
   DiffAnalyzer,
   IssueNumber,
-  ANTI_INCEPTION_GUARDRAIL
+  ANTI_INCEPTION_GUARDRAIL,
+  buildDefaultTriageSystemPrompt,
+  formatTriageActionList,
+  formatTriageActionSideEffects,
+  formatTriageRoutingCommand,
+  formatReviewVerdictChannelCommand,
+  NOTE_REVIEW_VERDICT_CHANNEL,
+  NOTE_REVIEW_GATE_EXIT_CONDITION,
+  formatToolProse,
+  TOOL_CAPABILITY_READ,
+  TOOL_CAPABILITY_SEARCH,
+  TOOL_CAPABILITY_LIST,
+  TOOL_CAPABILITY_WRITE,
+  TOOL_CAPABILITY_EDIT,
+  TOOL_CAPABILITY_SHELL
 } from '../domain';
 
 export {
@@ -323,6 +337,16 @@ export class ResolveSubagentUseCase {
     return DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
   }
 
+  public getTriageSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+    if (this.promptRepo) {
+      return this.promptRepo.loadPrompt(ROLE_TRIAGE, {
+        promptPath: options.promptPath,
+        cwd: options.workspaceDir
+      });
+    }
+    return buildDefaultTriageSystemPrompt();
+  }
+
   public execute(options: ResolveSubagentOptions = {}): SubagentDescriptor {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
     const config = options.customConfig || this.configRepo.loadConfig({ cwd: options.workspaceDir });
@@ -425,7 +449,10 @@ export class ResolveSubagentUseCase {
           enable_subagent_tools: false,
           enable_mcp_tools: false
         },
-        system_prompt: `# AgyLoop Triage Subagent System Prompt\nYou are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.\nYou may use \`bin/agyloop triage <implement|plan|discovery|completed|dismiss>\` to route the pipeline.`
+        system_prompt: this.getTriageSystemPrompt({
+          promptPath: options.promptPath,
+          workspaceDir: options.workspaceDir
+        })
       };
     }
 
@@ -502,7 +529,7 @@ export class ResolveSubagentUseCase {
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
 
     if (isContainerAvailable) {
       prompt += `2. **Strict Container-Only Guardrail**: Command execution in Discovery can ONLY run containerized invocations (\`act\`, \`podman run\`, \`docker run\`). Uncontained host mutations or native executions on the host are strictly prohibited to prevent host environment pollution.\n`;
@@ -591,7 +618,7 @@ export class ResolveSubagentUseCase {
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
     if (params.planPath) {
       prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n`;
@@ -643,8 +670,8 @@ export class ResolveSubagentUseCase {
 
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Plan Fidelity**: Adhere strictly to the approved specification. Do not perform unauthorized refactorings, style drifts, or introduce unrequested dependencies.\n`;
-    prompt += `2. **Surgical Modifications**: Use \`replace_file_content\` for targeted edits on existing files. Use \`write_to_file\` only for new files.\n`;
-    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n`;
+    prompt += `2. **Surgical Modifications**: Use ${formatToolProse([TOOL_CAPABILITY_EDIT])} for targeted edits on existing files. Use ${formatToolProse([TOOL_CAPABILITY_WRITE])} only for new files.\n`;
+    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via ${formatToolProse([TOOL_CAPABILITY_SHELL])} to validate all code edits before completing.\n`;
     prompt += `4. **No Commits**: Do NOT commit your changes. Leave them staged or unstaged in the worktree. The orchestrator's commit gate handles committing.\n\n`;
 
     if (params.workspaceDir) {
@@ -701,7 +728,7 @@ export class ResolveSubagentUseCase {
       const planFileName = params.planPath.replace(/^.*[\\/]/, '');
       prompt += `### Approved Technical Plan (${planFileName}):\n`;
       prompt += `The approved technical plan is located at \`${params.planPath}\`.\n`;
-      prompt += `You MUST read this file using the \`view_file\` tool to understand the acceptance criteria and implementation checklist before proceeding.\n\n`;
+      prompt += `You MUST read this file using ${formatToolProse([TOOL_CAPABILITY_READ])} to understand the acceptance criteria and implementation checklist before proceeding.\n\n`;
     } else if (params.planContent && params.planContent.trim()) {
       prompt += `### Approved Technical Plan (${PLAN_DEFAULT_SPECIFICATION_TITLE}):\n\n`;
       prompt += `${params.planContent.trim()}\n\n`;
@@ -753,7 +780,7 @@ export class ResolveSubagentUseCase {
     prompt += `Your goal is to execute automated build, typecheck, and test suites, isolate diagnostics, and report an objective quality verdict.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Verification Only**: You have access strictly to \`run_command\` and \`view_file\`. Never attempt to edit source files.\n`;
+    prompt += `1. **Verification Only**: You have access strictly to ${formatToolProse([TOOL_CAPABILITY_SHELL, TOOL_CAPABILITY_READ], { plural: true })}. Never attempt to edit source files.\n`;
     prompt += `2. **Log Shielding Mandate**: Do not flood the parent conversation with raw terminal output. Filter noise and extract concise failure summaries.\n`;
     prompt += `3. **Strict Timeout & Exit Code Respect**: Any non-zero exit code or timeout is an immediate gate failure.\n\n`;
 
@@ -780,7 +807,7 @@ export class ResolveSubagentUseCase {
 
     if (params.planPath) {
       prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
-      prompt += `You MUST read the "Manual Smoke Test Protocol" from the approved plan located at \`${params.planPath}\` using the \`view_file\` tool and execute those steps automatically using your tools.\n\n`;
+      prompt += `You MUST read the "Manual Smoke Test Protocol" from the approved plan located at \`${params.planPath}\` using ${formatToolProse([TOOL_CAPABILITY_READ])} and execute those steps automatically using your tools.\n\n`;
     } else if (params.planContent && params.planContent.trim()) {
       prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
       prompt += `You MUST read the "Manual Smoke Test Protocol" from the provided plan below and execute those steps automatically using your tools.\n`;
@@ -810,12 +837,12 @@ export class ResolveSubagentUseCase {
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${REVIEWER_TOOLS.join(', ')}). Never attempt to write or edit files.\n`;
+    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_SHELL], { plural: true })}). Never attempt to write or edit files.\n`;
     prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
 
     prompt += `### Two-Tier Review Methodology:\n`;
-    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using \`run_command\`:\n`;
+    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
     prompt += `   \`\`\`bash\n`;
     prompt += `   export PATH="$HOME/.local/bin:$PATH" && ${critiqueBinary} --json\n`;
     prompt += `   \`\`\`\n`;
@@ -904,7 +931,7 @@ export class ResolveSubagentUseCase {
           prompt += `#### Diff Stat:\n\`\`\`\n${statSummary}\n\`\`\`\n\n`;
         }
         prompt += `### Working Diff Inspection:\n`;
-        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using \`run_command\`:\n`;
+        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
         prompt += `\`\`\`bash\n`;
         prompt += `git diff --stat ${baseBranch} -- . ${diffExcludeArgs}\n`;
         prompt += `git diff ${baseBranch} -- <file_path>\n`;
@@ -914,7 +941,7 @@ export class ResolveSubagentUseCase {
       }
     } else {
       prompt += `### Working Diff Inspection:\n`;
-      prompt += `Inspect the working diff using \`run_command\` with \`${diffInspectionCmd}\`:\n`;
+      prompt += `Inspect the working diff using ${formatToolProse([TOOL_CAPABILITY_SHELL])} with \`${diffInspectionCmd}\`:\n`;
       prompt += `\`\`\`bash\n`;
       prompt += `${diffInspectionCmd}\n`;
       prompt += `\`\`\`\n\n`;
@@ -935,13 +962,12 @@ export class ResolveSubagentUseCase {
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
     prompt += `\`\`\`\n\n`;
 
-    // Issue #269: the verdict block is the ONLY record of this review, and
-    // there must be a channel for it to reach the checkpoint. The reviewer
-    // subagent is read-only (no write tools), so the channel is a COMMAND the
-    // orchestrator runs with the block.
-    prompt += `The verdict block above is the ONLY record of this review. The orchestrator files it with:\n`;
-    prompt += `    codeloop review --issue <n> --verdict-file <path>\n`;
-    prompt += `(or \`--review-output "<block>"\`, or by piping the block into \`codeloop review --verdict-stdin\`).\n`;
+    // Issue #269 built the channel; issue #272 makes the OPERATOR fields and the
+    // dispatched prompt share ONE formatter and ONE template, so the instruction
+    // cannot say something different from what the directive names.
+    const verdictChannelCommand = formatReviewVerdictChannelCommand(effectiveIssue);
+    prompt += `The verdict block above is the ONLY record of this review. ${NOTE_REVIEW_VERDICT_CHANNEL.replace('{command}', verdictChannelCommand)}\n`;
+    prompt += `${NOTE_REVIEW_GATE_EXIT_CONDITION}\n`;
     prompt += `Emit the block verbatim as the LAST thing in your response. Do not wrap the \`REVIEW_STATUS:\` line\n`;
     prompt += `in anything else.\n\n`;
 
@@ -968,7 +994,12 @@ export class ResolveSubagentUseCase {
       prompt += `### Review Comments to Triage:\n${params.triagePayload.trim()}\n\n`;
     }
 
-    prompt += `You are the Triage Subagent. Directly inspect the comments and execute \`bin/agyloop triage <action>\` using \`run_command\`. Do NOT spawn another subagent to do this.\n\n`;
+    prompt += `You are the Triage Subagent. Directly inspect the comments and route the pipeline by executing:\n`;
+    prompt += `    ${formatTriageRoutingCommand({ issue: effectiveIssue })}\n`;
+    prompt += `Run that command with ${formatToolProse([TOOL_CAPABILITY_SHELL])}.\n`;
+    prompt += `Where \`<action>\` is one of: ${formatTriageActionList()}.\n`;
+    prompt += `Side effects: ${formatTriageActionSideEffects()}.\n`;
+    prompt += `A routing action requires the checkpoint to be at the TRIAGE gate; \`codeloop next\` is the entry path. Do NOT spawn another subagent to do this.\n\n`;
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();

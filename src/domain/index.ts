@@ -35,6 +35,7 @@ export * from './value-objects/discovery-report';
 export * from './value-objects/semver-calculator';
 export * from './value-objects/version-anchor';
 export * from './value-objects/critique-version';
+export * from './value-objects/tool-vocabulary';
 export * from './value-objects/shell-quoting';
 export * from './entities/state-machine';
 

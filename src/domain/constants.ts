@@ -187,6 +187,36 @@ export const TOOL_WRITE_TO_FILE = 'write_to_file' as const;
 export const TOOL_REPLACE_FILE_CONTENT = 'replace_file_content' as const;
 export const TOOL_RUN_COMMAND = 'run_command' as const;
 
+/**
+ * Host-NEUTRAL capability words for a DISPATCHED prompt (issue #241, D6).
+ *
+ * The identifiers above are Antigravity's. A dispatched directive is executed
+ * by whatever harness the operator runs — OpenCode exposes `read`/`grep`/
+ * `glob`/`write`/`edit`/`shell`, not the names above — so naming one host's
+ * identifiers in a directive written for another is the same defect as
+ * naming a command the CLI refuses.
+ *
+ * These words are generic English verbs, deliberately NOT any host's tool
+ * identifiers: naming `read`/`grep` would re-introduce the same defect in the
+ * other direction. `formatToolProse` turns them into prose; `ToolWhitelist`
+ * and the Antigravity plugin's system-prompt assets keep the identifiers.
+ */
+export const TOOL_CAPABILITY_READ = 'read' as const;
+export const TOOL_CAPABILITY_SEARCH = 'search' as const;
+export const TOOL_CAPABILITY_LIST = 'list' as const;
+export const TOOL_CAPABILITY_WRITE = 'write' as const;
+export const TOOL_CAPABILITY_EDIT = 'edit' as const;
+export const TOOL_CAPABILITY_SHELL = 'shell' as const;
+export const TOOL_PROSE_QUALIFIER = 'your harness-provided' as const;
+
+export type ToolCapability =
+  | typeof TOOL_CAPABILITY_READ
+  | typeof TOOL_CAPABILITY_SEARCH
+  | typeof TOOL_CAPABILITY_LIST
+  | typeof TOOL_CAPABILITY_WRITE
+  | typeof TOOL_CAPABILITY_EDIT
+  | typeof TOOL_CAPABILITY_SHELL;
+
 export const PLANNER_TOOLS = Object.freeze([
   ...READ_ONLY_TOOLS,
   TOOL_WRITE_TO_FILE,
@@ -296,6 +326,15 @@ export const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hour
 export const EXIT_CODE_SUCCESS = 0 as const;
 export const EXIT_CODE_FAILURE = 1 as const;
 export const MAX_IMPLEMENT_GATE_LOOPS = 3 as const;
+/**
+ * How many times a REVIEW round may dispatch the reviewer without a verdict
+ * being filed before the gate breaks out to a human (issue #272).
+ *
+ * The counter is a CONTEXT field, like `implementToGateLoops`: `codeloop next`
+ * records the re-dispatch so "reviewer invoked, verdict forgotten" can never be
+ * mistaken for "reviewer never invoked".
+ */
+export const MAX_REVIEW_DISPATCH_LOOPS = 3 as const;
 
 // Circuit Breaker Defaults & Action Types
 export const DEFAULT_CB_MAX_TURNS_PER_SUBAGENT = 15 as const;
@@ -409,6 +448,8 @@ export const PROMPT_FILE_PLANNER = 'planner.md' as const;
 export const PROMPT_FILE_IMPLEMENTER = 'implementer.md' as const;
 export const PROMPT_FILE_GATE = 'gate.md' as const;
 export const PROMPT_FILE_REVIEWER = 'reviewer.md' as const;
+export const PROMPT_FILE_DISCOVERY = 'discovery.md' as const;
+export const PROMPT_FILE_TRIAGE = 'triage.md' as const;
 
 // Transition Notes
 export const NOTE_DEVELOPER_APPROVED = 'Approved by developer' as const;
@@ -513,7 +554,38 @@ export const MSG_COMMAND_FAILED_NO_OUTPUT = 'Command failed without output.' as 
  * all quote the operator the same sentence.
  */
 export const ISSUE_TOKEN_INVALID_MESSAGE = "Invalid --issue '{raw}'. Expected a positive integer (digits only), e.g. --issue 250." as const;
-export const MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST = 'State mutation is forbidden within smoke test isolation directories' as const;
+
+/**
+ * The tool's OWN smoke sandbox (issue #279).
+ *
+ * The role prompts used to mandate `/tmp/smoke-<issue>` — the one directory the
+ * storage-layer guard refuses EVERY state mutation in. The permitted path is the
+ * per-user cache directory below: outside the workspace (so `discoverWorkspaceRoot`
+ * cannot climb to the real `.agyloop`), outside the OS temp directory (so the
+ * `/tmp` rule does not apply), and positively recognisable as this tool's own
+ * sandbox by the guard.
+ *
+ * ONE source: the prompt prose, the recommended path in the refusal message and
+ * the guard's sandbox root all derive from these segments.
+ */
+export const SMOKE_SANDBOX_HOME_SEGMENTS = Object.freeze(['.cache', 'agyloop'] as const);
+export const SMOKE_SANDBOX_DIR_PREFIX = 'smoke-' as const;
+export const SMOKE_SANDBOX_HOME_ANCHOR = '$HOME' as const;
+export const SMOKE_SANDBOX_ROOT_DISPLAY = `${SMOKE_SANDBOX_HOME_ANCHOR}/${SMOKE_SANDBOX_HOME_SEGMENTS.join('/')}`;
+export const SMOKE_SANDBOX_RECOMMENDED_PATH = `${SMOKE_SANDBOX_ROOT_DISPLAY}/${SMOKE_SANDBOX_DIR_PREFIX}<issue>`;
+export const SMOKE_SANDBOX_MANDATE =
+  `If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely at \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`. If it is placed anywhere inside the workspace (e.g. \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.` as const;
+export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
+  'If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT` so the root-mutation guard does not block them.' as const;
+
+/**
+ * The in-repo smoke isolation directory the guard refuses outside a test run
+ * (issue #279). Composed from segments so the guard carries no magic path.
+ */
+export const SMOKE_ISOLATION_ARTIFACTS_DIR = 'artifacts' as const;
+export const SMOKE_ISOLATION_ARTIFACTS_PREFIX = 'smoke' as const;
+
+export const MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST = `State mutation is forbidden inside a smoke-isolation directory the tool does not recognise as its own sandbox (${SMOKE_SANDBOX_RECOMMENDED_PATH}).` as const;
 export const MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE = 'Test suite is forbidden from mutating the root orchestrator state.' as const;
 export const DIVIDER_DASHED = '----------------------------------------------------------------------' as const;
 
@@ -892,7 +964,7 @@ export const PLAN_DEFAULT_TITLE = 'Task Plan' as const;
 
 export const ANTI_INCEPTION_GUARDRAIL = `### Anti-Inception & Role Boundary Guardrail:
 - You are an isolated worker subagent, NOT the orchestrator.
-- You are STRICTLY FORBIDDEN from calling \`invoke_subagent\`, \`define_subagent\`, or spawning other subagents.
+- You are STRICTLY FORBIDDEN from dispatching or spawning other subagents (including via your harness's subagent/task tool).
 - Do not attempt to orchestrate lifecycle stages; perform your specific role directly.` as const;
 
 export const DEFAULT_DISCOVERY_SYSTEM_PROMPT = `# AgyLoop Discovery Subagent System Prompt
@@ -913,8 +985,8 @@ Your primary purpose is deep defect discovery, comprehensive root-cause analysis
 - Locate all relevant symbols, classes, functions across the codebase.
 - Trace the failure mechanism from ingress to failure.
 - Manually smoke test the bug to record exact, minimal reproduction commands, failing test targets, and reproduction results.
-- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely (explicitly recommending \`/tmp/smoke-<issue>\`). If it is placed anywhere inside the workspace (e.g., \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.
-- If testing root commands, you must run them in the isolated directory and unset \`AGY_SUBAGENT\` (\`env -u AGY_SUBAGENT ...\`) to bypass the guard for the test.` as const;
+- ${SMOKE_SANDBOX_MANDATE}
+- If testing root commands, you must run them in the isolated directory. ${SMOKE_SANDBOX_AGY_SUBAGENT_NOTE}` as const;
 
 // Default System Prompts (Embedded Domain Fallbacks)
 export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt
@@ -983,7 +1055,7 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Exact automated test commands (e.g. \`node --test tests/example.test.js\`).
    - Lint, typecheck, or build commands.
    - Manual verification steps if applicable.
-   - NOTE: If the smoke test requires state-mutating commands (like \`bin/agyloop transition\`), explicitly mandate cloning to an isolated dummy directory OUTSIDE the workspace (e.g. \`/tmp/smoke-<issue>\`), and unset \`AGY_SUBAGENT\` to simulate human execution.
+   - NOTE: ${SMOKE_SANDBOX_MANDATE} ${SMOKE_SANDBOX_AGY_SUBAGENT_NOTE}
 
 ---
 
@@ -1070,8 +1142,8 @@ Your primary purpose is to execute verification suites (typechecking, linting, b
 - Execute verification commands sequentially (e.g. \`npm run typecheck\`, \`npm test\`).
 - Track execution status, exit code, and runtime duration for each command.
 - Respect execution timeouts strictly.
-- If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely (explicitly recommending \`/tmp/smoke-<issue>\`). If it is placed anywhere inside the workspace (e.g., \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.
-- If testing root commands, you must run them in the isolated directory and unset \`AGY_SUBAGENT\` (\`env -u AGY_SUBAGENT ...\`) to bypass the guard for the test.
+- ${SMOKE_SANDBOX_MANDATE}
+- If testing root commands, you must run them in the isolated directory. ${SMOKE_SANDBOX_AGY_SUBAGENT_NOTE}
 
 ### Phase B: Diagnostics Extraction & Filtering
 - When a command succeeds (exit code 0):
@@ -1915,6 +1987,102 @@ export const TRIAGE_DISPOSITION_ACTIONS = Object.freeze([
 export type TriageDispositionAction = (typeof TRIAGE_DISPOSITION_ACTIONS)[number];
 
 /**
+ * The ONE routing-command template the triage directive names (issue #241, D1).
+ *
+ * The dispatched prompt and the operator-facing surfaces are both built from
+ * this template, so the command a subagent is told to run is a command the CLI
+ * accepts as written — no environment marker to discover, no second copy to
+ * drift. `{action}` is substituted with the placeholder or a concrete action;
+ * `{issue}` only appears when an issue is known.
+ */
+export const TRIAGE_ROUTING_COMMAND_TEMPLATE = 'codeloop triage {action} --issue {issue}' as const;
+export const TRIAGE_ROUTING_COMMAND_NO_ISSUE_TEMPLATE = 'codeloop triage {action}' as const;
+
+/**
+ * What each triage action DOES, as an operator-facing side effect (#277/AC3).
+ *
+ * `completed` and `dismiss` both record a disposition, but only `dismiss`
+ * writes to GitHub. That distinction is the whole reason an operator chooses
+ * one over the other, so it is data, not hand-typed help prose.
+ */
+export const TRIAGE_ACTION_SIDE_EFFECTS: Readonly<Record<TriageDispositionAction, string>> = Object.freeze({
+  implement: 'routes to IMPLEMENT with the review comments as context',
+  plan: 'routes to PLAN for structural plan revision',
+  discovery: 'routes to DISCOVERY for investigative root-cause analysis',
+  completed: 'records a disposition and posts nothing to the PR (non-destructive exit)',
+  dismiss: 'records a disposition and replies to/resolves the PR threads (writes to GitHub)'
+});
+
+export const TRIAGE_ACTION_LIST_SEPARATOR = '|' as const;
+export const TRIAGE_ACTION_SIDE_EFFECT_SEPARATOR = '; ' as const;
+
+/**
+ * The action vocabulary, derived from `TRIAGE_DISPOSITION_ACTIONS`.
+ *
+ * Consumers: the CLI parser, the CLI error text, `--help`, the read-only hint,
+ * the triage system prompt and task prompt, and the TRIAGE operator summary.
+ */
+export function formatTriageActionList(
+  separator: string = TRIAGE_ACTION_LIST_SEPARATOR
+): string {
+  return TRIAGE_DISPOSITION_ACTIONS.join(separator);
+}
+
+/** The action vocabulary as `action <side effect>` pairs. */
+export function formatTriageActionSideEffects(): string {
+  return TRIAGE_DISPOSITION_ACTIONS
+    .map((action) => `${action} ${TRIAGE_ACTION_SIDE_EFFECTS[action]}`)
+    .join(TRIAGE_ACTION_SIDE_EFFECT_SEPARATOR);
+}
+
+/**
+ * The exact command a triage subagent must run, with the action and issue
+ * interpolated when they are known.
+ */
+export function formatTriageRoutingCommand(
+  params: { readonly action?: string | null; readonly issue?: number | string | null } = {}
+): string {
+  const action = params.action && String(params.action).trim() ? String(params.action) : '<action>';
+  const hasIssue =
+    params.issue !== null && params.issue !== undefined && String(params.issue).trim().length > 0;
+
+  if (!hasIssue) {
+    return TRIAGE_ROUTING_COMMAND_NO_ISSUE_TEMPLATE.replace('{action}', action);
+  }
+
+  return TRIAGE_ROUTING_COMMAND_TEMPLATE
+    .replace('{action}', action)
+    .replace('{issue}', String(params.issue));
+}
+
+/**
+ * The replacement for the removed `AGY_SUBAGENT` marker guard (issue #241/R1).
+ *
+ * This is a DIFFERENT protection from the one it replaces: it prevents routing
+ * the WRONG checkpoint, not "a root agent routing". A dispatcher cannot
+ * distinguish its own root from a subagent, and pretending otherwise was the
+ * defect.
+ */
+export const MSG_TRIAGE_ROUTING_REQUIRES_GATE =
+  'Error: A triage routing action requires the checkpoint to be at the TRIAGE gate. Run `codeloop next` to reach the gate; a routing action never moves a checkpoint from any other stage.' as const;
+
+/**
+ * The triage subagent's default system prompt (issue #241, D1/D4).
+ *
+ * Lives here rather than as a `DEFAULT_*` constant so it can interpolate the
+ * action vocabulary and the routing command without a declaration-order cycle.
+ */
+export function buildDefaultTriageSystemPrompt(): string {
+  return [
+    '# AgyLoop Triage Subagent System Prompt',
+    'You are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.',
+    `Route with \`${formatTriageRoutingCommand()}\`, where \`<action>\` is one of: ${formatTriageActionList()}.`,
+    `${formatTriageActionSideEffects()}.`,
+    'A routing action requires the checkpoint to be at the TRIAGE gate (`codeloop next` is the entry path).'
+  ].join('\n');
+}
+
+/**
  * The cap on the number of feedback keys a single disposition may carry.
  *
  * The disposition lives in the checkpoint's snapshot, so an unbounded key set
@@ -1997,7 +2165,6 @@ export const TRIAGE_DISPOSITION_LINE_TEMPLATES = Object.freeze({
 
 export const COMMAND_PLAN = 'plan' as const;
 export const COMMAND_IMPLEMENT = 'implement' as const;
-export const COMMAND_GATES = 'gates' as const;
 export const COMMAND_COMMIT = 'commit' as const;
 export const COMMAND_YOLO = 'yolo' as const;
 export const COMMAND_STATUS = 'status' as const;
@@ -2014,6 +2181,21 @@ export const COMMAND_TRIAGE = 'triage' as const;
 export const COMMAND_SYNC = 'sync' as const;
 export const COMMAND_ABORT = 'abort' as const;
 export const COMMAND_INIT = 'init' as const;
+export const COMMAND_OPENCODE = 'opencode' as const;
+
+/**
+ * CLI sub-command that clears a persisted gate pause.
+ *
+ * This is the ONLY command that calls `StateMachine.resumeFromGate()` and
+ * persists the cleared checkpoint, so it is the only one that may be advertised
+ * as "the way out of a pause". `codeloop next` merely prints the next directive;
+ * it never touches `pausedAtGate`.
+ *
+ * Declared beside the other `COMMAND_*` constants rather than after
+ * `CLI_COMMANDS`: it is a member of that registry (issue #276), and a
+ * declaration that sits below the map is how it went missing from it.
+ */
+export const COMMAND_RESUME = 'resume' as const;
 
 /**
  * Inbound quota-halt channel (issue #220).
@@ -2041,6 +2223,50 @@ export const COMMAND_REVIEW = 'review' as const;
 export const FLAG_VERDICT_FILE = '--verdict-file' as const;
 export const FLAG_REVIEW_OUTPUT = '--review-output' as const;
 export const FLAG_VERDICT_STDIN = '--verdict-stdin' as const;
+
+/**
+ * The verdict-filing channel, named in the REVIEW directive's OPERATOR fields
+ * (issue #272).
+ *
+ * #269 built the channel (`codeloop review --verdict-file`) but the dispatch
+ * directive the operator reads never mentioned it, so the reviewer was
+ * re-dispatched forever. The command is COMPOSED from `COMMAND_REVIEW` and
+ * `FLAG_VERDICT_FILE`, and the concrete issue is interpolated when known so the
+ * operator is handed a string they can paste.
+ */
+export const REVIEW_VERDICT_CHANNEL_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_REVIEW} --issue {issue} ${FLAG_VERDICT_FILE} <path>` as const;
+export const REVIEW_VERDICT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_REVIEW} --issue <n> ${FLAG_VERDICT_FILE} <path>` as const;
+
+export function formatReviewVerdictChannelCommand(issue?: number | string | null): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return REVIEW_VERDICT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return REVIEW_VERDICT_CHANNEL_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/** The filing instruction; `{command}` is `formatReviewVerdictChannelCommand`. */
+export const NOTE_REVIEW_VERDICT_CHANNEL =
+  `File the verdict before the COMMIT gate: {command} (or \`codeloop ${COMMAND_REVIEW} --issue <n> ${FLAG_REVIEW_OUTPUT} "<block>"\`, or pipe the block into \`codeloop ${COMMAND_REVIEW} --issue <n> ${FLAG_VERDICT_STDIN}\`).` as const;
+
+/**
+ * What ENDS the REVIEW gate (issue #272/AC2) — the same shape as
+ * `NOTE_TRIAGE_GATE_EXIT_CONDITION`.
+ */
+export const NOTE_REVIEW_GATE_EXIT_CONDITION =
+  "This gate ends when the verdict is filed (the checkpoint records a reviewVerdict) or when the review is intentionally abandoned. Until then 'codeloop next' reports this gate again." as const;
+
+/** The per-read re-dispatch record: `{n}` of `{max}`. */
+export const NOTE_REVIEW_DISPATCH_ORDINAL =
+  'Reviewer dispatch {n} of {max} for this review round.' as const;
+
+/** The breaker's description: it names the cap AND the way out. */
+export const NOTE_REVIEW_DISPATCH_CAP =
+  'The reviewer has been dispatched {max} times without a filed verdict. File the verdict with `{command}` (or abandon the review) before continuing.' as const;
+
+/** The operator-facing label of the re-dispatch count (additive `status` line). */
+export const LABEL_REVIEW_DISPATCHES = 'Review Dispatches' as const;
 
 /**
  * The operator-facing source of an INLINE reviewer verdict.
@@ -2109,47 +2335,6 @@ export type ReviewSource =
   | (typeof REVIEW_SOURCE_SKIPPED)
   | (typeof REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED);
 
-/**
- * The DOCUMENTED command set of the CLI (issue #269, AC2.2).
- *
- * The OpenCode skill documents a set of commands; this list is the contract
- * the skill↔CLI test asserts against, so the skill and the CLI can never
- * disagree about a command that does not exist.
- *
- * `gate` / `gates` are deliberately ABSENT: they were removed commands whose
- * case only prints "use `agyloop next` instead", and they are not documented
- * commands.
- *
- * Named `CLI_DOCUMENTED_COMMANDS` rather than `CLI_COMMANDS`: the latter is
- * already the command-NAME map (`CLI_COMMANDS.HALT`, ...), and renaming it
- * would break every existing consumer.
- */
-export const CLI_DOCUMENTED_COMMANDS: readonly string[] = Object.freeze([
-  'init',
-  'plan',
-  'implement',
-  'commit',
-  'release',
-  'sync',
-  'next',
-  'branch-info',
-  'status',
-  'config',
-  'models',
-  'prompt',
-  'reset',
-  'resume',
-  'halt',
-  'abort',
-  'transition',
-  'worktree',
-  'critique',
-  'opencode',
-  'triage',
-  'review',
-  'yolo'
-]);
-
 export const FORGE_GITHUB = 'github' as const;
 export const FORGE_GITLAB = 'gitlab' as const;
 export const FORGE_GENERIC = 'generic' as const;
@@ -2184,7 +2369,6 @@ export const CLI_COMMANDS = Object.freeze({
   INIT: COMMAND_INIT,
   PLAN: COMMAND_PLAN,
   IMPLEMENT: COMMAND_IMPLEMENT,
-  GATES: COMMAND_GATES,
   COMMIT: COMMAND_COMMIT,
   YOLO: COMMAND_YOLO,
   STATUS: COMMAND_STATUS,
@@ -2192,12 +2376,14 @@ export const CLI_COMMANDS = Object.freeze({
   MODELS: COMMAND_MODELS,
   PROMPT: COMMAND_PROMPT,
   RESET: COMMAND_RESET,
+  RESUME: COMMAND_RESUME,
   TRANSITION: COMMAND_TRANSITION,
   WORKTREE: COMMAND_WORKTREE,
   RELEASE: COMMAND_RELEASE,
   NEXT: COMMAND_NEXT,
   BRANCH_INFO: COMMAND_BRANCH_INFO,
   CRITIQUE: COMMAND_CRITIQUE,
+  OPENCODE: COMMAND_OPENCODE,
   TRIAGE: COMMAND_TRIAGE,
   SYNC: COMMAND_SYNC,
   ABORT: COMMAND_ABORT,
@@ -2206,6 +2392,27 @@ export const CLI_COMMANDS = Object.freeze({
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
+
+/**
+ * The DOCUMENTED command set of the CLI (issue #269, AC2.2; reconciled in #276).
+ *
+ * The OpenCode skill documents a set of commands; this list is the contract
+ * the skill↔CLI test asserts against, so the skill and the CLI can never
+ * disagree about a command that does not exist.
+ *
+ * DERIVED, deliberately: `CLI_DOCUMENTED_COMMANDS` is `Object.values` of the
+ * one command-NAME map, so a removed command cannot linger in the documented
+ * list and a new command cannot be forgotten here. The exported type stays
+ * `readonly string[]` because the contract test calls `.includes(command)` with
+ * a plain string.
+ *
+ * `gate` / `gates` are deliberately ABSENT: they were removed commands whose
+ * case only prints "use `agyloop next` instead", and they are not documented
+ * commands.
+ */
+export const CLI_DOCUMENTED_COMMANDS: readonly string[] = Object.freeze(
+  Object.values(CLI_COMMANDS)
+);
 
 // SemVer Release Bumps & GitHub Release Labels
 export const RELEASE_BUMP_MAJOR = 'major' as const;
@@ -2431,16 +2638,6 @@ export const OPENCODE_SYMLINK_FALLBACK_CODES = Object.freeze([
 
 /** The single HTTP status every provider quota rejection maps to. */
 export const QUOTA_STATUS = 429 as const;
-
-/**
- * CLI sub-command that clears a persisted gate pause.
- *
- * This is the ONLY command that calls `StateMachine.resumeFromGate()` and
- * persists the cleared checkpoint, so it is the only one that may be advertised
- * as "the way out of a pause". `codeloop next` merely prints the next directive;
- * it never touches `pausedAtGate`.
- */
-export const COMMAND_RESUME = 'resume' as const;
 
 /**
  * Fully-qualified resume command printed in every breaker/quota diagnostic.

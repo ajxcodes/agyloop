@@ -104,13 +104,13 @@ function makeSandbox(comments: unknown[] | null): Sandbox {
     JSON.stringify(
       {
         version: '1.0.0',
-        currentStage: 'COMPLETED',
+        currentStage: 'TRIAGE',
         mode: 'standard',
         issue: ISSUE,
         baseBranch: 'main',
         createdAt: now,
         updatedAt: now,
-        history: [{ stage: 'COMPLETED', timestamp: now }],
+        history: [{ stage: 'TRIAGE', timestamp: now }],
         pausedAtGate: null,
         pausedAtTimestamp: null
       },

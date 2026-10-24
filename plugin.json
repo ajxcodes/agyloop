@@ -30,16 +30,13 @@
     "agyloop": {
       "name": "agyloop",
       "description": "Multi-subagent development lifecycle orchestrator (Context -> Plan -> Implement -> Gate -> Review -> Commit)",
-      "usage": "/agyloop [plan | implement | gates | yolo] [--commit-after]",
+      "usage": "/agyloop [plan | implement | yolo | abort] [--commit-after]",
       "subcommands": {
         "plan": {
           "description": "Run read-only planning subagent and generate persistent specs in artifacts/plans/"
         },
         "implement": {
           "description": "Resume straight from an approved plan with a fresh context"
-        },
-        "gates": {
-          "description": "Run quality and AI review gates on current working diff"
         },
         "yolo": {
           "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
@@ -59,16 +56,13 @@
     "codeloop": {
       "name": "codeloop",
       "description": "Multi-subagent development lifecycle orchestrator (alias for agyloop)",
-      "usage": "/codeloop [plan | implement | gates | yolo | abort] [--commit-after]",
+      "usage": "/codeloop [plan | implement | yolo | abort] [--commit-after]",
       "subcommands": {
         "plan": {
           "description": "Run read-only planning subagent and generate persistent specs in artifacts/plans/"
         },
         "implement": {
           "description": "Resume straight from an approved plan with a fresh context"
-        },
-        "gates": {
-          "description": "Run quality and AI review gates on current working diff"
         },
         "yolo": {
           "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
