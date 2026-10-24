@@ -281,6 +281,26 @@ describe('CLI triage dismissal call site', () => {
 
     try {
       process.chdir(tempDir);
+      // The routing precondition requires the resolved checkpoint to be at
+      // TRIAGE, and `--issue 259` binds `.agyloop/tasks/259.json` (#250).
+      const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+      const now = new Date().toISOString();
+      fs.writeFileSync(
+        path.join(tasksDir, '259.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'TRIAGE',
+          mode: 'standard',
+          issue: 259,
+          baseBranch: 'main',
+          createdAt: now,
+          updatedAt: now,
+          history: [{ stage: 'TRIAGE', timestamp: now }],
+          pausedAtGate: null,
+          pausedAtTimestamp: null
+        })
+      );
       exitCode = await runCli(['triage', 'dismiss', '-m', 'not applicable', '--issue', '259']);
     } finally {
       process.chdir(prevCwd);

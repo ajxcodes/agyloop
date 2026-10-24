@@ -13,15 +13,21 @@ import {
   ROLE_IMPLEMENTER,
   ROLE_GATE,
   ROLE_REVIEWER,
+  ROLE_DISCOVERY,
+  ROLE_TRIAGE,
   DEFAULT_PROMPTS_DIR,
   PROMPT_FILE_PLANNER,
   PROMPT_FILE_IMPLEMENTER,
   PROMPT_FILE_GATE,
   PROMPT_FILE_REVIEWER,
+  PROMPT_FILE_DISCOVERY,
+  PROMPT_FILE_TRIAGE,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_IMPLEMENTER_SYSTEM_PROMPT,
   DEFAULT_GATE_SYSTEM_PROMPT,
-  DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT
+  DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT,
+  DEFAULT_DISCOVERY_SYSTEM_PROMPT,
+  buildDefaultTriageSystemPrompt
 } from '../domain';
 
 
@@ -38,6 +44,10 @@ export class FilePromptRepository implements PromptRepository {
       promptFileName = PROMPT_FILE_GATE;
     } else if (role === ROLE_REVIEWER) {
       promptFileName = PROMPT_FILE_REVIEWER;
+    } else if (role === ROLE_DISCOVERY) {
+      promptFileName = PROMPT_FILE_DISCOVERY;
+    } else if (role === ROLE_TRIAGE) {
+      promptFileName = PROMPT_FILE_TRIAGE;
     } else {
       promptFileName = `${role}.md`;
     }
@@ -64,6 +74,12 @@ export class FilePromptRepository implements PromptRepository {
     }
     if (role === ROLE_REVIEWER) {
       return DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+    }
+    if (role === ROLE_DISCOVERY) {
+      return DEFAULT_DISCOVERY_SYSTEM_PROMPT;
+    }
+    if (role === ROLE_TRIAGE) {
+      return buildDefaultTriageSystemPrompt();
     }
 
     return '';

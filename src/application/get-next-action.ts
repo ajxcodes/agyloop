@@ -40,10 +40,18 @@ import {
   ValidationError,
   parseIssueToken,
   MAX_IMPLEMENT_GATE_LOOPS,
+  MAX_REVIEW_DISPATCH_LOOPS,
   GATE_TRIAGE,
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_RESTARTED_FROM_COMPLETED,
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
+  NOTE_REVIEW_VERDICT_CHANNEL,
+  NOTE_REVIEW_GATE_EXIT_CONDITION,
+  NOTE_REVIEW_DISPATCH_ORDINAL,
+  NOTE_REVIEW_DISPATCH_CAP,
+  formatReviewVerdictChannelCommand,
+  formatTriageActionList,
+  formatTriageActionSideEffects,
   TriageDisposition,
   formatTriageDispositionLine,
   assertNotRootWorkspace,
@@ -115,6 +123,11 @@ export interface NextActionResult {
   readonly taskBranch?: string | null;
   readonly invocationPayload?: SubagentInvocationPayload | null;
   readonly humanSummary: string;
+  /**
+   * The recorded re-dispatch count for the current REVIEW round (issue #272).
+   * Additive and optional; populated on every REVIEW return.
+   */
+  readonly reviewDispatchCount?: number;
 }
 
 export class GetNextActionUseCase {
@@ -197,6 +210,13 @@ export class GetNextActionUseCase {
     // only context fields (issue, baseBranch) and, on a COMPLETED checkpoint
     // with open PR review feedback, route to TRIAGE. It may NEVER advance a
     // stage on its own initiative, and it may NEVER reset a checkpoint.
+    //
+    // Issue #272 adds ONE more permitted context-field write:
+    // `reviewDispatchCount`, recorded when a REVIEW directive is returned so a
+    // silently repeated dispatch is observable. It is NOT written while the
+    // checkpoint is paused at a gate (`pausedAtGate !== null`): a paused read is
+    // not a dispatch. It never advances a stage, and `StateMachine.transition()`
+    // resets it when a new REVIEW round begins.
     //
     // The previous implementation inferred operator intent from whether
     // `--issue` merely happened to be supplied, which destroyed COMPLETED
@@ -516,6 +536,35 @@ export class GetNextActionUseCase {
       }
 
       case STAGE_REVIEW: {
+        const channelCommand = formatReviewVerdictChannelCommand(activeIssue);
+
+        // The breaker is checked BEFORE incrementing: three dispatches without a
+        // filed verdict mean the operator is not acting on the directive, and a
+        // fourth identical one would hide that. The way out is the existing
+        // channel, named in the description — never a second deadlock.
+        if (sm.reviewDispatchCount >= MAX_REVIEW_DISPATCH_LOOPS) {
+          return {
+            currentStage: STAGE_REVIEW,
+            nextStage: STAGE_COMMIT,
+            actionType: 'human_gate',
+            title: 'Review Verdict Breaker',
+            description: this.formatReviewDispatchCap(channelCommand),
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `The reviewer was dispatched ${sm.reviewDispatchCount} times without a filed verdict for issue ${activeIssue ?? '(unknown)'}. ${this.formatReviewDispatchCap(channelCommand)}`,
+            reviewDispatchCount: sm.reviewDispatchCount
+          };
+        }
+
+        // A paused read is NOT a dispatch: `actionable:false` already tells the
+        // harness, and recording it would inflate the count while the operator
+        // is blocked on a gate.
+        if (sm.pausedAtGate === null) {
+          sm.recordReviewDispatch();
+          await this.stateRepo.save(sm.toSnapshot());
+        }
+
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_REVIEWER,
           customConfig: config,
@@ -547,12 +596,17 @@ export class GetNextActionUseCase {
           actionType: 'subagent',
           role: ROLE_REVIEWER,
           title: 'Invoke AI Reviewer Subagent',
-          description: 'Run critique analysis and verify Acceptance Criteria fulfillment against the isolated diff.',
+          // Issue #272: the operator-facing fields name the ONLY channel that
+          // records a verdict. The instruction used to live only inside the
+          // dispatched prompt, so an operator following `next` re-dispatched the
+          // reviewer forever.
+          description: `Run critique analysis and verify Acceptance Criteria fulfillment against the isolated diff. ${NOTE_REVIEW_VERDICT_CHANNEL.replace('{command}', channelCommand)}`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_REVIEWER} with Model '${subagent.model}' against base '${baseBranch}'.`
+          humanSummary: `Invoke ${ROLE_TITLE_REVIEWER} with Model '${subagent.model}' against base '${baseBranch}'. ${this.formatReviewDispatchOrdinal(sm.reviewDispatchCount)} ${NOTE_REVIEW_VERDICT_CHANNEL.replace('{command}', channelCommand)} ${NOTE_REVIEW_GATE_EXIT_CONDITION}`,
+          reviewDispatchCount: sm.reviewDispatchCount
         };
       }
 
@@ -612,7 +666,7 @@ export class GetNextActionUseCase {
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke Triage Subagent with Model '${subagent.model}' to categorize comments and route to IMPLEMENT, PLAN, DISCOVERY, or COMPLETED. ${NOTE_TRIAGE_GATE_EXIT_CONDITION}`
+          humanSummary: `Invoke Triage Subagent with Model '${subagent.model}' to categorize comments and route to one of: ${formatTriageActionList('|')}. ${formatTriageActionSideEffects()}. ${NOTE_TRIAGE_GATE_EXIT_CONDITION}`
         };
       }
 
@@ -761,6 +815,24 @@ export class GetNextActionUseCase {
     }
 
     return null;
+  }
+
+  /**
+   * Renders `NOTE_REVIEW_DISPATCH_ORDINAL` for the current REVIEW round
+   * (issue #272). Mirrors `formatStaleWorktreeNote`'s placeholder style in the
+   * CLI rather than inventing a second templating mechanism.
+   */
+  private formatReviewDispatchOrdinal(current: number): string {
+    return NOTE_REVIEW_DISPATCH_ORDINAL
+      .replace('{n}', String(current))
+      .replace('{max}', String(MAX_REVIEW_DISPATCH_LOOPS));
+  }
+
+  /** Renders the breaker's cap + the way out of it (issue #272). */
+  private formatReviewDispatchCap(channelCommand: string): string {
+    return NOTE_REVIEW_DISPATCH_CAP
+      .replace('{max}', String(MAX_REVIEW_DISPATCH_LOOPS))
+      .replace('{command}', channelCommand);
   }
 
   /**

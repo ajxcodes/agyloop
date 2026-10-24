@@ -75,57 +75,161 @@ describe('FileStateRepository', () => {
   });
 
   describe('smoke test isolation', () => {
-    test('throws StateStorageError on save when cwd is in /tmp', () => {
-      process.cwd = () => path.join('/tmp', 'foo');
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
-      
-      const prevEnv = process.env.NODE_ENV;
-      const prevTestCtx = process.env.NODE_TEST_CONTEXT;
-      process.env.NODE_ENV = 'production';
-      delete process.env.NODE_TEST_CONTEXT;
+    /**
+     * Runs `fn` with an explicit environment, restoring every key afterwards.
+     * `HOME` is overridden because the guard's sandbox is `os.homedir()`-anchored.
+     */
+    const withSmokeEnv = (
+      env: Record<string, string | undefined>,
+      fn: () => void
+    ): void => {
+      const keys = ['NODE_ENV', 'NODE_TEST_CONTEXT', 'HOME'];
+      const previous = new Map<string, string | undefined>();
+      for (const key of keys) {
+        previous.set(key, process.env[key]);
+        delete process.env[key];
+      }
+      Object.assign(process.env, env);
       try {
-        assert.throws(() => {
-          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
-        }, (err: any) => {
-          return err instanceof StateStorageError && 
-                 err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+        fn();
+      } finally {
+        for (const key of keys) {
+          const value = previous.get(key);
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      }
+    };
+
+    const isSmokeError = (err: any) =>
+      err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+
+    test('SR1: permits the tool\'s own sandbox path', () => {
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+      fs.mkdirSync(sandbox, { recursive: true });
+
+      try {
+        withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
+          process.cwd = () => sandbox;
+          const repo = new FileStateRepository({
+            stateFilePath: path.join(sandbox, '.agyloop', 'state.json')
+          });
+          assert.doesNotThrow(() =>
+            repo.save({ issue: 241, currentStage: 'DISCOVERY', history: [] })
+          );
         });
       } finally {
-        process.env.NODE_ENV = prevEnv;
-        if (prevTestCtx !== undefined) {
-          process.env.NODE_TEST_CONTEXT = prevTestCtx;
-        }
+        fs.rmSync(fakeHome, { recursive: true, force: true });
       }
     });
 
-    test('throws StateStorageError on save when cwd is in artifacts/smoke', () => {
-      process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
+    test('SR2: refuses a /tmp state path outside test mode (unchanged)', () => {
+      process.cwd = () => path.join('/tmp', 'foo');
       const repo = new FileStateRepository({ stateFilePath: stateFile });
-      
-      assert.throws(() => {
-        repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
-      }, (err: any) => {
-        return err instanceof StateStorageError && 
-               err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+
+      withSmokeEnv({ NODE_ENV: 'production' }, () => {
+        assert.throws(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        }, isSmokeError);
       });
     });
 
-    test('throws StateStorageError on reset when cwd is in artifacts/smoke', () => {
+    test('SR3a: refuses artifacts/smoke outside test mode', () => {
       process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
       const repo = new FileStateRepository({ stateFilePath: stateFile });
-      
-      assert.throws(() => {
-        repo.reset();
-      }, (err: any) => {
-        return err instanceof StateStorageError && 
-               err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
+
+      withSmokeEnv({ NODE_ENV: 'production' }, () => {
+        assert.throws(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        }, isSmokeError);
+
+        assert.throws(() => {
+          repo.reset();
+        }, isSmokeError);
       });
+    });
+
+    test('SR3b: permits artifacts/smoke inside test mode under the same rule as /tmp (N3)', () => {
+      process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
+      const repo = new FileStateRepository({ stateFilePath: stateFile });
+
+      withSmokeEnv({ NODE_ENV: 'test' }, () => {
+        assert.doesNotThrow(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        });
+      });
+    });
+
+    test('SR4: refuses a /tmp target even when cwd is outside /tmp (target-keyed)', () => {
+      process.cwd = () => path.join('/home', 'user', 'project');
+      const tmpSandboxState = path.join(os.tmpdir(), 'smoke-241', '.agyloop', 'state.json');
+      const repo = new FileStateRepository({ stateFilePath: tmpSandboxState });
+
+      withSmokeEnv({ NODE_ENV: 'production' }, () => {
+        assert.throws(() => {
+          repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+        }, isSmokeError);
+      });
+    });
+
+    test('SR5: a sandbox cwd cannot reach a target outside the sandbox', () => {
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+      fs.mkdirSync(sandbox, { recursive: true });
+      const external = path.join(fakeHome, 'project', '.agyloop', 'state.json');
+
+      try {
+        withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
+          process.cwd = () => sandbox;
+          const repo = new FileStateRepository({ stateFilePath: external });
+          assert.throws(() => {
+            repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
+          }, isSmokeError);
+        });
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
+    });
+
+    test('SR6: still refuses the real root state under test mode', () => {
+      withSmokeEnv({ NODE_ENV: 'test' }, () => {
+        const repo = new FileStateRepository();
+        assert.throws(() => {
+          repo.reset();
+        }, (err: any) => err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE);
+      });
+    });
+
+    test('SR7: a symlinked alias of the sandbox is still recognised', () => {
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+      const alias = path.join(fakeHome, 'sandbox-alias');
+      fs.mkdirSync(sandbox, { recursive: true });
+      fs.symlinkSync(sandbox, alias, 'dir');
+
+      try {
+        withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
+          process.cwd = () => alias;
+          const repo = new FileStateRepository({
+            stateFilePath: path.join(alias, '.agyloop', 'state.json')
+          });
+          assert.doesNotThrow(() =>
+            repo.save({ issue: 241, currentStage: 'DISCOVERY', history: [] })
+          );
+        });
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
     });
 
     test('allows save when cwd is normal path', () => {
       process.cwd = () => path.join('/home/user/project');
       const repo = new FileStateRepository({ stateFilePath: stateFile });
-      
+
       assert.doesNotThrow(() => {
         repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
       });

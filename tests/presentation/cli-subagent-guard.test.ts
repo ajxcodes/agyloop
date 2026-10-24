@@ -13,6 +13,7 @@ const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE
 } = require('../../dist/presentation');
+const { MSG_TRIAGE_ROUTING_REQUIRES_GATE } = require('../../dist/domain');
 
 describe('CLI Subagent Guard', () => {
   let prevCwd: string;
@@ -148,10 +149,43 @@ describe('CLI Subagent Guard', () => {
       assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
     });
 
-    test('blocks root agent from running triage actions', async () => {
+    test('SG3a: permits a triage routing action without an environment marker', async () => {
+      // Seed the gate the action actually routes: TRIAGE.
+      const statePath = path.join(tempDir, '.agyloop', 'state.json');
+      const snapshot = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          ...snapshot,
+          currentStage: 'TRIAGE',
+          history: [{ stage: 'TRIAGE', timestamp: new Date().toISOString() }],
+          pausedAtGate: null,
+          pausedAtTimestamp: null
+        })
+      );
+
+      const exitCode = await runCli(['triage', 'completed']);
+
+      assert.strictEqual(exitCode, 0, `a routing action must not need a marker, got:\n${errorOutput}`);
+      assert.strictEqual(
+        errorOutput.includes('Root agent is not allowed'),
+        false,
+        'the removed marker guard must not fire'
+      );
+      assert.strictEqual(
+        errorOutput.includes('requires the checkpoint to be at the TRIAGE gate'),
+        false,
+        'a TRIAGE checkpoint must be routable'
+      );
+    });
+
+    test('SG3b: refuses a routing action from a non-TRIAGE checkpoint', async () => {
       const exitCode = await runCli(['triage', 'implement']);
       assert.strictEqual(exitCode, 1);
-      assert.ok(errorOutput.includes('Error: Execution blocked. Root agent is not allowed to run pipeline routing triage actions.'));
+      assert.ok(
+        errorOutput.includes(MSG_TRIAGE_ROUTING_REQUIRES_GATE),
+        `the stage precondition must refuse routing from INITIALIZED, got:\n${errorOutput}`
+      );
     });
   });
 });

@@ -19,7 +19,11 @@ const {
 } = require('../../dist/application');
 const { FileBuildDetector } = require('../../dist/infrastructure');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
-const { RESOLVER_SOURCE_USER_DATA, RESOLVER_SOURCE_NONE } = require('../../dist/domain');
+const {
+  RESOLVER_SOURCE_USER_DATA,
+  RESOLVER_SOURCE_NONE,
+  TRIAGE_DISPOSITION_ACTIONS
+} = require('../../dist/domain');
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
 
@@ -265,9 +269,32 @@ index 1111111..2222222 100644
       assert.ok(triagePrompt.includes(ANTI_INCEPTION_GUARDRAIL));
 
       assert.ok(
-        triagePrompt.includes(
-          'You are the Triage Subagent. Directly inspect the comments and execute `bin/agyloop triage <action>` using `run_command`. Do NOT spawn another subagent to do this.'
-        )
+        triagePrompt.includes('codeloop triage <action> --issue 203'),
+        `the triage directive must name the exact routing command, got:\n${triagePrompt}`
+      );
+      for (const action of TRIAGE_DISPOSITION_ACTIONS) {
+        assert.ok(
+          triagePrompt.includes(action),
+          `the triage directive must name the action '${action}', got:\n${triagePrompt}`
+        );
+      }
+      assert.ok(
+        triagePrompt.includes('posts nothing'),
+        `the triage directive must state the non-destructive exit, got:\n${triagePrompt}`
+      );
+      assert.ok(
+        triagePrompt.includes('writes to GitHub'),
+        `the triage directive must state the dismissal side effect, got:\n${triagePrompt}`
+      );
+      assert.strictEqual(
+        triagePrompt.includes('AGY_SUBAGENT'),
+        false,
+        'the triage directive must not require an environment marker'
+      );
+      assert.strictEqual(
+        triagePrompt.includes('bin/agyloop triage <action>'),
+        false,
+        'the triage directive must not name the old refused command form'
       );
     });
   });

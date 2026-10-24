@@ -19,7 +19,11 @@ import {
   invalidIssueTokenMessage,
   parseIssueToken,
   MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST,
-  MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
+  MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE,
+  SMOKE_SANDBOX_HOME_SEGMENTS,
+  SMOKE_SANDBOX_DIR_PREFIX,
+  SMOKE_ISOLATION_ARTIFACTS_DIR,
+  SMOKE_ISOLATION_ARTIFACTS_PREFIX
 } from '../domain';
 import { StateRepository } from '../ports';
 
@@ -167,19 +171,36 @@ export class FileStateRepository implements StateRepository {
    *
    * `additionalTargets` carries the extra paths an operation destroys beyond
    * `stateFilePath` (see `workspaceResetTargets`).
+   *
+   * The guard is TARGET-KEYED and positively recognises the tool's own smoke
+   * sandbox (issue #279). The old predicate tested only `process.cwd()`, so it
+   * refused every `/tmp` cwd (including the path the role prompts mandated)
+   * while permitting `--workspace /tmp/smoke-x` from outside `/tmp`, although
+   * the state it writes lives in the sandbox.
+   *
+   * Rule order matters:
+   *  1. ESCAPE   — a sandbox cwd may not reach a target outside the sandbox.
+   *  2. SANDBOX  — every target inside the tool's own sandbox is permitted.
+   *  3. RESERVED — `/tmp` and `artifacts/smoke` are refused outside test mode.
+   *  4. TEST ROOT — under test mode a target must be provably isolated from the
+   *                 real workspace (unchanged).
    */
   private validateSmokeTestIsolation(
     operation: 'write' | 'delete',
     additionalTargets: string[] = []
   ): void {
-    const cwd = path.resolve(process.cwd());
-    const isArtifactsSmoke = cwd.includes(`${path.sep}artifacts${path.sep}smoke`);
-    
-    // Bypass the /tmp block during unit tests because agyloop tests run in /tmp
-    const isTmpDir = cwd.startsWith('/tmp') || cwd.startsWith(os.tmpdir());
-    const isTmpBlocked = process.env.NODE_ENV !== 'test' && !process.env.NODE_TEST_CONTEXT;
+    const testMode = process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT);
+    const sandboxRoot = this.realpathOfNearestExisting(this.resolveSmokeSandboxRoot());
+    const normalise = (target: string): string => this.realpathOfNearestExisting(target);
 
-    if (isArtifactsSmoke || (isTmpDir && isTmpBlocked)) {
+    const cwd = normalise(process.cwd());
+    const targets = [this.stateFilePath, ...additionalTargets].map(normalise);
+
+    const inSandbox = (target: string): boolean => this.isSmokeSandboxPath(target, sandboxRoot);
+
+    // 1. ESCAPE: the one case the old cwd check caught by accident is now
+    //    caught on purpose — a sandbox checkout must not reach real state.
+    if (inSandbox(cwd) && targets.some((target) => !inSandbox(target))) {
       throw new StateStorageError(
         this.stateFilePath,
         operation,
@@ -187,8 +208,37 @@ export class FileStateRepository implements StateRepository {
       );
     }
 
-    if (process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT)) {
-      const unproven = [this.stateFilePath, ...additionalTargets].find(
+    // 2. SANDBOX: all targets inside the tool's own sandbox are permitted. This
+    //    is checked BEFORE the reserved-path rule so a `$HOME` that is itself
+    //    under the OS temp directory (containers, CI) still works (issue #279,R6).
+    if (targets.length > 0 && targets.every(inSandbox)) {
+      return;
+    }
+
+    // 3. RESERVED: `/tmp` and `artifacts/smoke` obey the SAME rule — refused
+    //    outside a test run, permitted inside one, where rule 4 protects the
+    //    real state (issue #279, N3).
+    const tmpRoot = normalise(os.tmpdir());
+    const inTmp = (target: string): boolean =>
+      target === tmpRoot || target.startsWith(tmpRoot + path.sep);
+    const isReserved = (target: string): boolean =>
+      inTmp(target) ||
+      target.includes(
+        `${path.sep}${SMOKE_ISOLATION_ARTIFACTS_DIR}${path.sep}${SMOKE_ISOLATION_ARTIFACTS_PREFIX}`
+      );
+
+    if (!testMode && [cwd, ...targets].some(isReserved)) {
+      throw new StateStorageError(
+        this.stateFilePath,
+        operation,
+        MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST
+      );
+    }
+
+    // 4. TEST ROOT: unchanged. A test-mode run may only touch state that is
+    //    provably isolated from this package's real workspace roots.
+    if (testMode) {
+      const unproven = targets.find(
         (target) => !this.isProvenIsolatedFromRealState(target)
       );
       if (unproven !== undefined) {
@@ -199,6 +249,72 @@ export class FileStateRepository implements StateRepository {
         );
       }
     }
+  }
+
+  /**
+   * The tool's own smoke-sandbox root: `$HOME/.cache/agyloop`.
+   *
+   * Composed from the SAME domain segments the role prompts print, so the
+   * mandated path and the predicate cannot disagree (issue #279, AC2).
+   */
+  private resolveSmokeSandboxRoot(): string {
+    return path.join(os.homedir(), ...SMOKE_SANDBOX_HOME_SEGMENTS);
+  }
+
+  /**
+   * Realpath-normalises `target` through its nearest EXISTING ancestor, then
+   * re-appends the not-yet-created remainder.
+   *
+   * A checkpoint path usually does not exist yet, so `fs.realpathSync` cannot be
+   * called on it directly. Normalising the existing ancestor is what makes a
+   * symlinked sandbox alias recognisable while a symlink into `/tmp` from
+   * outside is still refused (issue #279, R7).
+   */
+  private realpathOfNearestExisting(target: string): string {
+    const resolved = path.resolve(target);
+    let current = resolved;
+    const remainder: string[] = [];
+
+    while (true) {
+      try {
+        const real = fs.realpathSync(current);
+        return remainder.length === 0
+          ? real
+          : path.join(real, ...[...remainder].reverse());
+      } catch {
+        const parent = path.dirname(current);
+        if (parent === current) {
+          return resolved;
+        }
+        remainder.push(path.basename(current));
+        current = parent;
+      }
+    }
+  }
+
+  /**
+   * True when `target` is inside the tool's smoke sandbox — i.e. under
+   * `sandboxRoot` and its first relative segment is a `smoke-*` directory.
+   * `sandboxRoot` itself is the parent (`.cache/agyloop`), never a sandbox.
+   */
+  private isSmokeSandboxPath(target: string, sandboxRoot: string): boolean {
+    if (!this.isInside(sandboxRoot, target)) {
+      return false;
+    }
+    const relative = path.relative(sandboxRoot, target);
+    const firstSegment = relative.split(path.sep)[0];
+    return firstSegment.startsWith(SMOKE_SANDBOX_DIR_PREFIX);
+  }
+
+  /** True when `target` is strictly inside `root` (root itself is not inside). */
+  private isInside(root: string, target: string): boolean {
+    const relative = path.relative(root, target);
+    return (
+      relative.length > 0 &&
+      relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+    );
   }
 
   /**
@@ -298,8 +414,8 @@ export class FileStateRepository implements StateRepository {
    * still stands -- so the guard degrades to "tempdir only", never to "off".
    */
   private isProvenIsolatedFromRealState(target: string): boolean {
-    const tmpRoot = path.resolve(os.tmpdir());
-    const resolved = path.resolve(target);
+    const tmpRoot = this.realpathOfNearestExisting(os.tmpdir());
+    const resolved = this.realpathOfNearestExisting(target);
 
     if (!(resolved === tmpRoot || resolved.startsWith(tmpRoot + path.sep))) {
       return false;
