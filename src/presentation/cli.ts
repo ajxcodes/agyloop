@@ -41,6 +41,8 @@ import {
   ROLE_TRIAGE,
   VERDICT_SKIPPED,
   DEFAULT_PROMPTS_DIR,
+  DEFAULT_STATE_DIR,
+  DEFAULT_STATE_FILE,
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
   EXIT_CODE_QUOTA_EXHAUSTED,
@@ -119,6 +121,9 @@ import {
   // Issue #282: a read-only diagnostic reports a dead descriptor as STALE
   // instead of advertising a directory that is gone.
   NOTE_WORKTREE_STALE,
+  // Issue #266: the abort summary states that the checkpoint records no
+  // worktree instead of printing an ambiguous `0`.
+  NOTE_ABORT_NO_WORKTREE_LABEL,
   // Issue #269: the TRIAGE gate's exit condition and the disposition line.
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
   NOTE_TRIAGE_DISPOSITION_NOT_RECORDED,
@@ -190,6 +195,7 @@ import {
   TriageDismissReport,
   SyncUseCase,
   AbortPipelineUseCase,
+  AbortPipelineResult,
   InitProjectUseCase,
   ResumePipelineUseCase,
   HaltPipelineUseCase,
@@ -240,6 +246,11 @@ export interface CliOptions {
   messageFile: string | null;
   createPr: boolean;
   quarantine: boolean;
+  /**
+   * `--no-quarantine` / `--keep-worktrees` (issue #266 AC-5): abort without
+   * relocating the task worktree's uncommitted work.
+   */
+  noQuarantine: boolean;
   reason: string | null;
   retryAfter: string | null;
   /**
@@ -415,6 +426,7 @@ Operational Flags:
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
       --quarantine   Quarantine uncommitted changes to a dedicated branch during abort
+      --no-quarantine  Abort without stashing worktrees (alias: --keep-worktrees)
       --issue <num>  Associate execution with GitHub issue number (digits only; e.g. --issue 250)
       --title <text> Specify plan title for persistent artifact scaffolding
       --type <type>  Specify plan type (discovery | implementation | auto)
@@ -507,6 +519,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     messageFile: null,
     createPr: false,
     quarantine: false,
+    noQuarantine: false,
     reason: null,
     retryAfter: null,
     restart: false,
@@ -559,6 +572,11 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.force = true;
     } else if (arg === '--quarantine') {
       options.quarantine = true;
+    } else if (arg === '--no-quarantine' || arg === '--keep-worktrees') {
+      // #266 AC-5. `--keep-worktrees` is PLURAL and distinct from the existing
+      // singular `--keep-worktree` (keep the worktree after commit), so this is
+      // matched by exact equality only — never by prefix.
+      options.noQuarantine = true;
     } else if (arg === '--reason') {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         options.reason = args[++i];
@@ -1116,6 +1134,67 @@ function redactStaleWorktreeArtifacts<
     humanSummary: redact(result.humanSummary),
     invocationPayload: payload
   } as T;
+}
+
+/**
+ * Renders the abort's worktree section truthfully (issue #266 AC-4).
+ *
+ * The emergency abort used to print only a count and a `(stashed)` marker, so an
+ * operator whose files had moved into a stash was never told WHERE they went.
+ * Every touched worktree now carries the one reference that restores it, and
+ * every worktree deliberately left alone names its reason. Quarantine FAILURES
+ * go to stderr with `⚠`; the abort itself still exits 0 — it is a best-effort
+ * teardown and a non-zero exit would imply the teardown did not happen.
+ */
+function renderAbortQuarantine(result: AbortPipelineResult): void {
+  const { worktreesQuarantined, worktreesQuarantineSkipped, worktreesQuarantineFailed } =
+    result;
+
+  if (worktreesQuarantined.length === 0 && result.worktreeScopePath === null) {
+    console.log(`  - Worktrees quarantined    : ${NOTE_ABORT_NO_WORKTREE_LABEL}`);
+  } else {
+    console.log(`  - Worktrees quarantined    : ${worktreesQuarantined.length}`);
+    for (const wt of worktreesQuarantined) {
+      if (wt.branch) {
+        console.log(`    * ${wt.worktreePath} (branch: ${wt.branch})`);
+        console.log(`      recover: git -C ${wt.worktreePath} checkout ${wt.branch}`);
+      } else if (wt.stashRef) {
+        console.log(`    * ${wt.worktreePath} (stash: ${wt.stashRef})`);
+        console.log(`      recover: git -C ${wt.worktreePath} stash pop ${wt.stashRef}`);
+        if (wt.stashMessage) {
+          console.log(`      stash message: ${wt.stashMessage}`);
+        }
+      } else if (wt.stashMessage) {
+        // Never claim a ref that could not be resolved: the message is the only
+        // stable handle on a stash list whose index a concurrent push can shift.
+        console.log(`    * ${wt.worktreePath} (stash: unresolved)`);
+        console.log(
+          `      recover: run \`git stash list\` and \`git stash pop <ref>\` (stash message: ${wt.stashMessage})`
+        );
+      } else if (wt.stashed) {
+        console.log(`    * ${wt.worktreePath} (stashed)`);
+        console.log(
+          `      recover: run \`git -C ${wt.worktreePath} stash list\` and \`git stash pop <ref>\``
+        );
+      } else {
+        console.log(`    * ${wt.worktreePath} (quarantined)`);
+      }
+    }
+  }
+
+  if (worktreesQuarantineSkipped.length > 0) {
+    console.log(`  - Worktrees left untouched : ${worktreesQuarantineSkipped.length}`);
+    for (const skipped of worktreesQuarantineSkipped) {
+      console.log(`    * ${skipped.worktreePath} — ${skipped.reason}`);
+    }
+  }
+
+  if (worktreesQuarantineFailed.length > 0) {
+    console.error(`  - Worktree quarantine FAILED: ${worktreesQuarantineFailed.length}`);
+    for (const failed of worktreesQuarantineFailed) {
+      console.error(`    * ${failed.worktreePath} — ${failed.error}`);
+    }
+  }
 }
 
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
@@ -1759,17 +1838,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         workspaceDir: options.workspaceDir,
         issue: issueValue,
         force: options.force,
-        quarantine: options.quarantine
+        quarantine: options.quarantine,
+        noQuarantine: options.noQuarantine
       });
 
       console.log(`✓ Emergency Abort completed in ${abortResult.durationMs}ms:`);
       console.log(`  - Processes terminated     : ${abortResult.processesTerminated}`);
       console.log(`  - Stale git locks cleared  : ${abortResult.indexLockRemoved ? 'YES' : 'NONE'}`);
-      console.log(`  - Worktrees quarantined    : ${abortResult.worktreesQuarantined.length}`);
-      for (const wt of abortResult.worktreesQuarantined) {
-        const actionStr = wt.branch ? `branch: ${wt.branch}` : (wt.stashed ? 'stashed' : 'quarantined');
-        console.log(`    * ${wt.worktreePath} (${actionStr})`);
-      }
+      renderAbortQuarantine(abortResult);
       console.log(`  - Containers terminated    : ${abortResult.containersTerminated.length}`);
       for (const c of abortResult.containersTerminated) {
         console.log(`    * ${c}`);
@@ -1877,6 +1953,25 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           const targetIssue =
             issueValue ?? (parsedTarget.kind === 'valid' ? parsedTarget.issue : null);
 
+          // Issue #266 (absorbs #287): descriptor clearing must target the
+          // REPOSITORY's checkpoint, not the caller's worktree-local one. When
+          // `worktree remove` runs from inside `.worktrees/<id>`, the caller's
+          // state root IS the directory this command deletes first.
+          const repoRoot = worktreeManager.resolveRepositoryRoot
+            ? await worktreeManager.resolveRepositoryRoot(workspaceDir)
+            : workspaceDir;
+          const removalStateRepo = new FileStateRepository({
+            workspaceDir: repoRoot,
+            // Bind the ROOT checkpoint as the PRIMARY candidate and do NOT pass
+            // `issue:`: that keeps the legacy root `.agyloop/state.json` on the
+            // watchlist (the dual-checkpoint case pinned by cli-worktree-remove
+            // T-P9). `clearDescriptor` adds `.agyloop/tasks/<id>.json` from its
+            // own `issue` parameter and from the path-matched `listAllStates()`
+            // sweep.
+            stateFilePath: path.join(repoRoot, DEFAULT_STATE_DIR, DEFAULT_STATE_FILE)
+          });
+          const removalUseCase = new ManageWorktreeUseCase(worktreeManager, removalStateRepo);
+
           // `--prune-stale` is the supported repair for a descriptor whose
           // directory is gone (#282 review iteration 2). The plain command must
           // keep refusing a missing path (AC-2), so this opt-in is the only
@@ -1890,7 +1985,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               return EXIT_CODE_FAILURE;
             }
 
-            const pruned = await manageWorktreeUseCase.clearStaleDescriptor({
+            const pruned = await removalUseCase.clearStaleDescriptor({
               worktreePath: targetPath,
               issue: targetIssue
             });
@@ -1904,9 +1999,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             return EXIT_CODE_SUCCESS;
           }
 
-          const res = await manageWorktreeUseCase.teardown({
+          const res = await removalUseCase.teardown({
             worktreePath: targetPath,
-            workspaceDir,
+            workspaceDir: repoRoot,
             taskId: options.worktreeTarget,
             issue: targetIssue
           });
@@ -3006,7 +3101,8 @@ export async function main(): Promise<void> {
         workspaceDir: parsedOptions?.workspaceDir,
         issue: issueValue,
         force: true,
-        reason: `POSIX Signal ${signal}`
+        reason: `POSIX Signal ${signal}`,
+        noQuarantine: parsedOptions?.noQuarantine === true
       });
     } catch {
       // Best-effort cleanup

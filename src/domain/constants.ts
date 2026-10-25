@@ -1541,6 +1541,57 @@ export const NOTE_WORKTREE_STALE =
   'stale descriptor — the worktree directory does not exist; run `codeloop worktree remove {id} --prune-stale` to clear it' as const;
 
 // ============================================================================
+// Emergency Abort quarantine scope (issue #266)
+// ============================================================================
+
+/**
+ * `abort` used to quarantine EVERY worktree the repository registered —
+ * including other tasks' and external ones — so aborting one task emptied
+ * every other task's in-flight work (#266, live #250 instance). These notes
+ * single-source the reasons an operator is told about a worktree the abort did
+ * NOT touch, so no call site invents its own wording.
+ */
+/** The checkpoint records no worktree: nothing may be quarantined. */
+export const NOTE_ABORT_NO_WORKTREE_RECORDED =
+  'this checkpoint records no worktree — nothing to quarantine' as const;
+
+/** The descriptor names a path this repository does not register under `.worktrees`. */
+export const NOTE_ABORT_WORKTREE_NOT_REGISTERED =
+  'not a registered worktree of this repository (stale descriptor or external worktree) — left untouched' as const;
+
+/** The descriptor names the directory the abort was invoked from. */
+export const NOTE_ABORT_WORKTREE_CWD =
+  'current working directory — left untouched (run `codeloop abort` from the repository root to quarantine it, or pass --no-quarantine to silence this)' as const;
+
+/** `--no-quarantine` / `--keep-worktrees`. */
+export const NOTE_ABORT_QUARANTINE_DISABLED =
+  'quarantine disabled by --no-quarantine — left untouched' as const;
+
+/** The worktree was already clean. */
+export const NOTE_ABORT_WORKTREE_CLEAN = 'already clean — nothing to quarantine' as const;
+
+/** No abort run may ever quarantine a worktree outside `<repo>/.worktrees` (AC-3). */
+export const NOTE_ABORT_EXTERNAL_NEVER_QUARANTINED =
+  'external worktrees are never quarantined' as const;
+
+/** Adapter omitted the optional `quarantineWorktree` capability. */
+export const NOTE_ABORT_QUARANTINE_UNSUPPORTED =
+  'quarantine is not supported by this adapter' as const;
+
+/** Report label for a worktree that recorded nothing. */
+export const NOTE_ABORT_NO_WORKTREE_LABEL =
+  'NONE (this checkpoint records no worktree)' as const;
+
+// --- Missing worktree descriptor (issue #287 B / #266 D5) ---
+
+/**
+ * `next` at IMPLEMENT with `worktree: null`. `{command}` is filled by the
+ * application layer, which knows the issue token.
+ */
+export const NOTE_WORKTREE_MISSING_REPROVISION =
+  'No isolated worktree is recorded for this checkpoint, so the IMPLEMENT stage cannot dispatch a subagent. Re-provision it with `{command}` (an existing task branch is reused). If direct root execution was intended, re-run with `--no-worktree`.' as const;
+
+// ============================================================================
 // Implementation Evidence (issue #259)
 // ============================================================================
 

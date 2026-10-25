@@ -775,3 +775,110 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
 });
 
 
+
+/**
+ * Issue #266 (absorbs #287 B): a checkpoint at IMPLEMENT whose worktree
+ * descriptor is null used to raise the Zero Direct Root Mutation invariant and
+ * surface as a raw `Fatal:` + stack. It must instead return an actionable
+ * directive — while a NON-NULL descriptor that resolves to the root keeps
+ * raising (pinned by the #247 test above).
+ */
+describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
+  const NOW = '2026-10-24T00:00:00.000Z';
+
+  function implementWithoutWorktree(): any {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    return sm;
+  }
+
+  test('E1 IMPLEMENT with a null worktree returns a re-provision directive (AC-10)', async () => {
+    const sm = implementWithoutWorktree();
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.strictEqual(result.title, 'Worktree Required');
+    assert.ok(result.humanSummary.length > 0, 'the directive must be rendered');
+    assert.ok(
+      result.humanSummary.includes('codeloop implement --issue 41'),
+      `the directive must name the recovery command:\n${result.humanSummary}`
+    );
+    assert.strictEqual(result.worktreePath, null);
+    assert.strictEqual(result.nextStage, STAGE_IMPLEMENT, 'never advance into an unrunnable stage');
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+  });
+
+  test('E2 the directive is stable across IMPLEMENT retries (AC-10)', async () => {
+    const sm = implementWithoutWorktree();
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    const first = await useCase.execute({ workspaceDir: '/repo' });
+    const second = await useCase.execute({ workspaceDir: '/repo' });
+
+    for (const result of [first, second]) {
+      assert.strictEqual(result.actionType, 'human_gate');
+      assert.strictEqual(result.title, 'Worktree Required');
+      assert.ok(result.humanSummary.includes('codeloop implement --issue 41'));
+      assert.strictEqual(result.nextStage, STAGE_IMPLEMENT);
+    }
+  });
+
+  test('E3 YOLO APPROVAL with a null worktree returns the same directive (AC-10)', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, mode: MODE_YOLO, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.strictEqual(result.currentStage, STAGE_APPROVAL);
+    assert.ok(result.humanSummary.includes('codeloop implement --issue 41'));
+  });
+
+  test('E5 TRIAGE and COMMIT are unaffected by a null worktree (scope guard)', async () => {
+    const triageSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_TRIAGE,
+      mode: MODE_STANDARD,
+      issue: 41,
+      baseBranch: 'main',
+      worktree: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      history: [{ stage: STAGE_TRIAGE, timestamp: NOW }]
+    } as unknown;
+
+    const triageRepo = new MockStateRepo(triageSnapshot as any);
+    const triageUseCase = new GetNextActionUseCase(triageRepo, makeMockConfig());
+    const triageResult = await triageUseCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(triageResult.currentStage, STAGE_TRIAGE);
+    assert.strictEqual(triageResult.actionType, 'subagent');
+    assert.strictEqual(triageResult.role, 'triage');
+
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+
+    const commitRepo = new MockStateRepo(sm.toSnapshot());
+    const commitUseCase = new GetNextActionUseCase(commitRepo, makeMockConfig());
+    const commitResult = await commitUseCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(commitResult.actionType, 'human_gate');
+    assert.ok(commitResult.humanSummary.includes('agyloop commit'));
+  });
+});
