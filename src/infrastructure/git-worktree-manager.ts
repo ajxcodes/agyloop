@@ -21,7 +21,8 @@ import {
   ValidationError,
   isRootWorkspace,
   isPathInsideRoot,
-  isSamePath
+  isSamePath,
+  shellQuote
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -36,7 +37,8 @@ import {
   GetCommitsOptions,
   IsAncestorOptions,
   PushBranchOptions,
-  CommandExecutorPort
+  CommandExecutorPort,
+  QuarantineWorktreeResult
 } from '../ports';
 import { ProcessCommandExecutor } from './process-command-executor';
 
@@ -82,6 +84,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     }
 
     return path.resolve(cwd);
+  }
+
+  /** Public probe for the PRIMARY repository root (see the port doc). */
+  public async resolveRepositoryRoot(workspaceDir?: string): Promise<string> {
+    return this.getRepoRoot(workspaceDir);
   }
 
   /**
@@ -1195,25 +1202,43 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
   /**
    * Stashes or quarantines dirty changes in a worktree to prevent data loss.
+   *
+   * Atomic per worktree and evidence-returning (issue #266 AC-4 / AC-6):
+   *
+   *   - a failed dirty probe is `failed`, never `clean`;
+   *   - a failed `git stash push` is `failed`, never `quarantined`;
+   *   - branch mode checks each of its three steps;
+   *   - a success returns the ONLY recovery reference an operator can use:
+   *     `stash@{n}` for `git stash pop`, or the quarantine branch name.
+   *
+   * Every interpolated token is shell-quoted, so a task id can never execute.
    */
   public async quarantineWorktree(options: {
     worktreePath: string;
     taskId?: string | number;
     quarantineBranch?: boolean;
     workspaceDir?: string;
-  }): Promise<{ quarantined: boolean; branch?: string; stashed?: boolean }> {
+  }): Promise<QuarantineWorktreeResult> {
     const wtPath = path.resolve(options.worktreePath);
     if (!fs.existsSync(wtPath)) {
-      return { quarantined: false };
+      return { quarantined: false, outcome: 'missing' };
     }
 
-    // Check if worktree is dirty
+    // Check if worktree is dirty. A probe that FAILS is not "clean": reporting
+    // it as clean would silently leave the work where it is (AC-6).
     const statusRes = await this.commandExecutor.execute('git status --porcelain', {
       cwd: wtPath
     });
+    if (statusRes.exitCode !== 0) {
+      return {
+        quarantined: false,
+        outcome: 'failed',
+        error: (statusRes.stderr || statusRes.stdout || 'git status failed').trim()
+      };
+    }
     const isDirty = Boolean(statusRes.stdout && statusRes.stdout.trim().length > 0);
     if (!isDirty) {
-      return { quarantined: false };
+      return { quarantined: false, outcome: 'clean' };
     }
 
     const taskId = options.taskId ?? path.basename(wtPath);
@@ -1221,22 +1246,90 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     if (options.quarantineBranch) {
       const qBranch = `quarantine/task-${taskId}-${timestamp}`;
-      await this.commandExecutor.execute(`git checkout -b ${qBranch}`, { cwd: wtPath });
-      await this.commandExecutor.execute('git add -A', { cwd: wtPath });
-      await this.commandExecutor.execute(
-        `git commit -m "quarantine: automated emergency abort checkpoint for task ${taskId}"`,
+      const checkoutRes = await this.commandExecutor.execute(
+        `git checkout -b ${shellQuote(qBranch)}`,
         { cwd: wtPath }
       );
-      return { quarantined: true, branch: qBranch };
+      if (checkoutRes.exitCode !== 0) {
+        return {
+          quarantined: false,
+          outcome: 'failed',
+          branch: qBranch,
+          error: (checkoutRes.stderr || checkoutRes.stdout || 'git checkout -b failed').trim()
+        };
+      }
+      const addRes = await this.commandExecutor.execute('git add -A', { cwd: wtPath });
+      if (addRes.exitCode !== 0) {
+        return {
+          quarantined: false,
+          outcome: 'failed',
+          branch: qBranch,
+          error: (addRes.stderr || addRes.stdout || 'git add -A failed').trim()
+        };
+      }
+      const commitRes = await this.commandExecutor.execute(
+        `git commit -m ${shellQuote(
+          `quarantine: automated emergency abort checkpoint for task ${taskId}`
+        )}`,
+        { cwd: wtPath }
+      );
+      if (commitRes.exitCode !== 0) {
+        return {
+          quarantined: false,
+          outcome: 'failed',
+          branch: qBranch,
+          error: (commitRes.stderr || commitRes.stdout || 'git commit failed').trim()
+        };
+      }
+      return { quarantined: true, outcome: 'branch', branch: qBranch };
     }
 
     // Default: git stash
     const stashMsg = `quarantine-abort-task-${taskId}-${timestamp}`;
-    const stashRes = await this.commandExecutor.execute(`git stash push -u -m "${stashMsg}"`, {
-      cwd: wtPath
-    });
-    const stashed = stashRes.exitCode === 0;
-    return { quarantined: true, stashed };
+    const stashRes = await this.commandExecutor.execute(
+      `git stash push -u -m ${shellQuote(stashMsg)}`,
+      { cwd: wtPath }
+    );
+    if (stashRes.exitCode !== 0) {
+      return {
+        quarantined: false,
+        outcome: 'failed',
+        stashed: false,
+        error: (stashRes.stderr || stashRes.stdout || 'git stash push failed').trim()
+      };
+    }
+
+    // Resolve the ref the operator can actually `git stash pop`. The stash list
+    // is repository-wide, so a concurrent push shifts `stash@{0}`: the message
+    // is the only stable handle.
+    let stashRef: string | undefined;
+    try {
+      const list = await this.commandExecutor.execute(
+        'git stash list --format="%gd%x00%s"',
+        { cwd: wtPath }
+      );
+      if (list.exitCode === 0) {
+        stashRef =
+          (list.stdout || '')
+            .split('\n')
+            .map((line) => line.split('\x00'))
+            // `%s` for a stash is `On <branch>: <message>` (or `WIP on …`).
+            .find(
+              ([, subject]) => typeof subject === 'string' && subject.endsWith(stashMsg)
+            )?.[0]
+            ?.trim() || undefined;
+      }
+    } catch {
+      // Non-fatal: the message still lets the operator find the stash.
+    }
+
+    return {
+      quarantined: true,
+      outcome: 'stashed',
+      stashed: true,
+      stashRef,
+      stashMessage: stashMsg
+    };
   }
 
   /**

@@ -15,6 +15,16 @@ import {
   WorktreeManagerPort,
   PlanGeneratorPort
 } from '../ports';
+import {
+  StateMachineSnapshot,
+  isSamePath,
+  isPathInsideRoot,
+  NOTE_ABORT_QUARANTINE_DISABLED,
+  NOTE_ABORT_QUARANTINE_UNSUPPORTED,
+  NOTE_ABORT_WORKTREE_CLEAN,
+  NOTE_ABORT_WORKTREE_CWD,
+  NOTE_ABORT_WORKTREE_NOT_REGISTERED
+} from '../domain';
 
 export interface AbortPipelineParams {
   readonly workspaceDir?: string;
@@ -23,6 +33,25 @@ export interface AbortPipelineParams {
   readonly quarantine?: boolean;
   readonly reason?: string;
   readonly activeSubagent?: string;
+  /**
+   * `--no-quarantine` / `--keep-worktrees` (issue #266 AC-5): tear the run down
+   * without relocating the worktree's uncommitted work.
+   *
+   * TODO(#248): `--dry-run` never reaches this use case; once that wiring
+   * exists it should map onto this flag. No behaviour here.
+   */
+  readonly noQuarantine?: boolean;
+  /** Injectable cwd (defaults to `process.cwd()`) so the skip-cwd guard is testable. */
+  readonly currentDir?: string;
+}
+
+/** One worktree the abort relocated, with the reference needed to restore it. */
+export interface AbortQuarantineEntry {
+  readonly worktreePath: string;
+  readonly branch?: string;
+  readonly stashed?: boolean;
+  readonly stashRef?: string;
+  readonly stashMessage?: string;
 }
 
 export interface AbortPipelineResult {
@@ -30,7 +59,18 @@ export interface AbortPipelineResult {
   readonly processesTerminated: number;
   readonly terminatedProcessesCount?: number;
   readonly indexLockRemoved: boolean;
-  readonly worktreesQuarantined: Array<{ worktreePath: string; branch?: string; stashed?: boolean }>;
+  /**
+   * ONLY the checkpoint's own worktree may appear here (issue #266 AC-1): the
+   * emergency abort used to quarantine every registered worktree, including
+   * other tasks' and external ones.
+   */
+  readonly worktreesQuarantined: AbortQuarantineEntry[];
+  /** Worktrees deliberately left untouched, each with the reason. */
+  readonly worktreesQuarantineSkipped: Array<{ worktreePath: string; reason: string }>;
+  /** Quarantine attempts that failed atomically (AC-6). Never counted as quarantined. */
+  readonly worktreesQuarantineFailed: Array<{ worktreePath: string; error: string }>;
+  /** The descriptor path the checkpoint recorded, or null when it recorded none. */
+  readonly worktreeScopePath: string | null;
   readonly containersTerminated: string[];
   readonly auditLogged: boolean;
   readonly durationMs: number;
@@ -82,33 +122,25 @@ export class AbortPipelineUseCase {
     }
 
     // 3. Worktree Quarantine & Safe Teardown
-    const worktreesQuarantined: Array<{ worktreePath: string; branch?: string; stashed?: boolean }> = [];
+    //
+    // Issue #266 (live #250 instance): this step used to quarantine EVERY
+    // worktree `listWorktrees({ includeExternal: true })` returned, so aborting
+    // one task emptied every other task's in-flight work. Only the checkpoint's
+    // OWN worktree may be touched, external worktrees never are (AC-3), and the
+    // directory the abort was invoked from is left alone (AC-8).
+    let snapshot: StateMachineSnapshot | null = null;
     try {
-      const activeWorktrees = await this.worktreeManager.listWorktrees({
-        workspaceDir: workspace,
-        includeExternal: true
-      });
-
-      for (const wt of activeWorktrees) {
-        if (this.worktreeManager.quarantineWorktree) {
-          const res = await this.worktreeManager.quarantineWorktree({
-            worktreePath: wt.worktreePath,
-            taskId: wt.taskId,
-            quarantineBranch: params.quarantine,
-            workspaceDir: workspace
-          });
-          if (res.quarantined) {
-            worktreesQuarantined.push({
-              worktreePath: wt.worktreePath,
-              branch: res.branch,
-              stashed: res.stashed
-            });
-          }
-        }
-      }
+      // Corrupt ⇒ null, never fatal (#250 B1).
+      snapshot = await this.stateRepo.load();
     } catch {
-      // Non-fatal
+      // Left null: a checkpoint that cannot be read selects no worktree.
     }
+
+    const quarantine = await this.quarantineOwnWorktree(params, workspace, snapshot);
+    const worktreesQuarantined = quarantine.quarantined;
+    const worktreesQuarantineSkipped = quarantine.skipped;
+    const worktreesQuarantineFailed = quarantine.failed;
+    const worktreeScopePath = quarantine.scopePath;
 
     // 4. Container Sandbox Teardown (Docker / Podman)
     const containersTerminated: string[] = [];
@@ -117,7 +149,6 @@ export class AbortPipelineUseCase {
     // 5. Audit Checkpoint in Summary
     let auditLogged = false;
     try {
-      const snapshot = await this.stateRepo.load();
       const currentStage = snapshot?.currentStage || 'UNKNOWN';
       const issue = params.issue ?? snapshot?.issue;
 
@@ -145,7 +176,9 @@ export class AbortPipelineUseCase {
               terminatedProcessesCount: processesTerminated,
               indexLockRemoved,
               containersTerminated: containersTerminated.length,
-              worktreesQuarantined: worktreesQuarantined.length
+              worktreesQuarantined: worktreesQuarantined.length,
+              worktreesQuarantineFailed: worktreesQuarantineFailed.length,
+              worktreesQuarantineSkipped: worktreesQuarantineSkipped.length
             },
             reason: params.reason || (params.force ? 'Forced Emergency Abort' : 'Emergency Abort Signal Received')
           }
@@ -162,10 +195,128 @@ export class AbortPipelineUseCase {
       terminatedProcessesCount: processesTerminated,
       indexLockRemoved,
       worktreesQuarantined,
+      worktreesQuarantineSkipped,
+      worktreesQuarantineFailed,
+      worktreeScopePath,
       containersTerminated,
       auditLogged,
       durationMs
     };
+  }
+
+  /**
+   * Selects and quarantines the ONE worktree this checkpoint owns (issue #266).
+   *
+   * Decision order, each step reported to the operator rather than silently
+   * skipped:
+   *
+   *   1. no recorded descriptor          → nothing selected (`scopePath: null`);
+   *   2. `--no-quarantine`               → skipped (AC-5);
+   *   3. the cwd is inside that worktree → skipped (AC-8, the #250 incident);
+   *   4. the adapter has no quarantine   → skipped;
+   *   5. the path is not registered      → skipped (AC-3: a stale descriptor or
+   *                                        an external worktree is never a
+   *                                        destructive target);
+   *   6. otherwise                       → quarantine and report the reference.
+   *
+   * `includeExternal` is deliberately NOT passed: a destructive operation never
+   * widens past `<repo>/.worktrees` (AC-3).
+   *
+   * Never throws: a git failure is reported as a failure, not a teardown abort.
+   */
+  private async quarantineOwnWorktree(
+    params: AbortPipelineParams,
+    workspace: string | undefined,
+    snapshot: StateMachineSnapshot | null
+  ): Promise<{
+    quarantined: AbortQuarantineEntry[];
+    skipped: Array<{ worktreePath: string; reason: string }>;
+    failed: Array<{ worktreePath: string; error: string }>;
+    scopePath: string | null;
+  }> {
+    const quarantined: AbortQuarantineEntry[] = [];
+    const skipped: Array<{ worktreePath: string; reason: string }> = [];
+    const failed: Array<{ worktreePath: string; error: string }> = [];
+    const ownPath = AbortPipelineUseCase.recordedWorktreePath(snapshot);
+
+    if (!ownPath) {
+      return { quarantined, skipped, failed, scopePath: null };
+    }
+
+    const scopePath = ownPath;
+
+    if (params.noQuarantine) {
+      skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_QUARANTINE_DISABLED });
+      return { quarantined, skipped, failed, scopePath };
+    }
+
+    const cwd = params.currentDir ?? process.cwd();
+    if (isSamePath(cwd, ownPath) || isPathInsideRoot(cwd, ownPath)) {
+      skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_WORKTREE_CWD });
+      return { quarantined, skipped, failed, scopePath };
+    }
+
+    const quarantineWorktree = this.worktreeManager.quarantineWorktree;
+    if (!quarantineWorktree) {
+      skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_QUARANTINE_UNSUPPORTED });
+      return { quarantined, skipped, failed, scopePath };
+    }
+
+    try {
+      // Ownership check (#266 §2.3): `quarantineWorktree` has no containment
+      // check of its own, so the path is acted on ONLY when this repository
+      // reports it as a registered worktree.
+      const listed = await this.worktreeManager.listWorktrees({ workspaceDir: workspace });
+      const own = listed.find((wt) => isSamePath(wt.worktreePath, ownPath));
+      if (!own) {
+        skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_WORKTREE_NOT_REGISTERED });
+        return { quarantined, skipped, failed, scopePath };
+      }
+
+      const res = await quarantineWorktree.call(this.worktreeManager, {
+        worktreePath: own.worktreePath,
+        taskId: own.taskId,
+        quarantineBranch: params.quarantine,
+        workspaceDir: workspace
+      });
+
+      if (res.quarantined) {
+        quarantined.push({
+          worktreePath: own.worktreePath,
+          branch: res.branch,
+          stashed: res.stashed,
+          stashRef: res.stashRef,
+          stashMessage: res.stashMessage
+        });
+      } else if (res.error) {
+        failed.push({ worktreePath: own.worktreePath, error: res.error });
+      } else {
+        skipped.push({
+          worktreePath: own.worktreePath,
+          reason:
+            res.outcome === 'clean'
+              ? NOTE_ABORT_WORKTREE_CLEAN
+              : 'worktree path does not exist'
+        });
+      }
+    } catch (err: unknown) {
+      failed.push({
+        worktreePath: ownPath,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+
+    return { quarantined, skipped, failed, scopePath };
+  }
+
+  /** The descriptor's `worktreePath`, narrowed to a non-empty string. */
+  private static recordedWorktreePath(
+    snapshot: StateMachineSnapshot | null
+  ): string | null {
+    const worktree = snapshot?.worktree;
+    if (!worktree || typeof worktree !== 'object') return null;
+    const candidate = (worktree as Record<string, unknown>).worktreePath;
+    return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
   }
 
   private async cleanupContainers(containersTerminated: string[]): Promise<void> {

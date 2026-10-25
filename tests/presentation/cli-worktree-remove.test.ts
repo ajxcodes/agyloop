@@ -64,13 +64,13 @@ function addWorktree(dir: string, id: number): string {
 }
 
 /** Writes `.agyloop/tasks/<id>.json` with a worktree descriptor. */
-function seedTask(dir: string, id: number, worktreePath: string): void {
+function seedTask(dir: string, id: number, worktreePath: string, stage = 'COMPLETED'): void {
   fs.writeFileSync(
     path.join(dir, '.agyloop', 'tasks', `${id}.json`),
     JSON.stringify(
       {
         version: '1.0.0',
-        currentStage: 'COMPLETED',
+        currentStage: stage,
         mode: 'standard',
         issue: id,
         baseBranch: 'main',
@@ -83,7 +83,7 @@ function seedTask(dir: string, id: number, worktreePath: string): void {
         },
         createdAt: NOW,
         updatedAt: NOW,
-        history: [{ stage: 'COMPLETED', timestamp: NOW }]
+        history: [{ stage, timestamp: NOW }]
       },
       null,
       2
@@ -99,13 +99,13 @@ function seedTask(dir: string, id: number, worktreePath: string): void {
  * descriptor here and in `.agyloop/tasks/<id>.json`; the removal must clear
  * both (review iteration 2).
  */
-function seedRootState(dir: string, id: number, worktreePath: string): void {
+function seedRootState(dir: string, id: number, worktreePath: string, stage = 'COMPLETED'): void {
   fs.writeFileSync(
     path.join(dir, '.agyloop', 'state.json'),
     JSON.stringify(
       {
         version: '1.0.0',
-        currentStage: 'COMPLETED',
+        currentStage: stage,
         mode: 'standard',
         issue: id,
         baseBranch: 'main',
@@ -118,7 +118,7 @@ function seedRootState(dir: string, id: number, worktreePath: string): void {
         },
         createdAt: NOW,
         updatedAt: NOW,
-        history: [{ stage: 'COMPLETED', timestamp: NOW }]
+        history: [{ stage, timestamp: NOW }]
       },
       null,
       2
@@ -417,6 +417,111 @@ describe('codeloop worktree remove (#282)', () => {
         null,
         'a live descriptor must not be cleared'
       );
+    } finally {
+      cleanup(sandbox);
+    }
+  });
+});
+
+/**
+ * Issue #266 (absorbs #287): running `worktree remove <id>` from INSIDE the
+ * target used to clear the caller's own (worktree-local) checkpoint while the
+ * REPOSITORY-root checkpoint kept advertising the deleted path. The fix roots
+ * descriptor clearing at the primary repository.
+ */
+describe('codeloop worktree remove from inside the target (#266, absorbs #287)', () => {
+  test('D1/T-P12 removing from inside the target clears the ROOT checkpoint (AC-9, AC-11)', async () => {
+    const sandbox = makeSandbox();
+    const worktreePath = addWorktree(sandbox.dir, 557);
+    seedRootState(sandbox.dir, 557, worktreePath, 'IMPLEMENT');
+    seedTask(sandbox.dir, 557, worktreePath, 'IMPLEMENT');
+
+    try {
+      const run = await runCliIn(worktreePath, ['worktree', 'remove', '557']);
+
+      assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      assert.ok(run.stdout.includes('✓'), run.stdout);
+      assert.strictEqual(fs.existsSync(worktreePath), false, 'the worktree must be gone');
+
+      assert.strictEqual(
+        readCheckpoint(path.join(sandbox.dir, '.agyloop', 'tasks', '557.json')).worktree,
+        null,
+        'the task checkpoint must be cleared'
+      );
+      assert.strictEqual(
+        readCheckpoint(path.join(sandbox.dir, '.agyloop', 'state.json')).worktree,
+        null,
+        'the ROOT checkpoint must be cleared — not the caller-local one'
+      );
+      assert.ok(run.stdout.includes(path.join('tasks', '557.json')), run.stdout);
+      assert.strictEqual(
+        run.stdout.includes('did not point at the removed path'),
+        false,
+        `the success text must not claim the descriptor was untouched:\n${run.stdout}`
+      );
+    } finally {
+      cleanup(sandbox);
+    }
+  });
+
+  test('D2/T-P12b the message names every checkpoint it cleared (AC-9)', async () => {
+    const sandbox = makeSandbox();
+    const worktreePath = addWorktree(sandbox.dir, 557);
+    seedRootState(sandbox.dir, 557, worktreePath, 'IMPLEMENT');
+    seedTask(sandbox.dir, 557, worktreePath, 'IMPLEMENT');
+
+    try {
+      const run = await runCliIn(worktreePath, ['worktree', 'remove', '557']);
+
+      assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      assert.ok(run.stdout.includes(NOTE_WORKTREE_CHECKPOINT_CLEARED), run.stdout);
+      assert.ok(run.stdout.includes('state.json'), `the root checkpoint must be named:\n${run.stdout}`);
+      assert.ok(
+        run.stdout.includes(path.join('tasks', '557.json')),
+        `the task checkpoint must be named:\n${run.stdout}`
+      );
+    } finally {
+      cleanup(sandbox);
+    }
+  });
+
+  test('D3/T-P13 --prune-stale from the root also repairs the root checkpoint (AC-9, AC-11)', async () => {
+    const sandbox = makeSandbox();
+    const stalePath = path.join(sandbox.dir, '.worktrees', '557');
+    seedRootState(sandbox.dir, 557, stalePath, 'IMPLEMENT');
+    seedTask(sandbox.dir, 557, stalePath, 'IMPLEMENT');
+
+    try {
+      const run = await runCliIn(sandbox.dir, ['worktree', 'remove', '557', '--prune-stale']);
+
+      assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      assert.ok(run.stdout.includes('✓'), run.stdout);
+      assert.strictEqual(
+        readCheckpoint(path.join(sandbox.dir, '.agyloop', 'tasks', '557.json')).worktree,
+        null
+      );
+      assert.strictEqual(
+        readCheckpoint(path.join(sandbox.dir, '.agyloop', 'state.json')).worktree,
+        null,
+        'the legacy root descriptor must be repaired too, without a second command'
+      );
+    } finally {
+      cleanup(sandbox);
+    }
+  });
+
+  test('D4/T-P14 exit codes: refusal non-zero, success zero (AC-12)', async () => {
+    const sandbox = makeSandbox();
+    const worktreePath = addWorktree(sandbox.dir, 557);
+    seedTask(sandbox.dir, 557, worktreePath);
+
+    try {
+      const refused = await runCliIn(worktreePath, ['worktree', 'remove', '999']);
+      assert.strictEqual(refused.code, 1, `${refused.stdout}\n${refused.stderr}`);
+      assert.strictEqual(fs.existsSync(worktreePath), true, 'the target must survive a refusal');
+
+      const removed = await runCliIn(worktreePath, ['worktree', 'remove', '557']);
+      assert.strictEqual(removed.code, 0, `${removed.stdout}\n${removed.stderr}`);
     } finally {
       cleanup(sandbox);
     }

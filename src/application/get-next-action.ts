@@ -49,6 +49,7 @@ import {
   NOTE_REVIEW_GATE_EXIT_CONDITION,
   NOTE_REVIEW_DISPATCH_ORDINAL,
   NOTE_REVIEW_DISPATCH_CAP,
+  NOTE_WORKTREE_MISSING_REPROVISION,
   formatReviewVerdictChannelCommand,
   formatTriageActionList,
   formatTriageActionSideEffects,
@@ -865,17 +866,21 @@ export class GetNextActionUseCase {
   private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
-    
-    // Issue #247: the implement-action root check shares the ONE domain invariant
-    // predicate (resolve-normalized) instead of a raw `===` compare, so `next`
-    // and every cleanup path agree on the same descriptor verdict (AC7). The
-    // thrown message text is single-sourced in `assertNotRootWorkspace`.
-    if (!worktreePath || isRootWorkspace(worktreePath, cwd)) {
-      assertNotRootWorkspace(worktreePath ?? cwd, cwd, 'worktreePath');
+    const baseBranch = sm.baseBranch || 'main';
+
+    // Issue #266 (absorbs #287 B): a NULL descriptor is not a root-mutation
+    // attempt — the worktree was removed (`codeloop worktree remove` during
+    // IMPLEMENT, for example). Return an actionable directive instead of
+    // asserting. A NON-NULL descriptor that resolves to the root is still a
+    // genuine violation (#247), and the ONE domain predicate decides it.
+    if (!worktreePath) {
+      return this.buildMissingWorktreeDirective(sm, baseBranch);
+    }
+    if (isRootWorkspace(worktreePath, cwd)) {
+      assertNotRootWorkspace(worktreePath, cwd, 'worktreePath');
     }
 
     const taskBranch = sm.worktree?.branch || null;
-    const baseBranch = sm.baseBranch || 'main';
 
     const subagent = this.resolveSubagentUseCase.execute({
       role: ROLE_IMPLEMENTER,
@@ -937,6 +942,35 @@ export class GetNextActionUseCase {
       worktreePath,
       invocationPayload,
       humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`
+    };
+  }
+
+  /**
+   * "The worktree is gone — re-provision it" (issue #287 B / #266 D5).
+   *
+   * `codeloop implement` is the ONE command that re-provisions: at IMPLEMENT it
+   * resumes and creates the worktree when `sm.worktree` is null
+   * (`start-implementation.ts`); at APPROVAL (YOLO) it transitions and
+   * provisions on the way. `next` never mutates the checkpoint to do this.
+   *
+   * `nextStage` never advances: dispatching IMPLEMENT without a worktree would
+   * violate the Zero Direct Root Mutation invariant the assertion used to raise.
+   */
+  private buildMissingWorktreeDirective(
+    sm: StateMachine,
+    baseBranch: string
+  ): NextActionResult {
+    const command = sm.issue ? `codeloop implement --issue ${sm.issue}` : 'codeloop implement';
+    return {
+      currentStage: sm.currentStage,
+      nextStage: sm.currentStage,
+      actionType: 'human_gate',
+      title: 'Worktree Required',
+      description: NOTE_WORKTREE_MISSING_REPROVISION.replace('{command}', command),
+      baseBranch,
+      taskBranch: null,
+      worktreePath: null,
+      humanSummary: `No isolated worktree is recorded for this checkpoint. Run \`${command}\`, then run \`codeloop next\` again.`
     };
   }
 }

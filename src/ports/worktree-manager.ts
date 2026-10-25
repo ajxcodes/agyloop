@@ -59,6 +59,25 @@ export interface EnsureGitIgnoreOptions {
   readonly entry?: string;
 }
 
+/**
+ * Outcome of a quarantine attempt (issue #266 AC-4 / AC-6).
+ *
+ * `quarantined === true` iff `outcome` is `'stashed'` or `'branch'`: a failed
+ * `git stash` must never be counted as quarantined.
+ */
+export interface QuarantineWorktreeResult {
+  readonly quarantined: boolean;
+  /** Machine-readable cause. `quarantined === true` iff 'stashed' | 'branch'. */
+  readonly outcome?: 'stashed' | 'branch' | 'clean' | 'missing' | 'failed';
+  readonly branch?: string;
+  readonly stashed?: boolean;
+  /** e.g. 'stash@{0}' — the ONLY value `git stash pop` accepts. */
+  readonly stashRef?: string;
+  /** The generated message, so an operator whose index shifted can re-find it. */
+  readonly stashMessage?: string;
+  readonly error?: string;
+}
+
 export interface CleanOrphanedOptions {
   readonly workspaceDir?: string;
   readonly subagents?: boolean;
@@ -162,13 +181,26 @@ export interface WorktreeManagerPort {
 
   /**
    * Stashes or quarantines dirty changes in a worktree to prevent data loss.
+   *
+   * The result carries the RECOVERY REFERENCE (issue #266 AC-4): an operator
+   * whose abort relocated their work must be told how to get it back. Before
+   * the fix the manager returned a bare `quarantined: true` and a failed
+   * `git stash` was reported as success (AC-6).
    */
   quarantineWorktree?(options: {
     worktreePath: string;
     taskId?: string | number;
     quarantineBranch?: boolean;
     workspaceDir?: string;
-  }): Promise<{ quarantined: boolean; branch?: string; stashed?: boolean }>;
+  }): Promise<QuarantineWorktreeResult>;
+
+  /**
+   * Resolves the PRIMARY repository root (the main worktree) that owns
+   * `workspaceDir` — the root whose `.agyloop` holds the operator's
+   * checkpoints. Optional: adapters that cannot probe git may omit it, and the
+   * CLI falls back to the configured workspace.
+   */
+  resolveRepositoryRoot?(workspaceDir?: string): Promise<string>;
 
   /**
    * Clears stale .git/index.lock if present.

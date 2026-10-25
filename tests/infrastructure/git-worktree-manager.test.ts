@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 const { GitWorktreeManager } = require('../../dist/infrastructure');
 const { WorktreeCreationError, INIT_GITIGNORE_RULES } = require('../../dist/domain');
 
@@ -2415,3 +2416,198 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   });
 });
 
+
+/**
+ * Issue #266: `quarantineWorktree` used to discard its own recovery reference
+ * and to report a failed `git stash` as success. These tests pin the atomic,
+ * evidence-returning contract the abort summary depends on.
+ */
+describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt266-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  /** A real git repository with one committed file, plus dirty work. */
+  function initRepo(dir: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+    fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+  }
+
+  test('B1 returns the stash ref and message a failed stash would otherwise hide (AC-4)', async () => {
+    initRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'feature.txt'), 'work in progress\n', 'utf8');
+
+    const manager = new GitWorktreeManager();
+    const result = await manager.quarantineWorktree({
+      worktreePath: tmpDir,
+      taskId: '212',
+      workspaceDir: tmpDir
+    });
+
+    assert.strictEqual(result.quarantined, true);
+    assert.strictEqual(result.outcome, 'stashed');
+    assert.strictEqual(result.stashed, true);
+    assert.match(result.stashRef || '', /^stash@\{\d+\}$/);
+    assert.match(result.stashMessage || '', /^quarantine-abort-task-212-\d+$/);
+
+    const stashList = execFileSync('git', ['stash', 'list'], { cwd: tmpDir, encoding: 'utf8' });
+    assert.ok(
+      stashList.includes(result.stashMessage),
+      `the reported message must identify the stash:\n${stashList}`
+    );
+    assert.strictEqual(fs.existsSync(path.join(tmpDir, 'feature.txt')), false);
+  });
+
+  test('B2 fails atomically when the stash is refused (AC-6)', async () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const commands: string[] = [];
+    const executor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        commands.push(cmd);
+        if (cmd === 'git status --porcelain') {
+          return makeResult(cmd, { stdout: 'M f.txt\n' });
+        }
+        if (cmd.startsWith('git stash push')) {
+          return makeResult(cmd, { exitCode: 1, stderr: 'stash failed' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(executor);
+    const result = await manager.quarantineWorktree({
+      worktreePath: tmpDir,
+      taskId: '212'
+    });
+
+    assert.strictEqual(result.quarantined, false);
+    assert.strictEqual(result.outcome, 'failed');
+    assert.ok((result.error || '').includes('stash failed'));
+    assert.ok(commands.some((c) => c.startsWith('git stash push')));
+  });
+
+  test('B3 reports a failed dirty probe instead of "clean" (AC-6)', async () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const commands: string[] = [];
+    const executor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        commands.push(cmd);
+        if (cmd === 'git status --porcelain') {
+          return makeResult(cmd, { exitCode: 128, stderr: 'not a git repository' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(executor);
+    const result = await manager.quarantineWorktree({
+      worktreePath: tmpDir,
+      taskId: '212'
+    });
+
+    assert.strictEqual(result.quarantined, false);
+    assert.strictEqual(result.outcome, 'failed');
+    assert.ok((result.error || '').includes('not a git repository'));
+    assert.strictEqual(
+      commands.some((c) => c.startsWith('git stash')),
+      false,
+      'a failed probe must never reach a destructive command'
+    );
+  });
+
+  test('B4 branch mode checks every step (AC-6)', async () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const executor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git status --porcelain') {
+          return makeResult(cmd, { stdout: 'M f.txt\n' });
+        }
+        if (cmd.startsWith('git commit')) {
+          return makeResult(cmd, { exitCode: 1, stderr: 'commit refused' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(executor);
+    const result = await manager.quarantineWorktree({
+      worktreePath: tmpDir,
+      taskId: '212',
+      quarantineBranch: true
+    });
+
+    assert.strictEqual(result.quarantined, false);
+    assert.strictEqual(result.outcome, 'failed');
+    assert.match(result.branch || '', /^quarantine\/task-212-/);
+    assert.ok((result.error || '').includes('commit refused'));
+  });
+
+  test('B5 resolveRepositoryRoot returns the main root from inside a linked worktree (AC-9)', async () => {
+    initRepo(tmpDir);
+    const worktreePath = path.join(tmpDir, '.worktrees', '7');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'task/7-probe', worktreePath], {
+      cwd: tmpDir,
+      stdio: 'ignore'
+    });
+
+    const manager = new GitWorktreeManager();
+    const resolved = await manager.resolveRepositoryRoot(worktreePath);
+
+    assert.strictEqual(fs.realpathSync(resolved), fs.realpathSync(tmpDir));
+  });
+
+  test('B6 quotes every interpolated token so a task id can never execute', async () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const commands: string[] = [];
+    const executor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        commands.push(cmd);
+        if (cmd === 'git status --porcelain') {
+          return makeResult(cmd, { stdout: 'M f.txt\n' });
+        }
+        if (cmd.startsWith('git stash push')) {
+          return makeResult(cmd);
+        }
+        if (cmd.startsWith('git stash list')) {
+          return makeResult(cmd, { stdout: '' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(executor);
+    await manager.quarantineWorktree({
+      worktreePath: tmpDir,
+      taskId: "$(touch /tmp/pwned)'; rm -rf /"
+    });
+
+    const stashPush = commands.find((c) => c.startsWith('git stash push'));
+    assert.ok(stashPush, 'the stash command must have run');
+    assert.ok(
+      /^git stash push -u -m '.*'$/.test(stashPush as string),
+      `the message must be one single-quoted POSIX word:\n${stashPush}`
+    );
+    assert.ok(
+      (stashPush as string).includes("'\\''"),
+      `an embedded single quote must be escaped:\n${stashPush}`
+    );
+    assert.strictEqual(
+      (stashPush as string).includes('"'),
+      false,
+      `no double-quoted word may remain:\n${stashPush}`
+    );
+  });
+});
