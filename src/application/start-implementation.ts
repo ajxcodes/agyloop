@@ -32,7 +32,8 @@ import {
   IssueNumber,
   InvalidTransitionError,
   ValidationError,
-  WorktreeCreationError
+  WorktreeCreationError,
+  isPlanContentSubstantive
 } from '../domain';
 import {
   StateRepository,
@@ -222,7 +223,10 @@ export class StartImplementationUseCase {
     const resolved = this.planGenerator.resolvePlanFile({
       projectRoot: workspace,
       issue: activeIssue,
-      planPath: params.planPath,
+      // An explicit `--plan-path` wins; otherwise the checkpoint's recorded
+      // supplied plan does (issue #267), so `next` and the implementer see the
+      // SAME document the operator handed in.
+      planPath: params.planPath || sm.planPath || undefined,
       planDir: params.planDir || sm.planDir
     });
 
@@ -234,11 +238,29 @@ export class StartImplementationUseCase {
       );
     }
 
-    if (!sm.planDir && resolved?.planDir) {
+    if (params.planPath && resolved?.planPath) {
+      sm.setPlanPath(resolved.planPath);
+    }
+    // Only adopt a plan DIRECTORY for ordinary (canonical) resolution. A
+    // supplied plan file is not a directory instruction: persisting its
+    // dirname made later scaffolding write next to the supplied plan (#267).
+    if (!sm.planDir && resolved?.planDir && !params.planPath && !sm.planPath) {
       sm.setPlanDir(resolved.planDir);
     }
 
     const planContent = resolved ? this.planGenerator.readPlanDocument(resolved.planPath) : '';
+
+    // Issue #267: a plan the operator SUPPLIED must be non-blank before the
+    // implementer is dispatched. The tool's OWN blank scaffold is a different
+    // case: the YOLO path must keep parking at IMPLEMENT with its advisory, so
+    // only an explicitly supplied path is rejected here.
+    if (params.planPath && !isPlanContentSubstantive(planContent)) {
+      throw new ValidationError(
+        VALIDATION_FIELD_PLAN_PATH,
+        resolved?.planPath ?? params.planPath,
+        `The supplied plan is blank: ${resolved?.planPath ?? params.planPath}. Write a plan with implementation steps (or run \`codeloop plan\`) before dispatching the implementer.`
+      );
+    }
 
     // 4. Resolve GitHub issue context if available
     let issueData: GitHubIssueData | null = null;

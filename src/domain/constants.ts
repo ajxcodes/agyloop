@@ -54,7 +54,10 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
   [STAGE_DISCOVERY]: Object.freeze([STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_PLAN]: Object.freeze([STAGE_APPROVAL, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed only in YOLO mode
   [STAGE_APPROVAL]: Object.freeze([STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]), // PLAN allowed if re-planning requested
-  [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE, STAGE_TRIAGE]),
+  // PLAN is a supported recovery target (issue #267): the blank-plan park at
+  // IMPLEMENT tells the operator to re-plan, and the planner payload is produced
+  // at PLAN. Without this entry the instruction could not be carried out.
+  [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE, STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if gates fail
   [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if review changes required
   [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]),
@@ -1680,17 +1683,44 @@ export const NOTE_IMPLEMENTATION_PLAN_EMPTY =
  * The continuation line of the plan-empty advisory. It REPLACES
  * `NOTE_IMPLEMENTATION_PARK_NEXT` — printing both would tell the operator to
  * dispatch an implementer that has nothing to execute.
+ *
+ * Issue #267: the path it names must be REACHABLE. `codeloop next` now returns
+ * the PLANNER directive (not the implementer) while the plan is blank, and
+ * `--plan-path` can supply a plan the operator already wrote. The
+ * Architectural Planning Subagent is no longer the sole, unreachable route.
+ * `{issue}` is optional: the fallback text stays valid without it.
  */
 export const NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT =
-  'Next: run the Architectural Planning Subagent (or write the plan) first, then run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`.' as const;
+  'Next: run `codeloop next` to obtain the planner directive (or supply your own plan with `codeloop implement --plan-path <file>`), then re-run `codeloop next` to dispatch the Code Implementation Subagent once the plan is non-blank.' as const;
 
 /**
  * The full park message for a YOLO run whose plan is still the blank
  * scaffold. `{baseRef}` is the reference the probe compared against and
  * `{planPath}` names the empty plan.
+ *
+ * Issue #267: the recovery route is named as the commands the operator can
+ * actually run — `codeloop next` (planner directive) or `--plan-path`.
  */
 export const NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN =
-  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The plan at '{planPath}' is still the blank scaffold (no implementation steps), so dispatching the implementer now would give it nothing to execute: run the Architectural Planning Subagent (or write the plan) first, then run `codeloop next`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The plan at '{planPath}' is still the blank scaffold (no implementation steps), so dispatching the implementer now would give it nothing to execute: run `codeloop next` to obtain the planner directive (or supply your own plan with `codeloop implement --plan-path <file>`), then run `codeloop next` again. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
+/**
+ * A REPEATED blank-plan park (issue #267, AC-A5).
+ *
+ * The second occurrence must not read identically to the first: it says how
+ * many attempts have been observed, so a re-run with no intervening action is
+ * visibly not progress. `{count}` is the recorded park count, `{baseRef}` the
+ * probe reference and `{planPath}` the still-blank plan.
+ */
+export const NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN_REPEAT =
+  "Implementation produced no changes — refusing to advance to quality gates (attempt {count}, the plan is STILL blank). The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The plan at '{planPath}' carries no implementation steps; nothing has changed since the previous park. Run `codeloop next` to obtain the planner directive (or supply a plan with `codeloop implement --plan-path <file>`). State is checkpointed at IMPLEMENT; nothing is lost." as const;
+
+/**
+ * The CLI stderr advisory for the SECOND and later blank-plan park
+ * (issue #267, AC-A5): `{planPath}` and the attempt `{count}`.
+ */
+export const NOTE_IMPLEMENTATION_PLAN_EMPTY_REPEAT =
+  "The plan at '{planPath}' is STILL the blank scaffold (attempt {count}); no plan was written since the previous park" as const;
 
 /**
  * The VACUOUS gate verdict line: the gates refused to certify a tree that
@@ -2319,6 +2349,106 @@ export const NOTE_REVIEW_DISPATCH_CAP =
 /** The operator-facing label of the re-dispatch count (additive `status` line). */
 export const LABEL_REVIEW_DISPATCHES = 'Review Dispatches' as const;
 
+// ============================================================================
+// Stage dispatch directives (issue #292)
+// ============================================================================
+
+/**
+ * The command that ADVANCES the DISCOVERY stage (issue #292).
+ *
+ * The directive used to name neither the completion condition nor the command
+ * that moves the pipeline on, so an operator (or an external runner) following
+ * `codeloop next` re-dispatched the discovery subagent forever.
+ */
+export const DISCOVERY_ADVANCE_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_PLAN} --issue {issue}` as const;
+export const DISCOVERY_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_PLAN} --issue <n>` as const;
+
+export function formatDiscoveryAdvanceCommand(issue?: number | string | null): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return DISCOVERY_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return DISCOVERY_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/** The command that ADVANCES the PLAN stage (issue #292). */
+export const PLAN_ADVANCE_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} APPROVAL --issue {issue}` as const;
+export const PLAN_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} APPROVAL --issue <n>` as const;
+
+export function formatPlanAdvanceCommand(issue?: number | string | null): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return PLAN_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return PLAN_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/** What ENDS the DISCOVERY stage (issue #292). */
+export const NOTE_DISCOVERY_ADVANCE_CONDITION =
+  'This stage ends when a populated RCA report exists for the issue.' as const;
+
+/** What ENDS the PLAN stage (issue #292). */
+export const NOTE_PLAN_ADVANCE_CONDITION =
+  'This stage ends when the plan file is non-blank.' as const;
+
+/** The per-read re-dispatch record for DISCOVERY: `{n}`. */
+export const NOTE_DISCOVERY_DISPATCH_ORDINAL =
+  'Discovery dispatch {n} for this stage.' as const;
+
+/** The per-read re-dispatch record for PLAN: `{n}`. */
+export const NOTE_PLAN_DISPATCH_ORDINAL =
+  'Planner dispatch {n} for this stage.' as const;
+
+/**
+ * The number of blank-plan parks after which the advisory reports a REPEAT
+ * (issue #267, AC-A5). ONE definition shared by the lifecycle message chooser
+ * and the CLI advisory so the two can never disagree about "attempt 2".
+ */
+export const PLAN_EMPTY_PARK_REPEAT_THRESHOLD = 2 as const;
+
+/** Operator-facing labels of the two new re-dispatch counters. */
+export const LABEL_DISCOVERY_DISPATCHES = 'Discovery Dispatches' as const;
+export const LABEL_PLAN_DISPATCHES = 'Planner Dispatches' as const;
+
+/** Operator-facing label of the recorded blank-plan park count. */
+export const LABEL_PLAN_EMPTY_PARKS = 'Blank-Plan Parks' as const;
+
+/**
+ * Recorded in history metadata when `codeloop plan` re-enters PLAN from an
+ * IMPLEMENT checkpoint (issue #267). Re-planning is the supported recovery
+ * from the blank-plan park.
+ */
+export const NOTE_REOPENED_PLAN_FROM_IMPLEMENT =
+  'Re-opened the plan from an IMPLEMENT checkpoint (blank-plan recovery)' as const;
+
+/**
+ * The blank-plan IMPLEMENT directive (issue #267, AC-A2).
+ *
+ * `codeloop next` at a blank-plan checkpoint returns the PLANNER instead of the
+ * implementer, so the operator is handed the payload that can actually fill the
+ * plan. `{planPath}` is the spec to complete, `{issue}` the task, `{command}`
+ * the advance command.
+ */
+export const NOTE_BLANK_PLAN_DISPATCH_PLANNER =
+  "The plan at '{planPath}' is still blank, so dispatching the implementer would give it nothing to execute. Dispatch the PLANNER to write the specification (or supply a plan with `codeloop implement --plan-path <file>`), then run `codeloop next` again. {command}." as const;
+
+/**
+ * Appends the checked paths to the DISCOVERY park message (issue #283, AC3).
+ *
+ * Kept as a formatter rather than a second constant so the base note stays the
+ * exact fallback when no path is known (a dry run, a checkpoint with no
+ * directory) — and so a parked operator is always told WHICH file was read.
+ */
+export function formatDiscoveryParkAwaitingRca(checkedPaths?: string | null): string {
+  if (!checkedPaths || String(checkedPaths).trim().length === 0) {
+    return NOTE_DISCOVERY_PARK_AWAITING_RCA;
+  }
+  return `${NOTE_DISCOVERY_PARK_AWAITING_RCA} Checked: ${checkedPaths}.`;
+}
+
+
 /**
  * The operator-facing source of an INLINE reviewer verdict.
  *
@@ -2553,6 +2683,15 @@ export const FLAG_JSON = '--json' as const;
 export const FLAG_FORCE = '--force' as const;
 export const FLAG_FORCE_SHORT = '-f' as const;
 export const FLAG_QUARANTINE = '--quarantine' as const;
+/**
+ * Operator-supplied plan inputs (issue #267).
+ *
+ * `--plan-path <file>` names a plan the lifecycle must execute instead of
+ * scaffolding a fresh one; `--plan-dir <dir>` names its directory. Implemented
+ * end to end — never silently discarded.
+ */
+export const FLAG_PLAN_PATH = '--plan-path' as const;
+export const FLAG_PLAN_DIR = '--plan-dir' as const;
 
 export const CLI_FLAGS = Object.freeze({
   YOLO: FLAG_YOLO,

@@ -157,7 +157,10 @@ function makeMockPlanGenerator(): PlanGeneratorPort {
       type: 'implementation',
       planPath: '/repo/artifacts/plans/[Implementation] - Test.md',
       mirrorPath: '',
-      summaryPath: '/repo/artifacts/plans/AgyLoop Summary.md'
+      summaryPath: '/repo/artifacts/plans/AgyLoop Summary.md',
+      directoryCreated: false,
+      filesCreated: false,
+      adoptedExisting: true
     }),
     resolvePlanFile: () => ({
       planPath: '/repo/artifacts/plans/[Implementation] - Test.md',
@@ -168,7 +171,17 @@ function makeMockPlanGenerator(): PlanGeneratorPort {
       hasSummary: true
     }),
     readPlanDocument: () => '# Plan\nImplementation details',
-    generatePlan: () => ({ planPath: '', mirrorPath: '', isNew: false, created: false, title: '', content: '', documentContent: '' }),
+    generatePlan: () => ({
+      planPath: '',
+      mirrorPath: '',
+      isNew: false,
+      created: false,
+      title: '',
+      content: '',
+      mirrorContent: null,
+      mirrorCreated: false,
+      documentContent: ''
+    }),
     generateSummaryLog: () => ({ summaryPath: '', isNew: false, created: false, content: '' }),
     updateSummaryLog: () => true,
     findPlanDirectory: () => '/repo/artifacts/plans'

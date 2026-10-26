@@ -231,6 +231,15 @@ describe('CLI Next & Branch-Info Subcommands', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-json-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
+      // Issue #283: a canonical plan directory with the discovery artifact, so
+      // the dispatch payload carries a concrete target path.
+      const planDir = path.join(tempDir, 'artifacts', 'plans', '41-bug-probe');
+      fs.mkdirSync(planDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(planDir, '[Discovery] - probe.md'),
+        '# [Discovery] - probe\n\n## 1. Problem Statement & Symptoms\n- **Observed Behavior:** probe\n',
+        'utf8'
+      );
       fs.writeFileSync(
         path.join(stateDir, 'state.json'),
         JSON.stringify({
@@ -239,6 +248,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
           mode: 'standard',
           issue: 41,
           baseBranch: 'phase/1-bridge',
+          planDir,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           history: []

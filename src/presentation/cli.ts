@@ -61,6 +61,8 @@ import {
   FLAG_VERDICT_FILE,
   FLAG_REVIEW_OUTPUT,
   FLAG_VERDICT_STDIN,
+  FLAG_PLAN_PATH,
+  FLAG_PLAN_DIR,
   VERDICT_INPUT_SOURCE_STDIN,
   NOTE_VERDICT_INPUT_MISSING,
   HINT_VERDICT_FILE_INPUT,
@@ -94,7 +96,9 @@ import {
   NOTE_IMPLEMENTATION_UNMEASURABLE,
   NOTE_IMPLEMENTATION_STALE_WORKTREE,
   NOTE_IMPLEMENTATION_PLAN_EMPTY,
+  NOTE_IMPLEMENTATION_PLAN_EMPTY_REPEAT,
   NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT,
+  PLAN_EMPTY_PARK_REPEAT_THRESHOLD,
   // Issue #259: the VACUOUS refusal messages live in the domain. The CLI
   // must never re-type them — a hand-typed copy is how the two drift apart.
   NOTE_GATES_VACUOUS_YOLO,
@@ -136,6 +140,9 @@ import {
   MSG_TRIAGE_ROUTING_REQUIRES_GATE,
   // Issue #272: the additive `status` line for the REVIEW re-dispatch record.
   LABEL_REVIEW_DISPATCHES,
+  LABEL_DISCOVERY_DISPATCHES,
+  LABEL_PLAN_DISPATCHES,
+  LABEL_PLAN_EMPTY_PARKS,
   COMMAND_OPENCODE,
   // Issue #269 (R5): the ONE renderer for the operator-facing disposition
   // line. The CLI must not hand-render it.
@@ -171,6 +178,7 @@ import {
 import { installOpenCodeIntegration } from './opencode-setup';
 import {
   validateCapability,
+  validatePlanInputScope,
   validateUnknownFlags
 } from './cli-flags';
 import {
@@ -298,6 +306,17 @@ export interface CliOptions {
    * (issue #269).
    */
   verdictStdin: boolean;
+  /**
+   * An operator-supplied plan file (issue #267). When present it is the plan
+   * the lifecycle executes, and no competing plan directory is scaffolded.
+   */
+  planPath: string | null;
+  /** An operator-supplied plan directory (issue #267). */
+  planDir: string | null;
+  /** True when `--plan-path` was PRESENT, whether or not it carried a value. */
+  planPathRequested: boolean;
+  /** True when `--plan-dir` was PRESENT, whether or not it carried a value. */
+  planDirRequested: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -454,7 +473,8 @@ Operational Flags:
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
       --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
-      --plan-path <f> Recognised but NOT implemented yet (issue #267); rejected with an explanatory error
+      --plan-path <f> Supply an existing plan file the lifecycle executes instead of scaffolding a new plan (plan, implement, yolo)
+      --plan-dir <d>  Supply an existing plan directory (plan, implement, yolo)
       --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' NEVER mutates a checkpoint.
       --skip-discovery  Explicit opt-in: bypass the DISCOVERY RCA park (auditable in state history).
   -h, --help         Show this help message and exit
@@ -541,7 +561,11 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     reviewOutput: null,
     verdictFileRequested: false,
     reviewOutputRequested: false,
-    verdictStdin: false
+    verdictStdin: false,
+    planPath: null,
+    planDir: null,
+    planPathRequested: false,
+    planDirRequested: false
   };
 
   const positional: string[] = [];
@@ -642,6 +666,29 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       }
     } else if (arg.startsWith('--message-file=')) {
       options.messageFile = arg.split('=')[1] || null;
+    } else if (arg === FLAG_PLAN_PATH) {
+      // Issue #267: implemented, never silently discarded. A missing value is
+      // recorded as requested-but-null so runCli can fail loudly (mirrors the
+      // `--verdict-file` contract from #269).
+      options.planPathRequested = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.planPath = args[++i];
+      } else {
+        options.planPath = null;
+      }
+    } else if (arg.startsWith(`${FLAG_PLAN_PATH}=`)) {
+      options.planPathRequested = true;
+      options.planPath = arg.split('=')[1] || null;
+    } else if (arg === FLAG_PLAN_DIR) {
+      options.planDirRequested = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.planDir = args[++i];
+      } else {
+        options.planDir = null;
+      }
+    } else if (arg.startsWith(`${FLAG_PLAN_DIR}=`)) {
+      options.planDirRequested = true;
+      options.planDir = arg.split('=')[1] || null;
     } else if (arg === FLAG_VERDICT_FILE) {
       // A flag whose value is missing sets the option to `null` — never a
       // silent default (issue #269): a verdict that was never read must fail
@@ -1232,6 +1279,59 @@ function renderAbortQuarantine(result: AbortPipelineResult): void {
   }
 }
 
+/**
+ * Renders the plan-artifact summary truthfully (issues #240/Defect 5, #299).
+ *
+ * `📁 Initialized plan directory` is printed ONLY when a directory was actually
+ * created; an existing directory says so. A discovery scaffold names BOTH
+ * artifacts — the RCA report and the technical specification — because they no
+ * longer carry the same content.
+ */
+function printPlanScaffoldSummary(info: {
+  readonly type: string;
+  readonly directoryCreated: boolean;
+  readonly folderName: string;
+  readonly planDir: string;
+  readonly planPath: string;
+  readonly mirrorPath: string;
+  readonly summaryPath: string;
+}): void {
+  const verb = info.directoryCreated
+    ? '📁 Initialized plan directory'
+    : '📁 Using existing plan directory';
+  // Print the ACTUAL target, relative to cwd when it is inside the workspace,
+  // otherwise absolute. Always prefixing `artifacts/plans/` named a location
+  // that did not exist for `--plan-dir` (issue #240/Defect 5).
+  const absoluteDir = path.resolve(info.planDir);
+  const relativeDir = path.relative(process.cwd(), absoluteDir);
+  const displayDir =
+    relativeDir.length > 0 && !relativeDir.startsWith('..') && !path.isAbsolute(relativeDir)
+      ? `${relativeDir.split(path.sep).join('/')}/`
+      : `${absoluteDir}/`;
+  console.log(`${verb}: ${displayDir}`);
+  if (info.type === 'discovery') {
+    console.log(`  ✓ Discovery Report (discovery): ${path.basename(info.planPath)}`);
+    console.log(`  ✓ Specification (implementation): ${path.basename(info.mirrorPath)}`);
+  } else {
+    console.log(`  ✓ Specification (implementation): ${path.basename(info.planPath)}`);
+    if (info.mirrorPath) {
+      console.log(`  ✓ Canonical Mirror  : ${path.basename(info.mirrorPath)}`);
+    }
+  }
+  console.log(`  ✓ Execution Log     : ${path.basename(info.summaryPath)}`);
+}
+
+/**
+ * Renders the operator-supplied plan summary (issue #267). A supplied plan
+ * means NO scaffold happened, so no scaffold line may be printed.
+ */
+function printSuppliedPlanSummary(planPath: string, currentStage?: string): void {
+  console.log(`📄 Using supplied plan: ${planPath}`);
+  if (currentStage === STAGE_IMPLEMENT) {
+    console.log(`Next: run codeloop next to obtain the implementer directive.`);
+  }
+}
+
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
   const { command, options, unknownFlags } = parseArguments(rawArgs);
 
@@ -1292,6 +1392,43 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       console.error(line);
     }
     return EXIT_CODE_FAILURE;
+  }
+
+  // Issue #267: plan inputs are scoped to the commands that execute a plan,
+  // and a present-but-valueless flag is a LOUD failure — never a silent
+  // fall-through to a freshly scaffolded plan directory.
+  const planInputViolations = validatePlanInputScope({
+    command: effectiveCommand,
+    planPathRequested: options.planPathRequested,
+    planDirRequested: options.planDirRequested
+  });
+  const planInputMissing: string[] = [];
+  if (options.planPathRequested && options.planPath === null) {
+    planInputMissing.push(
+      `✗ '${FLAG_PLAN_PATH}' was provided without a value. Nothing was changed; supply a plan file path (or remove the flag).`
+    );
+  }
+  if (options.planDirRequested && options.planDir === null) {
+    planInputMissing.push(
+      `✗ '${FLAG_PLAN_DIR}' was provided without a value. Nothing was changed; supply a plan directory path (or remove the flag).`
+    );
+  }
+  if (planInputViolations.length > 0 || planInputMissing.length > 0) {
+    for (const line of [...planInputViolations, ...planInputMissing]) {
+      console.error(line);
+    }
+    return EXIT_CODE_FAILURE;
+  }
+
+  // Issue #267: a supplied plan path is relative to the OPERATOR's cwd (the
+  // repo root), not to the task worktree the implementation later runs in.
+  // Resolve it ONCE here, so every downstream use case receives an absolute
+  // path that is valid from any workspace.
+  if (options.planPath) {
+    options.planPath = path.resolve(options.planPath);
+  }
+  if (options.planDir) {
+    options.planDir = path.resolve(options.planDir);
   }
 
   const stateRepo = new FileStateRepository({ workspaceDir: options.workspaceDir, issue: issueValue });
@@ -1670,6 +1807,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
                 pausedAtGate: statusPause?.gate ?? null,
                 pause: statusPause,
                 reviewDispatchCount: result.status.reviewDispatchCount,
+                discoveryDispatchCount: result.status.discoveryDispatchCount,
+                planDispatchCount: result.status.planDispatchCount,
+                planEmptyParkCount: result.status.planEmptyParkCount,
                 activeTasks: result.activeTasks.map((task) => ({
                   issue: task.issue,
                   currentStage: task.status.currentStage,
@@ -1720,6 +1860,18 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // observable in `status`, not only in the checkpoint file.
         if (result.status.reviewDispatchCount > 0) {
           console.log(`${LABEL_REVIEW_DISPATCHES} : ${result.status.reviewDispatchCount}`);
+        }
+        // Additive (issue #292/#267): the early-stage re-dispatch records and
+        // the blank-plan park count are observable in `status`, not only in the
+        // checkpoint file.
+        if (result.status.discoveryDispatchCount > 0) {
+          console.log(`${LABEL_DISCOVERY_DISPATCHES} : ${result.status.discoveryDispatchCount}`);
+        }
+        if (result.status.planDispatchCount > 0) {
+          console.log(`${LABEL_PLAN_DISPATCHES} : ${result.status.planDispatchCount}`);
+        }
+        if (result.status.planEmptyParkCount > 0) {
+          console.log(`${LABEL_PLAN_EMPTY_PARKS} : ${result.status.planEmptyParkCount}`);
         }
 
         if (result.activeTasks && result.activeTasks.length > 0) {
@@ -2080,7 +2232,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,          // (#226 — was silently dropped)
           noWorktree: options.noWorktree,
           baseBranch: options.baseBranch,
-          issue: issueValue
+          issue: issueValue,
+          title: options.title,
+          workspaceDir: options.workspaceDir
         });
         console.log(
           `${options.dryRun ? '[dry-run] ' : '✓ '}Transitioned to ${formatStageBadge(options.stageArg)}`
@@ -2737,6 +2891,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,
           configPath: options.configPath,
           skipDiscovery: options.skipDiscovery,
+          planPath: options.planPath,
+          planDir: options.planDir,
           interactive: promptsAllowed
         });
 
@@ -2749,14 +2905,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(
             `\n[DRY RUN] Would scaffold artifacts/plans/ for: "${result.planResult?.planTitle}" (type: ${result.planResult?.planType})`
           );
-        } else if (result.planResult?.scaffoldInfo) {
-          const info = result.planResult.scaffoldInfo;
-          console.log(`\n📁 Initialized plan directory: artifacts/plans/${info.folderName}/`);
-          console.log(`  ✓ Specification (${info.type}): ${path.basename(info.planPath)}`);
-          if (info.mirrorPath) {
-            console.log(`  ✓ Canonical Mirror  : ${path.basename(info.mirrorPath)}`);
+        } else {
+          const suppliedPlanPath = result.planResult?.suppliedPlanPath ?? null;
+          if (suppliedPlanPath) {
+            console.log('');
+            printSuppliedPlanSummary(suppliedPlanPath, result.currentStage);
+          } else if (result.planResult?.scaffoldInfo) {
+            console.log('');
+            printPlanScaffoldSummary(result.planResult.scaffoldInfo);
           }
-          console.log(`  ✓ Execution Log     : ${path.basename(info.summaryPath)}`);
         }
 
         if (result.planResult?.plannerDef) {
@@ -2814,6 +2971,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,
           worktree: options.noWorktree ? false : true,
           baseBranch: options.baseBranch || undefined,
+          planPath: options.planPath,
+          planDir: options.planDir,
           interactive: promptsAllowed
         });
 
@@ -3035,6 +3194,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           dryRun: options.dryRun,
           configPath: options.configPath,
           skipDiscovery: options.skipDiscovery,
+          planPath: options.planPath,
+          planDir: options.planDir,
           worktree: options.noWorktree ? false : true,
           baseBranch: options.baseBranch || undefined,
           interactive: promptsAllowed
@@ -3054,8 +3215,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // wrong-stage guard checkpoint). Surface `result.message` + standard guidance
         // instead of falling through to the "gates and review passed" copy below.
         if (!result.qualityGateResult && !result.reviewResult && !result.executeCommitResult) {
-          if (result.planResult?.scaffoldInfo) {
-            console.log(`📁 Initialized plan directory: artifacts/plans/${result.planResult.scaffoldInfo.folderName}/`);
+          const suppliedPlanPath = result.planResult?.suppliedPlanPath ?? null;
+          if (suppliedPlanPath) {
+            printSuppliedPlanSummary(suppliedPlanPath, result.currentStage);
+          } else if (result.planResult?.scaffoldInfo) {
+            printPlanScaffoldSummary(result.planResult.scaffoldInfo);
           }
 
           // Issue #259: the implementation park. A non-green block on stderr
@@ -3111,7 +3275,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             // that the tree cannot be certified.
             if (measurementError === null && result.implementationPlanEmpty === true) {
               const planPath = result.implementationResult?.planPath ?? '(the scaffolded plan)';
-              console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY.replace('{planPath}', planPath)}`);
+              const parkCount = result.implementationPlanParkCount ?? 1;
+              if (parkCount >= PLAN_EMPTY_PARK_REPEAT_THRESHOLD) {
+                console.error(
+                  `   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_REPEAT.replace('{planPath}', planPath).replace('{count}', String(parkCount))}`
+                );
+              } else {
+                console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY.replace('{planPath}', planPath)}`);
+              }
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
             } else {
               console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
@@ -3124,10 +3295,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return result.success ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
         }
 
-        if (result.planResult?.scaffoldInfo) {
-          const info = result.planResult.scaffoldInfo;
-          console.log(`📁 Initialized plan directory: artifacts/plans/${info.folderName}/`);
-          console.log(`⚡ Auto-approved plan gate -> streaming into implementation.`);
+        {
+          const suppliedPlanPath = result.planResult?.suppliedPlanPath ?? null;
+          if (suppliedPlanPath) {
+            printSuppliedPlanSummary(suppliedPlanPath, result.currentStage);
+            console.log(`⚡ Auto-approved plan gate -> streaming into implementation.`);
+          } else if (result.planResult?.scaffoldInfo) {
+            printPlanScaffoldSummary(result.planResult.scaffoldInfo);
+            console.log(`⚡ Auto-approved plan gate -> streaming into implementation.`);
+          }
         }
 
         if (result.worktree) {
@@ -3276,13 +3452,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           configPath: options.configPath,
           skipDiscovery: options.skipDiscovery,
           worktree: options.noWorktree ? false : true,
-          baseBranch: options.baseBranch || undefined
+          baseBranch: options.baseBranch || undefined,
+          planPath: options.planPath,
+          planDir: options.planDir
         });
 
         if (result.pausedAtGate === GATE_APPROVAL) {
-          if (result.planResult?.scaffoldInfo) {
-            const info = result.planResult.scaffoldInfo;
-            console.log(`📁 Scaffolded Plan: artifacts/plans/${info.folderName}/`);
+          const suppliedPlanPath = result.planResult?.suppliedPlanPath ?? null;
+          if (suppliedPlanPath) {
+            printSuppliedPlanSummary(suppliedPlanPath, result.currentStage);
+          } else if (result.planResult?.scaffoldInfo) {
+            printPlanScaffoldSummary(result.planResult.scaffoldInfo);
           }
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
           console.log(`Review artifacts and run 'agyloop implement' (or 'agyloop') to continue.\n`);

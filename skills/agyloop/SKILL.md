@@ -162,11 +162,12 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
 ### 3. Planning Subagent (`PLAN`)
 - Launch the read-only **`planner`** subagent via `invoke_subagent`.
 - Support iterative plan revisions: accepts `userFeedback`, `previousPlanContent`, and tracks `iterationCount`.
-- Produce technical specifications in `artifacts/plans/`:
-  - `[Discovery] - {Title}.md` (for defects)
-  - `[Implementation] - {Title}.md` (technical plan)
-  - `AgyLoop Summary.md` (cumulative run log)
-- Advance state: `bin/agyloop transition PLAN`.
+- Produce technical specifications in the ONE canonical `artifacts/plans/<issue>-<slug>/` directory:
+  - `[Discovery] - {Title}.md` (the RCA report for defects)
+  - `implementation_plan.md` (the technical specification the planner completes; this is what PLAN/QUALITY_GATE/REVIEW/COMMIT resolve)
+  - `CodeLoop Summary.md` (cumulative run log)
+- For a defect scaffold the RCA report and `implementation_plan.md` are DIFFERENT documents: `implementation_plan.md` always starts from the implementation template.
+- Advance state: `bin/agyloop transition APPROVAL` (`bin/agyloop plan` moves DISCOVERY → PLAN).
 
 ### 4. Human Approval Gate (`APPROVAL`) & Plan Redirection Loops
 - Pause and present plan to the user.
@@ -245,11 +246,11 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | Command / Invocation | Description & Primary Use Case | Key Flags & Arguments |
 | :--- | :--- | :--- |
 | `bin/agyloop [issue]` | Standard continuous lifecycle orchestrator. Runs Discovery $\rightarrow$ Plan $\rightarrow$ [Approval] $\rightarrow$ Implement $\rightarrow$ Gates $\rightarrow$ Review $\rightarrow$ [Commit]. | `[issue]` (e.g. `113`), `--yolo`, `--commit-after`, `--no-worktree`, `--dry-run` (`--json` is refused) |
-| `bin/agyloop plan [--issue <id>]` | Plan-only mode. Generates persistent specification in `artifacts/plans/` and halts at `[APPROVAL]` gate. | `--issue <id>`, `--title <text>`, `--type <discovery\|implementation\|auto>`, `--dry-run` |
-| `bin/agyloop implement [--issue <id>]` | Resumes implementation directly from approved plan inside isolated worktree. | `--issue <id>`, `--no-worktree`, `--base-branch <branch>`, `--dry-run` |
+| `bin/agyloop plan [--issue <id>]` | Plan-only mode. Scaffolds/reuses the ONE canonical `artifacts/plans/<issue>-<slug>/` directory, moves the checkpoint to `[PLAN]`, and halts at `[APPROVAL]`. Re-running it adopts the existing directory (a populated RCA report releases the RCA gate). | `--issue <id>`, `--title <text>`, `--type <discovery\|implementation\|auto>`, `--plan-path <file>`, `--plan-dir <dir>`, `--dry-run` |
+| `bin/agyloop implement [--issue <id>]` | Resumes implementation directly from approved plan inside isolated worktree. `next` at IMPLEMENT returns the **planner** while the plan is blank, and the implementer once it is non-blank. | `--issue <id>`, `--plan-path <file>`, `--plan-dir <dir>`, `--no-worktree`, `--base-branch <branch>`, `--dry-run` |
 | `bin/agyloop triage` | Read-only: lists current PR review comments without changing state. | `--issue <id>`, `--json` |
 | `bin/agyloop commit` | Drafts Conventional Commit and prompts for interactive human approval (or commits immediately with `-y`). | `-y` / `--yes`, `-m` / `--message "<msg>"`, `-s` / `--staged`, `--keep-worktree`, `--dry-run` (`--json` is refused) |
-| `bin/agyloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. Re-running `yolo` while parked at `DISCOVERY` **holds** the park until the discovery report is populated — it does not advance to `PLAN` from a pristine scaffold. | `--issue <id>`, `--commit-after`, `--no-worktree`, `--skip-discovery`, `--dry-run` |
+| `bin/agyloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. Re-running `yolo` while parked at `DISCOVERY` **holds** the park until the discovery report is populated — it does not advance to `PLAN` from a pristine scaffold. A blank plan parks at IMPLEMENT with `codeloop next` (planner) or `--plan-path` as the recovery. | `--issue <id>`, `--plan-path <file>`, `--plan-dir <dir>`, `--commit-after`, `--no-worktree`, `--skip-discovery`, `--dry-run` |
 | `bin/agyloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. Reports a gate pause but **never clears one**. Read-only by default: plain `next` never advances or resets a checkpoint. | `--json` (adds `actionable`, `pause`), `--issue <id>`, `--restart` (COMPLETED only: reset and re-open at DISCOVERY). `--dry-run` is refused: `next` can persist a TRIAGE pause, so it has no simulation path |
 | `bin/agyloop resume` | Clears a persisted gate pause (`CIRCUIT_BREAKER`, `APPROVAL`, `COMMIT`, `TRIAGE`) and checkpoints the wait time. The only command that clears a pause. | `--json`, `--dry-run` |
 | `bin/agyloop branch-info [--json]` | Displays base collector branch, active task branch, worktree directory, and PR target. | `--json` |

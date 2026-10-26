@@ -152,7 +152,14 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 
   public generatePlan(_options: GeneratePlanOptions): GeneratePlanResult {
-    return { planPath: '', mirrorPath: null, content: '', created: true };
+    return {
+      planPath: '',
+      mirrorPath: null,
+      content: '',
+      mirrorContent: null,
+      created: true,
+      mirrorCreated: false
+    };
   }
 
   public generateSummaryLog(_options: GenerateSummaryLogOptions): GenerateSummaryLogResult {
@@ -519,7 +526,11 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
 
   test('supports explicit planPath override', async () => {
     const customPlanPath = path.join(tempDir, 'custom-plan.md');
-    fs.writeFileSync(customPlanPath, '# Custom Plan Specification\n', 'utf8');
+    fs.writeFileSync(
+      customPlanPath,
+      '# Custom Plan Specification\n\n## 3. Implementation Steps\n- [ ] **Step 1:** do the thing\n',
+      'utf8'
+    );
 
     const stateRepo = new MockStateRepository({
       version: '1.0.0',
@@ -540,7 +551,13 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     });
 
     assert.strictEqual(result.planPath, customPlanPath);
-    assert.strictEqual(result.planContent, '# Custom Plan Specification\n');
+    assert.ok(result.planContent.startsWith('# Custom Plan Specification'));
+    // Issue #267: the supplied FILE is persisted so `next` (and the gate/review)
+    // execute the same document, not a lexicographic neighbour.
+    assert.strictEqual(stateRepo.snapshot?.planPath, customPlanPath);
+    // The supplied plan's directory is NOT adopted as `planDir`: doing so made a
+    // later plan pass scaffold beside the supplied plan.
+    assert.strictEqual(stateRepo.snapshot?.planDir ?? null, null);
   });
 
   test('dryRun avoids saving state or mutating disk', async () => {
@@ -1024,5 +1041,61 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     // Without commandExecutor, no conflict payload should be injected
     assert.strictEqual(result.isSelfCorrection, false);
     assert.ok(!result.taskPrompt.includes('Merge Conflict'));
+  });
+});
+
+// ============================================================================
+// Supplied plan validation (issue #267, AC-B3)
+// ============================================================================
+
+describe('StartImplementationUseCase supplied-plan validation (#267)', () => {
+  const { test: caseTest } = require('node:test');
+  const fsReal = require('node:fs');
+  const osReal = require('node:os');
+  const pathReal = require('node:path');
+
+  function approvalCheckpoint(issue: number): any {
+    return {
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    };
+  }
+
+  caseTest('T-267.B3: a blank supplied plan is rejected before the implementer is prepared', async () => {
+    const tempDir = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'agyloop-supplied-plan-'));
+    try {
+      const blank = pathReal.join(tempDir, 'blank.md');
+      fsReal.writeFileSync(blank, '', 'utf8');
+
+      const stateRepo = new MockStateRepository(approvalCheckpoint(16));
+      const planGen = new MockPlanGenerator(null);
+      const useCase = new StartImplementationUseCase(
+        stateRepo,
+        new MockConfigRepository(),
+        planGen
+      );
+
+      await assert.rejects(
+        async () => useCase.execute({ planPath: blank, workspaceDir: tempDir }),
+        (err: any) => {
+          assert.ok(err.message.includes(blank), err.message);
+          assert.match(err.message, /blank/i);
+          assert.match(err.message, /codeloop plan/);
+          return true;
+        }
+      );
+
+      // The checkpoint is not SAVED on the rejection path (the save happens at
+      // the very end of the use case).
+      assert.strictEqual(stateRepo.saveCallCount, 0);
+      assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    } finally {
+      fsReal.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

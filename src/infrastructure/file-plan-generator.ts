@@ -30,7 +30,13 @@ import {
   CANDIDATE_PLAN_FILENAMES,
   STAGE_DISCOVERY,
   FILENAME_ALT_DISCOVERY_PLAN,
-  FILENAME_ALT_IMPLEMENTATION_PLAN
+  FILENAME_ALT_IMPLEMENTATION_PLAN,
+  DiscoveryReport,
+  isDiscoveryPlanDocument,
+  isPlanContentSubstantive,
+  planSlug,
+  planFolderName,
+  planDirectoryPrefix
 } from '../domain';
 
 export const LEGACY_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
@@ -143,12 +149,7 @@ export class FilePlanGenerator implements PlanGeneratorPort {
   }
 
   public slugify(text: string): string {
-    if (!text || typeof text !== 'string') return '';
-    return text
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
+    return planSlug(text);
   }
 
   public sanitizeFilename(title: string): string {
@@ -282,7 +283,10 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     const safeTitle = this.sanitizeFilename(title);
     const prefix = isDiscovery ? '[Discovery] - ' : '[Implementation] - ';
     const planFileName = `${prefix}${safeTitle}.md`;
-    const planPath = path.join(targetDir, planFileName);
+    const planPath =
+      options.planPath && String(options.planPath).length > 0
+        ? options.planPath
+        : path.join(targetDir, planFileName);
 
     let created = false;
     if (!fs.existsSync(planPath) || overwrite) {
@@ -290,15 +294,31 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       created = true;
     }
 
+    // Issue #299: a DISCOVERY scaffold must NOT put the RCA template into the
+    // implementation mirror. The planner, the gate and the reviewer all resolve
+    // `implementation_plan.md` as the technical specification, so it carries the
+    // implementation template while the `[Discovery]` artifact carries the RCA.
+    const mirrorContent = isDiscovery
+      ? this.renderTemplate(this.loadTemplate(TEMPLATE_FILES.IMPLEMENTATION, templatesDir), mergedVariables)
+      : content;
+
     let mirrorPath: string | null = null;
+    let mirrorCreated = false;
     if (createMirror) {
       mirrorPath = path.join(targetDir, 'implementation_plan.md');
-      if (!fs.existsSync(mirrorPath) || overwrite) {
-        fs.writeFileSync(mirrorPath, content, 'utf8');
+      const exists = fs.existsSync(mirrorPath);
+      const existing = exists ? fs.readFileSync(mirrorPath, 'utf8') : '';
+      // Heal a legacy discovery-shaped, non-substantive mirror (#299); never
+      // touch a real specification the planner wrote.
+      const healLegacyMirror =
+        isDiscovery && exists && isDiscoveryPlanDocument(existing) && !isPlanContentSubstantive(existing);
+      if (!exists || overwrite || healLegacyMirror) {
+        fs.writeFileSync(mirrorPath, mirrorContent, 'utf8');
+        mirrorCreated = true;
       }
     }
 
-    return { planPath, mirrorPath, content, created };
+    return { planPath, mirrorPath, content, mirrorContent, created, mirrorCreated };
   }
 
   public generateSummaryLog(options: GenerateSummaryLogOptions): GenerateSummaryLogResult {
@@ -338,17 +358,179 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     return { summaryPath, content, created };
   }
 
+  /**
+   * Absolute paths of the DISCOVERY artifacts in `dir`, in the deterministic
+   * order the resolver and the detector both use (issue #283):
+   * sorted `[Discovery] - *.md`, then `discovery_plan.md`, then
+   * `discovery-plan.md`.
+   */
+  private listDiscoveryArtifacts(dir: string): string[] {
+    if (!fs.existsSync(dir)) return [];
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return [];
+    }
+    const prefixed = names
+      .filter((name) => name.startsWith('[Discovery] - ') && name.endsWith('.md'))
+      .sort();
+    const ordered = [...prefixed];
+    for (const alias of [FILENAME_ALT_DISCOVERY_PLAN, TEMPLATE_DISCOVERY]) {
+      if (names.includes(alias)) {
+        ordered.push(alias);
+      }
+    }
+    return ordered.map((name) => path.join(dir, name));
+  }
+
+  /** Absolute paths of the IMPLEMENTATION artifacts in `dir`, deterministic. */
+  private listImplementationArtifacts(dir: string): string[] {
+    if (!fs.existsSync(dir)) return [];
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return [];
+    }
+    const prefixed = names
+      .filter((name) => name.startsWith('[Implementation] - ') && name.endsWith('.md'))
+      .sort();
+    const ordered = [...prefixed];
+    for (const alias of [FILENAME_ALT_IMPLEMENTATION_PLAN, TEMPLATE_IMPLEMENTATION]) {
+      if (names.includes(alias)) {
+        ordered.push(alias);
+      }
+    }
+    return ordered.map((name) => path.join(dir, name));
+  }
+
+  /** True when any discovery artifact in `dir` carries a populated RCA. */
+  private hasPopulatedDiscoveryReport(dir: string): boolean {
+    for (const artifact of this.listDiscoveryArtifacts(dir)) {
+      try {
+        if (DiscoveryReport.fromMarkdown(fs.readFileSync(artifact, 'utf8')).isPopulated) {
+          return true;
+        }
+      } catch {
+        // Fail closed on a read error.
+      }
+    }
+    return false;
+  }
+
+  /** True when any implementation artifact carries an executable spec. */
+  private hasSubstantiveImplementation(dir: string): boolean {
+    for (const artifact of this.listImplementationArtifacts(dir)) {
+      try {
+        const markdown = fs.readFileSync(artifact, 'utf8');
+        // A discovery-shaped document is never evidence of a technical spec
+        // (issue #299): it may carry body lines, but it is the wrong deliverable.
+        if (!isDiscoveryPlanDocument(markdown) && isPlanContentSubstantive(markdown)) {
+          return true;
+        }
+      } catch {
+        // Fail closed on a read error.
+      }
+    }
+    return false;
+  }
+
+  /** A directory already holds real content (an RCA report or a real spec). */
+  private isPopulatedPlanDirectory(dir: string): boolean {
+    return this.hasPopulatedDiscoveryReport(dir) || this.hasSubstantiveImplementation(dir);
+  }
+
+  /** Candidate `<issue>-*` folder names (unsorted, straight from disk). */
+  private listCandidateDirectories(plansDir: string, issueNum: string): string[] {
+    try {
+      return fs
+        .readdirSync(plansDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith(planDirectoryPrefix(issueNum)))
+        .map((entry) => entry.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The deterministic candidate ranking (issue #283, §2.4):
+   * 1. contains a populated discovery report;
+   * 2. contains a substantive implementation plan;
+   * 3. exact shared-slug match (when a title is given);
+   * 4. lexicographic ascending folder name.
+   *
+   * No `mtime`, no `readdirSync` order: #108 showed that filesystem order makes
+   * the resolver pick a different directory run to run.
+   */
+  private rankCandidateDirectories(
+    plansDir: string,
+    candidates: readonly string[],
+    issueNum: string,
+    title?: string | null
+  ): string[] {
+    const expected = title ? planFolderName(issueNum, title) : null;
+    return [...candidates].sort((a, b) => {
+      const rank = (name: string): number => {
+        const dir = path.join(plansDir, name);
+        if (this.hasPopulatedDiscoveryReport(dir)) return 0;
+        if (this.hasSubstantiveImplementation(dir)) return 1;
+        if (expected !== null && name === expected) return 2;
+        return 3;
+      };
+      const diff = rank(a) - rank(b);
+      if (diff !== 0) return diff;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  }
+
   public scaffoldPlanDirectory(params: ScaffoldParams = {}): ScaffoldResult {
     const projectRoot = params.projectRoot || process.cwd();
     const plansDir = this.ensurePlanDirectory(projectRoot);
 
     const issueNum = params.issue ? String(params.issue) : 'adhoc';
     const rawTitle = params.title || 'Task Plan';
-    const slug = this.slugify(rawTitle);
-    const folderName = `${issueNum}-${slug}`;
-    const targetDir = path.join(plansDir, folderName);
+    const canonicalFolderName = planFolderName(params.issue, rawTitle);
+    const canonicalDir = path.join(plansDir, canonicalFolderName);
 
-    if (!fs.existsSync(targetDir)) {
+    const ranked = this.rankCandidateDirectories(
+      plansDir,
+      this.listCandidateDirectories(plansDir, issueNum),
+      issueNum,
+      rawTitle
+    );
+    const populatedCandidate = ranked.find((name) =>
+      this.isPopulatedPlanDirectory(path.join(plansDir, name))
+    );
+
+    const suppliedDir = params.planDir
+      ? path.isAbsolute(params.planDir)
+        ? params.planDir
+        : path.resolve(projectRoot, params.planDir)
+      : null;
+
+    // §2.4 target resolution. The ONLY branch that creates a directory is the
+    // final fallback, so a re-entry can never duplicate an existing one.
+    let targetDir: string;
+    if (suppliedDir) {
+      // Explicit intent wins — unless a POPULATED sibling exists and the
+      // supplied directory is empty, which is the orphaned-report heal (#283).
+      targetDir =
+        this.isPopulatedPlanDirectory(suppliedDir) || !populatedCandidate
+          ? suppliedDir
+          : path.join(plansDir, populatedCandidate);
+    } else if (populatedCandidate) {
+      targetDir = path.join(plansDir, populatedCandidate);
+    } else if (fs.existsSync(canonicalDir)) {
+      targetDir = canonicalDir;
+    } else if (ranked.length > 0) {
+      targetDir = path.join(plansDir, ranked[0]);
+    } else {
+      targetDir = canonicalDir;
+    }
+
+    const existedBefore = fs.existsSync(targetDir);
+    if (!existedBefore) {
       fs.mkdirSync(targetDir, { recursive: true });
     }
 
@@ -357,11 +539,36 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         ? params.type
         : this.detectPlanType(rawTitle, params.labels || []);
 
+    // §2.4 existing-primary reuse: never write a SECOND primary artifact
+    // beside one that already exists (a re-entry with a different title would
+    // otherwise add an empty `[Discovery] - <new title>.md` that can sort first).
+    let primaryPath: string;
+    if (type === 'discovery') {
+      const artifacts = this.listDiscoveryArtifacts(targetDir);
+      const populatedArtifact = artifacts.find((artifact) => {
+        try {
+          return DiscoveryReport.fromMarkdown(fs.readFileSync(artifact, 'utf8')).isPopulated;
+        } catch {
+          return false;
+        }
+      });
+      primaryPath =
+        populatedArtifact ??
+        artifacts[0] ??
+        path.join(targetDir, `[Discovery] - ${this.sanitizeFilename(rawTitle)}.md`);
+    } else {
+      const artifacts = this.listImplementationArtifacts(targetDir);
+      primaryPath =
+        artifacts[0] ??
+        path.join(targetDir, `[Implementation] - ${this.sanitizeFilename(rawTitle)}.md`);
+    }
+
     const planResult = this.generatePlan({
       targetDir,
       type,
       title: rawTitle,
       issueNumber: issueNum,
+      planPath: primaryPath,
       templatesDir: params.templatesDir
     });
 
@@ -374,11 +581,14 @@ export class FilePlanGenerator implements PlanGeneratorPort {
 
     return {
       planDir: targetDir,
-      folderName,
+      folderName: path.basename(targetDir),
       type,
       planPath: planResult.planPath,
       mirrorPath: planResult.mirrorPath || path.join(targetDir, 'implementation_plan.md'),
-      summaryPath: summaryResult.summaryPath
+      summaryPath: summaryResult.summaryPath,
+      directoryCreated: !existedBefore,
+      filesCreated: planResult.created || planResult.mirrorCreated || summaryResult.created,
+      adoptedExisting: existedBefore
     };
   }
 
@@ -612,42 +822,17 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     if (!fs.existsSync(plansDir)) return null;
 
     try {
-      const entries = fs.readdirSync(plansDir, { withFileTypes: true });
-      const targetPrefix = `${issueNumber}-`;
-      const candidates = entries
-        .filter((e) => e.isDirectory() && e.name.startsWith(targetPrefix))
-        .map((e) => e.name);
-
-      if (candidates.length === 0) {
+      const issueNum = String(issueNumber);
+      const ranked = this.rankCandidateDirectories(
+        plansDir,
+        this.listCandidateDirectories(plansDir, issueNum),
+        issueNum,
+        title
+      );
+      if (ranked.length === 0) {
         return null;
       }
-
-      if (title) {
-        const slug = this.slugify(title);
-        const expectedFolderName = `${issueNumber}-${slug}`;
-        const exactMatch = candidates.find((name) => name === expectedFolderName);
-        if (exactMatch) {
-          return path.join(plansDir, exactMatch);
-        }
-      }
-
-      candidates.sort((a, b) => {
-        let mtimeA = 0;
-        let mtimeB = 0;
-        try {
-          mtimeA = fs.statSync(path.join(plansDir, a)).mtimeMs;
-        } catch {
-          // Ignore stat errors
-        }
-        try {
-          mtimeB = fs.statSync(path.join(plansDir, b)).mtimeMs;
-        } catch {
-          // Ignore stat errors
-        }
-        return mtimeB - mtimeA;
-      });
-
-      return path.join(plansDir, candidates[0]);
+      return path.join(plansDir, ranked[0]);
     } catch {
       // Read failed
     }
@@ -682,36 +867,7 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       }
 
       if (resolvedPlanDir && fs.existsSync(resolvedPlanDir)) {
-        let candidates = [...CANDIDATE_PLAN_FILENAMES];
-        if (options.stage === STAGE_DISCOVERY) {
-          candidates = [
-            TEMPLATE_DISCOVERY,
-            FILENAME_ALT_DISCOVERY_PLAN,
-            TEMPLATE_IMPLEMENTATION,
-            FILENAME_ALT_IMPLEMENTATION_PLAN
-          ];
-        }
-        for (const candidate of candidates) {
-          const candidatePath = path.join(resolvedPlanDir, candidate);
-          if (fs.existsSync(candidatePath)) {
-            resolvedPlanPath = candidatePath;
-            break;
-          }
-        }
-
-        if (!resolvedPlanPath) {
-          try {
-            const files = fs.readdirSync(resolvedPlanDir);
-            const mdFile = files.find(
-              (f) => f.endsWith('.md') && !f.toLowerCase().includes('summary')
-            );
-            if (mdFile) {
-              resolvedPlanPath = path.join(resolvedPlanDir, mdFile);
-            }
-          } catch {
-            // directory read error
-          }
-        }
+        resolvedPlanPath = this.resolveDocumentInDirectory(resolvedPlanDir, options.stage);
       }
     }
 
@@ -733,6 +889,81 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       planFileName: path.basename(resolvedPlanPath),
       summaryPath
     };
+  }
+
+  /**
+   * Stage-aware document resolution inside ONE plan directory (issue #283/#299).
+   *
+   * DISCOVERY ranks a POPULATED `[Discovery] - *.md` ahead of a pristine one,
+   * then falls back to the historical candidates. Every other stage may NEVER
+   * be handed a discovery-shaped document: the planner, the gate and the
+   * reviewer all read the technical specification.
+   */
+  private resolveDocumentInDirectory(dir: string, stage?: string): string | null {
+    const readSafe = (candidate: string): string => {
+      try {
+        return fs.readFileSync(candidate, 'utf8');
+      } catch {
+        return '';
+      }
+    };
+
+    if (stage === STAGE_DISCOVERY) {
+      const discoveryArtifacts = this.listDiscoveryArtifacts(dir);
+      const populated = discoveryArtifacts.find((artifact) =>
+        DiscoveryReport.fromMarkdown(readSafe(artifact)).isPopulated
+      );
+      if (populated) {
+        return populated;
+      }
+      if (discoveryArtifacts.length > 0) {
+        return discoveryArtifacts[0];
+      }
+      for (const alias of [FILENAME_ALT_IMPLEMENTATION_PLAN, TEMPLATE_IMPLEMENTATION]) {
+        const candidatePath = path.join(dir, alias);
+        if (fs.existsSync(candidatePath)) {
+          return candidatePath;
+        }
+      }
+      return null;
+    }
+
+    // Plan-stage resolution: substantive implementation documents first
+    // (lexicographic on ties), then the scaffold's primary, then the aliases.
+    // A discovery-shaped document is skipped everywhere.
+    const implementationArtifacts = this.listImplementationArtifacts(dir);
+    const substantive = implementationArtifacts.find((artifact) => {
+      const markdown = readSafe(artifact);
+      return !isDiscoveryPlanDocument(markdown) && isPlanContentSubstantive(markdown);
+    });
+    if (substantive) {
+      return substantive;
+    }
+    for (const candidate of implementationArtifacts) {
+      if (!isDiscoveryPlanDocument(readSafe(candidate))) {
+        return candidate;
+      }
+    }
+    // Legacy candidate list, but never a discovery-shaped document.
+    for (const candidate of CANDIDATE_PLAN_FILENAMES) {
+      const candidatePath = path.join(dir, candidate);
+      if (!fs.existsSync(candidatePath)) continue;
+      if (isDiscoveryPlanDocument(readSafe(candidatePath))) continue;
+      return candidatePath;
+    }
+    // Last resort: any non-summary markdown that is not discovery-shaped.
+    try {
+      const files = fs.readdirSync(dir).sort();
+      for (const file of files) {
+        if (!file.endsWith('.md') || file.toLowerCase().includes('summary')) continue;
+        const candidatePath = path.join(dir, file);
+        if (isDiscoveryPlanDocument(readSafe(candidatePath))) continue;
+        return candidatePath;
+      }
+    } catch {
+      // directory read error
+    }
+    return null;
   }
 
   public readPlanDocument(planPath: string): string {

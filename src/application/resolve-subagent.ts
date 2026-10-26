@@ -541,9 +541,14 @@ export class ResolveSubagentUseCase {
     const deliverableNum = isContainerAvailable ? 4 : 3;
     if (params.planPath) {
       prompt += `${deliverableNum}. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - Write ONLY this file. Do NOT create another directory under \`artifacts/plans/\` and do NOT create a second discovery artifact.\n`;
+      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+    } else if (params.planDir) {
+      prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification INSIDE this existing directory: \`${params.planDir}\`, matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `   - Do NOT create another directory under \`artifacts/plans/\`.\n`;
       prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
     } else {
-      prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification in the \`${targetDir}\` directory matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `${deliverableNum}. **Deliverable**: Run \`codeloop plan --issue <n>\` first to scaffold the canonical plan directory, then create the discovery specification there matching \`templates/discovery-plan.md\`.\n`;
       prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
     }
 
@@ -622,10 +627,16 @@ export class ResolveSubagentUseCase {
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
     if (params.planPath) {
       prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - Write ONLY this file. Do NOT create another directory under \`artifacts/plans/\` and do NOT write a second plan artifact.\n`;
+      prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
+      prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
+    } else if (params.planDir) {
+      prompt += `3. **Deliverable**: Create the technical specification INSIDE this existing directory: \`${params.planDir}\`, matching \`templates/implementation-plan.md\` (prefer \`implementation_plan.md\`).\n`;
+      prompt += `   - Do NOT create another directory under \`artifacts/plans/\`.\n`;
       prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
       prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
     } else {
-      prompt += `3. **Deliverable**: Create the technical specification in the \`${targetDir}\` directory matching \`templates/implementation-plan.md\`.\n`;
+      prompt += `3. **Deliverable**: Run \`codeloop plan --issue <n>\` first to scaffold the canonical plan directory, then complete the technical specification there matching \`templates/implementation-plan.md\`.\n`;
       prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
       prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
     }
