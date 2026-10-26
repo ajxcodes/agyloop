@@ -240,8 +240,11 @@ describe('codeloop next --restart / --skip-discovery (issue #237)', () => {
 
       assert.strictEqual(result.code, EXIT_CODE_SUCCESS);
       assert.strictEqual(parsed.currentStage, 'DISCOVERY');
-      assert.strictEqual(parsed.actionType, 'subagent');
-      assert.strictEqual(parsed.role, 'discovery');
+      // Issue #283: a restart lands at DISCOVERY with NO plan directory, so
+      // `next` names the command that scaffolds the canonical one instead of
+      // dispatching a discovery subagent with an unspecified write target.
+      assert.strictEqual(parsed.actionType, 'human_gate');
+      assert.ok(parsed.humanSummary.includes('codeloop plan --issue 237'), parsed.humanSummary);
 
       const persisted = result.persisted;
       assert.ok(persisted, 'a restarted checkpoint must be persisted');

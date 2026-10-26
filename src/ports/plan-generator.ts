@@ -12,6 +12,12 @@ export interface ScaffoldParams {
   readonly type?: string | null;
   readonly labels?: readonly string[];
   readonly templatesDir?: string;
+  /**
+   * The checkpoint's tracked directory (issue #283). Explicit intent wins over
+   * the derived slug — but a populated sibling report still wins over an empty
+   * tracked directory, which is what heals the orphaned-report case.
+   */
+  readonly planDir?: string | null;
 }
 
 export interface ScaffoldResult {
@@ -21,6 +27,12 @@ export interface ScaffoldResult {
   readonly planPath: string;
   readonly mirrorPath: string;
   readonly summaryPath: string;
+  /** `mkdir` actually happened this run (issue #240/Defect 5). */
+  readonly directoryCreated: boolean;
+  /** Any of plan/mirror/summary was actually written this run. */
+  readonly filesCreated: boolean;
+  /** The target directory already existed and was reused. */
+  readonly adoptedExisting: boolean;
 }
 
 export interface SummaryUpdateData {
@@ -57,6 +69,12 @@ export interface SummaryUpdateData {
 
 export interface GeneratePlanOptions {
   readonly targetDir: string;
+  /**
+   * The exact primary artifact to write (issue #283). When supplied, the
+   * existing-primary reuse has already chosen it (e.g. a populated
+   * `[Discovery] - <title>.md` that must be reused byte-for-byte).
+   */
+  readonly planPath?: string | null;
   readonly type?: 'discovery' | 'implementation';
   readonly title?: string;
   readonly issueNumber?: number | string;
@@ -71,7 +89,10 @@ export interface GeneratePlanResult {
   readonly planPath: string;
   readonly mirrorPath: string | null;
   readonly content: string;
+  /** The spec content when it differs from `content` (discovery scaffolds). */
+  readonly mirrorContent: string | null;
   readonly created: boolean;
+  readonly mirrorCreated: boolean;
 }
 
 export interface GenerateSummaryLogOptions {

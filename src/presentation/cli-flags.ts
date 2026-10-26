@@ -14,6 +14,9 @@
  */
 
 import {
+  COMMAND_IMPLEMENT,
+  COMMAND_PLAN,
+  COMMAND_YOLO,
   FLAG_COMMIT_AFTER,
   FLAG_CONFIG,
   FLAG_DRY_RUN,
@@ -27,6 +30,8 @@ import {
   FLAG_MESSAGE,
   FLAG_MESSAGE_SHORT,
   FLAG_NO_WORKTREE,
+  FLAG_PLAN_DIR,
+  FLAG_PLAN_PATH,
   FLAG_QUARANTINE,
   FLAG_REFRESH,
   FLAG_REVIEW_OUTPUT,
@@ -45,11 +50,12 @@ import {
 } from '../domain';
 
 /**
- * Every long flag this build recognises (39 entries).
+ * Every long flag this build recognises (40 entries).
  *
- * The three verdict flags come from their domain constants (issued #269) rather
- * than being re-typed here. `--plan-path` is the one entry that is recognised
- * but deliberately NOT implemented — see {@link UNIMPLEMENTED_FLAGS}.
+ * The three verdict flags come from their domain constants (issue #269) rather
+ * than being re-typed here. `--plan-path` / `--plan-dir` are implemented
+ * (issue #267): they are accepted by plan/implement/yolo and refused, loudly,
+ * by every other command.
  */
 export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   '--all',
@@ -69,6 +75,8 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   '--model',
   '--no-quarantine',
   FLAG_NO_WORKTREE,
+  FLAG_PLAN_DIR,
+  FLAG_PLAN_PATH,
   '--prune-stale',
   FLAG_QUARANTINE,
   '--reason',
@@ -89,8 +97,7 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   '--workspace-dir',
   FLAG_WORKTREE,
   FLAG_YES,
-  FLAG_YOLO,
-  '--plan-path'
+  FLAG_YOLO
 ]);
 
 /** Every short flag this build recognises (6 entries). */
@@ -103,7 +110,7 @@ export const KNOWN_SHORT_FLAGS: readonly string[] = Object.freeze([
   FLAG_MESSAGE_SHORT
 ]);
 
-/** The union, frozen: 39 long + 6 short = 45. */
+/** The union, frozen: 40 long + 6 short = 46. */
 export const KNOWN_CLI_FLAGS: readonly string[] = Object.freeze([
   ...KNOWN_LONG_FLAGS,
   ...KNOWN_SHORT_FLAGS
@@ -112,14 +119,57 @@ export const KNOWN_CLI_FLAGS: readonly string[] = Object.freeze([
 /**
  * Flags the parser recognises ON PURPOSE but that this build refuses.
  *
- * `--plan-path` is owned by issue #267. It must never be reported as "unknown"
- * (that would read like a typo in a documented workflow) and it must never be
- * silently dropped (that is the defect this issue is about), so it carries its
- * own explanatory diagnostic.
+ * Empty as of issue #267: `--plan-path` is now IMPLEMENTED. Kept as the
+ * single vocabulary for any future recognised-but-unimplemented flag, so the
+ * "unknown vs unimplemented" distinction survives.
  */
-export const UNIMPLEMENTED_FLAGS: Readonly<Record<string, string>> = Object.freeze({
-  '--plan-path': 'issue #267'
-});
+export const UNIMPLEMENTED_FLAGS: Readonly<Record<string, string>> = Object.freeze({});
+
+/**
+ * The operator-supplied plan inputs (issue #267).
+ */
+export const PLAN_INPUT_FLAGS: readonly string[] = Object.freeze([
+  FLAG_PLAN_PATH,
+  FLAG_PLAN_DIR
+]);
+
+/** The ONLY commands that execute a plan, and so may accept a supplied one. */
+export const COMMANDS_ACCEPTING_PLAN_INPUT: readonly string[] = Object.freeze([
+  COMMAND_PLAN,
+  COMMAND_IMPLEMENT,
+  COMMAND_YOLO,
+  '(default)'
+]);
+
+/**
+ * Refuses a plan input on a command that does not execute one.
+ *
+ * Without this, the parser would accept `--plan-path` globally and the flag
+ * would be silently dropped on `status`/`next`/`transition` — the exact defect
+ * class issue #248 removed for `--dry-run`.
+ */
+export function validatePlanInputScope(subject: {
+  readonly command: string | null;
+  readonly planPathRequested: boolean;
+  readonly planDirRequested: boolean;
+}): readonly string[] {
+  const key = subject.command === null ? '(default)' : subject.command;
+  if (COMMANDS_ACCEPTING_PLAN_INPUT.includes(key)) {
+    return [];
+  }
+  const lines: string[] = [];
+  if (subject.planPathRequested) {
+    lines.push(
+      `✗ '${FLAG_PLAN_PATH}' is only supported by ${COMMANDS_ACCEPTING_PLAN_INPUT.filter((c) => c !== '(default)').join('/')}. Remove the flag from '${key}'.`
+    );
+  }
+  if (subject.planDirRequested) {
+    lines.push(
+      `✗ '${FLAG_PLAN_DIR}' is only supported by ${COMMANDS_ACCEPTING_PLAN_INPUT.filter((c) => c !== '(default)').join('/')}. Remove the flag from '${key}'.`
+    );
+  }
+  return lines;
+}
 
 /** Whether a command simulates (`supported`) or refuses (`refused`) a flag. */
 export type FlagSupport = 'supported' | 'refused';

@@ -13,6 +13,7 @@ import {
   STAGE_INITIALIZED,
   STAGE_APPROVAL,
   STAGE_COMPLETED,
+  STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_REVIEW,
   MODE_STANDARD,
@@ -41,6 +42,12 @@ export interface StateMachineSnapshot {
   readonly baseBranch?: string | null;
   readonly worktree?: Record<string, unknown> | null;
   readonly planDir?: string | null;
+  /**
+   * An operator-supplied plan FILE (issue #267). When present it wins over any
+   * directory resolution, so the lifecycle executes exactly the document the
+   * operator handed in.
+   */
+  readonly planPath?: string | null;
   readonly triagePayload?: string | null;
   /**
    * The recorded triage disposition (issue #269). Its ABSENCE is meaningful:
@@ -62,6 +69,22 @@ export interface StateMachineSnapshot {
    * before this field loads as `0`.
    */
   readonly reviewDispatchCount?: number;
+  /**
+   * How many times the current DISCOVERY stage has dispatched the discovery
+   * subagent without the report being populated (issue #292). Optional: a
+   * checkpoint written before this field loads as `0`.
+   */
+  readonly discoveryDispatchCount?: number;
+  /**
+   * How many times the current PLAN stage has dispatched the planner without
+   * the plan becoming non-blank (issue #292).
+   */
+  readonly planDispatchCount?: number;
+  /**
+   * How many blank-plan parks the run has recorded at IMPLEMENT (issue #267).
+   * Reset when the pipeline re-enters PLAN.
+   */
+  readonly planEmptyParkCount?: number;
 }
 
 export interface StateStatusSummary {
@@ -72,6 +95,8 @@ export interface StateStatusSummary {
   readonly baseBranch?: string | null;
   readonly worktree?: WorktreeDescriptor | null;
   readonly planDir?: string | null;
+  /** The operator-supplied plan file, when one was recorded (issue #267). */
+  readonly planPath?: string | null;
   readonly triagePayload?: string | null;
   readonly triageDisposition?: TriageDispositionSerialized | null;
   readonly stepCount: number;
@@ -83,6 +108,9 @@ export interface StateStatusSummary {
   readonly planRevisionCount: number;
   readonly implementToGateLoops: number;
   readonly reviewDispatchCount: number;
+  readonly discoveryDispatchCount: number;
+  readonly planDispatchCount: number;
+  readonly planEmptyParkCount: number;
 }
 
 export class StateMachine {
@@ -93,6 +121,7 @@ export class StateMachine {
   private _baseBranch: string | null;
   private _worktree: WorktreeDescriptor | null;
   private _planDir: string | null;
+  private _planPath: string | null;
   private _triagePayload: string | null;
   private _triageDisposition: TriageDisposition | null;
   private _createdAt: string;
@@ -104,6 +133,9 @@ export class StateMachine {
   private _planRevisionCount: number;
   private _implementToGateLoops: number;
   private _reviewDispatchCount: number;
+  private _discoveryDispatchCount: number;
+  private _planDispatchCount: number;
+  private _planEmptyParkCount: number;
 
   constructor(options: {
     stage?: Stage;
@@ -113,6 +145,7 @@ export class StateMachine {
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
+    planPath?: string | null;
     triagePayload?: string | null;
     triageDisposition?: TriageDisposition | null;
     createdAt?: string;
@@ -124,6 +157,9 @@ export class StateMachine {
     planRevisionCount?: number;
     implementToGateLoops?: number;
     reviewDispatchCount?: number;
+    discoveryDispatchCount?: number;
+    planDispatchCount?: number;
+    planEmptyParkCount?: number;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -132,6 +168,7 @@ export class StateMachine {
     this._baseBranch = options.baseBranch || null;
     this._worktree = options.worktree || null;
     this._planDir = options.planDir || null;
+    this._planPath = options.planPath || null;
     this._triagePayload = options.triagePayload || null;
     this._triageDisposition = options.triageDisposition || null;
     const now = new Date().toISOString();
@@ -143,6 +180,12 @@ export class StateMachine {
     this._planRevisionCount = typeof options.planRevisionCount === 'number' ? options.planRevisionCount : 0;
     this._implementToGateLoops = typeof options.implementToGateLoops === 'number' ? options.implementToGateLoops : 0;
     this._reviewDispatchCount = typeof options.reviewDispatchCount === 'number' ? options.reviewDispatchCount : 0;
+    this._discoveryDispatchCount =
+      typeof options.discoveryDispatchCount === 'number' ? options.discoveryDispatchCount : 0;
+    this._planDispatchCount =
+      typeof options.planDispatchCount === 'number' ? options.planDispatchCount : 0;
+    this._planEmptyParkCount =
+      typeof options.planEmptyParkCount === 'number' ? options.planEmptyParkCount : 0;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -191,6 +234,11 @@ export class StateMachine {
 
   public get planDir(): string | null {
     return this._planDir;
+  }
+
+  /** The operator-supplied plan file, or null when none was recorded. */
+  public get planPath(): string | null {
+    return this._planPath;
   }
 
   public get triagePayload(): string | null {
@@ -258,6 +306,42 @@ export class StateMachine {
 
   public resetReviewDispatchCount(): void {
     this._reviewDispatchCount = 0;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get discoveryDispatchCount(): number {
+    return this._discoveryDispatchCount;
+  }
+
+  /**
+   * Records one discovery-subagent dispatch in the current DISCOVERY stage
+   * (issue #292). A context field: `next` may record it without advancing.
+   */
+  public recordDiscoveryDispatch(): void {
+    this._discoveryDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get planDispatchCount(): number {
+    return this._planDispatchCount;
+  }
+
+  /** Records one planner dispatch in the current PLAN stage (issue #292). */
+  public recordPlanDispatch(): void {
+    this._planDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get planEmptyParkCount(): number {
+    return this._planEmptyParkCount;
+  }
+
+  /**
+   * Records one blank-plan park at IMPLEMENT (issue #267). The count makes a
+   * silently repeated park observable instead of an identical message.
+   */
+  public recordPlanEmptyPark(): void {
+    this._planEmptyParkCount++;
     this._updatedAt = new Date().toISOString();
   }
 
@@ -354,6 +438,16 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  /**
+   * Records the operator-supplied plan file (issue #267). It is an explicit
+   * intent, not an inference: the lifecycle executes THIS document even when a
+   * plan directory is also tracked.
+   */
+  public setPlanPath(planPath: string | null | undefined): void {
+    this._planPath = planPath && planPath.trim() ? planPath.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setTriagePayload(payload: string | null | undefined): void {
     this._triagePayload = payload && payload.trim() ? payload.trim() : null;
     this._updatedAt = new Date().toISOString();
@@ -413,6 +507,15 @@ export class StateMachine {
     if (target.value === STAGE_REVIEW) {
       this._reviewDispatchCount = 0;
     }
+    // Same rule for the two early-stage dispatch records (issue #292): a
+    // transition INTO the stage starts a fresh round.
+    if (target.value === STAGE_DISCOVERY) {
+      this._discoveryDispatchCount = 0;
+    }
+    if (target.value === STAGE_PLAN) {
+      this._planDispatchCount = 0;
+      this._planEmptyParkCount = 0;
+    }
     this._history.push({
       stage: target.value,
       timestamp: now,
@@ -455,6 +558,7 @@ export class StateMachine {
     this._baseBranch = null;
     this._worktree = null;
     this._planDir = null;
+    this._planPath = null;
     this._triagePayload = null;
     // A re-opened task starts with NO disposition: the tool must see the
     // pull request's feedback again, because the task is being REDONE.
@@ -465,6 +569,9 @@ export class StateMachine {
     this._planRevisionCount = 0;
     this._implementToGateLoops = 0;
     this._reviewDispatchCount = 0;
+    this._discoveryDispatchCount = 0;
+    this._planDispatchCount = 0;
+    this._planEmptyParkCount = 0;
     this._updatedAt = now;
     this._history = [
       {
@@ -484,6 +591,7 @@ export class StateMachine {
       baseBranch: this._baseBranch,
       worktree: this._worktree,
       planDir: this._planDir,
+      planPath: this._planPath,
       triagePayload: this._triagePayload,
       triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       stepCount: this._history.length,
@@ -494,7 +602,10 @@ export class StateMachine {
       activeExecutionDurationMs: this.activeExecutionDurationMs(),
       planRevisionCount: this._planRevisionCount,
       implementToGateLoops: this._implementToGateLoops,
-      reviewDispatchCount: this._reviewDispatchCount
+      reviewDispatchCount: this._reviewDispatchCount,
+      discoveryDispatchCount: this._discoveryDispatchCount,
+      planDispatchCount: this._planDispatchCount,
+      planEmptyParkCount: this._planEmptyParkCount
     };
   }
 
@@ -508,6 +619,7 @@ export class StateMachine {
       baseBranch: this._baseBranch,
       worktree: this._worktree ? this._worktree.toJSON() : null,
       planDir: this._planDir,
+      planPath: this._planPath,
       triagePayload: this._triagePayload,
       triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       createdAt: this._createdAt,
@@ -518,7 +630,10 @@ export class StateMachine {
       totalHumanWaitMs: this._totalHumanWaitMs,
       planRevisionCount: this._planRevisionCount,
       implementToGateLoops: this._implementToGateLoops,
-      reviewDispatchCount: this._reviewDispatchCount
+      reviewDispatchCount: this._reviewDispatchCount,
+      discoveryDispatchCount: this._discoveryDispatchCount,
+      planDispatchCount: this._planDispatchCount,
+      planEmptyParkCount: this._planEmptyParkCount
     };
   }
 
@@ -547,6 +662,7 @@ export class StateMachine {
     const milestoneTitle = snapshot.milestoneTitle || null;
     const baseBranch = snapshot.baseBranch || null;
     const planDir = snapshot.planDir || null;
+    const planPath = snapshot.planPath || null;
     const triagePayload = snapshot.triagePayload || null;
     // A legacy checkpoint (no `triageDisposition` key) and a malformed one
     // both load as `null` — `fromJSON` never throws.
@@ -560,6 +676,7 @@ export class StateMachine {
       baseBranch,
       worktree,
       planDir,
+      planPath,
       triagePayload,
       triageDisposition,
       createdAt: snapshot.createdAt,
@@ -570,7 +687,12 @@ export class StateMachine {
       totalHumanWaitMs: typeof snapshot.totalHumanWaitMs === 'number' ? snapshot.totalHumanWaitMs : 0,
       planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0,
       implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0,
-      reviewDispatchCount: typeof snapshot.reviewDispatchCount === 'number' ? snapshot.reviewDispatchCount : 0
+      reviewDispatchCount: typeof snapshot.reviewDispatchCount === 'number' ? snapshot.reviewDispatchCount : 0,
+      discoveryDispatchCount:
+        typeof snapshot.discoveryDispatchCount === 'number' ? snapshot.discoveryDispatchCount : 0,
+      planDispatchCount: typeof snapshot.planDispatchCount === 'number' ? snapshot.planDispatchCount : 0,
+      planEmptyParkCount:
+        typeof snapshot.planEmptyParkCount === 'number' ? snapshot.planEmptyParkCount : 0
     });
   }
 
@@ -585,6 +707,7 @@ export class StateMachine {
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
+    planPath?: string | null;
     triagePayload?: string | null;
   } = {}): StateMachine {
     return new StateMachine({
@@ -594,7 +717,8 @@ export class StateMachine {
       milestoneTitle: options.milestoneTitle,
       baseBranch: options.baseBranch,
       worktree: options.worktree,
-      planDir: options.planDir
+      planDir: options.planDir,
+      planPath: options.planPath
     });
   }
 }

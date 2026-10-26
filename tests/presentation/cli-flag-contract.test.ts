@@ -21,6 +21,7 @@ const { runCli, parseArguments } = require('../../dist/presentation/cli');
 const {
   COMMAND_CAPABILITIES,
   KNOWN_LONG_FLAGS,
+  UNIMPLEMENTED_FLAGS,
   validateUnknownFlags
 } = require('../../dist/presentation/cli-flags');
 
@@ -190,13 +191,20 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
     assert.ok(!result.stderr.includes('Did you mean'), result.stderr);
   });
 
-  test('T-F6: --plan-path is recognised-but-unimplemented (#267), never "unknown"', async () => {
-    const result = await runCliInSandbox(['implement', '--plan-path', 'artifacts/x.md']);
-    assert.strictEqual(result.code, 1);
-    assert.ok(result.stderr.includes('#267'), result.stderr);
-    assert.ok(result.stderr.includes('not implemented'), result.stderr);
-    assert.ok(!result.stderr.includes('Unknown flag'), result.stderr);
-    assert.ok(!result.stderr.includes('Did you mean'), result.stderr);
+  test('T-F6: --plan-path is IMPLEMENTED (#267) and scoped to plan/implement/yolo', async () => {
+    // A command that does not execute a plan refuses it loudly — never
+    // "unknown" (a typo signal) and never a silent drop.
+    const refused = await runCliInSandbox(['status', '--plan-path', 'artifacts/x.md']);
+    assert.strictEqual(refused.code, 1);
+    assert.ok(refused.stderr.includes('--plan-path'), refused.stderr);
+    assert.ok(refused.stderr.includes('only supported by plan/implement/yolo'), refused.stderr);
+    assert.ok(!refused.stderr.includes('Unknown flag'), refused.stderr);
+    assert.ok(!refused.stderr.includes('Did you mean'), refused.stderr);
+
+    // A present-but-valueless flag is a loud failure.
+    const missing = await runCliInSandbox(['plan', '--plan-path']);
+    assert.strictEqual(missing.code, 1);
+    assert.ok(missing.stderr.includes('without a value'), missing.stderr);
   });
 
   test('T-F9: a flag before the command is still rejected', async () => {
@@ -226,7 +234,7 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
       ['worktree', 'remove', '888', '--dry-runn'],
       ['critique', 'install', '--dry-runn'],
       ['status', '--bogus'],
-      ['implement', '--plan-path', 'x.md']
+      ['status', '--plan-path', 'x.md']
     ];
 
     for (const args of invocations) {
@@ -343,20 +351,21 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
     }
   });
 
-  test('the unimplemented vocabulary never doubles as an unknown flag', () => {
-    const lines = validateUnknownFlags(['--plan-path']);
-    assert.strictEqual(lines.length, 1);
-    assert.ok(lines[0].includes('#267'), lines[0]);
+  test('the unimplemented vocabulary is empty and the plan flags are known (#267)', () => {
+    assert.deepStrictEqual(Object.keys(UNIMPLEMENTED_FLAGS), []);
+    assert.ok(KNOWN_LONG_FLAGS.includes('--plan-path'));
+    assert.ok(KNOWN_LONG_FLAGS.includes('--plan-dir'));
     assert.ok(!KNOWN_LONG_FLAGS.includes('--not-a-real-flag'));
   });
 });
 
 describe('help text documents the flag contract (#275 AC-275.5)', () => {
-  test('T-J8: --json names its supported commands and --plan-path names #267', async () => {
+  test('T-J8: --json names its supported commands and both plan flags are documented', async () => {
     const result = await runCliInSandbox(['--help']);
     assert.strictEqual(result.code, 0);
     assert.match(result.stdout, /--json\s+Machine-readable JSON \(supported by: init, next, branch-info, status/);
-    assert.match(result.stdout, /--plan-path <f> Recognised but NOT implemented yet \(issue #267\)/);
+    assert.match(result.stdout, /--plan-path <f> Supply an existing plan file/);
+    assert.match(result.stdout, /--plan-dir <d>\s+Supply an existing plan directory/);
     assert.match(result.stdout, /--dry-run\s+Simulate execution without modifying state \(mutating commands only/);
     assert.ok(result.stdout.includes('Legacy {COMPLETED, pausedAtGate: COMMIT}'), result.stdout);
   });

@@ -117,6 +117,32 @@ export class TransitionStageUseCase {
     // the on-disk checkpoint is byte-identical on the failure path either way.
     sm.transition(params.targetStage, params.metadata || {});
 
+    // Issue #283: DISCOVERY is where the RCA report is written, so the stage
+    // that opens it must ALSO create the canonical plan directory. Otherwise
+    // the discovery subagent invents its own slug and a later `codeloop plan`
+    // scaffolds a second directory for the same issue.
+    //
+    // Only when an issue is known (an ad-hoc run has no artifact to attribute)
+    // and never on a dry run. The type is forced to `discovery`: this stage's
+    // deliverable is the RCA, and a bare `--issue` invocation has no GitHub
+    // gateway to read the issue labels from.
+    if (targetStageStr === STAGE_DISCOVERY && !params.dryRun && this.planGenerator) {
+      const workspace = params.workspaceDir || process.cwd();
+      const activeIssue = params.issue || sm.issue;
+      if (activeIssue) {
+        const scaffold = this.planGenerator.scaffoldPlanDirectory({
+          projectRoot: workspace,
+          issue: activeIssue,
+          type: 'discovery',
+          title: params.title || 'Task Plan',
+          planDir: sm.planDir
+        });
+        if (scaffold && scaffold.planDir) {
+          sm.setPlanDir(scaffold.planDir);
+        }
+      }
+    }
+
     if (targetStageStr === STAGE_APPROVAL || targetStageStr === STAGE_COMMIT) {
       sm.pauseAtGate(targetStageStr);
     }

@@ -39,6 +39,7 @@ const {
   AiReviewReport,
   NOTE_YOLO_NO_IMPLEMENTATION,
   NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN,
+  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN_REPEAT,
   NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE
 } = require('../../dist/domain');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
@@ -821,5 +822,93 @@ describe('YOLO implementation park — the empty-plan guard (issue #259, S10)', 
       !result.message.includes('unchanged relative to'),
       `the park must not claim the tree is unchanged, got: ${result.message}`
     );
+  });
+});
+
+
+// ============================================================================
+// Blank-plan recovery end to end (issue #267, AC-A5 / AC-Both)
+// ============================================================================
+
+describe('Blank-plan recovery (issue #267)', () => {
+  const BLANK = [
+    '# [Implementation] - repro task',
+    '',
+    '## 1. Context & Objectives',
+    '- **Feature Overview:**',
+    '## 3. Implementation Steps',
+    '- [ ] **Step 1:** '
+  ].join('\n');
+
+  const REAL = [
+    '# [Implementation] - repro task',
+    '',
+    '## 3. Implementation Steps',
+    '- [ ] **Step 1:** Edit `src-target.js` so `answer()` returns `7`.'
+  ].join('\n');
+
+  test('T-267.A5: the second blank-plan park is not identical and records attempt 2', async () => {
+    const harness = buildHarness(unchangedVerdict('main'), () => ({
+      runQualityGateUseCase: gateMustNotRun().useCase
+    }));
+    harness.planGenerator.planContent = BLANK;
+
+    const first = await harness.lifecycle.execute({
+      mode: MODE_YOLO,
+      issue: 32,
+      workspaceDir: '/mock/workspace'
+    });
+    assert.strictEqual(first.implementationPlanParkCount, 1);
+    assert.strictEqual((harness.stateRepo.savedSnapshot as any).planEmptyParkCount, 1);
+    assert.match(first.message, /blank scaffold/);
+
+    const second = await harness.lifecycle.execute({
+      mode: MODE_YOLO,
+      issue: 32,
+      workspaceDir: '/mock/workspace'
+    });
+    assert.strictEqual(harness.stateRepo.savedSnapshot.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(second.implementationPlanEmpty, true);
+    assert.strictEqual(second.implementationPlanParkCount, 2);
+    assert.strictEqual((harness.stateRepo.savedSnapshot as any).planEmptyParkCount, 2);
+    assert.match(second.message, /attempt 2/);
+    assert.ok(second.message.includes('STILL blank'), second.message);
+    assert.ok(second.message.includes('implementation-plan.md'), second.message);
+  });
+
+  test('T-267.Both: park -> planner directive -> real plan -> implementer directive, all at IMPLEMENT', async () => {
+    const harness = buildHarness(unchangedVerdict('main'), () => ({
+      runQualityGateUseCase: gateMustNotRun().useCase
+    }));
+    harness.planGenerator.planContent = BLANK;
+
+    const park = await harness.lifecycle.execute({
+      mode: MODE_YOLO,
+      issue: 32,
+      workspaceDir: '/mock/workspace'
+    });
+    assert.strictEqual(park.implementationHalted, true);
+    assert.strictEqual(harness.stateRepo.savedSnapshot.currentStage, STAGE_IMPLEMENT);
+
+    const next = new GetNextActionUseCase(
+      harness.stateRepo,
+      harness.configRepo,
+      harness.planGenerator
+    );
+
+    const plannerDirective = await next.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(plannerDirective.currentStage, STAGE_IMPLEMENT, 'next never advances');
+    assert.strictEqual(plannerDirective.role, 'planner');
+    assert.strictEqual(plannerDirective.planBlank, true);
+
+    // The planner produced a real plan — no transition was needed.
+    harness.planGenerator.planContent = REAL;
+
+    const implementerDirective = await next.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(implementerDirective.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(implementerDirective.role, 'implementer');
+    assert.strictEqual(implementerDirective.planBlank, false);
+    assert.ok(implementerDirective.invocationPayload);
+    assert.strictEqual(harness.stateRepo.savedSnapshot.currentStage, STAGE_IMPLEMENT);
   });
 });

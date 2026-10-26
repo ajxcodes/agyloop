@@ -50,13 +50,13 @@ function extractedLongFlags(): Set<string> {
 }
 
 describe('flag vocabulary (#248 Wave 1)', () => {
-  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 45 entries and no duplicates', () => {
+  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 46 entries and no duplicates', () => {
     assert.ok(Object.isFrozen(KNOWN_CLI_FLAGS), 'the union must be frozen');
     assert.ok(Object.isFrozen(KNOWN_LONG_FLAGS), 'the long list must be frozen');
     assert.ok(Object.isFrozen(KNOWN_SHORT_FLAGS), 'the short list must be frozen');
-    assert.strictEqual(KNOWN_LONG_FLAGS.length, 39);
+    assert.strictEqual(KNOWN_LONG_FLAGS.length, 40);
     assert.strictEqual(KNOWN_SHORT_FLAGS.length, 6);
-    assert.strictEqual(KNOWN_CLI_FLAGS.length, 45);
+    assert.strictEqual(KNOWN_CLI_FLAGS.length, 46);
     assert.strictEqual(new Set(KNOWN_CLI_FLAGS).size, KNOWN_CLI_FLAGS.length, 'no duplicates');
   });
 
@@ -96,7 +96,13 @@ describe('flag vocabulary (#248 Wave 1)', () => {
 
   test('T-V4: every known long flag has a source (no dead vocabulary)', () => {
     const extracted = extractedLongFlags();
-    const constantOnly = new Set(['--verdict-file', '--review-output', '--verdict-stdin']);
+    const constantOnly = new Set([
+      '--verdict-file',
+      '--review-output',
+      '--verdict-stdin',
+      '--plan-path',
+      '--plan-dir'
+    ]);
     for (const flag of KNOWN_LONG_FLAGS) {
       const accounted =
         extracted.has(flag) ||

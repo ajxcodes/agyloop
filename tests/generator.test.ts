@@ -752,50 +752,75 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.strictEqual(foundDir, scaffold.planDir);
     });
 
-    test('findPlanDirectory resolves most recent folder by mtime when multiple match', () => {
+    test('findPlanDirectory is deterministic (lexicographic, never mtime) when candidates are empty', () => {
+      // Issue #283: mtime ordering made the resolver filesystem-order-dependent
+      // (#108). Two pristine candidates must resolve by folder name, always.
       const plansDir = path.join(tempDir, 'artifacts', 'plans');
-      const dirOld = path.join(plansDir, '42-apple-first');
-      const dirNew = path.join(plansDir, '42-zebra-last');
-      fs.mkdirSync(dirOld, { recursive: true });
-      fs.mkdirSync(dirNew, { recursive: true });
+      const dirA = path.join(plansDir, '42-apple-first');
+      const dirB = path.join(plansDir, '42-zebra-last');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
 
-      // Set old time on dirOld, new time on dirNew
+      // Invert the mtimes: the answer must NOT follow them.
       const pastTime = new Date(Date.now() - 60000);
-      const currentTime = new Date();
-      fs.utimesSync(dirOld, pastTime, pastTime);
-      fs.utimesSync(dirNew, currentTime, currentTime);
+      const futureTime = new Date(Date.now() + 60000);
+      fs.utimesSync(dirA, pastTime, pastTime);
+      fs.utimesSync(dirB, futureTime, futureTime);
 
-      const found = generator.findPlanDirectory(tempDir, 42);
-      assert.strictEqual(found, dirNew);
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 42), dirA);
 
-      // Now set dirOld to be newer than dirNew
-      const newestTime = new Date(Date.now() + 60000);
-      fs.utimesSync(dirOld, newestTime, newestTime);
-
-      const foundSwapped = generator.findPlanDirectory(tempDir, 42);
-      assert.strictEqual(foundSwapped, dirOld);
+      fs.utimesSync(dirA, futureTime, futureTime);
+      fs.utimesSync(dirB, pastTime, pastTime);
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 42), dirA);
     });
 
-    test('findPlanDirectory prefers exact slug match when title is provided', () => {
+    test('findPlanDirectory prefers a populated discovery report over an exact slug match', () => {
+      const plansDir = path.join(tempDir, 'artifacts', 'plans');
+      const dirEmpty = path.join(plansDir, '55-feature-alpha');
+      const dirPopulated = path.join(plansDir, '55-feature-beta');
+      fs.mkdirSync(dirEmpty, { recursive: true });
+      fs.mkdirSync(dirPopulated, { recursive: true });
+      fs.writeFileSync(
+        path.join(dirPopulated, '[Discovery] - Beta.md'),
+        [
+          '# [Discovery] - Beta',
+          '',
+          '## 1. Problem Statement & Symptoms',
+          '- **Observed Behavior:** the resolver picked the empty directory',
+          '- **Expected Behavior:** the populated report wins',
+          '- **Affected Components / Paths:** src/infrastructure/file-plan-generator.ts',
+          '',
+          '## 2. Root Cause Analysis (RCA)',
+          '- **Investigation Steps:** reproduced with two sibling directories',
+          '- **Identified Failure Mode:** mtime ordering',
+          '- **Relevant Code References:** findPlanDirectory',
+          '',
+          '## 3. Reproduction Steps & Verification Protocol',
+          '- **Local Reproduction Command:** node --test tests/generator.test.ts',
+          '- **Failing Test Target:** tests/generator.test.ts',
+          '',
+          '## 4. Remediation Strategy',
+          '- **Recommended Fix Approach:** rank populated candidates first',
+          '- **Potential Regressions / Side Effects:** none'
+        ].join('\n'),
+        'utf8'
+      );
+
+      // The title matches the EMPTY directory's slug, but the populated one wins.
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 55, 'Feature Alpha'), dirPopulated);
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 55), dirPopulated);
+    });
+
+    test('findPlanDirectory prefers exact slug match when no candidate is populated', () => {
       const plansDir = path.join(tempDir, 'artifacts', 'plans');
       const dirA = path.join(plansDir, '55-feature-alpha');
       const dirB = path.join(plansDir, '55-feature-beta');
       fs.mkdirSync(dirA, { recursive: true });
       fs.mkdirSync(dirB, { recursive: true });
 
-      // dirB is newer
-      const pastTime = new Date(Date.now() - 60000);
-      const currentTime = new Date();
-      fs.utimesSync(dirA, pastTime, pastTime);
-      fs.utimesSync(dirB, currentTime, currentTime);
-
-      // But searching with title "Feature Alpha" should pick dirA
-      const found = generator.findPlanDirectory(tempDir, 55, 'Feature Alpha');
-      assert.strictEqual(found, dirA);
-
-      // Searching without title picks newer dirB
-      const foundWithoutTitle = generator.findPlanDirectory(tempDir, 55);
-      assert.strictEqual(foundWithoutTitle, dirB);
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 55, 'Feature Beta'), dirB);
+      // Without a title the deterministic lexicographic order applies.
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 55), dirA);
     });
   });
 
@@ -816,5 +841,118 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.strictEqual(parsed.options.title, null);
       assert.strictEqual(parsed.options.type, null);
     });
+  });
+});
+
+// ============================================================================
+// Plan artifact resolution & mirror content (issues #283, #299, #240/Defect 5)
+// ============================================================================
+
+describe('Plan artifact resolution & mirror content (#283, #299, #240/5)', () => {
+  let tempDir: string;
+  let generator: any;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-artifacts-test-'));
+    generator = new FilePlanGenerator();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  /** A discovery report that `DiscoveryReport.isPopulated` accepts. */
+  function populatedReport(title: string): string {
+    return [
+      `# [Discovery] - ${title}`,
+      '',
+      '## 1. Problem Statement & Symptoms',
+      '- **Observed Behavior:** the scaffold created a second directory',
+      '- **Expected Behavior:** one directory per issue',
+      '- **Affected Components / Paths:** src/infrastructure/file-plan-generator.ts',
+      '',
+      '## 2. Root Cause Analysis (RCA)',
+      '- **Investigation Steps:** reproduced with `transition DISCOVERY` then `plan`',
+      '- **Identified Failure Mode:** the slug was re-derived',
+      '- **Relevant Code References:** scaffoldPlanDirectory',
+      '',
+      '## 3. Reproduction Steps & Verification Protocol',
+      '- **Local Reproduction Command:** node --test tests/generator.test.ts',
+      '- **Failing Test Target:** tests/generator.test.ts',
+      '',
+      '## 4. Remediation Strategy',
+      '- **Recommended Fix Approach:** shared slug plus populated-first adoption',
+      '- **Potential Regressions / Side Effects:** none'
+    ].join('\n');
+  }
+
+  test('T-299.1/T-299.4/T-299.6: a discovery scaffold writes the implementation mirror', () => {
+    const scaffold = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      issue: 901,
+      title: '[Bug] Some lifecycle bug',
+      type: 'discovery'
+    });
+
+    const primary = fs.readFileSync(scaffold.planPath, 'utf8');
+    const mirror = fs.readFileSync(scaffold.mirrorPath, 'utf8');
+
+    assert.ok(primary.startsWith('# [Discovery] - '), primary.split('\n')[0]);
+    assert.ok(mirror.startsWith('# [Implementation] - '), mirror.split('\n')[0]);
+    assert.ok(!mirror.includes('Root Cause Analysis'), 'the mirror must not be the RCA template');
+    assert.notStrictEqual(primary, mirror, 'the two artifacts must not be byte-identical');
+    assert.ok(fs.existsSync(scaffold.planPath));
+    assert.ok(fs.existsSync(scaffold.mirrorPath));
+  });
+
+  test('T-299.5: a bug-labelled scaffold resolves PLAN to the implementation document', () => {
+    const scaffold = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      issue: 902,
+      title: 'Fix: login crash',
+      labels: ['bug']
+    });
+
+    const mirror = fs.readFileSync(path.join(scaffold.planDir, 'implementation_plan.md'), 'utf8');
+    assert.ok(!/Root Cause Analysis/.test(mirror), 'implementation_plan.md must not carry RCA headings');
+
+    for (const stage of ['PLAN', 'QUALITY_GATE', 'REVIEW', 'COMMIT']) {
+      const resolved = generator.resolvePlanFile({ projectRoot: tempDir, planDir: scaffold.planDir, stage });
+      assert.ok(resolved, `${stage} must resolve a plan`);
+      assert.strictEqual(resolved.planPath, path.join(scaffold.planDir, 'implementation_plan.md'));
+    }
+  });
+
+  test('T-283.5/T-240.D5: a re-entry adopts the existing directory and never duplicates it', () => {
+    const first = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      issue: 903,
+      title: "[Bug] The base's own new commits",
+      type: 'discovery'
+    });
+    assert.strictEqual(first.directoryCreated, true, 'the first run creates the directory');
+
+    // The discovery subagent populated the report.
+    fs.writeFileSync(first.planPath, populatedReport("The base's own new commits"), 'utf8');
+
+    const second = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      issue: 903,
+      // A DIFFERENT title would derive a different slug; the populated
+      // directory must still win.
+      title: 'A completely different title',
+      type: 'discovery'
+    });
+
+    const dirs = fs
+      .readdirSync(path.join(tempDir, 'artifacts', 'plans'), { withFileTypes: true })
+      .filter((entry: any) => entry.isDirectory())
+      .map((entry: any) => entry.name);
+    assert.strictEqual(dirs.length, 1, `exactly one directory, got ${dirs.join(', ')}`);
+    assert.strictEqual(second.planDir, first.planDir);
+    assert.strictEqual(second.adoptedExisting, true);
+    assert.strictEqual(second.directoryCreated, false);
+    assert.strictEqual(second.planPath, first.planPath, 'the populated primary is reused untouched');
+    assert.ok(fs.readFileSync(second.planPath, 'utf8').includes('created a second directory'));
   });
 });

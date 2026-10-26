@@ -37,6 +37,17 @@ function makeSandbox(): Sandbox {
   execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
 
+  // A substantive plan: a BLANK plan at IMPLEMENT is the #267 planner
+  // directive, which is checked before the worktree guard. These tests are
+  // about the worktree guard, so the plan must be real.
+  const planDir = path.join(dir, 'artifacts', 'plans', `${ISSUE}-missing-worktree-probe`);
+  fs.mkdirSync(planDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(planDir, 'implementation_plan.md'),
+    '# [Implementation] - missing worktree probe\n\n## 3. Implementation Steps\n- [ ] **Step 1:** probe the guard\n',
+    'utf8'
+  );
+
   fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`),
@@ -47,6 +58,7 @@ function makeSandbox(): Sandbox {
         mode: 'standard',
         issue: ISSUE,
         baseBranch: 'main',
+        planDir,
         worktree: null,
         createdAt: NOW,
         updatedAt: NOW,

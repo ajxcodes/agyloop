@@ -127,12 +127,22 @@ class MockPlanGenerator implements PlanGeneratorPort {
       type: 'implementation',
       planPath: '/mock/plans/1-test/[Implementation] - Test.md',
       mirrorPath: '/mock/plans/1-test/implementation_plan.md',
-      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md'
+      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md',
+      directoryCreated: false,
+      filesCreated: false,
+      adoptedExisting: true
     };
   }
 
   public generatePlan() {
-    return { planPath: '', mirrorPath: null, content: '', created: true };
+    return {
+      planPath: '',
+      mirrorPath: null,
+      content: '',
+      mirrorContent: null,
+      created: true,
+      mirrorCreated: false
+    };
   }
 
   public generateSummaryLog() {

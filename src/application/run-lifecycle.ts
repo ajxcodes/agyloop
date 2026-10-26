@@ -73,7 +73,6 @@ import {
   NOTE_PAUSED_COMMIT_GATE,
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_YOLO_PARKED_AT_DISCOVERY,
-  NOTE_DISCOVERY_PARK_AWAITING_RCA,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AUTO_APPROVED_PLAN,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -82,7 +81,10 @@ import {
   NOTE_PAUSED_CIRCUIT_BREAKER_GATE,
   NOTE_YOLO_NO_IMPLEMENTATION,
   NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN,
+  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN_REPEAT,
   NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE,
+  PLAN_EMPTY_PARK_REPEAT_THRESHOLD,
+  formatDiscoveryParkAwaitingRca,
   isPlanContentSubstantive,
   NOTE_GATES_VACUOUS_STANDARD,
   NOTE_GATES_VACUOUS_YOLO,
@@ -237,6 +239,12 @@ export interface RunLifecycleResult {
    * and names the plan instead.
    */
   readonly implementationPlanEmpty?: boolean;
+  /**
+   * How many blank-plan parks have been recorded for this checkpoint
+   * (issue #267). 1 on the first park, 2+ on a repeat, so the CLI can say
+   * "attempt N, still blank" instead of repeating the same text.
+   */
+  readonly implementationPlanParkCount?: number;
 }
 
 export interface RunLifecycleDependencies {
@@ -647,6 +655,8 @@ export class RunLifecycleUseCase {
       dryRun: params.dryRun,
       configPath: params.configPath,
       skipDiscovery: params.skipDiscovery,
+      planPath: params.planPath,
+      planDir: params.planDir,
       workspaceDir: workspace
     });
 
@@ -661,12 +671,22 @@ export class RunLifecycleUseCase {
       message:
         planResult.discoveryReentry === 'PARK_AT_DISCOVERY'
           ? // Re-entry park (issue #237): the RCA never ran, so "advanced to
-            // DISCOVERY" would read like progress. Name the outstanding work.
-            NOTE_DISCOVERY_PARK_AWAITING_RCA
+            // DISCOVERY" would read like progress. Name the outstanding work
+            // AND the paths that were actually checked (issue #283, AC3).
+            this.formatDiscoveryParkMessage(planResult)
           : isApproval
             ? NOTE_PAUSED_APPROVAL_GATE
             : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
     };
+  }
+
+  /**
+   * The DISCOVERY park message, naming the paths that were actually read
+   * (issue #283, AC3). Falls back to the base note when no path is known.
+   */
+  private formatDiscoveryParkMessage(planResult?: StartPlanningResult | null): string {
+    const checked = planResult?.discoveryReportEvidence?.checkedPaths ?? [];
+    return formatDiscoveryParkAwaitingRca(checked.join(', '));
   }
 
   /**
@@ -934,6 +954,8 @@ export class RunLifecycleUseCase {
           dryRun: true,
           configPath: params.configPath,
           skipDiscovery: params.skipDiscovery,
+          planPath: params.planPath,
+          planDir: params.planDir,
           workspaceDir: workspace
         });
       }
@@ -958,6 +980,8 @@ export class RunLifecycleUseCase {
         dryRun: params.dryRun,
         configPath: params.configPath,
         skipDiscovery: params.skipDiscovery,
+        planPath: params.planPath,
+        planDir: params.planDir,
         workspaceDir: workspace
       });
 
@@ -986,7 +1010,7 @@ export class RunLifecycleUseCase {
         planResult,
         message:
           planResult?.discoveryReentry === 'PARK_AT_DISCOVERY'
-            ? NOTE_DISCOVERY_PARK_AWAITING_RCA
+            ? this.formatDiscoveryParkMessage(planResult)
             : NOTE_YOLO_PARKED_AT_DISCOVERY
       };
     }
@@ -1060,8 +1084,37 @@ export class RunLifecycleUseCase {
       // plan-empty advisory belongs to the measured case only; the operator's
       // first problem is that the tree cannot be certified.
       const unmeasurable = (implementationVerdict.measurementError ?? null) !== null;
-      const planIsEmpty = implResult ? !isPlanContentSubstantive(implResult.planContent) : false;
-      const planPath = implResult?.planPath || '(the scaffolded plan)';
+
+      // Issue #267: a RE-RUN at IMPLEMENT never calls StartImplementation, so
+      // `implResult` is absent. Resolve and read the plan anyway — otherwise
+      // the second park could not tell the operator the plan is STILL blank.
+      let planContentAtPark = implResult?.planContent ?? '';
+      let resolvedPlanPath = implResult?.planPath ?? '';
+      if (!implResult && this.planGenerator) {
+        try {
+          const resolved = this.planGenerator.resolvePlanFile({
+            issue: sm.issue,
+            planPath: sm.planPath ?? undefined,
+            planDir: sm.planDir
+          });
+          if (resolved) {
+            resolvedPlanPath = resolved.planPath;
+            planContentAtPark = this.planGenerator.readPlanDocument(resolved.planPath);
+          }
+        } catch {
+          // Unreadable is not evidence of a blank plan; fall through.
+        }
+      }
+      const planIsEmpty = planContentAtPark.length > 0 && !isPlanContentSubstantive(planContentAtPark);
+      const planPath = resolvedPlanPath || '(the scaffolded plan)';
+
+      // A measured, blank-plan park is recorded so a repeat is distinguishable
+      // from the first occurrence (AC-A5). An unmeasurable park is a DIFFERENT
+      // problem and must not consume this counter.
+      if (planIsEmpty && !unmeasurable) {
+        sm.recordPlanEmptyPark();
+      }
+      const planParkCount = sm.planEmptyParkCount;
 
       await this.persistCheckpoint(sm, params.dryRun);
 
@@ -1076,16 +1129,24 @@ export class RunLifecycleUseCase {
         implementationHalted: true,
         implementationDiff,
         implementationPlanEmpty: unmeasurable ? false : planIsEmpty,
+        implementationPlanParkCount: planIsEmpty && !unmeasurable ? planParkCount : undefined,
         message: unmeasurable
           ? NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE.replace(
               '{baseRef}',
               implementationVerdict.baseRef
             ).replace('{error}', implementationVerdict.measurementError!)
           : planIsEmpty
-            ? NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN.replace('{baseRef}', implementationVerdict.baseRef).replace(
-                '{planPath}',
-                planPath
-              )
+            ? (planParkCount >= PLAN_EMPTY_PARK_REPEAT_THRESHOLD
+                ? NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN_REPEAT.replace(
+                    '{baseRef}',
+                    implementationVerdict.baseRef
+                  )
+                    .replace('{planPath}', planPath)
+                    .replace('{count}', String(planParkCount))
+                : NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN.replace(
+                    '{baseRef}',
+                    implementationVerdict.baseRef
+                  ).replace('{planPath}', planPath))
             : NOTE_YOLO_NO_IMPLEMENTATION.replace('{baseRef}', implementationVerdict.baseRef)
       };
     }
@@ -1116,7 +1177,7 @@ export class RunLifecycleUseCase {
     // B. Quality Gates
     const qgResult = await this.runQualityGateUseCase.execute({
       issue: sm.issue,
-      planPath: params.planPath,
+      planPath: params.planPath ?? sm.planPath,
       planDir: params.planDir,
       commands: params.commands,
       timeoutSeconds: params.timeoutSeconds,
@@ -1204,7 +1265,7 @@ export class RunLifecycleUseCase {
     // C. AI PR Review
     const reviewResult = await this.runReviewUseCase.execute({
       issue: sm.issue,
-      planPath: params.planPath,
+      planPath: params.planPath ?? sm.planPath,
       planDir: params.planDir,
       standardsPath: params.standardsPath,
       userInstructions: params.userInstructions,
@@ -1317,6 +1378,8 @@ export class RunLifecycleUseCase {
         dryRun: params.dryRun,
         configPath: params.configPath,
         skipDiscovery: params.skipDiscovery,
+        planPath: params.planPath,
+        planDir: params.planDir,
         workspaceDir: workspace
       });
 
@@ -1330,7 +1393,7 @@ export class RunLifecycleUseCase {
         planResult,
         message:
           planResult.discoveryReentry === 'PARK_AT_DISCOVERY'
-            ? NOTE_DISCOVERY_PARK_AWAITING_RCA
+            ? this.formatDiscoveryParkMessage(planResult)
             : isApproval
               ? NOTE_PAUSED_APPROVAL_GATE
               : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
@@ -1396,7 +1459,7 @@ export class RunLifecycleUseCase {
 
       qgResult = await this.runQualityGateUseCase.execute({
         issue: sm.issue,
-        planPath: params.planPath,
+        planPath: params.planPath ?? sm.planPath,
         planDir: params.planDir,
         commands: params.commands,
         timeoutSeconds: params.timeoutSeconds,
@@ -1464,7 +1527,7 @@ export class RunLifecycleUseCase {
     if (sm.currentStage === STAGE_QUALITY_GATE || sm.currentStage === STAGE_REVIEW) {
       reviewResult = await this.runReviewUseCase.execute({
         issue: sm.issue,
-        planPath: params.planPath,
+        planPath: params.planPath ?? sm.planPath,
         planDir: params.planDir,
         standardsPath: params.standardsPath,
         userInstructions: params.userInstructions,

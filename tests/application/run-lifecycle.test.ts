@@ -1472,8 +1472,10 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         assert.strictEqual(result.executeCommitResult, undefined);
         // The re-entry park message names the outstanding work (the RCA report).
         assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
-        assert.strictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
-        assert.doesNotMatch(result.message, /YOLO cannot dispatch subagents inline/);
+        // Issue #283: the park names the paths that were checked.
+        assert.ok(result.message?.startsWith(NOTE_DISCOVERY_PARK_AWAITING_RCA));
+        assert.match(result.message ?? '', /Checked:/);
+        assert.doesNotMatch(result.message ?? '', /YOLO cannot dispatch subagents inline/);
 
         // Stage and history are both untouched: no PLAN entry was ever written.
         assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
@@ -1573,7 +1575,8 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
       assert.strictEqual(result.pausedAtGate, undefined, 'a parked re-entry must not pause at APPROVAL');
       assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
-      assert.strictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
+      assert.ok(result.message?.startsWith(NOTE_DISCOVERY_PARK_AWAITING_RCA));
+      assert.match(result.message ?? '', /Checked:/);
       assert.strictEqual(gate.calls(), 0);
       assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
       assert.strictEqual(stateRepo.savedSnapshot.history.length, 2);
@@ -1599,7 +1602,8 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
       assert.strictEqual(result.pausedAtGate, undefined, 'a parked re-entry must not pause at APPROVAL');
       assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
-      assert.strictEqual(result.message, NOTE_DISCOVERY_PARK_AWAITING_RCA);
+      assert.ok(result.message?.startsWith(NOTE_DISCOVERY_PARK_AWAITING_RCA));
+      assert.match(result.message ?? '', /Checked:/);
       assert.strictEqual(gate.calls(), 0);
       assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
       assert.strictEqual(stateRepo.savedSnapshot.history.length, 2);

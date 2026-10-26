@@ -136,7 +136,10 @@ class MockPlanGenerator implements PlanGeneratorPort {
         planPath: `${planDir}/[Discovery] - ${params.title ?? 'Task Plan'}.md`,
         mirrorPath: `${planDir}/implementation_plan.md`,
         summaryPath: `${planDir}/Summary.md`,
-        type: params.type === 'discovery' ? 'discovery' : 'implementation'
+        type: params.type === 'discovery' ? 'discovery' : 'implementation',
+        directoryCreated: true,
+        filesCreated: true,
+        adoptedExisting: false
       };
     }
     return {
@@ -145,7 +148,10 @@ class MockPlanGenerator implements PlanGeneratorPort {
       planPath: '/fake/plans/10/plan.md',
       mirrorPath: '/fake/plans/10/mirror',
       summaryPath: '/fake/plans/10/Summary.md',
-      type: params.type === 'discovery' ? 'discovery' : 'implementation'
+      type: params.type === 'discovery' ? 'discovery' : 'implementation',
+      directoryCreated: true,
+      filesCreated: true,
+      adoptedExisting: false
     };
   }
 
@@ -819,5 +825,221 @@ describe('StartPlanningUseCase (Application Layer)', () => {
       },
       PreFlightHaltError
     );
+  });
+});
+
+// ============================================================================
+// Plan artifact resolution & supplied plans (issues #283, #267)
+// ============================================================================
+
+const fsReal = require('node:fs');
+const osReal = require('node:os');
+const pathReal = require('node:path');
+const { FilePlanGenerator } = require('../../dist/infrastructure');
+
+describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
+  const { test: caseTest, beforeEach: caseBeforeEach, afterEach: caseAfterEach } = require('node:test');
+
+  let workspace: string;
+  let stateRepo: any;
+  let githubGateway: any;
+  let configRepo: any;
+  let planGenerator: any;
+
+  function populatedReport(title: string): string {
+    return [
+      `# [Discovery] - ${title}`,
+      '',
+      '## 1. Problem Statement & Symptoms',
+      '- **Observed Behavior:** plan scaffolds a second directory and parks falsely',
+      '- **Expected Behavior:** one directory per issue',
+      '- **Affected Components / Paths:** src/infrastructure/file-plan-generator.ts',
+      '',
+      '## 2. Root Cause Analysis (RCA)',
+      '- **Investigation Steps:** ran transition DISCOVERY then plan',
+      '- **Identified Failure Mode:** the slug was re-derived',
+      '- **Relevant Code References:** scaffoldPlanDirectory',
+      '',
+      '## 3. Reproduction Steps & Verification Protocol',
+      '- **Local Reproduction Command:** codeloop transition DISCOVERY --issue 283',
+      '- **Failing Test Target:** tests/generator.test.ts',
+      '',
+      '## 4. Remediation Strategy',
+      '- **Recommended Fix Approach:** one slug grammar, populated-first adoption',
+      '- **Potential Regressions / Side Effects:** deterministic selection'
+    ].join('\n');
+  }
+
+  function plansDir(): string {
+    return pathReal.join(workspace, 'artifacts', 'plans');
+  }
+
+  function planDirectories(): string[] {
+    if (!fsReal.existsSync(plansDir())) return [];
+    return fsReal
+      .readdirSync(plansDir(), { withFileTypes: true })
+      .filter((entry: any) => entry.isDirectory())
+      .map((entry: any) => entry.name)
+      .sort();
+  }
+
+  function seedDiscoveryCheckpoint(planDir: string | null): void {
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 283 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    if (planDir) sm.setPlanDir(planDir);
+    stateRepo.savedSnapshot = sm.toSnapshot();
+  }
+
+  caseBeforeEach(() => {
+    workspace = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'agyloop-start-planning-283-'));
+    stateRepo = new MockStateRepository();
+    githubGateway = new MockGitHubGateway();
+    githubGateway.issueToReturn = {
+      repo: 'owner/repo',
+      number: 283,
+      title: "[Bug] The base's own new commits",
+      body: 'plan artifacts are wrong',
+      labels: ['bug'],
+      comments: [],
+      state: 'OPEN'
+    };
+    configRepo = new MockConfigRepository();
+    planGenerator = new FilePlanGenerator();
+  });
+
+  caseAfterEach(() => {
+    fsReal.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  caseTest('T-283.1: discovery-then-plan advances to PLAN in exactly one directory', async () => {
+    // Discovery ran first and scaffolded the canonical directory.
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 283,
+      title: "[Bug] The base's own new commits",
+      type: 'discovery'
+    });
+    seedDiscoveryCheckpoint(scaffold.planDir);
+    fsReal.writeFileSync(scaffold.planPath, populatedReport("The base's own new commits"), 'utf8');
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
+    const dirs = planDirectories();
+    assert.strictEqual(dirs.length, 1, `exactly one directory, got ${dirs.join(', ')}`);
+    assert.strictEqual(result.stateMachine.planDir, scaffold.planDir);
+    assert.strictEqual(result.scaffoldInfo?.directoryCreated, false);
+    assert.strictEqual(result.scaffoldInfo?.adoptedExisting, true);
+  });
+
+  caseTest('T-283.2: a populated report in a sibling directory releases the gate and is adopted', async () => {
+    // The checkpoint tracks an EMPTY scaffold (the old `plan` default), while
+    // the populated report lives in a differently-slugged sibling.
+    const empty = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 283,
+      title: 'task plan',
+      type: 'discovery'
+    });
+    const populatedDir = pathReal.join(plansDir(), '283-bug-probe-crash');
+    fsReal.mkdirSync(populatedDir, { recursive: true });
+    const populatedPath = pathReal.join(populatedDir, '[Discovery] - Bug probe crash.md');
+    fsReal.writeFileSync(populatedPath, populatedReport('Bug probe crash'), 'utf8');
+
+    seedDiscoveryCheckpoint(empty.planDir);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.stateMachine.planDir, populatedDir);
+    assert.strictEqual(result.discoveryReportEvidence.populated, true);
+    assert.strictEqual(result.discoveryReportEvidence.populatedPath, populatedPath);
+    assert.ok(
+      result.discoveryReportEvidence.checkedPaths.includes(populatedPath),
+      `checkedPaths must include the populated report, got ${result.discoveryReportEvidence.checkedPaths.join(', ')}`
+    );
+  });
+
+  caseTest('T-283.3: a pristine report still parks and the evidence names the checked paths', async () => {
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 283,
+      title: "[Bug] The base's own new commits",
+      type: 'discovery'
+    });
+    seedDiscoveryCheckpoint(scaffold.planDir);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+    assert.ok(result.discoveryReportEvidence.checkedPaths.length > 0);
+    assert.ok(result.discoveryReportEvidence.checkedPaths.includes(scaffold.planPath));
+  });
+
+  caseTest('T-267.B2: a supplied plan creates no competing directory', async () => {
+    const suppliedDir = pathReal.join(workspace, 'supplied');
+    fsReal.mkdirSync(suppliedDir, { recursive: true });
+    const suppliedPlan = pathReal.join(suppliedDir, 'plan.md');
+    fsReal.writeFileSync(
+      suppliedPlan,
+      '# [Implementation] - supplied\n\n## 3. Implementation Steps\n- [ ] **Step 1:** noop\n',
+      'utf8'
+    );
+    seedDiscoveryCheckpoint(null);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, planPath: suppliedPlan, workspaceDir: workspace });
+
+    assert.strictEqual(result.suppliedPlanPath, suppliedPlan);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.scaffoldInfo, null, 'a supplied plan must not scaffold');
+    assert.strictEqual(planDirectories().length, 0, 'no artifacts/plans directory may be created');
+  });
+
+  caseTest('T-267.B3: a supplied BLANK plan is rejected before any transition', async () => {
+    const suppliedDir = pathReal.join(workspace, 'supplied');
+    fsReal.mkdirSync(suppliedDir, { recursive: true });
+    const blankPlan = pathReal.join(suppliedDir, 'blank.md');
+    fsReal.writeFileSync(blankPlan, '', 'utf8');
+    seedDiscoveryCheckpoint(null);
+
+    await assert.rejects(
+      async () =>
+        new StartPlanningUseCase(stateRepo, githubGateway, configRepo, planGenerator).execute({
+          issue: 283,
+          mode: MODE_YOLO,
+          planPath: blankPlan,
+          workspaceDir: workspace
+        }),
+      (err: any) => {
+        assert.match(err.message, /blank/i);
+        assert.ok(err.message.includes(blankPlan), err.message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(planDirectories().length, 0);
   });
 });

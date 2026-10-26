@@ -234,6 +234,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     /** A plan generator that resolves a plan document — the old Defect-2 trigger. */
     const resolvingPlanGen: PlanGeneratorPort = {
+      findPlanDirectory: () => '/repo/artifacts/plans/40-done',
       resolvePlanFile: () => ({
         planDir: '/repo/artifacts/plans/40-done',
         planFileName: 'implementation-plan.md',

@@ -50,13 +50,21 @@ import {
   NOTE_REVIEW_DISPATCH_ORDINAL,
   NOTE_REVIEW_DISPATCH_CAP,
   NOTE_WORKTREE_MISSING_REPROVISION,
+  NOTE_DISCOVERY_ADVANCE_CONDITION,
+  NOTE_PLAN_ADVANCE_CONDITION,
+  NOTE_DISCOVERY_DISPATCH_ORDINAL,
+  NOTE_PLAN_DISPATCH_ORDINAL,
+  NOTE_BLANK_PLAN_DISPATCH_PLANNER,
+  formatDiscoveryAdvanceCommand,
+  formatPlanAdvanceCommand,
   formatReviewVerdictChannelCommand,
   formatTriageActionList,
   formatTriageActionSideEffects,
   TriageDisposition,
   formatTriageDispositionLine,
   assertNotRootWorkspace,
-  isRootWorkspace
+  isRootWorkspace,
+  isPlanContentSubstantive
 } from '../domain';
 import {
   StateRepository,
@@ -129,6 +137,14 @@ export interface NextActionResult {
    * Additive and optional; populated on every REVIEW return.
    */
   readonly reviewDispatchCount?: number;
+  /**
+   * The recorded re-dispatch count for the current DISCOVERY stage (issue #292).
+   */
+  readonly discoveryDispatchCount?: number;
+  /** The recorded re-dispatch count for the current PLAN stage (issue #292). */
+  readonly planDispatchCount?: number;
+  /** True when the IMPLEMENT directive is the PLANNER because the plan is blank. */
+  readonly planBlank?: boolean;
 }
 
 export class GetNextActionUseCase {
@@ -218,6 +234,11 @@ export class GetNextActionUseCase {
     // checkpoint is paused at a gate (`pausedAtGate !== null`): a paused read is
     // not a dispatch. It never advances a stage, and `StateMachine.transition()`
     // resets it when a new REVIEW round begins.
+    //
+    // Issue #292 extends the same rule to the two early stages:
+    // `discoveryDispatchCount` and `planDispatchCount` are context-field writes
+    // recorded on a real (non-paused) read, and reset by `transition()` into
+    // their stage. They never advance a stage either.
     //
     // The previous implementation inferred operator intent from whether
     // `--issue` merely happened to be supplied, which destroyed COMPLETED
@@ -320,21 +341,51 @@ export class GetNextActionUseCase {
       }
 
       case STAGE_DISCOVERY: {
+        const advanceCommand = formatDiscoveryAdvanceCommand(activeIssue);
+        const condition = NOTE_DISCOVERY_ADVANCE_CONDITION;
+
+        // Issue #283: the dispatch needs a CONCRETE target. Without a plan
+        // directory the subagent invents its own slug — the defect this issue
+        // exists to remove — so `next` names the command that creates the one
+        // canonical directory instead of dispatching an unspecified write.
+        const resolvedPlanDir =
+          sm.planDir ??
+          (activeIssue &&
+          this.planGenerator &&
+          typeof this.planGenerator.findPlanDirectory === 'function'
+            ? this.planGenerator.findPlanDirectory(cwd, activeIssue)
+            : null);
+
+        // Without an injected generator there is nothing to verify, so the
+        // pre-existing dispatch behaviour is preserved; with one, an
+        // unspecified target is a human gate (never an invented slug).
+        if (this.planGenerator && !resolvedPlanDir) {
+          return {
+            currentStage: STAGE_DISCOVERY,
+            nextStage: STAGE_PLAN,
+            actionType: 'human_gate',
+            title: 'Plan Directory Required',
+            description: `The discovery report needs a canonical plan directory, and this checkpoint tracks none. Run \`${advanceCommand}\` to scaffold it (the discovery subagent then receives the exact path). ${condition}`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `Run \`${advanceCommand}\` to create the canonical plan directory, then run \`codeloop next\` to dispatch the ${ROLE_TITLE_DISCOVERY}. ${condition}`
+          };
+        }
+
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_DISCOVERY,
           customConfig: config,
           workspaceDir: cwd
         });
 
-         
-        const planDir = sm.planDir;
         let planPath: string | undefined;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
             issue: activeIssue,
-            planDir: sm.planDir,
-            stage: sm.currentStage
+            planDir: resolvedPlanDir,
+            stage: STAGE_DISCOVERY
           });
           if (resolved) {
             planPath = resolved.planPath;
@@ -345,7 +396,7 @@ export class GetNextActionUseCase {
           issueNumber: activeIssue,
           workspaceDir: cwd,
           config,
-          planDir,
+          planDir: resolvedPlanDir,
           planPath
         });
 
@@ -361,42 +412,59 @@ export class GetNextActionUseCase {
           ]
         };
 
+        if (sm.pausedAtGate === null) {
+          sm.recordDiscoveryDispatch();
+          await this.persistDispatchCounter(sm);
+        }
+
+        const target = planPath ? ` Write ONLY \`${planPath}\`.` : '';
         return {
           currentStage: STAGE_DISCOVERY,
           nextStage: STAGE_PLAN,
           actionType: 'subagent',
           role: ROLE_DISCOVERY,
           title: 'Invoke Defect Discovery Subagent',
-          description: 'Execute root-cause analysis and manual smoke testing to produce a discovery report.',
+          description: `Execute root-cause analysis and manual smoke testing to produce a discovery report.${target} ${condition} Advance with \`${advanceCommand}\`.`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_DISCOVERY} with Model '${subagent.model}' (scoped write tools).`
+          humanSummary: `Invoke ${ROLE_TITLE_DISCOVERY} with Model '${subagent.model}' (scoped write tools). ${this.formatDispatchOrdinal(NOTE_DISCOVERY_DISPATCH_ORDINAL, sm.discoveryDispatchCount)} ${condition} Advance with \`${advanceCommand}\` once the report is populated.`,
+          discoveryDispatchCount: sm.discoveryDispatchCount
         };
       }
 
       case STAGE_PLAN: {
+        const advanceCommand = formatPlanAdvanceCommand(activeIssue);
+        const condition = NOTE_PLAN_ADVANCE_CONDITION;
         const subagent = this.resolveSubagentUseCase.execute({
           role: ROLE_PLANNER,
           customConfig: config,
           workspaceDir: cwd
         });
 
-         
         const planDir = sm.planDir;
         let planPath: string | undefined;
+        let planContent = '';
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
             issue: activeIssue,
+            planPath: sm.planPath ?? undefined,
             planDir: sm.planDir,
             stage: sm.currentStage
           });
           if (resolved) {
             planPath = resolved.planPath;
+            try {
+              planContent = this.planGenerator.readPlanDocument(resolved.planPath);
+            } catch {
+              // Non-fatal: an unreadable plan is treated as blank.
+            }
           }
         }
+
+        const planIsBlank = !isPlanContentSubstantive(planContent);
 
         const prompt = this.resolveSubagentUseCase.buildPlanningTaskPrompt({
           issueNumber: activeIssue,
@@ -418,18 +486,25 @@ export class GetNextActionUseCase {
           ]
         };
 
+        if (sm.pausedAtGate === null) {
+          sm.recordPlanDispatch();
+          await this.persistDispatchCounter(sm);
+        }
+
+        const stateWord = planIsBlank ? 'still blank' : 'non-blank';
         return {
           currentStage: STAGE_PLAN,
           nextStage: STAGE_APPROVAL,
           actionType: 'subagent',
           role: ROLE_PLANNER,
           title: 'Invoke Planning Architect Subagent',
-          description: 'Generate architectural plan and specifications in artifacts/plans/ with scoped write tools.',
+          description: `Generate architectural plan and specifications in artifacts/plans/ with scoped write tools. The plan is ${stateWord}${planPath ? ` at \`${planPath}\`` : ''}. ${condition} Advance with \`${advanceCommand}\`.`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (scoped write tools).`
+          humanSummary: `Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' (scoped write tools). ${this.formatDispatchOrdinal(NOTE_PLAN_DISPATCH_ORDINAL, sm.planDispatchCount)} The plan is ${stateWord}. ${condition} Advance with \`${advanceCommand}\`.`,
+          planDispatchCount: sm.planDispatchCount
         };
       }
 
@@ -438,16 +513,17 @@ export class GetNextActionUseCase {
           return this.buildImplementAction(sm, config, cwd);
         }
 
+        const planRecovery = this.buildBlankPlanDiagnosis(sm, cwd, activeIssue);
         return {
           currentStage: STAGE_APPROVAL,
           nextStage: STAGE_IMPLEMENT,
           actionType: 'human_gate',
           title: 'Human Approval Gate',
-          description: 'Review the technical plan in artifacts/plans/. Seek user confirmation before modifying source code.',
+          description: `Review the technical plan in artifacts/plans/. Seek user confirmation before modifying source code.${planRecovery ? ` ${planRecovery}` : ''}`,
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: 'Present the plan to the user and wait for approval. Once approved, run "agyloop implement" or "agyloop transition IMPLEMENT".'
+          humanSummary: `Present the plan to the user and wait for approval. Once approved, run "agyloop implement" or "agyloop transition IMPLEMENT".${planRecovery ? ` ${planRecovery}` : ''}`
         };
       }
 
@@ -487,6 +563,7 @@ export class GetNextActionUseCase {
           const resolved = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
             issue: activeIssue,
+            planPath: sm.planPath ?? undefined,
             planDir: sm.planDir,
             stage: sm.currentStage
           });
@@ -829,6 +906,30 @@ export class GetNextActionUseCase {
       .replace('{max}', String(MAX_REVIEW_DISPATCH_LOOPS));
   }
 
+  /**
+   * Persists a re-dispatch counter (issues #292/#272).
+   *
+   * Best-effort BY DESIGN: the counter is observability, and a failed write
+   * (for example `StateStorageError` when `next --issue N` runs from a
+   * DIFFERENT task's worktree) must not turn a read-only query into a crash.
+   * The directive is still returned; only the persisted record is skipped.
+   */
+  private async persistDispatchCounter(sm: StateMachine): Promise<void> {
+    try {
+      await this.stateRepo.save(sm.toSnapshot());
+    } catch {
+      // Observability only — never fail the read.
+    }
+  }
+
+  /**
+   * Renders one of the early-stage ordinal notes (`{n}`) for the current
+   * DISCOVERY/PLAN round (issue #292).
+   */
+  private formatDispatchOrdinal(template: string, current: number): string {
+    return template.replace('{n}', String(current));
+  }
+
   /** Renders the breaker's cap + the way out of it (issue #272). */
   private formatReviewDispatchCap(channelCommand: string): string {
     return NOTE_REVIEW_DISPATCH_CAP
@@ -868,32 +969,25 @@ export class GetNextActionUseCase {
     const worktreePath = sm.worktree?.worktreePath || null;
     const baseBranch = sm.baseBranch || 'main';
 
-    // Issue #266 (absorbs #287 B): a NULL descriptor is not a root-mutation
-    // attempt — the worktree was removed (`codeloop worktree remove` during
-    // IMPLEMENT, for example). Return an actionable directive instead of
-    // asserting. A NON-NULL descriptor that resolves to the root is still a
-    // genuine violation (#247), and the ONE domain predicate decides it.
-    if (!worktreePath) {
-      return this.buildMissingWorktreeDirective(sm, baseBranch);
-    }
-    if (isRootWorkspace(worktreePath, cwd)) {
+    // A NON-NULL descriptor that resolves to the root is a genuine violation
+    // (#247) regardless of the plan's content: the ONE domain predicate decides
+    // it BEFORE any directive is built. A MISSING descriptor is different —
+    // that check stays after the blank-plan branch, so an operator whose
+    // worktree was removed can still fix the plan (issue #267).
+    if (worktreePath && isRootWorkspace(worktreePath, cwd)) {
       assertNotRootWorkspace(worktreePath, cwd, 'worktreePath');
     }
 
-    const taskBranch = sm.worktree?.branch || null;
-
-    const subagent = this.resolveSubagentUseCase.execute({
-      role: ROLE_IMPLEMENTER,
-      customConfig: config,
-      workspaceDir: cwd
-    });
-
+    // Issue #267: resolve the plan BEFORE the missing-worktree guard. A blank
+    // plan can be fixed by the planner even when the worktree was removed, and
+    // the directive must name the reachable recovery instead of the implementer.
     let planContent = '';
     let planPath = '';
     if (this.planGenerator) {
       const resolved = this.planGenerator.resolvePlanFile({
         projectRoot: cwd,
         issue: activeIssue,
+        planPath: sm.planPath ?? undefined,
         planDir: sm.planDir,
         stage: sm.currentStage
       });
@@ -906,6 +1000,26 @@ export class GetNextActionUseCase {
         }
       }
     }
+
+    if (this.planGenerator && !isPlanContentSubstantive(planContent)) {
+      return this.buildBlankPlanPlannerDirective(sm, config, cwd, planPath, baseBranch);
+    }
+
+    // Issue #266 (absorbs #287 B): a NULL descriptor is not a root-mutation
+    // attempt — the worktree was removed (`codeloop worktree remove` during
+    // IMPLEMENT, for example). Return an actionable directive instead of
+    // asserting.
+    if (!worktreePath) {
+      return this.buildMissingWorktreeDirective(sm, baseBranch);
+    }
+
+    const taskBranch = sm.worktree?.branch || null;
+
+    const subagent = this.resolveSubagentUseCase.execute({
+      role: ROLE_IMPLEMENTER,
+      customConfig: config,
+      workspaceDir: cwd
+    });
 
     const prompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
@@ -941,8 +1055,110 @@ export class GetNextActionUseCase {
       taskBranch,
       worktreePath,
       invocationPayload,
-      humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`
+      humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`,
+      planBlank: false
     };
+  }
+
+  /**
+   * The blank-plan recovery directive (issue #267, AC-A2).
+   *
+   * The checkpoint stays at its current stage (`nextStage: PLAN` names the
+   * intent, but no transition is issued by `next`). The payload is the
+   * planner's — the ONE dispatchable route to a real plan.
+   */
+  private buildBlankPlanPlannerDirective(
+    sm: StateMachine,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    config: any,
+    cwd: string,
+    planPath: string,
+    baseBranch: string
+  ): NextActionResult {
+    const subagent = this.resolveSubagentUseCase.execute({
+      role: ROLE_PLANNER,
+      customConfig: config,
+      workspaceDir: cwd
+    });
+
+    // The trailing command must be reachable FROM THE CURRENT STAGE (issue
+    // #267, AC-A1/A4). At IMPLEMENT the way on is `codeloop next` (the
+    // implementer directive once the plan is non-blank) — `transition APPROVAL`
+    // is rejected from IMPLEMENT. APPROVAL is only the PLAN-stage advance.
+    const advanceCommand =
+      sm.currentStage === STAGE_PLAN ? formatPlanAdvanceCommand(sm.issue) : 'codeloop next';
+    const planLabel = planPath || '(the scaffolded plan)';
+    const diagnosis = NOTE_BLANK_PLAN_DISPATCH_PLANNER.replace('{planPath}', planLabel)
+      .replace('{issue}', String(sm.issue ?? ''))
+      .replace('{command}', `Advance with \`${advanceCommand}\``);
+
+    const prompt = this.resolveSubagentUseCase.buildPlanningTaskPrompt({
+      issueNumber: sm.issue,
+      workspaceDir: cwd,
+      config,
+      planDir: sm.planDir,
+      planPath: planPath || undefined
+    });
+
+    const invocationPayload: SubagentInvocationPayload = {
+      Subagents: [
+        {
+          TypeName: 'self',
+          Role: ROLE_TITLE_PLANNER,
+          Model: subagent.model,
+          Workspace: 'inherit',
+          Prompt: prompt
+        }
+      ]
+    };
+
+    return {
+      currentStage: sm.currentStage,
+      nextStage: STAGE_PLAN,
+      actionType: 'subagent',
+      role: ROLE_PLANNER,
+      title: 'Invoke Planning Architect Subagent',
+      description: diagnosis,
+      baseBranch,
+      taskBranch: sm.worktree?.branch || null,
+      worktreePath: sm.worktree?.worktreePath || null,
+      invocationPayload,
+      humanSummary: `The plan at '${planLabel}' is blank. Invoke ${ROLE_TITLE_PLANNER} with Model '${subagent.model}' to write it (or supply a plan with \`codeloop implement --plan-path <file>\`), then run \`codeloop next\` again.`,
+      planBlank: true
+    };
+  }
+
+  /**
+   * Appends the blank-plan diagnosis + recovery to the APPROVAL gate
+   * (issue #267). Returns an empty string when the plan is real.
+   */
+  private buildBlankPlanDiagnosis(
+    sm: StateMachine,
+    cwd: string,
+    activeIssue: number | string | null
+  ): string {
+    if (!this.planGenerator) {
+      return '';
+    }
+    try {
+      const resolved = this.planGenerator.resolvePlanFile({
+        projectRoot: cwd,
+        issue: activeIssue,
+        planPath: sm.planPath ?? undefined,
+        planDir: sm.planDir,
+        stage: STAGE_APPROVAL
+      });
+      if (!resolved) {
+        return '';
+      }
+      const content = this.planGenerator.readPlanDocument(resolved.planPath);
+      if (isPlanContentSubstantive(content)) {
+        return '';
+      }
+      return `⚠ The plan at '${resolved.planPath}' is still the blank scaffold. Write the plan (or run \`codeloop plan --issue ${activeIssue ?? '<n>'}\`) before approving.`;
+    } catch {
+      return '';
+    }
   }
 
   /**

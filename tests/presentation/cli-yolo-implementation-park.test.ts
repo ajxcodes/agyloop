@@ -607,7 +607,7 @@ describe('codeloop yolo implementation park — the empty-plan guard (issue #259
         `the park must say the plan is the blank scaffold, got:\n${run.stderr}`
       );
       assert.ok(
-        run.stderr.includes(ADHOC_PLAN_FILE.split(path.sep).join('/')),
+        run.stderr.includes('[Implementation] - repro task.md'),
         `the park must name the plan path, got:\n${run.stderr}`
       );
       assert.ok(

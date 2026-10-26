@@ -73,7 +73,19 @@ describe('REVIEW directive names its verdict channel (issue #272)', () => {
   let stateFile: string;
   let useCase: any;
 
-  const executeRead = () => useCase.execute({ issue: ISSUE, workspaceDir: sandbox });
+  // Run from INSIDE the sandbox: `FileStateRepository.save()` refuses to write
+  // a task checkpoint from within a DIFFERENT task's worktree, and this suite
+  // may itself run from `.worktrees/<n>`. The sandbox is the workspace under
+  // test, so it is also the correct cwd.
+  const executeRead = async () => {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(sandbox);
+      return await useCase.execute({ issue: ISSUE, workspaceDir: sandbox });
+    } finally {
+      process.chdir(previousCwd);
+    }
+  };
 
   beforeEach(() => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-channel-'));

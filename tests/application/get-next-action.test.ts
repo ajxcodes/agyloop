@@ -882,3 +882,337 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
     assert.ok(commitResult.humanSummary.includes('agyloop commit'));
   });
 });
+
+// ============================================================================
+// Early-stage dispatch directives & blank-plan recovery (#292, #267)
+// ============================================================================
+
+describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () => {
+  const { test: caseTest } = require('node:test');
+  const { NOTE_DISCOVERY_ADVANCE_CONDITION, NOTE_PLAN_ADVANCE_CONDITION } = require('../../dist/domain');
+
+  const DISCOVERY_PATH = '/repo/artifacts/plans/41-bug-probe/[Discovery] - Bug probe.md';
+  const PLAN_PATH = '/repo/artifacts/plans/41-bug-probe/implementation_plan.md';
+
+  const BLANK_PLAN = [
+    '# [Implementation] - Bug probe',
+    '',
+    '## 1. Context & Objectives',
+    '- **Feature Overview:**',
+    '## 3. Implementation Steps',
+    '- [ ] **Step 1:**'
+  ].join('\n');
+
+  const REAL_PLAN = [
+    '# [Implementation] - Bug probe',
+    '',
+    '## 3. Implementation Steps',
+    '- [ ] **Step 1:** change `src/probe.ts` to return a value.'
+  ].join('\n');
+
+  function planGen(content: string): any {
+    return {
+      findPlanDirectory: () => '/repo/artifacts/plans/41-bug-probe',
+      resolvePlanFile: (options: any) => ({
+        planDir: '/repo/artifacts/plans/41-bug-probe',
+        planPath: options?.stage === STAGE_DISCOVERY ? DISCOVERY_PATH : PLAN_PATH,
+        planFileName: options?.stage === STAGE_DISCOVERY ? '[Discovery] - Bug probe.md' : 'implementation_plan.md'
+      }),
+      readPlanDocument: () => content
+    };
+  }
+
+  function discoveryCheckpoint(): any {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY, { note: 'probe' });
+    sm.setPlanDir('/repo/artifacts/plans/41-bug-probe');
+    return sm;
+  }
+
+  function planCheckpoint(): any {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY, { note: 'probe' });
+    sm.setPlanDir('/repo/artifacts/plans/41-bug-probe');
+    sm.transition(STAGE_PLAN, { note: 'probe' });
+    return sm;
+  }
+
+  function implementCheckpoint(): any {
+    const sm = planCheckpoint();
+    sm.transition(STAGE_APPROVAL);
+    sm.setWorktree(
+      new WorktreeDescriptor({
+        taskId: '41',
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41',
+        baseBranch: 'main'
+      })
+    );
+    sm.transition(STAGE_IMPLEMENT);
+    return sm;
+  }
+
+  caseTest('T-292.1: the DISCOVERY directive names the condition, the command and the target', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'discovery');
+    assert.ok(result.description.includes('codeloop plan --issue 41'), result.description);
+    assert.ok(result.description.includes(NOTE_DISCOVERY_ADVANCE_CONDITION), result.description);
+    assert.ok(result.humanSummary.includes('codeloop plan --issue 41'), result.humanSummary);
+    assert.ok(result.humanSummary.includes(NOTE_DISCOVERY_ADVANCE_CONDITION), result.humanSummary);
+    assert.ok(result.invocationPayload!.Subagents[0].Prompt.includes(DISCOVERY_PATH));
+  });
+
+  caseTest('T-292.2: the PLAN directive names the condition, the command and the spec target', async () => {
+    const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(REAL_PLAN));
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'planner');
+    assert.ok(result.description.includes('codeloop transition APPROVAL --issue 41'), result.description);
+    assert.ok(result.description.includes(NOTE_PLAN_ADVANCE_CONDITION), result.description);
+    assert.ok(result.humanSummary.includes('codeloop transition APPROVAL --issue 41'), result.humanSummary);
+    assert.ok(result.humanSummary.includes(NOTE_PLAN_ADVANCE_CONDITION), result.humanSummary);
+    assert.ok(result.invocationPayload!.Subagents[0].Prompt.includes(PLAN_PATH));
+    assert.match(result.description, /non-blank/);
+  });
+
+  caseTest('T-292.5: three reads at DISCOVERY name the command and record counts 1, 2, 3', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+
+    for (let read = 1; read <= 3; read += 1) {
+      const result = await useCase.execute({ workspaceDir: '/repo' });
+      assert.ok(result.humanSummary.includes('codeloop plan --issue 41'));
+      assert.strictEqual(result.discoveryDispatchCount, read);
+      assert.strictEqual((stateRepo.savedSnapshot as any).discoveryDispatchCount, read);
+    }
+  });
+
+  caseTest('T-292.5: three reads at PLAN record planDispatchCount 1, 2, 3', async () => {
+    const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(REAL_PLAN));
+
+    for (let read = 1; read <= 3; read += 1) {
+      const result = await useCase.execute({ workspaceDir: '/repo' });
+      assert.ok(result.humanSummary.includes('codeloop transition APPROVAL --issue 41'));
+      assert.strictEqual(result.planDispatchCount, read);
+      assert.strictEqual((stateRepo.savedSnapshot as any).planDispatchCount, read);
+    }
+  });
+
+  caseTest('T-292.6: three reads never advance the stage or alter history', async () => {
+    const sm = discoveryCheckpoint();
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+
+    const beforeStage = stateRepo.savedSnapshot!.currentStage;
+    const beforeHistory = JSON.stringify(stateRepo.savedSnapshot!.history);
+    const beforeMode = stateRepo.savedSnapshot!.mode;
+    const beforePlanDir = stateRepo.savedSnapshot!.planDir;
+
+    for (let read = 0; read < 3; read += 1) {
+      await useCase.execute({ workspaceDir: '/repo' });
+    }
+
+    assert.strictEqual(stateRepo.savedSnapshot!.currentStage, beforeStage);
+    assert.strictEqual(JSON.stringify(stateRepo.savedSnapshot!.history), beforeHistory);
+    assert.strictEqual(stateRepo.savedSnapshot!.mode, beforeMode);
+    assert.strictEqual(stateRepo.savedSnapshot!.planDir, beforePlanDir);
+    assert.strictEqual((stateRepo.savedSnapshot as any).discoveryDispatchCount, 3);
+  });
+
+  caseTest('T-267.A2: a blank plan at IMPLEMENT offers the PLANNER, a real plan the implementer', async () => {
+    const blankRepo = new MockStateRepo(implementCheckpoint().toSnapshot());
+    const blankResult = await new GetNextActionUseCase(
+      blankRepo,
+      makeMockConfig(),
+      planGen(BLANK_PLAN)
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(blankResult.role, 'planner');
+    assert.strictEqual(blankResult.nextStage, STAGE_PLAN);
+    assert.strictEqual(blankResult.planBlank, true);
+    assert.strictEqual(blankResult.currentStage, STAGE_IMPLEMENT);
+    assert.ok(blankResult.humanSummary.includes('--plan-path'), blankResult.humanSummary);
+
+    const realRepo = new MockStateRepo(implementCheckpoint().toSnapshot());
+    const realResult = await new GetNextActionUseCase(
+      realRepo,
+      makeMockConfig(),
+      planGen(REAL_PLAN)
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(realResult.role, 'implementer');
+    assert.strictEqual(realResult.planBlank, false);
+    assert.strictEqual(realResult.nextStage, STAGE_QUALITY_GATE);
+  });
+});
+
+// ============================================================================
+// Blank-plan directive reachability, supplied plan preference, guard order
+// (review round 1: findings 1, 2, advisor on root guard/counter persistence)
+// ============================================================================
+
+describe('Blank-plan directive reachability & guard ordering (#267)', () => {
+  const { test: caseTest } = require('node:test');
+
+  const BLANK_PLAN = [
+    '# [Implementation] - probe',
+    '',
+    '## 1. Context & Objectives',
+    '- **Feature Overview:**',
+    '## 3. Implementation Steps',
+    '- [ ] **Step 1:**'
+  ].join('\n');
+
+  const SUPPLIED_PLAN = [
+    '# [Implementation] - supplied',
+    '',
+    '## 3. Implementation Steps',
+    '- [ ] **Step 1:** SUPPLIED_PLAN_MARKER'
+  ].join('\n');
+
+  /** A generator that prefers the recorded planPath, like the real port. */
+  function suppliedPlanGen(planPath: string): any {
+    return {
+      resolvePlanFile: (options: any) => ({
+        planDir: options?.planDir ?? '/',
+        planPath: options?.planPath ?? '/repo/README.md',
+        planFileName: 'myplan.md'
+      }),
+      readPlanDocument: (path: string) => (path === planPath ? SUPPLIED_PLAN : BLANK_PLAN),
+      readPlanPathCalls: [] as string[]
+    };
+  }
+
+  function implementCheckpoint(planPath?: string | null): any {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.setWorktree(
+      new WorktreeDescriptor({
+        taskId: '41',
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41',
+        baseBranch: 'main'
+      })
+    );
+    sm.transition(STAGE_IMPLEMENT);
+    if (planPath) sm.setPlanPath(planPath);
+    return sm;
+  }
+
+  caseTest('finding 1: the IMPLEMENT blank-plan directive names only reachable commands', async () => {
+    const sm = implementCheckpoint();
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    // This path reads back the BLANK document.
+    const generator = suppliedPlanGen('/repo/blank-plan.md');
+    const result = await new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      generator
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.role, 'planner');
+    const text = `${result.description} ${result.humanSummary}`;
+    // `IMPLEMENT -> APPROVAL` is rejected by the state machine.
+    assert.doesNotMatch(text, /codeloop transition APPROVAL/);
+    assert.match(text, /codeloop next/);
+
+    // Every transition the directive DOES name must be legal from the stage the
+    // operator is actually at.
+    const targets = [...text.matchAll(/codeloop transition ([A-Z_]+)/g)].map((m) => m[1]);
+    for (const target of targets) {
+      assert.strictEqual(
+        sm.canTransition(target),
+        true,
+        `the directive names 'transition ${target}', which is rejected from ${sm.currentStage}`
+      );
+    }
+  });
+
+  caseTest('finding 2: a recorded supplied plan wins over a blank sibling document', async () => {
+    const suppliedPath = '/repo/myplan.md';
+    const sm = implementCheckpoint(suppliedPath);
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const generator = suppliedPlanGen(suppliedPath);
+    const result = await new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      generator
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.planBlank, false);
+    assert.strictEqual(result.role, 'implementer');
+    assert.ok(
+      result.invocationPayload!.Subagents[0].Prompt.includes('/repo/myplan.md'),
+      'the implementer prompt must name the supplied document'
+    );
+    assert.ok(result.humanSummary.includes('.worktrees/41'));
+  });
+
+  caseTest('advisory: a failed counter persist never fails the read-only query', async () => {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.setPlanDir('/repo/artifacts/plans/41-bug-probe');
+    const stateRepo = {
+      snapshot: sm.toSnapshot() as any,
+      async load() {
+        return this.snapshot;
+      },
+      async save() {
+        throw new Error('StateStorageError: cross-worktree write refused');
+      },
+      async reset() {
+        this.snapshot = null;
+      },
+      getStateFilePath() {
+        return '/repo/.agyloop/tasks/41.json';
+      }
+    };
+
+    const result = await new GetNextActionUseCase(
+      stateRepo as any,
+      makeMockConfig(),
+      suppliedPlanGen('/repo/artifacts/plans/41-bug-probe/[Discovery] - probe.md')
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.discoveryDispatchCount, 1);
+  });
+
+  caseTest('advisory: a root-workspace descriptor still violates the invariant with a blank plan', async () => {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.setWorktree(
+      new WorktreeDescriptor({
+        taskId: '41',
+        // The repo ROOT is never a legal task worktree.
+        worktreePath: '/repo',
+        branch: 'task/41',
+        baseBranch: 'main'
+      })
+    );
+    sm.transition(STAGE_IMPLEMENT);
+
+    await assert.rejects(
+      async () =>
+        new GetNextActionUseCase(
+          new MockStateRepo(sm.toSnapshot()),
+          makeMockConfig(),
+          suppliedPlanGen('/repo/README.md')
+        ).execute({ workspaceDir: '/repo' }),
+      /Zero Direct Root Mutation/
+    );
+  });
+});
