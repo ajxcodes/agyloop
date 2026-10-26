@@ -21,6 +21,8 @@ export interface CritiqueInstallResult {
   readonly version: string | null;
   readonly targetPath: string | null;
   readonly error: string | null;
+  /** True when this result describes a simulation, not an installation (#248). */
+  readonly dryRun?: boolean;
 }
 
 export interface CritiqueCacheManifest {
@@ -131,11 +133,13 @@ export function createCritiqueInstallResult(params: {
   version?: string | null;
   targetPath?: string | null;
   error?: string | null;
+  dryRun?: boolean;
 }): CritiqueInstallResult {
   return Object.freeze({
     success: params.success,
     version: cleanVersion(params.version),
     targetPath: params.targetPath ?? null,
-    error: params.error ?? null
+    error: params.error ?? null,
+    ...(params.dryRun === true ? { dryRun: true } : {})
   });
 }

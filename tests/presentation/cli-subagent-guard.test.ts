@@ -112,6 +112,22 @@ describe('CLI Subagent Guard', () => {
     });
 
     test('permits subagents to report quota via halt (issue #220 inbound channel)', async () => {
+      // Issue #293: halt records a condition on a RUNNING pipeline, so a
+      // checkpoint must exist first.
+      const now = new Date().toISOString();
+      fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, '.agyloop', 'state.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'IMPLEMENT',
+          mode: 'standard',
+          issue: null,
+          createdAt: now,
+          updatedAt: now,
+          history: [{ stage: 'IMPLEMENT', timestamp: now }]
+        })
+      );
       const exitCode = await runCli(['halt', '--reason', 'quota', '--dry-run']);
       assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
       assert.strictEqual(errorOutput.includes('Zero Direct Root Mutation'), false);

@@ -52,6 +52,8 @@ export interface TeardownWorktreeParams {
   readonly tolerateMissing?: boolean;
   /** Forwarded to the manager: a registered worktree outside `.worktrees`. */
   readonly allowExternal?: boolean;
+  /** Simulate: run every guard, change nothing (#248). */
+  readonly dryRun?: boolean;
 }
 
 /** What the removal did to the checkpoint descriptor (issue #282, absorbed #273). */
@@ -68,6 +70,8 @@ export interface TeardownWorktreeData {
    * `.agyloop/tasks/<id>.json`, and both must be cleared (review iteration 2).
    */
   readonly clearedCheckpoints: readonly string[];
+  /** True when this was a simulation: the descriptor is unchanged (#248). */
+  readonly wouldClear?: boolean;
 }
 
 /** A repair request for a descriptor whose worktree directory is already gone (#282). */
@@ -75,6 +79,8 @@ export interface ClearStaleDescriptorParams {
   readonly worktreePath: string;
   /** Descriptor scope: which task checkpoint may be repaired. */
   readonly issue?: number | string | null;
+  /** Simulate the repair without saving any checkpoint (#248). */
+  readonly dryRun?: boolean;
 }
 
 /** Internal result of one descriptor-clearing sweep. */
@@ -99,6 +105,8 @@ export interface CleanWorktreesParams {
   readonly workspaceDir?: string;
   readonly subagents?: boolean;
   readonly all?: boolean;
+  /** Simulate the cleanup: report what would be removed, delete nothing (#248). */
+  readonly dryRun?: boolean;
 }
 
 export interface WorktreeOperationResult<T = void> {
@@ -161,16 +169,42 @@ export class ManageWorktreeUseCase {
   public async teardown(
     params: TeardownWorktreeParams
   ): Promise<WorktreeOperationResult<TeardownWorktreeData>> {
+    const dryRun = params.dryRun === true;
+    // A dry run still calls the manager — with `dryRun: true` — because THAT is
+    // what exercises every guard: a missing, unregistered, symlinked or
+    // out-of-scope target must still refuse, and the refusal is the prediction.
     await this.worktreeManager.removeWorktree({
       worktreePath: params.worktreePath,
       workspaceDir: params.workspaceDir,
       force: params.force ?? true,
       prune: params.prune ?? true,
       tolerateMissing: params.tolerateMissing,
-      allowExternal: params.allowExternal
+      allowExternal: params.allowExternal,
+      dryRun
     });
 
-    const outcome = await this.clearDescriptor(params);
+    const outcome = await this.clearDescriptor(params, dryRun);
+
+    if (dryRun) {
+      const descriptor =
+        outcome.status === 'cleared'
+          ? ` and would clear the descriptor in ${outcome.cleared.join(', ')}`
+          : outcome.status === 'not-found'
+            ? ` and no checkpoint descriptor names it (${NOTE_WORKTREE_CHECKPOINT_UNCHANGED})`
+            : outcome.status === 'corrupt'
+              ? ` (${NOTE_WORKTREE_CHECKPOINT_UNREADABLE})`
+              : '';
+      return {
+        success: true,
+        message: `Would remove the worktree at ${params.worktreePath}${descriptor} — nothing was written.`,
+        data: {
+          descriptorCleared: false,
+          descriptorStatus: outcome.status,
+          clearedCheckpoints: [],
+          wouldClear: outcome.status === 'cleared'
+        }
+      };
+    }
 
     let message = `${NOTE_WORKTREE_REMOVED} at ${params.worktreePath}`;
     switch (outcome.status) {
@@ -217,13 +251,33 @@ export class ManageWorktreeUseCase {
   public async clearStaleDescriptor(
     params: ClearStaleDescriptorParams
   ): Promise<WorktreeOperationResult<TeardownWorktreeData>> {
-    const outcome = await this.clearDescriptor(params);
+    const dryRun = params.dryRun === true;
+    const outcome = await this.clearDescriptor(params, dryRun);
 
     const data = {
-      descriptorCleared: outcome.status === 'cleared',
+      descriptorCleared: !dryRun && outcome.status === 'cleared',
       descriptorStatus: outcome.status,
-      clearedCheckpoints: outcome.cleared
+      clearedCheckpoints: dryRun ? [] : outcome.cleared,
+      wouldClear: outcome.status === 'cleared'
     } as const;
+
+    if (dryRun) {
+      if (outcome.status === 'corrupt') {
+        return {
+          success: false,
+          message: `${NOTE_WORKTREE_CHECKPOINT_UNREADABLE}: ${params.worktreePath}`,
+          data
+        };
+      }
+      return {
+        success: true,
+        message:
+          outcome.status === 'cleared'
+            ? `Would clear the stale descriptor at ${params.worktreePath} — nothing was written.`
+            : `${NOTE_WORKTREE_STALE_ABSENT}: ${params.worktreePath} (${NOTE_WORKTREE_CHECKPOINT_UNCHANGED})`,
+        data
+      };
+    }
 
     switch (outcome.status) {
       case 'cleared':
@@ -286,7 +340,10 @@ export class ManageWorktreeUseCase {
    *
    * Never throws: `corrupt` is a reportable outcome, not a removal failure.
    */
-  private async clearDescriptor(params: ClearStaleDescriptorParams): Promise<DescriptorClearOutcome> {
+  private async clearDescriptor(
+    params: ClearStaleDescriptorParams,
+    dryRun = false
+  ): Promise<DescriptorClearOutcome> {
     const stateRepo = this.stateRepo;
     if (!stateRepo) {
       return { status: 'unavailable', cleared: [], taskCheckpointCleared: false };
@@ -361,7 +418,10 @@ export class ManageWorktreeUseCase {
 
         const sm = StateMachine.fromSnapshot(snapshot);
         sm.setWorktree(null);
-        await repo.save(sm.toSnapshot());
+        // A dry run reports the file it WOULD clear and touches nothing (#248).
+        if (!dryRun) {
+          await repo.save(sm.toSnapshot());
+        }
         if (checkpointPath && !cleared.includes(checkpointPath)) cleared.push(checkpointPath);
       } catch {
         sawUnreadable = true;
@@ -449,15 +509,19 @@ export class ManageWorktreeUseCase {
   public async clean(
     params: CleanWorktreesParams = {}
   ): Promise<WorktreeOperationResult<{ count: number }>> {
+    const dryRun = params.dryRun === true;
     const count = await this.worktreeManager.cleanOrphanedWorktrees({
       workspaceDir: params.workspaceDir,
       subagents: params.subagents,
-      all: params.all
+      all: params.all,
+      dryRun
     });
 
     return {
       success: true,
-      message: `Cleaned ${count} orphaned worktree(s) and metadata lock(s).`,
+      message: dryRun
+        ? `Would remove ${count} orphaned worktree director${count === 1 ? 'y' : 'ies'} and prune dangling git registrations.`
+        : `Cleaned ${count} orphaned worktree(s) and metadata lock(s).`,
       data: { count }
     };
   }

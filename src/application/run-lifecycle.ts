@@ -417,10 +417,37 @@ export class RunLifecycleUseCase {
       }
     }
 
+    // 2. Load state checkpoint and determine execution mode.
+    //
+    // Issue #278: this is hoisted ABOVE the pre-flight block because it is a
+    // pure READ and the "just look" path needs its answer before anything with
+    // a side effect (network / `gh`) can run.
+    const snapshot = await this.stateRepo.load();
+    const requestedMode: ExecutionMode = params.mode || MODE_STANDARD;
+    const isNewIssue =
+      params.issue !== undefined &&
+      params.issue !== null &&
+      snapshot !== null &&
+      snapshot.issue !== null &&
+      String(params.issue) !== String(snapshot.issue);
+    /**
+     * A bare `codeloop` against a COMPLETED checkpoint is a read.
+     *
+     * Before #278 the standard path unconditionally called `sm.setMode()` and
+     * `stateRepo.save()`, so the run rewrote `mode` and `updatedAt`, and then
+     * provisioned a worktree on a stale branch. `MODE_IMPLEMENT` is
+     * deliberately EXCLUDED: `StartImplementationUseCase` legitimately re-opens
+     * COMPLETED → IMPLEMENT.
+     */
+    const isFinishedStandardRun =
+      snapshot?.currentStage === STAGE_COMPLETED &&
+      requestedMode === MODE_STANDARD &&
+      !isNewIssue;
+
     // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
     const activeIssueToCheck = effectiveIssue;
     let preflightResult = undefined;
-    if (activeIssueToCheck && !params.dryRun) {
+    if (activeIssueToCheck && !params.dryRun && !isFinishedStandardRun) {
       preflightResult = await this.runPreFlightCheckUseCase.execute({
         issueNumber: activeIssueToCheck,
         workspaceDir: workspace,
@@ -428,19 +455,22 @@ export class RunLifecycleUseCase {
       });
     }
 
-    // 2. Load state checkpoint and determine execution mode
-    const snapshot = await this.stateRepo.load();
     let sm: StateMachine;
     let activeMode: ExecutionMode = params.mode || MODE_STANDARD;
-    const isNewIssue =
-      params.issue !== undefined &&
-      params.issue !== null &&
-      snapshot !== null &&
-      snapshot.issue !== null &&
-      String(params.issue) !== String(snapshot.issue);
-
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
+      if (isFinishedStandardRun) {
+        // Nothing to do, and NOTHING to write: return before the reset/mode
+        // legs can touch the checkpoint or provision a worktree.
+        return {
+          success: true,
+          mode: MODE_STANDARD,
+          currentStage: STAGE_COMPLETED,
+          stateMachine: sm,
+          worktree: null,
+          message: NOTE_ALREADY_COMPLETED
+        };
+      }
       if (
         (activeMode === MODE_PLAN && (sm.currentStage === STAGE_COMPLETED || isNewIssue)) ||
         (isNewIssue && (activeMode === MODE_STANDARD || activeMode === MODE_YOLO))
@@ -452,9 +482,14 @@ export class RunLifecycleUseCase {
       } else {
         if (params.mode) {
           activeMode = params.mode;
-          sm.setMode(activeMode);
-          if (!params.dryRun) {
-            await this.stateRepo.save(sm.toSnapshot());
+          // Defence in depth for every other mode (#278 AC-278.2): `setMode`
+          // is a no-op when the mode is unchanged, so the save is skipped when
+          // there is nothing to persist.
+          if (sm.mode !== activeMode) {
+            sm.setMode(activeMode);
+            if (!params.dryRun) {
+              await this.stateRepo.save(sm.toSnapshot());
+            }
           }
         } else {
           activeMode = sm.mode || MODE_STANDARD;
@@ -1302,6 +1337,21 @@ export class RunLifecycleUseCase {
       };
     }
 
+    // Issue #278: a finished standard run returns BEFORE `resolveWorktree`, so
+    // no path through standard mode can provision a worktree for a COMPLETED
+    // checkpoint (the live defect: a bare `codeloop` re-created a task worktree
+    // from a stale, already-merged branch).
+    if (sm.currentStage === STAGE_COMPLETED) {
+      return {
+        success: true,
+        mode: MODE_STANDARD,
+        currentStage: STAGE_COMPLETED,
+        stateMachine: sm,
+        worktree: null,
+        message: NOTE_ALREADY_COMPLETED
+      };
+    }
+
     // Resolve isolated worktree for implementation, verification, and commit
     const worktree = await this.resolveWorktree(sm, params, workspace);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
@@ -1530,17 +1580,6 @@ export class RunLifecycleUseCase {
         draftCommitResult: draftResult,
         worktree,
         message: NOTE_PAUSED_COMMIT_GATE
-      };
-    }
-
-    if (sm.currentStage === STAGE_COMPLETED) {
-      return {
-        success: true,
-        mode: MODE_STANDARD,
-        currentStage: STAGE_COMPLETED,
-        stateMachine: sm,
-        worktree: null,
-        message: NOTE_ALREADY_COMPLETED
       };
     }
 

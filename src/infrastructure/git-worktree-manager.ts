@@ -852,7 +852,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     // (the commit gate / lifecycle teardown of a worktree removed out of band).
     if (!fs.existsSync(resolvedTarget)) {
       if (options.tolerateMissing) {
-        if (options.prune !== false) {
+        if (options.prune !== false && !options.dryRun) {
           await this.pruneWorktrees({ workspaceDir: workspace });
         }
         return;
@@ -923,6 +923,14 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         `Refusing to remove '${resolvedTarget}': its registration is prunable. Run \`git worktree prune\` to drop the stale registration, then retry.`,
         { worktreePath: resolvedTarget }
       );
+    }
+
+    // 5b. Dry run (issue #248): every guard above has PASSED, so returning here
+    // is a truthful prediction — a real invocation would delete this path.
+    // Returning before step 6 is what makes the simulation non-destructive
+    // (no symlink unlink, no `git worktree remove`, no rmSync, no prune).
+    if (options.dryRun) {
+      return;
     }
 
     // 6. Side effects — only now.
@@ -1130,9 +1138,12 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Cleans orphaned or stale worktrees/locks and returns count pruned.
    */
   public async cleanOrphanedWorktrees(options?: CleanOrphanedOptions): Promise<number> {
+    const dryRun = options?.dryRun === true;
     const workspace = await this.getRepoRoot(options?.workspaceDir);
     const initialList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
-    await this.pruneWorktrees({ workspaceDir: workspace });
+    if (!dryRun) {
+      await this.pruneWorktrees({ workspaceDir: workspace });
+    }
 
     const worktreesDir = path.join(workspace, DEFAULT_WORKTREES_DIR);
     let cleaned = 0;
@@ -1146,6 +1157,12 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         if (entry.isDirectory()) {
           const fullPath = path.join(worktreesDir, entry.name);
           if (!activePaths.has(fullPath)) {
+            // A dry run COUNTS the orphan it would remove — it never calls
+            // `rmSync`, so the directory survives (#248 AC-248.6).
+            if (dryRun) {
+              cleaned++;
+              continue;
+            }
             try {
               fs.rmSync(fullPath, { recursive: true, force: true });
               cleaned++;
@@ -1175,6 +1192,10 @@ export class GitWorktreeManager implements WorktreeManagerPort {
           options?.all === true;
 
         if (isSubagent) {
+          if (dryRun) {
+            cleaned++;
+            continue;
+          }
           try {
             await this.removeWorktree({
               worktreePath: normalizedWtPath,
@@ -1194,7 +1215,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
     }
 
-    await this.pruneWorktrees({ workspaceDir: workspace });
+    if (!dryRun) {
+      await this.pruneWorktrees({ workspaceDir: workspace });
+    }
     const finalList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
     const diff = Math.max(0, initialList.length - finalList.length);
     return Math.max(cleaned, diff);

@@ -194,6 +194,12 @@ export interface TriagePrCommentsParams {
   readonly workspaceDir?: string;
   readonly trackerRepo?: string;
   readonly comments?: readonly PullRequestReviewComment[];
+  /**
+   * When true, resolve the routing decision and report it, but write nothing:
+   * no dismissal, no persisted branch inference, no worktree, no checkpoint
+   * save (issue #248 AC-248.5).
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface TriagePrCommentsResult {
@@ -203,16 +209,36 @@ export interface TriagePrCommentsResult {
   readonly prNumber?: number | null;
   readonly comments: readonly PullRequestReviewComment[];
   readonly message: string;
+  /** True when this was a simulation (#248). */
+  readonly dryRun?: boolean;
+  /** True when the checkpoint was written. Always false on a dry run. */
+  readonly stateUpdated?: boolean;
+  /** The stage a real run would have routed to (#248 dry run). */
+  readonly wouldTransitionTo?: StageName;
+  /** True when a real run would have provisioned a worktree (#248 dry run). */
+  readonly wouldCreateWorktree?: boolean;
+  /** True when a real run would have posted dismissal replies (#248 dry run). */
+  readonly wouldDismiss?: boolean;
+  /**
+   * True when a real run would have recorded a disposition (#248 dry run).
+   *
+   * A dry run reports the disposition as a PREDICTION: it never serialises a
+   * `TriageDisposition` (whose `recordedAt` would be a timestamp of a write
+   * that never happened), and `dispositionRecorded` stays `false`.
+   */
+  readonly wouldRecordDisposition?: boolean;
   /** Present for the `dismiss` action: what the dismissal really achieved. */
   readonly dismissal?: TriageDismissReport;
   /**
    * The recorded triage disposition (issue #269), or `null` when none was
-   * recorded (no PR feedback could be read).
+   * recorded (no PR feedback could be read — or this was a dry run).
    */
   readonly disposition?: TriageDispositionSerialized | null;
   /**
-   * Whether a disposition was recorded. `false` means the feedback could not
-   * be read — the reason is in the CLI's output.
+   * Whether a disposition was actually WRITTEN. `false` means either the
+   * feedback could not be read (the reason is in the CLI's output) or this was
+   * a dry run, where the would-be disposition is reported by
+   * {@link wouldRecordDisposition} instead.
    */
   readonly dispositionRecorded?: boolean;
 }
@@ -388,6 +414,7 @@ export class TriagePrCommentsUseCase {
 
   public async execute(params: TriagePrCommentsParams = {}): Promise<TriagePrCommentsResult> {
     const cwd = params.workspaceDir || process.cwd();
+    const dryRun = params.dryRun === true;
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
 
@@ -449,6 +476,8 @@ export class TriagePrCommentsUseCase {
         stateMachine: sm,
         prNumber,
         comments,
+        dryRun,
+        stateUpdated: false,
         message: `Listed ${comments.length} PR review comment(s) (read-only).`
       };
     }
@@ -458,8 +487,9 @@ export class TriagePrCommentsUseCase {
     // The dismissal route runs BEFORE the state transition so its outcome can
     // be reported truthfully. It never blocks the transition: a partial
     // dismissal is reported as partial, not as a failure of the routing.
+    // On a dry run it does not run at all — it posts to GitHub (#248).
     let dismissal: TriageDismissReport | undefined;
-    if (selectedAction === 'dismiss') {
+    if (selectedAction === 'dismiss' && !dryRun) {
       dismissal = await this.performDismissal({
         prNumber,
         notes: params.notes,
@@ -521,10 +551,15 @@ export class TriagePrCommentsUseCase {
     // It is recorded for EVERY routing action (the feedback was triaged in all
     // of them), and it is NOT recorded at all when no feedback could be read:
     // an empty key set must never masquerade as "everything was dispositioned".
+    //
+    // A DRY RUN writes nothing, so it must not shape a `recordedAt` timestamp
+    // and call it a recorded fact (issue #248, AC-275.6): it predicts whether a
+    // disposition WOULD be recorded instead of serialising one.
     let disposition: TriageDisposition | null = null;
     let dispositionRecorded = false;
+    const wouldRecordDisposition = prNumber !== null && comments.length > 0;
 
-    if (prNumber !== null && comments.length > 0) {
+    if (!dryRun && prNumber !== null && comments.length > 0) {
       const classified = classifyPrFeedback(comments);
       const keys = feedbackKeysOf(classified.actionable);
       disposition = TriageDisposition.merge(sm.triageDisposition, {
@@ -537,12 +572,20 @@ export class TriagePrCommentsUseCase {
     }
 
     // Transition from STAGE_TRIAGE to targetStage
+    let wouldCreateWorktree = false;
     if (sm.canTransition(targetStage)) {
       if (targetStage === STAGE_IMPLEMENT && this.worktreeManager) {
+        wouldCreateWorktree = dryRun;
         let baseBranch = sm.baseBranch;
         if (!baseBranch && activeIssue && this.inferBaseBranchUseCase) {
            try {
-             const inference = await this.inferBaseBranchUseCase.execute({ issueNumber: activeIssue, workspaceDir: cwd });
+             const inference = await this.inferBaseBranchUseCase.execute({
+               issueNumber: activeIssue,
+               workspaceDir: cwd,
+               // The default is `persist: true` — a hidden checkpoint write.
+               // A dry run must not take it (#248, R14).
+               persist: !dryRun
+             });
              if (inference.baseBranch) {
                baseBranch = inference.baseBranch;
                sm.setBaseBranch(baseBranch);
@@ -551,23 +594,27 @@ export class TriagePrCommentsUseCase {
              // Non-fatal
            }
         }
-        try {
-          const worktreeRes = await this.worktreeManager.createWorktree({
-            taskId: activeIssue || 'adhoc',
-            workspaceDir: cwd,
-            baseBranch: baseBranch || 'main'
-          });
-          sm.setWorktree(worktreeRes);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            success: false,
-            targetStage: sm.currentStage,
-            stateMachine: sm,
-            prNumber,
-            comments,
-            message: `Failed to construct worktree for implementation: ${msg}`
-          };
+        if (!dryRun) {
+          try {
+            const worktreeRes = await this.worktreeManager.createWorktree({
+              taskId: activeIssue || 'adhoc',
+              workspaceDir: cwd,
+              baseBranch: baseBranch || 'main'
+            });
+            sm.setWorktree(worktreeRes);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+              success: false,
+              targetStage: sm.currentStage,
+              stateMachine: sm,
+              prNumber,
+              comments,
+              dryRun,
+              stateUpdated: false,
+              message: `Failed to construct worktree for implementation: ${msg}`
+            };
+          }
         }
       }
 
@@ -591,6 +638,31 @@ export class TriagePrCommentsUseCase {
       sm.setTriageDisposition(disposition);
     }
 
+    // A dry run stops before the write: the transition above is in MEMORY only,
+    // so the report describes what WOULD be routed (#248).
+    if (dryRun) {
+      return {
+        success: true,
+        targetStage,
+        stateMachine: sm,
+        prNumber,
+        comments,
+        dismissal,
+        // A prediction, never a written fact: no `disposition` (its
+        // `recordedAt` would timestamp a write that did not happen) and
+        // `dispositionRecorded` stays false (#248, AC-275.6).
+        disposition: null,
+        dispositionRecorded: false,
+        wouldRecordDisposition,
+        dryRun: true,
+        stateUpdated: false,
+        wouldTransitionTo: targetStage,
+        wouldCreateWorktree,
+        wouldDismiss: selectedAction === 'dismiss',
+        message: `Triage simulated: would route to ${targetStage} with ${comments.length} comment(s); nothing was written.`
+      };
+    }
+
     await this.stateRepo.save(sm.toSnapshot());
 
     return {
@@ -602,6 +674,8 @@ export class TriagePrCommentsUseCase {
       dismissal,
       disposition: disposition ? disposition.toJSON() : null,
       dispositionRecorded,
+      dryRun: false,
+      stateUpdated: true,
       message: `Triage complete: routed to ${targetStage} with ${comments.length} comment(s).`
     };
   }

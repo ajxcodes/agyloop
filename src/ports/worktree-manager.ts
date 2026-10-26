@@ -26,6 +26,15 @@ export interface RemoveWorktreeOptions {
   readonly force?: boolean;
   readonly prune?: boolean;
   /**
+   * Run every guard (root refusal, containment, existence, symlink,
+   * registration, prunable) and report what WOULD be removed, but perform no
+   * side effect (issue #248). A missing/unregistered/symlinked target still
+   * refuses — that is the point of exercising the guards on a dry run.
+   *
+   * Default `false`.
+   */
+  readonly dryRun?: boolean;
+  /**
    * Resolve successfully when the directory is already gone (internal
    * teardown of a worktree that was deleted out of band). Operator commands
    * MUST leave this false: a missing target is a failure, not a success (#282).
@@ -82,6 +91,13 @@ export interface CleanOrphanedOptions {
   readonly workspaceDir?: string;
   readonly subagents?: boolean;
   readonly all?: boolean;
+  /**
+   * Report how many orphans WOULD be removed without pruning registrations,
+   * deleting directories or removing subagent worktrees (issue #248).
+   *
+   * Default `false`.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface ListBranchesOptions {
