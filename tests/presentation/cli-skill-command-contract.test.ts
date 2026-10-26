@@ -8,8 +8,9 @@
  *
  * SK1 - every `codeloop <cmd>` the skill mentions is a DOCUMENTED command
  * SK2 - every DOCUMENTED command has a `case` in the CLI's command switch
- * SK3 - `AGY_SUBAGENT=1 codeloop review` is permitted (the channel is open)
- *       while every other mutating command is still blocked
+ * SK3 - `AGY_SUBAGENT=1` may run `triage` and `halt`, but `review` is guarded
+ *       like every other mutating command (issue #297: a read-only reviewer
+ *       never files its own verdict)
  * SK4 - `OPENCODE_SKILL_ASSET_RELATIVE_PATH` resolves to the skill file — the
  *       installed copy and the source cannot disagree
  */
@@ -103,7 +104,7 @@ describe('Skill <-> CLI command contract (issue #269)', () => {
     assert.ok(!CLI_DOCUMENTED_COMMANDS.includes('gates'));
   });
 
-  test('SK3: AGY_SUBAGENT=1 may run `review`, but every other mutating command is still blocked', async () => {
+  test('SK3: AGY_SUBAGENT=1 may run `triage` and `halt`, but `review` is blocked like any other mutating command', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-skill-contract-'));
     const prevCwd = process.cwd();
     const originalSubagent = process.env.AGY_SUBAGENT;
@@ -119,10 +120,10 @@ describe('Skill <-> CLI command contract (issue #269)', () => {
         errorOutput += String(msg) + '\n';
       };
 
-      // The carved-out commands: the reviewer subagent must be able to FILE its
-      // verdict, the triage subagent must be able to ROUTE, and the runner must
-      // be able to report a quota halt.
-      for (const command of [COMMAND_REVIEW, COMMAND_TRIAGE, COMMAND_HALT]) {
+      // The carved-out commands: the triage subagent must be able to ROUTE and
+      // the runner must be able to report a quota halt. `review` is NOT here
+      // (issue #297): the reviewer only emits a block.
+      for (const command of [COMMAND_TRIAGE, COMMAND_HALT]) {
         errorOutput = '';
         await runCli([command]);
         assert.ok(
@@ -135,20 +136,26 @@ describe('Skill <-> CLI command contract (issue #269)', () => {
         );
       }
 
-      // Every OTHER mutating command is still blocked.
+      // Every OTHER mutating command — `review` included — is blocked.
       for (const command of STATE_MUTATING_COMMANDS) {
         if (command === null) continue;
-        if (command === COMMAND_TRIAGE || command === COMMAND_HALT || command === COMMAND_REVIEW) {
+        if (command === COMMAND_TRIAGE || command === COMMAND_HALT) {
           continue;
         }
         errorOutput = '';
         const code = await runCli([command]);
         assert.ok(
           errorOutput.includes('Subagents are not permitted'),
-          `\`${command}\` must still be blocked for a subagent, got:\n${errorOutput}`
+          `\`${command}\` must be blocked for a subagent, got:\n${errorOutput}`
         );
         assert.strictEqual(code, 1, `\`${command}\` must exit 1 when blocked`);
       }
+
+      // Pin the contract directly on `review`: the #269 carve-out is gone.
+      errorOutput = '';
+      const reviewCode = await runCli([COMMAND_REVIEW]);
+      assert.strictEqual(reviewCode, 1, 'a subagent must not be able to file a verdict');
+      assert.ok(errorOutput.includes('Subagents are not permitted'), errorOutput);
     } finally {
       process.chdir(prevCwd);
       console.log = originalLog;

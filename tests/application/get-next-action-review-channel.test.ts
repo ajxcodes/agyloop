@@ -21,7 +21,8 @@ const { GetNextActionUseCase } = require('../../dist/application');
 const { FileStateRepository } = require('../../dist/infrastructure');
 const {
   NOTE_REVIEW_GATE_EXIT_CONDITION,
-  MAX_REVIEW_DISPATCH_LOOPS
+  MAX_REVIEW_DISPATCH_LOOPS,
+  StateStorageError
 } = require('../../dist/domain');
 
 const ISSUE = 241;
@@ -144,5 +145,139 @@ describe('REVIEW directive names its verdict channel (issue #272)', () => {
     assert.strictEqual(result.reviewDispatchCount, 0);
     assert.strictEqual(readCheckpoint(stateFile).reviewDispatchCount, 0);
     assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+  });
+});
+
+/**
+ * Issue #291 (F1): a REVIEW read must degrade, not abort, when the re-dispatch
+ * counter save fails — and the skip must be visible on stderr.
+ */
+class FailingStateRepo {
+  public saveCalls = 0;
+  private readonly snapshot: any;
+
+  constructor(snapshot: any) {
+    this.snapshot = snapshot;
+  }
+
+  public async load(): Promise<any> {
+    return this.snapshot;
+  }
+
+  public async save(): Promise<void> {
+    this.saveCalls += 1;
+    throw new StateStorageError('checkpoint is not writable from this cwd');
+  }
+
+  public async reset(): Promise<void> {}
+
+  public getStateFilePath(): string {
+    return '/fake/.agyloop/tasks/241.json';
+  }
+}
+
+class RecoveringStateRepo {
+  public saveCalls = 0;
+  public snapshot: any;
+
+  constructor(snapshot: any) {
+    this.snapshot = snapshot;
+  }
+
+  public async load(): Promise<any> {
+    return this.snapshot;
+  }
+
+  public async save(next: any): Promise<void> {
+    this.saveCalls += 1;
+    if (this.saveCalls === 1) {
+      throw new StateStorageError('checkpoint is not writable from this cwd');
+    }
+    this.snapshot = next;
+  }
+
+  public async reset(): Promise<void> {}
+
+  public getStateFilePath(): string {
+    return '/fake/.agyloop/tasks/241.json';
+  }
+}
+
+function reviewSnapshot(): any {
+  return {
+    version: '1.0.0',
+    currentStage: 'REVIEW',
+    mode: 'standard',
+    issue: ISSUE,
+    baseBranch: 'main',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    history: [{ stage: 'REVIEW', timestamp: new Date().toISOString() }],
+    pausedAtGate: null,
+    pausedAtTimestamp: null,
+    reviewDispatchCount: 0
+  };
+}
+
+describe('REVIEW read degrades on an unwritable counter save (issue #291 F1)', () => {
+  test('CH1: a failing save returns the directive, names the channel, and warns', async () => {
+    const repo = new FailingStateRepo(reviewSnapshot());
+    const useCase = new GetNextActionUseCase(repo as any, configRepo);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    let result: any;
+    try {
+      console.warn = (...args: any[]) => {
+        warnings.push(args.map(String).join(' '));
+      };
+      result = await useCase.execute({ issue: ISSUE, workspaceDir: process.cwd() });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+    assert.match(result.humanSummary, /codeloop review --issue 241 --verdict-file/);
+    assert.strictEqual(result.reviewDispatchCount, 1, 'the in-memory count is reported');
+    assert.strictEqual(repo.saveCalls, 1, 'the save was attempted once and threw');
+    assert.strictEqual(warnings.length, 1, `exactly one warning expected, got: ${warnings.join(' | ')}`);
+    assert.ok(
+      warnings[0].includes('could not record the review dispatch counter'),
+      `the warning must name what was not persisted, got: ${warnings[0]}`
+    );
+  });
+
+  test('CH2: the warning is not duplicated, and a later writable read persists the count', async () => {
+    const repo = new RecoveringStateRepo(reviewSnapshot());
+    const useCase = new GetNextActionUseCase(repo as any, configRepo);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    try {
+      console.warn = (...args: any[]) => {
+        warnings.push(args.map(String).join(' '));
+      };
+      await useCase.execute({ issue: ISSUE, workspaceDir: process.cwd() });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.strictEqual(warnings.length, 1, 'one failed save, one warning');
+
+    // The breaker stays reachable: once the checkpoint is writable the count is
+    // recorded again, without any new warning.
+    const secondWarnings: string[] = [];
+    try {
+      console.warn = (...args: any[]) => {
+        secondWarnings.push(args.map(String).join(' '));
+      };
+      await useCase.execute({ issue: ISSUE, workspaceDir: process.cwd() });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepStrictEqual(secondWarnings, []);
+    assert.strictEqual(repo.snapshot.reviewDispatchCount, 1, 'the counter is persisted again');
+    assert.strictEqual(repo.saveCalls, 2);
   });
 });

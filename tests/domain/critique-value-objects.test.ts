@@ -243,4 +243,71 @@ Hope this helps!`;
     );
     assert.throws(() => AiReviewReport.parse(''), CritiqueError);
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #303: `parse()` must not drop the bypass signal. A review that did
+  // not run was recorded as CHANGES_REQUESTED because the flag was lost here.
+  // -------------------------------------------------------------------------
+
+  test('P1: parses a real critique bypass payload (bypassed + diagnosticMessage)', () => {
+    const payload = JSON.stringify({
+      bypassed: true,
+      diagnosticMessage: 'GEMINI_API_KEY is not set.',
+      summary: 'AI review was bypassed: Error: GEMINI_API_KEY is not set.',
+      confidenceLevel: 'Low',
+      confidenceExplanation: 'bypassed',
+      comments: []
+    });
+
+    const report = AiReviewReport.parse(payload);
+
+    assert.strictEqual(report.bypassed, true);
+    assert.strictEqual(report.diagnosticMessage, 'GEMINI_API_KEY is not set.');
+    assert.strictEqual(report.isPassing(), false);
+    assert.strictEqual(report.findings.length, 0);
+  });
+
+  test('P2: only a strict boolean true sets bypassed; a missing key defaults to false', () => {
+    const stringFlag = AiReviewReport.parse(
+      JSON.stringify({ summary: 'x', comments: [], bypassed: 'true' })
+    );
+    assert.strictEqual(stringFlag.bypassed, false, 'a truthy string is not a bypass');
+
+    const numericFlag = AiReviewReport.parse(
+      JSON.stringify({ summary: 'x', comments: [], bypassed: 1 })
+    );
+    assert.strictEqual(numericFlag.bypassed, false, 'a number is not a bypass');
+
+    const missing = AiReviewReport.parse(JSON.stringify({ summary: 'x', comments: [] }));
+    assert.strictEqual(missing.bypassed, false);
+    assert.strictEqual(missing.diagnosticMessage, undefined);
+
+    const nonStringDiagnostic = AiReviewReport.parse(
+      JSON.stringify({ summary: 'x', comments: [], bypassed: true, diagnosticMessage: 42 })
+    );
+    assert.strictEqual(nonStringDiagnostic.bypassed, true);
+    assert.strictEqual(nonStringDiagnostic.diagnosticMessage, undefined);
+  });
+
+  test('P3: a bypassed payload that also carries an error finding keeps BOTH facts', () => {
+    const report = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed.',
+        comments: [
+          {
+            path: 'src/index.ts',
+            line: 1,
+            severity: 'error',
+            body: 'Stray finding on a bypassed report'
+          }
+        ]
+      })
+    );
+
+    assert.strictEqual(report.bypassed, true);
+    assert.strictEqual(report.findings.length, 1);
+    assert.strictEqual(report.errorCount(), 1);
+  });
 });

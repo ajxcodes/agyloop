@@ -425,11 +425,22 @@ describe('review --dry-run (#248 AC-248.7)', () => {
     let before = '';
     let after = '';
     const result = await runCliInSandbox(
-      ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--dry-run'],
+      ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--dry-run'],
       (dir) => {
         initGitWorkspace(dir);
         seedTask(dir, 905, { currentStage: 'REVIEW' });
         fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
+        // Issue #297: hermetic Tier 1 evidence — never shell out to a host
+        // `critique`, and never let the machine's install state decide.
+        fs.writeFileSync(
+          path.join(dir, 'critique.json'),
+          JSON.stringify({
+            summary: 'Clean automated review',
+            confidenceLevel: 'High',
+            confidenceExplanation: 'diff verified',
+            comments: []
+          })
+        );
         before = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '905.json'), 'utf8');
       },
       (dir) => {

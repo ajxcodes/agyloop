@@ -3,7 +3,7 @@
  *
  * TR1 - the command the DISPATCHED prompt names runs verbatim (from dist/)
  * TR2 - every parser-accepted action appears in the prompt and is accepted
- * TR3 - triage and review have the same (no-marker) requirement
+ * TR3 - `triage` needs no marker; `review` DOES (a subagent cannot file)
  * TR4 - the payload schema carries no phantom Env field
  * TR5 - routing requires the checkpoint to be at TRIAGE
  */
@@ -179,7 +179,7 @@ describe('Triage routing command contract (issue #241)', () => {
     }
   });
 
-  test('TR3: triage and review have the same (no-marker) requirement', async () => {
+  test('TR3: triage needs no marker, review is refused to a subagent (issue #297)', async () => {
     const verdictPath = (dir: string): string => {
       const file = path.join(dir, 'verdict.md');
       fs.writeFileSync(
@@ -189,7 +189,22 @@ describe('Triage routing command contract (issue #241)', () => {
       );
       return file;
     };
+    const critiquePath = (dir: string): string => {
+      const file = path.join(dir, 'critique.json');
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          summary: 'Clean automated review',
+          confidenceLevel: 'High',
+          confidenceExplanation: 'diff verified',
+          comments: []
+        }),
+        'utf8'
+      );
+      return file;
+    };
 
+    // `triage` keeps its no-marker requirement.
     for (const marker of [undefined, '1']) {
       const triage = seedSandbox('TRIAGE');
       sandboxes.push(triage.dir);
@@ -203,20 +218,41 @@ describe('Triage routing command contract (issue #241)', () => {
         0,
         `triage must not depend on a marker (AGY_SUBAGENT=${marker}):\n${triageRun.stderr}`
       );
-
-      const review = seedSandbox('REVIEW');
-      sandboxes.push(review.dir);
-      const reviewRun = await runIn(
-        review.dir,
-        ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(review.dir)],
-        { env: { AGY_SUBAGENT: marker } }
-      );
-      assert.strictEqual(
-        reviewRun.code,
-        0,
-        `review must not depend on a marker (AGY_SUBAGENT=${marker}):\n${reviewRun.stderr}`
-      );
     }
+
+    // A subagent-marked `review` is refused by the root-mutation guard.
+    const marked = seedSandbox('REVIEW');
+    sandboxes.push(marked.dir);
+    const markedRun = await runIn(
+      marked.dir,
+      ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(marked.dir), '--critique-report', critiquePath(marked.dir)],
+      { env: { AGY_SUBAGENT: '1' } }
+    );
+    assert.strictEqual(markedRun.code, 1, `a subagent must not file:\n${markedRun.stderr}`);
+    assert.ok(
+      markedRun.stderr.includes('Subagents are not permitted'),
+      `the failure must be the root-mutation guard:\n${markedRun.stderr}`
+    );
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(marked.stateFile, 'utf8')).currentStage,
+      'REVIEW',
+      'a refused filing must not move the checkpoint'
+    );
+
+    // The orchestrator (no marker) files the same verdict successfully.
+    const open = seedSandbox('REVIEW');
+    sandboxes.push(open.dir);
+    const openRun = await runIn(
+      open.dir,
+      ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(open.dir), '--critique-report', critiquePath(open.dir)],
+      { env: { AGY_SUBAGENT: undefined } }
+    );
+    assert.strictEqual(openRun.code, 0, `the orchestrator must file:\n${openRun.stderr}`);
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(open.stateFile, 'utf8')).currentStage,
+      'COMMIT',
+      'the orchestrator filing advances to COMMIT'
+    );
   });
 
   test('TR4: the payload subagent carries no Env field', async () => {

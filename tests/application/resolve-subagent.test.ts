@@ -22,7 +22,9 @@ const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 const {
   RESOLVER_SOURCE_USER_DATA,
   RESOLVER_SOURCE_NONE,
-  TRIAGE_DISPOSITION_ACTIONS
+  TRIAGE_DISPOSITION_ACTIONS,
+  STATE_MUTATING_COMMANDS,
+  NOTE_REVIEW_VERDICT_RETURN
 } = require('../../dist/domain');
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
@@ -295,6 +297,40 @@ index 1111111..2222222 100644
         triagePrompt.includes('bin/agyloop triage <action>'),
         false,
         'the triage directive must not name the old refused command form'
+      );
+    });
+  });
+
+  describe('REVIEW verdict contract (issue #297)', () => {
+    test('PS1: the reviewer is read-only and is told to emit, never to file', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({ issueNumber: 297 });
+
+      // The read-only rules survive, and they are now unopposed.
+      assert.ok(prompt.includes('Never attempt to write or edit files'));
+      assert.ok(prompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(prompt.includes('the orchestrator files it'));
+      assert.ok(prompt.includes(NOTE_REVIEW_VERDICT_RETURN));
+
+      // No mutating command may appear anywhere in the payload.
+      assert.strictEqual(
+        /codeloop\s+review/.test(prompt),
+        false,
+        `the read-only reviewer must not be told to file its own verdict, got:\n${prompt}`
+      );
+      const named = (STATE_MUTATING_COMMANDS as readonly (string | null)[])
+        .filter((command): command is string => command !== null)
+        .filter((command) => new RegExp(`codeloop\\s+${command}\\b`).test(prompt));
+      assert.deepStrictEqual(named, [], 'the payload must name zero mutating commands');
+    });
+
+    test('PS2: the reviewer keeps its own Tier 1 cross-check methodology', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({ issueNumber: 297 });
+
+      assert.ok(prompt.includes('### Two-Tier Review Methodology:'));
+      assert.ok(
+        prompt.includes('Any `critical` or `error` findings mandate `REVIEW_STATUS: CHANGES_REQUESTED`')
       );
     });
   });

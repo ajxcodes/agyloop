@@ -61,6 +61,8 @@ import {
   FLAG_VERDICT_FILE,
   FLAG_REVIEW_OUTPUT,
   FLAG_VERDICT_STDIN,
+  FLAG_CRITIQUE_REPORT,
+  CRITIQUE_REPORT_STDIN,
   FLAG_PLAN_PATH,
   FLAG_PLAN_DIR,
   VERDICT_INPUT_SOURCE_STDIN,
@@ -68,6 +70,8 @@ import {
   HINT_VERDICT_FILE_INPUT,
   HINT_REVIEW_OUTPUT_INPUT,
   HINT_VERDICT_STDIN_INPUT,
+  formatCritiqueReportInputMissing,
+  formatCritiqueReportParseFailure,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -140,6 +144,9 @@ import {
   MSG_TRIAGE_ROUTING_REQUIRES_GATE,
   // Issue #272: the additive `status` line for the REVIEW re-dispatch record.
   LABEL_REVIEW_DISPATCHES,
+  // Issue #297: the advisory printed when a filed verdict was not cross-checked
+  // by Tier 1.
+  NOTE_REVIEW_CRITIQUE_NOT_VERIFIED,
   LABEL_DISCOVERY_DISPATCHES,
   LABEL_PLAN_DISPATCHES,
   LABEL_PLAN_EMPTY_PARKS,
@@ -148,6 +155,7 @@ import {
   // line. The CLI must not hand-render it.
   formatTriageDispositionLine,
   ReviewVerdict,
+  AiReviewReport,
   ReviewerSubagentError
 } from '../domain';
 import type {
@@ -307,6 +315,16 @@ export interface CliOptions {
    */
   verdictStdin: boolean;
   /**
+   * The path of a critique CLI JSON report to cross-check the filed verdict
+   * against (issue #297), or the literal `-` for stdin.
+   *
+   * This is the hermetic Tier 1 evidence channel: supplying it suppresses the
+   * critique subprocess but NOT the two-tier invariant.
+   */
+  critiqueReport: string | null;
+  /** True when `--critique-report` was PRESENT, whether or not it carried a value. */
+  critiqueReportRequested: boolean;
+  /**
    * An operator-supplied plan file (issue #267). When present it is the plan
    * the lifecycle executes, and no competing plan directory is scaffolded.
    */
@@ -453,6 +471,7 @@ Operational Flags:
       --verdict-file <path> Read an AI Reviewer Subagent's verdict block from a file (codeloop review)
       --review-output <text> Pass an AI Reviewer Subagent's verdict block inline (codeloop review)
       --verdict-stdin   Read an AI Reviewer Subagent's verdict block from stdin (codeloop review)
+      --critique-report <path|->  Cross-check the verdict against a critique CLI JSON report (codeloop review)
       --create-pr    Automatically create a PR after commit
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
@@ -562,6 +581,8 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     verdictFileRequested: false,
     reviewOutputRequested: false,
     verdictStdin: false,
+    critiqueReport: null,
+    critiqueReportRequested: false,
     planPath: null,
     planDir: null,
     planPathRequested: false,
@@ -718,6 +739,19 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.verdictStdin = true;
     } else if (arg.startsWith(`${FLAG_VERDICT_STDIN}=`)) {
       options.verdictStdin = arg.split('=')[1] !== 'false';
+    } else if (arg === FLAG_CRITIQUE_REPORT) {
+      // Issue #297: the Tier 1 evidence channel. A literal `-` is a VALUE
+      // (stdin), never a missing value — so it is accepted even though it
+      // starts with a dash.
+      options.critiqueReportRequested = true;
+      if (i + 1 < args.length && (args[i + 1] === CRITIQUE_REPORT_STDIN || !args[i + 1].startsWith('-'))) {
+        options.critiqueReport = args[++i];
+      } else {
+        options.critiqueReport = null;
+      }
+    } else if (arg.startsWith(`${FLAG_CRITIQUE_REPORT}=`)) {
+      options.critiqueReportRequested = true;
+      options.critiqueReport = arg.split('=')[1] || null;
     } else if (arg === '--create-pr') {
       options.createPr = true;
     } else if (arg === '--restart') {
@@ -847,6 +881,22 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
  */
 export function formatVerdictInputMissing(flag: string, hint: string): string {
   return NOTE_VERDICT_INPUT_MISSING.replace('{flag}', flag).replace('{hint}', hint);
+}
+
+/**
+ * The reviewer's OWN recorded status, before the two-tier invariant could
+ * escalate it (issue #297). Read from the checkpoint history the use case just
+ * wrote; null when no reviewer block was supplied.
+ */
+function lastRecordedReviewerVerdict(sm: StateMachine): string | null {
+  const history = sm.history;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const reviewerVerdict = history[index].metadata?.reviewerVerdict;
+    if (typeof reviewerVerdict === 'string' && reviewerVerdict.length > 0) {
+      return reviewerVerdict;
+    }
+  }
+  return null;
 }
 
 export function formatStageBadge(stage: string): string {
@@ -1489,11 +1539,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
   const manageCritiqueUseCase = new ManageCritiqueUseCase(critique, critiqueInstaller);
 
-  // Issue #269: `review` is carved out for the same reason `triage` and `halt`
-  // are — the REVIEWER subagent is the PRODUCER of the verdict, and `review` is
-  // the channel that files it. It IS listed in `STATE_MUTATING_COMMANDS` (it
-  // mutates the checkpoint), and the carve-out is what keeps the channel open.
-  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== COMMAND_TRIAGE && effectiveCommand !== COMMAND_HALT && effectiveCommand !== COMMAND_REVIEW && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
+  // Issue #269: `triage` is carved out because ROUTING is the subagent's job,
+  // and `halt` because the runner must be able to report quota. `review` is NOT
+  // carved out (issue #297): the dispatched reviewer only EMITS a verdict block,
+  // and the orchestrator — a root session, with no `AGY_SUBAGENT` marker — is
+  // the one that files it. A read-only agent must not hold a command that
+  // advances the checkpoint.
+  if (process.env.AGY_SUBAGENT === '1' && effectiveCommand !== COMMAND_TRIAGE && effectiveCommand !== COMMAND_HALT && (STATE_MUTATING_COMMANDS as readonly (string | null)[]).includes(effectiveCommand)) {
     console.error('Error: Execution blocked. Subagents are not permitted to mutate global pipeline state.');
     console.error(`Command '${effectiveCommand === null ? '(default)' : effectiveCommand}' violates the Zero Direct Root Mutation invariant.`);
     return EXIT_CODE_FAILURE;
@@ -2644,6 +2696,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.error(`✗ ${formatVerdictInputMissing(FLAG_REVIEW_OUTPUT, HINT_REVIEW_OUTPUT_INPUT)}`);
         return EXIT_CODE_FAILURE;
       }
+      // Issue #297: the Tier 1 evidence flag failed the same way. A report that
+      // was requested but never supplied must not become "no cross-check".
+      if (options.critiqueReportRequested && options.critiqueReport === null) {
+        console.error(`✗ ${formatCritiqueReportInputMissing(FLAG_CRITIQUE_REPORT)}`);
+        return EXIT_CODE_FAILURE;
+      }
+      // ONE stdin: a verdict on stdin and a critique report on stdin cannot both
+      // be read, so the invocation is refused before anything is consumed.
+      if (options.verdictStdin && options.critiqueReport === CRITIQUE_REPORT_STDIN) {
+        console.error(
+          `✗ ${FLAG_VERDICT_STDIN} and ${FLAG_CRITIQUE_REPORT} - both read stdin. Supply one of them from a file.`
+        );
+        return EXIT_CODE_FAILURE;
+      }
 
       try {
         const scope = await resolveScope(stateRepo, issueValue);
@@ -2704,9 +2770,30 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           }
         }
 
+        // Issue #297: the Tier 1 evidence is read and PARSED here — before the
+        // use case runs — so an unreadable or unparseable report cannot leave a
+        // half-applied checkpoint behind. A supplied report suppresses the
+        // critique subprocess but never the two-tier invariant itself.
+        let priorCritiqueReport: AiReviewReport | null = null;
+        if (options.critiqueReport !== null) {
+          try {
+            const rawReport =
+              options.critiqueReport === CRITIQUE_REPORT_STDIN
+                ? fs.readFileSync(0, 'utf8')
+                : fs.readFileSync(options.critiqueReport, 'utf8');
+            priorCritiqueReport = AiReviewReport.parse(rawReport);
+          } catch (err: unknown) {
+            console.error(
+              formatCritiqueReportParseFailure(err instanceof Error ? err.message : String(err))
+            );
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
         const result = await reviewUseCase.execute({
           issue: issueValue,
           reviewOutput,
+          priorCritiqueReport,
           baseRef: options.baseBranch || undefined,
           configPath: options.configPath,
           dryRun: options.dryRun,
@@ -2727,6 +2814,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             dryRun,
             verdict: result.verdict.toJSON(),
             verdictSource: result.reviewSource,
+            critiqueVerified: result.critiqueVerified,
             passed: result.passed
           };
           if (dryRun) {
@@ -2734,9 +2822,16 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             payload.currentStage = result.previousStage ?? result.currentStage;
             payload.wouldSetStage = result.currentStage;
             payload.wouldRecordVerdict = result.verdict.status;
+            payload.wouldRecordCritiqueVerified = result.critiqueVerified;
           } else {
             payload.currentStage = result.currentStage;
             payload.reviewVerdict = result.verdict.status;
+            // Issue #297: the reviewer's OWN status, before the invariant could
+            // escalate it — only present when a reviewer block was filed.
+            const reviewerVerdict = lastRecordedReviewerVerdict(result.stateMachine);
+            if (reviewerVerdict) {
+              payload.reviewerVerdict = reviewerVerdict;
+            }
           }
           console.log(JSON.stringify(payload, null, 2));
           if (!result.passed) {
@@ -2758,8 +2853,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Current Stage  : ${formatStageBadge(result.previousStage ?? result.currentStage)}`);
         }
         console.log(`Verdict Source : ${result.reviewSource ?? 'unknown'}`);
+        console.log(`Critique Verified : ${result.critiqueVerified}`);
         if (reviewOutputSource) {
           console.log(`Verdict Input  : ${reviewOutputSource}`);
+        }
+        // Issue #297: a filed APPROVED that Tier 1 never cross-checked is
+        // recorded, but it must say so — on stderr, so stdout stays a report.
+        if (result.verdict.isApproved() && !result.critiqueVerified) {
+          console.error(NOTE_REVIEW_CRITIQUE_NOT_VERIFIED);
         }
 
         if (options.dryRun) {

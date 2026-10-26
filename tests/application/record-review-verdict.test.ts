@@ -13,9 +13,14 @@
  * RV4 - a CHANGES_REQUESTED is never downgraded to SKIPPED
  * RV5 - no reviewer output and no critique report -> SKIPPED -> COMMIT (N1:
  *      the #236 fail-open is NOT inverted)
- * RV8 - filing a verdict does NOT execute the Tier 1 critique CLI (R2)
+ * RV8 - filing a verdict does NOT prompt to install critique, run the update
+ *      check, or mutate the machine — but it DOES run Tier 1 (issue #297)
  * RV9 - a critique escalation is reported as such, never as the reviewer's
  *      verdict (R3)
+ * RV10-RV12 - Tier 1 cannot be disabled by a supplied verdict; the reviewer's
+ *      own status and the provenance are persisted (issue #297, AC2/AC3)
+ * RV13 - a BYPASSED report never downgrades a real reviewer verdict (#303)
+ * RV14 - a supplied prior report is the dedupe: no subprocess, same invariant
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -139,11 +144,10 @@ class MockStandardsRepository implements StandardsRepository {
 /** A critique port that reports NOTHING (a clean Tier 1 report). */
 class CleanCritique implements CritiquePort {
   /**
-   * How many times the Tier 1 critique was EXECUTED (issue #269, R2).
+   * How many times the Tier 1 critique was EXECUTED (issues #269, #297).
    *
-   * The recording path must not run the critique CLI: it is a network call, a
-   * latency cost and an interactive install prompt on a path that must never
-   * block. The counter makes the claim checkable.
+   * The filing path DOES run the critique CLI now: it is the cross-check that
+   * makes a filed verdict trustworthy. This counter pins that it really ran.
    */
   public reviewCalls = 0;
 
@@ -151,8 +155,13 @@ class CleanCritique implements CritiquePort {
     return { source: 'bundled', path: '/fake/bin/critique.js', isAvailable: true };
   }
 
-  public async review(_options?: CritiqueOptions): Promise<AiReviewReportType> {
+  public async getVersion(): Promise<string> {
+    return '1.0.0';
+  }
+
+  public async review(options?: CritiqueOptions): Promise<AiReviewReportType> {
     this.reviewCalls += 1;
+    this.lastReviewOptions = options;
     const { AiReviewReport, ReviewConfidence } = require('../../dist/domain');
     return new AiReviewReport({
       summary: 'Clean automated review',
@@ -160,6 +169,8 @@ class CleanCritique implements CritiquePort {
       findings: []
     });
   }
+
+  public lastReviewOptions?: CritiqueOptions;
 }
 
 const APPROVED_BLOCK = `REVIEW_STATUS: APPROVED
@@ -214,6 +225,10 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     assert.strictEqual(result.passed, true);
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
     assert.strictEqual(result.reviewSource, 'reviewer-output');
+    // Issue #297: Tier 1 is no longer disabled by a supplied verdict. The clean
+    // report does not change the outcome — that is the point.
+    assert.strictEqual(critique.reviewCalls, 1, 'Tier 1 must run on the filing path');
+    assert.strictEqual(result.critiqueVerified, true);
 
     const saved: any = await stateRepo.load();
     assert.strictEqual(saved.currentStage, STAGE_COMMIT);
@@ -330,14 +345,52 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     assert.strictEqual(last.metadata.reviewVerdict, VERDICT_CHANGES_REQUESTED);
   });
 
-  test('RV8: filing a verdict does NOT execute the Tier 1 critique CLI (issue #269, R2)', async () => {
-    // The recording path is hermetic: the reviewer's verdict is authoritative,
-    // so the critique CLI must not be executed — no network round-trip, no
-    // latency cost and NO interactive install prompt on a path that must never
-    // block or mutate the machine.
-    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+  test('RV8: filing a verdict never prompts, never checks for updates, and never mutates the machine (issue #297)', async () => {
+    // The invariant that mattered in #269 was "no interactive side effect on
+    // the filing path". Tier 1 now RUNS, so the test asserts the side effects,
+    // not the absence of the critique call.
+    let installCalls = 0;
+    let updateChecks = 0;
+    let confirmCalls = 0;
 
-    assert.strictEqual(critique.reviewCalls, 0, 'the critique CLI must not be executed');
+    const installer: any = {
+      fetchLatestVersion: async () => null,
+      checkUpdateAvailable: async () => {
+        updateChecks += 1;
+        return { isOutdated: false };
+      },
+      install: async () => {
+        installCalls += 1;
+        return { success: true };
+      },
+      update: async () => ({ success: true }),
+      getCachedVersionInfo: async () => null
+    };
+    const confirmationPrompt: any = {
+      confirm: async () => {
+        confirmCalls += 1;
+        return true;
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique,
+      undefined,
+      undefined,
+      installer,
+      confirmationPrompt
+    );
+
+    const result = await useCase.execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(installCalls, 0, 'the filing path must not install critique');
+    assert.strictEqual(confirmCalls, 0, 'the filing path must not prompt');
+    assert.strictEqual(updateChecks, 0, 'the filing path must not run the update check');
+    assert.strictEqual(critique.reviewCalls, 1, 'Tier 1 still runs');
     assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
     assert.strictEqual(result.reviewSource, 'reviewer-output');
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
@@ -380,5 +433,144 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
       'the source must not claim the reviewer produced the CHANGES_REQUESTED'
     );
     assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #297: a supplied verdict must not disable Tier 1, and the record must
+  // carry BOTH the reviewer's own status and the provenance.
+  // -------------------------------------------------------------------------
+
+  function errorCritique(): any {
+    const { AiReviewReport, AiReviewFinding, ReviewConfidence } = require('../../dist/domain');
+    const port: any = {
+      reviewCalls: 0,
+      resolveReviewer: () => ({ source: 'bundled', path: '/fake/bin/critique.js', isAvailable: true }),
+      getVersion: async () => '1.0.0',
+      review: async () => {
+        port.reviewCalls += 1;
+        return new AiReviewReport({
+          summary: 'Automated critique found a blocking defect',
+          confidence: ReviewConfidence.high('Static scan'),
+          findings: [
+            new AiReviewFinding({
+              path: 'src/index.ts',
+              line: 1,
+              rule: 'blocking-defect',
+              message: 'Forged blocking defect',
+              severity: 'error'
+            })
+          ]
+        });
+      }
+    };
+    return port;
+  }
+
+  test('RV10: a filed APPROVED cannot outrank an error finding (Tier 1 still runs)', async () => {
+    const errorPort = errorCritique();
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      errorPort
+    );
+
+    const result = await useCase.execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    assert.strictEqual(errorPort.reviewCalls, 1, 'Tier 1 was executed, not bypassed');
+  });
+
+  test('RV11: the record carries the reviewer\'s own status, the provenance, and the reviewer\'s words', async () => {
+    const errorPort = errorCritique();
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      errorPort
+    );
+
+    await useCase.execute({ reviewOutput: APPROVED_BLOCK });
+
+    const saved: any = await stateRepo.load();
+    const metadata = saved.history[saved.history.length - 1].metadata;
+
+    assert.strictEqual(metadata.reviewerVerdict, VERDICT_APPROVED);
+    assert.strictEqual(metadata.reviewVerdict, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(metadata.reviewSource, 'reviewer-output+critique-escalation');
+    assert.strictEqual(metadata.critiqueVerified, true);
+    assert.ok(
+      String(metadata.reviewTokens).includes('faithfully implements the approved plan'),
+      `the reviewer's summary must travel with the escalation, got:\n${metadata.reviewTokens}`
+    );
+  });
+
+  test('RV12: a clean Tier 1 report leaves the reviewer APPROVED and is recorded as verified', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.critiqueVerified, true);
+
+    const saved: any = await stateRepo.load();
+    const metadata = saved.history[saved.history.length - 1].metadata;
+    assert.strictEqual(metadata.reviewerVerdict, VERDICT_APPROVED);
+    assert.strictEqual(metadata.reviewSource, 'reviewer-output');
+    assert.strictEqual(metadata.critiqueVerified, true);
+  });
+
+  test('RV13: a BYPASSED Tier 1 report never downgrades a real reviewer verdict (issue #303)', async () => {
+    const { AiReviewReport } = require('../../dist/domain');
+    const bypassed = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed: Error: GEMINI_API_KEY is not set.',
+        confidenceLevel: 'Low',
+        confidenceExplanation: 'bypassed',
+        comments: []
+      })
+    );
+
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport: bypassed
+    });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.critiqueVerified, false);
+  });
+
+  test('RV14: a supplied prior report is deduped — no subprocess, same escalation', async () => {
+    const { AiReviewReport, AiReviewFinding, ReviewConfidence } = require('../../dist/domain');
+    const priorCritiqueReport = new AiReviewReport({
+      summary: 'Automated critique found a blocking defect',
+      confidence: ReviewConfidence.high('Static scan'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/index.ts',
+          line: 1,
+          rule: 'blocking-defect',
+          message: 'Forged blocking defect',
+          severity: 'error'
+        })
+      ]
+    });
+
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport
+    });
+
+    assert.strictEqual(critique.reviewCalls, 0, 'supplied evidence must not re-run the subprocess');
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    assert.strictEqual(result.critiqueVerified, true);
   });
 });

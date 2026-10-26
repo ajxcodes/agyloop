@@ -714,4 +714,257 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #297: a supplied verdict cannot disable Tier 1. `--critique-report`
+  // is the hermetic evidence channel that makes this testable without a host
+  // `critique` binary.
+  // -------------------------------------------------------------------------
+
+  function writeVerdict(dir: string, block: string): string {
+    const file = path.join(dir, 'verdict.md');
+    fs.writeFileSync(file, block, 'utf8');
+    return file;
+  }
+
+  function writeCritique(dir: string, payload: unknown, name = 'critique.json'): string {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, JSON.stringify(payload), 'utf8');
+    return file;
+  }
+
+  const CLEAN_CRITIQUE = {
+    summary: 'Clean automated review',
+    confidenceLevel: 'High',
+    confidenceExplanation: 'diff verified',
+    comments: []
+  };
+
+  const ERROR_CRITIQUE = {
+    summary: 'Automated critique found a blocking defect',
+    confidenceLevel: 'High',
+    confidenceExplanation: 'static scan',
+    comments: [
+      {
+        path: 'src/index.ts',
+        line: 1,
+        rule: 'blocking-defect',
+        message: 'Forged blocking defect',
+        severity: 'error'
+      }
+    ]
+  };
+
+  test('CV1: `--verdict-file APPROVED` beside an error finding exits non-zero and records CHANGES_REQUESTED', async () => {
+    const sandbox = makeSandbox('REVIEW');
+    try {
+      const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
+      const critiqueFile = writeCritique(sandbox.dir, ERROR_CRITIQUE);
+
+      const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          critiqueFile
+        ])
+      );
+
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.value, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
+      assert.ok(output.includes('CHANGES_REQUESTED'), output);
+
+      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
+      const last = checkpoint.history[checkpoint.history.length - 1];
+      assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');
+      assert.strictEqual(last.metadata.reviewSource, 'reviewer-output+critique-escalation');
+      assert.strictEqual(last.metadata.reviewerVerdict, 'APPROVED');
+      assert.strictEqual(last.metadata.critiqueVerified, true);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('CV2: a clean `--critique-report` records APPROVED with critiqueVerified=true', async () => {
+    const humanSandbox = makeSandbox('REVIEW');
+    try {
+      const verdictFile = writeVerdict(humanSandbox.dir, APPROVED_BLOCK);
+      const critiqueFile = writeCritique(humanSandbox.dir, CLEAN_CRITIQUE);
+
+      const run = await withSanitizedEnv(humanSandbox.dir, humanSandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          critiqueFile
+        ])
+      );
+
+      assert.strictEqual(run.value, EXIT_CODE_SUCCESS, run.stderr);
+      assert.match(run.stdout, /Critique Verified\s*:\s*true/);
+      assert.strictEqual(readCheckpoint(humanSandbox.dir, ISSUE).currentStage, 'COMMIT');
+    } finally {
+      fs.rmSync(humanSandbox.dir, { recursive: true, force: true });
+    }
+
+    const jsonSandbox = makeSandbox('REVIEW');
+    try {
+      const verdictFile = writeVerdict(jsonSandbox.dir, APPROVED_BLOCK);
+      const critiqueFile = writeCritique(jsonSandbox.dir, CLEAN_CRITIQUE);
+
+      const run = await withSanitizedEnv(jsonSandbox.dir, jsonSandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          critiqueFile,
+          '--json'
+        ])
+      );
+
+      assert.strictEqual(run.value, EXIT_CODE_SUCCESS, run.stderr);
+      const payload = JSON.parse(run.stdout);
+      assert.strictEqual(payload.critiqueVerified, true);
+      assert.strictEqual(payload.reviewerVerdict, 'APPROVED');
+    } finally {
+      fs.rmSync(jsonSandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('CV3: a missing, unreadable, or unparseable `--critique-report` records nothing', async () => {
+    // A present-but-valueless flag.
+    const missingValueSandbox = makeSandbox('REVIEW');
+    try {
+      const before = readCheckpoint(missingValueSandbox.dir, ISSUE);
+      const verdictFile = writeVerdict(missingValueSandbox.dir, APPROVED_BLOCK);
+      const run = await withSanitizedEnv(missingValueSandbox.dir, missingValueSandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report'
+        ])
+      );
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
+      assert.ok(output.includes('--critique-report'), output);
+      const after = readCheckpoint(missingValueSandbox.dir, ISSUE);
+      assert.strictEqual(after.currentStage, before.currentStage);
+      assert.strictEqual(after.history.length, before.history.length);
+    } finally {
+      fs.rmSync(missingValueSandbox.dir, { recursive: true, force: true });
+    }
+
+    // A path that does not exist.
+    const nonexistentSandbox = makeSandbox('REVIEW');
+    try {
+      const before = readCheckpoint(nonexistentSandbox.dir, ISSUE);
+      const verdictFile = writeVerdict(nonexistentSandbox.dir, APPROVED_BLOCK);
+      const run = await withSanitizedEnv(nonexistentSandbox.dir, nonexistentSandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          path.join(nonexistentSandbox.dir, 'no-such-critique.json')
+        ])
+      );
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
+      assert.ok(output.includes('could not be parsed'), output);
+      const after = readCheckpoint(nonexistentSandbox.dir, ISSUE);
+      assert.strictEqual(after.currentStage, before.currentStage);
+      assert.strictEqual(after.history.length, before.history.length);
+    } finally {
+      fs.rmSync(nonexistentSandbox.dir, { recursive: true, force: true });
+    }
+
+    // A file that is not JSON.
+    const garbageSandbox = makeSandbox('REVIEW');
+    try {
+      const before = readCheckpoint(garbageSandbox.dir, ISSUE);
+      const verdictFile = writeVerdict(garbageSandbox.dir, APPROVED_BLOCK);
+      const garbage = path.join(garbageSandbox.dir, 'critique.json');
+      fs.writeFileSync(garbage, 'this is not a critique report', 'utf8');
+
+      const run = await withSanitizedEnv(garbageSandbox.dir, garbageSandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          garbage
+        ])
+      );
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
+      assert.ok(output.includes('could not be parsed'), output);
+      const after = readCheckpoint(garbageSandbox.dir, ISSUE);
+      assert.strictEqual(after.currentStage, before.currentStage);
+      assert.strictEqual(after.history.length, before.history.length);
+      assert.ok(!after.history.some((h: any) => h.metadata?.reviewVerdict));
+    } finally {
+      fs.rmSync(garbageSandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('CV4: `--critique-report -` reads the same evidence from stdin', async () => {
+    const sandbox = makeSandbox('REVIEW');
+    try {
+      const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.join(REPO_ROOT, 'bin', 'codeloop.js'),
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          '-'
+        ],
+        {
+          cwd: sandbox.dir,
+          input: JSON.stringify(ERROR_CRITIQUE),
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: sandbox.shadowPath,
+            HOME: path.join(sandbox.dir, '.home'),
+            AGY_SUBAGENT: ''
+          }
+        }
+      );
+
+      const output = `${result.stdout}\n${result.stderr}`;
+      assert.strictEqual(result.status, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
+      assert.ok(output.includes('CHANGES_REQUESTED'), output);
+
+      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
+      const last = checkpoint.history[checkpoint.history.length - 1];
+      assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');
+      assert.strictEqual(last.metadata.reviewSource, 'reviewer-output+critique-escalation');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
 });

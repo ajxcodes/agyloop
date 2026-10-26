@@ -81,6 +81,21 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
       assert.strictEqual(run.code, 0, run.output);
       assert.ok(run.output.includes('codeloop review --issue'), run.output);
       assert.ok(run.output.includes('--verdict-file'), run.output);
+      // Issue #297: the instruction is addressed to the ORCHESTRATOR, and the
+      // channel itself is unchanged.
+      assert.ok(
+        run.output.includes("Orchestrator: file the reviewer's emitted verdict block"),
+        run.output
+      );
+      // Every secondary snippet interpolates the REAL issue (issue #291 F3).
+      assert.ok(
+        run.output.includes('codeloop review --issue 912 --review-output'),
+        `the inline snippet must name the issue, got:\n${run.output}`
+      );
+      assert.ok(
+        run.output.includes('codeloop review --issue 912 --verdict-stdin'),
+        `the stdin snippet must name the issue, got:\n${run.output}`
+      );
       assert.ok(run.output.includes(NOTE_REVIEW_GATE_EXIT_CONDITION), run.output);
       assert.strictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).reviewDispatchCount, 1);
     } finally {

@@ -27,9 +27,7 @@ import {
   MODE_STANDARD,
   ROLE_REVIEWER,
   SUMMARY_STAGE_AI_REVIEW,
-  VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
-  VERDICT_SKIPPED,
   NOTE_EXECUTING_REVIEW,
   NOTE_REVIEW_APPROVED,
   NOTE_REVIEW_CHANGES_REQUESTED,
@@ -48,6 +46,7 @@ import {
   ReviewerSubagentError,
   AiReviewReport,
   AiReviewFinding,
+  DEFAULT_CRITIQUE_REVIEW_TIMEOUT_MS,
   DIFF_EXCLUDE_ARGS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   DiffAnalyzer
@@ -76,11 +75,10 @@ export interface RunReviewParams {
   /**
    * A Tier 1 critique report that was produced ELSEWHERE (issue #269, R2/R3).
    *
-   * The recording path does NOT execute the critique CLI — no network call,
-   * no latency cost, no interactive install prompt on a path that must never
-   * block or mutate the machine. A report that ALREADY exists is still
-   * honoured: it informs the reviewer prompt and it still drives the
-   * TWO-TIER INVARIANT (see `applyTwoTierInvariant`).
+   * It is the DEDUPED evidence path (issue #297): the report still informs the
+   * reviewer prompt and it still drives the TWO-TIER INVARIANT (see
+   * `applyTwoTierInvariant`). When it is supplied the critique CLI is not
+   * executed — the same evidence, no second subprocess.
    */
   readonly priorCritiqueReport?: AiReviewReport | null;
   readonly critiqueReport?: string | null;
@@ -122,6 +120,13 @@ export interface RunReviewResult {
    *   asked for (issue #269, R3).
    */
   readonly reviewSource?: ReviewSource;
+  /**
+   * True when a real (non-bypassed) Tier 1 critique report informed this
+   * verdict (issue #297, AC10). Persisted beside `reviewVerdict`/`reviewSource`
+   * so a recorded verdict can be audited after the fact: a reviewer verdict
+   * recorded with `critiqueVerified: false` was never cross-checked.
+   */
+  readonly critiqueVerified: boolean;
   readonly currentStage: string;
   /**
    * The stage the checkpoint was at BEFORE this call transitioned it — the
@@ -340,14 +345,16 @@ export class RunReviewUseCase {
     }
 
     /**
-     * Whether the dispatched reviewer's verdict was supplied (issue #269, R2).
+     * Whether the dispatched reviewer's verdict block was supplied (issues
+     * #269, #297).
      *
-     * When it was, the Tier 1 critique CLI is NOT executed: the reviewer's
-     * verdict is authoritative, the critique run is a network round-trip and
-     * a latency cost, and its auto-install prompt is an INTERACTIVE side
-     * effect on a path that must never block or mutate the machine.
+     * This is NO LONGER a licence to skip Tier 1. #269 skipped critique to keep
+     * the recording path off the network; #297 showed the cost — a self-filed
+     * `APPROVED` was never cross-checked, so an `error` finding could be
+     * overruled by the very verdict it should fail. The critique still runs on
+     * this path (bounded, non-interactive); `priorCritiqueReport` is the dedupe.
      */
-    const reviewerVerdictSupplied =
+    const filingPath =
       typeof params.reviewOutput === 'string' && params.reviewOutput.trim().length > 0;
 
     // 1. Load active pipeline state checkpoint
@@ -468,15 +475,18 @@ export class RunReviewUseCase {
 
     // Tier 1: Execute Automated Critique Diagnostics (if CritiquePort available)
     //
-    // The critique CLI is only EXECUTED when the reviewer's verdict was NOT
-    // supplied: the recording path must not pay for a network round-trip, a
-    // latency cost and an interactive install prompt it does not need
-    // (issue #269, R2).
+    // Issue #297: Tier 1 is NOT disabled by a supplied reviewer verdict. The
+    // critique run is the cross-check that makes a filed `APPROVED` trustworthy;
+    // `priorCritiqueReport` is the dedupe when the evidence was already
+    // produced. On the filing path the run is non-interactive (no install
+    // prompt, no update check) and carries a bounded timeout.
     let aiReport: AiReviewReport | null = null;
     let critiqueReportText: string | null = params.critiqueReport || null;
     let critiqueResolution: CritiqueResolution | null = null;
 
-    if (this.critique && !reviewerVerdictSupplied) {
+    const shouldExecuteCritique = Boolean(this.critique) && !params.priorCritiqueReport;
+
+    if (shouldExecuteCritique && this.critique) {
       const prompt = params.confirmationPrompt ?? this.confirmationPrompt;
       const installer = params.critiqueInstaller ?? this.critiqueInstaller;
 
@@ -485,10 +495,13 @@ export class RunReviewUseCase {
         : { source: 'system_path' as const, path: 'critique', isAvailable: true };
       critiqueResolution = resolution;
 
-      // Auto-install fallback prompt if critique CLI is absent and confirmation prompt is available.
-      // Skipped when the session is non-interactive: this prompt defaults to "yes",
-      // so an unguarded CI/cron run would both block and silently mutate the machine.
-      if (!resolution.isAvailable && prompt && installer && params.interactive !== false && !params.dryRun) {
+      // Auto-install fallback prompt if critique CLI is absent and confirmation
+      // prompt is available. NEVER on the filing path: a dispatched reviewer's
+      // verdict must be recordable without mutating the operator's machine.
+      // Skipped when the session is non-interactive: this prompt defaults to
+      // "yes", so an unguarded CI/cron run would both block and silently mutate
+      // the machine.
+      if (!filingPath && !resolution.isAvailable && prompt && installer && params.interactive !== false && !params.dryRun) {
         const confirmed = await prompt.confirm(
           'Critique CLI is not installed. Would you like to install it automatically? [Y/n]',
           true
@@ -506,8 +519,9 @@ export class RunReviewUseCase {
       }
 
       // Non-blocking version update check with 24-hour cache TTL. A dry run
-      // skips it entirely: the check writes the update cache (#248, R13).
-      if (!params.dryRun && resolution.isAvailable && resolution.path && installer && typeof this.critique.getVersion === 'function') {
+      // skips it entirely: the check writes the update cache (#248, R13). The
+      // filing path skips it too: it is a side effect the verdict does not need.
+      if (!filingPath && !params.dryRun && resolution.isAvailable && resolution.path && installer && typeof this.critique.getVersion === 'function') {
         try {
           const currentVer = await this.critique.getVersion(resolution.path);
           const versionInfo = await installer.checkUpdateAvailable(currentVer, {
@@ -526,7 +540,8 @@ export class RunReviewUseCase {
         aiReport = await this.critique.review({
           cwd: reviewCwd,
           staged: params.staged,
-          baseRef: targetBaseRef
+          baseRef: targetBaseRef,
+          timeoutMs: filingPath ? DEFAULT_CRITIQUE_REVIEW_TIMEOUT_MS : undefined
         });
         if (aiReport) {
           critiqueReportText = aiReport.formatMarkdownReport();
@@ -616,12 +631,30 @@ export class RunReviewUseCase {
     // escalation on a reviewer's verdict must never be reported as plain
     // `reviewer-output`, because that would claim the reviewer asked for
     // changes the reviewer never asked for.
+    //
+    // Issue #297: `reviewerVerdict` is the status the reviewer actually emitted,
+    // captured BEFORE the invariant can rewrite it, and `critiqueVerified` says
+    // whether real Tier 1 evidence informed the record. Together with
+    // `reviewSource` they make the record auditable after the fact.
+    const reviewerVerdict = filingPath ? verdict.status : null;
+    const critiqueVerified = Boolean(aiReport && !aiReport.bypassed);
+
     const invariant = applyTwoTierInvariant(verdict, aiReport);
     verdict = invariant.verdict;
 
     if (invariant.escalatedBy === 'critique' && reviewSource === REVIEW_SOURCE_REVIEWER_OUTPUT) {
       reviewSource = REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED;
     }
+
+    // ONE provenance object, spread into every transition arm: the three
+    // records cannot drift apart (issue #297, AC3/AC10).
+    const provenance = {
+      reviewVerdict: verdict.status,
+      reviewTokens: verdict.formatStructuredTokens(),
+      reviewSource,
+      critiqueVerified,
+      ...(reviewerVerdict ? { reviewerVerdict } : {})
+    };
 
     const durationMs = Date.now() - startTime;
     const durationStr = `${(durationMs / MS_PER_SECOND).toFixed(1)}s`;
@@ -647,8 +680,7 @@ export class RunReviewUseCase {
     if (verdict.isApproved()) {
       sm.transition(STAGE_COMMIT, {
         note: NOTE_REVIEW_APPROVED,
-        reviewVerdict: VERDICT_APPROVED,
-        reviewTokens: verdict.formatStructuredTokens(),
+        ...provenance,
         suggestedCommitMessage
       });
     } else if (verdict.isSkipped()) {
@@ -656,14 +688,12 @@ export class RunReviewUseCase {
       // payload because there is nothing to correct (issue #236).
       sm.transition(STAGE_COMMIT, {
         note: NOTE_REVIEW_SKIPPED,
-        reviewVerdict: VERDICT_SKIPPED,
-        reviewTokens: verdict.formatStructuredTokens()
+        ...provenance
       });
     } else {
       sm.transition(STAGE_IMPLEMENT, {
         note: NOTE_REVIEW_CHANGES_REQUESTED,
-        reviewVerdict: VERDICT_CHANGES_REQUESTED,
-        reviewTokens: verdict.formatStructuredTokens(),
+        ...provenance,
         selfCorrectionPayload: verdict.formatSelfCorrectionPayload()
       });
     }
@@ -704,6 +734,7 @@ export class RunReviewUseCase {
       passed: verdict.isApproved() || verdict.isSkipped(),
       verdict,
       reviewSource,
+      critiqueVerified,
       currentStage: sm.currentStage,
       previousStage,
       dryRun: params.dryRun === true,

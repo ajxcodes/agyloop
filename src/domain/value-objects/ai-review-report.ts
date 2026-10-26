@@ -36,6 +36,16 @@ interface RawReviewJsonPayload {
   readonly confidenceExplanation?: unknown;
   readonly resolvedThreads?: unknown;
   readonly comments?: unknown;
+  /**
+   * The critique CLI's "review did not run" signal (issue #303).
+   *
+   * Dropping it made a bypassed review indistinguishable from a finding-free
+   * critique, so `RunReviewUseCase` recorded `CHANGES_REQUESTED` for a review
+   * that never happened. Read STRICTLY (`=== true`): a truthy string is not a
+   * bypass, and nothing is inferred from `summary`.
+   */
+  readonly bypassed?: unknown;
+  readonly diagnosticMessage?: unknown;
 }
 
 function extractJsonString(rawText: string): string {
@@ -223,11 +233,20 @@ export class AiReviewReport {
       }
     }
 
+    // Issue #303: the bypass signal the critique CLI emits must survive the
+    // parse. A truthy string is NOT a bypass (strict `=== true`), and the
+    // diagnostic is carried only when it is a string.
+    const bypassed = parsed.bypassed === true;
+    const diagnosticMessage =
+      typeof parsed.diagnosticMessage === 'string' ? parsed.diagnosticMessage : undefined;
+
     return new AiReviewReport({
       summary,
       confidence,
       findings,
       resolvedThreads,
+      bypassed,
+      diagnosticMessage,
       rawOutput: rawText
     });
   }

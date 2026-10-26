@@ -56,9 +56,7 @@ import {
   formatTriageActionList,
   formatTriageActionSideEffects,
   formatTriageRoutingCommand,
-  formatReviewVerdictChannelCommand,
-  NOTE_REVIEW_VERDICT_CHANNEL,
-  NOTE_REVIEW_GATE_EXIT_CONDITION,
+  NOTE_REVIEW_VERDICT_RETURN,
   formatToolProse,
   TOOL_CAPABILITY_READ,
   TOOL_CAPABILITY_SEARCH,
@@ -1067,12 +1065,11 @@ export class ResolveSubagentUseCase {
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
     prompt += `\`\`\`\n\n`;
 
-    // Issue #269 built the channel; issue #272 makes the OPERATOR fields and the
-    // dispatched prompt share ONE formatter and ONE template, so the instruction
-    // cannot say something different from what the directive names.
-    const verdictChannelCommand = formatReviewVerdictChannelCommand(effectiveIssue);
-    prompt += `The verdict block above is the ONLY record of this review. ${NOTE_REVIEW_VERDICT_CHANNEL.replace('{command}', verdictChannelCommand)}\n`;
-    prompt += `${NOTE_REVIEW_GATE_EXIT_CONDITION}\n`;
+    // Issue #297: ONE contract, stated once. The reviewer is a pure block
+    // producer; the read-only whitelist above and the anti-inception guardrail
+    // below are now unopposed. The filing instruction belongs to the
+    // operator-facing directive (`next`), whose reader is the orchestrator.
+    prompt += `${NOTE_REVIEW_VERDICT_RETURN}\n`;
     prompt += `Emit the block verbatim as the LAST thing in your response. Do not wrap the \`REVIEW_STATUS:\` line\n`;
     prompt += `in anything else.\n\n`;
 
