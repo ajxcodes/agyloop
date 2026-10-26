@@ -83,7 +83,32 @@ export class HaltPipelineUseCase {
       params.retryAfterSeconds === null || params.retryAfterSeconds === undefined;
 
     const snapshot = await this.stateRepo.load();
-    let sm = snapshot ? StateMachine.fromSnapshot(snapshot) : new StateMachine();
+    if (snapshot === null) {
+      // Issue #293: `halt` RECORDS a condition on a running pipeline; it does
+      // not start one. Fabricating an INITIALIZED checkpoint here made `status`
+      // list a phantom active task and `resume` offer to clear a pause on a run
+      // that never existed.
+      const requestedIssue =
+        params.issue !== undefined && params.issue !== null && String(params.issue).trim() !== ''
+          ? String(params.issue).trim()
+          : null;
+      return {
+        success: false,
+        halted: false,
+        persisted: false,
+        pausedAtGate: null,
+        pausedAtTimestamp: null,
+        quotaResetAt: new Date().toISOString(),
+        quotaResetEstimated: true,
+        retryAfterSeconds: QUOTA_DEFAULT_RETRY_AFTER_SECONDS,
+        issue: null,
+        message: requestedIssue
+          ? `No pipeline checkpoint exists for issue #${requestedIssue} — 'halt' records a condition on a running pipeline; it does not start one. Run 'codeloop plan --issue ${requestedIssue}' to start it.`
+          : `No pipeline checkpoint exists — 'halt' records a condition on a running pipeline; it does not start one. Run 'codeloop plan' to start it.`
+      };
+    }
+
+    let sm = StateMachine.fromSnapshot(snapshot);
 
     if (params.issue !== undefined && params.issue !== null && params.issue !== '') {
       sm.setIssue(params.issue);

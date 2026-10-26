@@ -29,6 +29,7 @@ import { StateRepository } from '../ports';
 import {
   resolveAuthoritativeCheckpoint,
   resolveCheckpointRepository,
+  selectAuthoritativeCheckpoint,
   CheckpointCandidate
 } from './resolve-task-checkpoint';
 
@@ -84,11 +85,16 @@ function describeOtherPausedTask(
   candidates: readonly CheckpointCandidate[],
   selectedIssue: number | null
 ): string {
-  const other = candidates.find(
-    (candidate) =>
-      candidate.issue !== null &&
-      candidate.issue !== selectedIssue &&
-      Boolean(candidate.snapshot.pausedAtGate)
+  // Issue #252: rank with the RESOLVER'S OWN rules (in flight -> newest
+  // `updatedAt` -> lowest issue), never `readdirSync` order. `candidates` is
+  // unsorted by contract, so a `.find()` here was non-deterministic.
+  const other = selectAuthoritativeCheckpoint(
+    candidates.filter(
+      (candidate) =>
+        candidate.issue !== null &&
+        candidate.issue !== selectedIssue &&
+        Boolean(candidate.snapshot.pausedAtGate)
+    )
   );
   if (!other || other.issue === null) {
     return '';
@@ -219,8 +225,8 @@ export class ResumePipelineUseCase {
       issue: sm.issue,
       stateMachine: sm,
       message: params.dryRun
-        ? `Cleared the ${pausedAtGate} pause${since} in memory (--dry-run: nothing written).`
-        : `Cleared the ${pausedAtGate} pause${since}. Pipeline remains checkpointed at ${sm.currentStage}.`,
+        ? `Cleared the ${pausedAtGate} pause${since} in memory (--dry-run: nothing written).` + otherPausedNote
+        : `Cleared the ${pausedAtGate} pause${since}. Pipeline remains checkpointed at ${sm.currentStage}.` + otherPausedNote,
       resolvedFromIssue,
       resolvedFromPath
     };

@@ -37,10 +37,18 @@ export interface AbortPipelineParams {
    * `--no-quarantine` / `--keep-worktrees` (issue #266 AC-5): tear the run down
    * without relocating the worktree's uncommitted work.
    *
-   * TODO(#248): `--dry-run` never reaches this use case; once that wiring
-   * exists it should map onto this flag. No behaviour here.
+   * Distinct from `dryRun` (#248): this really terminates processes, clears the
+   * index lock and stops containers — it only leaves the worktree's work where
+   * it is.
    */
   readonly noQuarantine?: boolean;
+  /**
+   * Simulate the whole emergency teardown (issue #248). Every destructive step
+   * is gated individually — termination, lock clearing, quarantine, container
+   * removal and the summary-log audit — and the selection logic still runs so
+   * the report says exactly what WOULD have happened.
+   */
+  readonly dryRun?: boolean;
   /** Injectable cwd (defaults to `process.cwd()`) so the skip-cwd guard is testable. */
   readonly currentDir?: string;
 }
@@ -74,6 +82,12 @@ export interface AbortPipelineResult {
   readonly containersTerminated: string[];
   readonly auditLogged: boolean;
   readonly durationMs: number;
+  /** True when this was a simulation (#248). */
+  readonly dryRun: boolean;
+  /** Worktree paths a real abort would have quarantined (#248 dry run only). */
+  readonly worktreesWouldQuarantine: string[];
+  /** Container identifiers a real abort would have removed (#248 dry run only). */
+  readonly containersWouldTerminate: string[];
 }
 
 export class AbortPipelineUseCase {
@@ -97,11 +111,12 @@ export class AbortPipelineUseCase {
   public async execute(params: AbortPipelineParams = {}): Promise<AbortPipelineResult> {
     const startTime = Date.now();
     const workspace = params.workspaceDir;
+    const dryRun = params.dryRun === true;
 
     // 1. Process Signal Propagation
     let processesTerminated = 0;
     try {
-      if (this.commandExecutor.killAll) {
+      if (!dryRun && this.commandExecutor.killAll) {
         processesTerminated = this.commandExecutor.killAll(params.force ? 'SIGKILL' : 'SIGTERM');
         if (processesTerminated > 0) {
           console.debug(`[abort] Terminated ${processesTerminated} active child process(es).`);
@@ -114,7 +129,7 @@ export class AbortPipelineUseCase {
     // 2. Clear Stale .git/index.lock
     let indexLockRemoved = false;
     try {
-      if (this.worktreeManager.clearIndexLock) {
+      if (!dryRun && this.worktreeManager.clearIndexLock) {
         indexLockRemoved = await this.worktreeManager.clearIndexLock(workspace);
       }
     } catch {
@@ -136,15 +151,17 @@ export class AbortPipelineUseCase {
       // Left null: a checkpoint that cannot be read selects no worktree.
     }
 
-    const quarantine = await this.quarantineOwnWorktree(params, workspace, snapshot);
+    const quarantine = await this.quarantineOwnWorktree(params, workspace, snapshot, dryRun);
     const worktreesQuarantined = quarantine.quarantined;
     const worktreesQuarantineSkipped = quarantine.skipped;
     const worktreesQuarantineFailed = quarantine.failed;
     const worktreeScopePath = quarantine.scopePath;
+    const worktreesWouldQuarantine = quarantine.wouldQuarantine;
 
     // 4. Container Sandbox Teardown (Docker / Podman)
     const containersTerminated: string[] = [];
-    await this.cleanupContainers(containersTerminated);
+    const containersWouldTerminate: string[] = [];
+    await this.cleanupContainers(containersTerminated, containersWouldTerminate, dryRun);
 
     // 5. Audit Checkpoint in Summary
     let auditLogged = false;
@@ -163,7 +180,9 @@ export class AbortPipelineUseCase {
         }
       }
 
-      if (summaryPath && this.planGenerator) {
+      // A dry run never writes the audit entry: the summary log is one more
+      // file the operator did not ask to change (#248).
+      if (!dryRun && summaryPath && this.planGenerator) {
         const timestamp = new Date().toISOString();
         auditLogged = this.planGenerator.updateSummaryLog(summaryPath, {
           abortEvent: {
@@ -200,7 +219,10 @@ export class AbortPipelineUseCase {
       worktreeScopePath,
       containersTerminated,
       auditLogged,
-      durationMs
+      durationMs,
+      dryRun,
+      worktreesWouldQuarantine,
+      containersWouldTerminate
     };
   }
 
@@ -227,39 +249,42 @@ export class AbortPipelineUseCase {
   private async quarantineOwnWorktree(
     params: AbortPipelineParams,
     workspace: string | undefined,
-    snapshot: StateMachineSnapshot | null
+    snapshot: StateMachineSnapshot | null,
+    dryRun: boolean
   ): Promise<{
     quarantined: AbortQuarantineEntry[];
     skipped: Array<{ worktreePath: string; reason: string }>;
     failed: Array<{ worktreePath: string; error: string }>;
     scopePath: string | null;
+    wouldQuarantine: string[];
   }> {
     const quarantined: AbortQuarantineEntry[] = [];
     const skipped: Array<{ worktreePath: string; reason: string }> = [];
     const failed: Array<{ worktreePath: string; error: string }> = [];
+    const wouldQuarantine: string[] = [];
     const ownPath = AbortPipelineUseCase.recordedWorktreePath(snapshot);
 
     if (!ownPath) {
-      return { quarantined, skipped, failed, scopePath: null };
+      return { quarantined, skipped, failed, scopePath: null, wouldQuarantine };
     }
 
     const scopePath = ownPath;
 
     if (params.noQuarantine) {
       skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_QUARANTINE_DISABLED });
-      return { quarantined, skipped, failed, scopePath };
+      return { quarantined, skipped, failed, scopePath, wouldQuarantine };
     }
 
     const cwd = params.currentDir ?? process.cwd();
     if (isSamePath(cwd, ownPath) || isPathInsideRoot(cwd, ownPath)) {
       skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_WORKTREE_CWD });
-      return { quarantined, skipped, failed, scopePath };
+      return { quarantined, skipped, failed, scopePath, wouldQuarantine };
     }
 
     const quarantineWorktree = this.worktreeManager.quarantineWorktree;
     if (!quarantineWorktree) {
       skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_QUARANTINE_UNSUPPORTED });
-      return { quarantined, skipped, failed, scopePath };
+      return { quarantined, skipped, failed, scopePath, wouldQuarantine };
     }
 
     try {
@@ -270,7 +295,15 @@ export class AbortPipelineUseCase {
       const own = listed.find((wt) => isSamePath(wt.worktreePath, ownPath));
       if (!own) {
         skipped.push({ worktreePath: ownPath, reason: NOTE_ABORT_WORKTREE_NOT_REGISTERED });
-        return { quarantined, skipped, failed, scopePath };
+        return { quarantined, skipped, failed, scopePath, wouldQuarantine };
+      }
+
+      // The ownership check is a READ, and a dry run runs it too — that is how
+      // the report can promise the real command would have selected this
+      // worktree. Only the destructive call is skipped (#248 AC-248.4).
+      if (dryRun) {
+        wouldQuarantine.push(own.worktreePath);
+        return { quarantined, skipped, failed, scopePath, wouldQuarantine };
       }
 
       const res = await quarantineWorktree.call(this.worktreeManager, {
@@ -306,7 +339,7 @@ export class AbortPipelineUseCase {
       });
     }
 
-    return { quarantined, skipped, failed, scopePath };
+    return { quarantined, skipped, failed, scopePath, wouldQuarantine };
   }
 
   /** The descriptor's `worktreePath`, narrowed to a non-empty string. */
@@ -319,7 +352,11 @@ export class AbortPipelineUseCase {
     return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
   }
 
-  private async cleanupContainers(containersTerminated: string[]): Promise<void> {
+  private async cleanupContainers(
+    containersTerminated: string[],
+    containersWouldTerminate: string[],
+    dryRun: boolean
+  ): Promise<void> {
     const runtimes = ['docker', 'podman'];
     for (const runtime of runtimes) {
       try {
@@ -330,6 +367,10 @@ export class AbortPipelineUseCase {
         if (psRes.exitCode === 0 && psRes.stdout && psRes.stdout.trim()) {
           const ids = psRes.stdout.trim().split(/\s+/).filter(Boolean);
           for (const id of ids) {
+            if (dryRun) {
+              containersWouldTerminate.push(`${runtime}:${id}`);
+              continue;
+            }
             await this.commandExecutor.execute(`${runtime} rm -f ${id}`, { timeoutMs: 2000 });
             containersTerminated.push(`${runtime}:${id}`);
           }
@@ -343,6 +384,13 @@ export class AbortPipelineUseCase {
         if (labelRes.exitCode === 0 && labelRes.stdout && labelRes.stdout.trim()) {
           const ids = labelRes.stdout.trim().split(/\s+/).filter(Boolean);
           for (const id of ids) {
+            if (dryRun) {
+              const entry = `${runtime}:${id}`;
+              if (!containersWouldTerminate.includes(entry)) {
+                containersWouldTerminate.push(entry);
+              }
+              continue;
+            }
             if (!containersTerminated.includes(`${runtime}:${id}`)) {
               await this.commandExecutor.execute(`${runtime} rm -f ${id}`, { timeoutMs: 2000 });
               containersTerminated.push(`${runtime}:${id}`);

@@ -3,11 +3,18 @@ import { shellQuote } from '../domain';
 
 export interface SyncParams {
   readonly workspaceDir?: string;
+  /**
+   * When true, resolve what would be synced and report it, but perform no
+   * fetch, no pull, no `gh pr list` and no issue close/comment (issue #248).
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface SyncResult {
   readonly success: boolean;
   readonly message: string;
+  /** True when this was a simulation (#248). */
+  readonly dryRun?: boolean;
   readonly warnings?: string[];
   readonly logs?: string[];
 }
@@ -32,6 +39,7 @@ export class SyncUseCase {
 
   public async execute(params: SyncParams = {}): Promise<SyncResult> {
     const cwd = params.workspaceDir || process.cwd();
+    const dryRun = params.dryRun === true;
     const warnings: string[] = [];
     const logs: string[] = [];
 
@@ -48,6 +56,17 @@ export class SyncUseCase {
           // If not on a collector branch and no active state base branch, assume main
           collectorBranch = 'main';
         }
+      }
+
+      // A simulation stops HERE: the branch resolution above is a pure read,
+      // and every step below mutates the remote, the local branch or GitHub
+      // (#248 AC-248.3).
+      if (dryRun) {
+        return {
+          success: true,
+          dryRun: true,
+          message: `[dry-run] Would fetch origin and process merged PRs for '${collectorBranch}'. Nothing was fetched, pulled, or closed.`
+        };
       }
 
       // 2. Fetch and fast-forward
@@ -103,6 +122,7 @@ export class SyncUseCase {
 
       return {
         success: true,
+        dryRun: false,
         message: `Successfully synced ${collectorBranch} and processed merged PRs.`,
         warnings: warnings.length > 0 ? warnings : undefined,
         logs: logs.length > 0 ? logs : undefined
@@ -110,6 +130,7 @@ export class SyncUseCase {
     } catch (err) {
       return {
         success: false,
+        dryRun,
         message: `Sync failed: ${err instanceof Error ? err.message : String(err)}`
       };
     }

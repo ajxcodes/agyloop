@@ -174,7 +174,10 @@ describe('runCli prompt guards', () => {
     assert.ok(result.stderr.includes('Worktree path is missing in state'), result.stderr);
   });
 
-  test('commit --json on a TTY never prompts and reports the --json guard, not a fake TTY', async () => {
+  test('commit --json is REFUSED by the capability gate, never silently ignored', async () => {
+    // Issue #248 (decision 3): `commit --json` used to mean "never prompt" while
+    // printing human text. The non-interactive path is `-y/--yes`; the flag is
+    // now a hard, non-zero refusal.
     const result = await runCliInSandbox(['commit', '--json'], {
       stdinIsTTY: true,
       stdoutIsTTY: true,
@@ -182,17 +185,20 @@ describe('runCli prompt guards', () => {
     });
 
     assert.strictEqual(result.code, 1);
-    // Regression guard: this terminal IS interactive. `promptsAllowed` is false only
-    // because `--json` forbids prompts, so claiming a non-interactive terminal sends
-    // the user hunting a TTY problem that does not exist.
-    assert.ok(
-      result.stderr.includes('[agyloop] Machine-readable output requested; re-run without --json or pass -y/--yes to confirm.'),
-      result.stderr
-    );
-    assert.ok(
-      !result.stderr.includes('Non-interactive terminal detected'),
-      result.stderr
-    );
+    assert.ok(result.stderr.includes("'--json' is not supported by 'commit'"), result.stderr);
+    assert.ok(!result.stdout.includes('Proposed Conventional Commit'), result.stdout);
+    assert.ok(!result.stderr.includes('Non-interactive terminal detected'), result.stderr);
+  });
+
+  test('commit -y --json is refused too (the flag is not a non-interactive shortcut)', async () => {
+    const result = await runCliInSandbox(['commit', '-y', '--json'], {
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      seed: (dir) => seedStateAtCommit(dir)
+    });
+
+    assert.strictEqual(result.code, 1);
+    assert.ok(result.stderr.includes("'--json' is not supported by 'commit'"), result.stderr);
   });
 
   test('commit without -y on a non-TTY keeps the exact non-interactive message', async () => {

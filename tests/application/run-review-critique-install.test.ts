@@ -160,7 +160,7 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       mockPrompt
     );
 
-    const result = await useCase.execute({ dryRun: true });
+    const result = await useCase.execute({ dryRun: false });
 
     assert.strictEqual(promptAsked, true);
     assert.strictEqual(installCalled, true);
@@ -221,7 +221,7 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       mockPrompt
     );
 
-    const result = await useCase.execute({ dryRun: true });
+    const result = await useCase.execute({ dryRun: false });
 
     assert.strictEqual(installCalled, false);
     assert.strictEqual(result.autoInstalled, false);
@@ -285,7 +285,7 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       mockInstaller
     );
 
-    const result = await useCase.execute({ dryRun: true });
+    const result = await useCase.execute({ dryRun: false });
 
     assert.ok(result.updateNotification);
     assert.ok(result.updateNotification.includes('v0.1.6 -> v0.2.0'));
@@ -348,7 +348,7 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       mockPrompt
     );
 
-    const result = await useCase.execute({ dryRun: true, interactive: false });
+    const result = await useCase.execute({ dryRun: false, interactive: false });
 
     assert.strictEqual(promptAsked, false);
     assert.strictEqual(installCalled, false);
@@ -404,8 +404,80 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       mockPrompt
     );
 
-    await useCase.execute({ dryRun: true });
+    await useCase.execute({ dryRun: false });
 
     assert.strictEqual(promptAsked, true);
+  });
+});
+
+/**
+ * Issue #248 (R13): a DRY RUN must not reach the network or the machine's
+ * installation. The installer prompt defaults to yes, so an unguarded dry run
+ * would both prompt and mutate the user's data directory.
+ */
+describe('RunReviewUseCase --dry-run never installs or checks for updates (#248)', () => {
+  it('does not prompt, install, or run the update check', async () => {
+    let promptAsked = false;
+    let installCalled = false;
+    let updateChecked = false;
+
+    const mockPrompt: ConfirmationPromptPort = {
+      async confirm(): Promise<boolean> {
+        promptAsked = true;
+        return true;
+      }
+    };
+
+    const mockInstaller: CritiqueInstallerPort = {
+      async fetchLatestVersion(): Promise<string | null> {
+        return null;
+      },
+      async install(): Promise<CritiqueInstallResult> {
+        installCalled = true;
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async update(): Promise<CritiqueInstallResult> {
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async checkUpdateAvailable(): Promise<any> {
+        updateChecked = true;
+        return { currentVersion: null, latestVersion: null, lastCheckedAt: 0, isOutdated: false, isInstalled: false };
+      },
+      async getCachedVersionInfo(): Promise<any> {
+        return null;
+      }
+    };
+
+    const mockCritique: CritiquePort = {
+      resolveReviewer(): CritiqueResolution {
+        return { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false };
+      },
+      async review(): Promise<any> {
+        return AiReviewReport.empty();
+      },
+      async getVersion(): Promise<string | null> {
+        return null;
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      new MockStateRepo(),
+      new MockConfigRepo(),
+      new MockPlanGenerator(),
+      undefined,
+      mockCritique,
+      undefined,
+      undefined,
+      mockInstaller,
+      mockPrompt
+    );
+
+    const result = await useCase.execute({ dryRun: true });
+
+    assert.strictEqual(promptAsked, false, 'a dry run must not prompt');
+    assert.strictEqual(installCalled, false, 'a dry run must not install');
+    assert.strictEqual(updateChecked, false, 'a dry run must not run the update check (it writes the cache)');
+    assert.strictEqual(result.dryRun, true);
+    assert.strictEqual(result.previousStage, STAGE_QUALITY_GATE);
   });
 });

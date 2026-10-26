@@ -15,6 +15,12 @@ import { StateRepository } from '../ports';
 export interface ResetPipelineOptions {
   readonly issue?: number | string | null;
   readonly all?: boolean;
+  /**
+   * When true, RESOLVE what would be cleared and report it, but never remove a
+   * checkpoint (issue #248). `removed` stays truthful (`false`); the prediction
+   * travels in `wouldClear`.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface ResetPipelineResult {
@@ -27,6 +33,13 @@ export interface ResetPipelineResult {
   readonly path: string;
   /** True when a checkpoint file was actually removed. */
   readonly removed: boolean;
+  /** True when this was a simulation (#248). */
+  readonly dryRun: boolean;
+  /**
+   * What a real reset would have removed (#248). Only meaningful on a dry run;
+   * `false` on a real run (the truth is `removed`).
+   */
+  readonly wouldClear: boolean;
 }
 
 export class ResetPipelineUseCase {
@@ -37,7 +50,23 @@ export class ResetPipelineUseCase {
   }
 
   public async execute(options: ResetPipelineOptions = {}): Promise<ResetPipelineResult> {
+    const dryRun = options.dryRun === true;
+
     if (options.all) {
+      if (dryRun) {
+        // Never invent a count: `listAllStates()` drops corrupt files, so a
+        // count would UNDERSTATE the purge. The message names what is in scope
+        // without pretending to know how many files that is (#248).
+        return {
+          stateMachine: StateMachine.createInitial({ mode: MODE_STANDARD }),
+          scope: 'all',
+          issue: null,
+          path: this.stateRepo.getStateFilePath(),
+          removed: false,
+          dryRun: true,
+          wouldClear: true
+        };
+      }
       if (this.stateRepo.resetAll) {
         await this.stateRepo.resetAll();
       } else {
@@ -48,7 +77,9 @@ export class ResetPipelineUseCase {
         scope: 'all',
         issue: null,
         path: this.stateRepo.getStateFilePath(),
-        removed: true
+        removed: true,
+        dryRun: false,
+        wouldClear: false
       };
     }
 
@@ -63,33 +94,61 @@ export class ResetPipelineUseCase {
       }
       if (parsed.kind === 'absent') {
         // An empty/whitespace token names nothing: fall through to the root reset.
-        return this.resetRoot();
+        return this.resetRoot(dryRun);
       }
 
       const issue = parsed.issue;
       const path = this.taskCheckpointPath(issue);
+      if (dryRun) {
+        return {
+          stateMachine: StateMachine.createInitial({ mode: MODE_STANDARD, issue }),
+          scope: 'task',
+          issue,
+          path,
+          removed: false,
+          dryRun: true,
+          wouldClear: await this.taskCheckpointExists(issue)
+        };
+      }
       const removed = await this.removeTaskCheckpoint(issue);
       return {
         stateMachine: StateMachine.createInitial({ mode: MODE_STANDARD, issue }),
         scope: 'task',
         issue,
         path,
-        removed
+        removed,
+        dryRun: false,
+        wouldClear: false
       };
     }
 
-    return this.resetRoot();
+    return this.resetRoot(dryRun);
   }
 
   /** Resets the singleton root checkpoint (`.agyloop/state.json`). */
-  private async resetRoot(): Promise<ResetPipelineResult> {
+  private async resetRoot(dryRun = false): Promise<ResetPipelineResult> {
+    const path = this.stateRepo.getStateFilePath();
+    if (dryRun) {
+      return {
+        stateMachine: StateMachine.createInitial({ mode: MODE_STANDARD }),
+        scope: 'root',
+        issue: null,
+        path,
+        removed: false,
+        dryRun: true,
+        wouldClear: await this.rootCheckpointExists()
+      };
+    }
+
     await this.stateRepo.reset();
     return {
       stateMachine: StateMachine.createInitial({ mode: MODE_STANDARD }),
       scope: 'root',
       issue: null,
-      path: this.stateRepo.getStateFilePath(),
-      removed: true
+      path,
+      removed: true,
+      dryRun: false,
+      wouldClear: false
     };
   }
 
@@ -124,6 +183,20 @@ export class ResetPipelineUseCase {
       return snapshot !== null && snapshot !== undefined;
     } catch {
       // A checkpoint that exists but cannot be parsed still EXISTS.
+      return true;
+    }
+  }
+
+  /**
+   * Read-only existence probe for the root checkpoint, used by a dry run. A
+   * file that exists but cannot be parsed still EXISTS (and the real reset
+   * would still remove it).
+   */
+  private async rootCheckpointExists(): Promise<boolean> {
+    try {
+      const snapshot = await this.stateRepo.load();
+      return snapshot !== null && snapshot !== undefined;
+    } catch {
       return true;
     }
   }

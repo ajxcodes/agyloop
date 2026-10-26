@@ -375,6 +375,12 @@ export class StateMachine {
     if (!Object.values(EXECUTION_MODES).includes(mode)) {
       throw new ValidationError('mode', mode, `Invalid execution mode: ${mode}`);
     }
+    // Issue #278: setting the mode it ALREADY has is not a change. Mutating
+    // `_updatedAt` here made a read-only bare `codeloop` rewrite the checkpoint
+    // and advance the timestamp even though nothing happened.
+    if (this._mode === mode) {
+      return;
+    }
     this._mode = mode;
     this._updatedAt = new Date().toISOString();
   }

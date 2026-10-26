@@ -170,6 +170,10 @@ import {
 } from '../infrastructure';
 import { installOpenCodeIntegration } from './opencode-setup';
 import {
+  validateCapability,
+  validateUnknownFlags
+} from './cli-flags';
+import {
   RunLifecycleUseCase,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   StartPlanningUseCase,
@@ -299,6 +303,13 @@ export interface CliOptions {
 export interface ParsedCliArgs {
   command: string | null;
   options: CliOptions;
+  /**
+   * Tokens the parser did not recognise (issue #248). The parser never throws
+   * and never drops a token silently: `runCli` rejects the invocation before
+   * any command body runs, so a misspelled safety switch (`--dry-runn`) is a
+   * hard error instead of a destructive operation.
+   */
+  unknownFlags: readonly string[];
 }
 
 /**
@@ -406,6 +417,7 @@ Pipeline Management:
   halt --reason quota [--retry-after <s>]  Record provider quota halt (429) and checkpoint at CIRCUIT_BREAKER (exits 2)
   abort              Emergency Stop: halts subagents, clears locks, quarantines worktrees, stops sandboxes
   transition <STAGE> Advance state machine to target stage
+      Legacy {COMPLETED, pausedAtGate: COMMIT} checkpoints: 'transition' cleanses the stale pause when it reopens the run; 'implement' fails first at the plan gate and leaves it in place.
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)
   opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
@@ -438,10 +450,11 @@ Operational Flags:
       --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
       --all          Include/prune all worktrees (used with worktree list/prune/clean)
       --prune-stale  Clear the checkpoint descriptor of a worktree whose directory no longer exists (used with worktree remove <id>)
-      --json         Output machine-readable JSON for scripting and piping
+      --json         Machine-readable JSON (supported by: init, next, branch-info, status, resume, halt, critique status, triage, review)
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
-      --dry-run      Simulate execution without modifying state or files on disk
+      --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
+      --plan-path <f> Recognised but NOT implemented yet (issue #267); rejected with an explanatory error
       --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' NEVER mutates a checkpoint.
       --skip-discovery  Explicit opt-in: bypass the DISCOVERY RCA park (auditable in state history).
   -h, --help         Show this help message and exit
@@ -532,6 +545,11 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
   };
 
   const positional: string[] = [];
+  // Issue #248: the diagnostic channel for unrecognised tokens. The parser is
+  // deliberately non-throwing (main() parses speculatively inside a swallowing
+  // try/catch, so a throw here would be swallowed and resurface as `Fatal:` +
+  // stack); the return value is the channel.
+  const unknownFlags: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -717,7 +735,18 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.workspaceDir = arg.split('=')[1] || undefined;
     } else if (arg.startsWith('--workspace-dir=')) {
       options.workspaceDir = arg.split('=')[1] || undefined;
-    } else if (!arg.startsWith('-')) {
+    } else if (arg === '--') {
+      // Conventional end-of-options: everything after it is positional, so
+      // `codeloop status -- --json` runs `status` with `--json` as a positional
+      // rather than inventing an unknown flag (#248, R15).
+      positional.push(...args.slice(i + 1));
+      break;
+    } else if (arg.startsWith('-') && arg !== '-') {
+      // The terminal branch that did not exist: an unrecognised flag is
+      // RECORDED, never silently discarded (#248). `runCli` rejects the whole
+      // invocation before dispatch. A bare `-` is a positional.
+      unknownFlags.push(arg);
+    } else {
       positional.push(arg);
     }
   }
@@ -758,7 +787,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     }
   }
 
-  return { command, options };
+  return { command, options, unknownFlags };
 }
 
 /**
@@ -915,9 +944,12 @@ function buildResumeJsonPayload(result: {
   readonly mode: string | null;
   readonly issue: number | null;
   readonly message: string;
-}): Record<string, unknown> {
+  readonly resolvedFromIssue: number | null;
+  readonly resolvedFromPath: string | null;
+}, dryRun: boolean): Record<string, unknown> {
   return {
     success: result.success,
+    dryRun,
     resumed: result.resumed,
     persisted: result.persisted,
     pausedAtGate: result.pausedAtGate,
@@ -926,6 +958,9 @@ function buildResumeJsonPayload(result: {
     currentStage: result.currentStage,
     mode: result.mode,
     issue: result.issue,
+    // Issue #252.1: JSON parity with the human `Task : #n (path)` line.
+    resolvedFromIssue: result.resolvedFromIssue,
+    resolvedFromPath: result.resolvedFromPath,
     message: result.message
   };
 }
@@ -1198,7 +1233,18 @@ function renderAbortQuarantine(result: AbortPipelineResult): void {
 }
 
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
-  const { command, options } = parseArguments(rawArgs);
+  const { command, options, unknownFlags } = parseArguments(rawArgs);
+
+  // Issue #248: unknown flags are rejected FIRST — before help, before version
+  // and before any adapter, repository load or command body. A misspelled
+  // `--dry-runn` must never become "no --dry-run at all" (#248 AC-248.9/10).
+  const unknownViolations = validateUnknownFlags(unknownFlags);
+  if (unknownViolations.length > 0) {
+    for (const line of unknownViolations) {
+      console.error(line);
+    }
+    return EXIT_CODE_FAILURE;
+  }
 
   if (options.help) {
     printHelp();
@@ -1224,6 +1270,29 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     return EXIT_CODE_FAILURE;
   }
   const issueValue: number | undefined = issueToken.kind === 'valid' ? issueToken.issue : undefined;
+
+  // Treat 'yolo' subcommand or --yolo flag as YOLO execution. Computed BEFORE
+  // the capability gate so the gate sees the command that will actually run.
+  const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
+
+  // Issue #248: a flag the selected command cannot honour is a REFUSAL, not a
+  // silent no-op. Runs before any adapter is constructed, so no mutation is
+  // even possible (#248 AC-248.11).
+  const capabilityViolations = validateCapability({
+    command: effectiveCommand,
+    yolo: options.yolo,
+    worktreeSubcommand: options.worktreeSubcommand,
+    critiqueSubcommand: options.critiqueSubcommand,
+    opencodeSubcommand: options.opencodeSubcommand,
+    dryRun: options.dryRun,
+    json: options.json
+  });
+  if (capabilityViolations.length > 0) {
+    for (const line of capabilityViolations) {
+      console.error(line);
+    }
+    return EXIT_CODE_FAILURE;
+  }
 
   const stateRepo = new FileStateRepository({ workspaceDir: options.workspaceDir, issue: issueValue });
   const githubGateway = new CliGitHubGateway();
@@ -1282,9 +1351,6 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     new InferBaseBranchUseCase(worktreeManager, githubGateway, repo);
 
   const manageCritiqueUseCase = new ManageCritiqueUseCase(critique, critiqueInstaller);
-
-  // Treat 'yolo' subcommand or --yolo flag as YOLO execution
-  const effectiveCommand = command === null && options.yolo ? 'yolo' : command;
 
   // Issue #269: `review` is carved out for the same reason `triage` and `halt`
   // are — the REVIEWER subagent is the PRODUCER of the verdict, and `review` is
@@ -1349,6 +1415,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     }
 
     case 'next': {
+      // Issue #251 AC-251.4: a corrupt NAMED checkpoint is a rendered failure,
+      // not a raw stack out of `runCli`.
+      try {
       // The scope is resolved from the CLI's own repository, and the use case
       // reads AND writes through `scope.repo` — so `next` can no longer
       // contradict `status` about which checkpoint is live, and the context
@@ -1405,6 +1474,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           JSON.stringify(
             {
               ...truthful,
+              // #275.6: every machine-readable payload states whether it was a
+              // simulation. `next` is not a simulation (it can write a TRIAGE
+              // pause), but the marker must never be absent.
+              dryRun: false,
               worktreePath: worktreeTruth.livePath,
               worktreeStale: worktreeTruth.stalePath !== null,
               staleWorktreePath: worktreeTruth.stalePath,
@@ -1456,9 +1529,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log('\nPass this payload directly to invoke_subagent or copy into chat.\n');
       }
       return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ Next failed: ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
 
     case 'branch-info': {
+      // Issue #251 AC-251.4: same rendered failure as `status`/`resume`.
+      try {
       // `branch-info` is a DIAGNOSTIC: it must perform ZERO checkpoint writes
       // (issue #250, AC A4). It used to write the inferred issue back into the
       // checkpoint AND let the base-branch inference persist its own result —
@@ -1467,6 +1546,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       // write there).
       const scope = await resolveScope(stateRepo, issueValue);
       const snapshot = scope.snapshot;
+      // Issue #251 AC-251.4: a parseable-but-invalid checkpoint (`{"currentStage":
+      // "GARBAGE"}`) must fail HERE too. `branch-info` never rehydrated the
+      // snapshot, so it exited 0 while `status` crashed. This is a pure read and
+      // does not weaken the zero-write guarantee.
+      if (snapshot) {
+        StateMachine.fromSnapshot(snapshot);
+      }
       const currentBranch = await worktreeManager.resolveBaseBranch();
       const defaultBranch = 'main';
 
@@ -1504,6 +1590,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(
           JSON.stringify(
             {
+              dryRun: false,
               baseBranch: collectorBranch,
               taskBranch: activeTaskBranch,
               worktreePath: worktreeTruth.livePath,
@@ -1539,6 +1626,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
       console.log('');
       return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ Branch info failed: ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
 
     case 'status': {
@@ -1546,72 +1637,127 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       // MUST keep the SAME repository the CLI constructed — re-resolving an
       // already-scoped repository would re-run the scan and could select a
       // different file (#250, R13).
-      const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
-      const result = await getStatusUseCase.execute({ issue: issueValue });
-      console.log('\n=== CodeLoop: Pipeline Status ===');
-      console.log(`Current Stage : ${formatStageBadge(result.status.currentStage)}`);
-      console.log(`Execution Mode: ${result.status.mode}`);
-      console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
-      console.log(`Updated At    : ${result.status.updatedAt}`);
-      console.log(`Checkpoint    : ${result.stateFilePath}`);
-      if (result.resolvedIssue !== null) {
-        // Without this the `Checkpoint` line read like an assertion that the run
-        // uses the root file, which is exactly what it did NOT use: the root
-        // `.agyloop/state.json` is not read or written by task runs (#226 D5).
-        console.log(`              (authoritative for issue #${result.resolvedIssue} — the root .agyloop/state.json is not used by task runs)`);
-      }
+      //
+      // The local catch mirrors `resume` (#251 AC-251.2): a corrupt checkpoint
+      // is a rendered `✗`, never `Fatal:` + stack from `main`.
+      try {
+        const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
+        const result = await getStatusUseCase.execute({ issue: issueValue });
+        const statusPause = await readPersistedGatePause(stateRepo, result.resolvedSnapshot);
 
-      // Additive: nothing else below distinguishes a live pipeline from one halted at
-      // a gate, so an operator could not tell that the run was waiting on them.
-      // The resolved snapshot is handed in so the pause block agrees with the header.
-      const statusPause = await readPersistedGatePause(stateRepo, result.resolvedSnapshot);
-      if (statusPause) {
-        console.log(`Paused At Gate: ${statusPause.gate}`);
-        console.log(`Paused At     : ${statusPause.pausedAt ?? '(unknown)'}`);
-        if (statusPause.gate === GATE_CIRCUIT_BREAKER) {
-          console.log('Recovery      : resolve the blocking condition (e.g. wait for the provider quota window),');
-          console.log(`                then run \`${RESUME_COMMAND}\`.`);
+        // A skipped row is a diagnostic, not a payload field to swallow: tell
+        // the operator on stderr so stdout stays a single JSON document.
+        for (const skipped of result.skippedCorrupt) {
+          console.error(
+            `⚠ Skipped unreadable checkpoint${skipped.issue !== null ? ` for issue #${skipped.issue}` : ''}` +
+            `${skipped.path ? ` (${skipped.path})` : ''}: ${skipped.error}`
+          );
         }
-      }
 
-      // Additive (issue #272): a REVIEW round that has been re-dispatched is
-      // observable in `status`, not only in the checkpoint file.
-      if (result.status.reviewDispatchCount > 0) {
-        console.log(`${LABEL_REVIEW_DISPATCHES} : ${result.status.reviewDispatchCount}`);
-      }
-
-      if (result.activeTasks && result.activeTasks.length > 0) {
-        console.log(`\nActive Tasks Matrix (${result.activeTasks.length}):`);
-        console.log('--------------------------------------------------------------------------------');
-        console.log('Issue       Stage                Mode            Updated At');
-        console.log('--------------------------------------------------------------------------------');
-        for (const task of result.activeTasks) {
-          const issueStr = task.issue ? `#${task.issue}` : 'Root';
-          const issuePad = issueStr.padEnd(11);
-          const rawStage = `[${task.status.currentStage}]`;
-          const stageBadge = formatStageBadge(task.status.currentStage);
-          const stagePaddingNeeded = Math.max(0, 20 - rawStage.length);
-          const stagePad = stageBadge + ' '.repeat(stagePaddingNeeded);
-          const modePad = task.status.mode.padEnd(15);
-          console.log(`${issuePad} ${stagePad} ${modePad} ${task.status.updatedAt}`);
+        if (options.json) {
+          // RAW stage/mode strings — never `formatStageBadge`, which emits ANSI
+          // and would corrupt a machine-readable document (#275, R10).
+          console.log(
+            JSON.stringify(
+              {
+                dryRun: false,
+                currentStage: result.status.currentStage,
+                mode: result.status.mode,
+                issue: result.status.issue,
+                updatedAt: result.status.updatedAt,
+                stateFilePath: result.stateFilePath,
+                resolvedIssue: result.resolvedIssue,
+                pausedAtGate: statusPause?.gate ?? null,
+                pause: statusPause,
+                reviewDispatchCount: result.status.reviewDispatchCount,
+                activeTasks: result.activeTasks.map((task) => ({
+                  issue: task.issue,
+                  currentStage: task.status.currentStage,
+                  mode: task.status.mode,
+                  updatedAt: task.status.updatedAt,
+                  stateFilePath: task.stateFilePath ?? null
+                })),
+                skippedCorrupt: result.skippedCorrupt.map((skipped) => ({
+                  issue: skipped.issue,
+                  path: skipped.path,
+                  error: skipped.error
+                })),
+                history: result.history.map((entry) => ({
+                  stage: entry.stage,
+                  timestamp: entry.timestamp
+                }))
+              },
+              null,
+              2
+            )
+          );
+          return EXIT_CODE_SUCCESS;
         }
-        console.log('--------------------------------------------------------------------------------');
-      }
 
-      const worktrees = await worktreeManager.listWorktrees();
-      if (worktrees.length > 0) {
-        console.log(`\nIsolated Git Worktrees (${worktrees.length}):`);
-        for (const wt of worktrees) {
-          console.log(`  - Task ${wt.taskId}: ${wt.worktreePath} (branch: ${wt.branch})`);
+        console.log('\n=== CodeLoop: Pipeline Status ===');
+        console.log(`Current Stage : ${formatStageBadge(result.status.currentStage)}`);
+        console.log(`Execution Mode: ${result.status.mode}`);
+        console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
+        console.log(`Updated At    : ${result.status.updatedAt}`);
+        console.log(`Checkpoint    : ${result.stateFilePath}`);
+        if (result.resolvedIssue !== null) {
+          // Without this the `Checkpoint` line read like an assertion that the run
+          // uses the root file, which is exactly what it did NOT use: the root
+          // `.agyloop/state.json` is not read or written by task runs (#226 D5).
+          console.log(`              (authoritative for issue #${result.resolvedIssue} — the root .agyloop/state.json is not used by task runs)`);
         }
-      }
 
-      console.log('\nTransition History:');
-      result.history.forEach((entry, idx) => {
-        console.log(`  ${idx + 1}. ${formatStageBadge(entry.stage)} at ${entry.timestamp}`);
-      });
-      console.log('');
-      return EXIT_CODE_SUCCESS;
+        if (statusPause) {
+          console.log(`Paused At Gate: ${statusPause.gate}`);
+          console.log(`Paused At     : ${statusPause.pausedAt ?? '(unknown)'}`);
+          if (statusPause.gate === GATE_CIRCUIT_BREAKER) {
+            console.log('Recovery      : resolve the blocking condition (e.g. wait for the provider quota window),');
+            console.log(`                then run \`${RESUME_COMMAND}\`.`);
+          }
+        }
+
+        // Additive (issue #272): a REVIEW round that has been re-dispatched is
+        // observable in `status`, not only in the checkpoint file.
+        if (result.status.reviewDispatchCount > 0) {
+          console.log(`${LABEL_REVIEW_DISPATCHES} : ${result.status.reviewDispatchCount}`);
+        }
+
+        if (result.activeTasks && result.activeTasks.length > 0) {
+          console.log(`\nActive Tasks Matrix (${result.activeTasks.length}):`);
+          console.log('--------------------------------------------------------------------------------');
+          console.log('Issue       Stage                Mode            Updated At');
+          console.log('--------------------------------------------------------------------------------');
+          for (const task of result.activeTasks) {
+            const issueStr = task.issue ? `#${task.issue}` : 'Root';
+            const issuePad = issueStr.padEnd(11);
+            const rawStage = `[${task.status.currentStage}]`;
+            const stageBadge = formatStageBadge(task.status.currentStage);
+            const stagePaddingNeeded = Math.max(0, 20 - rawStage.length);
+            const stagePad = stageBadge + ' '.repeat(stagePaddingNeeded);
+            const modePad = task.status.mode.padEnd(15);
+            console.log(`${issuePad} ${stagePad} ${modePad} ${task.status.updatedAt}`);
+          }
+          console.log('--------------------------------------------------------------------------------');
+        }
+
+        const worktrees = await worktreeManager.listWorktrees();
+        if (worktrees.length > 0) {
+          console.log(`\nIsolated Git Worktrees (${worktrees.length}):`);
+          for (const wt of worktrees) {
+            console.log(`  - Task ${wt.taskId}: ${wt.worktreePath} (branch: ${wt.branch})`);
+          }
+        }
+
+        console.log('\nTransition History:');
+        result.history.forEach((entry, idx) => {
+          console.log(`  ${idx + 1}. ${formatStageBadge(entry.stage)} at ${entry.timestamp}`);
+        });
+        console.log('');
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ Status failed: ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
     }
 
     case 'config': {
@@ -1663,8 +1809,33 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const resetUseCase = new ResetPipelineUseCase(stateRepo);
       const result = await resetUseCase.execute({
         issue: issueValue,
-        all: options.all
+        all: options.all,
+        dryRun: options.dryRun
       });
+
+      if (result.dryRun) {
+        // A simulation states what it WOULD do and predicts the real exit code
+        // (#248): task-scope with nothing to clear exits 1, exactly like the
+        // real command; root and `--all` exit 0 either way.
+        if (result.scope === 'all') {
+          console.log('[dry-run] Would purge .agyloop/state.json and all task checkpoints.');
+          return EXIT_CODE_SUCCESS;
+        }
+        if (result.scope === 'task') {
+          if (result.wouldClear) {
+            console.log(`[dry-run] Would clear the checkpoint for issue #${result.issue} (${result.path}).`);
+            return EXIT_CODE_SUCCESS;
+          }
+          console.error(`[dry-run] Nothing to clear for issue #${result.issue} (${result.path}).`);
+          return EXIT_CODE_FAILURE;
+        }
+        if (result.wouldClear) {
+          console.log(`[dry-run] Would clear ${result.path}.`);
+        } else {
+          console.log(`[dry-run] Nothing to clear at ${result.path}.`);
+        }
+        return EXIT_CODE_SUCCESS;
+      }
 
       if (result.scope === 'all') {
         console.log('✓ CodeLoop pipeline state reset. .agyloop/state.json and all task checkpoints purged.');
@@ -1704,7 +1875,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (options.json) {
           // Single JSON document on stdout; anything diagnostic goes to stderr.
-          console.log(JSON.stringify(buildResumeJsonPayload(resumeResult), null, 2));
+          console.log(JSON.stringify(buildResumeJsonPayload(resumeResult, options.dryRun === true), null, 2));
           if (!resumeResult.success) {
             console.error(`✗ ${resumeResult.message}`);
           }
@@ -1779,6 +1950,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             JSON.stringify(
               {
                 success: haltResult.success,
+                dryRun: options.dryRun === true,
                 halted: haltResult.halted,
                 persisted: haltResult.persisted,
                 pausedAtGate: haltResult.pausedAtGate,
@@ -1797,7 +1969,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         console.log('\n=== CodeLoop: Provider Quota Halt ===');
-        console.log(`${options.dryRun ? '[dry-run] ' : ''}✓ Quota halt recorded at the ${haltResult.pausedAtGate} gate — nothing is lost.`);
+        if (options.dryRun) {
+          // Never `✓ Quota halt recorded` — nothing was recorded (#248).
+          console.log(`[dry-run] Would record a quota halt at the ${haltResult.pausedAtGate} gate — nothing was written.`);
+          console.log(`  Quota Resets : ${haltResult.quotaResetAt}${haltResult.quotaResetEstimated ? ' (estimated)' : ''}`);
+          console.log(`  Next Step    : run \`${QUOTA_RESUME_COMMAND}\` once the quota window resets.`);
+          console.log('');
+          return EXIT_CODE_QUOTA_EXHAUSTED;
+        }
+        console.log(`✓ Quota halt recorded at the ${haltResult.pausedAtGate} gate — nothing is lost.`);
         console.log(`  Paused At    : ${haltResult.pausedAtTimestamp ?? '(unknown)'}`);
         console.log(`  Quota Resets : ${haltResult.quotaResetAt}${haltResult.quotaResetEstimated ? ' (estimated)' : ''}`);
         console.log(`  Next Step    : run \`${QUOTA_RESUME_COMMAND}\` once the quota window resets.`);
@@ -1839,8 +2019,30 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         issue: issueValue,
         force: options.force,
         quarantine: options.quarantine,
-        noQuarantine: options.noQuarantine
+        noQuarantine: options.noQuarantine,
+        dryRun: options.dryRun
       });
+
+      if (abortResult.dryRun) {
+        // A simulation must never print the teardown's completion line (#248).
+        console.log('[dry-run] Emergency abort simulated — nothing was terminated, moved or cleared.');
+        console.log('  - Processes terminated     : 0 (simulated — no signal was sent)');
+        console.log('  - Stale git locks cleared  : NO (simulated)');
+        console.log(`  - Worktrees would quarantine: ${abortResult.worktreesWouldQuarantine.length}`);
+        for (const path of abortResult.worktreesWouldQuarantine) {
+          console.log(`    * ${path}`);
+        }
+        for (const skipped of abortResult.worktreesQuarantineSkipped) {
+          console.log(`    * ${skipped.worktreePath} would be left untouched — ${skipped.reason}`);
+        }
+        console.log(`  - Containers would terminate: ${abortResult.containersWouldTerminate.length}`);
+        for (const c of abortResult.containersWouldTerminate) {
+          console.log(`    * ${c}`);
+        }
+        console.log('  - Summary audit checkpoint : SKIPPED (simulated)');
+        console.log('');
+        return EXIT_CODE_SUCCESS;
+      }
 
       console.log(`✓ Emergency Abort completed in ${abortResult.durationMs}ms:`);
       console.log(`  - Processes terminated     : ${abortResult.processesTerminated}`);
@@ -1917,12 +2119,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
 
       if (sub === 'clean' || sub === 'prune') {
-        console.log('Pruning orphaned git worktrees and locks...');
+        console.log(
+          options.dryRun
+            ? 'Simulating orphaned git worktree and lock pruning...'
+            : 'Pruning orphaned git worktrees and locks...'
+        );
         const res = await manageWorktreeUseCase.clean({
           subagents: options.subagents,
-          all: options.all
+          all: options.all,
+          dryRun: options.dryRun
         });
-        console.log(`✓ ${res.message}\n`);
+        console.log(`${options.dryRun ? '[dry-run] ' : '✓ '}${res.message}\n`);
         return EXIT_CODE_SUCCESS;
       }
 
@@ -1943,7 +2150,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             workspaceDir,
             options.worktreeTarget
           );
-          console.log(`Removing worktree at ${targetPath}...`);
+          console.log(
+            `${options.dryRun ? '[dry-run] Would remove' : 'Removing'} worktree at ${targetPath}...`
+          );
 
           // Descriptor scope uses the SAME issue grammar as every other
           // command (#250): an explicit `--issue` wins, else a purely numeric
@@ -1987,7 +2196,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
             const pruned = await removalUseCase.clearStaleDescriptor({
               worktreePath: targetPath,
-              issue: targetIssue
+              issue: targetIssue,
+              dryRun: options.dryRun
             });
 
             if (!pruned.success) {
@@ -1995,7 +2205,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               return EXIT_CODE_FAILURE;
             }
 
-            console.log(`✓ ${pruned.message}\n`);
+            console.log(`${options.dryRun ? '[dry-run] ' : '✓ '}${pruned.message}\n`);
             return EXIT_CODE_SUCCESS;
           }
 
@@ -2003,11 +2213,22 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             worktreePath: targetPath,
             workspaceDir: repoRoot,
             taskId: options.worktreeTarget,
-            issue: targetIssue
+            issue: targetIssue,
+            dryRun: options.dryRun
           });
 
           // Belt-and-braces over the manager's own post-condition: never print
-          // `✓` for a path that still exists.
+          // `✓` for a path that still exists. On a DRY RUN the directory is
+          // EXPECTED to still exist — that is the whole point — so the check is
+          // inverted (#248, R5).
+          if (options.dryRun) {
+            if (!fs.existsSync(targetPath)) {
+              console.error(`✗ A dry run removed the worktree at ${targetPath}; nothing may be deleted.`);
+              return EXIT_CODE_FAILURE;
+            }
+            console.log(`[dry-run] ${res.message}\n`);
+            return EXIT_CODE_SUCCESS;
+          }
           if (fs.existsSync(targetPath)) {
             console.error(`✗ Worktree still exists after removal: ${targetPath}`);
             return EXIT_CODE_FAILURE;
@@ -2031,7 +2252,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         case 'status': {
           const status = await manageCritiqueUseCase.getStatus(process.cwd());
           if (options.json) {
-            console.log(JSON.stringify(status, null, 2));
+            console.log(JSON.stringify({ dryRun: false, ...status }, null, 2));
             return EXIT_CODE_SUCCESS;
           }
 
@@ -2058,9 +2279,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         case 'install': {
-          console.log('\n📥 Installing Critique CLI...');
-          const result = await manageCritiqueUseCase.install({ force: options.force });
+          console.log(
+            options.dryRun ? '\n📥 Simulating Critique CLI installation...' : '\n📥 Installing Critique CLI...'
+          );
+          const result = await manageCritiqueUseCase.install({
+            force: options.force,
+            dryRun: options.dryRun
+          });
           if (result.success) {
+            if (options.dryRun) {
+              console.log(`[dry-run] Would install critique v${result.version} to:`);
+              console.log(`  ${result.targetPath}`);
+              console.log('  Nothing was downloaded or written.\n');
+              return EXIT_CODE_SUCCESS;
+            }
             console.log(`✓ Successfully installed critique v${result.version} to:`);
             console.log(`  ${result.targetPath}\n`);
             return EXIT_CODE_SUCCESS;
@@ -2071,9 +2303,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         case 'update': {
-          console.log('\n🔄 Updating Critique CLI...');
-          const result = await manageCritiqueUseCase.update();
+          console.log(
+            options.dryRun ? '\n🔄 Simulating Critique CLI update...' : '\n🔄 Updating Critique CLI...'
+          );
+          const result = await manageCritiqueUseCase.update({ dryRun: options.dryRun });
           if (result.success) {
+            if (options.dryRun) {
+              console.log(`[dry-run] Would update critique to v${result.version} at:`);
+              console.log(`  ${result.targetPath}`);
+              console.log('  Nothing was downloaded or written.\n');
+              return EXIT_CODE_SUCCESS;
+            }
             console.log(`✓ Successfully updated critique to v${result.version} at:`);
             console.log(`  ${result.targetPath}\n`);
             return EXIT_CODE_SUCCESS;
@@ -2101,7 +2341,6 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
       const action = (rawAction || undefined) as TriageAction | undefined;
 
-      console.log('\n=== CodeLoop: PR Review Comments Triage ===');
       try {
         // The scope resolution lives INSIDE the try (issue #250, review N1): an
         // unreadable NAMED checkpoint must be REPORTED as a triage failure,
@@ -2132,13 +2371,40 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           issue: issueValue,
           action,
           notes: options.message || undefined,
-          workspaceDir: process.cwd()
+          workspaceDir: process.cwd(),
+          dryRun: options.dryRun
         });
 
         if (options.json) {
-          console.log(JSON.stringify(result, null, 2));
-          return EXIT_CODE_SUCCESS;
+          // A machine-readable projection, never the rehydrated StateMachine
+          // entity, and — critically — a SINGLE document on stdout: the human
+          // banner is printed below, after this branch returns (#275 Defect A).
+          console.log(
+            JSON.stringify(
+              {
+                success: result.success,
+                dryRun: result.dryRun === true,
+                stateUpdated: result.stateUpdated === true,
+                targetStage: result.targetStage,
+                wouldTransitionTo: result.wouldTransitionTo ?? null,
+                wouldCreateWorktree: result.wouldCreateWorktree === true,
+                wouldDismiss: result.wouldDismiss === true,
+                wouldRecordDisposition: result.wouldRecordDisposition === true,
+                prNumber: result.prNumber ?? null,
+                comments: result.comments,
+                ...(result.dismissal ? { dismissal: result.dismissal } : {}),
+                disposition: result.disposition ?? null,
+                dispositionRecorded: result.dispositionRecorded === true,
+                message: result.message
+              },
+              null,
+              2
+            )
+          );
+          return result.success ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
         }
+
+        console.log('\n=== CodeLoop: PR Review Comments Triage ===');
 
         if (result.comments && result.comments.length > 0) {
           console.log(`Found ${result.comments.length} PR review comment(s):\n`);
@@ -2157,6 +2423,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (!action) {
           console.log(`(Read-only list mode: no state changes. Provide an action: ${formatTriageActionList('|')}.)`);
           console.log(`  ${formatTriageActionSideEffects()}.\n`);
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (result.dryRun) {
+          // A simulation never says "State Updated" (#248 AC-248.5).
+          console.log(`[dry-run] Triage Action : ${action.toUpperCase()}`);
+          console.log(`[dry-run] Would transition to ${formatStageBadge(result.wouldTransitionTo ?? result.targetStage)}`);
+          if (result.wouldCreateWorktree) {
+            console.log('[dry-run] Would create a worktree');
+          }
+          if (result.wouldDismiss) {
+            console.log('[dry-run] Would reply to and resolve the PR review threads');
+          }
+          console.log('[dry-run] Nothing was written.\n');
           return EXIT_CODE_SUCCESS;
         }
 
@@ -2283,21 +2563,34 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (options.json) {
           // A SINGLE JSON document on stdout; warnings go to stderr so stdout
           // stays parseable.
-          console.log(
-            JSON.stringify(
-              {
-                verdict: result.verdict.toJSON(),
-                verdictSource: result.reviewSource,
-                passed: result.passed,
-                currentStage: result.currentStage,
-                reviewVerdict: result.verdict.status
-              },
-              null,
-              2
-            )
-          );
+          //
+          // On a dry run the payload must NOT assert state that was never
+          // written (#275.6 / #248): `currentStage` stays the on-disk stage,
+          // the untaken stage travels as `wouldSetStage`, the unfiled verdict as
+          // `wouldRecordVerdict`, and `reviewVerdict` is omitted entirely.
+          const dryRun = options.dryRun === true;
+          const payload: Record<string, unknown> = {
+            dryRun,
+            verdict: result.verdict.toJSON(),
+            verdictSource: result.reviewSource,
+            passed: result.passed
+          };
+          if (dryRun) {
+            payload.previousStage = result.previousStage ?? result.currentStage;
+            payload.currentStage = result.previousStage ?? result.currentStage;
+            payload.wouldSetStage = result.currentStage;
+            payload.wouldRecordVerdict = result.verdict.status;
+          } else {
+            payload.currentStage = result.currentStage;
+            payload.reviewVerdict = result.verdict.status;
+          }
+          console.log(JSON.stringify(payload, null, 2));
           if (!result.passed) {
-            console.error('✗ AI Review requested changes. Pipeline reverted to IMPLEMENT.');
+            console.error(
+              dryRun
+                ? `[dry-run] Would record verdict ${result.verdict.status} and revert to ${formatStageBadge(STAGE_IMPLEMENT)}.`
+                : '✗ AI Review requested changes. Pipeline reverted to IMPLEMENT.'
+            );
           }
           return result.passed ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
         }
@@ -2305,10 +2598,30 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log('\n=== CodeLoop: AI Review Verdict ===');
         console.log(result.verdict.formatReportText());
         console.log('');
+        // The stage on disk. On a dry run this is the ONLY stage that exists,
+        // so the unwritten next stage is never presented as the current one.
+        if (options.dryRun) {
+          console.log(`Current Stage  : ${formatStageBadge(result.previousStage ?? result.currentStage)}`);
+        }
         console.log(`Verdict Source : ${result.reviewSource ?? 'unknown'}`);
         if (reviewOutputSource) {
           console.log(`Verdict Input  : ${reviewOutputSource}`);
         }
+
+        if (options.dryRun) {
+          if (!result.passed) {
+            console.error(
+              `[dry-run] Would record verdict ${result.verdict.status} and revert to ${formatStageBadge(STAGE_IMPLEMENT)}.`
+            );
+            return EXIT_CODE_FAILURE;
+          }
+          console.log(`[dry-run] Would set stage : ${formatStageBadge(result.currentStage)}`);
+          console.log(
+            `[dry-run] Would record verdict ${result.verdict.status} — nothing was recorded.`
+          );
+          return EXIT_CODE_SUCCESS;
+        }
+
         console.log(`Next Stage     : ${formatStageBadge(result.currentStage)}`);
 
         if (!result.passed) {
@@ -2511,9 +2824,18 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         const impl = result.implementationResult;
         if (impl?.resumed) {
-          console.log(`Already at ${formatStageBadge(STAGE_IMPLEMENT)}. Resuming code modifications.\n`);
+          console.log(
+            `${options.dryRun ? '[dry-run] ' : ''}Already at ${formatStageBadge(STAGE_IMPLEMENT)}. Resuming code modifications.\n`
+          );
         } else {
-          console.log(`✓ Advanced to ${formatStageBadge(STAGE_IMPLEMENT)}. Ready for code modifications.\n`);
+          console.log(
+            `${options.dryRun ? '[dry-run] ' : '✓ '}Advanced to ${formatStageBadge(STAGE_IMPLEMENT)}. Ready for code modifications.\n`
+          );
+        }
+        if (options.dryRun) {
+          // The mutation is correctly suppressed (`start-implementation.ts`
+          // gates it on `dryRun`); only the output used to claim otherwise (#248).
+          console.log('[dry-run] Nothing was written.\n');
         }
 
         if (result.worktree) {
@@ -2597,15 +2919,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (!options.yes && !promptsAllowed) {
-          // `promptsAllowed` folds in `!options.json`, so this single guard covers two
-          // unrelated situations. Saying "non-interactive terminal" about a fully
-          // interactive TTY is factually false and sends the user hunting for a TTY
-          // problem they do not have, so the diagnostic is split while the refusal
-          // (and its non-zero exit) stays identical.
+          // `commit` refuses `--json` at the capability gate (#248), so the only
+          // way to reach this guard is a genuinely non-interactive terminal.
+          // Saying "non-interactive terminal" about a fully interactive TTY is
+          // factually false and sends the user hunting for a TTY problem they
+          // do not have, so the refusal stays non-zero and names the fix.
           console.error(
-            options.json
-              ? `\n[agyloop] Machine-readable output requested; re-run without --json or pass -y/--yes to confirm.\n`
-              : `\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`
+            `\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`
           );
           return EXIT_CODE_FAILURE;
         }
@@ -2681,9 +3001,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           scope.repo,
           worktreeManager
         );
-        const res = await syncUseCase.execute({ workspaceDir: process.cwd() });
+        const res = await syncUseCase.execute({
+          workspaceDir: process.cwd(),
+          dryRun: options.dryRun
+        });
         if (res.success) {
-          console.log(`✓ ${res.message}\n`);
+          // The dry-run message already carries `[dry-run] `; a `✓` here would
+          // claim the fetch happened (#248).
+          console.log(`${res.dryRun ? '' : '✓ '}${res.message}\n`);
           return EXIT_CODE_SUCCESS;
         } else {
           console.error(`✗ ${res.message}\n`);

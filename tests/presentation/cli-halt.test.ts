@@ -144,13 +144,59 @@ describe('codeloop halt (issue #220)', () => {
     );
   });
 
-  test('AC1: halt works with no pre-existing checkpoint', async () => {
+  test('AC-293: halt REFUSES with no pre-existing checkpoint (never fabricates one)', async () => {
+    // Issue #293: `halt` records a condition on a running pipeline; it does not
+    // start one. Before the fix this created `.agyloop/state.json` at
+    // INITIALIZED, paused at CIRCUIT_BREAKER, and exited 2 — so `status` listed
+    // a phantom task.
     const result = await runCliInSandbox(['halt', '--reason', 'quota'], {
       env: { AGY_SUBAGENT: undefined }
     });
-    assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
-    assert.strictEqual(result.persisted?.pausedAtGate, GATE_CIRCUIT_BREAKER);
-    assert.ok(result.persisted?.pausedAtTimestamp);
+    assert.strictEqual(result.code, EXIT_CODE_FAILURE);
+    assert.strictEqual(result.persisted, null, 'no checkpoint may be created');
+    assert.ok(result.stderr.includes('No pipeline checkpoint exists'), result.stderr);
+    assert.ok(result.stderr.includes('does not start one'), result.stderr);
+  });
+
+  test('AC-293: empty workspace + halt --issue 777 creates no task and no phantom', async () => {
+    const prevCwd = process.cwd();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-phantom-'));
+    const origLog = console.log;
+    const origErr = console.error;
+    let stdout = '';
+    let stderr = '';
+    try {
+      process.chdir(tempDir);
+      console.log = (...a: any[]) => {
+        stdout += a.map(String).join(' ') + '\n';
+      };
+      console.error = (...a: any[]) => {
+        stderr += a.map(String).join(' ') + '\n';
+      };
+      delete process.env.AGY_SUBAGENT;
+
+      assert.strictEqual(
+        await runCli(['halt', '--reason', 'quota', '--issue', '777']),
+        EXIT_CODE_FAILURE
+      );
+      assert.ok(stderr.includes('#777'), stderr);
+      assert.strictEqual(
+        fs.existsSync(path.join(tempDir, '.agyloop', 'tasks', '777.json')),
+        false,
+        'halt must not fabricate tasks/777.json'
+      );
+
+      stdout = '';
+      stderr = '';
+      assert.strictEqual(await runCli(['status']), EXIT_CODE_SUCCESS);
+      assert.ok(!stdout.includes('#777'), `status must not list a phantom task:\n${stdout}`);
+      assert.ok(!/Active Tasks Matrix/.test(stdout), stdout);
+    } finally {
+      process.chdir(prevCwd);
+      console.log = origLog;
+      console.error = origErr;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('AC1: second halt preserves the original timestamp (first-wins)', async () => {
@@ -162,12 +208,15 @@ describe('codeloop halt (issue #220)', () => {
     assert.strictEqual(first.code, EXIT_CODE_QUOTA_EXHAUSTED);
     assert.strictEqual(first.persisted?.pausedAtTimestamp, firstPause);
 
-    // Double-halt on a fresh checkpoint also keeps the first timestamp.
+    // Double-halt on a SEEDED root checkpoint also keeps the first timestamp
+    // (issue #293: a halt with no checkpoint is a refusal, not a fresh start).
     const prevCwd = process.cwd();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-firstwins-'));
     const origLog = console.log;
     const origErr = console.error;
     try {
+      fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
+      fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(seedState()));
       process.chdir(tempDir);
       console.log = (..._a: any[]): void => {};
       console.error = (..._a: any[]): void => {};
@@ -423,7 +472,10 @@ describe('codeloop halt --issue (issue #225)', () => {
     }
   }
 
-  async function runCliInSandbox(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
+  async function runCliInSandbox(
+    args: readonly string[],
+    { seed = null, taskSeed = null, taskIssue = 999, env = {} }: any = {}
+  ): Promise<any> {
     const prevCwd = process.cwd();
     const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-issue-'));
     const originalEnv: any = {};
@@ -444,6 +496,10 @@ describe('codeloop halt --issue (issue #225)', () => {
         fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
         fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(seed));
       }
+      if (taskSeed !== null) {
+        fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
+        fs.writeFileSync(taskFilePath(tempDir, taskIssue), JSON.stringify(taskSeed));
+      }
       process.chdir(tempDir);
       console.log = (...a: any[]) => {
         stdout += a.map(String).join(' ') + '\n';
@@ -457,7 +513,10 @@ describe('codeloop halt --issue (issue #225)', () => {
         stdout: stdout.replace(ANSI_ESCAPE, ''),
         stderr: stderr.replace(ANSI_ESCAPE, ''),
         rootState: readState(tempDir),
-        taskState: readTask(tempDir, 999)
+        taskState: readTask(tempDir, taskIssue),
+        taskBytes: fs.existsSync(taskFilePath(tempDir, taskIssue))
+          ? fs.readFileSync(taskFilePath(tempDir, taskIssue), 'utf8')
+          : null
       };
     } finally {
       process.chdir(prevCwd);
@@ -474,8 +533,24 @@ describe('codeloop halt --issue (issue #225)', () => {
     }
   }
 
+  function seedTask(overrides: any = {}): any {
+    const now = new Date().toISOString();
+    return {
+      version: '1.0.0',
+      currentStage: 'IMPLEMENT',
+      mode: 'standard',
+      issue: 999,
+      createdAt: now,
+      updatedAt: now,
+      history: [{ stage: 'IMPLEMENT', timestamp: now }],
+      pausedAtGate: null,
+      ...overrides
+    };
+  }
+
   test('AC1: halt --issue 999 writes tasks/999.json with issue:999', async () => {
     const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999'], {
+      taskSeed: seedTask(),
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
@@ -487,28 +562,34 @@ describe('codeloop halt --issue (issue #225)', () => {
 
   test('AC2: halt --issue 999 --json includes issue in output', async () => {
     const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999', '--json'], {
+      taskSeed: seedTask(),
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
     const payload = JSON.parse(result.stdout);
     assert.strictEqual(payload.issue, 999);
     assert.strictEqual(payload.pausedAtGate, GATE_CIRCUIT_BREAKER);
+    assert.strictEqual(payload.dryRun, false);
   });
 
   test('AC3: halt --issue 999 --dry-run writes nothing', async () => {
+    const before = seedTask();
     const result = await runCliInSandbox(['halt', '--reason', 'quota', '--issue', '999', '--dry-run', '--json'], {
+      taskSeed: before,
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
     const payload = JSON.parse(result.stdout);
     assert.strictEqual(payload.persisted, false);
     assert.strictEqual(payload.issue, 999);
-    assert.strictEqual(result.taskState, null, 'dry-run must not write tasks/999.json');
+    assert.strictEqual(payload.dryRun, true);
+    assert.deepStrictEqual(JSON.parse(result.taskBytes), before, 'dry-run must not rewrite tasks/999.json');
     assert.strictEqual(result.rootState, null, 'dry-run must not write root state.json');
   });
 
   test('AC4: halt without --issue keeps root checkpoint with issue:null', async () => {
     const result = await runCliInSandbox(['halt', '--reason', 'quota', '--json'], {
+      seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
@@ -651,6 +732,15 @@ describe('codeloop halt rejects a garbage --issue token (#250)', () => {
       fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
       const rootSeed = seedState();
       fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(rootSeed));
+      // Issue #293: `--issue 999` addresses an existing task checkpoint; halt
+      // no longer starts a pipeline for an issue that has none.
+      fs.writeFileSync(
+        path.join(tempDir, '.agyloop', 'tasks', '999.json'),
+        JSON.stringify({
+          ...seedState(),
+          issue: 999
+        })
+      );
       process.chdir(tempDir);
       console.log = (..._a: any[]): void => {};
       console.error = (..._a: any[]): void => {};

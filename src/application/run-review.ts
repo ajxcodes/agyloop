@@ -123,6 +123,13 @@ export interface RunReviewResult {
    */
   readonly reviewSource?: ReviewSource;
   readonly currentStage: string;
+  /**
+   * The stage the checkpoint was at BEFORE this call transitioned it — the
+   * stage a `--dry-run` leaves on disk (#248).
+   */
+  readonly previousStage?: string;
+  /** True when this was a simulation (#248). */
+  readonly dryRun?: boolean;
   readonly stateMachine: StateMachine;
   readonly reviewerDef: SubagentDescriptor;
   readonly taskPrompt: string;
@@ -355,6 +362,10 @@ export class RunReviewUseCase {
     }
 
     const sm = StateMachine.fromSnapshot(snapshot);
+    // Captured BEFORE any transition below: on a dry run this is the stage that
+    // stays on disk, so the report must never present the unwritten next stage
+    // as the current one (#248 AC-248.7).
+    const previousStage = sm.currentStage;
     const activeIssue = params.issue || sm.issue;
     /**
      * Whether the COMMIT pause must be restored after the verdict is recorded.
@@ -477,7 +488,7 @@ export class RunReviewUseCase {
       // Auto-install fallback prompt if critique CLI is absent and confirmation prompt is available.
       // Skipped when the session is non-interactive: this prompt defaults to "yes",
       // so an unguarded CI/cron run would both block and silently mutate the machine.
-      if (!resolution.isAvailable && prompt && installer && params.interactive !== false) {
+      if (!resolution.isAvailable && prompt && installer && params.interactive !== false && !params.dryRun) {
         const confirmed = await prompt.confirm(
           'Critique CLI is not installed. Would you like to install it automatically? [Y/n]',
           true
@@ -494,8 +505,9 @@ export class RunReviewUseCase {
         }
       }
 
-      // Non-blocking version update check with 24-hour cache TTL
-      if (resolution.isAvailable && resolution.path && installer && typeof this.critique.getVersion === 'function') {
+      // Non-blocking version update check with 24-hour cache TTL. A dry run
+      // skips it entirely: the check writes the update cache (#248, R13).
+      if (!params.dryRun && resolution.isAvailable && resolution.path && installer && typeof this.critique.getVersion === 'function') {
         try {
           const currentVer = await this.critique.getVersion(resolution.path);
           const versionInfo = await installer.checkUpdateAvailable(currentVer, {
@@ -693,6 +705,8 @@ export class RunReviewUseCase {
       verdict,
       reviewSource,
       currentStage: sm.currentStage,
+      previousStage,
+      dryRun: params.dryRun === true,
       stateMachine: sm,
       reviewerDef,
       taskPrompt,
