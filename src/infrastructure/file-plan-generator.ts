@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
 import {
   PlanGeneratorPort,
   ScaffoldParams,
@@ -34,6 +35,7 @@ import {
   DiscoveryReport,
   isDiscoveryPlanDocument,
   isPlanContentSubstantive,
+  normalizePlanForDigest,
   planSlug,
   planFolderName,
   planDirectoryPrefix
@@ -106,9 +108,13 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 - [ ] **Step 3:** 
 
 ## 4. Quality Gate & Test Verification
-- **Automated Test Targets:**
-- **Build / Lint Commands:**
+
+### Quality Gate Targets
+- **Target 1:** 
+- **Target 2:** 
+
 ### Manual Smoke Test Protocol
+- **Check 1:** 
 `,
 
   [TEMPLATE_SUMMARY]: `# AgyLoop Execution Summary
@@ -968,5 +974,23 @@ export class FilePlanGenerator implements PlanGeneratorPort {
 
   public readPlanDocument(planPath: string): string {
     return fs.readFileSync(planPath, 'utf8');
+  }
+
+  /**
+   * sha256 of the NORMALIZED plan bytes (issue #298).
+   *
+   * Normalization is shared with `normalizePlanForDigest`, so checkbox ticks
+   * and line-ending noise do not invalidate an approval, while any prose or
+   * command edit does. Returns `null` when the file cannot be read: an
+   * unreadable approved plan is reported as a gate failure by the caller, not
+   * thrown from the adapter.
+   */
+  public hashPlanDocument(planPath: string): string | null {
+    try {
+      const content = fs.readFileSync(planPath, 'utf8');
+      return createHash('sha256').update(normalizePlanForDigest(content), 'utf8').digest('hex');
+    } catch {
+      return null;
+    }
   }
 }

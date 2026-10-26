@@ -64,6 +64,7 @@ class MockStateRepo implements StateRepository {
 
 class MockBuildDetector implements BuildDetectorPort {
   private readonly commands: readonly GateCommandDefinition[];
+  public lintCommand: string | null = null;
 
   constructor(commands: readonly GateCommandDefinition[] = []) {
     this.commands = commands;
@@ -81,6 +82,86 @@ class MockBuildDetector implements BuildDetectorPort {
 
   async resolveCommands(): Promise<readonly GateCommandDefinition[]> {
     return this.commands;
+  }
+
+  async resolveCommandPlan(
+    workspaceDir: string,
+    _config?: AgyLoopConfig,
+    options?: import('../../src/ports').GateCommandResolutionOptions
+  ): Promise<import('../../src/domain').GateCommandPlan> {
+    const planTargets = options?.planTargets ?? [];
+    const planPath = options?.planPath ?? null;
+    const appended: string[] = [];
+
+    const applyLint = (defs: GateCommandDefinition[]): GateCommandDefinition[] => {
+      if (this.lintCommand === null) return defs;
+      const hasLint = defs.some((def) => def.command.split(/\s+/).includes('lint'));
+      if (hasLint) return defs;
+      appended.push(this.lintCommand);
+      return [...defs, { id: 'lint', label: 'Lint (npm)', command: this.lintCommand }];
+    };
+
+    if (planTargets.length > 0) {
+      return {
+        commands: applyLint(
+          planTargets.map((command, idx) => ({
+            id: `plan-${idx + 1}`,
+            label: `Plan Target ${idx + 1}`,
+            command
+          }))
+        ),
+        source: 'plan',
+        sourceDetail: planPath ? `plan ${planPath}` : 'plan targets',
+        appended,
+        lintRequired: this.lintCommand !== null,
+        lintCommand: this.lintCommand,
+        planPath
+      };
+    }
+    return {
+      commands: applyLint([...this.commands]),
+      source: 'auto-detect',
+      sourceDetail: `auto-detected from ${workspaceDir}`,
+      appended,
+      lintRequired: this.lintCommand !== null,
+      lintCommand: this.lintCommand,
+      planPath
+    };
+  }
+}
+
+class MockPlanGenerator {
+  public content = '';
+  public digest: string | null = null;
+  public planPath = '/repo/artifacts/plans/41-task/implementation_plan.md';
+
+  public resolvePlanFile(): any {
+    return {
+      planDir: '/repo/artifacts/plans/41-task',
+      planPath: this.planPath,
+      planFileName: 'implementation_plan.md'
+    };
+  }
+  public readPlanDocument(): string {
+    return this.content;
+  }
+  public hashPlanDocument(): string | null {
+    return this.digest;
+  }
+  public scaffoldPlanDirectory(): any {
+    return { planDir: '/repo/artifacts/plans/41-task', folderName: '41-task', type: 'implementation', planPath: this.planPath, mirrorPath: this.planPath, summaryPath: '', directoryCreated: false, filesCreated: false, adoptedExisting: true };
+  }
+  public generatePlan(): any {
+    return { planPath: '', mirrorPath: null, content: '', mirrorContent: null, created: false, mirrorCreated: false };
+  }
+  public generateSummaryLog(): any {
+    return { summaryPath: '', content: '', created: false };
+  }
+  public updateSummaryLog(): boolean {
+    return true;
+  }
+  public findPlanDirectory(): string | null {
+    return '/repo/artifacts/plans/41-task';
   }
 }
 
@@ -1214,5 +1295,210 @@ describe('Blank-plan directive reachability & guard ordering (#267)', () => {
         ).execute({ workspaceDir: '/repo' }),
       /Zero Direct Root Mutation/
     );
+  });
+});
+
+describe('Quality Gate evidence contract (issue #298)', () => {
+  const PLAN_HEADER = '/repo/artifacts/plans/41-task/implementation_plan.md';
+
+  function gateCheckpoint(configure?: (sm: any) => void): any {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.setWorktree(
+      WorktreeDescriptor.create({
+        taskId: 41,
+        worktreePath: '/repo/.worktrees/41',
+        branch: 'task/41-work',
+        baseBranch: 'phase/1-bridge'
+      })
+    );
+    if (configure) configure(sm);
+    return sm;
+  }
+
+  function planWithTargets(commands: readonly string[]): string {
+    return [
+      '# Plan',
+      '',
+      '## 5. Quality Gate Targets',
+      '',
+      '```bash',
+      ...commands,
+      '```',
+      ''
+    ].join('\n');
+  }
+
+  function planWithSmoke(commands: readonly string[]): string {
+    return [
+      '# Plan',
+      '',
+      '## 5. Quality Gate Targets',
+      '',
+      '```bash',
+      ...commands,
+      '```',
+      '',
+      '## 6. Manual Smoke Test Protocol',
+      '',
+      '#### Check 1 — fixture require',
+      '',
+      '```bash',
+      'node -e \'const m = require("fixture.js"); console.log(m);\'',
+      '```',
+      ''
+    ].join('\n');
+  }
+
+  test('GNA-L1: the gate prompt carries every plan target in order and names the source', async () => {
+    const commands = [
+      'npm run build',
+      'npm run typecheck',
+      'npm run lint',
+      'node --test tests/a.test.ts',
+      'node --test tests/b.test.ts',
+      'node --test tests/c.test.ts',
+      'node --test tests/d.test.ts',
+      'node --test tests/e.test.ts',
+      'npm test'
+    ];
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(commands);
+    planGenerator.digest = 'digest-1';
+
+    const sm = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
+    );
+    const useCase = new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.ok(result.invocationPayload);
+    const prompt: string = result.invocationPayload.Subagents[0].Prompt;
+
+    let cursor = -1;
+    for (const command of commands) {
+      const index = prompt.indexOf(`\`${command}\``);
+      assert.ok(index > cursor, `command '${command}' must appear in plan order`);
+      cursor = index;
+    }
+    assert.match(prompt, /Command Source:\s*plan/i);
+    assert.match(result.description, /source 'plan'/);
+    assert.match(result.humanSummary, /source 'plan'/);
+  });
+
+  test('GNA-L2: lint is appended and reported when the plan omits it', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run build', 'npm test']);
+    planGenerator.digest = 'digest-1';
+
+    const detector = new MockBuildDetector();
+    detector.lintCommand = 'npm run lint';
+
+    const sm = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
+    );
+    const useCase = new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig(),
+      planGenerator,
+      undefined,
+      undefined,
+      undefined,
+      detector
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    const prompt: string = result.invocationPayload.Subagents[0].Prompt;
+
+    assert.ok(prompt.includes('npm run lint'));
+    assert.ok(prompt.includes('Mandatory commands appended'));
+    assert.match(prompt, /Lint Gate/);
+    assert.match(prompt, /REQUIRED/);
+  });
+
+  test('GNA-C1: the prompt states the execution cwd and why it must not cd to the root', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    planGenerator.digest = 'digest-1';
+
+    const sm = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
+    );
+    const useCase = new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+    const prompt: string = result.invocationPayload.Subagents[0].Prompt;
+
+    assert.ok(prompt.includes('### Execution Cwd'));
+    assert.ok(prompt.includes('Execution Cwd: /repo/.worktrees/41'));
+    assert.match(prompt, /Do not cd to the repository root/i);
+    assert.ok(prompt.includes('/repo/.worktrees/41'));
+  });
+
+  test('GNA-S1: a non-executable smoke protocol blocks dispatch and names the check', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithSmoke(['npm test']);
+
+    const sm = gateCheckpoint();
+    const useCase = new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(!result.invocationPayload, 'a failed protocol must not dispatch a gate');
+    assert.match(result.description, /Quality Gate: FAILED/);
+    assert.match(result.description, /bare-module-path/);
+    assert.match(result.description, /Check 1/);
+    assert.match(result.description, /plan line \d+/);
+  });
+
+  test('GNA-D1: a digest mismatch blocks dispatch and names both digests', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    planGenerator.digest = 'actual-digest';
+
+    const mismatched = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'approved-digest')
+    );
+    const blocked = await new GetNextActionUseCase(
+      new MockStateRepo(mismatched.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(blocked.actionType, 'human_gate');
+    assert.strictEqual(blocked.title, 'Plan Integrity Gate');
+    assert.ok(!blocked.invocationPayload);
+    assert.ok(blocked.description.includes('approved-digest'));
+    assert.ok(blocked.description.includes('actual-digest'));
+
+    const matching = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'actual-digest')
+    );
+    const dispatched = await new GetNextActionUseCase(
+      new MockStateRepo(matching.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    ).execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(dispatched.actionType, 'subagent');
+    assert.ok(dispatched.invocationPayload);
   });
 });

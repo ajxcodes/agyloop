@@ -32,7 +32,9 @@ import {
   SECONDS_PER_MINUTE,
   WorktreeCreationError,
   PreFlightHaltError,
-  HALT_TYPE_MISSING_PLAN_DIR
+  HALT_TYPE_MISSING_PLAN_DIR,
+  ValidationError,
+  MSG_PLAN_MODIFIED_DURING_GATE
 } from '../domain';
 import { StateRepository, WorktreeManagerPort, PlanGeneratorPort } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
@@ -116,6 +118,27 @@ export class TransitionStageUseCase {
     // worktree and a branch on disk. Nothing is persisted until the save below, so
     // the on-disk checkpoint is byte-identical on the failure path either way.
     sm.transition(params.targetStage, params.metadata || {});
+
+    // Issue #298: the approved plan is frozen for the whole IMPLEMENT ->
+    // QUALITY_GATE -> REVIEW loop. Entering IMPLEMENT from a fresh approval
+    // records the digest; entering from a retry/self-correction preserves it.
+    if (targetStageStr === STAGE_IMPLEMENT && !params.dryRun) {
+      const fromFreshApproval =
+        prevStage === STAGE_PLAN || prevStage === STAGE_APPROVAL || prevStage === STAGE_COMPLETED;
+      if (fromFreshApproval || !sm.approvedPlanDigest) {
+        this.recordApprovedPlanDigest(sm, params);
+      }
+    }
+
+    // Certification requires the artifact that was approved. A plan edited
+    // after approval cannot be certified by the stage that follows the gate.
+    if (
+      prevStage === STAGE_QUALITY_GATE &&
+      targetStageStr === STAGE_REVIEW &&
+      !params.dryRun
+    ) {
+      this.assertApprovedPlanUnchanged(sm, params);
+    }
 
     // Issue #283: DISCOVERY is where the RCA report is written, so the stage
     // that opens it must ALSO create the canonical plan directory. Otherwise
@@ -297,5 +320,62 @@ export class TransitionStageUseCase {
     }
 
     return sm;
+  }
+
+  /** Resolves the current plan document, or null when nothing is resolvable. */
+  private resolveCurrentPlan(
+    sm: StateMachine,
+    params: TransitionParams
+  ): { planPath: string } | null {
+    if (!this.planGenerator) return null;
+    const workspace = params.workspaceDir || process.cwd();
+    const resolved = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: sm.issue || params.issue,
+      planPath: sm.planPath ?? sm.approvedPlanPath ?? undefined,
+      planDir: sm.planDir
+    });
+    if (resolved?.planPath) {
+      return { planPath: resolved.planPath };
+    }
+    return sm.approvedPlanPath ? { planPath: sm.approvedPlanPath } : null;
+  }
+
+  private hashPlan(planPath: string): string | null {
+    if (!this.planGenerator || typeof this.planGenerator.hashPlanDocument !== 'function') {
+      return null;
+    }
+    return this.planGenerator.hashPlanDocument(planPath);
+  }
+
+  private recordApprovedPlanDigest(sm: StateMachine, params: TransitionParams): void {
+    const resolved = this.resolveCurrentPlan(sm, params);
+    if (!resolved) return;
+    const digest = this.hashPlan(resolved.planPath);
+    if (digest) {
+      sm.recordApprovedPlan(resolved.planPath, digest);
+    }
+  }
+
+  private assertApprovedPlanUnchanged(sm: StateMachine, params: TransitionParams): void {
+    const expected = sm.approvedPlanDigest;
+    if (!expected) return;
+
+    const resolved = this.resolveCurrentPlan(sm, params);
+    const planPath = resolved?.planPath ?? sm.approvedPlanPath;
+    const actual = planPath ? this.hashPlan(planPath) : null;
+
+    if (actual !== null && actual === expected) {
+      return;
+    }
+
+    throw new ValidationError(
+      'approvedPlanDigest',
+      actual,
+      MSG_PLAN_MODIFIED_DURING_GATE
+        .replace('{path}', planPath ?? '(unknown plan path)')
+        .replace('{expected}', expected)
+        .replace('{actual}', actual ?? '(unreadable)')
+    );
   }
 }

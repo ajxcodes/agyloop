@@ -209,6 +209,15 @@ class MockPlanGenerator implements PlanGeneratorPort {
   public readPlanDocument(planPath: string): string {
     return fs.readFileSync(planPath, 'utf8');
   }
+
+  /** Deterministic, content-addressed stand-in for the sha256 adapter (#298). */
+  public hashPlanDocument(planPath: string): string | null {
+    try {
+      return `sha256:${fs.readFileSync(planPath, 'utf8')}`;
+    } catch {
+      return null;
+    }
+  }
 }
 
 /**
@@ -1097,5 +1106,77 @@ describe('StartImplementationUseCase supplied-plan validation (#267)', () => {
     } finally {
       fsReal.rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('StartImplementationUseCase - approved plan digest (issue #298)', () => {
+  let tempDir: string;
+  let planDir: string;
+  let planPath: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-impl-digest-'));
+    planDir = path.join(tempDir, 'artifacts/plans/16-test-task');
+    fs.mkdirSync(planDir, { recursive: true });
+    planPath = path.join(planDir, 'implementation-plan.md');
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1\n', 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function snapshotAt(stage: string, extra: Record<string, unknown> = {}): any {
+    return {
+      version: '1.0.0',
+      currentStage: stage,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage, timestamp: new Date().toISOString() }],
+      ...extra
+    };
+  }
+
+  test('SI-D1: a fresh approval records the digest and the plan path', async () => {
+    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const planGen = new MockPlanGenerator(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+    const expected = planGen.hashPlanDocument(planPath);
+
+    assert.strictEqual(result.resumed, false);
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, expected);
+    assert.strictEqual(result.stateMachine.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, expected);
+  });
+
+  test('SI-D2: a resume never overwrites an existing approved digest', async () => {
+    const stateRepo = new MockStateRepository(
+      snapshotAt(STAGE_IMPLEMENT, {
+        approvedPlanDigest: 'frozen-digest',
+        approvedPlanPath: planPath
+      })
+    );
+    const planGen = new MockPlanGenerator(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.resumed, true);
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, 'frozen-digest');
+  });
+
+  test('SI-D3: a dry run records nothing', async () => {
+    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const planGen = new MockPlanGenerator(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: true });
+
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, null);
+    assert.strictEqual(stateRepo.saveCallCount, 0);
   });
 });

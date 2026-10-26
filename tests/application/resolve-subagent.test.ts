@@ -367,3 +367,83 @@ index 1111111..2222222 100644
   });
 });
 
+
+describe('Gate prompt evidence contract (issue #298)', () => {
+  const { SmokeProtocol, HEADING_QUALITY_GATE_TARGETS, HEADING_MANUAL_SMOKE_TEST_PROTOCOL } =
+    require('../../dist/domain');
+
+  const SMOKE_PLAN = [
+    '# Plan',
+    '',
+    '## 6. Manual Smoke Test Protocol',
+    '',
+    '#### Check 1 — the app starts',
+    '',
+    '```bash',
+    'echo "S1 PASS"',
+    '```',
+    ''
+  ].join('\n');
+
+  function useCase(): any {
+    return new ResolveSubagentUseCase(new MockConfigRepo());
+  }
+
+  test('RS-G1: the prompt states cwd, source, frozen checks and the edit ban', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm run build', 'npm run lint', 'npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan',
+      commandSourceDetail: 'approved plan Quality Gate Targets from /repo/artifacts/plans/41/implementation_plan.md',
+      planPath: '/repo/artifacts/plans/41/implementation_plan.md',
+      requiredLint: true,
+      smokeProtocol: SmokeProtocol.fromPlan(SMOKE_PLAN),
+      planIntegrity: {
+        status: 'verified',
+        planPath: '/repo/artifacts/plans/41/implementation_plan.md',
+        expectedDigest: 'abc',
+        actualDigest: 'abc'
+      }
+    });
+
+    assert.ok(prompt.includes('### Execution Cwd'));
+    assert.ok(prompt.includes('/repo/.worktrees/41'));
+    assert.match(prompt, /Do not cd to the repository root/i);
+    assert.ok(prompt.includes('### Command Source'));
+    assert.match(prompt, /Source:\s*plan/);
+    assert.match(prompt, /explicit > plan > config > act > auto-detect > default/);
+    assert.ok(prompt.includes('Do NOT edit the plan'));
+    assert.ok(prompt.includes('frozen at dispatch'));
+    assert.ok(prompt.includes('Check 1'));
+    assert.ok(prompt.includes('plan line'));
+    assert.ok(!prompt.includes('execute those steps automatically'));
+    assert.match(prompt, /Command Source:\s*plan/);
+    assert.match(prompt, /Smoke Protocol: PASSED \| FAILED \| NOT DECLARED/);
+  });
+
+  test('RS-G2: a required lint with no lint command is an invariant violation', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan',
+      requiredLint: true
+    });
+
+    assert.ok(prompt.includes('### Lint Invariant Violation'));
+    assert.match(prompt, /MUST be FAILED/);
+  });
+
+  test('RS-G3: the planner prompt requires both exact headings and the implementer forbids edits', () => {
+    const plannerPrompt = useCase().buildPlanningTaskPrompt({ issueNumber: 41 });
+    assert.ok(plannerPrompt.includes(HEADING_QUALITY_GATE_TARGETS));
+    assert.ok(plannerPrompt.includes(HEADING_MANUAL_SMOKE_TEST_PROTOCOL));
+
+    const implementerPrompt = useCase().buildImplementationTaskPrompt({
+      issueNumber: 41,
+      planPath: '/repo/artifacts/plans/41/implementation_plan.md'
+    });
+    assert.ok(implementerPrompt.includes('Do not edit the approved plan'));
+  });
+});

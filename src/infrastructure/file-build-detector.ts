@@ -97,6 +97,7 @@ import {
   CONFIDENCE_CERTAIN,
   CMD_ID_TYPECHECK,
   CMD_ID_BUILD,
+  CMD_ID_LINT,
   CMD_ID_TEST,
   CMD_ID_PLAYWRIGHT,
   CMD_ID_GO_VET,
@@ -112,6 +113,7 @@ import {
   CMD_ID_ACT,
   CMD_LABEL_TYPECHECK,
   CMD_LABEL_BUILD,
+  CMD_LABEL_LINT,
   CMD_LABEL_TEST,
   CMD_LABEL_PLAYWRIGHT,
   CMD_LABEL_GO_VET,
@@ -127,15 +129,34 @@ import {
   CMD_LABEL_ACT,
   CMD_PREFIX_CUSTOM,
   CMD_PREFIX_CONFIG,
+  CMD_LABEL_CUSTOM,
+  CMD_LABEL_CONFIG,
+  CMD_ID_PLAN_TARGET_PREFIX,
+  CMD_LABEL_PLAN_TARGET,
+  GATE_COMMAND_SOURCE_EXPLICIT,
+  GATE_COMMAND_SOURCE_PLAN,
+  GATE_COMMAND_SOURCE_CONFIG,
+  GATE_COMMAND_SOURCE_ACT,
+  GATE_COMMAND_SOURCE_AUTO_DETECT,
+  GATE_COMMAND_SOURCE_DEFAULT,
+  GateCommandPlan,
+  GateCommandSource,
+  isLintCommand,
   SCRIPT_NAME_TYPECHECK,
   SCRIPT_NAME_BUILD,
+  SCRIPT_NAME_LINT,
   SCRIPT_NAME_TEST,
   NPM_DEFAULT_TEST_STUB,
   PYTEST_INDICATOR_KEYWORD,
   PYTEST_CONFIG_HEADER
 } from '../domain';
 
-import { BuildDetectorPort, DetectedProject, AgyLoopConfig } from '../ports';
+import {
+  BuildDetectorPort,
+  DetectedProject,
+  AgyLoopConfig,
+  GateCommandResolutionOptions
+} from '../ports';
 
 export class FileBuildDetector implements BuildDetectorPort {
   /**
@@ -320,40 +341,152 @@ export class FileBuildDetector implements BuildDetectorPort {
   /**
    * Resolves the concrete verification commands following strict precedence:
    * 1. explicitCommands parameter
-   * 2. config overrides (gateCommands / quality_gates.commands)
-   * 3. auto-detected ecosystem commands
-   * 4. default gate commands fallback
+   * 2. approved plan targets
+   * 3. config overrides (gateCommands / quality_gates.commands)
+   * 4. act container gate
+   * 5. auto-detected ecosystem commands
+   * 6. default gate commands fallback
+   *
+   * Thin compatibility wrapper over `resolveCommandPlan` (issue #298): there is
+   * exactly ONE precedence implementation.
    */
   public async resolveCommands(
     workspaceDir: string,
     config?: AgyLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]> {
+    const plan = await this.resolveCommandPlan(workspaceDir, config, { explicitCommands });
+    return plan.commands;
+  }
+
+  /**
+   * Resolves the verification command list WITH provenance (issue #298).
+   *
+   * Detected Node lint is non-optional: when the workspace declares a `lint`
+   * script and the chosen list omits it, the detected command is appended at
+   * the end and recorded in `appended`. Plan order is otherwise untouched.
+   */
+  public async resolveCommandPlan(
+    workspaceDir: string,
+    config?: AgyLoopConfig,
+    options: GateCommandResolutionOptions = {}
+  ): Promise<GateCommandPlan> {
+    const detected = await this.detectBestEffort(workspaceDir, config);
+    const detectedLint = detected?.commands.find((cmd) => cmd.id === CMD_ID_LINT) ?? null;
+    const planPath = options.planPath ?? null;
+
+    const finalize = (
+      commands: readonly GateCommandDefinition[],
+      source: GateCommandSource,
+      sourceDetail: string
+    ): GateCommandPlan => this.buildCommandPlan(commands, source, sourceDetail, planPath, detectedLint);
+
     // 1. Explicit CLI / parameter commands (Highest precedence)
-    if (explicitCommands && explicitCommands.length > 0) {
-      return this.normalizeCommands(explicitCommands, CMD_PREFIX_CUSTOM);
+    if (options.explicitCommands && options.explicitCommands.length > 0) {
+      return finalize(
+        this.normalizeCommands(options.explicitCommands, CMD_PREFIX_CUSTOM),
+        GATE_COMMAND_SOURCE_EXPLICIT,
+        'explicit commands (CLI --commands / caller parameter)'
+      );
     }
 
-    // 2. Explicit configuration overrides (.agyloop.json / config.default.json)
+    // 2. Approved plan Quality Gate Targets
+    if (options.planTargets && options.planTargets.length > 0) {
+      const planCommands = options.planTargets.map((command, idx) => ({
+        id: `${CMD_ID_PLAN_TARGET_PREFIX}${idx + 1}`,
+        label: `${CMD_LABEL_PLAN_TARGET} ${idx + 1}`,
+        command
+      }));
+      return finalize(
+        planCommands,
+        GATE_COMMAND_SOURCE_PLAN,
+        planPath
+          ? `approved plan Quality Gate Targets from ${planPath}`
+          : 'approved plan Quality Gate Targets'
+      );
+    }
+
+    // 3. Explicit configuration overrides (.agyloop.json / config.default.json)
     const configuredCommands = this.extractConfiguredCommands(config);
     if (configuredCommands && configuredCommands.length > 0) {
-      return this.normalizeCommands(configuredCommands, CMD_PREFIX_CONFIG);
+      return finalize(
+        this.normalizeCommands(configuredCommands, CMD_PREFIX_CONFIG),
+        GATE_COMMAND_SOURCE_CONFIG,
+        'configuration gateCommands / quality_gates.commands override'
+      );
     }
 
-    // 2b. Act Container Gate Resolution (if enabled/configured or auto-detected with containerGates: true)
+    // 4. Act Container Gate Resolution (if enabled/configured or auto-detected with containerGates: true)
     const actCommand = this.resolveActCommand(workspaceDir, config);
     if (actCommand) {
-      return [actCommand];
+      return finalize([actCommand], GATE_COMMAND_SOURCE_ACT, 'act container gate');
     }
 
-    // 3. Auto-detected commands from workspace filesystem markers
-    const detected = await this.detect(workspaceDir, config);
-    if (detected.commands && detected.commands.length > 0) {
-      return detected.commands;
+    // 5. Auto-detected commands from workspace filesystem markers
+    if (detected && detected.ecosystems.length > 0) {
+      return finalize(
+        detected.commands,
+        GATE_COMMAND_SOURCE_AUTO_DETECT,
+        `auto-detected from workspace markers (${detected.primaryEcosystem.toString()})`
+      );
     }
 
-    // 4. Safe fallback
-    return DEFAULT_GATE_COMMANDS;
+    // 6. Safe fallback
+    return finalize(
+      DEFAULT_GATE_COMMANDS,
+      GATE_COMMAND_SOURCE_DEFAULT,
+      'safe default; no ecosystem markers matched'
+    );
+  }
+
+  /**
+   * Detection for provenance/lint only. Best-effort: a probe failure must not
+   * turn an explicit or plan-sourced command list into an exception.
+   */
+  private async detectBestEffort(
+    workspaceDir: string,
+    config?: AgyLoopConfig
+  ): Promise<DetectedProject | null> {
+    try {
+      return await this.detect(workspaceDir, config);
+    } catch {
+      return null;
+    }
+  }
+
+  private buildCommandPlan(
+    commands: readonly GateCommandDefinition[],
+    source: GateCommandSource,
+    sourceDetail: string,
+    planPath: string | null,
+    detectedLint: GateCommandDefinition | null
+  ): GateCommandPlan {
+    const finalCommands: GateCommandDefinition[] = [...commands];
+    const appended: string[] = [];
+    let lintRequired = false;
+    let lintCommand: string | null = null;
+
+    if (detectedLint !== null) {
+      lintRequired = true;
+      const existingLint = finalCommands.find((cmd) => isLintCommand(cmd));
+      if (existingLint) {
+        lintCommand = existingLint.command;
+      } else {
+        finalCommands.push(detectedLint);
+        appended.push(detectedLint.command);
+        lintCommand = detectedLint.command;
+      }
+    }
+
+    return {
+      commands: finalCommands,
+      source,
+      sourceDetail,
+      appended,
+      lintRequired,
+      lintCommand,
+      planPath
+    };
   }
 
   private detectNodeEcosystem(
@@ -384,6 +517,15 @@ export class FileBuildDetector implements BuildDetectorPort {
         id: CMD_ID_BUILD,
         label: `${CMD_LABEL_BUILD} (${pkgMgr})`,
         command: `${pkgMgr} run ${SCRIPT_NAME_BUILD}`
+      });
+    }
+
+    // Check lint script (issue #298: a Node gate can never pass without lint)
+    if (scripts[SCRIPT_NAME_LINT]) {
+      commands.push({
+        id: CMD_ID_LINT,
+        label: `${CMD_LABEL_LINT} (${pkgMgr})`,
+        command: `${pkgMgr} run ${SCRIPT_NAME_LINT}`
       });
     }
 
@@ -564,8 +706,8 @@ export class FileBuildDetector implements BuildDetectorPort {
     return commands.map((cmd, idx) => {
       const defaultId = `${prefix}-cmd-${idx + 1}`;
       const defaultLabel = prefix === CMD_PREFIX_CUSTOM
-        ? `Custom Command ${idx + 1}`
-        : `Configured Command ${idx + 1}`;
+        ? `${CMD_LABEL_CUSTOM} ${idx + 1}`
+        : `${CMD_LABEL_CONFIG} ${idx + 1}`;
 
       if (typeof cmd === 'string') {
         return {

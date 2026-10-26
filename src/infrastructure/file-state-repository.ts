@@ -23,7 +23,12 @@ import {
   SMOKE_SANDBOX_HOME_SEGMENTS,
   SMOKE_SANDBOX_DIR_PREFIX,
   SMOKE_ISOLATION_ARTIFACTS_DIR,
-  SMOKE_ISOLATION_ARTIFACTS_PREFIX
+  SMOKE_ISOLATION_ARTIFACTS_PREFIX,
+  ENV_NODE_ENV,
+  ENV_NODE_VALUE_TEST,
+  ENV_NODE_TEST_CONTEXT,
+  ENV_ALLOW_WORKTREE_ISSUE_MISMATCH,
+  ENV_FLAG_ENABLED
 } from '../domain';
 import { StateRepository } from '../ports';
 
@@ -33,12 +38,27 @@ export class FileStateRepository implements StateRepository {
   private static readonly mainWorktreeRootCache = new Map<string, string>();
   private readonly stateFilePath: string;
   private readonly workspaceRoot: string;
+  /**
+   * Cross-worktree issue-match policy (issue #298).
+   *
+   * `undefined`  -> default policy: bypass under a test-run signal.
+   * `true`       -> always bypass (an operator running a fixture).
+   * `false`      -> always strict, even under NODE_ENV=test. This is what the
+   *                 tests that pin the operator guard pass.
+   */
+  private readonly allowWorktreeIssueMismatch?: boolean;
 
-  constructor(options: { workspaceDir?: string; stateFilePath?: string; issue?: number | null } = {}) {
+  constructor(options: {
+    workspaceDir?: string;
+    stateFilePath?: string;
+    issue?: number | null;
+    allowWorktreeIssueMismatch?: boolean;
+  } = {}) {
     const workspace = options.workspaceDir
       ? path.resolve(options.workspaceDir)
       : this.discoverWorkspaceRoot(process.cwd());
     this.workspaceRoot = workspace;
+    this.allowWorktreeIssueMismatch = options.allowWorktreeIssueMismatch;
 
     if (options.stateFilePath) {
       this.stateFilePath = options.stateFilePath;
@@ -131,7 +151,11 @@ export class FileStateRepository implements StateRepository {
     if (parsed.kind !== 'valid') {
       throw new ValidationError('issue', parsed.kind === 'invalid' ? parsed.raw : issue, invalidIssueTokenMessage(issue));
     }
-    return new FileStateRepository({ workspaceDir: this.workspaceRoot, issue: parsed.issue });
+    return new FileStateRepository({
+      workspaceDir: this.workspaceRoot,
+      issue: parsed.issue,
+      allowWorktreeIssueMismatch: this.allowWorktreeIssueMismatch
+    });
   }
 
   /**
@@ -458,7 +482,32 @@ export class FileStateRepository implements StateRepository {
     ];
   }
 
+  /**
+   * True when this process is a TEST RUN (issue #298).
+   *
+   * The guard exists to stop an operator/CLI command from writing another
+   * task's checkpoint while standing in a worktree. A test process that seeds
+   * a fixture issue must not be refused for the cwd it happens to run in.
+   *
+   * Deliberately NOT reused by `validateSmokeTestIsolation`: that policy is
+   * about reaching REAL state and is stricter.
+   */
+  private isTestCaseRun(): boolean {
+    return (
+      process.env[ENV_NODE_ENV] === ENV_NODE_VALUE_TEST ||
+      Boolean(process.env[ENV_NODE_TEST_CONTEXT]) ||
+      process.env[ENV_ALLOW_WORKTREE_ISSUE_MISMATCH] === ENV_FLAG_ENABLED
+    );
+  }
+
   private validateWorktreeIssueMatch(snapshot: StateMachineSnapshot): void {
+    if (this.allowWorktreeIssueMismatch === true) {
+      return;
+    }
+    if (this.allowWorktreeIssueMismatch === undefined && this.isTestCaseRun()) {
+      return;
+    }
+
     const inferredIssue = IssueNumber.inferFromPath(process.cwd());
     if (inferredIssue !== null && snapshot.issue !== undefined && snapshot.issue !== inferredIssue) {
       throw new StateStorageError(

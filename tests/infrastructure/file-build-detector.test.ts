@@ -605,3 +605,126 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
     });
   });
 });
+
+describe('FileBuildDetector - lint and command-plan provenance (issue #298)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-build-lint-'));
+  });
+
+  afterEach(() => {
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  function writePackage(scripts: Record<string, string>, lockfile?: string): void {
+    fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ name: 'lint-probe', scripts }), 'utf8');
+    if (lockfile) {
+      fs.writeFileSync(path.join(tempDir, lockfile), '', 'utf8');
+    }
+  }
+
+  function configWith(commands: string[]): any {
+    return {
+      models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+      options: {
+        commitAfter: false,
+        gateTimeoutSeconds: 300,
+        autoApproveInYolo: true,
+        enableMcpInPlanner: true,
+        gateCommands: commands
+      }
+    };
+  }
+
+  test('FBD-L1: the Node detector emits typecheck, lint, test in that order', async () => {
+    writePackage({ typecheck: 'tsc --noEmit', lint: 'eslint .', test: 'node --test' });
+
+    const detected = await new FileBuildDetector().detect(tempDir);
+
+    assert.deepStrictEqual(
+      detected.commands.map((cmd: any) => cmd.command),
+      ['npm run typecheck', 'npm run lint', 'npm test']
+    );
+    assert.deepStrictEqual(
+      detected.commands.map((cmd: any) => cmd.id),
+      ['typecheck', 'lint', 'test']
+    );
+  });
+
+  test('FBD-L2: no lint script means no lint command', async () => {
+    writePackage({ typecheck: 'tsc --noEmit', test: 'node --test' });
+
+    const detected = await new FileBuildDetector().detect(tempDir);
+
+    assert.ok(!detected.commands.some((cmd: any) => cmd.command.split(/\s+/).includes('lint')));
+  });
+
+  test('FBD-P1: precedence is explicit > plan > config > auto-detect', async () => {
+    writePackage({ typecheck: 'tsc --noEmit', lint: 'eslint .', test: 'node --test' });
+    const detector = new FileBuildDetector();
+
+    const explicit = await detector.resolveCommandPlan(tempDir, configWith(['echo config']), {
+      explicitCommands: ['echo explicit'],
+      planTargets: ['echo plan']
+    });
+    assert.strictEqual(explicit.source, 'explicit');
+    assert.strictEqual(explicit.commands[0].command, 'echo explicit');
+
+    const plan = await detector.resolveCommandPlan(tempDir, configWith(['echo config']), {
+      planTargets: ['echo plan']
+    });
+    assert.strictEqual(plan.source, 'plan');
+    assert.deepStrictEqual(
+      plan.commands.map((cmd: any) => cmd.command),
+      ['echo plan', 'npm run lint']
+    );
+
+    const config = await detector.resolveCommandPlan(tempDir, configWith(['echo config']));
+    assert.strictEqual(config.source, 'config');
+
+    const detected = await detector.resolveCommandPlan(tempDir);
+    assert.strictEqual(detected.source, 'auto-detect');
+    assert.deepStrictEqual(
+      detected.commands.map((cmd: any) => cmd.command),
+      ['npm run typecheck', 'npm run lint', 'npm test']
+    );
+  });
+
+  test('FBD-P2: plan targets keep their order and mandatory lint is appended last', async () => {
+    writePackage({ lint: 'eslint .', test: 'node --test' });
+    const detector = new FileBuildDetector();
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run build', 'npm test'],
+      planPath: '/repo/artifacts/plans/41/implementation_plan.md'
+    });
+
+    assert.strictEqual(resolved.source, 'plan');
+    assert.strictEqual(resolved.lintRequired, true);
+    assert.strictEqual(resolved.lintCommand, 'npm run lint');
+    assert.deepStrictEqual(resolved.appended, ['npm run lint']);
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run build', 'npm test', 'npm run lint']
+    );
+    assert.strictEqual(resolved.planPath, '/repo/artifacts/plans/41/implementation_plan.md');
+  });
+
+  test('FBD-P3: no plan targets falls back with a visible detail', async () => {
+    fs.writeFileSync(path.join(tempDir, 'README.md'), '# docs', 'utf8');
+    const detector = new FileBuildDetector();
+
+    const resolved = await detector.resolveCommandPlan(tempDir);
+
+    assert.strictEqual(resolved.source, 'default');
+    assert.ok(resolved.sourceDetail.includes('safe default'));
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      DEFAULT_GATE_COMMANDS.map((cmd: any) => cmd.command)
+    );
+    assert.deepStrictEqual(resolved.appended, []);
+  });
+});

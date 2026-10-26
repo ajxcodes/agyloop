@@ -517,6 +517,109 @@ export const DEFAULT_GATE_COMMANDS: readonly GateCommandDefinition[] = Object.fr
   })
 ]);
 
+/**
+ * Gate command provenance (issue #298).
+ *
+ * The resolver returns the source it used so a dispatched payload or an
+ * in-process gate can state WHY this list was executed. The source is never
+ * inferred by a consumer.
+ */
+export const GATE_COMMAND_SOURCE_EXPLICIT = 'explicit' as const;
+export const GATE_COMMAND_SOURCE_PLAN = 'plan' as const;
+export const GATE_COMMAND_SOURCE_CONFIG = 'config' as const;
+export const GATE_COMMAND_SOURCE_ACT = 'act' as const;
+export const GATE_COMMAND_SOURCE_AUTO_DETECT = 'auto-detect' as const;
+export const GATE_COMMAND_SOURCE_DEFAULT = 'default' as const;
+
+/** The ONE precedence string quoted by prompts and reports. */
+export const GATE_COMMAND_PRECEDENCE =
+  'explicit > plan > config > act > auto-detect > default' as const;
+
+/** Plan-sourced command definitions (issue #298). */
+export const CMD_PREFIX_PLAN = 'plan' as const;
+export const CMD_ID_PLAN_TARGET_PREFIX = `${CMD_PREFIX_PLAN}-` as const;
+export const CMD_LABEL_PLAN_TARGET = 'Plan Target' as const;
+
+/**
+ * The plan's verification headings (issue #298). Case-insensitive, optional
+ * numbering. The FIRST heading present wins; the smoke heading always ends
+ * target collection.
+ */
+export const HEADING_QUALITY_GATE_TARGETS = 'Quality Gate Targets' as const;
+export const HEADING_QUALITY_GATE_VERIFICATION = 'Quality Gate & Test Verification' as const;
+export const HEADING_AUTOMATED_TEST_TARGETS = 'Automated Test Targets' as const;
+export const HEADING_BUILD_LINT_COMMANDS = 'Build / Lint Commands' as const;
+export const HEADING_MANUAL_SMOKE_TEST_PROTOCOL = 'Manual Smoke Test Protocol' as const;
+
+export const PLAN_TARGET_HEADING_CANDIDATES: readonly string[] = Object.freeze([
+  HEADING_QUALITY_GATE_TARGETS,
+  HEADING_QUALITY_GATE_VERIFICATION,
+  HEADING_AUTOMATED_TEST_TARGETS,
+  HEADING_BUILD_LINT_COMMANDS
+]);
+
+/** Synthetic gate report ids for plan-contract failures (issue #298). */
+export const CMD_ID_SMOKE_PROTOCOL = 'smoke-protocol' as const;
+export const CMD_LABEL_SMOKE_PROTOCOL = 'Manual Smoke Test Protocol' as const;
+export const CMD_ID_PLAN_INTEGRITY = 'plan-integrity' as const;
+export const CMD_LABEL_PLAN_INTEGRITY = 'Approved Plan Integrity' as const;
+
+/** Runtime smoke attribution markers (issue #298). */
+export const SMOKE_CHECK_MARKER_PREFIX = '__AGYLOOP_SMOKE_CHECK_' as const;
+export const SMOKE_CHECK_MARKER_SUFFIX = '__' as const;
+export const SMOKE_SCRIPT_SHELL = 'bash' as const;
+
+export const SMOKE_STATUS_PASSED = 'PASSED' as const;
+export const SMOKE_STATUS_FAILED = 'FAILED' as const;
+export const SMOKE_STATUS_NOT_DECLARED = 'NOT DECLARED' as const;
+export const SMOKE_STATUS_TIMED_OUT = 'TIMED_OUT' as const;
+
+/** Static smoke-protocol findings (issue #298). */
+export const SMOKE_RULE_QUOTED_JSON_COMPARISON = 'quoted-json-comparison' as const;
+export const SMOKE_RULE_BARE_MODULE_PATH = 'bare-module-path' as const;
+export const SMOKE_RULE_NO_EXECUTABLE_CHECK = 'no-executable-check' as const;
+export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
+
+/** Plan integrity verdicts (issue #298). */
+export const PLAN_INTEGRITY_VERIFIED = 'verified' as const;
+export const PLAN_INTEGRITY_UNVERIFIED = 'unverified' as const;
+export const PLAN_INTEGRITY_MISMATCH = 'mismatch' as const;
+export const PLAN_INTEGRITY_MISSING = 'missing' as const;
+
+export type PlanIntegrityStatus =
+  | typeof PLAN_INTEGRITY_VERIFIED
+  | typeof PLAN_INTEGRITY_UNVERIFIED
+  | typeof PLAN_INTEGRITY_MISMATCH
+  | typeof PLAN_INTEGRITY_MISSING;
+
+/** Test-run signals that relax the cross-worktree state guard (issue #298). */
+export const ENV_NODE_ENV = 'NODE_ENV' as const;
+export const ENV_NODE_VALUE_TEST = 'test' as const;
+export const ENV_NODE_TEST_CONTEXT = 'NODE_TEST_CONTEXT' as const;
+export const ENV_ALLOW_WORKTREE_ISSUE_MISMATCH = 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH' as const;
+export const ENV_FLAG_ENABLED = '1' as const;
+
+/** Operator-facing prompts / report labels (issue #298). */
+export const LABEL_EXECUTION_CWD = 'Execution Cwd' as const;
+export const LABEL_COMMAND_SOURCE = 'Command Source' as const;
+export const LABEL_PLAN_INTEGRITY = 'Plan Integrity' as const;
+export const LABEL_SMOKE_PROTOCOL = 'Smoke Protocol' as const;
+
+export const MSG_PLAN_MODIFIED_AFTER_APPROVAL =
+  'The approved plan changed after approval: {path}. Expected digest {expected}, found {actual}. Restore the approved plan or re-run planning and approval (PLAN -> APPROVAL -> IMPLEMENT).' as const;
+export const MSG_PLAN_MODIFIED_DURING_GATE =
+  'The approved plan changed during the quality gate: {path}. Expected digest {expected}, found {actual}. A gate cannot certify an artifact it did not execute.' as const;
+export const MSG_PLAN_APPROVED_MISSING =
+  'The approved plan is missing or unreadable: {path}. Expected digest {expected}. Restore the approved plan before re-running the gate.' as const;
+export const MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE =
+  'Manual Smoke Test Protocol is not executable: check "{check}" at plan line {line} violates rule "{rule}": {excerpt}' as const;
+export const MSG_SMOKE_PROTOCOL_FAILED =
+  'Manual Smoke Test Protocol failed at check "{check}" (plan line {line}){detail}.' as const;
+export const MSG_SMOKE_PROTOCOL_NO_CHECKS =
+  'Manual Smoke Test Protocol declared no executable check; a zero-check protocol cannot pass the gate.' as const;
+export const MSG_GATE_LINT_MISSING =
+  'Lint is mandatory for this Node project, but no resolved gate command is a lint command.' as const;
+
 export const MAX_FILTERED_LOG_LINES = 30 as const;
 export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;
 
@@ -894,6 +997,7 @@ export const CONFIDENCE_NONE = 0.0 as const;
 // Command IDs
 export const CMD_ID_TYPECHECK = 'typecheck' as const;
 export const CMD_ID_BUILD = 'build' as const;
+export const CMD_ID_LINT = 'lint' as const;
 export const CMD_ID_TEST = 'test' as const;
 export const CMD_ID_PLAYWRIGHT = 'playwright' as const;
 export const CMD_ID_GO_VET = 'go-vet' as const;
@@ -915,6 +1019,7 @@ export const KEYWORD_VET = 'vet' as const;
 // Command Labels
 export const CMD_LABEL_TYPECHECK = 'TypeScript Compilation & Typecheck' as const;
 export const CMD_LABEL_BUILD = 'Build Script' as const;
+export const CMD_LABEL_LINT = 'Lint' as const;
 export const CMD_LABEL_TEST = 'Automated Test Suite' as const;
 export const CMD_LABEL_PLAYWRIGHT = 'Playwright End-to-End Test Suite' as const;
 export const CMD_LABEL_GO_VET = 'Go Vet Analysis' as const;
@@ -932,10 +1037,13 @@ export const CMD_LABEL_ACT = 'Act Container Workflow Verification' as const;
 // Command Prefixes
 export const CMD_PREFIX_CUSTOM = 'custom' as const;
 export const CMD_PREFIX_CONFIG = 'config' as const;
+export const CMD_LABEL_CUSTOM = 'Custom Command' as const;
+export const CMD_LABEL_CONFIG = 'Configured Command' as const;
 
 // Detection Indicators & Script Constants
 export const SCRIPT_NAME_TYPECHECK = 'typecheck' as const;
 export const SCRIPT_NAME_BUILD = 'build' as const;
+export const SCRIPT_NAME_LINT = 'lint' as const;
 export const SCRIPT_NAME_TEST = 'test' as const;
 export const NPM_DEFAULT_TEST_STUB = 'no test specified' as const;
 export const PYTEST_INDICATOR_KEYWORD = 'pytest' as const;

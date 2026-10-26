@@ -419,3 +419,46 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     });
   });
 });
+
+describe('Approved plan digest state (issue #298)', () => {
+  function snapshotWithoutDigest(): any {
+    return {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: 'standard',
+      issue: 41,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+  }
+
+  test('SM-D1: the digest and path round-trip through the snapshot', () => {
+    const sm = StateMachine.fromSnapshot(snapshotWithoutDigest());
+    sm.recordApprovedPlan('/repo/artifacts/plans/41/implementation_plan.md', 'sha256-abc');
+
+    const snapshot = sm.toSnapshot();
+    assert.strictEqual(snapshot.approvedPlanDigest, 'sha256-abc');
+    assert.strictEqual(snapshot.approvedPlanPath, '/repo/artifacts/plans/41/implementation_plan.md');
+
+    const reloaded = StateMachine.fromSnapshot(snapshot);
+    assert.strictEqual(reloaded.approvedPlanDigest, 'sha256-abc');
+    assert.strictEqual(reloaded.approvedPlanPath, '/repo/artifacts/plans/41/implementation_plan.md');
+  });
+
+  test('SM-D2: a legacy snapshot without a digest loads as null, never broken', () => {
+    const sm = StateMachine.fromSnapshot(snapshotWithoutDigest());
+    assert.strictEqual(sm.approvedPlanDigest, null);
+    assert.strictEqual(sm.approvedPlanPath, null);
+    assert.strictEqual(sm.toSnapshot().approvedPlanDigest, null);
+  });
+
+  test('SM-D3: reset clears the approved plan identity', () => {
+    const sm = StateMachine.fromSnapshot(snapshotWithoutDigest());
+    sm.recordApprovedPlan('/repo/plan.md', 'sha256-abc');
+    sm.reset('standard', 41);
+
+    assert.strictEqual(sm.approvedPlanDigest, null);
+    assert.strictEqual(sm.approvedPlanPath, null);
+  });
+});

@@ -250,6 +250,19 @@ export class StartImplementationUseCase {
 
     const planContent = resolved ? this.planGenerator.readPlanDocument(resolved.planPath) : '';
 
+    // Issue #298: freeze the approved plan's identity. A fresh approval always
+    // records it; a resume only fills a missing one (a legacy checkpoint), so
+    // a self-correction retry can never re-bless edited bytes.
+    if (!params.dryRun && resolved?.planPath && (!resumed || !sm.approvedPlanDigest)) {
+      const digest =
+        typeof this.planGenerator.hashPlanDocument === 'function'
+          ? this.planGenerator.hashPlanDocument(resolved.planPath)
+          : null;
+      if (digest) {
+        sm.recordApprovedPlan(resolved.planPath, digest);
+      }
+    }
+
     // Issue #267: a plan the operator SUPPLIED must be non-blank before the
     // implementer is dispatched. The tool's OWN blank scaffold is a different
     // case: the YOLO path must keep parking at IMPLEMENT with its advisory, so

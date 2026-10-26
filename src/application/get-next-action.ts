@@ -64,7 +64,13 @@ import {
   formatTriageDispositionLine,
   assertNotRootWorkspace,
   isRootWorkspace,
-  isPlanContentSubstantive
+  isPlanContentSubstantive,
+  PLAN_INTEGRITY_MISMATCH,
+  PLAN_INTEGRITY_MISSING,
+  MSG_PLAN_MODIFIED_AFTER_APPROVAL,
+  MSG_PLAN_APPROVED_MISSING,
+  MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE,
+  GATE_COMMAND_PRECEDENCE
 } from '../domain';
 import {
   StateRepository,
@@ -76,6 +82,7 @@ import {
   PullRequestReviewComment
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
 import { resolveCompletedReentry } from './lifecycle-reentry-policy';
 import { classifyPrFeedback, feedbackKeysOf } from './triage-feedback';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
@@ -551,39 +558,52 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        let commands: string[] | undefined;
-        if (this.buildDetector) {
-          const resolvedCommands = await this.buildDetector.resolveCommands(worktreePath || cwd, config);
-          commands = resolvedCommands.map(c => c.command);
+        const workspace = worktreePath || cwd;
+
+        // Issue #298: ONE shared contract for the plan, the commands, the
+        // smoke protocol and the digest. The gate is never dispatched with a
+        // list that ignores the approved plan, and never dispatched against a
+        // plan that changed after approval.
+        const verification = await resolveGateVerification({
+          projectRoot: cwd,
+          workspaceDir: workspace,
+          config,
+          issue: activeIssue,
+          planPath: sm.planPath ?? null,
+          planDir: sm.planDir,
+          planGenerator: this.planGenerator,
+          buildDetector: this.buildDetector,
+          approvedPlanDigest: sm.approvedPlanDigest
+        });
+
+        if (
+          verification.integrity.status === PLAN_INTEGRITY_MISMATCH ||
+          verification.integrity.status === PLAN_INTEGRITY_MISSING
+        ) {
+          return this.buildPlanIntegrityGateFailure(verification, baseBranch, taskBranch, worktreePath);
         }
 
-        let planContent = '';
-        let planPath: string | undefined;
-        if (this.planGenerator) {
-          const resolved = this.planGenerator.resolvePlanFile({
-            projectRoot: cwd,
-            issue: activeIssue,
-            planPath: sm.planPath ?? undefined,
-            planDir: sm.planDir,
-            stage: sm.currentStage
-          });
-          if (resolved) {
-            planPath = resolved.planPath;
-            try {
-              planContent = this.planGenerator.readPlanDocument(resolved.planPath);
-            } catch {
-              // Non-fatal
-            }
-          }
+        if (verification.smoke.findings.length > 0) {
+          return this.buildSmokeProtocolGateFailure(verification, baseBranch, taskBranch, worktreePath);
         }
+
+        const commandPlan = verification.commandPlan;
+        const commands = commandPlan.commands.map((command) => command.command);
 
         const prompt = this.resolveSubagentUseCase.buildGateTaskPrompt({
           issueNumber: activeIssue,
-          workspaceDir: worktreePath || cwd,
+          workspaceDir: workspace,
           config,
           commands,
-          planContent: planContent || undefined,
-          planPath
+          planContent: verification.planContent || undefined,
+          planPath: verification.planPath ?? undefined,
+          cwd: verification.cwd,
+          commandSource: commandPlan.source,
+          commandSourceDetail: commandPlan.sourceDetail,
+          appendedCommands: commandPlan.appended,
+          requiredLint: commandPlan.lintRequired,
+          smokeProtocol: verification.smoke,
+          planIntegrity: verification.integrity
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -593,7 +613,7 @@ export class GetNextActionUseCase {
               Role: ROLE_TITLE_GATE,
               Model: subagent.model,
               Workspace: 'inherit',
-              Prompt: `Execute verification quality gates strictly inside isolated worktree directory:\nCwd: ${worktreePath || cwd}\n\n${prompt}`
+              Prompt: `Execute verification quality gates from the execution cwd stated below.\nCwd: ${verification.cwd}\n\n${prompt}`
             }
           ]
         };
@@ -604,12 +624,12 @@ export class GetNextActionUseCase {
           actionType: 'subagent',
           role: ROLE_GATE,
           title: 'Invoke Quality Gate Verifier Subagent',
-          description: 'Run automated build, typecheck, lint, and test suites against the isolated worktree changes.',
+          description: `Run ${commands.length} verification command(s) from source '${commandPlan.source}' (${GATE_COMMAND_PRECEDENCE}) in ${verification.cwd}.`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_GATE} with Model '${subagent.model}' inside ${worktreePath || cwd}.`
+          humanSummary: `Invoke ${ROLE_TITLE_GATE} with Model '${subagent.model}' inside ${verification.cwd}; ${commands.length} command(s) from source '${commandPlan.source}'${commandPlan.lintRequired ? ', lint mandatory' : ''}.`
         };
       }
 
@@ -1159,6 +1179,73 @@ export class GetNextActionUseCase {
     } catch {
       return '';
     }
+  }
+
+  /**
+   * A plan whose digest no longer matches the approved digest (or whose
+   * approved file is gone) blocks dispatch: the gate cannot certify an
+   * artifact it was not handed (issue #298).
+   */
+  private buildPlanIntegrityGateFailure(
+    verification: GateVerification,
+    baseBranch: string,
+    taskBranch: string | null,
+    worktreePath: string | null
+  ): NextActionResult {
+    const integrity = verification.integrity;
+    const template =
+      integrity.status === PLAN_INTEGRITY_MISSING
+        ? MSG_PLAN_APPROVED_MISSING
+        : MSG_PLAN_MODIFIED_AFTER_APPROVAL;
+    const detail = template
+      .replace('{path}', integrity.planPath ?? '(unknown plan path)')
+      .replace('{expected}', integrity.expectedDigest ?? '(none)')
+      .replace('{actual}', integrity.actualDigest ?? '(unreadable)');
+
+    return {
+      currentStage: STAGE_QUALITY_GATE,
+      nextStage: STAGE_REVIEW,
+      actionType: 'human_gate',
+      title: 'Plan Integrity Gate',
+      description: `Quality Gate: FAILED — ${detail}`,
+      baseBranch,
+      taskBranch,
+      worktreePath,
+      humanSummary: `The approved plan is no longer the plan on disk (${integrity.status}). Restore it or re-run planning and approval; the gate was not dispatched.`
+    };
+  }
+
+  /**
+   * A smoke protocol the gate cannot execute as written blocks dispatch
+   * (issue #298). The certifier never amends the artifact it certifies.
+   */
+  private buildSmokeProtocolGateFailure(
+    verification: GateVerification,
+    baseBranch: string,
+    taskBranch: string | null,
+    worktreePath: string | null
+  ): NextActionResult {
+    const detail = verification.smoke.findings
+      .map((finding) =>
+        MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE
+          .replace('{check}', finding.label || `Check ${finding.checkIndex}`)
+          .replace('{line}', String(finding.line))
+          .replace('{rule}', finding.rule)
+          .replace('{excerpt}', finding.excerpt)
+      )
+      .join(' ');
+
+    return {
+      currentStage: STAGE_QUALITY_GATE,
+      nextStage: STAGE_REVIEW,
+      actionType: 'human_gate',
+      title: 'Manual Smoke Test Protocol Not Executable',
+      description: `Quality Gate: FAILED — ${detail}`,
+      baseBranch,
+      taskBranch,
+      worktreePath,
+      humanSummary: `The approved plan's Manual Smoke Test Protocol cannot be executed as written (${verification.smoke.findings.length} finding(s)). Fix the plan and re-approve it; the gate was not dispatched and the plan was not edited.`
+    };
   }
 
   /**

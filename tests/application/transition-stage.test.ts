@@ -273,3 +273,112 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
     assert.strictEqual(stateRepo.saveCallCount, 0);
   });
 });
+describe('TransitionStageUseCase - approved plan immutability (issue #298)', () => {
+  let tempDir: string;
+  let planDir: string;
+  let planPath: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-transition-digest-'));
+    planDir = path.join(tempDir, 'artifacts/plans/16-task');
+    fs.mkdirSync(planDir, { recursive: true });
+    planPath = path.join(planDir, 'implementation_plan.md');
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1\n', 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function planGenerator(): any {
+    return {
+      resolvePlanFile: () => ({
+        planDir,
+        planPath,
+        planFileName: 'implementation_plan.md'
+      }),
+      readPlanDocument: () => fs.readFileSync(planPath, 'utf8'),
+      updateSummaryLog: () => true,
+      hashPlanDocument: () => `digest:${fs.readFileSync(planPath, 'utf8')}`
+    };
+  }
+
+  function machineAt(stage: string): any {
+    const sm = StateMachine.createInitial({ issue: 16, mode: MODE_STANDARD });
+    sm.setPlanDir(planDir);
+    const route: Record<string, string[]> = {
+      [STAGE_PLAN]: [STAGE_DISCOVERY, STAGE_PLAN],
+      [STAGE_APPROVAL]: [STAGE_DISCOVERY, STAGE_PLAN, STAGE_APPROVAL],
+      [STAGE_IMPLEMENT]: [STAGE_DISCOVERY, STAGE_PLAN, STAGE_APPROVAL, STAGE_IMPLEMENT],
+      'QUALITY_GATE': [STAGE_DISCOVERY, STAGE_PLAN, STAGE_APPROVAL, STAGE_IMPLEMENT, 'QUALITY_GATE']
+    };
+    for (const step of route[stage] || []) {
+      sm.transition(step);
+    }
+    return sm;
+  }
+
+  test('TS-D1: entering IMPLEMENT from APPROVAL records the approved digest', async () => {
+    const stateRepo = new MockStateRepo(machineAt(STAGE_APPROVAL).toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    const result = await useCase.execute({
+      targetStage: STAGE_IMPLEMENT,
+      issue: 16,
+      workspaceDir: tempDir,
+      noWorktree: true
+    });
+
+    const expected = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.approvedPlanDigest, expected);
+    assert.strictEqual(result.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.savedSnapshot?.approvedPlanDigest, expected);
+  });
+
+  test('TS-D2: QUALITY_GATE -> REVIEW succeeds while the digest still matches', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    const result = await useCase.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, 'REVIEW');
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, 'REVIEW');
+  });
+
+  test('TS-D3: a plan edited after approval refuses QUALITY_GATE -> REVIEW and persists nothing', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({ targetStage: 'REVIEW', issue: 16, workspaceDir: tempDir }),
+      /changed during the quality gate/i
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, 'QUALITY_GATE');
+  });
+
+  test('TS-D4: a legacy checkpoint with no digest still transitions', async () => {
+    const stateRepo = new MockStateRepo(machineAt('QUALITY_GATE').toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    const result = await useCase.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, 'REVIEW');
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+});
