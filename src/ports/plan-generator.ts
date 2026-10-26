@@ -162,4 +162,14 @@ export interface PlanGeneratorPort {
    * Reads the plan document content from disk.
    */
   readPlanDocument(planPath: string): string;
+
+  /**
+   * Returns the sha256 of the NORMALIZED plan bytes (issue #298), or `null`
+   * when the file cannot be read. Checkbox ticks and line-ending noise are
+   * normalized away, so they are not plan edits.
+   *
+   * Optional: a legacy/external mock without it simply reports plan integrity
+   * as UNVERIFIED instead of failing.
+   */
+  hashPlanDocument?(planPath: string): string | null;
 }

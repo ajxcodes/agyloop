@@ -55,6 +55,14 @@ export interface StateMachineSnapshot {
    * TRIAGE detector must see the pull request's feedback afresh.
    */
   readonly triageDisposition?: TriageDispositionSerialized | null;
+  /**
+   * The sha256 of the NORMALIZED approved plan (issue #298). A checkpoint
+   * without one predates the contract and is reported UNVERIFIED, never
+   * broken.
+   */
+  readonly approvedPlanDigest?: string | null;
+  /** The plan path the digest was taken from (issue #298). */
+  readonly approvedPlanPath?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -122,6 +130,8 @@ export class StateMachine {
   private _worktree: WorktreeDescriptor | null;
   private _planDir: string | null;
   private _planPath: string | null;
+  private _approvedPlanDigest: string | null;
+  private _approvedPlanPath: string | null;
   private _triagePayload: string | null;
   private _triageDisposition: TriageDisposition | null;
   private _createdAt: string;
@@ -146,6 +156,8 @@ export class StateMachine {
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
     planPath?: string | null;
+    approvedPlanDigest?: string | null;
+    approvedPlanPath?: string | null;
     triagePayload?: string | null;
     triageDisposition?: TriageDisposition | null;
     createdAt?: string;
@@ -169,6 +181,8 @@ export class StateMachine {
     this._worktree = options.worktree || null;
     this._planDir = options.planDir || null;
     this._planPath = options.planPath || null;
+    this._approvedPlanDigest = options.approvedPlanDigest || null;
+    this._approvedPlanPath = options.approvedPlanPath || null;
     this._triagePayload = options.triagePayload || null;
     this._triageDisposition = options.triageDisposition || null;
     const now = new Date().toISOString();
@@ -239,6 +253,27 @@ export class StateMachine {
   /** The operator-supplied plan file, or null when none was recorded. */
   public get planPath(): string | null {
     return this._planPath;
+  }
+
+  /** The digest of the approved plan bytes, or null when never recorded. */
+  public get approvedPlanDigest(): string | null {
+    return this._approvedPlanDigest;
+  }
+
+  /** The plan path the approved digest was taken from. */
+  public get approvedPlanPath(): string | null {
+    return this._approvedPlanPath;
+  }
+
+  /**
+   * Records the approved plan's identity (issue #298). Called on a real
+   * approval, and on entering IMPLEMENT from a fresh approval — never on a
+   * retry/self-correction re-entry, which must preserve the frozen bytes.
+   */
+  public recordApprovedPlan(planPath: string | null | undefined, digest: string | null | undefined): void {
+    this._approvedPlanPath = planPath && planPath.trim() ? planPath.trim() : null;
+    this._approvedPlanDigest = digest && digest.trim().length > 0 ? digest : null;
+    this._updatedAt = new Date().toISOString();
   }
 
   public get triagePayload(): string | null {
@@ -559,6 +594,8 @@ export class StateMachine {
     this._worktree = null;
     this._planDir = null;
     this._planPath = null;
+    this._approvedPlanDigest = null;
+    this._approvedPlanPath = null;
     this._triagePayload = null;
     // A re-opened task starts with NO disposition: the tool must see the
     // pull request's feedback again, because the task is being REDONE.
@@ -620,6 +657,8 @@ export class StateMachine {
       worktree: this._worktree ? this._worktree.toJSON() : null,
       planDir: this._planDir,
       planPath: this._planPath,
+      approvedPlanDigest: this._approvedPlanDigest,
+      approvedPlanPath: this._approvedPlanPath,
       triagePayload: this._triagePayload,
       triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       createdAt: this._createdAt,
@@ -663,6 +702,8 @@ export class StateMachine {
     const baseBranch = snapshot.baseBranch || null;
     const planDir = snapshot.planDir || null;
     const planPath = snapshot.planPath || null;
+    const approvedPlanDigest = snapshot.approvedPlanDigest || null;
+    const approvedPlanPath = snapshot.approvedPlanPath || null;
     const triagePayload = snapshot.triagePayload || null;
     // A legacy checkpoint (no `triageDisposition` key) and a malformed one
     // both load as `null` — `fromJSON` never throws.
@@ -677,6 +718,8 @@ export class StateMachine {
       worktree,
       planDir,
       planPath,
+      approvedPlanDigest,
+      approvedPlanPath,
       triagePayload,
       triageDisposition,
       createdAt: snapshot.createdAt,

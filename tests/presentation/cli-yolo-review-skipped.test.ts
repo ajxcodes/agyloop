@@ -39,6 +39,9 @@ const SOURCE_FILE = 'src-target.js';
 const SOURCE_BASELINE = 'export function answer() { return 42; };\n';
 const SOURCE_IMPLEMENTED = 'export function answer() { return 7; };\n';
 
+/** The plan directory an adhoc `codeloop yolo --title 'Feature: probe'` scaffolds. */
+const ADHOC_PLAN_FILE = path.join('artifacts', 'plans', 'adhoc-feature-probe', 'implementation_plan.md');
+
 function stateFilePath(dir: string): string {
   return path.join(dir, '.agyloop', 'state.json');
 }
@@ -262,6 +265,61 @@ describe('codeloop yolo with absent critique => SKIPPED advisory (issue #236)', 
         !('selfCorrectionPayload' in (lastEntry.metadata ?? {})),
         `skipped review must not record a self-correction payload: ${JSON.stringify(lastEntry.metadata)}`
       );
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('an auto-scaffolded plan reaches COMMIT end-to-end (no PLANNER dispatch)', async (t: any) => {
+    // The yolo fast path never dispatches the PLANNER, so its plan IS the
+    // generated scaffold. That scaffold carries a placeholder-only
+    // `### Manual Smoke Test Protocol`; if the parser treats it as a broken
+    // protocol the gate refuses and every auto-scaffolded yolo reverts to
+    // IMPLEMENT (issue #298 review round 1). No plan is pre-written here.
+    const sandbox: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-yolo-scaffolded-plan-'));
+
+    try {
+      setupProbeRepo(sandbox);
+      const shadowPath = buildCritiqueFreePathShadow(path.join(sandbox, '.shadow-bin'));
+
+      const probe = await withSanitizedEnv(sandbox, shadowPath, async () => {
+        return new CliCritiqueGateway().resolveReviewer(sandbox);
+      });
+      const resolution: any = probe.value;
+      if (!resolution || resolution.source !== 'none') {
+        t.skip(
+          `environment cannot guarantee critique absence: resolveReviewer => ${JSON.stringify(resolution)}`
+        );
+        return;
+      }
+
+      const run = await withSanitizedEnv(sandbox, shadowPath, async () => {
+        return { code: await runCli(['yolo', '--title', 'Feature: probe']) };
+      });
+      const runResult: any = run.value;
+      const output = `${run.stdout}\n${run.stderr}`;
+
+      assert.strictEqual(runResult.code, EXIT_CODE_SUCCESS, `exit 0 expected; output=${output}`);
+
+      const planFile = path.join(sandbox, ADHOC_PLAN_FILE);
+      assert.ok(fs.existsSync(planFile), `the fast path must scaffold the plan it certifies: ${planFile}`);
+      const planText = fs.readFileSync(planFile, 'utf8');
+      assert.ok(
+        planText.includes('### Manual Smoke Test Protocol'),
+        'the scaffold must carry the exact heading contract'
+      );
+
+      // A placeholder-only section is NOT DECLARED — never a gate failure and
+      // never a smoke check the certifier would have to invent.
+      assert.match(output, /Smoke Protocol\s*:\s*NOT DECLARED/);
+      assert.ok(
+        !output.includes('Manual Smoke Test Protocol Not Executable'),
+        `the placeholder must not read as a broken protocol:\n${output}`
+      );
+
+      const persisted = readState(sandbox);
+      assert.ok(persisted, `state.json must exist under ${sandbox}`);
+      assert.strictEqual(persisted.currentStage, 'COMMIT', `state=${JSON.stringify(persisted)}`);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

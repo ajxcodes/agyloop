@@ -1,5 +1,6 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const path = require('path');
 const {
   getCurrentRepo,
   fetchIssueContext,
@@ -8,7 +9,9 @@ const {
 
 describe('GitHub Context Discovery (TypeScript)', () => {
   test('getCurrentRepo detects active git repository slug', () => {
-    const repo = getCurrentRepo();
+    // Resolve from THIS file, not the incidental process cwd, so the probe
+    // holds when the suite runs from `.worktrees/<n>` (issue #298).
+    const repo = getCurrentRepo(path.resolve(__dirname, '..'));
     assert.ok(repo !== null, 'Repository should be detected');
     assert.strictEqual(typeof repo, 'string');
     assert.ok(repo.includes('/'), 'Repository slug should follow owner/repo format');

@@ -65,8 +65,19 @@ import {
   TOOL_CAPABILITY_LIST,
   TOOL_CAPABILITY_WRITE,
   TOOL_CAPABILITY_EDIT,
-  TOOL_CAPABILITY_SHELL
+  TOOL_CAPABILITY_SHELL,
+  SmokeProtocol,
+  GateCommandSource,
+  GATE_COMMAND_PRECEDENCE,
+  GATE_COMMAND_SOURCE_PLAN,
+  hasLintCommand,
+  isLintCommand,
+  MSG_GATE_LINT_MISSING,
+  HEADING_QUALITY_GATE_TARGETS,
+  HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+  SMOKE_STATUS_NOT_DECLARED
 } from '../domain';
+import type { PlanIntegrityVerdict } from './resolve-gate-verification';
 
 export {
   DIFF_EXCLUDED_PATHSPECS,
@@ -229,6 +240,16 @@ export interface GateTaskPromptParams {
   readonly config?: AgyLoopConfig;
   readonly planContent?: string | null;
   readonly planPath?: string | null;
+  /** The cwd every gate command must run from (issue #298). */
+  readonly cwd?: string;
+  /** The resolver's provenance for the command list (issue #298). */
+  readonly commandSource?: GateCommandSource;
+  readonly commandSourceDetail?: string;
+  readonly appendedCommands?: readonly string[];
+  readonly requiredLint?: boolean;
+  /** The smoke checks FROZEN at dispatch (issue #298). */
+  readonly smokeProtocol?: SmokeProtocol;
+  readonly planIntegrity?: PlanIntegrityVerdict;
 }
 
 export interface ReviewerTaskPromptParams {
@@ -667,7 +688,8 @@ export class ResolveSubagentUseCase {
     prompt += `- **Summary & Acceptance Criteria**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
-    prompt += `- **Quality Gate Targets**: Precise automated test commands to verify the change.\n\n`;
+    prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
+    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons).\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -739,7 +761,8 @@ export class ResolveSubagentUseCase {
       const planFileName = params.planPath.replace(/^.*[\\/]/, '');
       prompt += `### Approved Technical Plan (${planFileName}):\n`;
       prompt += `The approved technical plan is located at \`${params.planPath}\`.\n`;
-      prompt += `You MUST read this file using ${formatToolProse([TOOL_CAPABILITY_READ])} to understand the acceptance criteria and implementation checklist before proceeding.\n\n`;
+      prompt += `You MUST read this file using ${formatToolProse([TOOL_CAPABILITY_READ])} to understand the acceptance criteria and implementation checklist before proceeding.\n`;
+      prompt += `Do not edit the approved plan; its digest is verified by the gate. Record progress in the CodeLoop Summary, never in the plan.\n\n`;
     } else if (params.planContent && params.planContent.trim()) {
       prompt += `### Approved Technical Plan (${PLAN_DEFAULT_SPECIFICATION_TITLE}):\n\n`;
       prompt += `${params.planContent.trim()}\n\n`;
@@ -804,6 +827,25 @@ export class ResolveSubagentUseCase {
       prompt += `### Active Issue: #${effectiveIssue}\n\n`;
     }
 
+    if (params.cwd) {
+      prompt += `### Execution Cwd\n`;
+      prompt += `\`${params.cwd}\`\n\n`;
+      prompt += `Run every command from this directory. Do not cd to the repository root — that tests the root checkout, not this diff. This worktree is the code under test, and a test-run signal (\`NODE_TEST_CONTEXT\`) makes the cross-worktree state guard accept fixtures seeded for another issue.\n\n`;
+    }
+
+    if (params.commandSource) {
+      prompt += `### Command Source\n`;
+      prompt += `- Source: ${params.commandSource}\n`;
+      if (params.commandSourceDetail) {
+        prompt += `- Detail: ${params.commandSourceDetail}\n`;
+      }
+      prompt += `- Precedence: ${GATE_COMMAND_PRECEDENCE}. Config and auto-detection remain the visible fallback when the approved plan declares no Quality Gate Targets.\n`;
+      if (params.appendedCommands && params.appendedCommands.length > 0) {
+        prompt += `- Mandatory commands appended: ${params.appendedCommands.map((cmd) => `\`${cmd}\``).join(', ')}\n`;
+      }
+      prompt += `\n`;
+    }
+
     if (params.commands && params.commands.length > 0) {
       prompt += `### Target Verification Commands:\n`;
       params.commands.forEach((cmd, idx) => {
@@ -816,17 +858,69 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    if (params.planPath) {
-      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
-      prompt += `You MUST read the "Manual Smoke Test Protocol" from the approved plan located at \`${params.planPath}\` using ${formatToolProse([TOOL_CAPABILITY_READ])} and execute those steps automatically using your tools.\n\n`;
-    } else if (params.planContent && params.planContent.trim()) {
-      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
-      prompt += `You MUST read the "Manual Smoke Test Protocol" from the provided plan below and execute those steps automatically using your tools.\n`;
-      prompt += `\`\`\`markdown\n${params.planContent.trim()}\n\`\`\`\n\n`;
+    const commands = params.commands ?? [];
+    const commandDefinitions = commands.map((command, idx) => ({
+      id: `command-${idx}`,
+      label: '',
+      command
+    }));
+
+    if (params.requiredLint === true) {
+      const lintCommand = commandDefinitions.find(isLintCommand)?.command;
+      prompt += `### Lint Gate\n`;
+      prompt += lintCommand
+        ? `REQUIRED — \`${lintCommand}\`. A passing verdict is impossible without this command succeeding.\n\n`
+        : `### Lint Invariant Violation\n${MSG_GATE_LINT_MISSING} The verdict MUST be FAILED.\n\n`;
+    } else if (hasLintCommand(commandDefinitions)) {
+      prompt += `### Lint Gate\n`;
+      prompt += `A lint command is part of the target list. Its failure is a build-class gate failure.\n\n`;
+    } else {
+      prompt += `### Lint Gate\n`;
+      prompt += `Lint is not declared by this project's detector, so it is not mandatory for this run.\n\n`;
     }
+
+    const smoke = params.smokeProtocol;
+    if (smoke && smoke.found) {
+      prompt += `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} (frozen at dispatch)\n`;
+      if (smoke.checks.length === 0) {
+        prompt += `No executable check was extracted. A zero-check protocol is a \`FAILED\` verdict.\n\n`;
+      } else {
+        smoke.checks.forEach((check) => {
+          const checkTitle = check.label.toLowerCase().startsWith(`check ${check.index}`)
+            ? check.label
+            : `Check ${check.index} — ${check.label}`;
+          prompt += `#### ${checkTitle} (plan line ${check.planLine})\n`;
+          prompt += `\`\`\`bash\n${check.body}\n\`\`\`\n\n`;
+        });
+      }
+      prompt += `Execute each check exactly as written, in order. Do NOT edit the plan. A failing check, a skipped check, a zero-check protocol, or any edit to the plan is a \`FAILED\` verdict naming the check and plan line.\n`;
+      if (smoke.findings.length > 0) {
+        prompt += `The verdict MUST be \`FAILED\`: this protocol is not executable as written.\n`;
+        smoke.findings.forEach((finding) => {
+          prompt += `- Rule \`${finding.rule}\`, check "${finding.label}" at plan line ${finding.line}: ${finding.excerpt}\n`;
+        });
+      }
+      prompt += `\n`;
+    } else {
+      prompt += `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\n`;
+      prompt += `This plan declares no ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} section. Report \`${SMOKE_STATUS_NOT_DECLARED}\` for it; do not invent checks.\n\n`;
+    }
+
+    prompt += `### Plan Immutability\n`;
+    prompt += `The approved plan${params.planPath ? ` at \`${params.planPath}\`` : ''} is frozen. You may read it with ${formatToolProse([TOOL_CAPABILITY_READ])}, but editing it is itself a gate failure: report \`FAILED\` and name the path. Annotations belong in the CodeLoop Summary, not in the plan.\n\n`;
 
     prompt += `### Required Verdict Output:\n`;
     prompt += `- Overall Status: PASSED or FAILED\n`;
+    if (params.cwd) {
+      prompt += `- Execution Cwd: ${params.cwd}\n`;
+    }
+    if (params.commandSource) {
+      prompt += `- Command Source: ${params.commandSource}${params.planPath && params.commandSource === GATE_COMMAND_SOURCE_PLAN ? ` (${params.planPath})` : ''}\n`;
+    }
+    if (params.planIntegrity) {
+      prompt += `- Plan Integrity: ${params.planIntegrity.status.toUpperCase()}\n`;
+    }
+    prompt += `- Smoke Protocol: PASSED | FAILED | ${SMOKE_STATUS_NOT_DECLARED}\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
     prompt += `- Concise Failure Diagnostics (if failed)\n\n`;
 

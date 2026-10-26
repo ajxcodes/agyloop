@@ -29,6 +29,7 @@ const {
   // cannot drift from the shipped wording.
   MSG_GATE_VACUOUS,
   MSG_GATE_UNMEASURABLE,
+  MSG_GATE_LINT_MISSING,
   LABEL_IMPLEMENTATION_EVIDENCE,
   LABEL_IMPLEMENTATION_EVIDENCE_LINE,
   LABEL_BASE_FRESHNESS,
@@ -57,6 +58,7 @@ type CommandExecutionResult = import('../../src').CommandExecutionResult;
 type ModelTierName = import('../../src').ModelTierName;
 type InvalidTransitionError = import('../../src').InvalidTransitionError;
 type ImplementationDiff = import('../../src').ImplementationDiff;
+type GateCommandReport = import('../../src').GateCommandReport;
 
 
 class MockStateRepository implements StateRepository {
@@ -124,6 +126,8 @@ class MockConfigRepository implements ConfigRepository {
 
 class MockPlanGenerator implements PlanGeneratorPort {
   public updates: Array<{ summaryPath: string; updateData: SummaryUpdateData }> = [];
+  public content = '# Test Plan';
+  public digests: Array<string | null> = [];
 
   public scaffoldPlanDirectory(params: ScaffoldParams): ScaffoldResult {
     return {
@@ -167,7 +171,13 @@ class MockPlanGenerator implements PlanGeneratorPort {
     };
   }
   public readPlanDocument(planPath: string): string {
-    return '# Test Plan';
+    return this.content;
+  }
+  public hashPlanDocument(planPath: string): string | null {
+    if (this.digests.length > 0) {
+      return this.digests.shift() ?? null;
+    }
+    return 'stable-digest';
   }
 }
 
@@ -230,22 +240,90 @@ class MockBuildDetector implements BuildDetectorPort {
     config?: AgyLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]> {
-    if (explicitCommands && explicitCommands.length > 0) {
-      return explicitCommands.map((c, i) =>
-        typeof c === 'string'
-          ? { id: `cli-${i}`, label: `CLI ${i}`, command: c }
-          : c
-      );
+    const plan = await this.resolveCommandPlan(workspaceDir, config, { explicitCommands });
+    return plan.commands;
+  }
+
+  public async resolveCommandPlan(
+    workspaceDir: string,
+    config?: AgyLoopConfig,
+    options?: import('../../src/ports').GateCommandResolutionOptions
+  ): Promise<import('../../src/domain').GateCommandPlan> {
+    const base = {
+      appended: [] as readonly string[],
+      lintRequired: false,
+      lintCommand: null,
+      planPath: options?.planPath ?? null
+    };
+
+    if (options?.explicitCommands && options.explicitCommands.length > 0) {
+      return {
+        ...base,
+        commands: options.explicitCommands.map((c, i) =>
+          typeof c === 'string'
+            ? { id: `cli-${i}`, label: `CLI ${i}`, command: c }
+            : c
+        ),
+        source: 'explicit',
+        sourceDetail: 'mock explicit'
+      };
     }
-    const anyConfig = config as unknown as Record<string, unknown> | undefined;
+
+    if (options?.planTargets && options.planTargets.length > 0) {
+      return {
+        ...base,
+        commands: options.planTargets.map((command, idx) => ({
+          id: `plan-${idx + 1}`,
+          label: `Plan Target ${idx + 1}`,
+          command
+        })),
+        source: 'plan',
+        sourceDetail: options.planPath ? `mock plan ${options.planPath}` : 'mock plan'
+      };
+    }
+
     if (config?.options?.gateCommands && Array.isArray(config.options.gateCommands) && config.options.gateCommands.length > 0) {
-      return config.options.gateCommands.map((c: any, i: number) =>
-        typeof c === 'string'
-          ? { id: `cfg-${i}`, label: `Config ${i}`, command: c }
-          : c
-      );
+      return {
+        ...base,
+        commands: config.options.gateCommands.map((c: any, i: number) =>
+          typeof c === 'string'
+            ? { id: `cfg-${i}`, label: `Config ${i}`, command: c }
+            : c
+        ),
+        source: 'config',
+        sourceDetail: 'mock config'
+      };
     }
-    return this.commandsToResolve;
+
+    return {
+      ...base,
+      commands: this.commandsToResolve,
+      source: 'auto-detect',
+      sourceDetail: `mock detection from ${workspaceDir}`,
+      planPath: options?.planPath ?? null
+    };
+  }
+}
+
+/**
+ * A detector whose plan says lint is mandatory while the resolved list omits
+ * it: the gate's defence-in-depth preflight must refuse to run anything.
+ */
+class LintMissingBuildDetector extends MockBuildDetector {
+  public async resolveCommandPlan(
+    _workspaceDir: string,
+    _config?: AgyLoopConfig,
+    _options?: import('../../src/ports').GateCommandResolutionOptions
+  ): Promise<import('../../src/domain').GateCommandPlan> {
+    return {
+      commands: [{ id: 'plan-1', label: 'Plan Target 1', command: 'npm run build' }],
+      source: 'plan',
+      sourceDetail: 'mock plan without lint',
+      appended: [],
+      lintRequired: true,
+      lintCommand: 'npm run lint',
+      planPath: null
+    };
   }
 }
 
@@ -1225,5 +1303,361 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
         `no surface may print VACUOUS for an unmeasurable diff, got:\n${result.summaryReport}`
       );
     });
+  });
+});
+
+describe('Quality Gate execution contract (issue #298)', () => {
+  function gateSnapshot(extra: Record<string, unknown> = {}): StateMachineSnapshot {
+    const now = new Date().toISOString();
+    return {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 20,
+      createdAt: now,
+      updatedAt: now,
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: now }],
+      ...extra
+    } as StateMachineSnapshot;
+  }
+
+  function planWithTargets(commands: readonly string[]): string {
+    return [
+      '# Plan',
+      '',
+      '## 5. Quality Gate Targets',
+      '',
+      '```bash',
+      ...commands,
+      '```',
+      ''
+    ].join('\n');
+  }
+
+  function planWithSmoke(commands: readonly string[], checks: readonly string[]): string {
+    const blocks: string[] = [
+      '# Plan',
+      '',
+      '## 5. Quality Gate Targets',
+      '',
+      '```bash',
+      ...commands,
+      '```',
+      '',
+      '## 6. Manual Smoke Test Protocol',
+      ''
+    ];
+    checks.forEach((body, idx) => {
+      blocks.push(`#### Check ${idx + 1} — check ${idx + 1}`, '', '```bash', body, '```', '');
+    });
+    return blocks.join('\n');
+  }
+
+  function resultOf(overrides: Partial<CommandExecutionResult> = {}): CommandExecutionResult {
+    return {
+      command: 'mock',
+      exitCode: 0,
+      stdout: 'OK\nℹ tests 10\nℹ pass 10\nℹ fail 0',
+      stderr: '',
+      combinedOutput: 'OK\nℹ tests 10\nℹ pass 10\nℹ fail 0',
+      durationMs: 10,
+      timedOut: false,
+      ...overrides
+    } as CommandExecutionResult;
+  }
+
+  test('RQG-P1: the plan commands are executed and the source is reported', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run build', 'npm test']);
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.commandSource, 'plan');
+    assert.deepStrictEqual(
+      commandExecutor.executed.map((entry) => entry.command),
+      ['npm run build', 'npm test']
+    );
+    assert.ok(result.summaryReport.includes('Command Source'));
+    assert.ok(result.summaryReport.includes('Execution Cwd'));
+    assert.ok(result.summaryReport.includes('Plan Integrity'));
+  });
+
+  test('RQG-L1: a plan-sourced lint failure is a build-class failure', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run lint', 'npm test']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ exitCode: 1, stdout: 'lint error', combinedOutput: 'src/x.ts:1:1 lint error', stderr: 'lint error' })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.buildStatus, STATUS_FAILED);
+    assert.strictEqual(result.reports[0].id, 'plan-1');
+  });
+
+  test('RQG-L2: a lint-required plan with no lint command fails before execution', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run build']);
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new LintMissingBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(
+      commandExecutor.executed.length,
+      0,
+      'a mandatory lint that is absent must stop the gate before any command runs'
+    );
+    assert.strictEqual(result.reports.length, 1);
+    assert.strictEqual(result.reports[0].id, 'plan-integrity');
+    assert.ok(
+      (result.reports[0].failureSnippet ?? '').includes(MSG_GATE_LINT_MISSING),
+      `the preflight must state the lint invariant, got: ${result.reports[0].failureSnippet}`
+    );
+    assert.strictEqual(result.buildStatus, STATUS_FAILED);
+  });
+
+  test('RQG-P2: a failing plan-sourced `npm test` is a TEST-class failure, not a pass', async () => {
+    // Plan targets carry synthetic ids (`plan-N`), so classification must come
+    // from the command text: a probe used to report `testsStatus: PASSED` next
+    // to an overall FAILED verdict (issue #298 review round 1).
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ exitCode: 1, stdout: 'not ok 1', combinedOutput: 'not ok 1 - boom', stderr: '' })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.testsStatus, STATUS_FAILED);
+    assert.strictEqual(result.reports[0].id, 'plan-1');
+  });
+
+  test('RQG-P3: a failing plan-sourced `npm run build` is a BUILD-class failure', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run build']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ exitCode: 1, stdout: 'tsc error', combinedOutput: 'tsc error', stderr: 'tsc error' })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.buildStatus, STATUS_FAILED);
+  });
+
+  test('RQG-S1: a static smoke finding fails before any command runs', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithSmoke(['npm test'], [
+      'node -e \'const m = require("fixture.js"); console.log(m);\''
+    ]);
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(commandExecutor.executed.length, 0, 'no command may run for a broken protocol');
+    assert.strictEqual(result.reports[0].id, 'smoke-protocol');
+    assert.match(result.reports[0].failureSnippet ?? '', /bare-module-path/);
+    assert.match(result.reports[0].failureSnippet ?? '', /Check 1/);
+    assert.match(result.reports[0].failureSnippet ?? '', /plan line \d+/);
+    assert.strictEqual(result.smokeStatus, 'FAILED');
+  });
+
+  test('RQG-S2: a runtime smoke failure names the failing check and plan line', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithSmoke(['npm test'], [
+      'echo "C1 PASS"',
+      'echo "C2 FAIL: broken"\nexit 1'
+    ]);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf(),
+      resultOf({
+        exitCode: 1,
+        stdout: '__AGYLOOP_SMOKE_CHECK_1__\nC1 PASS\n__AGYLOOP_SMOKE_CHECK_2__\nC2 FAIL: broken\n',
+        combinedOutput: '__AGYLOOP_SMOKE_CHECK_1__\nC1 PASS\n__AGYLOOP_SMOKE_CHECK_2__\nC2 FAIL: broken\n'
+      })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.smokeStatus, 'FAILED');
+    assert.ok(result.smokeReport);
+    assert.match(result.smokeReport.failureSnippet ?? '', /Check 2/);
+    assert.match(result.smokeReport.failureSnippet ?? '', /plan line \d+/);
+  });
+
+  test('RQG-S3: a printed FAIL line fails the gate even on exit 0', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithSmoke(['npm test'], ['echo "S1 PASS"']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf(),
+      resultOf({
+        exitCode: 0,
+        stdout: '__AGYLOOP_SMOKE_CHECK_1__\nS1 FAIL: silent lie\n',
+        combinedOutput: '__AGYLOOP_SMOKE_CHECK_1__\nS1 FAIL: silent lie\n'
+      })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.smokeStatus, 'FAILED');
+    assert.match(result.smokeReport?.failureSnippet ?? '', /Check 1/);
+  });
+
+  test('RQG-S4: a smoke timeout fails the gate and is named', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithSmoke(['npm test'], ['echo "S1 PASS"']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf(),
+      resultOf({
+        exitCode: -1,
+        timedOut: true,
+        stdout: '__AGYLOOP_SMOKE_CHECK_1__\n',
+        combinedOutput: '__AGYLOOP_SMOKE_CHECK_1__\n'
+      })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.smokeStatus, 'TIMED_OUT');
+    assert.strictEqual(result.smokeReport?.timedOut, true);
+    assert.match(result.smokeReport?.failureSnippet ?? '', /timed out/i);
+  });
+
+  test('RQG-D1: a digest mismatch before execution fails with no commands and a plan-integrity report', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    planGenerator.digests = ['actual-digest'];
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot({ approvedPlanDigest: 'approved-digest' })),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(commandExecutor.executed.length, 0);
+    assert.strictEqual(result.reports[0].id, 'plan-integrity');
+    assert.strictEqual(result.planIntegrityStatus, 'mismatch');
+    assert.match(result.reports[0].failureSnippet ?? '', /approved-digest/);
+    assert.match(result.reports[0].failureSnippet ?? '', /actual-digest/);
+  });
+
+  test('RQG-D2: a plan changed during the run fails the gate even when every command passes', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    planGenerator.digests = ['before-digest', 'after-digest'];
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.planIntegrityStatus, 'mismatch');
+    const integrityReport = result.reports.find((report: GateCommandReport) => report.id === 'plan-integrity');
+    assert.ok(integrityReport, 'a mid-run change must append a plan-integrity report');
+    assert.match(integrityReport.failureSnippet ?? '', /before-digest/);
+    assert.match(integrityReport.failureSnippet ?? '', /after-digest/);
+  });
+
+  test('RQG-N1: a plan with no smoke section reports NOT DECLARED and keeps the pass path', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.smokeStatus, 'NOT DECLARED');
+    assert.strictEqual(result.smokeReport, undefined);
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
   });
 });

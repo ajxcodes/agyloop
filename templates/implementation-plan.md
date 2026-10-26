@@ -22,6 +22,10 @@
 - [ ] **Step 3:** 
 
 ## 4. Quality Gate & Test Verification
-- **Automated Test Targets:**
-- **Build / Lint Commands:**
-- **Manual Verification Steps:**
+
+### Quality Gate Targets
+- **Target 1:**
+- **Target 2:**
+
+### Manual Smoke Test Protocol
+- **Check 1:**

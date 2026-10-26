@@ -79,3 +79,33 @@ describe('FilePlanGenerator - Summary Naming & Backward Compatibility', () => {
     assert.strictEqual(resolved.summaryPath, defaultSummaryPath);
   });
 });
+
+describe('FilePlanGenerator - plan digest (issue #298, AC9)', () => {
+  let tempDir: string;
+  let generator: any;
+  let planFile: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-digest-'));
+    generator = new FilePlanGenerator();
+    planFile = path.join(tempDir, 'implementation_plan.md');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('FPG-D1: stable for a checkbox tick, changes on a content edit, null when missing', () => {
+    fs.writeFileSync(planFile, '# Plan\n\n- [ ] Step one\n', 'utf8');
+    const first = generator.hashPlanDocument(planFile);
+    assert.ok(first);
+
+    fs.writeFileSync(planFile, '# Plan\n\n- [x] Step one\n', 'utf8');
+    assert.strictEqual(generator.hashPlanDocument(planFile), first, 'a tick is not a plan edit');
+
+    fs.writeFileSync(planFile, '# Plan\n\n- [ ] Step two\n', 'utf8');
+    assert.notStrictEqual(generator.hashPlanDocument(planFile), first, 'prose changes invalidate approval');
+
+    assert.strictEqual(generator.hashPlanDocument(path.join(tempDir, 'missing.md')), null);
+  });
+});

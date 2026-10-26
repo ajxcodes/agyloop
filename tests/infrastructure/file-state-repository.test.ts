@@ -11,6 +11,11 @@ describe('FileStateRepository', () => {
   let tempDir: string;
   let stateFile: string;
 
+  // The package's real workspace root, resolved from THIS FILE rather than
+  // from the process cwd, so the "real root" refusals hold when the suite runs
+  // from `.worktrees/<n>` (issue #298).
+  const REPO_ROOT = path.resolve(__dirname, '../..');
+
   before(() => {
     originalCwd = process.cwd;
   });
@@ -38,7 +43,10 @@ describe('FileStateRepository', () => {
       const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
       process.cwd = () => dummyWorktreePath;
 
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = new FileStateRepository({
+        stateFilePath: stateFile,
+        allowWorktreeIssueMismatch: false
+      });
 
       const snapshot = {
         issue: 999,
@@ -197,7 +205,10 @@ describe('FileStateRepository', () => {
 
     test('SR6: still refuses the real root state under test mode', () => {
       withSmokeEnv({ NODE_ENV: 'test' }, () => {
-        const repo = new FileStateRepository();
+        const repo = new FileStateRepository({
+          workspaceDir: REPO_ROOT,
+          stateFilePath: path.join(REPO_ROOT, '.agyloop', 'state.json')
+        });
         assert.throws(() => {
           repo.reset();
         }, (err: any) => err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE);
@@ -238,8 +249,11 @@ describe('FileStateRepository', () => {
 
   describe('test environment isolation', () => {
     test('throws StateStorageError on reset and save when touching real root repo in test env', () => {
-      // By not providing stateFilePath, it will default to the real root repo
-      const repo = new FileStateRepository();
+      // Explicit root: the probe must not depend on the process cwd (#298).
+      const repo = new FileStateRepository({
+        workspaceDir: REPO_ROOT,
+        stateFilePath: path.join(REPO_ROOT, '.agyloop', 'state.json')
+      });
       const prevEnv = process.env.NODE_ENV;
       process.env.NODE_ENV = 'test';
       try {
@@ -262,7 +276,10 @@ describe('FileStateRepository', () => {
     });
 
     test('throws StateStorageError on reset and save when NODE_TEST_CONTEXT is set and NODE_ENV is undefined', () => {
-      const repo = new FileStateRepository();
+      const repo = new FileStateRepository({
+        workspaceDir: REPO_ROOT,
+        stateFilePath: path.join(REPO_ROOT, '.agyloop', 'state.json')
+      });
       const prevEnv = process.env.NODE_ENV;
       const prevTestCtx = process.env.NODE_TEST_CONTEXT;
       delete process.env.NODE_ENV;
@@ -1066,6 +1083,121 @@ describe('FileStateRepository', () => {
         FileStateRepository.clearWorkspaceRootCache();
         fs.rmSync(bare, { recursive: true, force: true });
       }
+    });
+  });
+});
+
+describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)', () => {
+  const DUMMY_WORKTREE = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
+  let originalCwd: () => string;
+  let sandbox: string;
+
+  before(() => {
+    originalCwd = process.cwd;
+  });
+
+  after(() => {
+    process.cwd = originalCwd;
+  });
+
+  beforeEach(() => {
+    process.cwd = () => DUMMY_WORKTREE;
+    const homeCache = path.join(os.homedir(), '.cache', 'agyloop');
+    fs.mkdirSync(homeCache, { recursive: true });
+    sandbox = fs.mkdtempSync(path.join(homeCache, 'smoke-298-'));
+    FileStateRepository.clearWorkspaceRootCache();
+  });
+
+  afterEach(() => {
+    process.cwd = originalCwd;
+    if (sandbox && fs.existsSync(sandbox)) {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  function withGuardEnv(
+    env: Record<string, string | undefined>,
+    fn: () => void
+  ): void {
+    const keys = ['NODE_ENV', 'NODE_TEST_CONTEXT', 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH'];
+    const previous = new Map<string, string | undefined>();
+    for (const key of keys) {
+      previous.set(key, process.env[key]);
+      delete process.env[key];
+    }
+    Object.assign(process.env, env);
+    try {
+      fn();
+    } finally {
+      for (const key of keys) {
+        const value = previous.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+  }
+
+  function sandboxStateFile(): string {
+    return path.join(sandbox, '.agyloop', 'state.json');
+  }
+
+  function snapshotWithIssue(issue: number): any {
+    return { issue, currentStage: 'PLAN', history: [] };
+  }
+
+  const mismatchMessage =
+    'Cannot save state for issue 999 from inside worktree for issue 169. Use read-only commands inside worktrees.';
+
+  test('FSR-B1: NODE_ENV=test bypasses the cross-worktree guard', () => {
+    withGuardEnv({ NODE_ENV: 'test' }, () => {
+      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
+    });
+  });
+
+  test('FSR-B2: NODE_TEST_CONTEXT bypasses the cross-worktree guard', () => {
+    withGuardEnv({ NODE_TEST_CONTEXT: 'child-v8' }, () => {
+      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
+    });
+  });
+
+  test('FSR-B3: the explicit env flag bypasses the guard in production', () => {
+    withGuardEnv({ NODE_ENV: 'production', AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH: '1' }, () => {
+      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
+    });
+  });
+
+  test('FSR-B4: a production operator run from a mismatched worktree is still refused', () => {
+    withGuardEnv({ NODE_ENV: 'production' }, () => {
+      const strictRepo = new FileStateRepository({
+        stateFilePath: sandboxStateFile(),
+        allowWorktreeIssueMismatch: false
+      });
+      assert.throws(
+        () => strictRepo.save(snapshotWithIssue(999)),
+        (err: any) => err instanceof StateStorageError && err.message === mismatchMessage
+      );
+
+      const defaultRepo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      assert.throws(
+        () => defaultRepo.save(snapshotWithIssue(999)),
+        (err: any) => err instanceof StateStorageError && err.message === mismatchMessage
+      );
+    });
+  });
+
+  test('FSR-B5: an explicit allowWorktreeIssueMismatch:true bypasses in production', () => {
+    withGuardEnv({ NODE_ENV: 'production' }, () => {
+      const repo = new FileStateRepository({
+        stateFilePath: sandboxStateFile(),
+        allowWorktreeIssueMismatch: true
+      });
+      assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
     });
   });
 });
