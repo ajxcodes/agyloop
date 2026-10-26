@@ -92,7 +92,10 @@ function makeMockConfig(): ConfigRepository {
  * exactly the shape `RunReviewUseCase` produces. Passing `null` simulates a
  * checkpoint that carries NO recorded verdict at all.
  */
-function buildCommitCheckpoint(reviewVerdict: string | null): StateMachineSnapshot {
+function buildCommitCheckpoint(
+  reviewVerdict: string | null,
+  extraMetadata: Record<string, unknown> = {}
+): StateMachineSnapshot {
   const sm = StateMachine.createInitial({ issue: 259, baseBranch: 'main' });
   sm.transition(STAGE_DISCOVERY);
   sm.transition(STAGE_PLAN);
@@ -102,13 +105,18 @@ function buildCommitCheckpoint(reviewVerdict: string | null): StateMachineSnapsh
   sm.transition(STAGE_REVIEW);
   sm.transition(
     STAGE_COMMIT,
-    reviewVerdict === null ? { note: 'Reached the commit gate' } : { note: 'Reached the commit gate', reviewVerdict }
+    reviewVerdict === null
+      ? { note: 'Reached the commit gate', ...extraMetadata }
+      : { note: 'Reached the commit gate', reviewVerdict, ...extraMetadata }
   );
   return sm.toSnapshot();
 }
 
-async function commitGateDescription(reviewVerdict: string | null): Promise<string> {
-  const stateRepo = new MockStateRepo(buildCommitCheckpoint(reviewVerdict));
+async function commitGateDescription(
+  reviewVerdict: string | null,
+  extraMetadata: Record<string, unknown> = {}
+): Promise<string> {
+  const stateRepo = new MockStateRepo(buildCommitCheckpoint(reviewVerdict, extraMetadata));
   const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
 
   const result = await useCase.execute({ workspaceDir: '/repo' });
@@ -174,6 +182,31 @@ describe('GetNextActionUseCase COMMIT-gate description (issue #259, AC4)', () =>
     assert.ok(
       description.includes(COMMIT_INSTRUCTIONS),
       `the commit instructions must be preserved, got: ${description}`
+    );
+  });
+
+  test('C5: a recorded provenance is appended to the verdict sentence (issue #297)', async () => {
+    const description = await commitGateDescription(VERDICT_SKIPPED, {
+      reviewSource: 'skipped',
+      critiqueVerified: false
+    });
+
+    assert.ok(
+      description.includes('[Verdict source: skipped; Tier 1 critique verified: false]'),
+      `the record's provenance must be named, got: ${description}`
+    );
+    assert.ok(description.includes('SKIPPED'), description);
+    assert.ok(description.includes(COMMIT_INSTRUCTIONS), description);
+  });
+
+  test('C6: a legacy checkpoint with no recorded source renders no provenance suffix', async () => {
+    const description = await commitGateDescription(VERDICT_APPROVED);
+
+    assert.ok(description.startsWith('Review passed.'), description);
+    assert.strictEqual(
+      description.includes('Verdict source:'),
+      false,
+      `an unknown provenance must not be invented, got: ${description}`
     );
   });
 });

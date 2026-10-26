@@ -134,23 +134,47 @@ describe('CLI Subagent Guard', () => {
       assert.strictEqual(exitCode, 2);
     });
 
-    test('permits subagents to file their review verdict via review (issue #269 inbound channel)', async () => {
-      // The REVIEWER subagent is the PRODUCER of the verdict; `review` is the
-      // channel that files it. The guard must not close that channel.
+    test('blocks subagents from filing a review verdict (issue #297)', async () => {
+      // The reviewer only EMITS a block; the orchestrator files it. A
+      // subagent-marked `review` is refused exactly like every other mutating
+      // command, and the checkpoint is untouched.
+      const issue = '777';
+      const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+      const statePath = path.join(tasksDir, `${issue}.json`);
+      const now = new Date().toISOString();
+      const seeded = JSON.stringify({
+        version: '1.0.0',
+        currentStage: 'REVIEW',
+        mode: 'standard',
+        issue: Number(issue),
+        baseBranch: 'main',
+        createdAt: now,
+        updatedAt: now,
+        history: [{ stage: 'REVIEW', timestamp: now }],
+        pausedAtGate: null,
+        pausedAtTimestamp: null
+      });
+      fs.writeFileSync(statePath, seeded);
+
       const verdictFile = path.join(tempDir, 'verdict.md');
       fs.writeFileSync(verdictFile, 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n', 'utf8');
 
-      await runCli(['review', '--verdict-file', verdictFile]);
+      const exitCode = await runCli(['review', '--issue', issue, '--verdict-file', verdictFile]);
 
-      assert.strictEqual(
+      assert.strictEqual(exitCode, 1, 'a subagent must not be able to file a verdict');
+      assert.ok(
         errorOutput.includes('Subagents are not permitted'),
-        false,
-        `the review channel must be open for a subagent, got:\n${errorOutput}`
+        `the root-mutation guard must fire, got:\n${errorOutput}`
+      );
+      assert.ok(
+        errorOutput.includes('Zero Direct Root Mutation'),
+        `the guard must name the invariant, got:\n${errorOutput}`
       );
       assert.strictEqual(
-        errorOutput.includes('Zero Direct Root Mutation'),
-        false,
-        `the review channel must be open for a subagent, got:\n${errorOutput}`
+        fs.readFileSync(statePath, 'utf8'),
+        seeded,
+        'a refused filing must not touch the checkpoint'
       );
     });
   });
@@ -158,6 +182,57 @@ describe('CLI Subagent Guard', () => {
   describe('When AGY_SUBAGENT is not set', () => {
     beforeEach(() => {
       delete process.env.AGY_SUBAGENT;
+    });
+
+    test('permits the orchestrator to file a review verdict (issue #297)', async () => {
+      const issue = '778';
+      const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+      const now = new Date().toISOString();
+      const statePath = path.join(tasksDir, `${issue}.json`);
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'REVIEW',
+          mode: 'standard',
+          issue: Number(issue),
+          baseBranch: 'main',
+          createdAt: now,
+          updatedAt: now,
+          history: [{ stage: 'REVIEW', timestamp: now }],
+          pausedAtGate: null,
+          pausedAtTimestamp: null
+        })
+      );
+
+      const verdictFile = path.join(tempDir, 'verdict.md');
+      fs.writeFileSync(verdictFile, 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n', 'utf8');
+      const critiqueFile = path.join(tempDir, 'critique.json');
+      fs.writeFileSync(
+        critiqueFile,
+        JSON.stringify({
+          summary: 'Clean automated review',
+          confidenceLevel: 'High',
+          confidenceExplanation: 'diff verified',
+          comments: []
+        })
+      );
+
+      const exitCode = await runCli([
+        'review',
+        '--issue',
+        issue,
+        '--verdict-file',
+        verdictFile,
+        '--critique-report',
+        critiqueFile
+      ]);
+
+      assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
+      assert.strictEqual(exitCode, 0, `the orchestrator must be able to file, got:\n${errorOutput}`);
+      const checkpoint = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      assert.strictEqual(checkpoint.currentStage, 'COMMIT');
     });
 
     test('permits mutating commands', async () => {

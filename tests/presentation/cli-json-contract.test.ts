@@ -152,11 +152,22 @@ const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = 
     seed: (dir) => seedTask(dir, 901, { currentStage: 'TRIAGE' })
   },
   review: {
-    args: ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--json'],
+    args: ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json'],
     seed: (dir) => {
       initGitWorkspace(dir);
       seedTask(dir, 905, { currentStage: 'REVIEW' });
       fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
+      // Issue #297: the hermetic Tier 1 evidence channel — the fixture never
+      // shells out to a host `critique`, and the invariant still runs.
+      fs.writeFileSync(
+        path.join(dir, 'critique.json'),
+        JSON.stringify({
+          summary: 'Clean automated review',
+          confidenceLevel: 'High',
+          confidenceExplanation: 'diff verified',
+          comments: []
+        })
+      );
     }
   },
   plan: { args: ['plan', '--json'] },
@@ -246,11 +257,20 @@ describe('--json surface contract (#275)', () => {
 
   test('T-J6: `review --json --dry-run` asserts no unwritten state', async () => {
     const result = await runCliInSandbox(
-      ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--json', '--dry-run'],
+      ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json', '--dry-run'],
       (dir) => {
         initGitWorkspace(dir);
         seedTask(dir, 905, { currentStage: 'REVIEW' });
         fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
+        fs.writeFileSync(
+          path.join(dir, 'critique.json'),
+          JSON.stringify({
+            summary: 'Clean automated review',
+            confidenceLevel: 'High',
+            confidenceExplanation: 'diff verified',
+            comments: []
+          })
+        );
       }
     );
     assert.strictEqual(result.code, 0, result.stderr);
@@ -260,7 +280,21 @@ describe('--json surface contract (#275)', () => {
     assert.strictEqual(payload.currentStage, 'REVIEW');
     assert.strictEqual(payload.wouldSetStage, 'COMMIT');
     assert.strictEqual(payload.wouldRecordVerdict, 'APPROVED');
+    assert.strictEqual(payload.wouldRecordCritiqueVerified, true);
     assert.ok(!('reviewVerdict' in payload), 'a dry run must not claim a filed verdict');
+  });
+
+  test('JP1: `review --json` carries the provenance as booleans, in one document (issue #297)', async () => {
+    const fixture = CASES.review;
+    const result = await runCliInSandbox(fixture.args, fixture.seed);
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.critiqueVerified, true);
+    assert.strictEqual(payload.reviewerVerdict, 'APPROVED');
+    assert.strictEqual(payload.reviewVerdict, 'APPROVED');
+    assert.strictEqual(payload.verdictSource, 'reviewer-output');
+    assert.strictEqual(typeof payload.dryRun, 'boolean');
   });
 
   test('T-J9: `triage --json --dry-run` reports a prediction, never a written disposition', async () => {

@@ -389,10 +389,11 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   'halt',
   'release',
   'abort',
-  // `review` records the dispatched reviewer subagent's verdict into the
-  // checkpoint, so it mutates it exactly like `triage` does — it must be listed
-  // here for the `AGY_SUBAGENT` root mutation guard to cover it (with a
-  // carve-out in `cli.ts` so the REVIEWER subagent can file its own verdict).
+  // `review` records the reviewed verdict into the checkpoint, so it mutates
+  // it exactly like `triage` does — it must be listed here for the
+  // `AGY_SUBAGENT` root mutation guard to cover it. There is NO carve-out: the
+  // dispatched REVIEWER only emits a verdict block, and the orchestrator (a
+  // root session) is the one that files it (issue #297).
   'review',
   null
 ] as const);
@@ -1358,6 +1359,14 @@ export const CRITIQUE_GITHUB_LATEST_RELEASE_API = 'https://api.github.com/repos/
 export const CRITIQUE_UPDATE_TTL_MS = 24 * 60 * 60 * 1000; // 86,400,000 ms (24 hours)
 export const CRITIQUE_CACHE_FILENAME = 'critique-update-cache.json' as const;
 export const DEFAULT_CRITIQUE_CHECK_TIMEOUT_MS = 3000 as const;
+/**
+ * The bound on the critique run the REVIEW filing path performs (issue #297).
+ *
+ * The filing path executes Tier 1 so a supplied verdict cannot bypass it; the
+ * run is non-interactive and must never hang the operator, so it carries an
+ * explicit ceiling.
+ */
+export const DEFAULT_CRITIQUE_REVIEW_TIMEOUT_MS = 120_000 as const;
 export const DEFAULT_CRITIQUE_DOWNLOAD_TIMEOUT_MS = 15000 as const;
 export const CRITIQUE_EXECUTABLE_PERMISSIONS = 0o755;
 
@@ -2412,6 +2421,17 @@ export const COMMAND_REVIEW = 'review' as const;
 export const FLAG_VERDICT_FILE = '--verdict-file' as const;
 export const FLAG_REVIEW_OUTPUT = '--review-output' as const;
 export const FLAG_VERDICT_STDIN = '--verdict-stdin' as const;
+/**
+ * The hermetic Tier 1 evidence channel (issue #297).
+ *
+ * `codeloop review` executes the critique CLI so a supplied verdict cannot
+ * bypass Tier 1. This flag supplies that report instead — the deduped,
+ * subprocess-free path used by the CLI fixtures and by any caller that already
+ * holds a critique JSON payload.
+ */
+export const FLAG_CRITIQUE_REPORT = '--critique-report' as const;
+/** The `--critique-report` value that means "read the report from stdin". */
+export const CRITIQUE_REPORT_STDIN = '-' as const;
 
 /**
  * The verdict-filing channel, named in the REVIEW directive's OPERATOR fields
@@ -2435,9 +2455,45 @@ export function formatReviewVerdictChannelCommand(issue?: number | string | null
   return REVIEW_VERDICT_CHANNEL_COMMAND_TEMPLATE.replace('{issue}', String(issue));
 }
 
-/** The filing instruction; `{command}` is `formatReviewVerdictChannelCommand`. */
-export const NOTE_REVIEW_VERDICT_CHANNEL =
-  `File the verdict before the COMMIT gate: {command} (or \`codeloop ${COMMAND_REVIEW} --issue <n> ${FLAG_REVIEW_OUTPUT} "<block>"\`, or pipe the block into \`codeloop ${COMMAND_REVIEW} --issue <n> ${FLAG_VERDICT_STDIN}\`).` as const;
+/**
+ * The filing instruction, addressed to the ORCHESTRATOR (issue #297).
+ *
+ * #269 built the channel and #272 named it — but it was named inside the
+ * DISPATCHED PROMPT, next to "Never attempt to write or edit files", so the
+ * read-only reviewer was told to run a checkpoint-advancing command. The
+ * contract is now single-voice: the reviewer emits the block, the orchestrator
+ * (this directive's reader) files it.
+ *
+ * Every snippet interpolates the real issue when it is known, so the operator
+ * is handed strings they can paste.
+ */
+export function formatReviewVerdictChannelNote(issue?: number | string | null): string {
+  const command = formatReviewVerdictChannelCommand(issue);
+  const issueToken =
+    issue === null || issue === undefined || String(issue).trim().length === 0
+      ? '<n>'
+      : String(issue);
+  return `Orchestrator: file the reviewer's emitted verdict block before the COMMIT gate: ${command} (or \`codeloop ${COMMAND_REVIEW} --issue ${issueToken} ${FLAG_REVIEW_OUTPUT} "<block>"\`, or pipe the block into \`codeloop ${COMMAND_REVIEW} --issue ${issueToken} ${FLAG_VERDICT_STDIN}\`).`;
+}
+
+/**
+ * The dispatcher's instruction to the read-only reviewer (issue #297).
+ *
+ * It names NO `codeloop` command on purpose: the reviewer's whole job is to
+ * emit the block. `codeloop review` is refused to a dispatched subagent, so a
+ * command here would be a promise the guard breaks.
+ */
+export const NOTE_REVIEW_VERDICT_RETURN =
+  `The verdict block above is the ONLY record of this review. Emit it verbatim as the LAST thing in your response; the orchestrator files it into the checkpoint. Do not run any \`codeloop\` command — you are a read-only reviewer, and pipeline state is written by the orchestrator alone.` as const;
+
+/**
+ * The advisory printed when a verdict was recorded WITHOUT Tier 1 (issue #297).
+ *
+ * Applies only when a reviewer block was filed and no critique evidence was
+ * available: the operator is told the verdict was not cross-checked.
+ */
+export const NOTE_REVIEW_CRITIQUE_NOT_VERIFIED =
+  `Tier 1 critique did not run: this verdict was not cross-checked against automated findings.` as const;
 
 /**
  * What ENDS the REVIEW gate (issue #272/AC2) — the same shape as
@@ -2594,6 +2650,28 @@ export const HINT_REVIEW_OUTPUT_INPUT =
  */
 export const HINT_VERDICT_STDIN_INPUT =
   'Pipe the verdict block into the command, e.g. `cat verdict.md | codeloop review --issue 269 --verdict-stdin`.' as const;
+
+/**
+ * The `--critique-report` flag named no value (issue #297).
+ *
+ * Same posture as the verdict flags: a present-but-valueless evidence flag must
+ * fail loudly BEFORE any state is touched, rather than silently disabling the
+ * only cross-check of the filed verdict.
+ */
+export const NOTE_CRITIQUE_REPORT_INPUT_MISSING =
+  "{flag} was provided without a critique report. No verdict was recorded and the checkpoint was not touched. Pass the path of the critique CLI JSON report, or '-' to read it from stdin." as const;
+
+export function formatCritiqueReportInputMissing(flag: string): string {
+  return NOTE_CRITIQUE_REPORT_INPUT_MISSING.replace('{flag}', flag);
+}
+
+/** A `--critique-report` payload that was read but is not a critique report. */
+export const NOTE_CRITIQUE_REPORT_PARSE_FAILURE =
+  '✗ Critique report could not be parsed: {reason}' as const;
+
+export function formatCritiqueReportParseFailure(reason: string): string {
+  return NOTE_CRITIQUE_REPORT_PARSE_FAILURE.replace('{reason}', reason);
+}
 
 /**
  * WHERE the recorded verdict came from (issue #269).

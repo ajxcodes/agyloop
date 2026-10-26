@@ -339,11 +339,6 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
-  public resetReviewDispatchCount(): void {
-    this._reviewDispatchCount = 0;
-    this._updatedAt = new Date().toISOString();
-  }
-
   public get discoveryDispatchCount(): number {
     return this._discoveryDispatchCount;
   }

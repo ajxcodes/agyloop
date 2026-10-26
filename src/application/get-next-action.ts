@@ -45,7 +45,6 @@ import {
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_RESTARTED_FROM_COMPLETED,
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
-  NOTE_REVIEW_VERDICT_CHANNEL,
   NOTE_REVIEW_GATE_EXIT_CONDITION,
   NOTE_REVIEW_DISPATCH_ORDINAL,
   NOTE_REVIEW_DISPATCH_CAP,
@@ -58,6 +57,7 @@ import {
   formatDiscoveryAdvanceCommand,
   formatPlanAdvanceCommand,
   formatReviewVerdictChannelCommand,
+  formatReviewVerdictChannelNote,
   formatTriageActionList,
   formatTriageActionSideEffects,
   TriageDisposition,
@@ -152,6 +152,13 @@ export interface NextActionResult {
   readonly planDispatchCount?: number;
   /** True when the IMPLEMENT directive is the PLANNER because the plan is blank. */
   readonly planBlank?: boolean;
+  /**
+   * The recorded provenance of the last review verdict (issues #297/#303).
+   * Additive and optional; populated on the COMMIT return only, so `next --json`
+   * can audit `critique-report` vs `skipped` vs `reviewer-output`.
+   */
+  readonly lastReviewSource?: string | null;
+  readonly lastReviewCritiqueVerified?: boolean;
 }
 
 export class GetNextActionUseCase {
@@ -421,7 +428,7 @@ export class GetNextActionUseCase {
 
         if (sm.pausedAtGate === null) {
           sm.recordDiscoveryDispatch();
-          await this.persistDispatchCounter(sm);
+          await this.persistDispatchCounter(sm, 'discovery');
         }
 
         const target = planPath ? ` Write ONLY \`${planPath}\`.` : '';
@@ -495,7 +502,7 @@ export class GetNextActionUseCase {
 
         if (sm.pausedAtGate === null) {
           sm.recordPlanDispatch();
-          await this.persistDispatchCounter(sm);
+          await this.persistDispatchCounter(sm, 'plan');
         }
 
         const stateWord = planIsBlank ? 'still blank' : 'non-blank';
@@ -660,7 +667,7 @@ export class GetNextActionUseCase {
         // is blocked on a gate.
         if (sm.pausedAtGate === null) {
           sm.recordReviewDispatch();
-          await this.stateRepo.save(sm.toSnapshot());
+          await this.persistDispatchCounter(sm, 'review');
         }
 
         const subagent = this.resolveSubagentUseCase.execute({
@@ -698,17 +705,18 @@ export class GetNextActionUseCase {
           // records a verdict. The instruction used to live only inside the
           // dispatched prompt, so an operator following `next` re-dispatched the
           // reviewer forever.
-          description: `Run critique analysis and verify Acceptance Criteria fulfillment against the isolated diff. ${NOTE_REVIEW_VERDICT_CHANNEL.replace('{command}', channelCommand)}`,
+          description: `Run critique analysis and verify Acceptance Criteria fulfillment against the isolated diff. ${formatReviewVerdictChannelNote(activeIssue)}`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_REVIEWER} with Model '${subagent.model}' against base '${baseBranch}'. ${this.formatReviewDispatchOrdinal(sm.reviewDispatchCount)} ${NOTE_REVIEW_VERDICT_CHANNEL.replace('{command}', channelCommand)} ${NOTE_REVIEW_GATE_EXIT_CONDITION}`,
+          humanSummary: `Invoke ${ROLE_TITLE_REVIEWER} with Model '${subagent.model}' against base '${baseBranch}'. ${this.formatReviewDispatchOrdinal(sm.reviewDispatchCount)} ${formatReviewVerdictChannelNote(activeIssue)} ${NOTE_REVIEW_GATE_EXIT_CONDITION}`,
           reviewDispatchCount: sm.reviewDispatchCount
         };
       }
 
       case STAGE_COMMIT: {
+        const recordedSource = this.lastReviewSource(sm);
         return {
           currentStage: STAGE_COMMIT,
           nextStage: STAGE_COMPLETED,
@@ -716,11 +724,19 @@ export class GetNextActionUseCase {
           title: 'Conventional Commit & Teardown Gate',
           // Issue #259 (AC4): the verdict is read from the recorded history
           // metadata — a SKIPPED review must never be described as a pass.
-          description: this.buildCommitGateDescription(this.lastReviewVerdict(sm)),
+          // Issue #297: the record's PROVENANCE travels with it, so the gate
+          // says whether Tier 1 actually cross-checked the verdict.
+          description: this.buildCommitGateDescription({
+            verdict: this.lastReviewVerdict(sm),
+            source: recordedSource,
+            critiqueVerified: this.lastCritiqueVerified(sm)
+          }),
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: `Execute commit: run "agyloop commit" (targets base branch '${baseBranch}').`
+          humanSummary: `Execute commit: run "agyloop commit" (targets base branch '${baseBranch}').`,
+          lastReviewSource: recordedSource,
+          lastReviewCritiqueVerified: this.lastCritiqueVerified(sm)
         };
       }
 
@@ -916,6 +932,45 @@ export class GetNextActionUseCase {
   }
 
   /**
+   * Reads the MOST RECENT recorded AI-review verdict SOURCE from the checkpoint
+   * history (issue #297, AC10).
+   *
+   * Mirrors `lastReviewVerdict`: the last review entry wins, so a re-recorded
+   * verdict cannot inherit an older provenance. Returns null when no review has
+   * persisted a source (legacy checkpoints).
+   */
+  private lastReviewSource(sm: StateMachine): string | null {
+    const history = sm.history;
+
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const source = history[index].metadata?.reviewSource;
+      if (typeof source === 'string' && source.length > 0) {
+        return source;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Whether the most recent review was cross-checked by a real (non-bypassed)
+   * Tier 1 critique report (issue #297, AC10). Defaults to false — a record that
+   * cannot prove the cross-check never claims it.
+   */
+  private lastCritiqueVerified(sm: StateMachine): boolean {
+    const history = sm.history;
+
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (typeof entry.metadata?.reviewSource === 'string') {
+        return entry.metadata?.critiqueVerified === true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Renders `NOTE_REVIEW_DISPATCH_ORDINAL` for the current REVIEW round
    * (issue #272). Mirrors `formatStaleWorktreeNote`'s placeholder style in the
    * CLI rather than inventing a second templating mechanism.
@@ -927,18 +982,25 @@ export class GetNextActionUseCase {
   }
 
   /**
-   * Persists a re-dispatch counter (issues #292/#272).
+   * Persists a re-dispatch counter (issues #292/#272/#291).
    *
    * Best-effort BY DESIGN: the counter is observability, and a failed write
    * (for example `StateStorageError` when `next --issue N` runs from a
-   * DIFFERENT task's worktree) must not turn a read-only query into a crash.
-   * The directive is still returned; only the persisted record is skipped.
+   * DIFFERENT task's worktree, or a refused cwd) must not turn a read-only query
+   * into a crash. The directive is still returned; only the persisted record is
+   * skipped — and #291/F1 requires that skip to be VISIBLE, so the failure is
+   * reported on stderr instead of being swallowed.
    */
-  private async persistDispatchCounter(sm: StateMachine): Promise<void> {
+  private async persistDispatchCounter(
+    sm: StateMachine,
+    counter: 'review' | 'discovery' | 'plan'
+  ): Promise<void> {
     try {
       await this.stateRepo.save(sm.toSnapshot());
     } catch {
-      // Observability only — never fail the read.
+      console.warn(
+        `[agyloop] Warning: could not record the ${counter} dispatch counter at ${this.stateRepo.getStateFilePath()}; returning the directive unchanged.`
+      );
     }
   }
 
@@ -963,24 +1025,34 @@ export class GetNextActionUseCase {
    * The approved path keeps its original wording; every other verdict says
    * what actually happened. A skipped review is advisory, never a pass — the
    * #236 fail-open is preserved, only the WORDING at this gate changes.
+   *
+   * Issue #297: the provenance suffix is appended only when a source was
+   * recorded, so a legacy checkpoint renders exactly as it did before.
    */
-  private buildCommitGateDescription(reviewVerdict: string | null): string {
+  private buildCommitGateDescription(record: {
+    readonly verdict: string | null;
+    readonly source: string | null;
+    readonly critiqueVerified: boolean;
+  }): string {
     const commitInstructions =
       'Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.';
 
-    if (reviewVerdict === VERDICT_APPROVED) {
-      return `Review passed. ${commitInstructions}`;
+    let verdictLine: string;
+    if (record.verdict === VERDICT_APPROVED) {
+      verdictLine = 'Review passed.';
+    } else if (record.verdict === VERDICT_SKIPPED) {
+      verdictLine = 'AI review was SKIPPED (no reviewer output, no critique report) — advisory, not a pass.';
+    } else if (record.verdict === VERDICT_CHANGES_REQUESTED) {
+      verdictLine = 'AI review requested changes — this checkpoint should not be at the COMMIT gate.';
+    } else {
+      verdictLine = 'No AI review verdict is recorded for this task.';
     }
 
-    if (reviewVerdict === VERDICT_SKIPPED) {
-      return `AI review was SKIPPED (no reviewer output, no critique report) — advisory, not a pass. ${commitInstructions}`;
-    }
+    const provenance = record.source
+      ? ` [Verdict source: ${record.source}; Tier 1 critique verified: ${record.critiqueVerified}]`
+      : '';
 
-    if (reviewVerdict === VERDICT_CHANGES_REQUESTED) {
-      return `AI review requested changes — this checkpoint should not be at the COMMIT gate. ${commitInstructions}`;
-    }
-
-    return `No AI review verdict is recorded for this task. ${commitInstructions}`;
+    return `${verdictLine}${provenance} ${commitInstructions}`;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

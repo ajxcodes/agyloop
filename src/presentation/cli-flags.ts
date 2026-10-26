@@ -19,6 +19,7 @@ import {
   COMMAND_YOLO,
   FLAG_COMMIT_AFTER,
   FLAG_CONFIG,
+  FLAG_CRITIQUE_REPORT,
   FLAG_DRY_RUN,
   FLAG_FORCE,
   FLAG_FORCE_SHORT,
@@ -50,10 +51,11 @@ import {
 } from '../domain';
 
 /**
- * Every long flag this build recognises (40 entries).
+ * Every long flag this build recognises (41 entries).
  *
- * The three verdict flags come from their domain constants (issue #269) rather
- * than being re-typed here. `--plan-path` / `--plan-dir` are implemented
+ * The verdict flags come from their domain constants (issue #269) rather than
+ * being re-typed here; `--critique-report` is the hermetic Tier 1 evidence
+ * channel (issue #297). `--plan-path` / `--plan-dir` are implemented
  * (issue #267): they are accepted by plan/implement/yolo and refused, loudly,
  * by every other command.
  */
@@ -63,6 +65,7 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   FLAG_COMMIT_AFTER,
   FLAG_CONFIG,
   '--create-pr',
+  FLAG_CRITIQUE_REPORT,
   FLAG_DRY_RUN,
   FLAG_FORCE,
   FLAG_HELP,
@@ -110,7 +113,7 @@ export const KNOWN_SHORT_FLAGS: readonly string[] = Object.freeze([
   FLAG_MESSAGE_SHORT
 ]);
 
-/** The union, frozen: 40 long + 6 short = 46. */
+/** The union, frozen: 41 long + 6 short = 47. */
 export const KNOWN_CLI_FLAGS: readonly string[] = Object.freeze([
   ...KNOWN_LONG_FLAGS,
   ...KNOWN_SHORT_FLAGS

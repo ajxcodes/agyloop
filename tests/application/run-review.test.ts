@@ -586,6 +586,108 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
   });
 
+  test('RR1: a PARSED bypass payload maps to SKIPPED with provenance (#303)', async () => {
+    // The factory case above proves the mapping; this case proves the PARSER
+    // preserves the signal the CLI actually emits. Before #303 the flag was
+    // dropped and this exact payload recorded CHANGES_REQUESTED.
+    critique.reportToReturn = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed: Error: GEMINI_API_KEY is not set.',
+        confidenceLevel: 'Low',
+        confidenceExplanation: 'bypassed',
+        comments: []
+      })
+    );
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.strictEqual(result.reviewSource, 'skipped');
+    assert.strictEqual(result.critiqueVerified, false);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual(lastEntry.metadata?.reviewSource, 'skipped');
+    assert.strictEqual(lastEntry.metadata?.critiqueVerified, false);
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+  });
+
+  test('RR2: a finding on a BYPASSED report still cannot overwrite SKIPPED (#303 AC11)', async () => {
+    critique.reportToReturn = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed.',
+        comments: [
+          {
+            path: 'src/index.ts',
+            line: 1,
+            severity: 'error',
+            body: 'Stray finding on a bypassed report'
+          }
+        ]
+      })
+    );
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+  });
+
+  test('RR3: a real critique report records its provenance as critique-report (#297 AC10)', async () => {
+    critique.reportToReturn = new AiReviewReport({
+      summary: 'Clean automated review',
+      confidence: ReviewConfidence.high('Diff verified.'),
+      findings: []
+    });
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.reviewSource, 'critique-report');
+    assert.strictEqual(result.critiqueVerified, true);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewSource, 'critique-report');
+    assert.strictEqual(lastEntry.metadata?.critiqueVerified, true);
+  });
+
   test('real blocking critique findings still mandate CHANGES_REQUESTED (critique-only, no reviewer output)', async () => {
     // AC3/AC4b regression: a genuine blocking critique (Tier 1 only, no reviewer
     // output) must still revert to IMPLEMENT with a self-correction payload.

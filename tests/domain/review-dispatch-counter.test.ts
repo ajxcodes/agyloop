@@ -81,4 +81,17 @@ describe('StateMachine reviewDispatchCount (issue #272)', () => {
     sm.recordReviewDispatch();
     assert.strictEqual(sm.getStatus().reviewDispatchCount, 1);
   });
+
+  test('RC5: the dead review-dispatch reset method is gone (issue #291 F2)', () => {
+    // Assembled, not typed: the name must not survive anywhere in `src`/`tests`
+    // (the #291 F1/F2 smoke check greps for it), while this assertion still
+    // proves the method no longer exists.
+    const removedMethod = ['resetReview', 'DispatchCount'].join('');
+    const sm: any = StateMachine.createInitial();
+    assert.strictEqual(
+      typeof sm[removedMethod],
+      'undefined',
+      'reset()/transition() are the only reset authorities'
+    );
+  });
 });
