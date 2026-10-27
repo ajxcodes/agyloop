@@ -604,6 +604,17 @@ export const SMOKE_STATUS_FAILED = 'FAILED' as const;
 export const SMOKE_STATUS_NOT_DECLARED = 'NOT DECLARED' as const;
 export const SMOKE_STATUS_TIMED_OUT = 'TIMED_OUT' as const;
 
+/**
+ * Machine token for "the plan declares no smoke protocol" on the
+ * `GATE_REPORT_JSON` wire (issue #298).
+ *
+ * Deliberately NOT `SMOKE_STATUS_NOT_DECLARED`: that is the human-facing phrase
+ * ("NOT DECLARED") written into prompts and summaries, while this is the exact
+ * token a gate subagent emits and `GateResultReport` parses. The two strings
+ * differ, so they must not share a constant.
+ */
+export const SMOKE_PROTOCOL_NOT_DECLARED = 'NOT_DECLARED' as const;
+
 /** Static smoke-protocol findings (issue #298). */
 export const SMOKE_RULE_QUOTED_JSON_COMPARISON = 'quoted-json-comparison' as const;
 export const SMOKE_RULE_BARE_MODULE_PATH = 'bare-module-path' as const;
@@ -1063,6 +1074,13 @@ export const CMD_LABEL_GRADLE_TEST = 'Gradle Test Suite' as const;
 export const CMD_LABEL_MAVEN_TEST = 'Maven Test Suite' as const;
 export const CMD_LABEL_DOTNET_TEST = '.NET Automated Test Suite' as const;
 export const CMD_LABEL_ACT = 'Act Container Workflow Verification' as const;
+
+/**
+ * Wall-clock budget for one container runtime health probe (`podman info` /
+ * `docker info`, issue #295). One place so the detector and any sibling probe
+ * cannot drift apart.
+ */
+export const CONTAINER_PROBE_TIMEOUT_MS = 5000 as const;
 
 // Command Prefixes
 export const CMD_PREFIX_CUSTOM = 'custom' as const;

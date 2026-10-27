@@ -16,9 +16,20 @@ import { ValidationError } from '../errors';
 import {
   GATE_REPORT_JSON_MARKER,
   STATUS_PASSED,
-  STATUS_FAILED
+  STATUS_FAILED,
+  SMOKE_PROTOCOL_NOT_DECLARED
 } from '../constants';
 import { formatStageDuration } from './run-evidence';
+
+/**
+ * The report's smoke-protocol verdict on the wire: `null` means "not reported",
+ * which is different from `SMOKE_PROTOCOL_NOT_DECLARED` ("reported: the plan
+ * declares no smoke protocol").
+ */
+export type SmokeProtocolVerdict =
+  | typeof STATUS_PASSED
+  | typeof STATUS_FAILED
+  | typeof SMOKE_PROTOCOL_NOT_DECLARED;
 
 /** A declared gate that was NOT executed, with the reason it was skipped. */
 export interface GateReportNotRun {
@@ -37,7 +48,7 @@ export interface GateResultReportProps {
   readonly durationMs: number | null;
   readonly executedCommands: readonly string[];
   /** `PASSED` | `FAILED` | `NOT_DECLARED` | `null` when not reported. */
-  readonly smokeProtocol: 'PASSED' | 'FAILED' | 'NOT_DECLARED' | null;
+  readonly smokeProtocol: SmokeProtocolVerdict | null;
   readonly notRun: readonly GateReportNotRun[];
   /** Which gate round this report certifies (count of QUALITY_GATE entries). */
   readonly gateRound: number;
@@ -48,7 +59,7 @@ export interface GateResultReportProps {
 const SMOKE_PROTOCOL_VALUES: readonly string[] = Object.freeze([
   STATUS_PASSED,
   STATUS_FAILED,
-  'NOT_DECLARED'
+  SMOKE_PROTOCOL_NOT_DECLARED
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -279,7 +290,7 @@ export class GateResultReport {
     return this.props.executedCommands;
   }
 
-  public get smokeProtocol(): 'PASSED' | 'FAILED' | 'NOT_DECLARED' | null {
+  public get smokeProtocol(): SmokeProtocolVerdict | null {
     return this.props.smokeProtocol;
   }
 
@@ -366,7 +377,7 @@ export class GateResultReport {
     );
   }
 
-  private static readSmokeProtocol(raw: unknown): 'PASSED' | 'FAILED' | 'NOT_DECLARED' | null {
+  private static readSmokeProtocol(raw: unknown): SmokeProtocolVerdict | null {
     if (raw === undefined || raw === null) {
       return null;
     }
@@ -377,6 +388,6 @@ export class GateResultReport {
         `must be one of ${SMOKE_PROTOCOL_VALUES.join(' | ')}`
       );
     }
-    return raw.toUpperCase() as 'PASSED' | 'FAILED' | 'NOT_DECLARED';
+    return raw.toUpperCase() as SmokeProtocolVerdict;
   }
 }

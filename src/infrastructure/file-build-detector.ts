@@ -127,6 +127,7 @@ import {
   CMD_LABEL_MAVEN_TEST,
   CMD_LABEL_DOTNET_TEST,
   CMD_LABEL_ACT,
+  CONTAINER_PROBE_TIMEOUT_MS,
   CMD_PREFIX_CUSTOM,
   CMD_PREFIX_CONFIG,
   CMD_LABEL_CUSTOM,
@@ -860,7 +861,7 @@ export class FileBuildDetector implements BuildDetectorPort {
     try {
       const res = child_process.spawnSync(runtime, probeArgs, {
         stdio: ['ignore', 'ignore', 'ignore'],
-        timeout: 5000
+        timeout: CONTAINER_PROBE_TIMEOUT_MS
       });
       if (res.status === 0) {
         return { runtime, socketPath: null, connection: 'fork-exec' };

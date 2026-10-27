@@ -85,6 +85,7 @@ import {
   SMOKE_STATUS_FAILED,
   SMOKE_STATUS_NOT_DECLARED,
   SMOKE_STATUS_TIMED_OUT,
+  SMOKE_PROTOCOL_NOT_DECLARED,
   PLAN_INTEGRITY_MISMATCH,
   PLAN_INTEGRITY_MISSING,
   PlanIntegrityStatus,
@@ -548,7 +549,7 @@ export class RunQualityGateUseCase {
         : smokeStatus === SMOKE_STATUS_FAILED
           ? 'FAILED'
           : smokeStatus === SMOKE_STATUS_NOT_DECLARED
-            ? 'NOT_DECLARED'
+            ? SMOKE_PROTOCOL_NOT_DECLARED
             // A timed-out smoke protocol is a failure, never "not declared".
             : 'FAILED',
       notRun: [],
