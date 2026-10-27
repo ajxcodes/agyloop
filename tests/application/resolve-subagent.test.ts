@@ -24,7 +24,16 @@ const {
   RESOLVER_SOURCE_NONE,
   TRIAGE_DISPOSITION_ACTIONS,
   STATE_MUTATING_COMMANDS,
-  NOTE_REVIEW_VERDICT_RETURN
+  NOTE_REVIEW_VERDICT_RETURN,
+  DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+  DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS,
+  DISCOVERY_REPORT_MIN_CONTENT_CHARS,
+  DISCOVERY_REPORT_MIN_CHARS,
+  DISCOVERY_REPORT_MIN_FILLED_KEYS,
+  DISCOVERY_REPORT_MAX_UNFILLED_KEYS,
+  DISCOVERY_REPORT_MIN_PROSE_SECTIONS,
+  DiscoveryReport,
+  formatDiscoveryReportContract
 } = require('../../dist/domain');
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
@@ -522,5 +531,71 @@ describe('Gate prompt evidence contract (issue #298)', () => {
 
     assert.ok(prompt.includes('Strict Container-Only Guardrail'));
     assert.ok(prompt.includes('Use podman (`podman run`) or `act`'));
+  });
+});
+
+describe('Discovery evidence contract (issue #306)', () => {
+  test('T14: the discovery prompt states the same contract the predicate enforces', () => {
+    const useCase = new ResolveSubagentUseCase(new MockConfigRepo());
+    const prompt = useCase.buildDiscoveryTaskPrompt({ issueNumber: 306 });
+    const contract = formatDiscoveryReportContract();
+
+    assert.ok(prompt.includes(contract), 'the prompt must carry the shared contract verbatim');
+    assert.ok(prompt.includes('### Evidence Contract:'), 'the contract must be labelled as such');
+
+    // The numbers are interpolated from the exports, so the prompt and the
+    // predicate cannot drift (AC4). Every published rule is asserted by the
+    // phrase that carries it, not by a bare digit that could match anything.
+    for (const value of [
+      DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+      DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS,
+      DISCOVERY_REPORT_MIN_CONTENT_CHARS
+    ]) {
+      assert.ok(contract.includes(String(value)), `the contract must state '${value}', got: ${contract}`);
+    }
+    for (const rule of [
+      `${DISCOVERY_REPORT_MIN_CHARS} characters long`,
+      `${DISCOVERY_REPORT_MIN_CONTENT_UNITS} content-bearing sections or key values`,
+      `each with ${DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS}+ characters`,
+      `${DISCOVERY_REPORT_MIN_CONTENT_CHARS} substantive characters`,
+      `${DISCOVERY_REPORT_MIN_PROSE_SECTIONS}+ substantive \`##\` sections`,
+      `${DISCOVERY_REPORT_MIN_FILLED_KEYS}+ filled key values`,
+      `at most ${DISCOVERY_REPORT_MAX_UNFILLED_KEYS} template keys blank`
+    ]) {
+      assert.ok(contract.includes(rule), `the contract must publish '${rule}', got: ${contract}`);
+    }
+
+    // Both accepted shapes are named, so a subagent can satisfy either.
+    assert.ok(prompt.includes('- **Key:**'), 'the prompt must name the bullet shape');
+    assert.ok(prompt.includes('##'), 'the prompt must name the heading shape');
+
+    // SUFFICIENCY (not just string inclusion): a document built to exactly the
+    // published numbers must actually be accepted, so the contract cannot
+    // understate a veto the predicate applies (the AC4 defect: the unstated
+    // blank-key cap and length floor parked a document that satisfied every
+    // sentence the prompt published).
+    const perUnit = DISCOVERY_REPORT_MIN_CONTENT_CHARS / DISCOVERY_REPORT_MIN_CONTENT_UNITS;
+    const value = (label: string): string => `${label} `.padEnd(perUnit, 'x');
+    const publishedNumbers = [
+      '# [Discovery] - contract probe',
+      '',
+      `- **Observed Behavior:** ${value('the login form crashes without a session cookie')}`,
+      `- **Identified Failure Mode:** ${value('the session resolver result is dereferenced unguarded')}`,
+      `- **Recommended Fix Approach:** ${value('guard the resolver and add a regression test')}`,
+      ''
+    ].join('\n');
+    assert.ok(
+      publishedNumbers.length >= DISCOVERY_REPORT_MIN_CHARS,
+      'fixture sanity: the contract-minimum document must clear the length floor'
+    );
+    const published = DiscoveryReport.fromMarkdown(publishedNumbers);
+    assert.strictEqual(published.contentUnitCount, DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+    assert.ok(published.contentCharCount >= DISCOVERY_REPORT_MIN_CONTENT_CHARS);
+    assert.deepStrictEqual(published.unfilledPlaceholderKeys, []);
+    assert.strictEqual(
+      published.isPopulated,
+      true,
+      'a report satisfying every published number must be accepted by the predicate'
+    );
   });
 });

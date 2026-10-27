@@ -22,7 +22,12 @@ const {
   DiscoveryReport,
   DISCOVERY_REPORT_MIN_CHARS,
   DISCOVERY_REPORT_MIN_FILLED_KEYS,
-  DISCOVERY_REPORT_MAX_UNFILLED_KEYS
+  DISCOVERY_REPORT_MAX_UNFILLED_KEYS,
+  DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+  DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS,
+  DISCOVERY_REPORT_MIN_CONTENT_CHARS,
+  DISCOVERY_REPORT_MIN_PROSE_SECTIONS,
+  formatDiscoveryMissingEvidence
 } = require('../../dist/domain');
 
 const TEMPLATE_PATH = path.resolve(__dirname, '../../templates/discovery-plan.md');
@@ -145,6 +150,112 @@ function populatedReport(): string {
 - **Potential Regressions / Side Effects:** none; the guard only adds an early return
 `;
 }
+
+/**
+ * A report written the way the discovery prompt's own Expected Output
+ * Structure asks for: `##` headings and substantive prose, with NO
+ * `- **Key:**` bullet anywhere (issue #306's #284 shape).
+ *
+ * This is the fixture that fails on the pre-fix predicate: `filledKeyCount` is
+ * 0, so the old bullet census scored a complete RCA as a scaffold.
+ */
+const HEADING_SHAPE_REPORT = `# [Discovery] - [Bug] probe: login crash without a session cookie
+
+**Issue:** #306
+**Date:** 2026-10-27
+**Author:** AgyLoop Discovery Subagent (Read-Only)
+
+## Summary & Symptoms
+
+The login form crashes whenever the session cookie is absent. Reproduced three times in an ephemeral container against the current build with a cleared cookie jar, and once from a fresh browser profile.
+
+## Root Cause Analysis
+
+The session resolver returns null and src/login.ts:41 dereferences it without a guard. The form submit handler reaches that line through the cookie parser, so any request without a cookie takes the same failing path.
+
+## Manual Bug Smoke Test
+
+The reproduction exits 1 with a stack frame at src/login.ts:41. The same run with a seeded cookie exits 0, three times out of three.
+
+## Remediation Strategy
+
+Guard the resolver result before the dereference and add a regression test asserting the form renders an inline validation error instead of crashing.
+`;
+
+/**
+ * The S4 skeleton: four headings with no prose under them, plus four filled
+ * bullets whose values only point at the heading above (`see above`).
+ *
+ * This scored `isPopulated === true` before the content rule (242 chars, four
+ * "filled" keys) — the AC2 false positive that adding formatting-only bullets
+ * released a content-free document.
+ */
+const COSMETIC_BULLETS_ONLY = `## 1. Summary & Symptoms
+
+## 2. Root Cause Analysis
+
+## 3. Manual Bug Smoke Test
+
+## 4. Remediation Strategy
+
+- **Observed Behavior:** see above
+- **Identified Failure Mode:** see above
+- **Smoke Test:** see above
+- **Remediation:** see above
+`;
+
+/**
+ * The padded AC2 variant the reviewer reproduced: four content-free bullets
+ * whose values are long POINTERS, each past the 20-char per-unit floor.
+ *
+ * These score four units and 200+ characters, so the character floors alone
+ * released them. A pointer is a cross-reference, not evidence, however long it
+ * is — `isPopulated` must stay false.
+ */
+const POINTER_PADDED_BULLETS_ONLY = `## 1. Summary & Symptoms
+
+## 2. Root Cause Analysis
+
+## 3. Manual Bug Smoke Test
+
+## 4. Remediation Strategy
+
+- **Observed Behavior:** see the Summary & Symptoms section above for details
+- **Identified Failure Mode:** see the Root Cause Analysis section above for details
+- **Smoke Test:** see the Manual Bug Smoke Test section above for details
+- **Remediation:** see the Remediation Strategy section above for details
+`;
+
+/**
+ * Four sections whose only body restates the heading as a bullet value. The
+ * longest value is 21 characters, so only two of the four clear the per-unit
+ * floor — below `DISCOVERY_REPORT_MIN_CONTENT_UNITS`.
+ */
+const RESTATED_HEADINGS_ONLY = `## 1. Summary & Symptoms
+- **Summary & Symptoms:** Summary & Symptoms
+
+## 2. Root Cause Analysis
+- **Root Cause Analysis:** Root Cause Analysis
+
+## 3. Manual Bug Smoke Test
+- **Manual Bug Smoke Test:** Manual Bug Smoke Test
+
+## 4. Remediation Strategy
+- **Remediation Strategy:** Remediation Strategy
+`;
+
+/**
+ * The workaround operators had to append in #298/#297/#284: six summary
+ * bullets bolted onto an already-complete heading report.
+ */
+const SYNTHETIC_INDEX = [
+  '- **Observed Behavior:** login crashes when the session cookie is absent',
+  '- **Expected Behavior:** the login form renders an inline validation error',
+  '- **Root Cause:** the session resolver result is dereferenced without a guard',
+  '- **Smoke Test:** the reproduction exits 1 at src/login.ts:41, seeded cookie exits 0',
+  '- **Remediation:** guard the resolver result before the dereference',
+  '- **Evidence:** three container runs with a cleared cookie jar'
+].join('\n');
 
 describe('DiscoveryReport Value Object (issue #237)', () => {
   test('an unpopulated template scaffold is NOT populated', () => {
@@ -315,20 +426,24 @@ describe('DiscoveryReport Value Object (issue #237)', () => {
     assert.strictEqual(report.filledKeyCount, 1);
   });
 
-  test('CALIBRATION: the repository\u2019s own genuine RCA reports are detected', () => {
+  test('T7 CALIBRATION: genuine reports are detected regardless of shape', (t: any) => {
     // The verification probe the reviewer asked for, kept as a test so the
     // calibration cannot silently regress.
     //
-    // Before this fix the predicate reported 80% false negatives against this
-    // corpus: only 3 of 15 genuine reports were recognised, because subagents
-    // write key values as nested sub-lists and quote the template inside
-    // fences. This test pins that number at (near) zero.
+    // Before the #306 fix the predicate reported false negatives against this
+    // corpus whenever a subagent wrote the prompt's own heading-shaped output:
+    // `filledKeyCount` was 0, so a complete RCA was scored as a scaffold. The
+    // ground truth below therefore accepts EITHER shape, and is deliberately
+    // independent of the code under test (a hand-rolled scanner, not
+    // `DiscoveryReport`): a regression that collapsed the predicate must show
+    // up as missed reports, not shrink the "genuine" set.
     //
     // `artifacts/` is gitignored, so a fresh clone has no corpus — the probe is
     // meaningful only where the developer actually ran the pipeline. Skip
     // rather than fail there.
     const plansDir = path.resolve(__dirname, '../../artifacts/plans');
     if (!fs.existsSync(plansDir)) {
+      t.skip('artifacts/plans is absent (fresh clone); calibration needs a real corpus');
       return;
     }
 
@@ -344,38 +459,55 @@ describe('DiscoveryReport Value Object (issue #237)', () => {
       }
     };
     walk(plansDir);
-    assert.ok(corpus.length > 0, 'the corpus should contain discovery reports');
+    if (corpus.length === 0) {
+      t.skip('no discovery reports in artifacts/plans yet');
+      return;
+    }
 
-    // Ground truth: a document with real RCA prose.
-    //
-    // Deliberately independent of the predicate under test. An earlier version
-    // used `DiscoveryReport.filledKeyCount >= 5` here, which made the test
-    // self-referential: a regression that collapsed the key parser would
-    // shrink the "genuine" set and hide itself. `TEMPLATE_PLACEHOLDER_KEYS` is
-    // a literal list from `templates/discovery-plan.md`, and `carriesContent`
-    // is a small hand-rolled scan with its own parser shape (inline value, or
-    // any following line indented deeper than its bullet), so no part of the
-    // decision routes through the code under test.
-    const carriesContent = (text: string, key: string): boolean => {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const bullet = new RegExp(`^[-*+][ \\t]*\\*\\*${escaped}:\\*\\*(.*)$`, 'm');
-      const match = text.match(bullet);
-      if (!match) return false;
-      if (match[1].trim() !== '') return true;
-      const after = text.slice(text.indexOf(match[0]) + match[0].length).split('\n').slice(1);
-      return after.some((line) => line.trim() !== '' && /^[ \t]+\S/.test(line));
+    /**
+     * Section bodies whose NON-bullet prose is substantive. The bullet filter
+     * keeps the heading shape distinct from the key shape: a section whose only
+     * body is `- **Key:** value` is not heading-style evidence.
+     */
+    const substantiveSectionBodies = (text: string): string[] => {
+      const bodies: string[] = [];
+      let current: string[] | null = null;
+      for (const line of text.split('\n')) {
+        if (/^[ \t]{0,3}#{2,6}[ \t]+\S/.test(line)) {
+          if (current !== null) bodies.push(current.join('\n'));
+          current = [];
+        } else if (current !== null) {
+          current.push(line);
+        }
+      }
+      if (current !== null) bodies.push(current.join('\n'));
+      return bodies.filter(
+        (body) =>
+          body
+            .split('\n')
+            .filter((line) => !/^[ \t]*[-*+][ \t]*\*\*[^*\n]+?(?::\*\*|\*\*:)/.test(line))
+            .join(' ')
+            .replace(/\s/g, '').length >= 100
+      );
     };
 
-    const genuine = corpus.filter((f: string) => {
-      const text = fs.readFileSync(f, 'utf8');
-      if (text.trim().length < 2000) return false;
-      const filled = TEMPLATE_PLACEHOLDER_KEYS.filter((k) => carriesContent(text, k)).length;
-      return filled >= 6;
-    });
-    // Skip when the corpus is too small to calibrate against — the same
-    // rationale as the fresh-clone skip above. The calibration is meaningful
-    // only where the developer actually ran the pipeline enough times.
+    const filledKeyValues = (text: string): number =>
+      (text.match(/^[ \t]*[-*+][ \t]*\*\*[^*\n]+?(?::\*\*|\*\*:)[ \t]*\S/gm) ?? []).length;
+
+    // Ground truth: a long document with real RCA content in EITHER accepted
+    // shape. Heading-style reports are explicitly admitted here — that is the
+    // #306 AC6 regression this test pins.
+    const isGenuine = (text: string): boolean =>
+      text.trim().length >= 2000 &&
+      (filledKeyValues(text) >= 3 || substantiveSectionBodies(text).length >= 2);
+
+    const genuine = corpus.filter((f: string) => isGenuine(fs.readFileSync(f, 'utf8')));
+    assert.ok(genuine.length > 0, 'the corpus must contain at least one genuine RCA report');
+
+    // The calibration is meaningful only where the developer actually ran the
+    // pipeline enough times.
     if (genuine.length < 5) {
+      t.skip(`corpus too small to calibrate (${genuine.length} genuine reports)`);
       return;
     }
 
@@ -388,11 +520,345 @@ describe('DiscoveryReport Value Object (issue #237)', () => {
       'genuine RCA reports must not be scored as unpopulated scaffolds'
     );
 
+    // AC6: a genuine report with ZERO key bullets is heading-shaped, and the
+    // ground truth must SYMBOLISE it as genuine rather than filter it out.
+    const headingOnly = genuine.filter((f: string) => filledKeyValues(fs.readFileSync(f, 'utf8')) === 0);
+    for (const file of headingOnly) {
+      assert.strictEqual(
+        DiscoveryReport.fromMarkdown(fs.readFileSync(file, 'utf8')).isPopulated,
+        true,
+        `${path.relative(plansDir, file)} is heading-shaped and must be accepted`
+      );
+    }
+
     // And the contrapositive: an untouched template must still be rejected.
     const pristine = DiscoveryReport.fromMarkdown(pristineScaffold());
     assert.strictEqual(pristine.isPopulated, false);
   });
 });
+
+// ============================================================================
+// Content predicate (issue #306)
+// ============================================================================
+
+describe('DiscoveryReport content predicate (issue #306)', () => {
+  test('T1 REGRESSION: a heading-style RCA with zero key bullets is populated', () => {
+    // The #284/#298/#297 shape: the prompt's four sections, prose under each,
+    // no `- **Key:**` grammar at all. Before #306 this scored filled 0 and was
+    // parked as an "unpopulated scaffold".
+    const report = DiscoveryReport.fromMarkdown(HEADING_SHAPE_REPORT);
+
+    assert.strictEqual(report.filledKeyCount, 0, 'the fixture proves the bullet scanner sees nothing');
+    assert.deepStrictEqual(report.unfilledPlaceholderKeys, []);
+    assert.strictEqual(report.isPopulated, true, 'a prompt-shaped RCA must release the park');
+    assert.ok(
+      report.substantiveSectionHeadings.length >= 3,
+      `expected >= 3 substantive sections, got ${report.substantiveSectionHeadings.join(', ')}`
+    );
+    assert.ok(report.contentUnitCount >= DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+  });
+
+  test('T2 a pristine scaffold stays unpopulated under the content rule', () => {
+    const report = DiscoveryReport.fromMarkdown(pristineScaffold());
+
+    assert.strictEqual(report.isPopulated, false, 'headings alone are not content');
+    assert.strictEqual(report.contentUnitCount, 0, 'a pristine scaffold has no substantive unit');
+    assert.strictEqual(report.contentCharCount, 0, 'a pristine scaffold has no substantive characters');
+    assert.strictEqual(report.unfilledPlaceholderKeys.length, TEMPLATE_PLACEHOLDER_KEYS.length);
+  });
+
+  test('T3 REGRESSION: cosmetic bullets cannot release a content-free skeleton', () => {
+    // AC2's reverse direction: adding formatting-only bullets to an empty
+    // document must not release the park. On the pre-#306 predicate this
+    // fixture scored `isPopulated === true` (four "filled" keys, 242 chars).
+    const report = DiscoveryReport.fromMarkdown(COSMETIC_BULLETS_ONLY);
+
+    assert.strictEqual(report.filledKeyCount, 4, 'the bullets are syntactically filled…');
+    assert.strictEqual(report.contentUnitCount, 0, '…but carry no substantive value');
+    assert.strictEqual(report.isPopulated, false, 'cosmetic bullets must not release a skeleton');
+
+    // AC2, padded form: a pointer long enough to clear the 20-char per-unit
+    // floor still carries no evidence. On the first #306 predicate this scored
+    // four units / 200+ characters and released the park.
+    const padded = DiscoveryReport.fromMarkdown(POINTER_PADDED_BULLETS_ONLY);
+    assert.strictEqual(padded.filledKeyCount, 4, 'sanity: the padded bullets are syntactically filled');
+    assert.strictEqual(padded.contentUnitCount, 0, 'pointer-only values are not substantive units');
+    assert.strictEqual(padded.contentCharCount, 0, 'pointer-only values contribute no content characters');
+    assert.strictEqual(padded.isPopulated, false, 'padded pointer filler must not release a skeleton');
+    assert.ok(
+      POINTER_PADDED_BULLETS_ONLY.includes('see the Summary & Symptoms section above for details'),
+      'the fixture must actually use the long pointer form'
+    );
+  });
+
+  test('T4 REGRESSION: restating the headings as bullets does not release the gate', () => {
+    const report = DiscoveryReport.fromMarkdown(RESTATED_HEADINGS_ONLY);
+
+    assert.strictEqual(report.isPopulated, false);
+    assert.ok(
+      report.contentUnitCount < DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+      `restated headings scored ${report.contentUnitCount} units; the floor is ${DISCOVERY_REPORT_MIN_CONTENT_UNITS}`
+    );
+  });
+
+  test('T5 missing evidence names the empty sections and blank keys', () => {
+    const pristine = DiscoveryReport.fromMarkdown(pristineScaffold());
+    const pristineMissing = pristine.describeMissingEvidence();
+    assert.match(pristineMissing, /content-bearing/);
+    assert.match(pristineMissing, /content characters/);
+    assert.ok(
+      pristineMissing.includes('1. Problem Statement & Symptoms'),
+      `the park must name the empty section, got: ${pristineMissing}`
+    );
+    assert.ok(
+      pristineMissing.includes('Observed Behavior'),
+      `the park must name a blank template key, got: ${pristineMissing}`
+    );
+
+    // Every blank key is named (up to the truncation bound) when only a few
+    // remain — the ten-key pristine scaffold is deliberately truncated.
+    const threeBlank = `# [Discovery] - probe
+
+## 1. Problem Statement & Symptoms
+- **Alpha Key:**
+- **Beta Key:**
+- **Gamma Key:**
+`;
+    const threeMissing = DiscoveryReport.fromMarkdown(threeBlank).describeMissingEvidence();
+    for (const key of ['Alpha Key', 'Beta Key', 'Gamma Key']) {
+      assert.ok(threeMissing.includes(key), `the park must name '${key}', got: ${threeMissing}`);
+    }
+
+    // A partially filled scaffold must NOT be told its filled section is empty:
+    // the section's only body is a substantive `- **Key:**` value, which is a
+    // KEY unit, not prose — but it is evidence and the section is not blank.
+    const partiallyFilled = pristineScaffold().replace(
+      '- **Observed Behavior:**',
+      '- **Observed Behavior:** The login form crashes whenever the session cookie is absent, reproduced three times in a cleared container.'
+    );
+    const partialMissing = DiscoveryReport.fromMarkdown(partiallyFilled).describeMissingEvidence();
+    assert.ok(
+      !partialMissing.includes('1. Problem Statement & Symptoms'),
+      `a section carrying a filled key must not be called empty, got: ${partialMissing}`
+    );
+    assert.ok(
+      partialMissing.includes('2. Root Cause Analysis (RCA)'),
+      `the genuinely empty sections must still be named, got: ${partialMissing}`
+    );
+
+    // A populated report has nothing missing to report.
+    assert.strictEqual(DiscoveryReport.fromMarkdown(populatedReport()).describeMissingEvidence(), '');
+    assert.strictEqual(DiscoveryReport.fromMarkdown(HEADING_SHAPE_REPORT).describeMissingEvidence(), '');
+  });
+
+  test('T5b describeMissingEvidence names every failing dimension (AC3)', () => {
+    // Review repro (a): ONLY the shape-evidence requirement fails — 1
+    // substantive section + 2 substantive key values = 3 units, 400+ chars,
+    // long enough, nothing blank. The first #306 formatter returned ''.
+    const shapeEvidenceOnly = [
+      '# [Discovery] - shape probe',
+      '',
+      '## Summary & Symptoms',
+      '',
+      'The login form crashes whenever the session cookie is absent. Reproduced three times in an ephemeral container against the current build with a cleared cookie jar and a fresh profile.',
+      '',
+      '## Remediation Strategy',
+      '- **Recommended Fix Approach:** guard the resolver result before the dereference and add a regression test for the inline error path.',
+      '- **Potential Regressions / Side Effects:** none, the guard only adds an early return before the existing submit handler continues.'
+    ].join('\n');
+    const shapeReport = DiscoveryReport.fromMarkdown(shapeEvidenceOnly);
+    assert.strictEqual(shapeReport.contentUnitCount, DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+    assert.ok(shapeReport.contentCharCount >= DISCOVERY_REPORT_MIN_CONTENT_CHARS);
+    assert.ok(shapeEvidenceOnly.length >= DISCOVERY_REPORT_MIN_CHARS);
+    assert.strictEqual(shapeReport.isPopulated, false, 'one section + two keys is not shape evidence');
+    const shapeMissing = shapeReport.describeMissingEvidence();
+    assert.ok(shapeMissing.length > 0, 'a parked report must never produce an empty diagnostic');
+    assert.match(shapeMissing, /no accepted shape/);
+    assert.match(shapeMissing, new RegExp(`${DISCOVERY_REPORT_MIN_PROSE_SECTIONS} substantive ## sections`));
+    assert.match(shapeMissing, new RegExp(`${DISCOVERY_REPORT_MIN_FILLED_KEYS} filled key values`));
+
+    // Review repro (b): ONLY the document-length floor fails — three 50-char
+    // sections clear the unit and content-character floors. The first #306
+    // formatter also returned '' here.
+    const fifty = 'x'.repeat(DISCOVERY_REPORT_MIN_CONTENT_CHARS / DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+    const shortDoc = `## A\n${fifty}\n\n## B\n${fifty}\n\n## C\n${fifty}\n`;
+    const shortReport = DiscoveryReport.fromMarkdown(shortDoc);
+    assert.strictEqual(shortReport.contentUnitCount, DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+    assert.strictEqual(shortReport.contentCharCount, DISCOVERY_REPORT_MIN_CONTENT_CHARS);
+    assert.ok(shortDoc.trim().length < DISCOVERY_REPORT_MIN_CHARS);
+    assert.strictEqual(shortReport.isPopulated, false, 'the length floor alone must hold the park');
+    const shortMissing = shortReport.describeMissingEvidence();
+    assert.ok(shortMissing.length > 0, 'a length-floor park must never produce an empty diagnostic');
+    assert.ok(
+      shortMissing.includes(
+        `${shortDoc.trim().length} of ${DISCOVERY_REPORT_MIN_CHARS} characters in the report`
+      ),
+      `the park must state the measured document length, got: ${shortMissing}`
+    );
+
+    // Only the blank-key cap fails: three substantive values (3 units, enough
+    // characters) but four blank template keys veto the bullet branch.
+    const cappedDoc = `# [Discovery] - cap probe
+
+- **Observed Behavior:** the login form crashes whenever the session cookie is absent, reproduced three times.
+- **Identified Failure Mode:** the session resolver result is dereferenced without a guard at src/login.ts line 41.
+- **Recommended Fix Approach:** guard the resolver result before the dereference and add an inline-error regression test.
+- **Expected Behavior:**
+- **Affected Components / Paths:**
+- **Relevant Code References:**
+- **Failing Test Target:**
+`;
+    const cappedReport = DiscoveryReport.fromMarkdown(cappedDoc);
+    assert.strictEqual(cappedReport.contentUnitCount, DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+    assert.ok(cappedReport.contentCharCount >= DISCOVERY_REPORT_MIN_CONTENT_CHARS);
+    assert.ok(cappedDoc.length >= DISCOVERY_REPORT_MIN_CHARS);
+    assert.ok(cappedReport.unfilledPlaceholderKeys.length > DISCOVERY_REPORT_MAX_UNFILLED_KEYS);
+    assert.strictEqual(cappedReport.isPopulated, false, 'the blank-key cap must hold the park');
+    const capMissing = cappedReport.describeMissingEvidence();
+    assert.match(capMissing, /no accepted shape/);
+    assert.ok(
+      capMissing.includes(`blank template keys (max ${DISCOVERY_REPORT_MAX_UNFILLED_KEYS})`),
+      `the park must state the blank-key cap, got: ${capMissing}`
+    );
+  });
+
+  test('T6 the verdict is invariant to adding a bullet index to a heading report', () => {
+    // The #298/#284 workaround must be a no-op: the report was already
+    // populated, so adding (or removing) the synthetic index changes nothing.
+    const withIndex = `${HEADING_SHAPE_REPORT}\n\n${SYNTHETIC_INDEX}\n`;
+    const withoutIndex = withIndex.replace(SYNTHETIC_INDEX, '');
+
+    const heading = DiscoveryReport.fromMarkdown(HEADING_SHAPE_REPORT);
+    const indexed = DiscoveryReport.fromMarkdown(withIndex);
+    const stripped = DiscoveryReport.fromMarkdown(withoutIndex);
+
+    assert.strictEqual(heading.isPopulated, true, 'the RCA alone is populated');
+    assert.strictEqual(indexed.isPopulated, true, 'adding the index must not change the verdict');
+    assert.strictEqual(stripped.isPopulated, true, 'removing it must not change the verdict either');
+    assert.ok(indexed.filledKeyCount > heading.filledKeyCount, 'sanity: the index adds key bullets');
+  });
+
+  test('T8 both bold-key spellings yield the same key and the same verdict', () => {
+    // The discovery prompt writes `- **Summary & Symptoms**: value` (colon
+    // outside the bold); the scaffold writes `- **Key:** value`. Both are
+    // evidence, and both must yield the bare key name.
+    const outsideColon = `# [Discovery] - probe
+
+## 1. Summary & Symptoms
+- **Summary & Symptoms**: the login form crashes whenever the session cookie is absent, reproduced three times.
+- **Root Cause Analysis**: the session resolver returns null and src/login.ts:41 dereferences it without a guard.
+- **Manual Bug Smoke Test**: the reproduction exits 1 with a stack frame at src/login.ts:41; a seeded cookie exits 0.
+`;
+    const report = DiscoveryReport.fromMarkdown(outsideColon);
+
+    assert.strictEqual(report.filledKeyCount, 3);
+    assert.deepStrictEqual(report.unfilledPlaceholderKeys, []);
+    assert.strictEqual(report.isPopulated, true);
+    assert.ok(report.contentCharCount >= DISCOVERY_REPORT_MIN_CONTENT_CHARS);
+
+    // The template spelling recovers the same bare key (no trailing colon).
+    const insideColon = `# [Discovery] - probe
+
+- **Observed Behavior:** probe crash on login
+- **Expected Behavior:** no crash at all
+- **Affected Components / Paths:** src/login.ts
+`;
+    const inside = DiscoveryReport.fromMarkdown(insideColon);
+    assert.strictEqual(inside.filledKeyCount, 3);
+    assert.deepStrictEqual(inside.unfilledPlaceholderKeys, []);
+    assert.strictEqual(inside.isPopulated, false, 'three short values are still below the content floors');
+
+    // Same keys, same bare names, either spelling of the delimiter.
+    const insideBlank = DiscoveryReport.fromMarkdown('# [Discovery] - probe\n\n- **Alpha Key:**\n- **Beta Key:**\n');
+    const outsideBlank = DiscoveryReport.fromMarkdown('# [Discovery] - probe\n\n- **Alpha Key**:\n- **Beta Key**:\n');
+    assert.deepStrictEqual(insideBlank.unfilledPlaceholderKeys, ['Alpha Key', 'Beta Key']);
+    assert.deepStrictEqual(outsideBlank.unfilledPlaceholderKeys, ['Alpha Key', 'Beta Key']);
+  });
+
+  test('T9 REGRESSION: CRLF reports score exactly like their LF form', () => {
+    // Every section/key rule is `$`-anchored without the `m` flag, so a line
+    // ending in `\r` never matched: a CRLF report collapsed to zero sections,
+    // zero units and an evidence-free park, and its blank keys were invisible
+    // to the handler's placeholder diagnostic (issue #306 review). The
+    // constructor normalises line endings before partitioning.
+    const toCrlf = (text: string): string => text.replace(/\n/g, '\r\n');
+
+    const lfHeading = DiscoveryReport.fromMarkdown(HEADING_SHAPE_REPORT);
+    const crlfHeading = DiscoveryReport.fromMarkdown(toCrlf(HEADING_SHAPE_REPORT));
+    assert.strictEqual(crlfHeading.isPopulated, true, 'a CRLF heading RCA must still release the park');
+    assert.deepStrictEqual(
+      crlfHeading.substantiveSectionHeadings,
+      lfHeading.substantiveSectionHeadings,
+      'the same sections must be substantive in either encoding'
+    );
+    assert.strictEqual(crlfHeading.contentUnitCount, lfHeading.contentUnitCount);
+    assert.strictEqual(crlfHeading.contentCharCount, lfHeading.contentCharCount);
+    assert.strictEqual(crlfHeading.describeMissingEvidence(), lfHeading.describeMissingEvidence());
+
+    const lfScaffold = DiscoveryReport.fromMarkdown(pristineScaffold());
+    const crlfScaffold = DiscoveryReport.fromMarkdown(toCrlf(pristineScaffold()));
+    assert.strictEqual(crlfScaffold.isPopulated, false, 'a CRLF scaffold must still park');
+    assert.strictEqual(crlfScaffold.contentUnitCount, 0);
+    assert.strictEqual(crlfScaffold.contentCharCount, 0);
+    assert.deepStrictEqual(
+      crlfScaffold.unfilledPlaceholderKeys,
+      lfScaffold.unfilledPlaceholderKeys,
+      'blank keys must parse identically in either encoding'
+    );
+    assert.strictEqual(crlfScaffold.unfilledPlaceholderKeys.length, TEMPLATE_PLACEHOLDER_KEYS.length);
+    assert.deepStrictEqual(
+      crlfScaffold.emptySectionHeadings,
+      lfScaffold.emptySectionHeadings,
+      'the park must name the same sections without substantive prose'
+    );
+    assert.ok(
+      crlfScaffold.emptySectionHeadings.includes('1. Problem Statement & Symptoms'),
+      `expected the first section to be named, got ${crlfScaffold.emptySectionHeadings.join(', ')}`
+    );
+    assert.strictEqual(
+      crlfScaffold.describeMissingEvidence(),
+      lfScaffold.describeMissingEvidence(),
+      'the diagnostic must not depend on the line ending'
+    );
+  });
+
+  test('T10 the missing-evidence wording is owned by formatDiscoveryMissingEvidence', () => {
+    // AC3's diagnostic fragments live beside `formatDiscoveryParkAwaitingRca`
+    // in the domain constants, not inline in the value object. Every failing
+    // dimension must render, and a section with 1–19 characters is described
+    // as lacking substantive prose, never as "empty".
+    const rendered = formatDiscoveryMissingEvidence({
+      markdownChars: 10,
+      contentUnitCount: 1,
+      contentCharCount: 20,
+      hasShapeEvidence: false,
+      blankKeys: ['Alpha Key', 'Beta Key', 'Gamma Key'],
+      sectionsWithoutSubstantiveProse: ['Summary & Symptoms']
+    });
+
+    assert.match(rendered, /10 of 200 characters in the report/);
+    assert.match(rendered, /1 of 3 content-bearing sections or key values/);
+    assert.match(rendered, /20 of 150 content characters/);
+    assert.match(rendered, /no accepted shape/);
+    assert.match(rendered, /3 blank template keys \(max 2\): Alpha Key, Beta Key, Gamma Key/);
+    assert.match(rendered, /sections without substantive prose: "Summary & Symptoms"/);
+    assert.doesNotMatch(rendered, /empty sections/);
+
+    // Nothing failing → no diagnostic, so the park never invents a gap.
+    assert.strictEqual(
+      formatDiscoveryMissingEvidence({
+        markdownChars: DISCOVERY_REPORT_MIN_CHARS,
+        contentUnitCount: DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+        contentCharCount: DISCOVERY_REPORT_MIN_CONTENT_CHARS,
+        hasShapeEvidence: true,
+        blankKeys: [],
+        sectionsWithoutSubstantiveProse: []
+      }),
+      ''
+    );
+  });
+});
+
 
 /** Small helper so the fence test can compare against a fence-free copy. */
 function filledKeyCountOf(markdown: string): number {

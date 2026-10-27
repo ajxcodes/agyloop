@@ -170,7 +170,7 @@ export interface RunLifecycleParams {
    * Threaded into `StartPlanningUseCase` and enforced by
    * `resolveDiscoveryReentry`; recorded in history metadata so a bypassed RCA
    * gate stays auditable. Without it, re-entering a DISCOVERY checkpoint whose
-   * report is still an unpopulated scaffold parks instead of advancing.
+   * report does not yet carry RCA evidence parks instead of advancing.
    */
   readonly skipDiscovery?: boolean;
   readonly onProgress?: (message: string) => void;
@@ -689,12 +689,17 @@ export class RunLifecycleUseCase {
   }
 
   /**
-   * The DISCOVERY park message, naming the paths that were actually read
-   * (issue #283, AC3). Falls back to the base note when no path is known.
+   * The DISCOVERY park message, naming the missing evidence and the paths that
+   * were actually read (issues #283, #306). Falls back to the base note when
+   * nothing is known.
    */
   private formatDiscoveryParkMessage(planResult?: StartPlanningResult | null): string {
-    const checked = planResult?.discoveryReportEvidence?.checkedPaths ?? [];
-    return formatDiscoveryParkAwaitingRca(checked.join(', '));
+    const evidence = planResult?.discoveryReportEvidence;
+    return formatDiscoveryParkAwaitingRca(
+      (evidence?.checkedPaths ?? []).join(', '),
+      evidence?.missingEvidence ?? null,
+      evidence?.evaluatedPath ?? null
+    );
   }
 
   /**

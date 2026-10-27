@@ -1,5 +1,8 @@
 # [Discovery] - {Title}
 
+<!-- Either fill these keys or replace this scaffold with ## sections and substantive
+     prose: the DISCOVERY gate scores content, not the bullet shape. -->
+
 **Issue:** #{IssueNumber}  
 **Date:** {Date}  
 **Author:** AgyLoop Planning Subagent (Read-Only)  

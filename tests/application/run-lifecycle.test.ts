@@ -1661,6 +1661,104 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         );
       }
     });
+
+    // ---- issue #306: the park names the evidence, not the shape ----------
+    /** A pristine scaffold, as `scaffoldPlanDirectory` would write it. */
+    const PRISTINE_SCAFFOLD = `# [Discovery] - probe
+
+**Issue:** #32
+**Date:** 2026-10-27
+**Author:** AgyLoop Discovery Subagent (Read-Only)
+
+## 1. Problem Statement & Symptoms
+- **Observed Behavior:**
+- **Expected Behavior:**
+- **Affected Components / Paths:**
+
+## 2. Root Cause Analysis (RCA)
+- **Investigation Steps:**
+- **Identified Failure Mode:**
+- **Relevant Code References:**
+
+## 3. Reproduction Steps & Verification Protocol
+- **Local Reproduction Command:**
+- **Failing Test Target:**
+
+## 4. Remediation Strategy
+- **Recommended Fix Approach:**
+- **Potential Regressions / Side Effects:**
+`;
+
+    /** The prompt-shaped report: `##` headings + prose, no key bullets. */
+    const HEADING_SHAPE_REPORT = `# [Discovery] - probe
+
+**Issue:** #32
+**Date:** 2026-10-27
+**Author:** AgyLoop Discovery Subagent (Read-Only)
+
+## Summary & Symptoms
+
+The yolo re-entry parks before the gates even though the discovery report is complete. Reproduced three times against the current build with a fresh checkpoint.
+
+## Root Cause Analysis
+
+The RCA gate counted one markdown construct instead of measuring content, so a heading-shaped report scored zero filled keys and was read as a scaffold.
+
+## Manual Bug Smoke Test
+
+The reproduction parks with the scaffold message; the same report in bullet shape advances, three times out of three.
+
+## Remediation Strategy
+
+Score content from either shape and make the park name the empty sections and blank keys.
+`;
+
+    test('T12: the yolo DISCOVERY park names the missing evidence', async () => {
+      seedDiscoveryCheckpoint();
+      planGenerator.planContent = PRISTINE_SCAFFOLD;
+      const gate = gateMustNotRun();
+
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(gate.calls(), 0, 'the park must hold before any gate runs');
+      assert.ok(result.message?.startsWith(NOTE_DISCOVERY_PARK_AWAITING_RCA));
+      assert.match(result.message ?? '', /Missing evidence/);
+      assert.match(result.message ?? '', /Checked:/);
+      assert.match(
+        result.message ?? '',
+        /Problem Statement & Symptoms|Observed Behavior/,
+        'the park must name an empty section or a blank template key'
+      );
+      // AC3: it must no longer call a populated report an unpopulated scaffold.
+      assert.doesNotMatch(result.message ?? '', /unpopulated scaffold/);
+    });
+
+    test('T13: a heading-style RCA advances a yolo re-entry to the COMMIT gate', async () => {
+      // The positive control for T12: without it, a resolver that always parks
+      // would satisfy the diagnostics assertion above.
+      seedDiscoveryCheckpoint();
+      planGenerator.planContent = HEADING_SHAPE_REPORT;
+      const gate = countingGate();
+
+      const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
+      const result = await lifecycle.execute({
+        mode: MODE_YOLO,
+        issue: 32,
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_COMMIT);
+      assert.strictEqual(result.planResult?.discoveryReentry, 'ADVANCE_TO_PLAN');
+      assert.strictEqual(gate.calls(), 1, 'gates must run once the heading RCA exists');
+      assert.doesNotMatch(result.message ?? '', /Missing evidence/);
+    });
   });
 
   describe('8. --no-worktree Forwarding Across Modes (issue #247)', () => {
