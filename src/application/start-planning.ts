@@ -219,6 +219,29 @@ export class StartPlanningUseCase {
     // discovery report for THIS run actually lives (issue #237, BLOCKER 2).
     const checkpointPlanDir = sm.planDir;
 
+    // Issue #301 (AC-6): a PARK is a no-op. Decide BEFORE scaffolding, so a run
+    // that cannot advance writes no plan artifacts and no `.gitignore`. The
+    // decision is recomputed below only when this run actually advances.
+    let willPark = false;
+    let preParkDecision: DiscoveryReentryDecision | undefined;
+    let preParkEvidence: DiscoveryReportEvidence | undefined;
+    if (sm.currentStage === STAGE_DISCOVERY && !params.planPath && !params.dryRun) {
+      preParkEvidence = this.inspectDiscoveryReport(
+        workspace,
+        activeIssue,
+        sm,
+        null,
+        checkpointPlanDir,
+        planTitle
+      );
+      preParkDecision = resolveDiscoveryReentry({
+        currentStage: sm.currentStage,
+        discoveryReportPresent: preParkEvidence.populated,
+        skipDiscovery: params.skipDiscovery === true
+      });
+      willPark = preParkDecision === 'PARK_AT_DISCOVERY';
+    }
+
     if (params.planPath) {
       // Issue #267: a supplied plan is the plan the lifecycle executes. It WINS
       // over `planDir`, and NOTHING is scaffolded — a competing empty directory
@@ -250,7 +273,7 @@ export class StartPlanningUseCase {
       // scaffold `[Implementation] - …`, `implementation_plan.md` and the
       // summary INTO that directory, beside the supplied plan (issue #267).
       sm.setPlanPath(resolved.planPath);
-    } else if (!params.dryRun) {
+    } else if (!params.dryRun && !willPark) {
       scaffoldInfo = this.planGenerator.scaffoldPlanDirectory({
         projectRoot: workspace,
         issue: activeIssue,
@@ -267,9 +290,12 @@ export class StartPlanningUseCase {
       // Every other case keeps the #237 guard: a scaffold that returns a
       // different, freshly created directory must never repoint an existing
       // checkpoint.
+      //
+      // Issue #301: `setPlanDir` always bumps `updatedAt`, so a no-op adoption
+      // must not be issued at all.
       const shouldAdopt =
         !sm.planDir || Boolean(params.planDir) || scaffoldInfo?.adoptedExisting === true;
-      if (shouldAdopt && scaffoldInfo && scaffoldInfo.planDir) {
+      if (shouldAdopt && scaffoldInfo?.planDir && sm.planDir !== scaffoldInfo.planDir) {
         sm.setPlanDir(scaffoldInfo.planDir);
       }
     }
@@ -359,23 +385,30 @@ export class StartPlanningUseCase {
       // stage is DISCOVERY". It requires either content evidence that a
       // discovery report was populated, or the operator's explicit
       // --skip-discovery opt-in. Without one of those the checkpoint stays
-      // parked here and the summary-log leg below records
-      // Discovery / IN PROGRESS — the caller's park leg then returns a
-      // checkpointed, actionable message instead of streaming an unattended run
-      // out of a pristine scaffold.
-      discoveryReportEvidence = this.inspectDiscoveryReport(
-        workspace,
-        activeIssue,
-        sm,
-        scaffoldInfo,
-        checkpointPlanDir,
-        planTitle
-      );
-      const decision = resolveDiscoveryReentry({
-        currentStage: sm.currentStage,
-        discoveryReportPresent: discoveryReportEvidence.populated,
-        skipDiscovery: params.skipDiscovery === true
-      });
+      // parked here — and a park writes NOTHING (#301, AC-6).
+      //
+      // A park reuses the pre-computed evidence (no scaffold ran). Every
+      // advancing path recomputes with the scaffold it just created, so the
+      // reported evidence names the real artifacts.
+      discoveryReportEvidence =
+        willPark && preParkEvidence
+          ? preParkEvidence
+          : this.inspectDiscoveryReport(
+              workspace,
+              activeIssue,
+              sm,
+              scaffoldInfo,
+              checkpointPlanDir,
+              planTitle
+            );
+      const decision =
+        willPark && preParkDecision
+          ? preParkDecision
+          : resolveDiscoveryReentry({
+              currentStage: sm.currentStage,
+              discoveryReportPresent: discoveryReportEvidence.populated,
+              skipDiscovery: params.skipDiscovery === true
+            });
       discoveryReentry = decision;
       if (decision === 'ADVANCE_TO_PLAN') {
         sm.transition(STAGE_PLAN, {
@@ -393,7 +426,10 @@ export class StartPlanningUseCase {
     }
 
     // 6. Checkpoint state and update summary log
-    if (!params.dryRun) {
+    //
+    // A park is a no-op: a read of a checkpoint that cannot advance must not
+    // create or rewrite anything (#301). No save, no summary update.
+    if (!params.dryRun && !willPark) {
       await this.stateRepo.save(sm.toSnapshot());
 
       const summaryPath = this.resolveSummaryPath(workspace, scaffoldInfo, checkpointPlanDir);
@@ -517,6 +553,23 @@ export class StartPlanningUseCase {
           // DISCOVERY resolution now ranks a POPULATED `[Discovery]` artifact
           // ahead of a pristine sibling, then any discovery artifact, so one
           // empty sibling can never mask a populated one.
+          stage: STAGE_DISCOVERY
+        });
+        if (resolved && resolved.planPath) {
+          candidates.push(resolved.planPath);
+        }
+      }
+
+      // Issue #301: a checkpoint that tracks NO plan directory (legacy or
+      // hand-seeded) must still be able to SEE the canonical report for its
+      // issue — the RCA gate would otherwise park forever because a park no
+      // longer scaffolds a directory to read. `resolvePlanFile` falls back to
+      // `findPlanDirectory(issue)` when `planDir` is null; this is a pure read.
+      if (candidates.length === 0 && activeIssue !== null && activeIssue !== undefined) {
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: activeIssue,
+          planDir: checkpointPlanDir,
           stage: STAGE_DISCOVERY
         });
         if (resolved && resolved.planPath) {

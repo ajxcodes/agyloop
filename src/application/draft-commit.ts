@@ -20,7 +20,8 @@ import {
   DiffAnalyzer,
   DraftCommitPlan,
   PublicSanitizer,
-  InvalidTransitionError
+  InvalidTransitionError,
+  isCommitExcludedPath
 } from '../domain';
 import {
   StateRepository,
@@ -59,6 +60,14 @@ export interface DraftCommitResult {
    * stays pure — the analysed plan's semantics are not mutated.
    */
   readonly listedFiles: readonly string[];
+  /**
+   * Paths the commit gate EXCLUDES (`.agyloop`, `node_modules`, `artifacts`)
+   * and that therefore never reach `listedFiles` (issue #301, absorbing #319).
+   *
+   * One predicate with `ExecuteCommitUseCase`'s `git rm --cached`, so the
+   * printed list and the commit cannot disagree.
+   */
+  readonly excludedFiles: readonly string[];
 }
 
 export class DraftCommitUseCase {
@@ -119,15 +128,20 @@ export class DraftCommitUseCase {
     // stage. The analysed diff is tracked-only, so untracked paths are collected
     // separately. Staged mode never runs `git add -A`, so it never lists them.
     let untrackedFiles: readonly string[] = [];
+    let excludedUntracked: readonly string[] = [];
     if (!params.staged) {
       try {
         const statusRes = await this.commandExecutor.execute('git status --porcelain -uall', { cwd });
         if (typeof statusRes.stdout === 'string') {
-          untrackedFiles = statusRes.stdout
+          const collected = statusRes.stdout
             .split('\n')
             .filter((line) => line.startsWith('?? '))
             .map((line) => stripPathQuotes(line.slice(3).trim()))
             .filter((entry) => entry.length > 0);
+          // Issue #301: `untrackedFiles` is the INCLUDED set the caller marks
+          // `(untracked)`; excluded bookkeeping is reported separately.
+          excludedUntracked = collected.filter(isCommitExcludedPath);
+          untrackedFiles = collected.filter((entry) => !isCommitExcludedPath(entry));
         }
       } catch {
         // A status probe failure must not fail the draft; the list is simply
@@ -194,9 +208,22 @@ export class DraftCommitUseCase {
     });
 
     const listedFiles = [
-      ...plan.modifiedFiles,
-      ...untrackedFiles.filter((file) => !plan.modifiedFiles.includes(file))
+      ...plan.modifiedFiles.filter((file) => !isCommitExcludedPath(file)),
+      ...untrackedFiles.filter(
+        (file) => !isCommitExcludedPath(file) && !plan.modifiedFiles.includes(file)
+      )
     ];
+
+    // Issue #301 (absorbing #319): the SAME exclusion predicate the commit uses
+    // for `git rm --cached`, applied to both the analysed (tracked) paths and
+    // the untracked ones — a tracked `.agyloop/state.json` is untracked by the
+    // commit too, so it must never appear in the printed list either.
+    const excludedFiles = Array.from(
+      new Set([
+        ...plan.modifiedFiles.filter(isCommitExcludedPath),
+        ...excludedUntracked
+      ])
+    );
 
     return {
       plan,
@@ -205,7 +232,8 @@ export class DraftCommitUseCase {
       currentStage: sm.currentStage,
       stateMachine: sm,
       untrackedFiles,
-      listedFiles
+      listedFiles,
+      excludedFiles
     };
   }
 }

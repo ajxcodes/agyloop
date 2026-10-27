@@ -200,9 +200,10 @@ export interface CommandCapability {
 export const COMMAND_CAPABILITIES: Readonly<Record<string, CommandCapability>> = Object.freeze({
   '(default)': { dryRun: 'supported', json: 'refused' },
   init: { dryRun: 'supported', json: 'supported' },
-  // `next` is read-only by default but can persist a TRIAGE pause, so it has
-  // no simulation path to advertise (#248 decision 4).
-  next: { dryRun: 'refused', json: 'supported' },
+  // `next` is a query that records its context fields (baseBranch, dispatch
+  // counters, updatedAt), so `--dry-run` has a real simulation path: read,
+  // declare the suppressed writes, write nothing (issue #301, absorbing #304).
+  next: { dryRun: 'supported', json: 'supported' },
   'branch-info': { dryRun: 'refused', json: 'supported' },
   status: { dryRun: 'refused', json: 'supported' },
   config: { dryRun: 'refused', json: 'refused' },

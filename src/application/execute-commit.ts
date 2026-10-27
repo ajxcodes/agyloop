@@ -34,7 +34,9 @@ import {
   consumedHumanWaitMs,
   escapeShellQuote,
   formatStageDuration,
-  isRootWorkspace
+  isRootWorkspace,
+  COMMIT_EXCLUDED_PATHSPECS,
+  isCommitExcludedPath
 } from '../domain';
 import {
   StateRepository,
@@ -98,6 +100,14 @@ export interface ExecuteCommitResult {
   readonly worktreeTornDownIsolated?: boolean;
   readonly pushError?: string;
   readonly fallbackUsed?: boolean;
+  /**
+   * The directory the commit actually ran in (issue #301, absorbing #307).
+   * Reported so the operator can see WHERE the commit landed — the worktree or
+   * the workspace root — instead of having to infer it.
+   */
+  readonly commitCwd: string;
+  /** Whether `commitCwd` is an isolated worktree or the workspace root. */
+  readonly worktreeMode: 'isolated' | 'root';
 }
 
 export class ExecuteCommitUseCase {
@@ -123,13 +133,18 @@ export class ExecuteCommitUseCase {
 
   public async execute(params: ExecuteCommitParams = {}): Promise<ExecuteCommitResult> {
     const initialDir = params.workspaceDir || process.cwd();
+    const rootDir = params.rootWorkspaceDir || initialDir;
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
-    const cwd = sm.worktree?.worktreePath;
-    if (!cwd) {
-      throw new CommitExecutionError('validateWorktree', 'Worktree path is missing in state. Cannot commit to root workspace.');
-    }
-    const rootDir = params.rootWorkspaceDir || initialDir;
+
+    // Issue #301/#307: `worktree: null` is a LEGAL root-scoped run
+    // (`--no-worktree`, a torn-down descriptor, a root-workspace pipeline).
+    // `null` no longer means "cannot commit": it means "commit the workspace the
+    // caller named". An isolated descriptor still wins, so the safety that
+    // prevents committing the wrong tree is unchanged.
+    const descriptorPath = sm.worktree?.worktreePath;
+    const cwd = descriptorPath ?? initialDir;
+    const worktreeMode: 'isolated' | 'root' = descriptorPath ? 'isolated' : 'root';
 
     if (sm.currentStage !== STAGE_COMMIT) {
       throw new InvalidTransitionError(
@@ -170,7 +185,9 @@ export class ExecuteCommitUseCase {
         commitMessage,
         currentStage: sm.currentStage,
         stateMachine: sm,
-        summaryUpdated: false
+        summaryUpdated: false,
+        commitCwd: cwd,
+        worktreeMode
       };
     }
 
@@ -247,7 +264,9 @@ export class ExecuteCommitUseCase {
           commitMessage,
           currentStage: sm.currentStage,
           stateMachine: sm,
-          summaryUpdated
+          summaryUpdated,
+          commitCwd: cwd,
+          worktreeMode
         };
       }
 
@@ -258,7 +277,9 @@ export class ExecuteCommitUseCase {
         commitMessage,
         currentStage: sm.currentStage,
         stateMachine: sm,
-        summaryUpdated: false
+        summaryUpdated: false,
+        commitCwd: cwd,
+        worktreeMode
       };
     }
 
@@ -273,6 +294,20 @@ export class ExecuteCommitUseCase {
 
     // Stage changes if not already strictly staged
     if (!params.staged) {
+      // Issue #301 (absorbing #319): refuse HONESTLY when the working tree
+      // contains nothing but the paths this gate excludes. Without this, the
+      // run printed a file list the commit then untracked and failed with git's
+      // "nothing added to commit but untracked files present".
+      const committable = parsePorcelainPaths(statusRes.stdout).filter(
+        (path) => !isCommitExcludedPath(path)
+      );
+      if (committable.length === 0) {
+        throw new CommitExecutionError(
+          'git status',
+          `Nothing to commit: the working tree contains only paths agyloop excludes from every commit (${COMMIT_EXCLUDED_PATHSPECS.join(', ')}). Stage or create a real change first.`
+        );
+      }
+
       const addRes = await this.commandExecutor.execute('git add -A', { cwd });
       if (addRes.exitCode !== 0) {
         throw new CommitExecutionError(
@@ -293,12 +328,14 @@ export class ExecuteCommitUseCase {
       // no `|| true` to swallow a genuine failure: exit status is checked and we fail closed.
       const untrackRes = await this.commandExecutor.execute('git', {
         cwd,
-        args: ['rm', '--cached', '-rf', '--ignore-unmatch', '.agyloop', 'node_modules', 'artifacts']
+        args: ['rm', '--cached', '-rf', '--ignore-unmatch', ...COMMIT_EXCLUDED_PATHSPECS]
       });
       if (untrackRes.exitCode !== 0) {
         throw new CommitExecutionError(
           'git rm --cached',
-          untrackRes.stderr || untrackRes.stdout || 'Failed to untrack .agyloop / node_modules / artifacts.'
+          untrackRes.stderr ||
+            untrackRes.stdout ||
+            `Failed to untrack ${COMMIT_EXCLUDED_PATHSPECS.join(' / ')}.`
         );
       }
     }
@@ -586,7 +623,9 @@ export class ExecuteCommitUseCase {
       worktreeTornDownPath,
       worktreeTornDownIsolated,
       pushError,
-      fallbackUsed
+      fallbackUsed,
+      commitCwd: cwd,
+      worktreeMode
     };
   }
 
@@ -615,4 +654,28 @@ export class ExecuteCommitUseCase {
     }
     return undefined;
   }
+}
+
+/**
+ * Extracts repo-relative paths from `git status --porcelain` output.
+ *
+ * Handles the v1 `XY path` shape and the rename form `R  old -> new` (the NEW
+ * path is what the commit will contain), and unquotes paths git C-quoted.
+ */
+function parsePorcelainPaths(stdout: string): string[] {
+  const paths: string[] = [];
+  for (const line of stdout.split('\n')) {
+    if (line.length < 4) continue;
+    const raw = line.slice(3).trim();
+    if (!raw) continue;
+    const arrow = raw.lastIndexOf(' -> ');
+    const candidate = (arrow === -1 ? raw : raw.slice(arrow + 4)).trim();
+    if (!candidate) continue;
+    paths.push(
+      candidate.length >= 2 && candidate.startsWith('"') && candidate.endsWith('"')
+        ? candidate.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+        : candidate
+    );
+  }
+  return paths;
 }

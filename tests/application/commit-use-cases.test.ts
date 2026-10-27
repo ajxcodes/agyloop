@@ -18,7 +18,8 @@ const {
   CommitMessage,
   InvalidTransitionError,
   CommitExecutionError,
-  WorktreeDescriptor
+  WorktreeDescriptor,
+  COMMIT_EXCLUDED_PATHSPECS
 } = require('../../dist/domain');
 const {
   DraftCommitUseCase,
@@ -243,6 +244,54 @@ new file mode 100644
         1,
         'a tracked file must not be duplicated by the untracked union'
       );
+    });
+
+    test('N-16 / AC-9: the draft never lists the excluded trees, only the real change', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), issue: null, worktree: mockWorktree });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain -uall'] = {
+        stdout: '?? .agyloop\n?? artifacts\n?? feature.txt\n'
+      };
+
+      const useCase = new DraftCommitUseCase(stateRepo, executor, new MockGitHubGateway());
+      const result = await useCase.execute();
+
+      assert.deepStrictEqual([...result.listedFiles], ['feature.txt']);
+      assert.deepStrictEqual([...result.untrackedFiles], ['feature.txt']);
+      assert.ok(result.excludedFiles.includes('.agyloop'));
+      assert.ok(result.excludedFiles.includes('artifacts'));
+    });
+
+    test('N-17 / AC-9: a tracked bookkeeping path is never listed (git rm --cached untracks it)', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), issue: null, worktree: mockWorktree });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git diff HEAD'] = {
+        stdout: `diff --git a/.agyloop/state.json b/.agyloop/state.json
+new file mode 100644
+--- /dev/null
++++ b/.agyloop/state.json
+@@ -0,0 +1 @@
++{}
+diff --git a/src/app.ts b/src/app.ts
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -0,0 +1 @@
++export const app = 1;`
+      };
+
+      const useCase = new DraftCommitUseCase(stateRepo, executor, new MockGitHubGateway());
+      const result = await useCase.execute();
+
+      assert.ok(result.listedFiles.includes('src/app.ts'));
+      assert.ok(
+        !result.listedFiles.includes('.agyloop/state.json'),
+        `excluded tracked paths must never be listed: ${JSON.stringify(result.listedFiles)}`
+      );
+      assert.ok(result.excludedFiles.includes('.agyloop/state.json'));
     });
 
     test('evaluates git commands in worktree directory when sm.worktree is configured', async () => {
@@ -619,6 +668,38 @@ new file mode 100644
       assert.strictEqual(worktreeManager.removedWorktreeOptions.worktreePath, '/mock/repo/.worktrees/48');
     });
 
+    test('N-18 / AC-9: a tree containing only excluded paths fails honestly, before git add', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      sm.setIssue(32);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: '?? .agyloop\n?? artifacts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+
+      const prompter = new MockConfirmationPrompt(true);
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, undefined, prompter);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'only bookkeeping paths',
+        issueNumber: 32
+      });
+
+      await assert.rejects(
+        () => useCase.execute({ commitMessage: commitMsg }),
+        (err: any) => {
+          assert.ok(err instanceof CommitExecutionError);
+          assert.strictEqual(err.operation, 'git status');
+          assert.match(err.message, /only paths agyloop excludes/);
+          assert.match(err.message, /\.agyloop/);
+          return true;
+        }
+      );
+      assert.ok(
+        !executor.executedCommands.includes('git add -A'),
+        'the honest refusal must precede staging'
+      );
+    });
+
     test('executes defensive git rm --cached with --ignore-unmatch after git add -A to untrack symlinks', async () => {
       const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
       sm.setIssue(30);
@@ -664,6 +745,9 @@ new file mode 100644
         ['rm', '--cached', '-rf', '--ignore-unmatch', '.agyloop', 'node_modules', 'artifacts'],
         'untrack guard must pass --ignore-unmatch so unmatched pathspecs cannot abort it'
       );
+      // Issue #301: the argv is built from the ONE shared constant, so the draft
+      // list and the commit can never exclude different trees.
+      assert.deepStrictEqual(rmArgs.slice(4), [...COMMIT_EXCLUDED_PATHSPECS]);
 
       // The old guard appended `|| true`, which turned the fatal into a silent success.
       assert.ok(
@@ -880,27 +964,73 @@ new file mode 100644
       assert.strictEqual(worktreeManager.removedWorktreeOptions, null);
     });
 
-    test('throws error if worktreePath is missing from state', async () => {
+    // Issue #301 (absorbing #307): `worktree: null` is a LEGAL root-scoped run.
+    // The gate must commit the workspace it was pointed at, not refuse.
+    test('N-14: commits from the workspace root when the checkpoint has no worktree', async () => {
       const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT) }); // no worktree
       sm.setIssue(88);
       const stateRepo = new MockStateRepository(sm.toSnapshot());
       const executor = new MockCommandExecutor();
-      
+      executor.responses['git status --porcelain'] = { stdout: 'M feature.txt\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: root commit test (#88)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'rootcommit\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'main\n' };
+      executor.responses['git push -u origin "main"'] = { exitCode: 0 };
+
       const useCase = new ExecuteCommitUseCase(stateRepo, executor);
       const commitMsg = CommitMessage.create({
         type: 'fix',
-        description: 'missing worktree test',
+        description: 'root commit test',
         issueNumber: 88
       });
 
-      await assert.rejects(
-        () => useCase.execute({
-          commitMessage: commitMsg,
-          confirmed: true,
-          workspaceDir: '/mock/repo'
-        }),
-        (err: any) => err.message.includes('Worktree path is missing in state')
-      );
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.commitCwd, '/repo');
+      assert.strictEqual(result.worktreeMode, 'root');
+      const statusIndex = executor.executedCommands.indexOf('git status --porcelain');
+      assert.ok(statusIndex >= 0, 'git status must run');
+      assert.strictEqual(executor.executedOptions[statusIndex].cwd, '/repo');
+    });
+
+    test('N-15: commits inside the isolated worktree when the descriptor is present', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      sm.setIssue(89);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M feature.txt\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: isolated commit test (#89)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'wtcommit\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/89\n' };
+      executor.responses['git push -u origin "task/89"'] = { exitCode: 0 };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const commitMsg = CommitMessage.create({
+        type: 'fix',
+        description: 'isolated commit test',
+        issueNumber: 89
+      });
+
+      const result = await useCase.execute({
+        commitMessage: commitMsg,
+        confirmed: true,
+        workspaceDir: '/mock/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.commitCwd, mockWorktree.worktreePath);
+      assert.strictEqual(result.worktreeMode, 'isolated');
+      const statusIndex = executor.executedCommands.indexOf('git status --porcelain');
+      assert.strictEqual(executor.executedOptions[statusIndex].cwd, mockWorktree.worktreePath);
     });
 
     test('invokes cleanOrphanedWorktrees with subagents: true after commit completion', async () => {

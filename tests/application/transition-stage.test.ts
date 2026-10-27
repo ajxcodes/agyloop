@@ -382,3 +382,96 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     assert.strictEqual(stateRepo.saveCallCount, 1);
   });
 });
+
+/**
+ * Issue #301 (P10) — the checkpoint guard precedes artifact writes.
+ *
+ * A refused save must leave the tree byte-identical and exit non-zero; a
+ * successful save scatters the DISCOVERY plan directory AFTER it, and records
+ * the adopted directory.
+ */
+describe('TransitionStageUseCase save-before-scaffold (#301)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-transition-301-'));
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function snapshotAtDiscovery(): StateMachineSnapshot {
+    const sm = StateMachine.createInitial({ issue: 906, mode: MODE_STANDARD });
+    sm.transition(STAGE_DISCOVERY);
+    sm.setPlanDir('/fake/plans/906-task-plan');
+    return sm.toSnapshot();
+  }
+
+  function recordingGenerator(calls: any[]): any {
+    return {
+      scaffoldPlanDirectory: (params: any) => {
+        calls.push(params);
+        return {
+          planDir: '/fake/plans/906-task-plan',
+          folderName: '906-task-plan',
+          planPath: '/fake/plans/906-task-plan/[Discovery] - Task Plan.md',
+          summaryPath: '/fake/plans/906-task-plan/CodeLoop Summary.md',
+          type: 'discovery',
+          directoryCreated: true,
+          filesCreated: true,
+          adoptedExisting: false
+        };
+      },
+      resolvePlanFile: () => null,
+      updateSummaryLog: () => true
+    };
+  }
+
+  test('N-6 / AC-7: a refused save writes no plan artifacts', async () => {
+    const { StateStorageError } = require('../../dist/domain');
+    const failingRepo = new (class extends MockStateRepo {
+      async save(): Promise<void> {
+        throw new StateStorageError('/repo/.agyloop/tasks/906.json', 'save', 'refused by the fixture');
+      }
+    })(null);
+    // Start at INITIALIZED so DISCOVERY is the legal target.
+    failingRepo.savedSnapshot = StateMachine.createInitial({ issue: 906, mode: MODE_STANDARD }).toSnapshot();
+    const calls: any[] = [];
+    const useCase = new TransitionStageUseCase(
+      failingRepo,
+      undefined,
+      undefined,
+      recordingGenerator(calls)
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_DISCOVERY, workspaceDir: tempDir }),
+      (err: any) => err instanceof StateStorageError
+    );
+    assert.strictEqual(calls.length, 0, 'a refused save must scaffold nothing');
+  });
+
+  test('N-7 / AC-7: the success path still scaffolds and records planDir', async () => {
+    const stateRepo = new MockStateRepo(
+      StateMachine.createInitial({ issue: 906, mode: MODE_STANDARD }).toSnapshot()
+    );
+    const calls: any[] = [];
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      recordingGenerator(calls)
+    );
+
+    const sm = await useCase.execute({ targetStage: STAGE_DISCOVERY, workspaceDir: tempDir });
+
+    assert.strictEqual(sm.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(calls.length, 1, 'the DISCOVERY scaffold must still run');
+    assert.strictEqual(sm.planDir, '/fake/plans/906-task-plan');
+    assert.strictEqual(stateRepo.saveCallCount, 2, 'one save for the stage, one for the adopted planDir');
+    assert.strictEqual(stateRepo.savedSnapshot!.planDir, '/fake/plans/906-task-plan');
+  });
+});

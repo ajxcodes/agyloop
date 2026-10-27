@@ -101,6 +101,20 @@ function readState(dir: string): any {
 }
 
 /**
+ * The tree the pipeline actually measures (issue #301).
+ *
+ * The YOLO fast-path provisions its worktree when it enters the implementation
+ * leg, so a re-entry at IMPLEMENT executes INSIDE that worktree. An
+ * implementation written into the root would be invisible to the gates — the
+ * run honours the descriptor it already has instead of re-provisioning (and no
+ * longer silently falls back to the root).
+ */
+function implementationDir(sandbox: string): string {
+  const worktreePath = readState(sandbox)?.worktree?.worktreePath;
+  return typeof worktreePath === 'string' && worktreePath.length > 0 ? worktreePath : sandbox;
+}
+
+/**
  * Builds a disposable git repository on branch `main` with a REAL test suite:
  * the gate command is `npm test`, and the suite fails when the source and the
  * test disagree.
@@ -498,8 +512,11 @@ describe('codeloop yolo implementation park (issue #259)', () => {
       assert.strictEqual(first.code, EXIT_CODE_SUCCESS, `the first run must park, got:\n${first.output}`);
 
       // Simulate the implementer subagent: the source AND the test change.
-      fs.writeFileSync(path.join(env.sandbox, 'src-target.js'), SOURCE_WITH_7, 'utf8');
-      fs.writeFileSync(path.join(env.sandbox, 'index.test.js'), TEST_EXPECTING_7, 'utf8');
+      // Issue #301: the run executes in the worktree it provisioned, so the
+      // implementation must land there.
+      const target = implementationDir(env.sandbox);
+      fs.writeFileSync(path.join(target, 'src-target.js'), SOURCE_WITH_7, 'utf8');
+      fs.writeFileSync(path.join(target, 'index.test.js'), TEST_EXPECTING_7, 'utf8');
 
       const second = await runYolo(env);
 
@@ -539,7 +556,8 @@ describe('codeloop yolo implementation park (issue #259)', () => {
       assert.strictEqual(first.code, EXIT_CODE_SUCCESS, `the first run must park, got:\n${first.output}`);
 
       // Simulate a WRONG implementation: the source changes, the test does not.
-      fs.writeFileSync(path.join(env.sandbox, 'src-target.js'), SOURCE_WITH_7, 'utf8');
+      // Issue #301: written in the worktree the pipeline actually measures.
+      fs.writeFileSync(path.join(implementationDir(env.sandbox), 'src-target.js'), SOURCE_WITH_7, 'utf8');
 
       const second = await runYolo(env);
 

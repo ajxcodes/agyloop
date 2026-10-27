@@ -290,7 +290,6 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
   test('T-F7: every read-only command refuses --dry-run', async () => {
     const refusedDryRun: Array<[string, string[]]> = [
       ['status', ['status', '--dry-run']],
-      ['next', ['next', '--dry-run']],
       ['config', ['config', '--dry-run']],
       ['models', ['models', '--dry-run']],
       ['prompt', ['prompt', '--dry-run']],
@@ -317,6 +316,28 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
       assert.ok(result.stderr.includes('--dry-run'), `${label}: ${result.stderr}`);
       assert.strictEqual(after, before, `${label} must change nothing`);
     }
+  });
+
+  // Issue #301 (absorbing #304): `next` DOES write context fields, so it must
+  // not claim to be a read-only command that refuses `--dry-run`. Its dry run
+  // succeeds AND writes nothing.
+  test('N-29: next --dry-run succeeds and writes nothing (#301)', async () => {
+    let before = '';
+    let after = '';
+    const result = await runCliInSandbox(
+      ['next', '--dry-run', '--issue', '888'],
+      (dir) => {
+        seedWorkspace(dir);
+        before = treeHash(path.join(dir, '.agyloop'));
+      },
+      (dir) => {
+        after = treeHash(path.join(dir, '.agyloop'));
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.strictEqual(after, before, 'next --dry-run must not touch the checkpoint tree');
+    assert.ok(!result.stderr.includes('does not modify state'), result.stderr);
   });
 
   test('T-F8: every command without a JSON surface refuses --json', async () => {

@@ -1064,3 +1064,111 @@ describe('worktree truth in read-only reporting (#282)', () => {
     );
   });
 });
+
+/**
+ * Issue #301 (absorbing #304) — the query contract at the CLI boundary.
+ */
+describe('next is a declared query (#301)', () => {
+  const DISCOVERY = {
+    version: '1.0.0',
+    currentStage: 'DISCOVERY',
+    mode: 'standard',
+    issue: 905,
+    milestoneTitle: null,
+    baseBranch: null,
+    worktree: null,
+    planDir: null,
+    planPath: null,
+    approvedPlanDigest: null,
+    approvedPlanPath: null,
+    triagePayload: null,
+    triageDisposition: null,
+    createdAt: EARLY,
+    updatedAt: EARLY,
+    history: [{ stage: 'DISCOVERY', timestamp: EARLY }],
+    pausedAtGate: null,
+    pausedAtTimestamp: null,
+    totalHumanWaitMs: 0,
+    planRevisionCount: 0,
+    implementToGateLoops: 0,
+    reviewDispatchCount: 0,
+    discoveryDispatchCount: 0,
+    planDispatchCount: 0,
+    planEmptyParkCount: 0
+  };
+
+  test('N-25 / AC-5: next --issue 900 in an empty sandbox creates no task file', async () => {
+    let exists = true;
+    const result = await runCliInSandbox(
+      ['next', '--issue', '900', '--json'],
+      undefined,
+      (dir) => {
+        exists = fs.existsSync(path.join(dir, '.agyloop', 'tasks', '900.json'));
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.strictEqual(exists, false, 'next must not manufacture a checkpoint');
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.currentStage, 'INITIALIZED');
+  });
+
+  test('N-26 / AC-5: next --dry-run --json writes nothing and declares its writes', async () => {
+    let before = '';
+    let after = '';
+    const result = await runCliInSandbox(
+      ['next', '--issue', '905', '--dry-run', '--json'],
+      (dir) => {
+        seedRoot(dir);
+        seedTask(dir, 905, DISCOVERY);
+        before = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '905.json'), 'utf8');
+      },
+      (dir) => {
+        after = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '905.json'), 'utf8');
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.strictEqual(after, before, 'a dry run must not touch the checkpoint');
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.dryRun, true);
+    assert.ok(Array.isArray(parsed.wouldWrite) && parsed.wouldWrite.length > 0, result.stdout);
+  });
+
+  test('N-27 / AC-5: the help text names the real write set and no longer claims read-only', async () => {
+    const result = await runCliInSandbox(['--help']);
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.match(result.stdout, /next\s+.*(writes|--dry-run)/);
+    assert.ok(!result.stdout.includes('read-only by default'), result.stdout);
+  });
+
+  test('N-28 / AC-4: next and worktree list are both honest about a descriptor-less checkpoint', async () => {
+    const { execFileSync } = require('node:child_process');
+
+    const seed = (dir: string): void => {
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'a@b.c'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'a'], { cwd: dir, stdio: 'ignore' });
+      fs.writeFileSync(path.join(dir, 'README.md'), 'base\n');
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-qm', 'base'], { cwd: dir, stdio: 'ignore' });
+      // An on-disk worktree registered with git, but no descriptor on the checkpoint.
+      execFileSync('git', ['worktree', 'add', '-q', '.worktrees/88', '-b', 'task/88'], {
+        cwd: dir,
+        stdio: 'ignore'
+      });
+      seedRoot(dir);
+      seedTask(dir, 88, { currentStage: 'IMPLEMENT', worktree: null, baseBranch: 'main' });
+    };
+
+    const first = await runCliInSandbox(['next', '--issue', '88', '--json'], seed);
+    assert.strictEqual(first.code, 0, first.stderr);
+    const parsed = JSON.parse(first.stdout);
+    assert.strictEqual(parsed.worktreePath, null, 'no descriptor means no worktree path');
+
+    const listed = await runCliInSandbox(['worktree', 'list'], seed);
+    assert.strictEqual(listed.code, 0, listed.stderr);
+    assert.ok(listed.stdout.includes(path.join('.worktrees', '88')), listed.stdout);
+  });
+});

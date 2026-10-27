@@ -160,18 +160,26 @@ describe('runCli prompt guards', () => {
     const result = await runCliInSandbox(['commit', '--yes'], {
       stdinIsTTY: false,
       stdoutIsTTY: false,
-      // No worktree in the fixture: the commit use case then fails deterministically
-      // right after the guard, which is enough to prove the guard was passed.
+      // No worktree in the fixture: the commit use case now legalises the root
+      // workspace (#301/#307) and fails deterministically at `git status`,
+      // which is enough to prove the guard was passed.
       seed: (dir) => seedStateAtCommit(dir, false)
     });
 
-    // Execution got past the prompt guard and into the commit use case, which then
-    // fails deterministically because the fixture has no worktree.
+    // Execution got past the prompt guard and into the commit use case, which
+    // then fails deterministically because the sandbox is not a git repo.
     assert.ok(
       !result.stderr.includes('Non-interactive terminal detected'),
       result.stderr
     );
-    assert.ok(result.stderr.includes('Worktree path is missing in state'), result.stderr);
+    assert.ok(
+      !result.stderr.includes('Worktree path is missing in state'),
+      `a null worktree must be a legal root-scoped run: ${result.stderr}`
+    );
+    assert.ok(
+      result.stderr.includes("Commit execution error during 'git status'"),
+      `expected the honest staging failure, got: ${result.stderr}`
+    );
   });
 
   test('commit --json is REFUSED by the capability gate, never silently ignored', async () => {

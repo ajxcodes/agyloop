@@ -9,6 +9,9 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { GetNextActionUseCase, RunPreFlightCheckUseCase } = require('../../dist/application');
 const {
   StateMachine,
@@ -598,5 +601,191 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
       const saved = await stateRepo.load();
       assert.strictEqual(saved?.issue, 42);
     });
+  });
+});
+
+/**
+ * Issue #301 (absorbing #304) — the read-path write contract.
+ *
+ * `next` is a QUERY that records a small, DECLARED set of context fields. It
+ * never manufactures a checkpoint, `--dry-run` is honoured, and a real read
+ * changes only `baseBranch` / the dispatch counters / `updatedAt`.
+ */
+describe('#301: next is a declared, non-fabricating query', () => {
+  const NOW = '2026-10-27T00:00:00.000Z';
+
+  function discoverySeed(overrides: Record<string, unknown> = {}): any {
+    return {
+      version: '1.0.0',
+      currentStage: STAGE_DISCOVERY,
+      mode: 'standard',
+      issue: 905,
+      milestoneTitle: null,
+      baseBranch: null,
+      worktree: null,
+      planDir: 'artifacts/plans/905-task-plan',
+      planPath: null,
+      approvedPlanDigest: null,
+      approvedPlanPath: null,
+      triagePayload: null,
+      triageDisposition: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      history: [{ stage: STAGE_DISCOVERY, timestamp: NOW }],
+      pausedAtGate: null,
+      pausedAtTimestamp: null,
+      totalHumanWaitMs: 0,
+      planRevisionCount: 0,
+      implementToGateLoops: 0,
+      reviewDispatchCount: 0,
+      discoveryDispatchCount: 0,
+      planDispatchCount: 0,
+      planEmptyParkCount: 0,
+      ...overrides
+    };
+  }
+
+  function tempStateFile(seed: any | null): { dir: string; stateFile: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-301-'));
+    fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
+    const stateFile = path.join(dir, '.agyloop', 'tasks', '905.json');
+    if (seed) {
+      fs.writeFileSync(stateFile, JSON.stringify(seed, null, 2));
+    }
+    return { dir, stateFile };
+  }
+
+  function countedRepo(stateFile: string): any {
+    const { FileStateRepository } = require('../../dist/infrastructure');
+    const real = new FileStateRepository({ stateFilePath: stateFile });
+    let saves = 0;
+    return {
+      repo: {
+        load: () => real.load(),
+        save: async (s: any) => {
+          saves++;
+          return real.save(s);
+        },
+        getStateFilePath: () => real.getStateFilePath(),
+        listAllStates: async () => real.listAllStates(),
+        forIssue: (issue: number) => real.forIssue(issue)
+      },
+      saves: () => saves
+    };
+  }
+
+  function baseBranchInference(): any {
+    return { execute: async () => ({ baseBranch: 'main', taskBranchPrefix: 'task/' }) };
+  }
+
+  test('N-20 / AC-5: an absent checkpoint is never manufactured', async () => {
+    const { dir, stateFile } = tempStateFile(null);
+    const { repo, saves } = countedRepo(stateFile);
+    const useCase = new GetNextActionUseCase(repo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: dir, issue: 900 });
+
+    assert.strictEqual(saves(), 0, 'a query must not create a task file');
+    assert.strictEqual(fs.existsSync(stateFile), false, 'no task file may be created');
+    assert.strictEqual(result.currentStage, STAGE_INITIALIZED);
+    assert.ok(result.humanSummary.includes('900'), result.humanSummary);
+    assert.strictEqual(result.dryRun, false);
+    assert.deepStrictEqual([...result.wouldWrite], []);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-21 / AC-5: an absent checkpoint with --dry-run still writes nothing', async () => {
+    const { dir, stateFile } = tempStateFile(null);
+    const { repo, saves } = countedRepo(stateFile);
+    const useCase = new GetNextActionUseCase(repo, makeMockConfig());
+
+    const result = await useCase.execute({ workspaceDir: dir, issue: 900, dryRun: true });
+
+    assert.strictEqual(saves(), 0);
+    assert.strictEqual(fs.existsSync(stateFile), false);
+    assert.strictEqual(result.dryRun, true);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-22 / AC-5: next --dry-run is byte-identical and declares its writes', async () => {
+    const { dir, stateFile } = tempStateFile(discoverySeed());
+    const { repo, saves } = countedRepo(stateFile);
+    const useCase = new GetNextActionUseCase(
+      repo,
+      makeMockConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      baseBranchInference()
+    );
+    const before = fs.readFileSync(stateFile, 'utf8');
+
+    const result = await useCase.execute({ workspaceDir: dir, issue: 905, dryRun: true });
+
+    assert.strictEqual(fs.readFileSync(stateFile, 'utf8'), before, 'the checkpoint must be byte-identical');
+    assert.strictEqual(saves(), 0);
+    assert.strictEqual(result.dryRun, true);
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+    assert.ok(
+      result.wouldWrite.some((entry: string) => entry.includes('discoveryDispatchCount')),
+      JSON.stringify(result.wouldWrite)
+    );
+    assert.strictEqual(JSON.parse(before).discoveryDispatchCount, 0);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-23 / AC-5: a real read changes only baseBranch, the counter and updatedAt', async () => {
+    const { dir, stateFile } = tempStateFile(discoverySeed());
+    const { repo } = countedRepo(stateFile);
+    const useCase = new GetNextActionUseCase(
+      repo,
+      makeMockConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      baseBranchInference()
+    );
+    const before = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+
+    await useCase.execute({ workspaceDir: dir, issue: 905 });
+
+    const after = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+      .sort();
+    assert.deepStrictEqual(changed, ['baseBranch', 'discoveryDispatchCount', 'updatedAt']);
+    assert.strictEqual(after.discoveryDispatchCount, 1);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-24 / AC-5: a second real read changes only the counter and updatedAt', async () => {
+    const { dir, stateFile } = tempStateFile(discoverySeed({ baseBranch: 'main' }));
+    const { repo } = countedRepo(stateFile);
+    const useCase = new GetNextActionUseCase(repo, makeMockConfig());
+    await useCase.execute({ workspaceDir: dir, issue: 905 });
+    const before = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+
+    await useCase.execute({ workspaceDir: dir, issue: 905 });
+
+    const after = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+      .sort();
+    assert.ok(
+      changed.every((key) => key === 'discoveryDispatchCount' || key === 'updatedAt'),
+      `only the declared fields may change, got ${JSON.stringify(changed)}`
+    );
+    assert.strictEqual(after.discoveryDispatchCount, 2);
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

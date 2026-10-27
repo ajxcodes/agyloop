@@ -102,6 +102,12 @@ export interface GetNextActionParams {
    * TRIAGE route that open PR review feedback justifies.
    */
   readonly restart?: boolean;
+  /**
+   * Preview without writing (issue #301, absorbing #304). Honoured: the reads
+   * run, every suppressed write is declared in `wouldWrite`, and the
+   * checkpoint is never touched.
+   */
+  readonly dryRun?: boolean;
 }
 
 /**
@@ -200,7 +206,27 @@ export interface NextActionResult {
    * recorded. Purely additive: absent from every other directive.
    */
   readonly reviewRemediationRound?: number | null;
+  /**
+   * True when this read was a `--dry-run` preview (issue #301).
+   *
+   * Always present: a query that can write must state whether it did.
+   */
+  readonly dryRun: boolean;
+  /**
+   * The checkpoint writes this read would have made, in operator language.
+   *
+   * Empty on a real read; populated on a `--dry-run` preview so the operator
+   * sees exactly what the write set is (#301, absorbing #304).
+   */
+  readonly wouldWrite: readonly string[];
 }
+
+/**
+ * A directive as built by the use case internals. The public `execute()` adds
+ * the read/write contract (`dryRun`, `wouldWrite`), so every internal return
+ * is free of bookkeeping and the contract is impossible to omit.
+ */
+type DirectiveResult = Omit<NextActionResult, 'dryRun' | 'wouldWrite'>;
 
 export class GetNextActionUseCase {
   private readonly stateRepo: StateRepository;
@@ -239,9 +265,28 @@ export class GetNextActionUseCase {
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
+    const wouldWrite: string[] = [];
+    const directive = await this.buildDirective(params, wouldWrite);
+    return {
+      ...directive,
+      dryRun: params.dryRun === true,
+      wouldWrite
+    };
+  }
+
+  private async buildDirective(
+    params: GetNextActionParams,
+    wouldWrite: string[]
+  ): Promise<DirectiveResult> {
     const cwd = params.workspaceDir || process.cwd();
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
+
+    // Issue #301 (absorbing #304): a query never manufactures a checkpoint. A
+    // write requires a LOADED snapshot, and `--dry-run` suppresses every write
+    // while declaring it. `wouldWrite` is the operator-visible declaration.
+    const persisted = snapshot !== null;
+    const writesEnabled = persisted && params.dryRun !== true;
 
     const config = this.configRepo.loadConfig({
       customPath: params.configPath,
@@ -275,8 +320,10 @@ export class GetNextActionUseCase {
         }
       }
       if (inferredIssue) {
-        sm.setIssue(inferredIssue);
-        await this.stateRepo.save(sm.toSnapshot());
+        if (persisted) {
+          sm.setIssue(inferredIssue);
+          await this.saveContext(sm, writesEnabled, 'checkpoint: issue (inferred)', wouldWrite);
+        }
       }
     }
 
@@ -342,7 +389,12 @@ export class GetNextActionUseCase {
           // TRIAGE is in HUMAN_WAIT_GATES, so transition() preserves the pause
           // rather than consuming it as a stale mechanical halt.
           sm.pauseAtGate(GATE_TRIAGE);
-          await this.stateRepo.save(sm.toSnapshot());
+          await this.saveContext(
+            sm,
+            writesEnabled,
+            'checkpoint: stage TRIAGE (pausedAtGate TRIAGE)',
+            wouldWrite
+          );
         }
         // Otherwise the COMPLETED case below reports idle — no mutation at all.
       } else if (decision === 'RESTART' && activeIssue !== null) {
@@ -352,28 +404,39 @@ export class GetNextActionUseCase {
         // why the forbidden `{ PLAN, planDir: null }` snapshot is structurally
         // unreachable from this path, not merely discouraged by convention.
         sm.transition(STAGE_DISCOVERY, { note: NOTE_RESTARTED_FROM_COMPLETED, restart: true });
-        await this.stateRepo.save(sm.toSnapshot());
+        await this.saveContext(
+          sm,
+          writesEnabled,
+          'checkpoint: reset + stage DISCOVERY (--restart)',
+          wouldWrite
+        );
       }
       // REPORT_IDLE_COMPLETED: no mutation whatsoever. A RESTART with a
       // unresolvable issue falls through to the idle report rather than
       // resetting to a null-issue checkpoint, which is why the guard above is
       // `activeIssue !== null`.
-    } else if (explicitIssue !== null && sm.issue !== explicitIssue) {
+    } else if (persisted && explicitIssue !== null && sm.issue !== explicitIssue) {
       // One of the two fields the query path is always permitted to write.
       sm.setIssue(explicitIssue);
-      await this.stateRepo.save(sm.toSnapshot());
+      await this.saveContext(sm, writesEnabled, 'checkpoint: issue', wouldWrite);
     }
 
-    activeIssue = sm.issue;
+    // Issue #301: a read of an ABSENT checkpoint must still report the issue it
+    // was asked about. `sm.issue` alone dropped the explicit `--issue`.
+    activeIssue = sm.issue ?? explicitIssue ?? inferredIssue;
     if (!sm.baseBranch && activeIssue && this.inferBaseBranchUseCase) {
       try {
         const inference = await this.inferBaseBranchUseCase.execute({
           issueNumber: activeIssue,
-          workspaceDir: cwd
+          workspaceDir: cwd,
+          // Issue #301: the use case persists the inferred branch itself. A
+          // query must not let that leak a write past `--dry-run` / an absent
+          // checkpoint — the outer `saveContext` is the ONE seam that decides.
+          persist: writesEnabled
         });
         if (inference.baseBranch) {
           sm.setBaseBranch(inference.baseBranch);
-          await this.stateRepo.save(sm.toSnapshot());
+          await this.saveContext(sm, writesEnabled, 'checkpoint: baseBranch (inferred)', wouldWrite);
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -490,7 +553,7 @@ export class GetNextActionUseCase {
 
         if (sm.pausedAtGate === null) {
           sm.recordDiscoveryDispatch();
-          await this.persistDispatchCounter(sm, 'discovery');
+          await this.persistDispatchCounter(sm, 'discovery', writesEnabled, wouldWrite);
         }
 
         // State → text (issue #320). Every verified state keeps the static
@@ -595,7 +658,7 @@ export class GetNextActionUseCase {
 
         if (sm.pausedAtGate === null) {
           sm.recordPlanDispatch();
-          await this.persistDispatchCounter(sm, 'plan');
+          await this.persistDispatchCounter(sm, 'plan', writesEnabled, wouldWrite);
         }
 
         const stateWord = planIsBlank ? 'still blank' : 'non-blank';
@@ -760,7 +823,7 @@ export class GetNextActionUseCase {
         // is blocked on a gate.
         if (sm.pausedAtGate === null) {
           sm.recordReviewDispatch();
-          await this.persistDispatchCounter(sm, 'review');
+          await this.persistDispatchCounter(sm, 'review', writesEnabled, wouldWrite);
         }
 
         const subagent = this.resolveSubagentUseCase.execute({
@@ -1147,8 +1210,16 @@ export class GetNextActionUseCase {
    */
   private async persistDispatchCounter(
     sm: StateMachine,
-    counter: 'review' | 'discovery' | 'plan'
+    counter: 'review' | 'discovery' | 'plan',
+    writesEnabled: boolean,
+    wouldWrite: string[]
   ): Promise<void> {
+    if (!writesEnabled) {
+      // A suppressed write is DECLARED, never silent (issue #301 / #304): the
+      // counter and `updatedAt` are the only keys this read would have changed.
+      wouldWrite.push(`checkpoint: ${counter}DispatchCount + updatedAt`);
+      return;
+    }
     try {
       await this.stateRepo.save(sm.toSnapshot());
     } catch {
@@ -1156,6 +1227,26 @@ export class GetNextActionUseCase {
         `[agyloop] Warning: could not record the ${counter} dispatch counter at ${this.stateRepo.getStateFilePath()}; returning the directive unchanged.`
       );
     }
+  }
+
+  /**
+   * The ONE seam every context-field write goes through (issue #301).
+   *
+   * When writes are disabled — no loaded checkpoint, or `--dry-run` — the
+   * intent is recorded in `wouldWrite` instead of being persisted, so the
+   * query contract and the observed behaviour cannot disagree.
+   */
+  private async saveContext(
+    sm: StateMachine,
+    enabled: boolean,
+    reason: string,
+    wouldWrite: string[]
+  ): Promise<void> {
+    if (!enabled) {
+      wouldWrite.push(reason);
+      return;
+    }
+    await this.stateRepo.save(sm.toSnapshot());
   }
 
   /**
@@ -1259,7 +1350,7 @@ export class GetNextActionUseCase {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
+  private buildImplementAction(sm: StateMachine, config: any, cwd: string): DirectiveResult {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
     const baseBranch = sm.baseBranch || 'main';
@@ -1378,7 +1469,7 @@ export class GetNextActionUseCase {
     cwd: string,
     planPath: string,
     baseBranch: string
-  ): NextActionResult {
+  ): DirectiveResult {
     const subagent = this.resolveSubagentUseCase.execute({
       role: ROLE_PLANNER,
       customConfig: config,
@@ -1475,7 +1566,7 @@ export class GetNextActionUseCase {
     baseBranch: string,
     taskBranch: string | null,
     worktreePath: string | null
-  ): NextActionResult {
+  ): DirectiveResult {
     const integrity = verification.integrity;
     const template =
       integrity.status === PLAN_INTEGRITY_MISSING
@@ -1508,7 +1599,7 @@ export class GetNextActionUseCase {
     baseBranch: string,
     taskBranch: string | null,
     worktreePath: string | null
-  ): NextActionResult {
+  ): DirectiveResult {
     const detail = verification.smoke.findings
       .map((finding) =>
         MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE
@@ -1546,7 +1637,7 @@ export class GetNextActionUseCase {
   private buildMissingWorktreeDirective(
     sm: StateMachine,
     baseBranch: string
-  ): NextActionResult {
+  ): DirectiveResult {
     const command = sm.issue ? `codeloop implement --issue ${sm.issue}` : 'codeloop implement';
     return {
       currentStage: sm.currentStage,
