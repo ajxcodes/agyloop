@@ -17,7 +17,23 @@ const {
   ResumePipelineUseCase,
   GetPipelineStatusUseCase
 } = require('../../dist/application');
-const { StateMachine, ValidationError, STAGE_COMPLETED, STAGE_REVIEW } = require('../../dist/domain');
+const {
+  StateMachine,
+  ValidationError,
+  STAGE_COMPLETED,
+  STAGE_REVIEW,
+  STAGE_PLAN,
+  STAGE_DISCOVERY,
+  STAGE_APPROVAL,
+  STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_COMMIT,
+  STAGE_TRIAGE,
+  StateStorageError,
+  WorktreeCreationError,
+  WorktreeDescriptor,
+  CommitMessage
+} = require('../../dist/domain');
 const { FileStateRepository, GithubCritiqueInstallerGateway, DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
 const NOW = '2026-10-01T00:00:00.000Z';
@@ -415,8 +431,7 @@ describe('#251: corrupt checkpoints are rendered, one bad file does not brick th
   });
 });
 
-describe('#248: critique installer dry run downloads nothing', () => {
-  test('fetches metadata once, writes no binary and no cache', async () => {
+describe('#248: critique installer dry run downloads nothing', () => {  test('fetches metadata once, writes no binary and no cache', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-critique-dry-'));
     const cacheFile = path.join(dir, 'cache.json');
     const targetBase = path.join(dir, 'data');
@@ -450,6 +465,454 @@ describe('#248: critique installer dry run downloads nothing', () => {
     assert.ok(fetched[0].includes('api.github.com'), fetched[0]);
     assert.strictEqual(fs.existsSync(targetBase), false, 'no target directory may be created');
     assert.strictEqual(fs.existsSync(cacheFile), false, 'no cache manifest may be written');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * #301 — the descriptor contract.
+ *
+ * > A command must act on, and describe, exactly the tree it touched.
+ *
+ * A bare run that does no stage work is a READ (byte-identical checkpoint, no
+ * worktree); provisioning is a consequence of starting implementation and is a
+ * TRANSACTION (create -> persist -> rollback on failure); and a root-scoped
+ * `--no-worktree` run can reach COMPLETED.
+ */
+describe('#301: a bare run is a read, provisioning is a transaction', () => {
+  const PLAN_DIR = '/fake/plans/301-task-plan';
+
+  function descriptor(dir: string): any {
+    return new WorktreeDescriptor({
+      taskId: '301',
+      worktreePath: path.join(dir, '.worktrees', '301'),
+      branch: 'task/301',
+      baseBranch: 'main',
+      slug: 'task',
+      isIsolated: true
+    });
+  }
+
+  function makeSandbox(overrides: Record<string, unknown> = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-301-'));
+    fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
+    const stateFile = path.join(dir, '.agyloop', 'tasks', '301.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify(
+        snapshot({
+          currentStage: STAGE_PLAN,
+          mode: 'standard',
+          issue: 301,
+          planDir: PLAN_DIR,
+          updatedAt: NOW,
+          history: [{ stage: STAGE_PLAN, timestamp: NOW }],
+          ...overrides
+        })
+      )
+    );
+    return { dir, stateFile };
+  }
+
+  function countedRepo(stateFile: string, failOnSave?: number) {
+    const real = new FileStateRepository({ stateFilePath: stateFile });
+    let saves = 0;
+    const repo = {
+      load: () => real.load(),
+      save: async (s: any) => {
+        saves++;
+        if (failOnSave !== undefined && saves === failOnSave) {
+          throw new StateStorageError(stateFile, 'save', 'refused by the fixture');
+        }
+        return real.save(s);
+      },
+      getStateFilePath: () => real.getStateFilePath(),
+      listAllStates: async () => real.listAllStates(),
+      forIssue: (issue: number) => real.forIssue(issue)
+    };
+    return { repo, saves: () => saves };
+  }
+
+  function quietPlanGenerator(overrides: Record<string, unknown> = {}): any {
+    return {
+      scaffoldPlanDirectory: () => null,
+      generatePlan: () => null,
+      generateSummaryLog: () => null,
+      updateSummaryLog: () => true,
+      findPlanDirectory: () => null,
+      resolvePlanFile: () => null,
+      readPlanDocument: () => '',
+      ...overrides
+    };
+  }
+
+  function deps(overrides: Record<string, unknown> = {}): any {
+    const created: any[] = [];
+    const removed: any[] = [];
+    const worktreeManager = {
+      resolveBaseBranch: async () => 'main',
+      createWorktree: async (params: any) => {
+        created.push(params);
+        return descriptor(params.workspaceDir);
+      },
+      removeWorktree: async (options: any) => {
+        removed.push(options);
+      },
+      listWorktrees: async () => [],
+      resolveTaskWorktreePath: async (workspaceDir: string, taskId: string) =>
+        path.join(workspaceDir, '.worktrees', String(taskId))
+    };
+    return {
+      planGenerator: quietPlanGenerator(),
+      githubGateway: { fetchIssue: async () => null },
+      commandExecutor: {
+        execute: async (command: string) => ({
+          command,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          combinedOutput: '',
+          durationMs: 1,
+          timedOut: false
+        })
+      },
+      worktreeManager,
+      inferBaseBranchUseCase: {
+        execute: async () => ({ baseBranch: 'main', taskBranchPrefix: 'task/' })
+      },
+      runPreFlightCheckUseCase: { execute: async () => ({}) },
+      created,
+      removed,
+      ...overrides
+    };
+  }
+
+  test('N-1 / AC-1: a bare run at PLAN writes nothing and provisions nothing', async () => {
+    const { dir, stateFile } = makeSandbox();
+    const { repo, saves } = countedRepo(stateFile);
+    const d = deps();
+    let worktreeCalls = 0;
+    d.worktreeManager.createWorktree = async () => {
+      worktreeCalls++;
+      throw new Error('must not provision from a read');
+    };
+
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+    const before = fs.readFileSync(stateFile, 'utf8');
+    const result = await useCase.execute({ mode: 'standard', workspaceDir: dir });
+    const after = fs.readFileSync(stateFile, 'utf8');
+
+    assert.strictEqual(result.currentStage, STAGE_PLAN);
+    assert.strictEqual(saves(), 0, 'a read must not save');
+    assert.strictEqual(worktreeCalls, 0, 'a read must not provision');
+    assert.strictEqual(after, before, 'the checkpoint must be byte-identical');
+    assert.strictEqual(JSON.parse(after).updatedAt, NOW);
+    assert.strictEqual(fs.existsSync(path.join(dir, '.worktrees', '301')), false);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-2 / AC-1 + AC-6: a DISCOVERY park writes nothing and scaffolds nothing', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_DISCOVERY,
+      planDir: null,
+      history: [{ stage: STAGE_DISCOVERY, timestamp: NOW }]
+    });
+    const { repo, saves } = countedRepo(stateFile);
+    let scaffoldCalls = 0;
+    const d = deps({
+      planGenerator: quietPlanGenerator({
+        scaffoldPlanDirectory: () => {
+          scaffoldCalls++;
+          throw new Error('a park must not scaffold');
+        }
+      })
+    });
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    const before = fs.readFileSync(stateFile, 'utf8');
+    const result = await useCase.execute({ mode: 'standard', workspaceDir: dir });
+    const after = fs.readFileSync(stateFile, 'utf8');
+
+    assert.strictEqual(result.planResult?.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(scaffoldCalls, 0, 'a park must not scaffold');
+    assert.strictEqual(saves(), 0, 'a park must not save');
+    assert.strictEqual(after, before, 'the checkpoint must be byte-identical');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-3 / AC-1: a TRIAGE checkpoint is exempt by early return and is byte-identical', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_TRIAGE,
+      history: [{ stage: STAGE_TRIAGE, timestamp: NOW }]
+    });
+    const { repo, saves } = countedRepo(stateFile);
+    const d = deps();
+    let worktreeCalls = 0;
+    d.worktreeManager.createWorktree = async () => {
+      worktreeCalls++;
+      throw new Error('TRIAGE returns before provisioning');
+    };
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    const before = fs.readFileSync(stateFile, 'utf8');
+    const result = await useCase.execute({ mode: 'standard', workspaceDir: dir });
+    const after = fs.readFileSync(stateFile, 'utf8');
+
+    assert.strictEqual(result.currentStage, STAGE_TRIAGE);
+    assert.strictEqual(worktreeCalls, 0);
+    assert.strictEqual(saves(), 0);
+    assert.strictEqual(after, before);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-8 / AC-3: a refused descriptor save tears the worktree down and fails loudly', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_APPROVAL,
+      history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
+    });
+    const { repo, saves } = countedRepo(stateFile, 1);
+    const d = deps();
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    await assert.rejects(
+      () => useCase.execute({ mode: 'standard', workspaceDir: dir }),
+      (err: any) => err instanceof StateStorageError
+    );
+
+    assert.strictEqual(d.created.length, 1, 'the worktree was created once');
+    assert.strictEqual(d.removed.length, 1, 'the just-created worktree must be torn down');
+    assert.deepStrictEqual(d.removed[0], {
+      worktreePath: path.join(dir, '.worktrees', '301'),
+      workspaceDir: dir,
+      force: true,
+      prune: true,
+      tolerateMissing: true,
+      allowExternal: true
+    });
+    assert.strictEqual(saves(), 1);
+
+    // N-13 / AC-4: no orphan is left for `next`/`worktree list` to disagree about.
+    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.strictEqual(persisted.worktree, null);
+    assert.strictEqual(fs.existsSync(path.join(dir, '.worktrees', '301')), false);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-9 / AC-3: a failing createWorktree is not swallowed', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_APPROVAL,
+      history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
+    });
+    const { repo, saves } = countedRepo(stateFile);
+    const d = deps();
+    d.worktreeManager.createWorktree = async () => {
+      throw new Error('git worktree add failed');
+    };
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    await assert.rejects(
+      () => useCase.execute({ mode: 'standard', workspaceDir: dir }),
+      (err: any) => err instanceof WorktreeCreationError
+    );
+    assert.strictEqual(saves(), 0, 'a failed creation must not save a descriptor');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-10 / AC-2: PLAN / QUALITY_GATE / REVIEW never provision and honour the descriptor', async () => {
+    for (const stage of [STAGE_PLAN, STAGE_QUALITY_GATE, STAGE_REVIEW]) {
+      const wt = new WorktreeDescriptor({
+        taskId: '301',
+        worktreePath: '/repo/.worktrees/301',
+        branch: 'task/301',
+        baseBranch: 'main'
+      });
+      const { dir, stateFile } = makeSandbox({
+        currentStage: stage,
+        worktree: stage === STAGE_PLAN ? null : wt,
+        history: [{ stage, timestamp: NOW }]
+      });
+      const { repo } = countedRepo(stateFile);
+      const d = deps();
+      let worktreeCalls = 0;
+      d.worktreeManager.createWorktree = async () => {
+        worktreeCalls++;
+        throw new Error('must not provision outside the implementation leg');
+      };
+      const workspaces: string[] = [];
+      // One shared chain: the stubs stand in for legs that would persist their
+      // own stage, so they advance the SAME object the lifecycle carries.
+      const chain = StateMachine.fromSnapshot(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
+      d.detectImplementationDiffUseCase = {
+        execute: async (params: any) => {
+          workspaces.push(params.workspaceDir);
+          return { baseRef: 'main', probeError: null, hasChanges: true, files: [] };
+        }
+      };
+      d.runQualityGateUseCase = {
+        execute: async (params: any) => {
+          workspaces.push(params.workspaceDir);
+          if (chain.currentStage === STAGE_IMPLEMENT) {
+            chain.transition(STAGE_QUALITY_GATE);
+          }
+          return { passed: true, stateMachine: chain, implementationDiff: undefined };
+        }
+      };
+      d.runReviewUseCase = {
+        execute: async (params: any) => {
+          workspaces.push(params.workspaceDir);
+          if (chain.currentStage === STAGE_QUALITY_GATE) {
+            chain.transition(STAGE_REVIEW);
+          }
+          chain.transition(STAGE_COMMIT);
+          return { passed: true, stateMachine: chain, verdict: { status: 'skipped' } };
+        }
+      };
+      d.draftCommitUseCase = {
+        execute: async () => ({
+          commitMessage: CommitMessage.create({ type: 'fix', description: 'read only', issueNumber: 301 }),
+          listedFiles: [],
+          untrackedFiles: [],
+          excludedFiles: []
+        })
+      };
+      const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+      await useCase.execute({ mode: 'standard', workspaceDir: '/repo' });
+
+      assert.strictEqual(worktreeCalls, 0, `${stage}: must not provision`);
+      if (stage !== STAGE_PLAN) {
+        assert.ok(
+          workspaces.every((w) => w === wt.worktreePath),
+          `${stage}: every leg must run in the descriptor's worktree, got ${JSON.stringify(workspaces)}`
+        );
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('N-11 / AC-2: a standard APPROVAL run provisions exactly once', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_APPROVAL,
+      history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
+    });
+    const { repo } = countedRepo(stateFile);
+    const d = deps();
+    const chain = StateMachine.fromSnapshot(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
+    d.startImplementationUseCase = {
+      execute: async () => {
+        chain.transition(STAGE_IMPLEMENT);
+        return { stateMachine: chain };
+      }
+    };
+    d.runQualityGateUseCase = {
+      execute: async () => ({ passed: true, stateMachine: chain, implementationDiff: undefined })
+    };
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    const result = await useCase.execute({ mode: 'standard', workspaceDir: dir });
+
+    assert.strictEqual(d.created.length, 1, 'exactly one provisioning per implementation start');
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-12 / AC-2: a failed implementation leg tears down the worktree it just created', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_APPROVAL,
+      history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
+    });
+    const { repo } = countedRepo(stateFile);
+    const d = deps();
+    d.startImplementationUseCase = {
+      execute: async () => {
+        throw new Error('the approved plan is missing');
+      }
+    };
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    await assert.rejects(
+      () => useCase.execute({ mode: 'standard', workspaceDir: dir }),
+      /approved plan is missing/
+    );
+    assert.strictEqual(d.created.length, 1);
+    assert.strictEqual(d.removed.length, 1, 'the orphan must be torn down');
+    assert.strictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).worktree, null);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('N-34 / AC-10: a --no-worktree run reaches COMPLETED end to end', async () => {
+    const { dir, stateFile } = makeSandbox({
+      currentStage: STAGE_APPROVAL,
+      history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
+    });
+    const { repo } = countedRepo(stateFile);
+    const d = deps();
+    const chain = StateMachine.fromSnapshot(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
+    // The chain: APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED.
+    d.startImplementationUseCase = {
+      execute: async () => {
+        chain.transition(STAGE_IMPLEMENT);
+        return { stateMachine: chain };
+      }
+    };
+    d.detectImplementationDiffUseCase = {
+      execute: async () => ({ baseRef: 'main', probeError: null, hasChanges: true, files: [] })
+    };
+    d.runQualityGateUseCase = {
+      execute: async () => {
+        if (chain.currentStage === STAGE_IMPLEMENT) {
+          chain.transition(STAGE_QUALITY_GATE);
+        }
+        return { passed: true, stateMachine: chain, implementationDiff: undefined };
+      }
+    };
+    d.runReviewUseCase = {
+      execute: async () => {
+        if (chain.currentStage === STAGE_QUALITY_GATE) {
+          chain.transition(STAGE_REVIEW);
+        }
+        chain.transition(STAGE_COMMIT);
+        return { passed: true, stateMachine: chain, verdict: { status: 'skipped' } };
+      }
+    };
+    const draftMessage = CommitMessage.create({ type: 'fix', description: 'root scoped run', issueNumber: 301 });
+    d.draftCommitUseCase = {
+      execute: async () => ({ commitMessage: draftMessage, listedFiles: [], untrackedFiles: [], excludedFiles: [] })
+    };
+    let commitWorkspace = null;
+    d.executeCommitUseCase = {
+      execute: async (params: any) => {
+        commitWorkspace = params.workspaceDir;
+        chain.transition(STAGE_COMPLETED);
+        return { success: true, currentStage: STAGE_COMPLETED, stateMachine: chain, commitHash: 'abc' };
+      }
+    };
+    let worktreeCalls = 0;
+    d.worktreeManager.createWorktree = async () => {
+      worktreeCalls++;
+      throw new Error('--no-worktree must not provision');
+    };
+    const useCase = new RunLifecycleUseCase({ stateRepo: repo, configRepo: mockConfigRepo(), ...d });
+
+    const result = await useCase.execute({
+      mode: 'standard',
+      workspaceDir: dir,
+      worktree: false,
+      yes: true
+    });
+
+    assert.strictEqual(worktreeCalls, 0);
+    assert.strictEqual(commitWorkspace, dir, 'the commit runs in the workspace root');
+    assert.strictEqual(result.currentStage, STAGE_COMPLETED);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

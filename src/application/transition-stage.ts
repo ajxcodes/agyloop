@@ -205,30 +205,12 @@ export class TransitionStageUseCase {
     }
 
     // Issue #283: DISCOVERY is where the RCA report is written, so the stage
-    // that opens it must ALSO create the canonical plan directory. Otherwise
-    // the discovery subagent invents its own slug and a later `codeloop plan`
-    // scaffolds a second directory for the same issue.
+    // that opens it must ALSO create the canonical plan directory.
     //
-    // Only when an issue is known (an ad-hoc run has no artifact to attribute)
-    // and never on a dry run. The type is forced to `discovery`: this stage's
-    // deliverable is the RCA, and a bare `--issue` invocation has no GitHub
-    // gateway to read the issue labels from.
-    if (targetStageStr === STAGE_DISCOVERY && !params.dryRun && this.planGenerator) {
-      const workspace = params.workspaceDir || process.cwd();
-      const activeIssue = params.issue || sm.issue;
-      if (activeIssue) {
-        const scaffold = this.planGenerator.scaffoldPlanDirectory({
-          projectRoot: workspace,
-          issue: activeIssue,
-          type: 'discovery',
-          title: params.title || 'Task Plan',
-          planDir: sm.planDir
-        });
-        if (scaffold && scaffold.planDir) {
-          sm.setPlanDir(scaffold.planDir);
-        }
-      }
-    }
+    // Issue #301 (P10): the scaffold runs AFTER the checkpoint save below. A
+    // REFUSED save therefore scaffolds nothing — the tree stays byte-identical
+    // and the command exits non-zero, instead of writing artifacts for a
+    // transition that never happened.
 
     if (targetStageStr === STAGE_APPROVAL || targetStageStr === STAGE_COMMIT) {
       sm.pauseAtGate(targetStageStr);
@@ -307,6 +289,44 @@ export class TransitionStageUseCase {
         this.gateReportRepo?.clear(activeIssue);
       }
       await this.stateRepo.save(sm.toSnapshot());
+
+      // Issue #283: DISCOVERY is where the RCA report is written, so the stage
+      // that opens it must ALSO create the canonical plan directory. Otherwise
+      // the discovery subagent invents its own slug and a later `codeloop plan`
+      // scaffolds a second directory for the same issue.
+      //
+      // Only when an issue is known (an ad-hoc run has no artifact to attribute).
+      // The type is forced to `discovery`: this stage's deliverable is the RCA,
+      // and a bare `--issue` invocation has no GitHub gateway to read the issue
+      // labels from.
+      //
+      // Issue #301 (P10): this runs AFTER the save above — a refused save means
+      // nothing is scaffolded, so the tree stays byte-identical.
+      if (targetStageStr === STAGE_DISCOVERY && this.planGenerator) {
+        const scaffoldWorkspace = params.workspaceDir || process.cwd();
+        const scaffoldIssue = params.issue || sm.issue;
+        if (scaffoldIssue) {
+          try {
+            const scaffold = this.planGenerator.scaffoldPlanDirectory({
+              projectRoot: scaffoldWorkspace,
+              issue: scaffoldIssue,
+              type: 'discovery',
+              title: params.title || 'Task Plan',
+              planDir: sm.planDir
+            });
+            if (scaffold?.planDir && sm.planDir !== scaffold.planDir) {
+              sm.setPlanDir(scaffold.planDir);
+              // Second save records the adopted directory. Best effort: the
+              // artifact already exists and the next run adopts it via
+              // findPlanDirectory.
+              await this.stateRepo.save(sm.toSnapshot());
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[agyloop] Warning: the plan directory could not be scaffolded: ${msg}`);
+          }
+        }
+      }
 
       if (this.planGenerator) {
         const workspace = params.workspaceDir || process.cwd();

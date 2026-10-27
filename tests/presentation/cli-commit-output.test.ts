@@ -29,14 +29,16 @@ interface Sandbox {
   readonly summaryPath: string;
 }
 
-function makeSandbox(baseBranch: string): Sandbox {
+function makeSandbox(baseBranch: string, options: { gitignore?: boolean } = {}): Sandbox {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-commit-output-'));
   const git = (args: string[], cwd = dir) => execFileSync('git', args, { cwd, stdio: 'ignore' });
 
   git(['init', '-q']);
   git(['config', 'user.email', 'smoke@test']);
   git(['config', 'user.name', 'smoke']);
-  fs.writeFileSync(path.join(dir, '.gitignore'), '.agyloop/\nartifacts/\n.bin/\n.plan-tmp/\n', 'utf8');
+  if (options.gitignore !== false) {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.agyloop/\nartifacts/\n.bin/\n.plan-tmp/\n', 'utf8');
+  }
   fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
   git(['add', '-A']);
   git(['commit', '-qm', 'chore: seed']);
@@ -144,6 +146,16 @@ function runCommit(sandbox: Sandbox, extraArgs: string[] = []) {
       }
     }
   );
+}
+
+
+/** Moves the fake `gh` outside the repo so it is never an untracked change. */
+function externaliseBin(sandbox: Sandbox): { sandbox: Sandbox; binDir: string } {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-commit-bin-'));
+  fs.copyFileSync(path.join(sandbox.binDir, 'gh'), path.join(binDir, 'gh'));
+  fs.chmodSync(path.join(binDir, 'gh'), 0o755);
+  fs.rmSync(path.join(sandbox.dir, '.bin'), { recursive: true, force: true });
+  return { sandbox: { ...sandbox, binDir }, binDir };
 }
 
 describe('commit output accuracy (issue #284)', () => {
@@ -283,6 +295,107 @@ describe('commit output accuracy (issue #284)', () => {
         commitMessageLines[0].includes(`(#${ISSUE})`),
         `the recorded subject must be the real one, got: ${commitMessageLines[0]}`
       );
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Issue #301 (absorbing #319) — the printed list equals the committed list.
+ *
+ * A workspace WITHOUT a `.gitignore` makes `.agyloop`/`artifacts` untracked.
+ * The draft and the commit share ONE exclusion list, so those paths are never
+ * listed and never committed; a tree containing nothing else fails honestly.
+ */
+describe('commit exclusions and root-scoped execution (#301)', () => {
+  const gitOut = (dir: string, args: string[]): string =>
+    execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+
+  test('N-31 / AC-9: the printed list equals the committed paths without a .gitignore', () => {
+    const external = externaliseBin(makeSandbox('main', { gitignore: false }));
+    const sandbox = external.sandbox;
+    try {
+      // Leave exactly ONE real change: the bookkeeping trees stay untracked.
+      execFileSync('git', ['checkout', '--', 'README.md'], {
+        cwd: sandbox.dir,
+        stdio: 'ignore'
+      });
+      fs.rmSync(path.join(sandbox.dir, 'tests', 'new.test.ts'), { force: true });
+      fs.writeFileSync(path.join(sandbox.dir, 'feature.txt'), 'feature\n', 'utf8');
+
+      const run = runCommit(sandbox, ['--create-pr']);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.status, 0, output);
+
+      assert.ok(output.includes('Files to commit (1):'), output);
+      assert.ok(output.includes('- feature.txt'), output);
+      assert.ok(
+        !output.includes('- .agyloop') && !output.includes('- artifacts'),
+        `excluded paths must never be listed:\n${output}`
+      );
+      assert.ok(output.includes('excluded from the commit: .agyloop, node_modules, artifacts'), output);
+
+      const committed = gitOut(sandbox.dir, ['show', '--name-only', '--pretty=format:', 'HEAD'])
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .sort();
+      assert.deepStrictEqual(committed, ['feature.txt']);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+      fs.rmSync(external.binDir, { recursive: true, force: true });
+    }
+  });
+
+  test('N-32 / AC-9: a tree with only bookkeeping paths fails honestly and moves no HEAD', () => {
+    const external = externaliseBin(makeSandbox('main', { gitignore: false }));
+    const sandbox = external.sandbox;
+    try {
+      // Remove every real change; `.agyloop` and `artifacts` are untracked.
+      execFileSync('git', ['checkout', '--', 'README.md'], {
+        cwd: sandbox.dir,
+        stdio: 'ignore'
+      });
+      fs.rmSync(path.join(sandbox.dir, 'tests', 'new.test.ts'), { force: true });
+      const before = gitOut(sandbox.dir, ['rev-parse', 'HEAD']).trim();
+
+      const run = runCommit(sandbox);
+      const output = `${run.stdout}\n${run.stderr}`;
+
+      assert.strictEqual(run.status, 1, output);
+      assert.match(output, /only paths agyloop excludes/);
+      assert.ok(output.includes('.agyloop'), output);
+      assert.strictEqual(gitOut(sandbox.dir, ['rev-parse', 'HEAD']).trim(), before, 'HEAD must not move');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+      fs.rmSync(external.binDir, { recursive: true, force: true });
+    }
+  });
+
+  test('N-33 / AC-8 + AC-10: a descriptor-less COMMIT commits from the workspace root', () => {
+    const sandbox = makeSandbox('main');
+    try {
+      // Issue #307: `worktree: null` is a legal root-scoped run.
+      const statePath = path.join(sandbox.dir, '.agyloop', 'tasks', `${ISSUE}.json`);
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      state.worktree = null;
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
+      const before = gitOut(sandbox.dir, ['rev-parse', 'HEAD']).trim();
+
+      const run = runCommit(sandbox);
+      const output = `${run.stdout}\n${run.stderr}`;
+
+      assert.strictEqual(run.status, 0, output);
+      assert.ok(output.includes('Committed in:'), output);
+      assert.ok(output.includes('workspace root'), output);
+      assert.notStrictEqual(gitOut(sandbox.dir, ['rev-parse', 'HEAD']).trim(), before, 'HEAD must advance');
+
+      const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      assert.strictEqual(persisted.currentStage, 'COMPLETED');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
       fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });

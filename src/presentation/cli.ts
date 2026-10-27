@@ -457,7 +457,7 @@ Operational Modes:
   sync               Fast-forward collector branch and process merged PRs to auto-close issues
 
 Pipeline Management:
-  next               Inspect state and generate next invoke_subagent command/payload (read-only by default; --restart is the only mutating form)
+  next               Inspect state and generate the next invoke_subagent directive (writes only the declared context fields: inferred baseBranch, dispatch counters, updatedAt; --dry-run previews without writing; --restart also resets the checkpoint)
   branch-info        Display base collector branch, active task branch, and PR target
   status             Display current pipeline stage, active tasks matrix, and checkpoint history
   config             Display active configuration and model routing table
@@ -511,7 +511,7 @@ Operational Flags:
       --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
       --plan-path <f> Supply an existing plan file the lifecycle executes instead of scaffolding a new plan (plan, implement, yolo)
       --plan-dir <d>  Supply an existing plan directory (plan, implement, yolo)
-      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' NEVER mutates a checkpoint.
+      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' never advances a stage; it writes only the context fields named above.
       --skip-discovery  Explicit opt-in: bypass the DISCOVERY RCA park (auditable in state history).
   -h, --help         Show this help message and exit
   -v, --version      Show version information and exit
@@ -1651,7 +1651,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
         issue: issueValue,
-        restart: options.restart
+        restart: options.restart,
+        dryRun: options.dryRun
       });
 
       // A persisted gate pause (quota exhaustion, exhausted retries) must never be
@@ -1690,9 +1691,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             {
               ...truthful,
               // #275.6: every machine-readable payload states whether it was a
-              // simulation. `next` is not a simulation (it can write a TRIAGE
-              // pause), but the marker must never be absent.
-              dryRun: false,
+              // simulation. `next` is not read-only — it records context
+              // fields — but `--dry-run` is honoured (issue #301) and declares
+              // the suppressed writes in `wouldWrite`.
+              dryRun: options.dryRun === true,
               worktreePath: worktreeTruth.livePath,
               worktreeStale: worktreeTruth.stalePath !== null,
               staleWorktreePath: worktreeTruth.stalePath,
@@ -1737,6 +1739,17 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
       console.log(`Description   : ${truthful.description}`);
       console.log(`Summary       : ${truthful.humanSummary}\n`);
+
+      // Issue #301: a dry run reads and declares, never writes.
+      if (options.dryRun) {
+        if (res.wouldWrite.length > 0) {
+          console.log('[dry-run] No checkpoint was written.');
+          res.wouldWrite.forEach((entry) => console.log(`  would write: ${entry}`));
+        } else {
+          console.log('[dry-run] Nothing would be written.');
+        }
+        console.log('');
+      }
 
       if (truthful.invocationPayload) {
         console.log('--- invoke_subagent JSON Payload ---');
@@ -3341,6 +3354,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         draftResult.listedFiles.forEach((f) =>
           console.log(`  - ${f}${draftResult.untrackedFiles.includes(f) ? ' (untracked)' : ''}`)
         );
+        if (draftResult.excludedFiles.length > 0) {
+          // Issue #301: the same exclusion list the commit applies. The list
+          // above never contains these, so saying so cannot contradict itself.
+          console.log(`   (excluded from the commit: .agyloop, node_modules, artifacts)`);
+        }
 
         if (options.dryRun) {
           console.log(`\n[DRY RUN] Simulated commit. No changes were committed.\n`);
@@ -3387,6 +3405,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (execResult.confirmed && execResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
           console.log(`✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.`);
+          // Issue #301/#307: name the tree the commit actually landed in.
+          console.log(
+            `   ✓ Committed in: ${execResult.commitCwd} (${execResult.worktreeMode === 'isolated' ? 'isolated worktree' : 'workspace root'})`
+          );
           if (execResult.fallbackUsed) {
             console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
           }

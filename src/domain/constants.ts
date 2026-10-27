@@ -2086,6 +2086,31 @@ export const IMPLEMENTATION_EVIDENCE_EXCLUDED_PREFIXES: readonly string[] = Obje
 ]);
 
 /**
+ * Pathspecs the commit gate refuses to commit (issue #301, absorbing #319).
+ *
+ * ONE list: `DraftCommitUseCase` filters the printed list with the same
+ * predicate `ExecuteCommitUseCase` uses for `git rm --cached`, so
+ * `Files to commit (N)` can never disagree with what is committed.
+ */
+export const COMMIT_EXCLUDED_PATHSPECS: readonly string[] = Object.freeze([
+  '.agyloop',
+  'node_modules',
+  'artifacts'
+]);
+
+/** True when a repo-relative path is one of the excluded trees. */
+export function isCommitExcludedPath(rawPath: string): boolean {
+  const normalised = rawPath
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+  if (!normalised) return false;
+  return COMMIT_EXCLUDED_PATHSPECS.some(
+    (excluded) => normalised === excluded || normalised.startsWith(`${excluded}/`)
+  );
+}
+
+/**
  * Untracked files that are the tool's own bookkeeping, plus the lock files the
  * tool already excludes from every diff (`DIFF_EXCLUDE_ARGS`).
  */

@@ -97,7 +97,10 @@ import {
   CircuitBreakerTrippedError,
   QuotaExhaustedError,
   QUOTA_RESUME_COMMAND,
-  VERDICT_SKIPPED
+  VERDICT_SKIPPED,
+  StateStorageError,
+  WorktreeCreationError,
+  WorktreeError
 } from '../domain';
 import {
   StateRepository,
@@ -738,6 +741,12 @@ export class RunLifecycleUseCase {
 
   /**
    * Helper: resolves an isolated git worktree if enabled for the active task.
+   *
+   * `null` means "not requested" and NOTHING ELSE (issue #301). The callers that
+   * may legitimately skip provisioning are the top guards below: a dry run, an
+   * explicit `--no-worktree`, no worktree manager, or no issue. Every failure
+   * after that point THROWS — the run never silently degrades to the root
+   * workspace while a worktree sits on disk.
    */
   private async resolveWorktree(
     sm: StateMachine,
@@ -753,48 +762,114 @@ export class RunLifecycleUseCase {
       return null;
     }
 
-    try {
-      let baseBranch = params.baseRef || params.baseBranch;
-      let branchPrefix: string | undefined = undefined;
+    const manager = this.worktreeManager;
+    let baseBranch = params.baseRef || params.baseBranch;
+    let branchPrefix: string | undefined = undefined;
 
-      if (this.inferBaseBranchUseCase) {
-        try {
-          const inference = await this.inferBaseBranchUseCase.execute({
-            issueNumber: taskId,
-            title: params.title,
-            explicitBaseBranch: baseBranch,
-            workspaceDir: rootWorkspace
-          });
-          baseBranch = inference.baseBranch;
-          branchPrefix = inference.taskBranchPrefix;
-        } catch {
-          // Fallback if inference fails
-        }
+    // Base-branch inference is NON-FATAL: a failed inference falls back to the
+    // caller's explicit branch (or the manager's own default).
+    if (this.inferBaseBranchUseCase) {
+      try {
+        const inference = await this.inferBaseBranchUseCase.execute({
+          issueNumber: taskId,
+          title: params.title,
+          explicitBaseBranch: baseBranch,
+          workspaceDir: rootWorkspace
+        });
+        baseBranch = inference.baseBranch;
+        branchPrefix = inference.taskBranchPrefix;
+      } catch {
+        // Fallback if inference fails
       }
+    }
 
-      const descriptor = await this.worktreeManager.createWorktree({
+    let descriptor: WorktreeDescriptor;
+    try {
+      descriptor = await manager.createWorktree({
         taskId,
         baseBranch,
         branchPrefix,
         title: params.title,
         workspaceDir: rootWorkspace
       });
-
-      sm.setWorktree(descriptor);
-      if (baseBranch) {
-        sm.setBaseBranch(baseBranch);
+    } catch (err: unknown) {
+      // A pre-existing worktree error keeps its own operation/message; anything
+      // else is wrapped so the caller always sees a worktree failure.
+      if (err instanceof WorktreeError) {
+        throw err;
       }
-      // #234/#226: persist the descriptor immediately — from the root workspace cwd
-      // and before any worktree-scoped execution — so a crash before the next stage
-      // save can never leave an on-disk worktree paired with `worktree: null` in
-      // state (the orphan that bricks `next` via Zero Direct Root Mutation).
-      // `dryRun` returns null at the top of this helper, so this save never fires
-      // on a dry run.
-      await this.stateRepo.save(sm.toSnapshot());
-      return descriptor;
-    } catch {
-      return null;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new WorktreeCreationError(
+        'createWorktree',
+        `Failed to create the isolated worktree for issue #${taskId}: ${message}`,
+        {},
+        err
+      );
     }
+
+    sm.setWorktree(descriptor);
+    if (baseBranch) {
+      sm.setBaseBranch(baseBranch);
+    }
+
+    // #234/#226 + #301: the descriptor save is part of the provisioning
+    // TRANSACTION. `createWorktree` -> `setWorktree` -> `save`; if the save
+    // fails, the just-created worktree is torn down before the error is
+    // rethrown, so an on-disk worktree can never outlive a `worktree: null`
+    // checkpoint. Failing loudly is what stops the run from continuing from the
+    // root workspace as if nothing was requested.
+    // `dryRun` returns null at the top of this helper, so this save never fires
+    // on a dry run.
+    try {
+      await this.stateRepo.save(sm.toSnapshot());
+    } catch (err: unknown) {
+      let teardownError: unknown = null;
+      try {
+        await manager.removeWorktree({
+          worktreePath: descriptor.worktreePath,
+          workspaceDir: rootWorkspace,
+          force: true,
+          prune: true,
+          tolerateMissing: true,
+          allowExternal: true
+        });
+      } catch (teardownErr: unknown) {
+        teardownError = teardownErr;
+      }
+
+      const base = err instanceof Error ? err.message : String(err);
+      const teardown = teardownError
+        ? ` Teardown also failed (${teardownError instanceof Error ? teardownError.message : String(teardownError)}); run \`codeloop worktree prune\`.`
+        : ' The just-created worktree was torn down.';
+      const suffix = `${teardown} The run did NOT continue from the root workspace.`;
+
+      if (err instanceof StateStorageError) {
+        throw new StateStorageError(err.filePath, err.operation, `${err.message}${suffix}`, err);
+      }
+      throw new StateStorageError(
+        this.stateRepo.getStateFilePath(),
+        'save',
+        `Failed to persist the worktree descriptor for issue #${taskId}: ${base}.${suffix}`,
+        err
+      );
+    }
+
+    return descriptor;
+  }
+
+  /**
+   * The ONLY lifecycle legs that START IMPLEMENTATION — and therefore the only
+   * ones allowed to create a worktree (issue #301).
+   *
+   * Every other stage honours the descriptor already on the checkpoint, or runs
+   * from the workspace root. `mode=implement` provisions explicitly in
+   * `executeImplementMode`; it never reaches this helper.
+   */
+  private shouldProvisionWorktree(stage: StageName, mode: ExecutionMode): boolean {
+    if (mode === MODE_YOLO) {
+      return stage === STAGE_PLAN || stage === STAGE_APPROVAL;
+    }
+    return stage === STAGE_APPROVAL;
   }
 
   /**
@@ -893,7 +968,9 @@ export class RunLifecycleUseCase {
     params: RunLifecycleParams,
     workspace: string
   ): Promise<RunLifecycleResult> {
-    const worktree = await this.resolveWorktree(sm, params, workspace);
+    // Issue #301: `codeloop commit` must commit the tree it was pointed at. It
+    // never provisions — a commit is not the start of an implementation.
+    const worktree = sm.worktree ?? null;
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
 
     const draftResult = await this.draftCommitUseCase.execute({
@@ -1028,26 +1105,51 @@ export class RunLifecycleUseCase {
       };
     }
 
-    // Resolve isolated worktree for implementation and verification
-    const worktree = await this.resolveWorktree(sm, params, workspace);
+    // Resolve isolated worktree for implementation and verification.
+    //
+    // Issue #301: only a leg that actually STARTS implementation provisions.
+    // YOLO A4 keeps its PLAN/APPROVAL provisioning; a YOLO re-entry at
+    // REVIEW/COMMIT honours the descriptor already on the checkpoint instead of
+    // creating a second worktree.
+    const hadDescriptor = Boolean(sm.worktree);
+    const provision = this.shouldProvisionWorktree(sm.currentStage, MODE_YOLO);
+    const worktree = provision
+      ? await this.resolveWorktree(sm, params, workspace)
+      : (sm.worktree ?? null);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
 
     if (sm.currentStage === STAGE_PLAN || sm.currentStage === STAGE_APPROVAL) {
-      implResult = await this.startImplementationUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        configPath: params.configPath,
-        dryRun: params.dryRun,
-        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
-        // across the boundary so StartImplementationUseCase's `skipWorktree`
-        // guardrail really short-circuits instead of re-provisioning through the
-        // adopt path. `resolveWorktree` (above) remains the outer layer.
-        noWorktree: params.worktree === false,
-        workspaceDir: activeWorkspace,
-        hasMergeConflicts: preflightResult?.hasMergeConflicts,
-        mergeBaseBranch: preflightResult?.candidateBaseBranch
-      });
+      // Issue #301: a worktree provisioned by THIS leg is torn down when the
+      // leg fails, so a bad plan cannot leave an orphan branch behind. The
+      // operator's failure stays the plan error — never the cleanup.
+      try {
+        implResult = await this.startImplementationUseCase.execute({
+          issue: sm.issue,
+          planPath: params.planPath,
+          planDir: params.planDir,
+          configPath: params.configPath,
+          dryRun: params.dryRun,
+          // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+          // across the boundary so StartImplementationUseCase's `skipWorktree`
+          // guardrail really short-circuits instead of re-provisioning through the
+          // adopt path. `resolveWorktree` (above) remains the outer layer.
+          noWorktree: params.worktree === false,
+          workspaceDir: activeWorkspace,
+          hasMergeConflicts: preflightResult?.hasMergeConflicts,
+          mergeBaseBranch: preflightResult?.candidateBaseBranch
+        });
+      } catch (err: unknown) {
+        if (!hadDescriptor && worktree) {
+          await this.teardownWorktree(worktree, workspace);
+          try {
+            sm.setWorktree(null);
+            await this.stateRepo.save(sm.toSnapshot());
+          } catch {
+            // Best effort: the run fails with the leg's own error.
+          }
+        }
+        throw err;
+      }
 
       sm = implResult.stateMachine;
     }
@@ -1428,29 +1530,53 @@ export class RunLifecycleUseCase {
       };
     }
 
-    // Resolve isolated worktree for implementation, verification, and commit
-    const worktree = await this.resolveWorktree(sm, params, workspace);
+    // Issue #301 (extends #278 to the rest of the pipeline): provisioning a
+    // worktree is a consequence of STARTING IMPLEMENTATION, not of running the
+    // CLI. A bare `codeloop` at PLAN/IMPLEMENT/QUALITY_GATE/REVIEW is a read:
+    // it honours the descriptor already on the checkpoint (or runs from the
+    // workspace root) and writes NOTHING — the checkpoint stays byte-identical.
+    const hadDescriptor = Boolean(sm.worktree);
+    const provision = this.shouldProvisionWorktree(sm.currentStage, MODE_STANDARD);
+    const worktree = provision
+      ? await this.resolveWorktree(sm, params, workspace)
+      : (sm.worktree ?? null);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
 
     // 2. If at APPROVAL: human review has occurred, start implementation
     let implResult: StartImplementationResult | undefined;
     if (sm.currentStage === STAGE_APPROVAL) {
-      implResult = await this.startImplementationUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        userInstructions: params.userInstructions,
-        configPath: params.configPath,
-        dryRun: params.dryRun,
-        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
-        // across the boundary so StartImplementationUseCase's `skipWorktree`
-        // guardrail really short-circuits instead of re-provisioning through the
-        // adopt path. `resolveWorktree` (above) remains the outer layer.
-        noWorktree: params.worktree === false,
-        workspaceDir: activeWorkspace,
-        hasMergeConflicts: preflightResult?.hasMergeConflicts,
-        mergeBaseBranch: preflightResult?.candidateBaseBranch
-      });
+      // Issue #301: a worktree provisioned by THIS leg is torn down when the
+      // leg fails (a missing/invalid approved plan), so the failed run leaves
+      // no orphan branch behind. The plan error is what the operator sees.
+      try {
+        implResult = await this.startImplementationUseCase.execute({
+          issue: sm.issue,
+          planPath: params.planPath,
+          planDir: params.planDir,
+          userInstructions: params.userInstructions,
+          configPath: params.configPath,
+          dryRun: params.dryRun,
+          // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+          // across the boundary so StartImplementationUseCase's `skipWorktree`
+          // guardrail really short-circuits instead of re-provisioning through the
+          // adopt path. `resolveWorktree` (above) remains the outer layer.
+          noWorktree: params.worktree === false,
+          workspaceDir: activeWorkspace,
+          hasMergeConflicts: preflightResult?.hasMergeConflicts,
+          mergeBaseBranch: preflightResult?.candidateBaseBranch
+        });
+      } catch (err: unknown) {
+        if (!hadDescriptor && worktree) {
+          await this.teardownWorktree(worktree, workspace);
+          try {
+            sm.setWorktree(null);
+            await this.stateRepo.save(sm.toSnapshot());
+          } catch {
+            // Best effort: the run fails with the leg's own error.
+          }
+        }
+        throw err;
+      }
 
       sm = implResult.stateMachine;
     }
