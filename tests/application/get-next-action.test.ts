@@ -1003,7 +1003,54 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     '- [ ] **Step 1:** change `src/probe.ts` to return a value.'
   ].join('\n');
 
-  function planGen(content: string): any {
+  /**
+   * A blank `[Discovery]` scaffold (issue #320): discovery-SHAPED, so it is
+   * scored, but with no content evidence, so it must be reported as blank.
+   */
+  const DISCOVERY_BLANK = [
+    '# [Discovery] - Bug probe',
+    '',
+    '## 1. Problem Statement & Symptoms',
+    '- **Observed Behavior:**',
+    '- **Expected Behavior:**',
+    '- **Affected Components / Paths:**',
+    '',
+    '## 2. Root Cause Analysis (RCA)',
+    '- **Investigation Steps:**',
+    '- **Identified Failure Mode:**',
+    '- **Relevant Code References:**'
+  ].join('\n');
+
+  /** A populated RCA: the same 4-section shape the discovery prompt mandates. */
+  const DISCOVERY_POPULATED = [
+    '# [Discovery] - Bug probe',
+    '',
+    '## 1. Problem Statement & Symptoms',
+    '- **Observed Behavior:** the directive never reported the RCA state',
+    '- **Expected Behavior:** blank and populated directives differ',
+    '- **Affected Components / Paths:** src/application/get-next-action.ts',
+    '',
+    '## 2. Root Cause Analysis (RCA)',
+    '- **Investigation Steps:** read the directive twice around a report write',
+    '- **Identified Failure Mode:** a static condition constant rendered as state',
+    '- **Relevant Code References:** get-next-action.ts:373-465',
+    '',
+    '## 3. Reproduction Steps & Verification Protocol',
+    '- **Local Reproduction Command:** codeloop next --issue 41 --json',
+    '- **Failing Test Target:** tests/application/get-next-action.test.ts',
+    '',
+    '## 4. Remediation Strategy',
+    '- **Recommended Fix Approach:** project DiscoveryReport state into the result',
+    '- **Potential Regressions / Side Effects:** none when no generator is injected'
+  ].join('\n');
+
+  /**
+   * `content` is the implementation document; `discoveryContent` is the
+   * discovery-shaped document at DISCOVERY_PATH. They must be distinguishable:
+   * an implementation document at the discovery path is NOT RCA evidence
+   * (issue #320).
+   */
+  function planGen(content: string, discoveryContent: string = DISCOVERY_BLANK): any {
     return {
       findPlanDirectory: () => '/repo/artifacts/plans/41-bug-probe',
       resolvePlanFile: (options: any) => ({
@@ -1011,7 +1058,20 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
         planPath: options?.stage === STAGE_DISCOVERY ? DISCOVERY_PATH : PLAN_PATH,
         planFileName: options?.stage === STAGE_DISCOVERY ? '[Discovery] - Bug probe.md' : 'implementation_plan.md'
       }),
-      readPlanDocument: () => content
+      readPlanDocument: (path: string) => (path === DISCOVERY_PATH ? discoveryContent : content)
+    };
+  }
+
+  /** A generator that resolves the implementation document even at DISCOVERY. */
+  function implementationOnlyGen(): any {
+    return {
+      findPlanDirectory: () => '/repo/artifacts/plans/41-bug-probe',
+      resolvePlanFile: () => ({
+        planDir: '/repo/artifacts/plans/41-bug-probe',
+        planPath: PLAN_PATH,
+        planFileName: 'implementation_plan.md'
+      }),
+      readPlanDocument: () => REAL_PLAN
     };
   }
 
@@ -1119,6 +1179,105 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     assert.strictEqual(stateRepo.savedSnapshot!.mode, beforeMode);
     assert.strictEqual(stateRepo.savedSnapshot!.planDir, beforePlanDir);
     assert.strictEqual((stateRepo.savedSnapshot as any).discoveryDispatchCount, 3);
+  });
+
+  caseTest('T-320.7: a populated discovery report is reported and names the advance command', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      planGen(REAL_PLAN, DISCOVERY_POPULATED)
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReportPopulated, true);
+    assert.strictEqual(result.discoveryReportPath, DISCOVERY_PATH);
+    assert.strictEqual(result.discoveryReportMissingEvidence, null);
+    assert.match(result.description, /populated/);
+    assert.match(result.description, /completion condition is met/);
+    assert.ok(result.description.includes(NOTE_DISCOVERY_ADVANCE_CONDITION), result.description);
+    assert.ok(result.description.includes('codeloop plan --issue 41'), result.description);
+    assert.doesNotMatch(result.description, /still blank/);
+    assert.ok(result.invocationPayload!.Subagents[0].Prompt.includes(DISCOVERY_PATH));
+  });
+
+  caseTest('T-320.8: a blank discovery report is reported blank and names the missing evidence', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      planGen(REAL_PLAN, DISCOVERY_BLANK)
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.discoveryReportPopulated, false);
+    assert.strictEqual(result.discoveryReportPath, DISCOVERY_PATH);
+    assert.ok(
+      typeof result.discoveryReportMissingEvidence === 'string' &&
+        result.discoveryReportMissingEvidence.length > 0,
+      `missing evidence must be reported, got: ${String(result.discoveryReportMissingEvidence)}`
+    );
+    assert.match(
+      String(result.discoveryReportMissingEvidence),
+      /Observed Behavior|blank template keys/
+    );
+    assert.match(result.description, /still blank/);
+    assert.ok(result.description.includes('Missing evidence:'), result.description);
+    assert.ok(result.description.includes(NOTE_DISCOVERY_ADVANCE_CONDITION), result.description);
+    assert.ok(result.description.includes('codeloop plan --issue 41'), result.description);
+  });
+
+  caseTest('T-320.9: an implementation document resolved at DISCOVERY is never RCA evidence', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), implementationOnlyGen());
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.discoveryReportPopulated, false);
+    assert.strictEqual(result.discoveryReportPath, null);
+    assert.strictEqual(result.discoveryReportMissingEvidence, null);
+    assert.match(result.description, /No discovery-shaped report/);
+    assert.ok(result.description.includes(NOTE_DISCOVERY_ADVANCE_CONDITION), result.description);
+    assert.ok(result.description.includes('codeloop plan --issue 41'), result.description);
+    // The implementation plan must never become the prompt's `Write ONLY` target.
+    assert.ok(
+      !result.invocationPayload!.Subagents[0].Prompt.includes(PLAN_PATH),
+      'the discovery prompt must not name the implementation plan'
+    );
+    assert.doesNotMatch(result.invocationPayload!.Subagents[0].Prompt, /Write ONLY/);
+  });
+
+  caseTest('T-320.10: the DISCOVERY report state is a read-only projection, never persisted', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      planGen(REAL_PLAN, DISCOVERY_POPULATED)
+    );
+
+    const beforeStage = stateRepo.savedSnapshot!.currentStage;
+    const beforeHistory = JSON.stringify(stateRepo.savedSnapshot!.history);
+    const beforeMode = stateRepo.savedSnapshot!.mode;
+    const beforePlanDir = stateRepo.savedSnapshot!.planDir;
+
+    for (let read = 1; read <= 3; read += 1) {
+      const result = await useCase.execute({ workspaceDir: '/repo' });
+      assert.strictEqual(result.discoveryReportPopulated, true);
+      assert.strictEqual(result.discoveryDispatchCount, read);
+    }
+
+    assert.strictEqual(stateRepo.savedSnapshot!.currentStage, beforeStage);
+    assert.strictEqual(JSON.stringify(stateRepo.savedSnapshot!.history), beforeHistory);
+    assert.strictEqual(stateRepo.savedSnapshot!.mode, beforeMode);
+    assert.strictEqual(stateRepo.savedSnapshot!.planDir, beforePlanDir);
+    assert.strictEqual((stateRepo.savedSnapshot as any).discoveryDispatchCount, 3);
+    assert.strictEqual((stateRepo.savedSnapshot as any).discoveryReportPopulated, undefined);
+    assert.strictEqual((stateRepo.savedSnapshot as any).discoveryReportPath, undefined);
   });
 
   caseTest('T-267.A2: a blank plan at IMPLEMENT offers the PLANNER, a real plan the implementer', async () => {

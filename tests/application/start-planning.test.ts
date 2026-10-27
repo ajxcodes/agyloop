@@ -13,6 +13,10 @@ const {
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_APPROVAL,
+  STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
   STAGE_COMPLETED,
   MODE_PLAN,
   MODE_STANDARD,
@@ -554,6 +558,59 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
   });
 
+  test('T-320.4: an implementation-shaped document is never scored as RCA evidence', async () => {
+    // Both the scaffold's own candidate (`scaffoldInfo.planPath`) and the
+    // resolver's answer point at implementation-shaped content. Kind is checked
+    // BEFORE content, so neither may populate the gate or invent a gap
+    // (issue #320, AC1).
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 11 });
+    sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
+    stateRepo.savedSnapshot = sm.toSnapshot();
+
+    const substantiveImplementation = [
+      '# [Implementation] - probe',
+      '',
+      '## 1. Context & Objectives',
+      '- **Feature Overview:** stale substantive implementation content.',
+      '- **Acceptance Criteria:** it must never satisfy the RCA gate.',
+      '',
+      '## 2. Architectural Design & Impact',
+      '- **Component Breakdown:** the gate and the directive.',
+      '- **Data Flow / Model Invariants:** kind is checked before content.',
+      '- **Dependencies & Imports:** domain predicates only.',
+      '',
+      '## 3. Implementation Steps',
+      '- [ ] **Step 1:** add the discovery-shape filter before scoring.',
+      '',
+      '## 4. Quality Gate & Test Verification',
+      '- **Target 1:** npm run lint'
+    ].join('\n');
+
+    planGenerator.planDocument = substantiveImplementation;
+    planGenerator.planDocumentByPath = {
+      '/fake/plans/10/plan.md': substantiveImplementation,
+      '/fake/plans/10/implementation_plan.md': substantiveImplementation
+    };
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/10',
+      planPath: '/fake/plans/10/implementation_plan.md',
+      planFileName: 'implementation_plan.md'
+    };
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 11, mode: MODE_YOLO });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+    assert.strictEqual(result.discoveryReportEvidence.populatedPath, null);
+    assert.strictEqual(result.discoveryReportEvidence.missingEvidence, null);
+  });
+
   test('skipDiscovery short-circuits DISCOVERY -> PLAN on re-entry and records the bypass', async () => {
     githubGateway.issueToReturn = {
       repo: 'owner/repo',
@@ -922,11 +979,48 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
       .sort();
   }
 
-  function seedDiscoveryCheckpoint(planDir: string | null): void {
-    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 283 });
+  function seedDiscoveryCheckpoint(planDir: string | null, issue: number = 283): void {
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue });
     sm.transition(STAGE_DISCOVERY, { note: 'Initiated discovery mode for defect RCA' });
     if (planDir) sm.setPlanDir(planDir);
     stateRepo.savedSnapshot = sm.toSnapshot();
+  }
+
+  /**
+   * A substantive IMPLEMENTATION document (issue #320): content-rich, but not
+   * discovery-shaped, so it must never be RCA evidence.
+   */
+  function substantiveImplementationPlan(title: string): string {
+    return [
+      `# [Implementation] - ${title}`,
+      '',
+      '## 1. Context & Objectives',
+      '- **Feature Overview:** stale substantive implementation content.',
+      '- **Acceptance Criteria:** it must never satisfy the RCA gate.',
+      '',
+      '## 2. Architectural Design & Impact',
+      '- **Component Breakdown:** the gate and the directive.',
+      '- **Data Flow / Model Invariants:** kind is checked before content.',
+      '- **Dependencies & Imports:** domain predicates only.',
+      '',
+      '## 3. Implementation Steps',
+      '- [ ] **Step 1:** add the discovery-shape filter before DiscoveryReport scoring.',
+      '',
+      '## 4. Quality Gate & Test Verification',
+      '- **Target 1:** npm run lint'
+    ].join('\n');
+  }
+
+  function nonBugIssue(number: number, title: string): void {
+    githubGateway.issueToReturn = {
+      repo: 'owner/repo',
+      number,
+      title,
+      body: 'feature probe body',
+      labels: [],
+      comments: [],
+      state: 'OPEN'
+    };
   }
 
   caseBeforeEach(() => {
@@ -1167,5 +1261,133 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
     );
 
     assert.strictEqual(planDirectories().length, 0);
+  });
+
+  caseTest('T-320.1: a non-bug scaffold with a substantive implementation plan parks and names the RCA gaps', async () => {
+    // Defect A: the gate seeded `scaffoldInfo.planPath` and scored it with the
+    // shape-agnostic content predicate, so an `implementation_plan.md` released
+    // the RCA gate with no discovery report at all (issue #320, AC1/AC2).
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 320,
+      title: 'probe',
+      type: 'discovery'
+    });
+    fsReal.writeFileSync(
+      pathReal.join(scaffold.planDir, 'implementation_plan.md'),
+      substantiveImplementationPlan('probe'),
+      'utf8'
+    );
+    nonBugIssue(320, 'feature probe');
+    seedDiscoveryCheckpoint(scaffold.planDir, 320);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 320, title: 'feature probe', mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+    assert.ok(
+      String(result.discoveryReportEvidence.evaluatedPath).endsWith('[Discovery] - probe.md'),
+      `the park must name the blank discovery report, got: ${String(result.discoveryReportEvidence.evaluatedPath)}`
+    );
+    const missing = result.discoveryReportEvidence.missingEvidence ?? '';
+    assert.match(missing, /Observed Behavior|Problem Statement/);
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+  });
+
+  caseTest('T-320.2: a directory holding only implementation artifacts yields no RCA evidence', async () => {
+    // Defect A's second door: DISCOVERY resolution used to fall back to the
+    // implementation aliases, so a directory with no discovery artifact still
+    // released the gate (issue #320, AC1/AC6).
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 320,
+      title: 'probe',
+      type: 'implementation'
+    });
+    fsReal.writeFileSync(scaffold.planPath, substantiveImplementationPlan('probe'), 'utf8');
+    fsReal.writeFileSync(
+      pathReal.join(scaffold.planDir, 'implementation_plan.md'),
+      substantiveImplementationPlan('probe'),
+      'utf8'
+    );
+    nonBugIssue(320, 'probe');
+    seedDiscoveryCheckpoint(scaffold.planDir, 320);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 320, title: 'probe', mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+    assert.ok(
+      !String(result.discoveryReportEvidence.evaluatedPath ?? '').includes('implementation'),
+      `an implementation document must never be the verdict's file: ${String(result.discoveryReportEvidence.evaluatedPath)}`
+    );
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(
+      result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN),
+      false,
+      'a parked re-entry must gain no PLAN history entry'
+    );
+  });
+
+  caseTest('T-320.3: a reopened issue (COMPLETED -> DISCOVERY) with a stale plan cannot bypass the gate', async () => {
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 320,
+      title: 'probe',
+      type: 'discovery'
+    });
+    fsReal.writeFileSync(
+      pathReal.join(scaffold.planDir, 'implementation_plan.md'),
+      substantiveImplementationPlan('probe'),
+      'utf8'
+    );
+
+    // Walk a checkpoint to COMPLETED, then reopen it at DISCOVERY — the legal
+    // transition that makes the stale plan reachable in practice (AC3).
+    const sm = StateMachine.createInitial({ mode: MODE_YOLO, issue: 320 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+    sm.transition(STAGE_COMPLETED);
+    sm.transition(STAGE_DISCOVERY);
+    sm.setPlanDir(scaffold.planDir);
+    stateRepo.savedSnapshot = sm.toSnapshot();
+    nonBugIssue(320, 'feature probe');
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 320, title: 'feature probe', mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+    assert.ok(
+      String(result.discoveryReportEvidence.evaluatedPath).endsWith('[Discovery] - probe.md'),
+      `the park must name the blank discovery report, got: ${String(result.discoveryReportEvidence.evaluatedPath)}`
+    );
+    assert.ok(
+      result.stateMachine.history.some((h: any) => h.stage === STAGE_COMPLETED),
+      'the reopened checkpoint keeps its COMPLETED history'
+    );
+    assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
   });
 });

@@ -995,9 +995,14 @@ export class FilePlanGenerator implements PlanGeneratorPort {
    * Stage-aware document resolution inside ONE plan directory (issue #283/#299).
    *
    * DISCOVERY ranks a POPULATED `[Discovery] - *.md` ahead of a pristine one,
-   * then falls back to the historical candidates. Every other stage may NEVER
-   * be handed a discovery-shaped document: the planner, the gate and the
-   * reviewer all read the technical specification.
+   * then falls back to the first discovery artifact, then returns `null`
+   * (issue #320). DISCOVERY NEVER returns an implementation document: an
+   * `implementation_plan.md` is not RCA evidence, and handing one to the
+   * discovery subagent told it to `Write ONLY` the wrong document. A caller
+   * with no discovery artifact names the plan directory instead.
+   *
+   * Every other stage may NEVER be handed a discovery-shaped document: the
+   * planner, the gate and the reviewer all read the technical specification.
    */
   private resolveDocumentInDirectory(dir: string, stage?: string): string | null {
     const readSafe = (candidate: string): string => {
@@ -1019,12 +1024,8 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       if (discoveryArtifacts.length > 0) {
         return discoveryArtifacts[0];
       }
-      for (const alias of [FILENAME_ALT_IMPLEMENTATION_PLAN, TEMPLATE_IMPLEMENTATION]) {
-        const candidatePath = path.join(dir, alias);
-        if (fs.existsSync(candidatePath)) {
-          return candidatePath;
-        }
-      }
+      // No discovery artifact: fail closed. An implementation document is never
+      // DISCOVERY evidence (issue #320).
       return null;
     }
 
