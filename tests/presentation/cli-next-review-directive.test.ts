@@ -71,6 +71,34 @@ async function runNextIn(dir: string): Promise<{ code: number; output: string }>
   }
 }
 
+/**
+ * Runs `next --json` and captures STDOUT ONLY, so the printed payload is one
+ * parseable JSON document even when the CLI also warns on stderr (issue #314).
+ */
+async function runNextJsonIn(dir: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  const previousCwd = process.cwd();
+  const originalLog = console.log;
+  const originalError = console.error;
+  let stdout = '';
+  let stderr = '';
+
+  try {
+    process.chdir(dir);
+    console.log = (...args: any[]) => {
+      stdout += args.map(String).join(' ') + '\n';
+    };
+    console.error = (...args: any[]) => {
+      stderr += args.map(String).join(' ') + '\n';
+    };
+    const code = await runCli(['next', '--issue', String(ISSUE), '--json']);
+    return { code, stdout, stderr };
+  } finally {
+    process.chdir(previousCwd);
+    console.log = originalLog;
+    console.error = originalError;
+  }
+}
+
 describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV5a: the terminal render names the channel and the exit condition', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-'));
@@ -120,6 +148,37 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
       );
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('RV6: the dispatched prompt quotes the critique binary the CLI resolved (issue #314)', async () => {
+    // A nested root keeps the resolver's sibling candidate (`../critique`)
+    // absent, so the bundled `<worktree>/bin/critique.js` is deterministic.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-314-'));
+    const sandbox = path.join(root, 'worktree');
+    try {
+      fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
+      const critiquePath = path.join(sandbox, 'bin', 'critique.js');
+      fs.writeFileSync(critiquePath, '#!/usr/bin/env node\n');
+      seedCheckpoint(sandbox);
+
+      const run = await runNextJsonIn(sandbox);
+
+      assert.strictEqual(run.code, 0, run.stderr || run.stdout);
+      const payload = JSON.parse(run.stdout);
+      const prompt = payload.invocationPayload?.Subagents?.[0]?.Prompt ?? '';
+      assert.strictEqual(payload.role, 'reviewer', `expected the reviewer directive, got ${payload.role}`);
+      assert.ok(
+        prompt.includes(`node '${critiquePath}' --json`),
+        `AC1: the Tier 1 command must quote the resolved path, got:\n${prompt.slice(0, 3000)}`
+      );
+      assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
+      assert.ok(
+        !prompt.includes('~/.local/bin/critique --json'),
+        'AC3: the dead hardcoded command must not be rendered'
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

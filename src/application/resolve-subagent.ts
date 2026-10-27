@@ -76,7 +76,12 @@ import {
   HEADING_QUALITY_GATE_TARGETS,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
   SMOKE_STATUS_NOT_DECLARED,
-  formatDiscoveryReportContract
+  formatDiscoveryReportContract,
+  shellQuote,
+  CRITIQUE_FLAG_JSON,
+  CRITIQUE_JS_EXTENSION,
+  NODE_RUNTIME_BINARY,
+  NOTE_CRITIQUE_TIER_ONE_UNRESOLVED
 } from '../domain';
 import type { PlanIntegrityVerdict } from './resolve-gate-verification';
 
@@ -263,6 +268,13 @@ export interface ReviewerTaskPromptParams {
   readonly standardsContent?: string | null;
   readonly workingDiff?: string | null;
   readonly critiqueReport?: string | null;
+  /**
+   * An authoritative critique binary path (issue #314).
+   *
+   * `run-review` resolves it asynchronously and passes it here; when present it
+   * wins over the port. `undefined` means "resolve through the critique port,
+   * else render the discovery instruction".
+   */
   readonly critiquePath?: string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
@@ -274,6 +286,23 @@ export interface TriageTaskPromptParams {
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
   readonly triagePayload?: string | null;
+}
+
+/**
+ * Renders the Tier 1 command for a RESOLVED critique binary (issue #314).
+ *
+ * The installer ships a `critique.js` that the gateway runs through `node`;
+ * a native binary runs directly. The path is single-quoted because macOS
+ * user-data paths contain spaces (`~/Library/Application Support/...`).
+ *
+ * No `PATH` export: the path is absolute, and `~/.local/bin` is not where the
+ * installer writes.
+ */
+function formatCritiqueTierOneCommand(binaryPath: string): string {
+  const quoted = shellQuote(binaryPath);
+  return binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
+    ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
+    : `${quoted} ${CRITIQUE_FLAG_JSON}`;
 }
 
 export class ResolveSubagentUseCase {
@@ -961,12 +990,14 @@ export class ResolveSubagentUseCase {
   }
 
   public buildReviewerTaskPrompt(params: ReviewerTaskPromptParams = {}): string {
+    // Issue #314: an explicit path (run-review) is authoritative; otherwise ask
+    // the port. Never fall back to a literal home-directory path — the
+    // installer writes to the user-data directory, not ~/.local/bin.
     const resolvedCritiquePath =
       params.critiquePath ??
       (this.manageCritiqueUseCase
         ? this.manageCritiqueUseCase.resolveCritiquePath(params.workspaceDir)
         : ManageCritiqueUseCase.resolveCritiquePath(this.critiquePort, params.workspaceDir));
-    const critiqueBinary = resolvedCritiquePath || '~/.local/bin/critique';
 
     let prompt = `# Task: Code Review & Standards Verification\n\n`;
     prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
@@ -979,10 +1010,15 @@ export class ResolveSubagentUseCase {
 
     prompt += `### Two-Tier Review Methodology:\n`;
     prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
-    prompt += `   \`\`\`bash\n`;
-    prompt += `   export PATH="$HOME/.local/bin:$PATH" && ${critiqueBinary} --json\n`;
-    prompt += `   \`\`\`\n`;
-    prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector) using the resolved path.\n`;
+    if (resolvedCritiquePath) {
+      prompt += `   \`\`\`bash\n`;
+      prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath)}\n`;
+      prompt += `   \`\`\`\n`;
+      prompt += `   - The command above quotes the path resolved for this workspace. Do not substitute a PATH lookup or a guessed location.\n`;
+    } else {
+      prompt += `${NOTE_CRITIQUE_TIER_ONE_UNRESOLVED}\n`;
+    }
+    prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector).\n`;
     prompt += `   - Invariant: Any \`critical\` or \`error\` findings mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n`;
     prompt += `2. **Tier 2 (Manual Diff & Standards Inspection)**: Independently inspect working diff against Acceptance Criteria and repository standards (\`.github/critique.md\`, zero magic numbers/strings, clean architecture).\n`;
     prompt += `3. **Consolidated Verdict**: Cross-reference both tiers into the structured verdict block (\`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\`).\n\n`;

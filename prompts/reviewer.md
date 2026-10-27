@@ -25,7 +25,7 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 ## 2. Review Methodology
 
 1. **Diff & Critique Inspection**:
-   - Run `critique` (or consume its automated findings) and `git diff` via `run_command`.
+   - Resolve the critique binary with `codeloop critique status --json`, then run the reported `resolution.path` with `--json` (prefix `node` for a `.js` binary) and `git diff` via `run_command`. Never assume `~/.local/bin/critique` or a bare `critique` on `PATH`.
    - Cross-reference findings with `.github/critique.md` standards and the approved implementation plan's Acceptance Criteria.
    - Trace callers and examine affected files using `view_file` and `grep_search`.
 

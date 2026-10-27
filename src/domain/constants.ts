@@ -1639,6 +1639,8 @@ export const PATH_USER_LOCAL_CRITIQUE = '.local/bin/critique' as const;
 export const PATH_SIBLING_CRITIQUE_DIR = '../critique' as const;
 export const REPO_CRITIQUE_GIT_URL = 'https://github.com/ajxcodes/critique.git' as const;
 export const CRITIQUE_FLAG_JSON = '--json' as const;
+export const CRITIQUE_JS_EXTENSION = '.js' as const;
+export const NODE_RUNTIME_BINARY = 'node' as const;
 export const CRITIQUE_FLAG_STAGED = '--staged' as const;
 export const CRITIQUE_FLAG_BASE = '--base' as const;
 export const CRITIQUE_BUILD_COMMAND = 'npm run build' as const;
@@ -1693,6 +1695,27 @@ export const MSG_CLEAN_DIFF_REVIEW = 'No uncommitted changes or working tree dif
 export const MSG_NO_ISSUES_FOUND = '*No issues found! Great job!* 🚀' as const;
 export const MSG_CRITIQUE_NOT_FOUND =
   'Critique CLI binary not found. Please install critique or place it on PATH, ~/.local/bin, or as sibling ../critique.' as const;
+
+/**
+ * Tier 1 guidance when the critique binary cannot be resolved (issue #314).
+ *
+ * The prompt used to quote `~/.local/bin/critique`, but `codeloop critique
+ * install` writes to the platform user-data directory, so the quoted command
+ * was dead on every installer-managed host. The unresolved render therefore
+ * names the resolver and the locations it actually searches instead of
+ * inventing a path.
+ *
+ * Every line but the last ends with a newline; the prompt builder appends the
+ * final `\n` itself.
+ */
+export const NOTE_CRITIQUE_TIER_ONE_UNRESOLVED =
+  `   \`\`\`bash\n` +
+  `   codeloop ${COMMAND_CRITIQUE} ${CRITIQUE_SUBCOMMAND_STATUS} ${CRITIQUE_FLAG_JSON}\n` +
+  `   \`\`\`\n` +
+  `   - The critique binary could not be resolved for this workspace, so no path is quoted here. Do NOT guess one and do NOT report Tier 1 as passed.\n` +
+  `   - Read \`resolution.path\` from that payload, then run that exact path with \`${CRITIQUE_FLAG_JSON}\` (prefix \`${NODE_RUNTIME_BINARY}\` when it ends in \`${CRITIQUE_JS_EXTENSION}\`).\n` +
+  `   - The resolver searches, in order: sibling \`${PATH_SIBLING_CRITIQUE_DIR}/${PATH_BUNDLED_CRITIQUE_JS}\`, bundled \`${PATH_BUNDLED_CRITIQUE_JS}\`, the user-data directory (\`$XDG_DATA_HOME/critique\` or \`~/${PATH_USER_DATA_CRITIQUE_DIR}\` on Linux, \`~/${PATH_USER_DATA_CRITIQUE_MAC}\` on macOS, \`%LOCALAPPDATA%/critique\` on Windows), \`~/${PATH_USER_LOCAL_CRITIQUE}\`, then \`$PATH\`.\n` +
+  `   - If the payload reports no path, tell the operator to run \`codeloop ${COMMAND_CRITIQUE} ${CRITIQUE_SUBCOMMAND_INSTALL}\` and record Tier 1 as unavailable — never as a pass.`;
 export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
 
 export const DIFF_EXCLUDED_PATHSPECS = Object.freeze([
@@ -1744,7 +1767,7 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 ## 2. Review Methodology
 
 1. **Diff & Critique Inspection**:
-   - Run \`critique\` (or consume its automated findings) and \`git diff\` via \`run_command\`.
+   - Resolve the critique binary with \`codeloop critique status --json\`, then run the reported \`resolution.path\` with \`--json\` (prefix \`node\` for a \`.js\` binary) and \`git diff\` via \`run_command\`. Never assume \`~/.local/bin/critique\` or a bare \`critique\` on \`PATH\`.
    - Cross-reference findings with \`.github/critique.md\` standards and the approved implementation plan's Acceptance Criteria.
    - Trace callers and examine affected files using \`view_file\` and \`grep_search\`.
 
