@@ -71,7 +71,9 @@ import {
   MSG_PLAN_MODIFIED_AFTER_APPROVAL,
   MSG_PLAN_APPROVED_MISSING,
   MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE,
-  GATE_COMMAND_PRECEDENCE
+  GATE_COMMAND_PRECEDENCE,
+  DiscoveryReport,
+  isDiscoveryPlanDocument
 } from '../domain';
 import {
   StateRepository,
@@ -117,6 +119,21 @@ interface OpenReviewFeedback {
   readonly payload: string;
 }
 
+/**
+ * The DISCOVERY report state projected into the directive (issue #320).
+ *
+ * Internal to this use case: it is the one scored artefact the directive both
+ * reports and (as a path) hands to the discovery prompt, so the operator can
+ * tell "keep dispatching discovery" from "advance with `codeloop plan`".
+ */
+interface DiscoveryReportState {
+  readonly populated: boolean;
+  /** The discovery-shaped document that was read; null when none resolved. */
+  readonly path: string | null;
+  /** `DiscoveryReport.describeMissingEvidence()` when blank; null otherwise. */
+  readonly missingEvidence: string | null;
+}
+
 export interface SubagentInvocationItem {
   readonly TypeName: string;
   readonly Role: string;
@@ -152,6 +169,19 @@ export interface NextActionResult {
   readonly discoveryDispatchCount?: number;
   /** The recorded re-dispatch count for the current PLAN stage (issue #292). */
   readonly planDispatchCount?: number;
+  /**
+   * The DISCOVERY report state (issue #320).
+   *
+   * `next` used to render a static completion condition and never read the RCA,
+   * so a blank and a populated report produced byte-identical directives. These
+   * three values project the SAME scored report the gate uses; they are absent
+   * when no `PlanGeneratorPort` is injected (nothing to verify).
+   */
+  readonly discoveryReportPopulated?: boolean;
+  /** The discovery-shaped document that was read; null when none resolved. */
+  readonly discoveryReportPath?: string | null;
+  /** `DiscoveryReport.describeMissingEvidence()` when blank; null otherwise. */
+  readonly discoveryReportMissingEvidence?: string | null;
   /** True when the IMPLEMENT directive is the PLANNER because the plan is blank. */
   readonly planBlank?: boolean;
   /**
@@ -378,6 +408,11 @@ export class GetNextActionUseCase {
         // directory the subagent invents its own slug — the defect this issue
         // exists to remove — so `next` names the command that creates the one
         // canonical directory instead of dispatching an unspecified write.
+        //
+        // Issue #320: DISCOVERY also reports the STATE of the RCA report it
+        // resolves. The directive used to be composed from the static condition
+        // alone, so a blank and a populated report produced byte-identical
+        // output and the operator could not tell the two apart.
         const resolvedPlanDir =
           sm.planDir ??
           (activeIssue &&
@@ -399,7 +434,12 @@ export class GetNextActionUseCase {
             baseBranch,
             taskBranch,
             worktreePath,
-            humanSummary: `Run \`${advanceCommand}\` to create the canonical plan directory, then run \`codeloop next\` to dispatch the ${ROLE_TITLE_DISCOVERY}. ${condition}`
+            humanSummary: `Run \`${advanceCommand}\` to create the canonical plan directory, then run \`codeloop next\` to dispatch the ${ROLE_TITLE_DISCOVERY}. ${condition}`,
+            // Issue #320: a consistent DISCOVERY contract — no report can have
+            // been resolved when no directory exists.
+            discoveryReportPopulated: false,
+            discoveryReportPath: null,
+            discoveryReportMissingEvidence: null
           };
         }
 
@@ -409,7 +449,7 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
-        let planPath: string | undefined;
+        let resolvedDiscoveryPath: string | null = null;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
             projectRoot: cwd,
@@ -418,16 +458,22 @@ export class GetNextActionUseCase {
             stage: STAGE_DISCOVERY
           });
           if (resolved) {
-            planPath = resolved.planPath;
+            resolvedDiscoveryPath = resolved.planPath;
           }
         }
+
+        // Project the SAME scored report the gate uses (issue #320). `null`
+        // means unverified — no generator was injected.
+        const reportState = this.resolveDiscoveryReportState(resolvedDiscoveryPath);
 
         const prompt = this.resolveSubagentUseCase.buildDiscoveryTaskPrompt({
           issueNumber: activeIssue,
           workspaceDir: cwd,
           config,
           planDir: resolvedPlanDir,
-          planPath
+          // Only a discovery-shaped document may become the `Write ONLY` target
+          // (issue #320); with none resolved the prompt names the directory.
+          planPath: reportState?.path ?? undefined
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -447,20 +493,51 @@ export class GetNextActionUseCase {
           await this.persistDispatchCounter(sm, 'discovery');
         }
 
-        const target = planPath ? ` Write ONLY \`${planPath}\`.` : '';
+        // State → text (issue #320). Every verified state keeps the static
+        // condition (#292's operator contract) and names the advance command;
+        // the state clause is what differs.
+        const target = reportState?.path ? ` Write ONLY \`${reportState.path}\`.` : '';
+        const planDirLabel = resolvedPlanDir ?? cwd;
+        let description: string;
+        let stateSummary: string;
+        if (reportState === null) {
+          // Unverified (no generator injected): the historical text, unchanged.
+          description = `Execute root-cause analysis and manual smoke testing to produce a discovery report.${target} ${condition} Advance with \`${advanceCommand}\`.`;
+          stateSummary = `${condition} Advance with \`${advanceCommand}\` once the report is populated.`;
+        } else if (reportState.populated) {
+          description = `The discovery report at \`${reportState.path}\` is populated — the completion condition is met. Do not re-dispatch discovery. ${condition} Advance with \`${advanceCommand}\`.`;
+          stateSummary = `The discovery report is populated — the completion condition is met; advance with \`${advanceCommand}\`.`;
+        } else if (reportState.path) {
+          const missing = reportState.missingEvidence
+            ? ` Missing evidence: ${reportState.missingEvidence}.`
+            : '';
+          description = `Execute root-cause analysis and manual smoke testing to produce a discovery report.${target} The discovery report is still blank.${missing} ${condition} Advance with \`${advanceCommand}\` once it is populated.`;
+          stateSummary = `The discovery report is still blank.${missing} ${condition} Advance with \`${advanceCommand}\` once it is populated.`;
+        } else {
+          description = `Execute root-cause analysis and manual smoke testing to produce a discovery report. No discovery-shaped report was resolved in \`${planDirLabel}\`. ${condition} Advance with \`${advanceCommand}\` once one exists.`;
+          stateSummary = `No discovery-shaped report was resolved. ${condition} Advance with \`${advanceCommand}\` once one exists.`;
+        }
+
         return {
           currentStage: STAGE_DISCOVERY,
           nextStage: STAGE_PLAN,
           actionType: 'subagent',
           role: ROLE_DISCOVERY,
           title: 'Invoke Defect Discovery Subagent',
-          description: `Execute root-cause analysis and manual smoke testing to produce a discovery report.${target} ${condition} Advance with \`${advanceCommand}\`.`,
+          description,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_DISCOVERY} with Model '${subagent.model}' (scoped write tools). ${this.formatDispatchOrdinal(NOTE_DISCOVERY_DISPATCH_ORDINAL, sm.discoveryDispatchCount)} ${condition} Advance with \`${advanceCommand}\` once the report is populated.`,
-          discoveryDispatchCount: sm.discoveryDispatchCount
+          humanSummary: `Invoke ${ROLE_TITLE_DISCOVERY} with Model '${subagent.model}' (scoped write tools). ${this.formatDispatchOrdinal(NOTE_DISCOVERY_DISPATCH_ORDINAL, sm.discoveryDispatchCount)} ${stateSummary}`,
+          discoveryDispatchCount: sm.discoveryDispatchCount,
+          ...(reportState === null
+            ? {}
+            : {
+                discoveryReportPopulated: reportState.populated,
+                discoveryReportPath: reportState.path,
+                discoveryReportMissingEvidence: reportState.missingEvidence
+              })
         };
       }
 
@@ -1015,6 +1092,47 @@ export class GetNextActionUseCase {
     return NOTE_REVIEW_DISPATCH_ORDINAL
       .replace('{n}', String(current))
       .replace('{max}', String(MAX_REVIEW_DISPATCH_LOOPS));
+  }
+
+  /**
+   * Scores the DISCOVERY report at the already-resolved path (issue #320).
+   *
+   * Returns `null` when no `PlanGeneratorPort` is injected: there is nothing to
+   * verify, so the directive keeps its historical text and emits no state
+   * fields rather than falsely claiming "still blank".
+   *
+   * Fails CLOSED: an unresolvable path, a throwing read and a non-discovery-
+   * shaped document all yield `{populated:false, path:null}` — an implementation
+   * plan can never be reported as (or named as) RCA evidence.
+   */
+  private resolveDiscoveryReportState(planPath: string | null): DiscoveryReportState | null {
+    if (!this.planGenerator) {
+      return null;
+    }
+
+    const unverified: DiscoveryReportState = { populated: false, path: null, missingEvidence: null };
+    if (!planPath) {
+      return unverified;
+    }
+
+    try {
+      const markdown = this.planGenerator.readPlanDocument(planPath);
+      if (!isDiscoveryPlanDocument(markdown)) {
+        return unverified;
+      }
+      const report = DiscoveryReport.fromMarkdown(markdown);
+      if (report.isPopulated) {
+        return { populated: true, path: planPath, missingEvidence: null };
+      }
+      return {
+        populated: false,
+        path: planPath,
+        missingEvidence: report.describeMissingEvidence()
+      };
+    } catch {
+      // Fail closed: a read failure is not evidence.
+      return unverified;
+    }
   }
 
   /**

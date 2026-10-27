@@ -47,8 +47,39 @@ const REAL_PLAN = [
   '- [ ] **Step 1:** do the probe'
 ].join('\n');
 
+const SUBSTANTIVE_IMPLEMENTATION = [
+  '# [Implementation] - probe',
+  '',
+  '## 1. Context & Objectives',
+  '- **Feature Overview:** substantive implementation content that must never satisfy the RCA gate.',
+  '- **Acceptance Criteria:** the RCA gate holds at DISCOVERY.',
+  '',
+  '## 2. Architectural Design & Impact',
+  '- **Component Breakdown:** the gate and the directive.',
+  '- **Data Flow / Model Invariants:** kind is checked before content.',
+  '- **Dependencies & Imports:** domain predicates only.',
+  '',
+  '## 3. Implementation Steps',
+  '- [ ] **Step 1:** add the discovery-shape filter before DiscoveryReport scoring.',
+  '',
+  '## 4. Quality Gate & Test Verification',
+  '- **Target 1:** npm run lint'
+].join('\n');
+
+function taskStateFileFor(dir: string, issue: number | string): string {
+  return path.join(dir, '.agyloop', 'tasks', `${issue}.json`);
+}
+
 function taskStateFile(dir: string): string {
-  return path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
+  return taskStateFileFor(dir, ISSUE);
+}
+
+function readStateFor(dir: string, issue: number | string): any {
+  try {
+    return JSON.parse(fs.readFileSync(taskStateFileFor(dir, issue), 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 function readState(dir: string): any {
@@ -183,6 +214,90 @@ describe('codeloop next stage directives (#292, #267)', () => {
       assert.strictEqual(implementer.role, 'implementer');
       assert.strictEqual(implementer.planBlank, false);
       assert.strictEqual(readState(dir)?.currentStage, 'IMPLEMENT');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-320.11: the DISCOVERY directive reports blank then populated, and never advances', async () => {
+    const dir = makeSandbox();
+    try {
+      const transition = await runIn(dir, [
+        'transition',
+        'DISCOVERY',
+        '--issue',
+        String(ISSUE),
+        '--title',
+        '[Bug] probe'
+      ]);
+      assert.strictEqual(transition.code, 0, transition.stderr);
+
+      const read1 = JSON.parse(
+        (await runIn(dir, ['next', '--issue', String(ISSUE), '--json'])).stdout
+      );
+      assert.strictEqual(read1.discoveryReportPopulated, false);
+      assert.ok(
+        String(read1.discoveryReportPath).endsWith('[Discovery] - [Bug] probe.md'),
+        `unexpected path: ${String(read1.discoveryReportPath)}`
+      );
+      assert.match(read1.description, /still blank/);
+      assert.match(read1.description, /Missing evidence/);
+
+      fs.writeFileSync(read1.discoveryReportPath, POPULATED_REPORT, 'utf8');
+
+      const read2 = JSON.parse(
+        (await runIn(dir, ['next', '--issue', String(ISSUE), '--json'])).stdout
+      );
+      assert.strictEqual(read2.discoveryReportPopulated, true);
+      assert.strictEqual(read2.discoveryReportPath, read1.discoveryReportPath);
+      assert.strictEqual(read2.discoveryReportMissingEvidence, null);
+      assert.notStrictEqual(read2.description, read1.description);
+      assert.match(read2.description, /completion condition is met/);
+      assert.ok(read2.description.includes('codeloop plan --issue 41'));
+      assert.doesNotMatch(read2.description, /still blank/);
+
+      // `next` is a query: the stage must not have advanced.
+      assert.strictEqual(readState(dir)?.currentStage, 'DISCOVERY');
+
+      const plan = await runIn(dir, ['plan', '--issue', String(ISSUE)]);
+      assert.strictEqual(plan.code, 0, `${plan.stdout}\n${plan.stderr}`);
+      assert.strictEqual(readState(dir)?.currentStage, 'PLAN');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-320.12: `plan` parks on a blank RCA beside a substantive implementation plan', async () => {
+    const dir = makeSandbox();
+    const issue = 42;
+    try {
+      const transition = await runIn(dir, [
+        'transition',
+        'DISCOVERY',
+        '--issue',
+        String(issue),
+        '--title',
+        'probe'
+      ]);
+      assert.strictEqual(transition.code, 0, transition.stderr);
+
+      const plansDir = path.join(dir, 'artifacts', 'plans');
+      const [planDirName] = fs.readdirSync(plansDir);
+      const planDir = path.join(plansDir, planDirName);
+      fs.writeFileSync(
+        path.join(planDir, 'implementation_plan.md'),
+        SUBSTANTIVE_IMPLEMENTATION,
+        'utf8'
+      );
+
+      const plan = await runIn(dir, ['plan', '--issue', String(issue), '--title', 'feature probe']);
+      const output = `${plan.stdout}\n${plan.stderr}`;
+      assert.strictEqual(plan.code, 0, output);
+      assert.match(output, /Parked at DISCOVERY/);
+      assert.match(output, /\[Discovery\] - probe\.md/);
+      assert.match(output, /Missing evidence/);
+      assert.doesNotMatch(output, /Pipeline advanced to \[PLAN\]/);
+      assert.strictEqual(readStateFor(dir, issue)?.currentStage, 'DISCOVERY');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

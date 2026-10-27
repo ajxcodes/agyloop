@@ -36,7 +36,8 @@ import {
   ValidationError,
   VALIDATION_FIELD_PLAN_PATH,
   DiscoveryReport,
-  isPlanContentSubstantive
+  isPlanContentSubstantive,
+  isDiscoveryPlanDocument
 } from '../domain';
 import {
   StateRepository,
@@ -468,6 +469,12 @@ export class StartPlanningUseCase {
    * unpopulated candidate keeps its diagnostics. The park then names the
    * measured gap (empty sections, blank keys, content counts) from the file the
    * verdict actually came from, not from an arbitrary sibling.
+   *
+   * Issue #320: content alone cannot prove a document is an RCA — only its KIND
+   * can. The same single read that feeds `DiscoveryReport` is first handed to
+   * `isDiscoveryPlanDocument`, so an implementation-shaped
+   * `implementation_plan.md` is skipped BEFORE scoring and can never populate
+   * the gate, name itself as `evaluatedPath`, or invent missing evidence.
    */
   private inspectDiscoveryReport(
     workspace: string,
@@ -498,6 +505,8 @@ export class StartPlanningUseCase {
 
       const candidates: string[] = [];
       if (scaffoldInfo && scaffoldInfo.planPath) {
+        // Only an ADDITIONAL candidate — the kind gate below decides whether
+        // anything is scored (issue #320).
         candidates.push(scaffoldInfo.planPath);
       }
       for (const planDir of candidateDirs) {
@@ -518,9 +527,16 @@ export class StartPlanningUseCase {
       for (const candidate of new Set(candidates)) {
         checkedPaths.push(candidate);
         try {
-          // One read, one report: the verdict and its diagnostics describe the
-          // same file (issue #306, AC3).
-          const report = DiscoveryReport.fromMarkdown(this.planGenerator.readPlanDocument(candidate));
+          // One read, one report: the kind check, the verdict and its
+          // diagnostics describe the same file (issues #306, #320).
+          const markdown = this.planGenerator.readPlanDocument(candidate);
+          // Kind before content: an implementation-shaped document is not RCA
+          // evidence (issue #320). It stays in `checkedPaths` (attempted ≠
+          // evidence) but never names `evaluatedPath`/`populatedPath`.
+          if (!isDiscoveryPlanDocument(markdown)) {
+            continue;
+          }
+          const report = DiscoveryReport.fromMarkdown(markdown);
           if (report.isPopulated) {
             populatedPath = candidate;
             break;

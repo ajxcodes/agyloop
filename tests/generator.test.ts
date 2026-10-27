@@ -928,6 +928,42 @@ describe('Plan artifact resolution & mirror content (#283, #299, #240/5)', () =>
     }
   });
 
+  test('T-320.5: DISCOVERY resolution never returns an implementation document', () => {
+    // Defect A's second door (issue #320): with no discovery artifact, the
+    // resolver used to fall back to the implementation aliases, so a stale
+    // `implementation_plan.md` became DISCOVERY evidence.
+    const scaffold = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      issue: 903,
+      title: 'probe',
+      type: 'implementation'
+    });
+    const implementationPath = path.join(scaffold.planDir, 'implementation_plan.md');
+    fs.writeFileSync(
+      implementationPath,
+      '# [Implementation] - probe\n\n## 3. Implementation Steps\n- [ ] **Step 1:** stale plan\n',
+      'utf8'
+    );
+
+    assert.strictEqual(
+      generator.resolvePlanFile({ projectRoot: tempDir, planDir: scaffold.planDir, stage: 'DISCOVERY' }),
+      null,
+      'an implementation document is never DISCOVERY evidence'
+    );
+
+    // A discovery artifact in the SAME directory wins, blank or populated.
+    const discoveryPath = path.join(scaffold.planDir, '[Discovery] - probe.md');
+    fs.writeFileSync(discoveryPath, '# [Discovery] - probe\n\n## 1. Problem Statement & Symptoms\n- **Observed Behavior:**\n', 'utf8');
+    const blank = generator.resolvePlanFile({ projectRoot: tempDir, planDir: scaffold.planDir, stage: 'DISCOVERY' });
+    assert.ok(blank, 'DISCOVERY must resolve the discovery artifact');
+    assert.strictEqual(blank.planPath, discoveryPath);
+
+    fs.writeFileSync(discoveryPath, populatedReport('probe'), 'utf8');
+    const populated = generator.resolvePlanFile({ projectRoot: tempDir, planDir: scaffold.planDir, stage: 'DISCOVERY' });
+    assert.ok(populated, 'DISCOVERY must resolve the populated report');
+    assert.strictEqual(populated.planPath, discoveryPath);
+  });
+
   test('T-283.5/T-240.D5: a re-entry adopts the existing directory and never duplicates it', () => {
     const first = generator.scaffoldPlanDirectory({
       projectRoot: tempDir,
