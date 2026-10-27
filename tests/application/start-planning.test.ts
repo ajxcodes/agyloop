@@ -22,7 +22,8 @@ const {
   SUMMARY_STAGE_PLAN_REVIEW,
   SUMMARY_STATUS_IN_PROGRESS,
   SUMMARY_STATUS_COMPLETED,
-  SUMMARY_STATUS_PENDING
+  SUMMARY_STATUS_PENDING,
+  SUMMARY_STATUS_SKIPPED
 } = require('../../dist/domain');
 const { StartPlanningUseCase } = require('../../dist/application');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
@@ -217,11 +218,15 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
 
-    // Verify summary log does not record redundant discovery row when skipDiscovery is true
-    assert.strictEqual(
-      planGenerator.summaryUpdates.some((u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY),
-      false
+    // Issue #284: a bypassed RCA gate is RECORDED as SKIPPED (terminal), not
+    // omitted — a skipped stage must never be reported as one that ran, and a
+    // missing row cannot be distinguished from an unfinished one.
+    const discoveryUpdate = planGenerator.summaryUpdates.find(
+      (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY
     );
+    assert.ok(discoveryUpdate, 'the bypassed Discovery row must still be written');
+    assert.strictEqual(discoveryUpdate!.updateData.status, SUMMARY_STATUS_SKIPPED);
+    assert.strictEqual(discoveryUpdate!.updateData.subagent, 'discovery');
     assert.ok(
       planGenerator.summaryUpdates.some(
         (u: any) => u.updateData.stage === SUMMARY_STAGE_PLAN_REVIEW && u.updateData.status === SUMMARY_STATUS_IN_PROGRESS
@@ -584,10 +589,14 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     const planEntry = result.stateMachine.history.find((h: any) => h.stage === STAGE_PLAN);
     assert.ok(planEntry, 'a PLAN history entry must exist');
     assert.strictEqual(planEntry!.metadata?.skipDiscovery, true);
-    // No redundant DISCOVERY row is written when the RCA gate is bypassed.
-    assert.ok(
-      !planGenerator.summaryUpdates.some((u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY)
+    // Issue #284: the bypass is recorded as a TERMINAL SKIPPED row, naming the
+    // discovery subagent — never omitted, never COMPLETED.
+    const bypassRow = planGenerator.summaryUpdates.find(
+      (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY
     );
+    assert.ok(bypassRow, 'the bypassed Discovery row must still be written');
+    assert.strictEqual(bypassRow!.updateData.status, SUMMARY_STATUS_SKIPPED);
+    assert.strictEqual(bypassRow!.updateData.subagent, 'discovery');
   });
 
   test('handles iterative plan redirection loop from APPROVAL back to PLAN with userFeedback', async () => {

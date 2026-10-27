@@ -17,6 +17,7 @@ export * from './confirmation-prompt';
 export * from './worktree-manager';
 export * from './agent-runner';
 export * from './project-scaffolder';
+export * from './gate-report-repository';
 
 
 

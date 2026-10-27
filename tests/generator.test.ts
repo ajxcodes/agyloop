@@ -10,7 +10,10 @@ const {
   FALLBACK_TEMPLATES,
   // Issue #259 (S7b): the placeholder status of a stage that has not run.
   // Imported, never re-typed, so the assertions cannot drift from the domain.
-  SUMMARY_STATUS_PENDING
+  SUMMARY_STATUS_PENDING,
+  // Issue #284: a fresh scaffold's metric value. `PENDING` is reserved for a
+  // stage that has not STARTED; "no evidence" says so in words.
+  EVIDENCE_NOT_RECORDED
 } = require('../dist');
 
 /**
@@ -496,13 +499,15 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         );
       }
 
-      // The metrics of the stages that have not run are honest too.
+      // The metrics of the stages that have not run are honest too
+      // (issue #284: a fresh scaffold says `not recorded`, never `PENDING` —
+      // `PENDING` is indistinguishable from a gate that ran and lost its result).
       assert.ok(
-        content.includes(`- **Build Status:** ${SUMMARY_STATUS_PENDING}`),
+        content.includes(`- **Build Status:** ${EVIDENCE_NOT_RECORDED}`),
         `the build status must not pre-claim a verdict, got:\n${content}`
       );
       assert.ok(
-        content.includes('- **Tests:** -'),
+        content.includes(`- **Tests:** ${EVIDENCE_NOT_RECORDED}`),
         `the tests metric must not pre-claim a result, got:\n${content}`
       );
 
@@ -701,8 +706,8 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         [...onDiskMetrics.entries()].sort(),
         'the fallback and templates/summary-log.md must carry the same metrics'
       );
-      assert.strictEqual(fallbackMetrics.get('Build Status'), SUMMARY_STATUS_PENDING);
-      assert.strictEqual(fallbackMetrics.get('Tests'), '-');
+      assert.strictEqual(fallbackMetrics.get('Build Status'), EVIDENCE_NOT_RECORDED);
+      assert.strictEqual(fallbackMetrics.get('Tests'), EVIDENCE_NOT_RECORDED);
 
       // The review notes agree too.
       assert.deepStrictEqual(

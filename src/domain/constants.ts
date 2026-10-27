@@ -395,6 +395,11 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   // dispatched REVIEWER only emits a verdict block, and the orchestrator (a
   // root session) is the one that files it (issue #297).
   'review',
+  // `gate-report` files the dispatched gate subagent's evidence block into the
+  // workspace (issue #284). Like `review`, it is NOT carved out: the GATE
+  // subagent only EMITS the block, and the orchestrator (a root session) files
+  // it — so a dispatched subagent can never certify its own round.
+  'gate-report',
   null
 ] as const);
 
@@ -445,6 +450,30 @@ export const SUMMARY_STATUS_IN_PROGRESS = 'IN PROGRESS' as const;
 export const SUMMARY_STATUS_APPROVED = 'APPROVED' as const;
 export const SUMMARY_STATUS_COMPLETED = 'COMPLETED' as const;
 export const SUMMARY_STATUS_FAILED = 'FAILED' as const;
+/**
+ * A stage the operator deliberately bypassed (issue #284).
+ *
+ * Terminal, like `COMPLETED` — never `IN PROGRESS`. A skipped stage must never
+ * be reported as one that ran (the same evidence-integrity rule the gate
+ * channel enforces).
+ */
+export const SUMMARY_STATUS_SKIPPED = 'SKIPPED' as const;
+/**
+ * The status of a stage whose evidence was never filed (issue #284).
+ *
+ * The summary must never print `PENDING` for a stage the run has already left:
+ * "we have no record" and "it has not started" are different statements, and
+ * only the second one is ever true of a row the run has moved past.
+ */
+export const SUMMARY_STATUS_NOT_RECORDED = 'NOT RECORDED' as const;
+/** A duration cell that cannot be attributed to the stage on the row. */
+export const DURATION_NOT_RECORDED = '-' as const;
+/** The summary's phrasing when evidence is absent (never `PENDING`). */
+export const EVIDENCE_NOT_RECORDED = 'not recorded' as const;
+/** The marker a dispatched gate subagent emits as the last block of its response. */
+export const GATE_REPORT_JSON_MARKER = 'GATE_REPORT_JSON:' as const;
+/** The recorded gate verdict that means "the gate stage exited with no evidence". */
+export const GATE_VERDICT_NOT_RECORDED = 'NOT_RECORDED' as const;
 
 // Prompt Paths & Files
 export const DEFAULT_PROMPTS_DIR = 'prompts' as const;
@@ -2416,6 +2445,65 @@ export const COMMAND_HALT = 'halt' as const;
 export const COMMAND_REVIEW = 'review' as const;
 
 /**
+ * The inbound channel for a dispatched gate subagent's evidence (issue #284).
+ *
+ * The GATE subagent emits a `GATE_REPORT_JSON:` block — and until this command
+ * existed there was no way to persist it, so the summary's gate metrics kept
+ * the template's `PENDING` forever. This command IS that producer: the
+ * orchestrator files the block, and `transition REVIEW` ingests it.
+ */
+export const COMMAND_GATE_REPORT = 'gate-report' as const;
+
+/** The flags that carry a dispatched gate report to the evidence file. */
+export const FLAG_REPORT_FILE = '--report-file' as const;
+export const FLAG_REPORT_STDIN = '--report-stdin' as const;
+
+/**
+ * The gate-evidence channel, named in the QUALITY_GATE directive (issue #284).
+ *
+ * Mirrors `formatReviewVerdictChannelCommand`: composed from the command and
+ * flag constants, with the concrete issue interpolated when known so the
+ * orchestrator is handed a string it can paste.
+ */
+export const GATE_REPORT_CHANNEL_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_GATE_REPORT} --issue {issue} ${FLAG_REPORT_FILE} <path>` as const;
+export const GATE_REPORT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_GATE_REPORT} --issue <n> ${FLAG_REPORT_FILE} <path>` as const;
+
+export function formatGateReportChannelCommand(issue?: number | string | null): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return GATE_REPORT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return GATE_REPORT_CHANNEL_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/**
+ * The filing instruction, addressed to the ORCHESTRATOR (issue #284).
+ *
+ * Same single-voice contract as `formatReviewVerdictChannelNote`: the dispatched
+ * gate only emits the block, and the orchestrator files it. A command named in
+ * the gate's own prompt would be a promise the `AGY_SUBAGENT` guard breaks.
+ */
+export function formatGateReportChannelNote(issue?: number | string | null): string {
+  const command = formatGateReportChannelCommand(issue);
+  const issueToken =
+    issue === null || issue === undefined || String(issue).trim().length === 0
+      ? '<n>'
+      : String(issue);
+  return `Orchestrator: file the gate's emitted GATE_REPORT_JSON block before advancing: ${command} (or pipe it into \`codeloop ${COMMAND_GATE_REPORT} --issue ${issueToken} ${FLAG_REPORT_STDIN}\`). Until it is filed, the summary reports the gate as not recorded.`;
+}
+
+/**
+ * The dispatcher's instruction to the read-only gate subagent (issue #284).
+ *
+ * It names the filing command as the ORCHESTRATOR's action and forbids the
+ * subagent from running it: `codeloop gate-report` is refused to a dispatched
+ * subagent, so an instruction to run it would be a promise the guard breaks.
+ */
+export const NOTE_GATE_REPORT_RETURN =
+  `This block is the ONLY record of this gate. Emit it verbatim as the LAST thing in your response. Do not run any \`codeloop\` command: you are a verification-only agent, and the orchestrator files this block with \`codeloop gate-report --issue <n> --report-file <path>\` and advances the checkpoint.` as const;
+
+/**
  * The flags that carry a dispatched reviewer verdict to the checkpoint.
  */
 export const FLAG_VERDICT_FILE = '--verdict-file' as const;
@@ -2755,7 +2843,8 @@ export const CLI_COMMANDS = Object.freeze({
   SYNC: COMMAND_SYNC,
   ABORT: COMMAND_ABORT,
   HALT: COMMAND_HALT,
-  REVIEW: COMMAND_REVIEW
+  REVIEW: COMMAND_REVIEW,
+  GATE_REPORT: COMMAND_GATE_REPORT
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];

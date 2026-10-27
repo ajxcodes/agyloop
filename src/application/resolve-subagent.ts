@@ -68,6 +68,8 @@ import {
   GateCommandSource,
   GATE_COMMAND_PRECEDENCE,
   GATE_COMMAND_SOURCE_PLAN,
+  GATE_REPORT_JSON_MARKER,
+  NOTE_GATE_REPORT_RETURN,
   hasLintCommand,
   isLintCommand,
   MSG_GATE_LINT_MISSING,
@@ -539,12 +541,28 @@ export class ResolveSubagentUseCase {
     prompt += `Your goal is to inspect the codebase, perform root-cause analysis (RCA), manually smoke test the bug, and produce an actionable discovery report.\n\n`;
 
     // Resolve container runtime and daemon availability
+    //
+    // Issue #295: prefer the runtime's OWN health probe. Availability by socket
+    // file alone reported a working rootless podman absent, so the container
+    // guardrail was dropped from the discovery prompt on every run. The
+    // runtime+socket pair stays as the fallback for a stub detector that has no
+    // probe.
     const detector = params.buildDetector || this.buildDetector;
-    const runtime = params.containerRuntime !== undefined
-      ? params.containerRuntime
-      : (detector && typeof detector.resolveContainerRuntime === 'function' ? detector.resolveContainerRuntime() : null);
-    const socket = detector && typeof detector.resolveContainerSocket === 'function' ? detector.resolveContainerSocket() : null;
-    const isContainerAvailable = Boolean(runtime && socket);
+    const probe = params.containerRuntime === undefined && detector && typeof detector.probeContainerRuntime === 'function'
+      ? detector.probeContainerRuntime()
+      : null;
+    let runtime: 'podman' | 'docker' | null;
+    let isContainerAvailable: boolean;
+    if (probe) {
+      runtime = probe.runtime;
+      isContainerAvailable = true;
+    } else {
+      runtime = params.containerRuntime !== undefined
+        ? params.containerRuntime
+        : (detector && typeof detector.resolveContainerRuntime === 'function' ? detector.resolveContainerRuntime() : null);
+      const socket = detector && typeof detector.resolveContainerSocket === 'function' ? detector.resolveContainerSocket() : null;
+      isContainerAvailable = Boolean(runtime && socket);
+    }
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
@@ -921,6 +939,17 @@ export class ResolveSubagentUseCase {
     prompt += `- Smoke Protocol: PASSED | FAILED | ${SMOKE_STATUS_NOT_DECLARED}\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
     prompt += `- Concise Failure Diagnostics (if failed)\n\n`;
+
+    // Issue #284: the ONE result channel. Without it the gate's verdict had no
+    // way into the summary, so `Build Status: PENDING` survived every run.
+    prompt += `### Required Evidence Output\n`;
+    prompt += `As the LAST thing in your response, emit a ${GATE_REPORT_JSON_MARKER} block:\n\n`;
+    prompt += `${GATE_REPORT_JSON_MARKER}\n`;
+    prompt += `{ "verdict": "PASSED", "buildSystem": "<id>", "buildStatus": "PASSED",\n`;
+    prompt += `  "testsStatus": "PASSED (N passed)", "testsPassed": N, "testsFailed": 0,\n`;
+    prompt += `  "durationMs": <integer>, "executedCommands": ["…"], "smokeProtocol": "PASSED",\n`;
+    prompt += `  "notRun": [{ "id": "act", "label": "…", "reason": "…" }] }\n\n`;
+    prompt += `${NOTE_GATE_REPORT_RETURN}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 

@@ -35,7 +35,8 @@ const {
   LABEL_BASE_FRESHNESS,
   LABEL_BASE_FRESHNESS_LINE,
   HEADER_QUALITY_GATE_REPORT,
-  LABEL_OVERALL_VERDICT
+  LABEL_OVERALL_VERDICT,
+  formatStageDuration
 } = require('../../dist');
 
 type StateRepository = import('../../src').StateRepository;
@@ -370,6 +371,64 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
     // Check state persistence
     assert.strictEqual(stateRepo.saved.length, 1);
     assert.strictEqual(stateRepo.saved[0].currentStage, STAGE_REVIEW);
+  });
+
+  test('files the same evidence record the dispatched path files (issue #284)', async () => {
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 20,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    const stateRepo = new MockStateRepository(initialSnapshot);
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const commandExecutor = new MockCommandExecutor();
+
+    const saved: any[] = [];
+    const gateReportRepo = {
+      load: () => null,
+      save: (_issue: unknown, report: any) => {
+        saved.push(report);
+        return '/fake/20.gate.json';
+      },
+      clear: () => {}
+    };
+
+    const useCase = new RunQualityGateUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      commandExecutor,
+      undefined,
+      undefined,
+      gateReportRepo
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(saved.length, 1, 'a passing in-process run must file one record');
+    assert.strictEqual(saved[0].verdict, 'PASSED');
+    assert.strictEqual(saved[0].durationMs, result.totalDurationMs);
+    assert.strictEqual(saved[0].testsStatus, result.testsStatus);
+    assert.strictEqual(saved[0].gateRound, 1, 'the first gate round is round 1');
+
+    // The in-process path still writes the summary itself (yolo has no
+    // `transition` command in that step), and no gate prose lands in
+    // `## Review Notes` any more.
+    assert.strictEqual(planGenerator.updates.length, 1);
+    const update = planGenerator.updates[0].updateData;
+    assert.strictEqual(update.reviewNote, undefined);
+    assert.strictEqual(
+      update.duration,
+      formatStageDuration(result.totalDurationMs),
+      'the shared formatter renders the measured total'
+    );
   });
 
   test('falls back from QUALITY_GATE to IMPLEMENT when command fails', async () => {
@@ -858,9 +917,13 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     assert.strictEqual(lastTransition.metadata.failureFile, 'tests/domain/value-objects.test.ts:35:12');
     assert.ok(String(lastTransition.metadata.selfCorrectionPayload).includes('Self-Correction Quality Gate Failure Diagnostics'));
 
-    // Plan generator update reviewNote recorded failing file
+    // Plan generator update: the gate's own row records the failure, and gate
+    // prose no longer lands in `## Review Notes` (issue #284). The failing
+    // location still travels in the history metadata asserted above.
     assert.strictEqual(planGenerator.updates.length, 1);
-    assert.ok(planGenerator.updates[0].updateData.reviewNote?.includes('tests/domain/value-objects.test.ts:35:12'));
+    assert.strictEqual(planGenerator.updates[0].updateData.stage, 'Quality Gates');
+    assert.strictEqual(planGenerator.updates[0].updateData.status, 'FAILED');
+    assert.strictEqual(planGenerator.updates[0].updateData.reviewNote, undefined);
   });
 
   test('T7: dead DOCKER_HOST skips the act gate and the pipeline advances to REVIEW (Issue #232)', async () => {
@@ -878,6 +941,9 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
 
       const detector = new FileBuildDetector();
       detector.hasActBinary = () => true;
+      // Issue #295: a dead socket is no longer evidence of anything. This case
+      // is about a DEAD runtime, so the probe is what says so.
+      detector.probeContainerRuntime = () => null;
 
       const initialSnapshot: StateMachineSnapshot = {
         version: '1.0.0',

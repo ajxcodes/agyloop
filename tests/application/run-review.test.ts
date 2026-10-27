@@ -290,12 +290,14 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual(result.reviewerDef.name, ROLE_REVIEWER);
     assert.strictEqual(result.acceptanceCriteria.length, 2);
 
-    // Verify summary log was updated
+    // Verify summary log was updated (issue #284: one reviewRecord, not prose)
     assert.strictEqual(planGenerator.summaryUpdates.length, 1);
     const update = planGenerator.summaryUpdates[0].updateData;
     assert.strictEqual(update.stage, 'AI Review');
     assert.strictEqual(update.status, VERDICT_APPROVED);
-    assert.ok(update.reviewNote.includes('All acceptance criteria fulfilled'));
+    assert.strictEqual(update.reviewRecord.verdict, VERDICT_APPROVED);
+    assert.strictEqual(update.reviewRecord.round, 1);
+    assert.ok(update.reviewRecord.summary.includes('All acceptance criteria fulfilled'));
 
     // Verify checkpoint persisted
     const saved = await stateRepo.load();
@@ -365,11 +367,12 @@ REMEDIATION_GUIDANCE:
       String(lastEntry.metadata?.selfCorrectionPayload).includes('Standards ingestion missing fallback')
     );
 
-    // Verify summary log update
+    // Verify summary log update (issue #284: one reviewRecord, not prose)
     assert.strictEqual(planGenerator.summaryUpdates.length, 1);
     const update = planGenerator.summaryUpdates[0].updateData;
     assert.strictEqual(update.status, VERDICT_CHANGES_REQUESTED);
-    assert.ok(update.reviewNote.includes('Pipeline reverted to IMPLEMENT'));
+    assert.strictEqual(update.reviewRecord.verdict, VERDICT_CHANGES_REQUESTED);
+    assert.ok(update.reviewRecord.summary.includes('Acceptance criteria AC 2 unfulfilled'));
   });
 
   test('uses injected CritiquePort when reviewOutput is not provided', async () => {
@@ -548,10 +551,8 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual(planGenerator.summaryUpdates.length, 1);
     const update = planGenerator.summaryUpdates[0].updateData;
     assert.strictEqual(update.status, VERDICT_SKIPPED);
-    assert.ok(
-      update.reviewNote.startsWith('Review skipped:'),
-      `expected a skipped note, got: ${update.reviewNote}`
-    );
+    assert.strictEqual(update.reviewRecord.verdict, VERDICT_SKIPPED);
+    assert.strictEqual(update.reviewRecord.round, 1);
 
     // Checkpoint persisted at COMMIT
     const saved = await stateRepo.load();

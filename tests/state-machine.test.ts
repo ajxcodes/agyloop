@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const {
   StateMachine,
+  Stage,
   FileStateRepository,
   STAGES,
   STAGE_INITIALIZED,
@@ -16,6 +17,7 @@ const {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  GATE_APPROVAL,
   parseArguments
 } = require('../dist');
 
@@ -152,18 +154,42 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   });
 
   test('tracks gate pause and resume duration cleanly', () => {
-    const sm = StateMachine.createInitial({ mode: 'standard' });
-    assert.strictEqual(sm.totalHumanWaitMs, 0);
+    // Issue #223/Defect 2: the old version called `pauseAtGate()` with NO
+    // argument, so no pause was ever set, `resumeFromGate()` operated on an
+    // empty pause, and `>= 0` was trivially true. It could not fail. A real
+    // gate name plus an exact banked-milliseconds assertion fixes that.
+    const sm = new StateMachine({
+      stage: new Stage(STAGE_APPROVAL),
+      pausedAtGate: GATE_APPROVAL,
+      pausedAtTimestamp: new Date(Date.now() - 1234).toISOString()
+    });
 
-    sm.pauseAtGate();
-    // Simulating paused state
     sm.resumeFromGate();
-    assert.strictEqual(typeof sm.totalHumanWaitMs, 'number');
-    assert.ok(sm.totalHumanWaitMs >= 0);
+    assert.ok(sm.totalHumanWaitMs >= 1234, `expected >= 1234ms, got ${sm.totalHumanWaitMs}`);
+    assert.ok(sm.totalHumanWaitMs < 10_000);
+    assert.strictEqual(sm.pausedAtGate, null);
 
-    const activeDuration = sm.activeExecutionDurationMs();
-    assert.strictEqual(typeof activeDuration, 'number');
-    assert.ok(activeDuration >= 0);
+    // A second resume on an already-resumed machine is a NO-OP — the property
+    // the old test could not express.
+    const banked = sm.totalHumanWaitMs;
+    sm.resumeFromGate();
+    assert.strictEqual(sm.totalHumanWaitMs, banked);
+  });
+
+  test('a pause timestamp WITHOUT a gate name still banks the wait', () => {
+    // Issue #284: this is the second pause shape, and the shape divergence the
+    // duration policy has to converge on. `resumeFromGate()` must bank a
+    // timestamp-only pause exactly like a named one.
+    const sm = new StateMachine({
+      stage: new Stage(STAGE_APPROVAL),
+      pausedAtGate: null,
+      pausedAtTimestamp: new Date(Date.now() - 2000).toISOString()
+    });
+
+    sm.resumeFromGate();
+    assert.ok(sm.totalHumanWaitMs >= 2000, `expected >= 2000ms, got ${sm.totalHumanWaitMs}`);
+    assert.ok(sm.totalHumanWaitMs < 10_000);
+    assert.strictEqual(sm.pausedAtTimestamp, null);
   });
 
   test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW, STAGE_PLAN, and STAGE_DISCOVERY', () => {

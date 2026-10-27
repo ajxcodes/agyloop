@@ -482,4 +482,45 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     });
     assert.ok(implementerPrompt.includes('Do not edit the approved plan'));
   });
+
+  test('RS-G4: the gate prompt requires the GATE_REPORT_JSON evidence block and forbids running codeloop (#284)', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan'
+    });
+
+    assert.ok(prompt.includes('### Required Evidence Output'));
+    assert.ok(prompt.includes('GATE_REPORT_JSON:'));
+    assert.ok(prompt.includes('"testsStatus": "PASSED (N passed)"'));
+    assert.ok(prompt.includes('codeloop gate-report'));
+    assert.ok(
+      prompt.includes('Do not run any `codeloop` command'),
+      `the read-only gate must be told not to run codeloop, got:\n${prompt}`
+    );
+    // The block must be the LAST thing in the response, exactly like the
+    // reviewer's verdict block.
+    assert.ok(prompt.indexOf('GATE_REPORT_JSON:') > prompt.indexOf('### Required Verdict Output'));
+  });
+
+  test('RS-G5: a healthy runtime with no socket selects the container guardrail (#295)', () => {
+    const mockDetector: any = {
+      probeContainerRuntime: () => ({ runtime: 'podman', socketPath: null, connection: 'fork-exec' }),
+      resolveContainerRuntime: () => 'podman',
+      resolveContainerSocket: () => null
+    };
+    const selection = new ResolveSubagentUseCase(
+      new MockConfigRepo(),
+      undefined,
+      undefined,
+      undefined,
+      mockDetector
+    );
+
+    const prompt = selection.buildDiscoveryTaskPrompt({ issueNumber: 119 });
+
+    assert.ok(prompt.includes('Strict Container-Only Guardrail'));
+    assert.ok(prompt.includes('Use podman (`podman run`) or `act`'));
+  });
 });

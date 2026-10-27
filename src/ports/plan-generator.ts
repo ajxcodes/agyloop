@@ -35,6 +35,13 @@ export interface ScaffoldResult {
   readonly adoptedExisting: boolean;
 }
 
+/** One gate that was declared but never executed (issue #284). */
+export interface SummaryNotRunEntry {
+  readonly id: string;
+  readonly label?: string;
+  readonly reason: string;
+}
+
 export interface SummaryUpdateData {
   readonly stage?: string;
   readonly status?: string;
@@ -45,6 +52,33 @@ export interface SummaryUpdateData {
   readonly buildStatus?: string;
   readonly testsStatus?: string;
   readonly reviewNote?: string;
+  /**
+   * ONE authoritative review note (issue #284, AC6).
+   *
+   * Replace-on-write: the section is rewritten, never appended to, so a
+   * re-review cannot leave two verdicts with no authority marker.
+   */
+  readonly reviewRecord?: {
+    readonly round: number;
+    readonly verdict: string;
+    readonly baseCommit: string | null;
+    readonly timestamp: string;
+    readonly summary: string;
+  };
+  /**
+   * Gates that were declared but NOT executed (issue #284). Rendered as one
+   * `- **Not Run:** …` line, so "never attempted" is distinguishable from
+   * "passed".
+   */
+  readonly notRun?: readonly SummaryNotRunEntry[];
+  /**
+   * Finalizes the summary when the run lands at COMPLETED (issue #284).
+   *
+   * Any stage row still `PENDING` / `IN PROGRESS` becomes `NOT RECORDED`, and
+   * the metric defaults become `not recorded`. A completed run must never read
+   * as one that has not started.
+   */
+  readonly finalize?: boolean;
   readonly buildSystem?: string;
   readonly detectedEcosystems?: readonly string[] | string;
   readonly executedCommands?: readonly string[];

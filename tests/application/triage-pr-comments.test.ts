@@ -207,7 +207,9 @@ describe('Issue #136 hardening', () => {
   });
 
   test('SKILL.md has no deprecated gates/gate CLI references and uses next --json', () => {
-    assert.ok(!/bin\/agyloop gates?\b/.test(skill));
+    // The removed commands were `gate` / `gates`. `gate-report` is a DIFFERENT,
+    // documented command (issue #284), so the guard must not swallow it.
+    assert.ok(!/bin\/agyloop gates?(?![-\w])/.test(skill));
     assert.ok(skill.includes('bin/agyloop next --json'));
   });
 

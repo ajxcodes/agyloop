@@ -10,7 +10,7 @@
 
 | Stage | Subagent | Model | Status | Duration |
 |---|---|---|---|---|
-| 1. Discovery | `planner` | `pro` | COMPLETED | - |
+| 1. Discovery | `discovery` | `inherit` | PENDING | - |
 | 2. Plan Review | Human Gate | - | PENDING | - |
 | 3. Implementation | `implementer` | `inherit` | PENDING | - |
 | 4. Quality Gate | `gate` | `flash_lite` | PENDING | - |
@@ -18,8 +18,8 @@
 | 6. Commit Gate | Human Gate | - | PENDING | - |
 
 ## Quality Gate Metrics
-- **Build Status:** PENDING
-- **Tests:** -
+- **Build Status:** not recorded
+- **Tests:** not recorded
 
 ## Review Notes
 -

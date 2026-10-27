@@ -34,14 +34,13 @@ import {
   NOTE_REVIEW_SKIPPED,
   NOTE_REVIEW_REOPENED_FROM_COMMIT,
   GATE_COMMIT,
-  MS_PER_SECOND,
+  deriveStageDuration,
   ReviewVerdict,
   ReviewSource,
   REVIEW_SOURCE_REVIEWER_OUTPUT,
   REVIEW_SOURCE_CRITIQUE_REPORT,
   REVIEW_SOURCE_SKIPPED,
   REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED,
-  PublicSanitizer,
   InvalidTransitionError,
   ReviewerSubagentError,
   AiReviewReport,
@@ -141,7 +140,19 @@ export interface RunReviewResult {
   readonly standardsContent: string | null;
   readonly acceptanceCriteria: readonly string[];
   readonly durationMs: number;
-  readonly suggestedCommitMessage?: string;
+  /**
+   * The reviewer's OWN status, before the two-tier invariant could escalate it
+   * (issue #297). `null` when no reviewer block was supplied this round.
+   *
+   * It is set from the same local that feeds the transition metadata, so the
+   * `--json` payload and the checkpoint can never disagree — and a re-run that
+   * supplied no block cannot inherit the previous round's status (#284 D7).
+   */
+  readonly reviewerVerdict: string | null;
+  /** The reviewed HEAD commit (full sha), or `null` when it could not be read. */
+  readonly reviewedBaseCommit: string | null;
+  /** Which review round this verdict belongs to (1-based, #284). */
+  readonly reviewRound: number;
   readonly critiqueReport?: string | null;
   readonly updateNotification?: string | null;
   readonly autoInstalled?: boolean;
@@ -373,6 +384,12 @@ export class RunReviewUseCase {
     // stays on disk, so the report must never present the unwritten next stage
     // as the current one (#248 AC-248.7).
     const previousStage = sm.currentStage;
+    // Issue #284: which round this verdict certifies. Counted BEFORE the
+    // transition, so the round a summary bullet names is the round that ran.
+    const reviewRound = Math.max(
+      1,
+      sm.history.filter((entry) => entry.stage === STAGE_REVIEW).length
+    );
     const activeIssue = params.issue || sm.issue;
     /**
      * Whether the COMMIT pause must be restored after the verdict is recorded.
@@ -469,6 +486,9 @@ export class RunReviewUseCase {
 
     const reviewCwd = sm.worktree?.worktreePath || workspace;
     const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
+    // Issue #284 (AC6): the commit this verdict was made AGAINST. The worktree,
+    // not the repo root — the reviewed diff is the worktree's.
+    const reviewedBaseCommit = await this.readReviewedBaseCommit(reviewCwd);
 
     let updateNotification: string | null = null;
     let autoInstalled = false;
@@ -646,42 +666,25 @@ export class RunReviewUseCase {
       reviewSource = REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED;
     }
 
-    // ONE provenance object, spread into every transition arm: the three
-    // records cannot drift apart (issue #297, AC3/AC10).
+    // ONE provenance object, spread into every transition arm: the records
+    // cannot drift apart (issue #297, AC3/AC10; #284 adds the round + base).
     const provenance = {
       reviewVerdict: verdict.status,
       reviewTokens: verdict.formatStructuredTokens(),
       reviewSource,
       critiqueVerified,
+      reviewRound,
+      ...(reviewedBaseCommit ? { reviewedBaseCommit } : {}),
       ...(reviewerVerdict ? { reviewerVerdict } : {})
     };
 
     const durationMs = Date.now() - startTime;
-    const durationStr = `${(durationMs / MS_PER_SECOND).toFixed(1)}s`;
-
-    // Formulate auto-suggested conventional commit message if approved
-    let suggestedCommitMessage: string | undefined = undefined;
-    if (verdict.isApproved()) {
-      const issueNum = activeIssue || sm.issue;
-      const issueRef = issueNum ? ` (#${issueNum})` : '';
-      let desc = 'implement approved changes';
-      if (resolvedPlan?.planPath) {
-        const baseName = resolvedPlan.planPath.split('/').pop() || '';
-        const cleanName = baseName.replace(/\.md$/, '').replace(/^\[Implementation\]\s*-\s*/i, '');
-        if (cleanName.trim()) {
-          desc = cleanName.trim().toLowerCase().replace(/^(feat|fix|chore):?\s*/i, '');
-        }
-      }
-      const rawMsg = `feat: ${desc}${issueRef}`;
-      suggestedCommitMessage = PublicSanitizer.sanitizeCommitMessage(rawMsg);
-    }
 
     // Enforce State Transitions based on ReviewVerdict
     if (verdict.isApproved()) {
       sm.transition(STAGE_COMMIT, {
         note: NOTE_REVIEW_APPROVED,
-        ...provenance,
-        suggestedCommitMessage
+        ...provenance
       });
     } else if (verdict.isSkipped()) {
       // Advisory advance: REVIEW -> COMMIT is already legal; no self-correction
@@ -698,6 +701,11 @@ export class RunReviewUseCase {
       });
     }
 
+    // The row's duration is measurable only AFTER the transition wrote the
+    // entry that ended REVIEW (issue #284): `deriveStageDuration` needs the
+    // stage's entry to be the penultimate one.
+    const measuredDurationStr = deriveStageDuration(sm.history, STAGE_REVIEW, { humanWaitMs: 0 });
+
     // The commit gate's human wait is restored when the verdict leaves the
     // machine at COMMIT (issue #269): the operator is still waiting there to
     // run the commit. A verdict that reverted the machine to IMPLEMENT leaves
@@ -711,21 +719,21 @@ export class RunReviewUseCase {
       await this.stateRepo.save(sm.toSnapshot());
 
       if (resolvedPlan && resolvedPlan.summaryPath) {
-        const noteDetails = verdict.isApproved()
-          ? `Review approved in ${durationStr}: ${verdict.summary}${
-              suggestedCommitMessage ? `\nSuggested Commit: \`${suggestedCommitMessage}\`` : ''
-            }`
-          : verdict.isSkipped()
-            ? `Review skipped: ${verdict.summary} Advisory proceeding to commit gate.`
-            : `Review requested changes: ${verdict.summary} Pipeline reverted to IMPLEMENT for self-correction.`;
+        const reviewRecord = {
+          round: reviewRound,
+          verdict: verdict.status,
+          baseCommit: reviewedBaseCommit,
+          timestamp: new Date().toISOString(),
+          summary: verdict.summary
+        };
 
         this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
           stage: SUMMARY_STAGE_AI_REVIEW,
           subagent: reviewerDef.name,
           model: reviewerDef.model,
           status: verdict.status,
-          duration: durationStr,
-          reviewNote: noteDetails
+          duration: measuredDurationStr,
+          reviewRecord
         });
       }
     }
@@ -735,6 +743,9 @@ export class RunReviewUseCase {
       verdict,
       reviewSource,
       critiqueVerified,
+      reviewerVerdict,
+      reviewedBaseCommit,
+      reviewRound,
       currentStage: sm.currentStage,
       previousStage,
       dryRun: params.dryRun === true,
@@ -744,10 +755,32 @@ export class RunReviewUseCase {
       standardsContent,
       acceptanceCriteria,
       durationMs,
-      suggestedCommitMessage,
       critiqueReport: critiqueReportText,
       updateNotification,
       autoInstalled
     };
+  }
+
+  /**
+   * The reviewed HEAD commit (issue #284).
+   *
+   * `git rev-parse HEAD` in the WORKTREE (the reviewed diff is the worktree's);
+   * `null` on any failure, so an unreadable base is reported as unrecorded
+   * rather than crashing the review.
+   */
+  private async readReviewedBaseCommit(cwd: string): Promise<string | null> {
+    if (!this.commandExecutor) {
+      return null;
+    }
+    try {
+      const res = await this.commandExecutor.execute('git rev-parse HEAD', { cwd });
+      const sha = (res.stdout || '').trim();
+      if (res.exitCode === 0 && /^[0-9a-f]{7,40}$/i.test(sha)) {
+        return sha;
+      }
+    } catch {
+      // Unmeasurable base is not a review failure.
+    }
+    return null;
   }
 }

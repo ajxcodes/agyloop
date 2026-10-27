@@ -170,6 +170,28 @@ const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = 
       );
     }
   },
+  // Issue #284: the gate evidence channel. The fixture files one valid block
+  // against a checkpoint resting at the gate.
+  'gate-report': {
+    args: ['gate-report', '--issue', '906', '--report-file', 'gate.json', '--json'],
+    seed: (dir) => {
+      initGitWorkspace(dir);
+      seedTask(dir, 906, {
+        currentStage: 'QUALITY_GATE',
+        history: [{ stage: 'QUALITY_GATE', timestamp: SEEDED_AT }]
+      });
+      fs.writeFileSync(
+        path.join(dir, 'gate.json'),
+        [
+          'GATE_REPORT_JSON:',
+          '{ "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",',
+          '  "testsStatus": "PASSED (12 passed)", "testsPassed": 12, "testsFailed": 0,',
+          '  "durationMs": 1000, "executedCommands": ["npm test"],',
+          '  "smokeProtocol": "NOT_DECLARED", "notRun": [] }'
+        ].join('\n')
+      );
+    }
+  },
   plan: { args: ['plan', '--json'] },
   implement: { args: ['implement', '--json'] },
   commit: { args: ['commit', '--json'] },

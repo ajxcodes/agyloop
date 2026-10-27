@@ -215,6 +215,36 @@ new file mode 100644
       assert.strictEqual(result.commitMessage.toSingleLine(), 'refactor(core): overhaul lifecycle transitions (#30)');
     });
 
+    test('lists untracked files alongside the tracked diff (issue #240/Defect 2)', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), issue: null, worktree: mockWorktree });
+      sm.setIssue(30);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git diff HEAD'] = {
+        stdout: `diff --git a/src/app.ts b/src/app.ts
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -0,0 +1 @@
++export const app = 1;`
+      };
+      executor.responses['git status --porcelain -uall'] = {
+        stdout: '?? tests/new.test.ts\n M src/app.ts\n'
+      };
+
+      const useCase = new DraftCommitUseCase(stateRepo, executor, new MockGitHubGateway());
+      const result = await useCase.execute();
+
+      assert.deepStrictEqual([...result.untrackedFiles], ['tests/new.test.ts']);
+      assert.strictEqual(result.listedFiles.length, 2);
+      assert.ok(result.listedFiles.includes('src/app.ts'));
+      assert.ok(result.listedFiles.includes('tests/new.test.ts'));
+      assert.strictEqual(
+        result.listedFiles.filter((f: string) => f === 'src/app.ts').length,
+        1,
+        'a tracked file must not be duplicated by the untracked union'
+      );
+    });
+
     test('evaluates git commands in worktree directory when sm.worktree is configured', async () => {
       const wt = WorktreeDescriptor.create({
         taskId: 48,
@@ -946,6 +976,115 @@ new file mode 100644
 
       assert.strictEqual(result.success, true);
       assert.ok(executor.executedCommands.some(cmd => cmd.includes('gh pr create')));
+    });
+
+    test('reports the created PR URL and suppresses the manual script (issue #240/Defect 1)', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 92,
+        worktreePath: '/mock/repo/.worktrees/92',
+        branch: 'task/92',
+        baseBranch: 'phase/6-codeloop'
+      });
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        worktree: wt,
+        baseBranch: 'phase/6-codeloop'
+      });
+      sm.setIssue(92);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: auto pr (#92)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit92\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/92\n' };
+      executor.responses['git push -u origin "task/92"'] = { exitCode: 0 };
+      executor.responses["gh pr list --head 'task/92' --json number"] = { exitCode: 0, stdout: '[]' };
+      executor.responses["gh pr view 'task/92' --json url --jq .url"] = {
+        exitCode: 0,
+        stdout: 'https://example.test/pull/7\n'
+      };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({ type: 'fix', description: 'auto pr', issueNumber: 92 }),
+        confirmed: true,
+        createPr: true
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.prCreated, true);
+      assert.strictEqual(result.prUrl, 'https://example.test/pull/7');
+      assert.strictEqual(result.prCommand, undefined, 'a created PR must not print the manual script');
+      assert.strictEqual(result.prBaseIsCollector, true);
+      assert.ok(executor.executedCommands.some((cmd: string) => cmd.includes('gh pr create')));
+    });
+
+    test('a PR that was NOT created still returns the manual command', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 93,
+        worktreePath: '/mock/repo/.worktrees/93',
+        branch: 'task/93',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(93);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: manual (#93)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit93\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/93\n' };
+      executor.responses['git push -u origin "task/93"'] = { exitCode: 0 };
+      executor.responses["gh pr list --head 'task/93' --json number"] = { exitCode: 0, stdout: '[]' };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({ type: 'fix', description: 'manual', issueNumber: 93 }),
+        confirmed: true
+      });
+
+      assert.strictEqual(result.prCreated, false);
+      assert.strictEqual(result.prExists, false);
+      assert.strictEqual(typeof result.prCommand, 'string');
+      assert.ok((result.prCommand as string).includes('gh pr create'));
+      assert.strictEqual(result.prBaseIsCollector, false);
+      assert.ok(!executor.executedCommands.some((cmd: string) => cmd.includes('gh pr create')));
+    });
+
+    test('an ALREADY EXISTING PR is reported as existing, not created', async () => {
+      const wt = WorktreeDescriptor.create({
+        taskId: 94,
+        worktreePath: '/mock/repo/.worktrees/94',
+        branch: 'task/94',
+        baseBranch: 'main'
+      });
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+      sm.setIssue(94);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git commit -m "fix: existing (#94)"'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'commit94\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/94\n' };
+      executor.responses['git push -u origin "task/94"'] = { exitCode: 0 };
+      executor.responses["gh pr list --head 'task/94' --json number"] = {
+        exitCode: 0,
+        stdout: '[{"number": 5}]'
+      };
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({ type: 'fix', description: 'existing', issueNumber: 94 }),
+        confirmed: true,
+        createPr: true
+      });
+
+      assert.strictEqual(result.prExists, true);
+      assert.strictEqual(result.prCreated, false);
+      assert.ok(!executor.executedCommands.some((cmd: string) => cmd.includes('gh pr create')));
     });
 
     test('generates prCommand with title, body with Closes #id, and --milestone from sm.milestoneTitle', async () => {

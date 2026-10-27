@@ -110,7 +110,8 @@ import {
   CritiquePort,
   CritiqueInstallerPort,
   ConfirmationPromptPort,
-  WorktreeManagerPort
+  WorktreeManagerPort,
+  GateReportRepositoryPort
 } from '../ports';
 import { StartPlanningUseCase, StartPlanningResult } from './start-planning';
 import { StartImplementationUseCase, StartImplementationResult } from './start-implementation';
@@ -273,6 +274,12 @@ export interface RunLifecycleDependencies {
    * drive the park deterministically without a real git repository.
    */
   readonly detectImplementationDiffUseCase?: DetectImplementationDiffUseCase;
+  /**
+   * The gate evidence channel (issue #284). Optional; injected by the CLI
+   * composition root so an in-process gate run files the same record a
+   * dispatched gate files.
+   */
+  readonly gateReportRepo?: GateReportRepositoryPort;
 }
 
 export class RunLifecycleUseCase {
@@ -348,7 +355,8 @@ export class RunLifecycleUseCase {
         this.planGenerator,
         this.commandExecutor,
         this.buildDetector,
-        resolveSubagentUseCase
+        resolveSubagentUseCase,
+        deps.gateReportRepo
       );
 
     this.runReviewUseCase =

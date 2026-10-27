@@ -31,7 +31,9 @@ import {
   InvalidTransitionError,
   PublicSanitizer,
   buildGitTokenRedirectConfig,
+  consumedHumanWaitMs,
   escapeShellQuote,
+  formatStageDuration,
   isRootWorkspace
 } from '../domain';
 import {
@@ -75,6 +77,21 @@ export interface ExecuteCommitResult {
   readonly stateMachine: StateMachine;
   readonly summaryUpdated: boolean;
   readonly prBaseBranch?: string;
+  /**
+   * The PR was CREATED by this run (issue #240/Defect 1). When true the manual
+   * "Next Step (Create PR)" script is suppressed — it would describe work that
+   * was already done.
+   */
+  readonly prCreated?: boolean;
+  /** The created PR's URL, best effort — `undefined` when it could not be read. */
+  readonly prUrl?: string;
+  /** A PR already existed for the active branch; nothing was created. */
+  readonly prExists?: boolean;
+  /**
+   * True when the PR targets a collector branch (`phase/*`, `feature/*`).
+   * Closing keywords do not fire on a collector-base PR (issue #240/Defect 3).
+   */
+  readonly prBaseIsCollector?: boolean;
   readonly prCommand?: string;
   readonly worktreeTornDown?: boolean;
   readonly worktreeTornDownPath?: string;
@@ -306,6 +323,10 @@ export class ExecuteCommitUseCase {
 
     // Resolve PR target base branch (inferred collector branch or main)
     const prBaseBranch = sm.baseBranch || 'main';
+    // Shape-based, deliberately (issue #240/Defect 3): no default-branch probe
+    // exists here, and adding a network call to the commit path is not worth it.
+    // `main` / `master` are never collectors.
+    const prBaseIsCollector = /^(phase|feature)\//.test(prBaseBranch);
 
     // Resolve active branch (worktree branch or git rev-parse HEAD fallback)
     let activeBranch = sm.worktree?.branch || '';
@@ -409,9 +430,26 @@ export class ExecuteCommitUseCase {
       throw new CommitExecutionError('git push', `Failed to push to remote: ${pushError}`);
     }
 
+    // Issue #240/Defect 1: report what this run DID with the PR, and never hand
+    // the operator a script for work that is already done. `prCommand` is
+    // returned ONLY when no PR was created.
+    let prCreated = false;
+    let prUrl: string | undefined;
+    let returnedPrCommand: string | undefined = prCommand;
+
     if (params.createPr && !prExists) {
       try {
-        await this.commandExecutor.execute(prCommand, { cwd });
+        const createRes = await this.commandExecutor.execute(prCommand, { cwd });
+        if (createRes.exitCode === 0) {
+          prCreated = true;
+          returnedPrCommand = undefined;
+          prUrl = await this.readCreatedPrUrl(activeBranch, cwd);
+        } else {
+          console.warn(
+            'Auto PR creation failed:',
+            (createRes.stderr || createRes.stdout || 'gh pr create exited non-zero').trim()
+          );
+        }
       } catch (err: unknown) {
         // Non-fatal if PR creation fails during auto-create
         console.warn('Auto PR creation failed:', err instanceof Error ? err.message : String(err));
@@ -420,11 +458,16 @@ export class ExecuteCommitUseCase {
 
     // Advance StateMachine
     const transitionNote = isYolo ? NOTE_COMMIT_AUTO_APPROVED : NOTE_COMMIT_CONFIRMED;
+    const waitBefore = sm.totalHumanWaitMs;
     sm.transition(STAGE_COMPLETED, {
       note: transitionNote,
       commitHash,
       commitMessage: commitMessage.toSingleLine()
     });
+    // Issue #284 (AC5): this row IS a human gate with a row of its own, so its
+    // wait is the honest measurement — and the value the live `263m 50s` used
+    // to contradict.
+    const commitGateWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
 
     // Checkpoint state
     await this.stateRepo.save(sm.toSnapshot());
@@ -514,9 +557,13 @@ export class ExecuteCommitUseCase {
         summaryUpdated = this.planGenerator.updateSummaryLog(summaryPath, {
           stage: SUMMARY_STAGE_COMMIT_PR,
           status: SUMMARY_STATUS_COMPLETED,
+          duration: formatStageDuration(commitGateWaitMs),
           commitHash,
           commitMessage: commitMessage.toSingleLine(),
-          commitTimestamp: new Date().toISOString()
+          commitTimestamp: new Date().toISOString(),
+          // Issue #284 (AC2): reaching COMPLETED is the last chance to make an
+          // unrecorded row honest. Nothing may survive as PENDING/IN PROGRESS.
+          finalize: true
         });
       }
     }
@@ -530,12 +577,42 @@ export class ExecuteCommitUseCase {
       stateMachine: sm,
       summaryUpdated,
       prBaseBranch,
-      prCommand,
+      prCreated,
+      prUrl,
+      prExists,
+      prBaseIsCollector,
+      prCommand: returnedPrCommand,
       worktreeTornDown,
       worktreeTornDownPath,
       worktreeTornDownIsolated,
       pushError,
       fallbackUsed
     };
+  }
+
+  /**
+   * Reads the URL of the PR that was just created (issue #240/Defect 1).
+   *
+   * Best effort: the PR exists whether or not `gh pr view` can read it back, so
+   * a failure here must not undo the creation or fail the commit. Returning
+   * `undefined` makes the CLI say "URL unavailable" rather than invent one.
+   */
+  private async readCreatedPrUrl(activeBranch: string, cwd: string): Promise<string | undefined> {
+    if (!activeBranch) {
+      return undefined;
+    }
+    try {
+      const res = await this.commandExecutor.execute(
+        `gh pr view '${escapeShellQuote(activeBranch)}' --json url --jq .url`,
+        { cwd }
+      );
+      const url = (res.stdout || '').trim();
+      if (res.exitCode === 0 && url.length > 0) {
+        return url;
+      }
+    } catch {
+      // Best effort only.
+    }
+    return undefined;
   }
 }

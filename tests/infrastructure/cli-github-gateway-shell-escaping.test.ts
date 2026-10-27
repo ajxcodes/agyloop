@@ -231,6 +231,11 @@ describe('codeloop sync names the collector branch again (#262)', () => {
             exitCode: 0
           };
         }
+        // Issue #240/Defect 3: the compensator requires the PR's own diff, so
+        // the real run reads it before it closes anything.
+        if (command.startsWith('gh pr view')) {
+          return { stdout: 'src/app.ts\n', exitCode: 0 };
+        }
         if (command.includes('git rev-parse')) {
           return { stdout: 'phase/123', exitCode: 0 };
         }
@@ -245,12 +250,12 @@ describe('codeloop sync names the collector branch again (#262)', () => {
 
     const bodies = invocations()
       .map((argv) => argv[argv.indexOf('--body') + 1])
-      .filter((body) => body && body.startsWith('Automatically closed'));
+      .filter((body) => body && body.startsWith('Closed by agyloop sync'));
 
     assert.strictEqual(bodies.length, 1, 'exactly one auto-close comment must be posted');
     assert.strictEqual(
       bodies[0],
-      'Automatically closed by agyloop sync. Implemented and merged via PR #42 into `phase/123`.'
+      'Closed by agyloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
     );
   });
 });

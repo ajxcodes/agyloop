@@ -47,6 +47,18 @@ export interface DraftCommitResult {
   readonly diffText: string;
   readonly currentStage: string;
   readonly stateMachine: StateMachine;
+  /**
+   * Untracked paths the commit WILL include, because the executor stages with
+   * `git add -A` (issue #240/Defect 2). The tracked-only diff cannot see them,
+   * so the operator's file list omitted files the commit actually contained.
+   */
+  readonly untrackedFiles: readonly string[];
+  /**
+   * Exactly what will be staged: the analysed `modifiedFiles` followed by any
+   * untracked path not already listed. A SEPARATE array so `DiffAnalyzer`
+   * stays pure — the analysed plan's semantics are not mutated.
+   */
+  readonly listedFiles: readonly string[];
 }
 
 export class DraftCommitUseCase {
@@ -100,6 +112,26 @@ export class DraftCommitUseCase {
           const unstagedRes = await this.commandExecutor.execute('git diff', { cwd });
           diffText = unstagedRes.stdout;
         }
+      }
+    }
+
+    // Issue #240/Defect 2: the count/list must match what `git add -A` will
+    // stage. The analysed diff is tracked-only, so untracked paths are collected
+    // separately. Staged mode never runs `git add -A`, so it never lists them.
+    let untrackedFiles: readonly string[] = [];
+    if (!params.staged) {
+      try {
+        const statusRes = await this.commandExecutor.execute('git status --porcelain -uall', { cwd });
+        if (typeof statusRes.stdout === 'string') {
+          untrackedFiles = statusRes.stdout
+            .split('\n')
+            .filter((line) => line.startsWith('?? '))
+            .map((line) => stripPathQuotes(line.slice(3).trim()))
+            .filter((entry) => entry.length > 0);
+        }
+      } catch {
+        // A status probe failure must not fail the draft; the list is simply
+        // the tracked set the diff already gave us.
       }
     }
 
@@ -161,12 +193,30 @@ export class DraftCommitUseCase {
       issueNumber: finalCommitMessage.issueNumber
     });
 
+    const listedFiles = [
+      ...plan.modifiedFiles,
+      ...untrackedFiles.filter((file) => !plan.modifiedFiles.includes(file))
+    ];
+
     return {
       plan,
       commitMessage: finalCommitMessage,
       diffText,
       currentStage: sm.currentStage,
-      stateMachine: sm
+      stateMachine: sm,
+      untrackedFiles,
+      listedFiles
     };
   }
+}
+
+/**
+ * Strips the C-style quoting `git status --porcelain` applies to unusual paths.
+ * A plain path is returned unchanged.
+ */
+function stripPathQuotes(raw: string): string {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    return raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return raw;
 }
