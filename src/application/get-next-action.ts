@@ -80,7 +80,8 @@ import {
   GitHubGateway,
   WorktreeManagerPort,
   BuildDetectorPort,
-  PullRequestReviewComment
+  PullRequestReviewComment,
+  CritiquePort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
@@ -189,14 +190,19 @@ export class GetNextActionUseCase {
     resolveSubagentUseCase?: ResolveSubagentUseCase,
     worktreeManager?: WorktreeManagerPort,
     buildDetector?: BuildDetectorPort,
-    inferBaseBranchUseCase?: InferBaseBranchUseCase
+    inferBaseBranchUseCase?: InferBaseBranchUseCase,
+    // Issue #314: the REVIEW directive resolves Tier 1's binary through this
+    // port. Without it the prompt fell back to a hardcoded ~/.local/bin path
+    // that `codeloop critique install` never writes.
+    critiquePort?: CritiquePort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
     this.planGenerator = planGenerator;
     this.githubGateway = githubGateway;
     this.resolveSubagentUseCase =
-      resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, githubGateway, undefined, undefined, buildDetector);
+      resolveSubagentUseCase ??
+      new ResolveSubagentUseCase(configRepo, githubGateway, undefined, critiquePort, buildDetector);
     this.worktreeManager = worktreeManager;
     this.buildDetector = buildDetector;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;

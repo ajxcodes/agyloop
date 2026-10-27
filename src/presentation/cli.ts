@@ -166,7 +166,8 @@ import type {
   PlanGeneratorPort,
   GitHubGateway,
   WorktreeManagerPort,
-  BuildDetectorPort
+  BuildDetectorPort,
+  CritiquePort
 } from '../ports';
 import {
   FileStateRepository,
@@ -1101,7 +1102,8 @@ async function printImplementerDirective(
   buildDetector: BuildDetectorPort,
   inferBaseBranchUseCase: InferBaseBranchUseCase,
   configPath: string | null,
-  issue: number | undefined
+  issue: number | undefined,
+  critique: CritiquePort
 ): Promise<void> {
   try {
     const getNextActionUseCase = new GetNextActionUseCase(
@@ -1112,7 +1114,8 @@ async function printImplementerDirective(
       undefined,
       worktreeManager,
       buildDetector,
-      inferBaseBranchUseCase
+      inferBaseBranchUseCase,
+      critique
     );
 
     const directive = await getNextActionUseCase.execute({
@@ -1641,7 +1644,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         undefined,
         worktreeManager,
         buildDetector,
-        makeInferBaseBranchUseCase(scope.repo)
+        makeInferBaseBranchUseCase(scope.repo),
+        critique
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
@@ -3580,7 +3584,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
             } else {
               console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
-              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), options.configPath, issueValue);
+              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), options.configPath, issueValue, critique);
             }
             return EXIT_CODE_SUCCESS;
           }

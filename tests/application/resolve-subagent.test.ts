@@ -87,7 +87,8 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
     });
 
     assert.ok(prompt.includes('### Two-Tier Review Methodology:'));
-    assert.ok(prompt.includes('export PATH="$HOME/.local/bin:$PATH" && /opt/custom/bin/critique --json'));
+    assert.ok(prompt.includes("'/opt/custom/bin/critique' --json"));
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
     assert.ok(prompt.includes('Tier 1 (Automated Critique CLI)'));
     assert.ok(prompt.includes('Tier 2 (Manual Diff & Standards Inspection)'));
     assert.ok(prompt.includes('Consolidated Verdict'));
@@ -111,11 +112,8 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
       issueNumber: 52
     });
 
-    assert.ok(
-      prompt.includes(
-        'export PATH="$HOME/.local/bin:$PATH" && /home/user/.local/share/agyloop/tools/critique --json'
-      )
-    );
+    assert.ok(prompt.includes("'/home/user/.local/share/agyloop/tools/critique' --json"));
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
   });
 
   test('resolves critique path from injected CritiquePort', () => {
@@ -128,10 +126,11 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
     const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, critiquePort);
     const prompt = useCase.buildReviewerTaskPrompt();
 
-    assert.ok(prompt.includes('export PATH="$HOME/.local/bin:$PATH" && /usr/bin/critique --json'));
+    assert.ok(prompt.includes("'/usr/bin/critique' --json"));
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
   });
 
-  test('falls back to ~/.local/bin/critique when critique path is unresolvable', () => {
+  test('names the resolver, not a hardcoded path, when critique is unresolvable (issue #314)', () => {
     const critiquePort = new MockCritiquePort({
       source: RESOLVER_SOURCE_NONE,
       path: null,
@@ -141,8 +140,34 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
     const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, critiquePort);
     const prompt = useCase.buildReviewerTaskPrompt();
 
-    assert.ok(prompt.includes('export PATH="$HOME/.local/bin:$PATH" && ~/.local/bin/critique --json'));
+    assert.ok(prompt.includes('codeloop critique status'), 'AC2: the fallback must name the resolver');
+    assert.ok(
+      prompt.includes('~/.local/share/critique'),
+      'AC2: the fallback must name the real search locations'
+    );
+    assert.ok(
+      !prompt.includes('~/.local/bin/critique --json'),
+      'AC3: the fallback must not quote the dead path as the command'
+    );
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export');
     assert.ok(prompt.includes('Any `critical` or `error` findings mandate `REVIEW_STATUS: CHANGES_REQUESTED`'));
+  });
+
+  test('runs a resolved .js critique binary through node (issue #314)', () => {
+    const critiquePort = new MockCritiquePort({
+      source: RESOLVER_SOURCE_USER_DATA,
+      path: '/home/user/.local/share/critique/bin/critique.js',
+      isAvailable: true
+    });
+
+    const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, critiquePort);
+    const prompt = useCase.buildReviewerTaskPrompt();
+
+    assert.ok(
+      prompt.includes("node '/home/user/.local/share/critique/bin/critique.js' --json"),
+      `AC3: a resolved .js binary must render through node, got:\n${prompt.slice(0, 2000)}`
+    );
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export');
   });
 
   describe('Token Optimization & Context Shielding in Reviewer Task Prompt', () => {
