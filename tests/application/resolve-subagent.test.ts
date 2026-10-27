@@ -489,7 +489,7 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     assert.ok(prompt.includes('plan line'));
     assert.ok(!prompt.includes('execute those steps automatically'));
     assert.match(prompt, /Command Source:\s*plan/);
-    assert.match(prompt, /Smoke Protocol: PASSED \| FAILED \| NOT DECLARED/);
+    assert.match(prompt, /Smoke Protocol: PASSED \| FAILED \| NOT_DECLARED/);
   });
 
   test('RS-G2: a required lint with no lint command is an invariant violation', () => {
@@ -622,5 +622,88 @@ describe('Discovery evidence contract (issue #306)', () => {
       true,
       'a report satisfying every published number must be accepted by the predicate'
     );
+  });
+});
+
+describe('Gate prompt → parser vocabulary contract (issue #311)', () => {
+  const {
+    GateResultReport,
+    GATE_REPORT_JSON_MARKER,
+    SMOKE_PROTOCOL_VALUES,
+    SMOKE_PROTOCOL_VOCABULARY,
+    SMOKE_PROTOCOL_NOT_DECLARED,
+    SmokeProtocol
+  } = require('../../dist/domain');
+
+  const CONTRACT_SMOKE_PLAN = [
+    '# Plan',
+    '',
+    '## 6. Manual Smoke Test Protocol',
+    '',
+    '#### Check 1 — the app starts',
+    '',
+    '```bash',
+    'echo "S1 PASS"',
+    '```',
+    ''
+  ].join('\n');
+
+  function gatePrompt(params: any = {}): string {
+    return new ResolveSubagentUseCase(new MockConfigRepo()).buildGateTaskPrompt({
+      issueNumber: 311,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/311',
+      ...params
+    });
+  }
+
+  function emittedExample(prompt: string): string {
+    const marker = prompt.lastIndexOf(GATE_REPORT_JSON_MARKER);
+    assert.ok(marker >= 0, 'the gate prompt must emit a GATE_REPORT_JSON example');
+    return prompt.slice(marker);
+  }
+
+  test('#311 P1: a no-protocol plan emits an example the parser accepts as NOT_DECLARED', () => {
+    const prompt = gatePrompt();
+    const example = emittedExample(prompt);
+
+    const report = GateResultReport.parseBlock(example, 1);
+    assert.strictEqual(report.smokeProtocol, SMOKE_PROTOCOL_NOT_DECLARED);
+
+    assert.ok(
+      prompt.includes(`Report \`${SMOKE_PROTOCOL_NOT_DECLARED}\` for it`),
+      'the prose must name the canonical wire token'
+    );
+    assert.ok(
+      !prompt.includes('NOT DECLARED'),
+      'the prompt must never emit the spaced spelling the parser used to reject'
+    );
+    assert.ok(
+      prompt.includes(`- Smoke Protocol: ${SMOKE_PROTOCOL_VOCABULARY}`),
+      'the verdict list must be the parser vocabulary'
+    );
+  });
+
+  test('#311 P2: a declared protocol emits an example the parser accepts as PASSED', () => {
+    const prompt = gatePrompt({ smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) });
+    const report = GateResultReport.parseBlock(emittedExample(prompt), 1);
+    assert.strictEqual(report.smokeProtocol, 'PASSED');
+  });
+
+  test('#311 P3: the example token and the verdict list come from one vocabulary', () => {
+    for (const params of [{}, { smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) }]) {
+      const prompt = gatePrompt(params);
+      const report = GateResultReport.parseBlock(emittedExample(prompt), 1);
+      assert.ok(
+        SMOKE_PROTOCOL_VALUES.includes(report.smokeProtocol),
+        `the example token ${report.smokeProtocol} must be a vocabulary member`
+      );
+      const verdictLine =
+        prompt
+          .split('\n')
+          .find((line: string) => line.startsWith('- Smoke Protocol: ')) ?? '';
+      assert.ok(verdictLine.length > 0, 'the prompt must carry the verdict line');
+      assert.ok(verdictLine.endsWith(SMOKE_PROTOCOL_VOCABULARY));
+    }
   });
 });

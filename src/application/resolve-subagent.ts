@@ -75,7 +75,11 @@ import {
   MSG_GATE_LINT_MISSING,
   HEADING_QUALITY_GATE_TARGETS,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
-  SMOKE_STATUS_NOT_DECLARED,
+  STATUS_PASSED,
+  SMOKE_PROTOCOL_NOT_DECLARED,
+  SMOKE_PROTOCOL_VOCABULARY,
+  formatGateReportExample,
+  NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS,
   formatDiscoveryReportContract,
   shellQuote,
   CRITIQUE_FLAG_JSON,
@@ -952,7 +956,7 @@ export class ResolveSubagentUseCase {
       prompt += `\n`;
     } else {
       prompt += `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\n`;
-      prompt += `This plan declares no ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} section. Report \`${SMOKE_STATUS_NOT_DECLARED}\` for it; do not invent checks.\n\n`;
+      prompt += `This plan declares no ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} section. Report \`${SMOKE_PROTOCOL_NOT_DECLARED}\` for it; do not invent checks.\n\n`;
     }
 
     prompt += `### Plan Immutability\n`;
@@ -969,19 +973,21 @@ export class ResolveSubagentUseCase {
     if (params.planIntegrity) {
       prompt += `- Plan Integrity: ${params.planIntegrity.status.toUpperCase()}\n`;
     }
-    prompt += `- Smoke Protocol: PASSED | FAILED | ${SMOKE_STATUS_NOT_DECLARED}\n`;
+    prompt += `- Smoke Protocol: ${SMOKE_PROTOCOL_VOCABULARY}\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
     prompt += `- Concise Failure Diagnostics (if failed)\n\n`;
 
     // Issue #284: the ONE result channel. Without it the gate's verdict had no
     // way into the summary, so `Build Status: PENDING` survived every run.
     prompt += `### Required Evidence Output\n`;
+    // Issue #311: the example is produced by ONE domain formatter, so what the
+    // prompt shows is literally what `GateResultReport.parseBlock` accepts. A
+    // plan with no smoke protocol is never shown a false `PASSED`.
+    const exampleSmokeToken =
+      smoke !== undefined && smoke.found ? STATUS_PASSED : SMOKE_PROTOCOL_NOT_DECLARED;
     prompt += `As the LAST thing in your response, emit a ${GATE_REPORT_JSON_MARKER} block:\n\n`;
-    prompt += `${GATE_REPORT_JSON_MARKER}\n`;
-    prompt += `{ "verdict": "PASSED", "buildSystem": "<id>", "buildStatus": "PASSED",\n`;
-    prompt += `  "testsStatus": "PASSED (N passed)", "testsPassed": N, "testsFailed": 0,\n`;
-    prompt += `  "durationMs": <integer>, "executedCommands": ["…"], "smokeProtocol": "PASSED",\n`;
-    prompt += `  "notRun": [{ "id": "act", "label": "…", "reason": "…" }] }\n\n`;
+    prompt += `${formatGateReportExample(exampleSmokeToken)}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS}\n\n`;
     prompt += `${NOTE_GATE_REPORT_RETURN}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;

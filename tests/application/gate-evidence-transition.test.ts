@@ -20,7 +20,8 @@ const {
   GateResultReport,
   STAGE_QUALITY_GATE,
   STAGE_REVIEW,
-  STAGE_IMPLEMENT
+  STAGE_IMPLEMENT,
+  resolveGateRound
 } = require('../../dist/domain');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -297,6 +298,42 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       await runTransition(ws, STAGE_QUALITY_GATE, repo);
       assert.strictEqual(repo.clears, 1, 'a stale report must be discarded on entry');
       assert.strictEqual(repo.load(ISSUE), null);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('#311 T1: filing and ingest agree on round 1 when the history has no QUALITY_GATE entry', async () => {
+    // A checkpoint that sits at QUALITY_GATE without a QG entry in its history:
+    // the filing side clamps to max(1, count), the ingest side used to read the
+    // raw count (0) and discarded a freshly filed round-1 report as stale.
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const repo = new FakeGateReportRepository();
+    const filedRound = resolveGateRound([{ stage: STAGE_IMPLEMENT }]);
+    assert.strictEqual(filedRound, 1, 'a count-0 checkpoint files round 1');
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON({ ...PASSED_REPORT.toJSON(), gateRound: filedRound }, filedRound)
+    );
+
+    try {
+      const sm = await runTransition(ws, STAGE_REVIEW, repo);
+
+      assert.ok(
+        !warnings.some((entry) => entry.includes('no gate evidence')),
+        `a freshly filed round-1 report must not be discarded, got: ${warnings.join(' | ')}`
+      );
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      assert.strictEqual(
+        row(summary, '4. Quality Gate'),
+        '| 4. Quality Gate | `gate` | `flash_lite` | COMPLETED | 3m 16s |'
+      );
+      const last = sm.history[sm.history.length - 1];
+      assert.strictEqual(last.stage, STAGE_REVIEW);
+      assert.strictEqual(last.metadata.gateVerdict, 'PASSED');
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }

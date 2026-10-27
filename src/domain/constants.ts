@@ -601,19 +601,41 @@ export const SMOKE_SCRIPT_SHELL = 'bash' as const;
 
 export const SMOKE_STATUS_PASSED = 'PASSED' as const;
 export const SMOKE_STATUS_FAILED = 'FAILED' as const;
+/**
+ * The RENDERED summary phrase only (issue #311).
+ *
+ * It is never emitted in a prompt and never accepted on the wire: a prompt that
+ * asked for this spelling produced a block `GateResultReport` rejected
+ * wholesale, losing the verdict, test counts and command list of a gate that
+ * did run. Every prompt and wire surface uses `SMOKE_PROTOCOL_VALUES` below.
+ */
 export const SMOKE_STATUS_NOT_DECLARED = 'NOT DECLARED' as const;
 export const SMOKE_STATUS_TIMED_OUT = 'TIMED_OUT' as const;
 
-/**
- * Machine token for "the plan declares no smoke protocol" on the
- * `GATE_REPORT_JSON` wire (issue #298).
- *
- * Deliberately NOT `SMOKE_STATUS_NOT_DECLARED`: that is the human-facing phrase
- * ("NOT DECLARED") written into prompts and summaries, while this is the exact
- * token a gate subagent emits and `GateResultReport` parses. The two strings
- * differ, so they must not share a constant.
- */
+/** Wire token for "the plan declares no smoke protocol" (issue #298, #311). */
 export const SMOKE_PROTOCOL_NOT_DECLARED = 'NOT_DECLARED' as const;
+
+/**
+ * The ONE smoke-protocol vocabulary (issue #311).
+ *
+ * `GateResultReport.readSmokeProtocol` validates against this list and the gate
+ * prompt names the same list, so the prompt can no longer ask for a token the
+ * parser rejects (the `NOT DECLARED` / `NOT_DECLARED` divergence).
+ */
+export type SmokeProtocolWireValue =
+  | typeof STATUS_PASSED
+  | typeof STATUS_FAILED
+  | typeof SMOKE_PROTOCOL_NOT_DECLARED;
+
+/** The ONLY values the gate prompt may name and the parser may accept (issue #311). */
+export const SMOKE_PROTOCOL_VALUES: readonly SmokeProtocolWireValue[] = Object.freeze([
+  STATUS_PASSED,
+  STATUS_FAILED,
+  SMOKE_PROTOCOL_NOT_DECLARED
+]);
+
+/** The rendered verdict list, e.g. `PASSED | FAILED | NOT_DECLARED` (issue #311). */
+export const SMOKE_PROTOCOL_VOCABULARY = SMOKE_PROTOCOL_VALUES.join(' | ');
 
 /** Static smoke-protocol findings (issue #298). */
 export const SMOKE_RULE_QUOTED_JSON_COMPARISON = 'quoted-json-comparison' as const;
@@ -2795,6 +2817,33 @@ export const NOTE_GATE_REPORT_RETURN =
   `This block is the ONLY record of this gate. Emit it verbatim as the LAST thing in your response. Do not run any \`codeloop\` command: you are a verification-only agent, and the orchestrator files this block with \`codeloop gate-report --issue <n> --report-file <path>\` and advances the checkpoint.` as const;
 
 /**
+ * The gate prompt's emitted `GATE_REPORT_JSON` example (issue #311).
+ *
+ * ONE producer, so the example the prompt shows is literally what
+ * `GateResultReport.parseBlock` accepts: well-formed JSON, a member of
+ * `SMOKE_PROTOCOL_VALUES` for `smokeProtocol` (never a false `PASSED` when the
+ * plan declares no protocol), and placeholders confined to strings and zeroes.
+ */
+export function formatGateReportExample(smokeProtocol: SmokeProtocolWireValue): string {
+  return [
+    GATE_REPORT_JSON_MARKER,
+    `{ "verdict": "${STATUS_PASSED}", "buildSystem": "<id>", "buildStatus": "${STATUS_PASSED}",`,
+    `  "testsStatus": "${STATUS_PASSED} (N passed)", "testsPassed": 0, "testsFailed": 0,`,
+    `  "durationMs": 0, "executedCommands": ["<command>"], "smokeProtocol": "${smokeProtocol}",`,
+    `  "notRun": [] }`
+  ].join('\n');
+}
+
+/**
+ * What the example's `<…>` tokens and zeroes mean (issue #311).
+ *
+ * Without this, a copying subagent emits the template verbatim and records
+ * "zero tests, zero milliseconds" as measured evidence.
+ */
+export const NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS =
+  `Replace every \`<…>\` placeholder and every placeholder zero above with THIS run's measured values. The example is a shape, not evidence: emitting it verbatim records false measurements.` as const;
+
+/**
  * The flags that carry a dispatched reviewer verdict to the checkpoint.
  */
 export const FLAG_VERDICT_FILE = '--verdict-file' as const;
@@ -2926,6 +2975,34 @@ export function formatPlanAdvanceCommand(issue?: number | string | null): string
     return PLAN_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
   }
   return PLAN_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/** The command that ADVANCES the QUALITY_GATE stage (issue #311). */
+export const GATE_ADVANCE_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW} --issue {issue}` as const;
+export const GATE_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW}` as const;
+
+/**
+ * The `Next:` line `gate-report` may print, derived from the CHECKPOINT stage
+ * (issue #311).
+ *
+ * Filing evidence is only meaningful at `QUALITY_GATE`: that is the only stage
+ * whose exit ingests the record. Printing the same line at `REVIEW` advised a
+ * self-transition the state machine rejects. Anything that is not the filing
+ * stage gets no advice at all (`null`) rather than an illegal command.
+ */
+export function formatGateReportAdvanceCommand(
+  stage: string | null | undefined,
+  issue?: number | string | null
+): string | null {
+  if (stage !== STAGE_QUALITY_GATE) {
+    return null;
+  }
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return GATE_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return GATE_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
 }
 
 /** What ENDS the DISCOVERY stage (issue #292). */

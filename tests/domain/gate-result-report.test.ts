@@ -113,3 +113,65 @@ describe('GateResultReport (issue #284)', () => {
     assert.deepStrictEqual([...report.executedCommands], ['echo {not-a-brace} && npm test']);
   });
 });
+
+describe('gate evidence vocabulary and round parity (issue #311)', () => {
+  const {
+    SMOKE_PROTOCOL_VALUES,
+    SMOKE_PROTOCOL_VOCABULARY,
+    SMOKE_PROTOCOL_NOT_DECLARED,
+    STAGE_QUALITY_GATE,
+    STAGE_IMPLEMENT,
+    resolveGateRound
+  } = require('../../dist/domain');
+
+  function withSmoke(value: string): string {
+    return VALID_BLOCK.replace('"smokeProtocol": "PASSED"', `"smokeProtocol": "${value}"`);
+  }
+
+  test('#311 D1: the canonical NOT_DECLARED token parses', () => {
+    const report = GateResultReport.parseBlock(withSmoke('NOT_DECLARED'), 1);
+    assert.strictEqual(report.smokeProtocol, SMOKE_PROTOCOL_NOT_DECLARED);
+  });
+
+  test('#311 D2: legacy spacing is normalized, unknown spellings still fail closed', () => {
+    for (const spelling of ['NOT DECLARED', 'not  declared']) {
+      const report = GateResultReport.parseBlock(withSmoke(spelling), 1);
+      assert.strictEqual(report.smokeProtocol, SMOKE_PROTOCOL_NOT_DECLARED, spelling);
+    }
+    for (const spelling of ['NOT-DECLARED', 'NOT_DECLARD', 'maybe']) {
+      assert.throws(
+        () => GateResultReport.parseBlock(withSmoke(spelling), 1),
+        (err: any) =>
+          err instanceof ValidationError &&
+          err.field === 'smokeProtocol' &&
+          err.message.includes(SMOKE_PROTOCOL_VOCABULARY),
+        spelling
+      );
+    }
+  });
+
+  test('#311 D3: the parser accepts exactly the advertised vocabulary', () => {
+    assert.deepStrictEqual([...SMOKE_PROTOCOL_VALUES], ['PASSED', 'FAILED', 'NOT_DECLARED']);
+    assert.strictEqual(SMOKE_PROTOCOL_VOCABULARY, 'PASSED | FAILED | NOT_DECLARED');
+    for (const value of SMOKE_PROTOCOL_VALUES) {
+      assert.strictEqual(GateResultReport.parseBlock(withSmoke(value), 1).smokeProtocol, value);
+    }
+  });
+
+  test('#311 D4: one round formula for empty, sparse and repeated history', () => {
+    assert.strictEqual(resolveGateRound(undefined), 1);
+    assert.strictEqual(resolveGateRound(null), 1);
+    assert.strictEqual(resolveGateRound([]), 1);
+    assert.strictEqual(resolveGateRound([{ stage: STAGE_IMPLEMENT }]), 1);
+    assert.strictEqual(resolveGateRound([{ stage: STAGE_QUALITY_GATE }]), 1);
+    assert.strictEqual(
+      resolveGateRound([
+        { stage: STAGE_QUALITY_GATE },
+        { stage: STAGE_IMPLEMENT },
+        { stage: STAGE_QUALITY_GATE }
+      ]),
+      2
+    );
+    assert.strictEqual(resolveGateRound([{}, { timestamp: 'x' } as any]), 1);
+  });
+});

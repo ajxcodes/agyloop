@@ -101,6 +101,7 @@ import {
   LABEL_OVERALL_VERDICT,
   InvalidTransitionError,
   GateResultReport,
+  resolveGateRound,
   formatStageDuration,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
@@ -528,11 +529,8 @@ export class RunQualityGateUseCase {
 
     // Issue #284: file the SAME evidence the dispatched path files, so an
     // in-process (yolo) run and a filed run leave identical records. The round
-    // is the count of QUALITY_GATE entries the transition just wrote.
-    const gateRound = Math.max(
-      1,
-      sm.history.filter((entry) => entry.stage === STAGE_QUALITY_GATE).length
-    );
+    // comes from the ONE shared formula (issue #311).
+    const gateRound = resolveGateRound(sm.history);
     const evidence = GateResultReport.fromJSON({
       verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
       // A gate run without a detector still has to name SOMETHING: the report
