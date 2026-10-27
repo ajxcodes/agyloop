@@ -15,9 +15,12 @@
 import { ValidationError } from '../errors';
 import {
   GATE_REPORT_JSON_MARKER,
+  STAGE_QUALITY_GATE,
   STATUS_PASSED,
   STATUS_FAILED,
-  SMOKE_PROTOCOL_NOT_DECLARED
+  SMOKE_PROTOCOL_VALUES,
+  SMOKE_PROTOCOL_VOCABULARY,
+  type SmokeProtocolWireValue
 } from '../constants';
 import { formatStageDuration } from './run-evidence';
 
@@ -25,11 +28,11 @@ import { formatStageDuration } from './run-evidence';
  * The report's smoke-protocol verdict on the wire: `null` means "not reported",
  * which is different from `SMOKE_PROTOCOL_NOT_DECLARED` ("reported: the plan
  * declares no smoke protocol").
+ *
+ * The accepted values are exactly `SMOKE_PROTOCOL_VALUES` — the same list the
+ * gate prompt names (issue #311).
  */
-export type SmokeProtocolVerdict =
-  | typeof STATUS_PASSED
-  | typeof STATUS_FAILED
-  | typeof SMOKE_PROTOCOL_NOT_DECLARED;
+export type SmokeProtocolVerdict = SmokeProtocolWireValue;
 
 /** A declared gate that was NOT executed, with the reason it was skipped. */
 export interface GateReportNotRun {
@@ -55,12 +58,6 @@ export interface GateResultReportProps {
   /** ISO timestamp of the report. */
   readonly reportedAt: string;
 }
-
-const SMOKE_PROTOCOL_VALUES: readonly string[] = Object.freeze([
-  STATUS_PASSED,
-  STATUS_FAILED,
-  SMOKE_PROTOCOL_NOT_DECLARED
-]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -381,13 +378,30 @@ export class GateResultReport {
     if (raw === undefined || raw === null) {
       return null;
     }
-    if (typeof raw !== 'string' || !SMOKE_PROTOCOL_VALUES.includes(raw.toUpperCase())) {
+    // Issue #311: normalize the legacy spaced spelling (`NOT DECLARED`) so an
+    // already-in-flight block is recorded instead of being discarded wholesale.
+    // Only the spelling is normalized; an unknown token still fails closed.
+    const normalized = typeof raw === 'string' ? raw.trim().toUpperCase().replace(/\s+/g, '_') : '';
+    if (!SMOKE_PROTOCOL_VALUES.some((value) => value === normalized)) {
       throw new ValidationError(
         'smokeProtocol',
         raw,
-        `must be one of ${SMOKE_PROTOCOL_VALUES.join(' | ')}`
+        `must be one of ${SMOKE_PROTOCOL_VOCABULARY}`
       );
     }
-    return raw.toUpperCase() as SmokeProtocolVerdict;
+    return normalized as SmokeProtocolVerdict;
   }
+}
+
+/**
+ * The gate round a checkpoint is in (issue #311). ONE formula for the filing
+ * side (`gate-report`, yolo gate) and the ingest side (`transition REVIEW`):
+ * two copies drifted, so a checkpoint with no `QUALITY_GATE` entry filed round
+ * `1` and ingested round `0`, discarding a freshly filed report as stale.
+ */
+export function resolveGateRound(
+  history: readonly { readonly stage?: string }[] | null | undefined
+): number {
+  const entries = Array.isArray(history) ? history : [];
+  return Math.max(1, entries.filter((entry) => entry.stage === STAGE_QUALITY_GATE).length);
 }

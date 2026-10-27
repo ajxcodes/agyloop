@@ -36,6 +36,7 @@ import {
   STATUS_PASSED,
   STATUS_FAILED,
   GateResultReport,
+  resolveGateRound,
   consumedHumanWaitMs,
   deriveStageDuration,
   isHumanWaitStage,
@@ -145,7 +146,7 @@ export class TransitionStageUseCase {
     let gateEvidence: GateResultReport | null = null;
     let transitionMetadata: Record<string, unknown> = { ...(params.metadata || {}) };
     if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
-      const gateRound = sm.history.filter((entry) => entry.stage === STAGE_QUALITY_GATE).length;
+      const gateRound = resolveGateRound(sm.history);
       const filed = this.gateReportRepo ? this.gateReportRepo.load(activeIssue) : null;
       if (filed && filed.gateRound === gateRound) {
         gateEvidence = filed;

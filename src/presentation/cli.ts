@@ -13,7 +13,6 @@ import {
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
-  STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -158,7 +157,9 @@ import {
   ReviewVerdict,
   AiReviewReport,
   ReviewerSubagentError,
-  GateResultReport
+  GateResultReport,
+  resolveGateRound,
+  formatGateReportAdvanceCommand
 } from '../domain';
 import type {
   StateRepository,
@@ -2735,9 +2736,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         const scope = await resolveScope(stateRepo, issueValue);
         const stage = scope.snapshot?.currentStage ?? null;
-        if (stage !== STAGE_QUALITY_GATE && stage !== STAGE_REVIEW) {
+        // Issue #311: only the QUALITY_GATE exit consumes gate evidence
+        // (`transition-stage.ts`). Accepting REVIEW here wrote a record no
+        // transition could ever ingest, which the clear-on-enter hook then
+        // deleted as stale — an accepted filing path that was silently orphaned.
+        if (stage !== STAGE_QUALITY_GATE) {
           console.error(
-            `✗ Gate evidence refused: checkpoint is at ${stage ?? '(none)'}; the gate stage is ${STAGE_QUALITY_GATE}.`
+            `✗ Gate evidence refused: checkpoint is at ${stage ?? '(none)'}; evidence can only be filed at ${STAGE_QUALITY_GATE}, the one stage whose exit consumes it. Nothing was written.`
           );
           return EXIT_CODE_FAILURE;
         }
@@ -2757,13 +2762,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         // The round is stamped FROM THE CHECKPOINT: a block that certifies a
         // different round is refused, so a stale PASSED can never certify a
-        // later run.
-        const gateRound = Math.max(
-          1,
-          (scope.snapshot?.history ?? []).filter(
-            (entry: { stage?: string }) => entry.stage === STAGE_QUALITY_GATE
-          ).length
-        );
+        // later run. One formula, shared with the ingest side (issue #311).
+        const gateRound = resolveGateRound(scope.snapshot?.history);
 
         let report: GateResultReport;
         try {
@@ -2822,9 +2822,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         console.log(`✓ Gate evidence recorded: ${report.formatConfirmation()}`);
         console.log(`  Evidence: ${evidencePath}`);
-        console.log(
-          `  Next: codeloop transition REVIEW${issueForEvidence === null ? '' : ` --issue ${issueForEvidence}`}`
-        );
+        // Issue #311: the advice is a state-machine query, not a literal. At
+        // any non-filing stage the formatter returns null and no line prints,
+        // so the command can never advise a self-transition.
+        const nextStep = formatGateReportAdvanceCommand(stage, issueForEvidence);
+        if (nextStep !== null) {
+          console.log(`  Next: ${nextStep}`);
+        }
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);

@@ -14,7 +14,15 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
-const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE, GATE_REPORT_JSON_MARKER } = require('../../dist/domain');
+const {
+  EXIT_CODE_SUCCESS,
+  EXIT_CODE_FAILURE,
+  GATE_REPORT_JSON_MARKER,
+  ALLOWED_TRANSITIONS,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  formatGateReportAdvanceCommand
+} = require('../../dist/domain');
 
 const ISSUE = 489;
 
@@ -146,7 +154,7 @@ describe('codeloop gate-report (issue #284)', () => {
   });
 
   test('--json prints one document', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
       const run = await runIn(sandbox, [
@@ -268,5 +276,89 @@ describe('codeloop gate-report (issue #284)', () => {
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('gate-report stage guard and Next line (issue #311)', () => {
+  test('#311 C1: filing at REVIEW is refused, writes nothing, and prints no Next line', async () => {
+    const sandbox = makeSandbox('REVIEW');
+    try {
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(
+        run.stderr.includes('REVIEW') && run.stderr.includes(STAGE_QUALITY_GATE),
+        `the refusal must name the observed stage and the legal one, got:\n${run.stderr}`
+      );
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a refused filing must write no evidence file');
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.ok(!run.stdout.includes('Next:'), `no Next line at REVIEW, got:\n${run.stdout}`);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#311 C2: the Next line printed at QUALITY_GATE is a legal transition that consumes the evidence', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+
+      const line =
+        run.stdout.split('\n').find((entry) => entry.startsWith('  Next: ')) ?? '';
+      assert.ok(line.length > 0, `the filing at QUALITY_GATE must advise the next step, got:\n${run.stdout}`);
+      assert.strictEqual(line, `  Next: codeloop transition ${STAGE_REVIEW} --issue ${ISSUE}`);
+
+      const target = line.slice('  Next: codeloop transition '.length).split(' ')[0];
+      assert.notStrictEqual(target, STAGE_QUALITY_GATE, 'the advice must not be a self-transition');
+      assert.ok(
+        ALLOWED_TRANSITIONS[STAGE_QUALITY_GATE].includes(target),
+        `${target} must be a legal exit from ${STAGE_QUALITY_GATE}`
+      );
+
+      const advance = await runIn(sandbox, ['transition', target, '--issue', String(ISSUE)]);
+      assert.strictEqual(
+        advance.code,
+        EXIT_CODE_SUCCESS,
+        `the printed command must be legal, got:\n${advance.stderr}`
+      );
+      const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+      assert.strictEqual(checkpoint.currentStage, STAGE_REVIEW);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'the ingested evidence must be consumed');
+      const last = checkpoint.history[checkpoint.history.length - 1];
+      assert.strictEqual(last.metadata.gateVerdict, 'PASSED');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#311 C3: the advance formatter is stage-derived and needs no issue token', () => {
+    assert.strictEqual(
+      formatGateReportAdvanceCommand(STAGE_QUALITY_GATE, null),
+      `codeloop transition ${STAGE_REVIEW}`
+    );
+    assert.strictEqual(formatGateReportAdvanceCommand(STAGE_REVIEW, ISSUE), null);
+    assert.strictEqual(formatGateReportAdvanceCommand(null, ISSUE), null);
+    assert.strictEqual(
+      formatGateReportAdvanceCommand(STAGE_QUALITY_GATE, ISSUE),
+      `codeloop transition ${STAGE_REVIEW} --issue ${ISSUE}`
+    );
   });
 });
