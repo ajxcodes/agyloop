@@ -879,6 +879,36 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
     ].join('\n');
   }
 
+  /**
+   * A report in the discovery prompt's own Expected Output Structure: `##`
+   * headings and prose, with NO `- **Key:**` bullet (issue #306).
+   */
+  function headingReport(title: string): string {
+    return [
+      `# [Discovery] - ${title}`,
+      '',
+      '**Issue:** #283',
+      '**Date:** 2026-10-27',
+      '**Author:** AgyLoop Discovery Subagent (Read-Only)',
+      '',
+      '## Summary & Symptoms',
+      '',
+      'The plan command scaffolds a second directory and then parks because the report is not bullet-shaped. Reproduced three times with a cleared state file.',
+      '',
+      '## Root Cause Analysis',
+      '',
+      'The RCA gate counted one markdown construct instead of measuring content, so a heading-shaped report scored zero filled keys and was reported as a scaffold.',
+      '',
+      '## Manual Bug Smoke Test',
+      '',
+      'The reproduction exits 1 with the park message; the same checkpoint with the content fix advances to PLAN, three times out of three.',
+      '',
+      '## Remediation Strategy',
+      '',
+      'Score content from either shape and make the park name the empty sections and blank template keys.'
+    ].join('\n');
+  }
+
   function plansDir(): string {
     return pathReal.join(workspace, 'artifacts', 'plans');
   }
@@ -1001,6 +1031,93 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
     assert.strictEqual(result.discoveryReportEvidence.populated, false);
     assert.ok(result.discoveryReportEvidence.checkedPaths.length > 0);
     assert.ok(result.discoveryReportEvidence.checkedPaths.includes(scaffold.planPath));
+  });
+
+  caseTest('T-306.T9: a heading-style report in the checkpoint directory releases the park', async () => {
+    // AC1 at the application level: the prompt's own heading-shaped output
+    // must advance DISCOVERY -> PLAN with zero `- **Key:**` bullets on disk.
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 283,
+      title: "[Bug] The base's own new commits",
+      type: 'discovery'
+    });
+    seedDiscoveryCheckpoint(scaffold.planDir);
+    fsReal.writeFileSync(scaffold.planPath, headingReport("The base's own new commits"), 'utf8');
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.discoveryReportEvidence.populated, true);
+    assert.strictEqual(result.discoveryReportEvidence.populatedPath, scaffold.planPath);
+  });
+
+  caseTest('T-306.T10: the park evidence names the scaffold gaps', async () => {
+    // AC3: the park must name WHICH evidence is missing, not "unpopulated
+    // scaffold", and must say which file the verdict was formed on.
+    const scaffold = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 283,
+      title: "[Bug] The base's own new commits",
+      type: 'discovery'
+    });
+    seedDiscoveryCheckpoint(scaffold.planDir);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.discoveryReentry, 'PARK_AT_DISCOVERY');
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+    assert.strictEqual(result.discoveryReportEvidence.evaluatedPath, scaffold.planPath);
+    const missing = result.discoveryReportEvidence.missingEvidence ?? '';
+    assert.ok(
+      missing.includes('Problem Statement'),
+      `missing evidence must name the empty section, got: ${missing}`
+    );
+    assert.ok(
+      missing.includes('Observed Behavior'),
+      `missing evidence must name a blank key, got: ${missing}`
+    );
+    assert.ok(result.discoveryReportEvidence.checkedPaths.length > 0);
+  });
+
+  caseTest('T-306.T11: a heading-style report outranks an empty sibling directory', async () => {
+    // The #283 BLOCKER-2 vector, heading flavour: directory ranking reads
+    // `isPopulated`, so a heading report must win over an empty scaffold.
+    const empty = planGenerator.scaffoldPlanDirectory({
+      projectRoot: workspace,
+      issue: 283,
+      title: 'task plan',
+      type: 'discovery'
+    });
+    const headingDir = pathReal.join(plansDir(), '283-heading-probe');
+    fsReal.mkdirSync(headingDir, { recursive: true });
+    const headingPath = pathReal.join(headingDir, '[Discovery] - Heading probe.md');
+    fsReal.writeFileSync(headingPath, headingReport('Heading probe'), 'utf8');
+
+    seedDiscoveryCheckpoint(empty.planDir);
+
+    const result = await new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    ).execute({ issue: 283, mode: MODE_YOLO, workspaceDir: workspace });
+
+    assert.strictEqual(result.discoveryReentry, 'ADVANCE_TO_PLAN');
+    assert.strictEqual(result.stateMachine.planDir, headingDir);
+    assert.strictEqual(result.discoveryReportEvidence.populated, true);
+    assert.strictEqual(result.discoveryReportEvidence.populatedPath, headingPath);
   });
 
   caseTest('T-267.B2: a supplied plan creates no competing directory', async () => {

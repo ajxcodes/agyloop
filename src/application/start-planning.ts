@@ -73,15 +73,23 @@ export interface StartPlanningParams {
 }
 
 /**
- * The RCA-gate evidence (issue #283): what was read, and where.
+ * The RCA-gate evidence (issues #283, #306): what was read, where, and what the
+ * predicate found missing.
  *
  * `checkedPaths` exists so the park can NAME the files it inspected instead of
- * claiming a populated report is "an unpopulated scaffold".
+ * claiming a populated report is "an unpopulated scaffold". `evaluatedPath` is
+ * the file the verdict came from (the populated one, or the best-scoring
+ * candidate when none is populated) and `missingEvidence` is the measured gap
+ * from that file — both null until a candidate was scored.
  */
 export interface DiscoveryReportEvidence {
   readonly populated: boolean;
   readonly populatedPath: string | null;
   readonly checkedPaths: readonly string[];
+  /** The file the verdict was formed on: populated winner, else best candidate. */
+  readonly evaluatedPath?: string | null;
+  /** Measured gaps from `DiscoveryReport.describeMissingEvidence()`; null when populated. */
+  readonly missingEvidence?: string | null;
 }
 
 export interface StartPlanningResult {
@@ -311,7 +319,9 @@ export class StartPlanningUseCase {
     let discoveryReportEvidence: DiscoveryReportEvidence = {
       populated: false,
       populatedPath: null,
-      checkedPaths: []
+      checkedPaths: [],
+      evaluatedPath: null,
+      missingEvidence: null
     };
 
     if (suppliedPlanPath !== null) {
@@ -453,6 +463,11 @@ export class StartPlanningUseCase {
    * scaffold's, and the best `<issue>-*` candidate) and every path that was
    * read is returned, so a park can NAME what it checked instead of claiming a
    * populated report is "an unpopulated scaffold" (#283, AC3).
+   *
+   * Issue #306: the report is built ONCE per candidate, and the best-scoring
+   * unpopulated candidate keeps its diagnostics. The park then names the
+   * measured gap (empty sections, blank keys, content counts) from the file the
+   * verdict actually came from, not from an arbitrary sibling.
    */
   private inspectDiscoveryReport(
     workspace: string,
@@ -464,6 +479,8 @@ export class StartPlanningUseCase {
   ): DiscoveryReportEvidence {
     const checkedPaths: string[] = [];
     let populatedPath: string | null = null;
+    let bestPath: string | null = null;
+    let bestReport: DiscoveryReport | null = null;
 
     try {
       // `findPlanDirectory` ranks a POPULATED candidate first (issue #283), so
@@ -501,10 +518,24 @@ export class StartPlanningUseCase {
       for (const candidate of new Set(candidates)) {
         checkedPaths.push(candidate);
         try {
-          const markdown = this.planGenerator.readPlanDocument(candidate);
-          if (DiscoveryReport.fromMarkdown(markdown).isPopulated) {
+          // One read, one report: the verdict and its diagnostics describe the
+          // same file (issue #306, AC3).
+          const report = DiscoveryReport.fromMarkdown(this.planGenerator.readPlanDocument(candidate));
+          if (report.isPopulated) {
             populatedPath = candidate;
             break;
+          }
+          // Keep the candidate that got CLOSEST to the contract, so the park
+          // reports the gaps of the real attempt rather than of a pristine
+          // sibling directory's empty scaffold.
+          if (
+            bestReport === null ||
+            report.contentCharCount > bestReport.contentCharCount ||
+            (report.contentCharCount === bestReport.contentCharCount &&
+              report.contentUnitCount > bestReport.contentUnitCount)
+          ) {
+            bestPath = candidate;
+            bestReport = report;
           }
         } catch {
           // Fail closed: a read failure is not evidence.
@@ -517,7 +548,9 @@ export class StartPlanningUseCase {
     return {
       populated: populatedPath !== null,
       populatedPath,
-      checkedPaths
+      checkedPaths,
+      evaluatedPath: populatedPath ?? bestPath,
+      missingEvidence: populatedPath ? null : (bestReport?.describeMissingEvidence() ?? null)
     };
   }
 

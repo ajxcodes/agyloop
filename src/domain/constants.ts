@@ -820,13 +820,19 @@ export const REGEX_NOISE_PASSING = /^\s*(?:✔|√|PASS|ok\s+\d+)\s+/;
 // the predicate never names a specific section key, so it survives the repository
 // drifting its `templates/discovery-plan.md`.
 //
+// BOTH spellings carry evidence because the two authoritative sources disagree:
+// `templates/discovery-plan.md` writes the colon INSIDE the bold (`- **Key:**`),
+// while the discovery prompt's own Expected Output Structure writes it OUTSIDE
+// (`- **Summary & Symptoms**:`). Recognising one only made the prompt's own shape
+// invisible as evidence — half of issue #306's false negative.
+//
 // Both carry the `g` flag, so `RegExp.prototype.test()` is STATEFUL (it advances
 // `lastIndex` and would alternate true/false on repeated calls). Always use
 // `String.prototype.match()` with these — `match` on a global regex resets
 // `lastIndex` first and returns the full match array, so it is safe to call
 // repeatedly on the same instance.
-export const REGEX_MD_UNFILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+:\*\*[ \t]*$/gm;
-export const REGEX_MD_FILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+:\*\*[ \t]*\S/gm;
+export const REGEX_MD_UNFILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+?(?::\*\*|\*\*:)[ \t]*$/gm;
+export const REGEX_MD_FILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+?(?::\*\*|\*\*:)[ \t]*\S/gm;
 
 /**
  * The `- ` / `* ` / `+ ` list marker of a bullet, plus the whitespace after it.
@@ -836,10 +842,75 @@ export const REGEX_MD_FILLED_KEY_BULLET = /^[ \t]*[-*+][ \t]*\*\*[^*\n]+:\*\*[ \
 export const REGEX_MD_BULLET_PREFIX = /^[-*+][ \t]*/;
 
 /**
- * The `**Key:**` header of a bold-key bullet, without the leading list marker.
- * Paired with `REGEX_MD_BULLET_PREFIX` to recover the human-readable key name.
+ * The `**Key:**` / `**Key**:` header of a bold-key bullet, without the leading
+ * list marker. Paired with `REGEX_MD_BULLET_PREFIX` to recover the
+ * human-readable key name.
+ *
+ * No `g` flag: `exec()` must stay stateless, and the captured key never carries
+ * the trailing colon (`**Observed Behavior:**` yields `Observed Behavior`).
  */
-export const REGEX_MD_BOLD_KEY = /^\*\*(.+?):\*\*/;
+export const REGEX_MD_BOLD_KEY = /^\*\*([^*\n]+?)(?::\*\*|\*\*:)/;
+
+/**
+ * A `##`..`######` markdown section heading. Group 2 is the heading text.
+ *
+ * Why `DiscoveryReport` needs it: the discovery prompt's Expected Output
+ * Structure is heading-shaped, so a compliant RCA can carry its evidence as
+ * prose under these headings and never write a single `- **Key:**` bullet
+ * (issue #306). `#` (a single hash) is deliberately excluded — that is the
+ * document title, i.e. preamble, not a section.
+ */
+export const REGEX_MD_SECTION_HEADING = /^[ \t]{0,3}(#{2,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+
+/**
+ * A top-level `#` title heading (not a section). Matched lines are preamble and
+ * contribute no content, which is what keeps a pristine scaffold at zero units.
+ */
+export const REGEX_MD_TITLE_HEADING = /^[ \t]{0,3}#[ \t]+\S/;
+
+/**
+ * A markdown table separator row (`|---|:---:|`). Structural, not evidence —
+ * `cleanProseLine` returns `''` for it so pipes and dashes cannot pad a report
+ * over the content threshold.
+ */
+export const REGEX_MD_TABLE_SEPARATOR = /^[ \t]*\|?[ \t]*:?-{2,}[-|: \t]*$/;
+
+/**
+ * The markdown noise `DiscoveryReport.cleanProseLine` strips before measuring a
+ * line's substance. Hoisted here — beside the key-bullet grammar and the section
+ * regexes — so every markdown-shape rule the predicate reads is visible in one
+ * place instead of being scattered inline through the value object.
+ *
+ * All five are used with `String.prototype.replace()` only, so their `g` flag is
+ * safe (a global `test()` would carry `lastIndex` between calls).
+ */
+export const REGEX_MD_BLOCKQUOTE_PREFIX = /^(?:>[ \t]*)+/;
+/** `[text](url)` / `![alt](url)` → the link TEXT (`$1`), never the target. */
+export const REGEX_MD_LINK_SYNTAX = /!?\[([^\]]*)\]\([^)]*\)/g;
+export const REGEX_MD_EMPHASIS = /\*\*|__/g;
+/** Backticks and table pipes are punctuation, not words. */
+export const REGEX_MD_INLINE_NOISE = /[`|]/g;
+export const REGEX_MD_WHITESPACE_RUN = /\s+/g;
+/** Trailing sentence punctuation, stripped before pointer/heading comparisons. */
+export const REGEX_MD_TRAILING_PUNCTUATION = /[.!]+$/;
+/** The `1. ` / `2) ` numbering a discovery section heading carries. */
+export const REGEX_MD_HEADING_NUMBERING = /^\s*\d+[.)]?\s+/;
+
+/**
+ * A key value that POINTS at other evidence instead of carrying any: `see
+ * above`, `see the Root Cause Analysis section above for details`, `n/a`,
+ * `TODO`, …
+ *
+ * Why: without this, padding four content-free bullets with a 60-character
+ * pointer cleared the per-unit character floor, produced four content units and
+ * released a skeleton (issue #306, AC2). A cross-reference is not evidence,
+ * however long it is, so pointer-only values are never substantive units.
+ *
+ * Matched against a NORMALISED value: lowercased, markdown noise stripped,
+ * whitespace collapsed and trailing punctuation removed.
+ */
+export const REGEX_MD_POINTER_ONLY_VALUE =
+  /^(?:(?:see|refer\s+to)\s+(?:the\s+)?[^.!?]{0,80}?\b(?:above|below|earlier|previous)\b(?:\s+for\s+(?:details|context))?|(?:see|refer\s+to)\s+(?:above|below)|n\/?a|todo|tbd|none|ditto|as\s+above|same\s+as\s+above|null|nil)$/;
 
 /**
  * A line that continues the bullet above it: leading whitespace, then content.
@@ -874,6 +945,18 @@ export const REGEX_MD_INDENTED_CONTINUATION = /^[ \t]+\S/;
  */
 export const REGEX_MD_FENCED_CODE_BLOCK = /^[ \t]*(`{3,}|~{3,})[^\n]*(?:\r?\n[\s\S]*?\r?\n[ \t]*\1[^\n]*(?=\r?\n|(?![\s\S]))|[\s\S]*(?![\s\S]))/gm;
 
+/**
+ * A CRLF or lone-CR line ending, normalised to `\n` before any partition runs.
+ *
+ * Why `DiscoveryReport` needs it: every section/key rule is anchored with `$`
+ * and without the `m` flag, so a line ending in `\r` never matches — a CRLF
+ * report scored zero sections, zero units, and named no empty section or blank
+ * key in its park (issue #306 review). Sibling domain parsers already normalise
+ * this way (`plan-document-kind.ts`, `plan-content.ts`, `plan-digest.ts`), so
+ * reading raw on-disk text without it was the divergence, not the convention.
+ */
+export const REGEX_MD_CRLF = /\r\n?/g;
+
 // Content thresholds for `DiscoveryReport.isPopulated`: a document shorter than
 // DISCOVERY_REPORT_MIN_CHARS cannot be a real RCA, a report carrying fewer than
 // DISCOVERY_REPORT_MIN_FILLED_KEYS has not described the failure, and one
@@ -903,6 +986,168 @@ export const DISCOVERY_REPORT_MIN_FILLED_KEYS = 3;
  * blank and stays parked.
  */
 export const DISCOVERY_REPORT_MAX_UNFILLED_KEYS = 2;
+
+/**
+ * The minimum cleaned character count of ONE content unit — a `##` section's
+ * prose body, or a filled key bullet's value.
+ *
+ * Why 20: it separates a real statement from a stub. Measured over this
+ * repository (issue #306 §2.5), the largest RESTATED value (a bullet that only
+ * repeats its own heading, e.g. `- **Root Cause Analysis:** Root Cause Analysis`)
+ * is 19 characters, and every key value in a genuine report is longer. The
+ * pristine scaffold and a cosmetic `see above` skeleton score zero units either
+ * way — and a long pointer (`see the … section above for details`) is excluded
+ * by `REGEX_MD_POINTER_ONLY_VALUE`, not by length.
+ */
+export const DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS = 20;
+
+/**
+ * The minimum number of content units — substantive sections plus substantive
+ * key values — a report must carry to release the DISCOVERY park.
+ *
+ * Why 3: the smallest genuine report in the calibration corpus (the #284 core,
+ * 3,424 chars) has exactly 3 content-bearing units. Any higher value
+ * re-introduces the false negative on the issue's own evidence; any lower one
+ * admits a four-empty-heading scaffold.
+ */
+export const DISCOVERY_REPORT_MIN_CONTENT_UNITS = 3;
+
+/**
+ * The minimum total substantive characters across all content units.
+ *
+ * Why 150: the separation measured in issue #306 §2.5 is large — the largest
+ * REJECTED document carries 41 content characters, the smallest ACCEPTED
+ * fixture 193. 150 sits inside that gap with headroom on both sides.
+ */
+export const DISCOVERY_REPORT_MIN_CONTENT_CHARS = 150;
+
+/**
+ * How many `##`+ sections must carry substantive prose before the document
+ * counts as heading-shaped evidence.
+ *
+ * Why 2: the prompt's Expected Output Structure names four topics, and a real
+ * report fills the analysis. Requiring two keeps a report that lost one section
+ * (or merged two) accepted, while a document with a single populated heading
+ * and nothing else is still treated as a citation-free stub.
+ */
+export const DISCOVERY_REPORT_MIN_PROSE_SECTIONS = 2;
+
+/**
+ * How many names `DiscoveryReport.describeMissingEvidence` spells out per
+ * category before collapsing the rest into `+N more`.
+ *
+ * Why 4: the pristine scaffold leaves ten template keys blank, and naming all
+ * of them made the park longer than the operator's terminal while burying the
+ * actionable tail of the message.
+ */
+export const DISCOVERY_REPORT_MAX_MISSING_NAMES = 4;
+
+/**
+ * The one contract the discovery prompt and the DISCOVERY predicate share
+ * (issue #306, AC4).
+ *
+ * Numbers are INTERPOLATED from the thresholds above rather than restated, so
+ * the prompt a subagent reads and the rule `DiscoveryReport.isPopulated`
+ * applies cannot drift apart. `buildDiscoveryTaskPrompt` appends this verbatim.
+ *
+ * The text must publish EVERY rule the predicate applies — the document-length
+ * floor and the blank-key cap included. Leaving them out made a report that
+ * satisfied every published number still park (issue #306 review, AC4).
+ */
+export function formatDiscoveryReportContract(): string {
+  return (
+    'The DISCOVERY gate scores CONTENT, not markdown shape. Either complete the scaffold\'s\n' +
+    '`- **Key:**` bullets, or write the sections as `##` headings with substantive prose.\n' +
+    `Accepted when the report is at least ${DISCOVERY_REPORT_MIN_CHARS} characters long and carries at least\n` +
+    `${DISCOVERY_REPORT_MIN_CONTENT_UNITS} content-bearing sections or key values (each with ${DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS}+ characters),\n` +
+    `totalling at least ${DISCOVERY_REPORT_MIN_CONTENT_CHARS} substantive characters. Shape evidence is either\n` +
+    `${DISCOVERY_REPORT_MIN_PROSE_SECTIONS}+ substantive \`##\` sections or ${DISCOVERY_REPORT_MIN_FILLED_KEYS}+ filled key values; a bullet-only report may\n` +
+    `leave at most ${DISCOVERY_REPORT_MAX_UNFILLED_KEYS} template keys blank, while a report with ${DISCOVERY_REPORT_MIN_PROSE_SECTIONS}+ substantive prose\n` +
+    'sections is not vetoed for retaining copied blank keys. Pointers ("see above", "n/a",\n' +
+    'TODO) and headings restated as their own values are not content. An untouched template,\n' +
+    'or headings with no prose under them, is parked — and the park lists the sections without\n' +
+    'substantive prose and any blank keys.'
+  );
+}
+
+/**
+ * The measured gaps of a parked discovery report (issue #306, AC3).
+ *
+ * Pure data: `DiscoveryReport` supplies the measurements, this module owns the
+ * user-facing wording, so the value object stays a predicate and the operator
+ * message can change without touching the gate. Also keeps the predicate and
+ * its diagnostic reading the same facts.
+ */
+export interface DiscoveryMissingEvidence {
+  readonly markdownChars: number;
+  readonly contentUnitCount: number;
+  readonly contentCharCount: number;
+  /** True when the report has an accepted shape (prose sections or bounded keys). */
+  readonly hasShapeEvidence: boolean;
+  readonly blankKeys: readonly string[];
+  /** Headings whose body does not clear the substantive-prose floor. */
+  readonly sectionsWithoutSubstantiveProse: readonly string[];
+}
+
+/**
+ * Renders the measured gaps of a parked discovery report for the operator.
+ *
+ * One clause per FAILING condition only — a populated report never reaches this
+ * formatter, and an unmeasured one produces `''` rather than a guessed message.
+ * The wording lives here (beside `formatDiscoveryParkAwaitingRca`) so the domain
+ * value object does not carry presentation strings.
+ */
+export function formatDiscoveryMissingEvidence(evidence: DiscoveryMissingEvidence): string {
+  const clauses: string[] = [];
+
+  if (evidence.markdownChars < DISCOVERY_REPORT_MIN_CHARS) {
+    clauses.push(`${evidence.markdownChars} of ${DISCOVERY_REPORT_MIN_CHARS} characters in the report`);
+  }
+
+  if (evidence.contentUnitCount < DISCOVERY_REPORT_MIN_CONTENT_UNITS) {
+    clauses.push(
+      `${evidence.contentUnitCount} of ${DISCOVERY_REPORT_MIN_CONTENT_UNITS} content-bearing sections or key values`
+    );
+  }
+
+  if (evidence.contentCharCount < DISCOVERY_REPORT_MIN_CONTENT_CHARS) {
+    clauses.push(`${evidence.contentCharCount} of ${DISCOVERY_REPORT_MIN_CONTENT_CHARS} content characters`);
+  }
+
+  if (!evidence.hasShapeEvidence) {
+    clauses.push(
+      `no accepted shape: needs ${DISCOVERY_REPORT_MIN_PROSE_SECTIONS} substantive ## sections or ${DISCOVERY_REPORT_MIN_FILLED_KEYS} filled key values`
+    );
+  }
+
+  if (evidence.blankKeys.length > DISCOVERY_REPORT_MAX_UNFILLED_KEYS) {
+    clauses.push(
+      `${evidence.blankKeys.length} blank template keys (max ${DISCOVERY_REPORT_MAX_UNFILLED_KEYS}): ${summariseEvidenceNames(evidence.blankKeys)}`
+    );
+  }
+
+  if (evidence.sectionsWithoutSubstantiveProse.length > 0) {
+    clauses.push(
+      `sections without substantive prose: ${summariseEvidenceNames(evidence.sectionsWithoutSubstantiveProse, '"')}`
+    );
+  }
+
+  return clauses.join('; ');
+}
+
+/**
+ * Joins at most `DISCOVERY_REPORT_MAX_MISSING_NAMES` names, then `+N more`.
+ *
+ * A pristine scaffold blanks ten keys; naming all of them buried the
+ * actionable tail of the park message.
+ */
+function summariseEvidenceNames(names: readonly string[], quote = ''): string {
+  const shown = names
+    .slice(0, DISCOVERY_REPORT_MAX_MISSING_NAMES)
+    .map((name) => `${quote}${name}${quote}`);
+  const extra = names.length - shown.length;
+  return extra > 0 ? `${shown.join(', ')} (+${extra} more)` : shown.join(', ');
+}
 
 // Ecosystem Identifiers
 export const ECOSYSTEM_NODE = 'node' as const;
@@ -1636,9 +1881,14 @@ export const NOTE_YOLO_PARKED_AT_DISCOVERY =
  * Re-entry park (issue #237): distinct from NOTE_YOLO_PARKED_AT_DISCOVERY because
  * the operator DID re-run after the park, so the outstanding work is the RCA
  * report itself rather than "dispatch the discovery subagent".
+ *
+ * Reworded for issue #306: the message no longer claims a populated report "is
+ * still an unpopulated scaffold" (false, and it named nothing missing). It now
+ * says the report lacks RCA evidence, and `formatDiscoveryParkAwaitingRca`
+ * appends WHICH evidence is missing and which files were read.
  */
 export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
-  'Parked at DISCOVERY for RCA: the discovery report is still an unpopulated scaffold. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run (`codeloop resume` first if a pause is recorded). Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
+  'Parked at DISCOVERY for RCA: the discovery report does not yet contain RCA evidence. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run (`codeloop resume` first if a pause is recorded). Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
 /**
  * Recorded in history metadata when `codeloop next --restart` re-opens a
  * COMPLETED checkpoint, so the destructive reset is auditable from `status`.
@@ -2705,17 +2955,38 @@ export const NOTE_BLANK_PLAN_DISPATCH_PLANNER =
   "The plan at '{planPath}' is still blank, so dispatching the implementer would give it nothing to execute. Dispatch the PLANNER to write the specification (or supply a plan with `codeloop implement --plan-path <file>`), then run `codeloop next` again. {command}." as const;
 
 /**
- * Appends the checked paths to the DISCOVERY park message (issue #283, AC3).
+ * Appends the missing evidence and the checked paths to the DISCOVERY park
+ * message (issues #283, #306).
  *
  * Kept as a formatter rather than a second constant so the base note stays the
- * exact fallback when no path is known (a dry run, a checkpoint with no
- * directory) — and so a parked operator is always told WHICH file was read.
+ * exact fallback when nothing is known (a dry run, a checkpoint with no
+ * directory) — and so a parked operator is told WHICH file was read and WHAT
+ * the predicate found missing, instead of being told a populated report is "an
+ * unpopulated scaffold".
+ *
+ * With no arguments it returns `NOTE_DISCOVERY_PARK_AWAITING_RCA` unchanged.
  */
-export function formatDiscoveryParkAwaitingRca(checkedPaths?: string | null): string {
-  if (!checkedPaths || String(checkedPaths).trim().length === 0) {
-    return NOTE_DISCOVERY_PARK_AWAITING_RCA;
+export function formatDiscoveryParkAwaitingRca(
+  checkedPaths?: string | null,
+  missingEvidence?: string | null,
+  evaluatedPath?: string | null
+): string {
+  const parts: string[] = [NOTE_DISCOVERY_PARK_AWAITING_RCA];
+
+  const missing = (missingEvidence ?? '').trim();
+  if (missing.length > 0) {
+    const where = (evaluatedPath ?? '').trim();
+    parts.push(
+      where.length > 0 ? `Missing evidence in ${where}: ${missing}.` : `Missing evidence: ${missing}.`
+    );
   }
-  return `${NOTE_DISCOVERY_PARK_AWAITING_RCA} Checked: ${checkedPaths}.`;
+
+  const checked = (checkedPaths ?? '').trim();
+  if (checked.length > 0) {
+    parts.push(`Checked: ${checked}.`);
+  }
+
+  return parts.join(' ');
 }
 
 

@@ -75,7 +75,8 @@ import {
   MSG_GATE_LINT_MISSING,
   HEADING_QUALITY_GATE_TARGETS,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
-  SMOKE_STATUS_NOT_DECLARED
+  SMOKE_STATUS_NOT_DECLARED,
+  formatDiscoveryReportContract
 } from '../domain';
 import type { PlanIntegrityVerdict } from './resolve-gate-verification';
 
@@ -616,6 +617,9 @@ export class ResolveSubagentUseCase {
     prompt += `- **Root Cause Analysis**: Detailed breakdown of failure mechanisms.\n`;
     prompt += `- **Manual Bug Smoke Test**: Exact reproduction steps and results.\n`;
     prompt += `- **Remediation Strategy**: Cleanest fix approach.\n\n`;
+
+    prompt += `### Evidence Contract:\n`;
+    prompt += `${formatDiscoveryReportContract()}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
