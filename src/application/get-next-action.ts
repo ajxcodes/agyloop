@@ -160,6 +160,15 @@ export interface NextActionResult {
    */
   readonly lastReviewSource?: string | null;
   readonly lastReviewCritiqueVerified?: boolean;
+  /**
+   * The review round whose remediation is attached to the IMPLEMENT prompt
+   * (issue #313).
+   *
+   * Present ONLY when the latest recorded review asked for changes and its
+   * remediation block was rendered; `null` when the round number was not
+   * recorded. Purely additive: absent from every other directive.
+   */
+  readonly reviewRemediationRound?: number | null;
 }
 
 export class GetNextActionUseCase {
@@ -910,26 +919,46 @@ export class GetNextActionUseCase {
   }
 
   /**
+   * Reads the metadata of the MOST RECENT review entry in the checkpoint
+   * history (issues #259, #313).
+   *
+   * `RunReviewUseCase` records everything about a verdict in the metadata of
+   * the history entry it writes (`reviewVerdict`, `reviewTokens`,
+   * `reviewRound`, `reviewSource`, …). Both the COMMIT-gate description
+   * (#259) and the IMPLEMENT remediation channel (#313) read that ONE record,
+   * so the scan lives here.
+   *
+   * The history is scanned backwards: the newest review entry wins, so a
+   * re-recorded verdict cannot inherit older fields. An entry without a
+   * non-empty string `reviewVerdict` is not a review entry and is skipped.
+   */
+  private lastReviewMetadata(sm: StateMachine): Record<string, unknown> | null {
+    const history = sm.history;
+
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const metadata = history[index].metadata;
+      const verdict = metadata?.reviewVerdict;
+      if (typeof verdict === 'string' && verdict.length > 0) {
+        return metadata ?? null;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Reads the MOST RECENT recorded AI-review verdict from the checkpoint
    * history (issue #259).
    *
    * `RunReviewUseCase` records the verdict in the metadata of the history
    * entry it writes (`reviewVerdict`), so the COMMIT gate can describe what
-   * actually happened instead of hard-coding "Review passed". The history is
-   * scanned backwards: the last verdict is the one that produced this
-   * checkpoint.
+   * actually happened instead of hard-coding "Review passed". The scan is
+   * shared with the remediation channel (issue #313): the newest review entry
+   * wins, so a re-recorded verdict cannot inherit older fields.
    */
   private lastReviewVerdict(sm: StateMachine): string | null {
-    const history = sm.history;
-
-    for (let index = history.length - 1; index >= 0; index -= 1) {
-      const verdict = history[index].metadata?.reviewVerdict;
-      if (typeof verdict === 'string' && verdict.length > 0) {
-        return verdict;
-      }
-    }
-
-    return null;
+    const verdict = this.lastReviewMetadata(sm)?.reviewVerdict;
+    return typeof verdict === 'string' && verdict.length > 0 ? verdict : null;
   }
 
   /**
@@ -1056,6 +1085,55 @@ export class GetNextActionUseCase {
     return `${verdictLine}${provenance} ${commitInstructions}`;
   }
 
+  /**
+   * Builds the review-remediation section for a re-dispatched IMPLEMENT
+   * directive (issue #313).
+   *
+   * `RunReviewUseCase` already persists the reviewer's verdict, the structured
+   * `REVIEW_STATUS`/`REVIEW_SUMMARY`/`UNFULFILLED_AC`/`REMEDIATION_GUIDANCE`
+   * block (`reviewTokens`) and the round number, but nothing ever read that
+   * record when re-dispatching the implementer: the prompt was rebuilt from
+   * the plan and the TRIAGE payload only, so the reviewer's remediation was
+   * recorded and dropped.
+   *
+   * The LATEST review entry governs: a later `APPROVED`/`SKIPPED` round yields
+   * null, so no earlier round's guidance can leak into a re-dispatch. The
+   * `reviewTokens` block is canonical; `selfCorrectionPayload` is the legacy
+   * fallback for records written before it existed. The block travels
+   * VERBATIM — re-parsing it could drop an item the reviewer considered
+   * blocking — under a round-named heading that supplies the context the
+   * legacy Markdown lacks.
+   */
+  private buildReviewRemediation(
+    sm: StateMachine
+  ): { readonly round: number | null; readonly payload: string } | null {
+    const metadata = this.lastReviewMetadata(sm);
+    if (!metadata || metadata.reviewVerdict !== VERDICT_CHANGES_REQUESTED) {
+      return null;
+    }
+
+    const tokens = typeof metadata.reviewTokens === 'string' ? metadata.reviewTokens.trim() : '';
+    const selfCorrection =
+      typeof metadata.selfCorrectionPayload === 'string'
+        ? metadata.selfCorrectionPayload.trim()
+        : '';
+    const block = tokens || selfCorrection;
+    if (!block) {
+      return null;
+    }
+
+    const round = typeof metadata.reviewRound === 'number' ? metadata.reviewRound : null;
+    const heading =
+      round === null
+        ? `### Review Remediation (${VERDICT_CHANGES_REQUESTED})`
+        : `### Review Remediation - Round ${round} (${VERDICT_CHANGES_REQUESTED})`;
+
+    return {
+      round,
+      payload: `${heading}\nThe AI Review requested changes and returned the pipeline to IMPLEMENT. The rejected implementation is still in the worktree: address every item below before re-running the quality gate.\n\n${block}`
+    };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildImplementAction(sm: StateMachine, config: any, cwd: string): NextActionResult {
     const activeIssue = sm.issue;
@@ -1108,6 +1186,8 @@ export class GetNextActionUseCase {
 
     const taskBranch = sm.worktree?.branch || null;
 
+    const remediation = this.buildReviewRemediation(sm);
+
     const subagent = this.resolveSubagentUseCase.execute({
       role: ROLE_IMPLEMENTER,
       customConfig: config,
@@ -1120,7 +1200,11 @@ export class GetNextActionUseCase {
       issueNumber: activeIssue,
       workspaceDir: worktreePath || cwd,
       config,
-      prReviewComments: sm.triagePayload
+      prReviewComments: sm.triagePayload,
+      // Issue #313: the reviewer's recorded remediation must reach the
+      // implementer. It rides the EXISTING self-correction channel — the same
+      // one `codeloop implement` already hydrates from the last history entry.
+      selfCorrectionPayload: remediation?.payload ?? null
     });
 
     const invocationPayload: SubagentInvocationPayload = {
@@ -1143,12 +1227,15 @@ export class GetNextActionUseCase {
       actionType: 'subagent',
       role: ROLE_IMPLEMENTER,
       title: 'Invoke Code Implementer Subagent',
-      description: 'Execute surgical code modifications adhering strictly to approved plan in dedicated worktree.',
+      description: remediation
+        ? `Execute surgical code modifications adhering strictly to approved plan in dedicated worktree. Includes AI review remediation${remediation.round === null ? '' : ` from round ${remediation.round}`}.`
+        : 'Execute surgical code modifications adhering strictly to approved plan in dedicated worktree.',
       baseBranch,
       taskBranch,
       worktreePath,
       invocationPayload,
       humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`,
+      ...(remediation ? { reviewRemediationRound: remediation.round } : {}),
       planBlank: false
     };
   }
