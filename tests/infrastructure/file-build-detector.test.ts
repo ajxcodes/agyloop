@@ -331,8 +331,14 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       fs.writeFileSync(path.join(workflowsDir, 'test.yml'), 'name: Test\n', 'utf8');
 
       const detector = new FileBuildDetector();
-      // Stub hasActBinary and resolveContainerSocket to ensure deterministic resolution
+      // Stub all three decision seams: act presence, runtime availability, and
+      // the socket. `resolveContainerRuntime` is environment-dependent (it looks
+      // for podman/docker on PATH), so leaving it real made this test pass on a
+      // host with a container runtime and fail inside a container image without
+      // one (#284) — the gate was skipped and DEFAULT_GATE_COMMANDS (2 commands)
+      // fell through. The resolver must be decided by these seams alone.
       detector.hasActBinary = () => true;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
 
       const config = {
@@ -365,7 +371,8 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       const detector = new FileBuildDetector();
       detector.hasActBinary = () => true;
 
-      // When Podman socket is resolved
+      // When Podman socket is resolved (the probe must honour this seam).
+      detector.resolveContainerRuntime = () => 'podman';
       detector.resolveContainerSocket = () => ({
         socketPath: 'unix:///run/user/1000/podman/podman.sock',
         runtime: 'podman'
@@ -401,6 +408,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
 
       const detector = new FileBuildDetector();
       detector.hasActBinary = () => true;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
 
       const detected = await detector.detect(tempDir, {
@@ -419,6 +427,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       const detector = new FileBuildDetector();
       // Case A: Act binary missing
       detector.hasActBinary = () => false;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
 
       const resolvedNoAct = await detector.resolveCommands(tempDir, {
@@ -428,9 +437,11 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       assert.strictEqual(resolvedNoAct.length, 1);
       assert.strictEqual(resolvedNoAct[0].command, 'npm test');
 
-      // Case B: Container socket missing
+      // Case B: no usable container runtime (#295 — a missing socket is not
+      // evidence; the runtime health probe decides and fails closed here).
       detector.hasActBinary = () => true;
       detector.resolveContainerSocket = () => null;
+      detector.probeContainerRuntime = () => null;
 
       const resolvedNoSocket = await detector.resolveCommands(tempDir, {
         models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
@@ -441,6 +452,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
 
       // Case C: containerGates explicitly set to false
       detector.hasActBinary = () => true;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
       const resolvedDisabled = await detector.resolveCommands(tempDir, {
         models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
@@ -522,23 +534,23 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       }
     }
 
-    test('T1: dead DOCKER_HOST unix socket resolves to null with a warning', async () => {
+    test('T1: a dead DOCKER_HOST unix socket resolves to null WITHOUT a warning (#295: pure)', async () => {
       process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
 
       await withIsolatedFs(async (warnings) => {
         assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
-        assert.ok(warnings.some((w) => w.includes('DOCKER_HOST') && w.includes('missing socket')));
+        assert.deepStrictEqual(warnings, [], 'socket resolution must not warn; resolveActCommand owns the warning');
       });
     });
 
-    test('T2: DOCKER_HOST pointing at a non-socket path resolves to null with a warning', async () => {
+    test('T2: DOCKER_HOST pointing at a non-socket path resolves to null WITHOUT a warning', async () => {
       const regularFile = path.join(tempDir, 'not-a-socket');
       fs.writeFileSync(regularFile, 'definitely not a socket', 'utf8');
       process.env.DOCKER_HOST = `unix://${regularFile}`;
 
       await withIsolatedFs(async (warnings) => {
         assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
-        assert.ok(warnings.some((w) => w.includes('DOCKER_HOST') && w.includes('not a socket')));
+        assert.deepStrictEqual(warnings, [], 'a non-socket path is not a warning site');
       });
     });
 
@@ -582,25 +594,245 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       });
     });
 
-    test('T6: dead DOCKER_HOST skips the act gate and falls back to host commands', async () => {
+    test('T6: a DEAD runtime skips the act gate and falls back to host commands', async () => {
       fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
       fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
       process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
 
       const detector = new FileBuildDetector();
       detector.hasActBinary = () => true;
+      // #295: the runtime is what decides availability, and this one is dead.
+      detector.resolveContainerRuntime = () => 'docker';
+      detector.probeContainerRuntime = () => null;
       const config = {
         models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
         options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
       };
 
-      await withIsolatedFs(async () => {
+      await withIsolatedFs(async (warnings) => {
         assert.strictEqual(detector.resolveActCommand(tempDir, config), null);
+        assert.strictEqual(warnings.length, 1, 'exactly one container warning, at gate selection only');
+        assert.ok(warnings[0].includes('no usable container runtime'));
 
         const resolved = await detector.resolveCommands(tempDir, config);
         assert.strictEqual(resolved.length, 1);
         assert.strictEqual(resolved[0].command, 'npm test');
         assert.ok(resolved.every((c: { id: string }) => c.id !== CMD_ID_ACT));
+      });
+    });
+
+    test('T7: a HEALTHY runtime with no socket probes as fork-exec and act gets no socket flag (#295)', async () => {
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      process.env.XDG_RUNTIME_DIR = path.join(tempDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const podman = path.join(binDir, 'podman');
+      fs.writeFileSync(podman, '#!/bin/sh\nexit 0\n', 'utf8');
+      fs.chmodSync(podman, 0o755);
+      const prevPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+
+      try {
+        await withIsolatedFs(async () => {
+          const probe = FileBuildDetector.probeContainerRuntime();
+          assert.deepStrictEqual(probe, {
+            runtime: 'podman',
+            socketPath: null,
+            connection: 'fork-exec'
+          });
+
+          const detector = new FileBuildDetector();
+          detector.hasActBinary = () => true;
+          const actCommand = detector.resolveActCommand(tempDir, {
+            models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+            options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+          });
+          assert.strictEqual(actCommand.id, CMD_ID_ACT);
+          assert.strictEqual(actCommand.command, 'act');
+          assert.ok(!actCommand.command.includes('--container-daemon-socket'));
+        });
+      } finally {
+        process.env.PATH = prevPath;
+      }
+    });
+
+    test('T8: a runtime that FAILS its native probe is a clear skip, never a hard failure (#295/#232)', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      process.env.XDG_RUNTIME_DIR = path.join(tempDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const podman = path.join(binDir, 'podman');
+      fs.writeFileSync(podman, '#!/bin/sh\nexit 1\n', 'utf8');
+      fs.chmodSync(podman, 0o755);
+      const prevPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+
+      try {
+        await withIsolatedFs(async (warnings) => {
+          assert.strictEqual(FileBuildDetector.probeContainerRuntime(), null);
+
+          const detector = new FileBuildDetector();
+          detector.hasActBinary = () => true;
+          const config = {
+            models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+            options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+          };
+          assert.strictEqual(detector.resolveActCommand(tempDir, config), null);
+          assert.strictEqual(warnings.length, 1);
+
+          const resolved = await detector.resolveCommands(tempDir, config);
+          assert.strictEqual(resolved.length, 1);
+          assert.strictEqual(resolved[0].command, 'npm test');
+        });
+      } finally {
+        process.env.PATH = prevPath;
+      }
+    });
+
+    test('T9: a read-only command emits no container warning (#295: warning only at gate selection)', () => {
+      const { spawnSync } = require('node:child_process');
+      const repoRoot = path.resolve(__dirname, '..', '..');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const podman = path.join(binDir, 'podman');
+      fs.writeFileSync(podman, '#!/bin/sh\nexit 1\n', 'utf8');
+      fs.chmodSync(podman, 0o755);
+      fs.mkdirSync(path.join(tempDir, '.home'), { recursive: true });
+
+      const result = spawnSync(process.execPath, [path.join(repoRoot, 'bin', 'codeloop.js'), 'status'], {
+        cwd: tempDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          HOME: path.join(tempDir, '.home'),
+          DOCKER_HOST: `unix://${path.join(tempDir, 'missing.sock')}`,
+          XDG_RUNTIME_DIR: path.join(tempDir, 'xdg'),
+          AGY_SUBAGENT: ''
+        }
+      });
+
+      assert.ok(
+        !`${result.stderr}`.includes('container'),
+        `a read-only command must not warn about the container runtime, got:\n${result.stderr}`
+      );
+    });
+  });
+
+  describe('Environment-independent container gate resolution (#284)', () => {
+    /**
+     * Points PATH at a directory whose ONLY executable is a `which` that always
+     * exits 1. For the duration of `body`, the runtime lookups
+     * (`resolveContainerRuntime`, `hasActBinary`) therefore answer "absent" for
+     * podman/docker/act regardless of what the host has installed — the
+     * Alpine CI condition that made AC2 host-dependent.
+     *
+     * PATH is restored in a finally block: sibling tests share this process, so
+     * an environment stub must never leak.
+     */
+    async function withRuntimeFreePath<T>(body: () => Promise<T> | T): Promise<T> {
+      const binDir = path.join(tempDir, 'runtime-free-bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const which = path.join(binDir, 'which');
+      fs.writeFileSync(which, '#!/bin/sh\nexit 1\n', 'utf8');
+      fs.chmodSync(which, 0o755);
+
+      const prevPath = process.env.PATH;
+      process.env.PATH = binDir;
+      try {
+        return await body();
+      } finally {
+        if (prevPath === undefined) delete process.env.PATH;
+        else process.env.PATH = prevPath;
+      }
+    }
+
+    function containerGateConfig(): any {
+      return {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: {
+          commitAfter: false,
+          gateTimeoutSeconds: 300,
+          autoApproveInYolo: true,
+          enableMcpInPlanner: true,
+          containerGates: true,
+          act: { enabled: true, workflow: '.github/workflows/ci.yml', job: 'test-job' }
+        }
+      };
+    }
+
+    test('REG1: a stubbed healthy runtime resolves the act gate even with NO runtime binary installed', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+
+      await withRuntimeFreePath(async () => {
+        // Nothing is installed: the REAL lookups report no runtime and no act,
+        // which is exactly the Alpine CI condition.
+        assert.strictEqual(FileBuildDetector.resolveContainerRuntime(), null);
+        assert.strictEqual(FileBuildDetector.hasActBinary(), false);
+
+        const detector = new FileBuildDetector();
+        detector.hasActBinary = () => true;
+        detector.resolveContainerRuntime = () => 'docker';
+        detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
+
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+          warnings.push(args.map(String).join(' '));
+        };
+        try {
+          const actCommand = detector.resolveActCommand(tempDir, containerGateConfig());
+          assert.ok(actCommand, 'a healthy stubbed runtime must still select the act gate');
+          assert.strictEqual(actCommand.id, CMD_ID_ACT);
+
+          const resolved = await detector.resolveCommands(tempDir, containerGateConfig());
+          assert.strictEqual(resolved.length, 1, 'the act gate replaces the host commands, it does not join them');
+          assert.strictEqual(resolved[0].id, CMD_ID_ACT);
+          assert.strictEqual(resolved[0].label, CMD_LABEL_ACT);
+          assert.strictEqual(resolved[0].command, 'act -W .github/workflows/ci.yml -j test-job');
+          assert.deepStrictEqual(warnings, [], 'a selected gate must not warn about the runtime');
+        } finally {
+          console.warn = originalWarn;
+        }
+      });
+    });
+
+    test('REG2: an absent runtime is a clear skip, never a hard failure (#232/#295), independent of PATH', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+
+      await withRuntimeFreePath(async () => {
+        const detector = new FileBuildDetector();
+        detector.hasActBinary = () => true;
+        // Explicitly absent: no runtime answered the probe.
+        detector.resolveContainerRuntime = () => null;
+
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+          warnings.push(args.map(String).join(' '));
+        };
+        try {
+          assert.strictEqual(detector.resolveActCommand(tempDir, containerGateConfig()), null);
+          assert.strictEqual(warnings.length, 1, 'exactly one warning, at gate selection');
+          assert.ok(warnings[0].includes('no usable container runtime'));
+
+          const resolved = await detector.resolveCommands(tempDir, containerGateConfig());
+          assert.strictEqual(resolved.length, 1);
+          assert.strictEqual(resolved[0].command, 'npm test');
+          assert.ok(resolved.every((cmd: { id: string }) => cmd.id !== CMD_ID_ACT));
+        } finally {
+          console.warn = originalWarn;
+        }
       });
     });
   });

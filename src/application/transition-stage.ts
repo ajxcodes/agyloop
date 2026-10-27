@@ -28,15 +28,29 @@ import {
   SUMMARY_STATUS_PENDING,
   SUMMARY_STATUS_IN_PROGRESS,
   SUMMARY_STATUS_COMPLETED,
-  MS_PER_SECOND,
-  SECONDS_PER_MINUTE,
+  SUMMARY_STATUS_FAILED,
+  SUMMARY_STATUS_NOT_RECORDED,
+  DURATION_NOT_RECORDED,
+  EVIDENCE_NOT_RECORDED,
+  GATE_VERDICT_NOT_RECORDED,
+  STATUS_PASSED,
+  STATUS_FAILED,
+  GateResultReport,
+  consumedHumanWaitMs,
+  deriveStageDuration,
+  isHumanWaitStage,
   WorktreeCreationError,
   PreFlightHaltError,
   HALT_TYPE_MISSING_PLAN_DIR,
   ValidationError,
   MSG_PLAN_MODIFIED_DURING_GATE
 } from '../domain';
-import { StateRepository, WorktreeManagerPort, PlanGeneratorPort } from '../ports';
+import {
+  StateRepository,
+  WorktreeManagerPort,
+  PlanGeneratorPort,
+  GateReportRepositoryPort
+} from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface TransitionParams {
@@ -56,17 +70,25 @@ export class TransitionStageUseCase {
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
   private readonly planGenerator?: PlanGeneratorPort;
+  /**
+   * The gate evidence channel (issue #284). Optional so every existing call
+   * site and test keeps working: without it, the gate row is honestly reported
+   * as `NOT RECORDED` instead of inheriting a value nobody filed.
+   */
+  private readonly gateReportRepo?: GateReportRepositoryPort;
 
   constructor(
     stateRepo: StateRepository,
     worktreeManager?: WorktreeManagerPort,
     inferBaseBranchUseCase?: InferBaseBranchUseCase,
-    planGenerator?: PlanGeneratorPort
+    planGenerator?: PlanGeneratorPort,
+    gateReportRepo?: GateReportRepositoryPort
   ) {
     this.stateRepo = stateRepo;
     this.worktreeManager = worktreeManager;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
     this.planGenerator = planGenerator;
+    this.gateReportRepo = gateReportRepo;
   }
 
   public async execute(params: TransitionParams): Promise<StateMachine> {
@@ -103,13 +125,46 @@ export class TransitionStageUseCase {
     }
 
     const prevStage = sm.currentStage;
-    let gateWaitMs = 0;
-    if (sm.pausedAtGate && sm.pausedAtTimestamp) {
-      gateWaitMs = Math.max(0, Date.now() - new Date(sm.pausedAtTimestamp).getTime());
-    }
+    // Issue #284 (AC5): ONE wait measurement, taken by the ONLY code that banks
+    // wait. `resumeFromGate()` is already a no-op when there is no pause, so it
+    // is called unconditionally — the two pause shapes (gate name + timestamp,
+    // timestamp alone) converge here instead of diverging between call sites.
+    // What this transition consumed is `after - before`, never the cumulative
+    // total: subtracting the whole run's bank from one stage's window is what
+    // printed a minutes-long implementation as `0s`.
+    const waitBefore = sm.totalHumanWaitMs;
+    sm.resumeFromGate();
+    const humanWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
 
-    if (sm.pausedAtGate) {
-      sm.resumeFromGate();
+    // Issue #284 (D1): ingest the gate's filed evidence BEFORE the transition,
+    // so the entry this transition writes carries the verdict, the test count
+    // and the measured duration. One source: the checkpoint metadata and the
+    // summary cannot disagree, and a gate with nothing filed says `not
+    // recorded` rather than inheriting `PENDING` or a previous PASSED.
+    const activeIssue = sm.issue || params.issue || null;
+    let gateEvidence: GateResultReport | null = null;
+    let transitionMetadata: Record<string, unknown> = { ...(params.metadata || {}) };
+    if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
+      const gateRound = sm.history.filter((entry) => entry.stage === STAGE_QUALITY_GATE).length;
+      const filed = this.gateReportRepo ? this.gateReportRepo.load(activeIssue) : null;
+      if (filed && filed.gateRound === gateRound) {
+        gateEvidence = filed;
+        transitionMetadata = {
+          ...transitionMetadata,
+          gateVerdict: filed.verdict,
+          gateTests: filed.testsStatus,
+          ...(filed.durationMs !== null ? { stageDurationMs: filed.durationMs } : {})
+        };
+      } else {
+        transitionMetadata = {
+          ...transitionMetadata,
+          gateVerdict: GATE_VERDICT_NOT_RECORDED
+        };
+        console.warn(
+          '[agyloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded". ' +
+            'File it with `codeloop gate-report --issue <n> --report-file <path>` before advancing.'
+        );
+      }
     }
 
     // #226: legality FIRST. `transition()` is the single thrower of
@@ -117,7 +172,15 @@ export class TransitionStageUseCase {
     // worktree guardrail below, so a rejected target can no longer have created a
     // worktree and a branch on disk. Nothing is persisted until the save below, so
     // the on-disk checkpoint is byte-identical on the failure path either way.
-    sm.transition(params.targetStage, params.metadata || {});
+    sm.transition(params.targetStage, transitionMetadata);
+
+    // Consume-on-ingest (issue #284): one filed report certifies exactly one
+    // gate round, so the same PASSED can never be applied to a later run. A
+    // report whose round did not match is discarded too — it is stale evidence.
+    // A dry run only READS: it must never consume evidence it did not use.
+    if (!params.dryRun && prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
+      this.gateReportRepo?.clear(activeIssue);
+    }
 
     // Issue #298: the approved plan is frozen for the whole IMPLEMENT ->
     // QUALITY_GATE -> REVIEW loop. Entering IMPLEMENT from a fresh approval
@@ -237,6 +300,11 @@ export class TransitionStageUseCase {
     }
 
     if (!params.dryRun) {
+      // Issue #284: entering the gate invalidates any stale report BEFORE the
+      // save, so a re-run that files nothing cannot inherit the previous PASSED.
+      if (targetStageStr === STAGE_QUALITY_GATE && prevStage !== STAGE_QUALITY_GATE) {
+        this.gateReportRepo?.clear(activeIssue);
+      }
       await this.stateRepo.save(sm.toSnapshot());
 
       if (this.planGenerator) {
@@ -259,43 +327,84 @@ export class TransitionStageUseCase {
             [STAGE_COMPLETED]: SUMMARY_STAGE_COMMIT_PR
           };
 
-          const formatDuration = (ms: number): string => {
-            const totalSeconds = Math.max(0, Math.round(ms / MS_PER_SECOND));
-            const minutes = Math.floor(totalSeconds / SECONDS_PER_MINUTE);
-            const seconds = totalSeconds % SECONDS_PER_MINUTE;
-            if (minutes > 0) {
-              return `${minutes}m ${seconds}s`;
-            }
-            return `${seconds}s`;
-          };
-
-          // Compute duration for the stage just exited
-          let prevDurationStr: string | undefined = undefined;
-          const history = sm.history;
-          if (history.length >= 2) {
-            const currentEntry = history[history.length - 1];
-            const prevEntry = history[history.length - 2];
-            const startTime = new Date(prevEntry.timestamp).getTime();
-            const endTime = new Date(currentEntry.timestamp).getTime();
-            let durationMs = Math.max(0, endTime - startTime);
-            const waitMsForStage = gateWaitMs > 0 ? gateWaitMs : (prevStage === STAGE_IMPLEMENT ? sm.totalHumanWaitMs : 0);
-            if (waitMsForStage > 0) {
-              durationMs = Math.max(0, durationMs - waitMsForStage);
-            }
-            prevDurationStr = formatDuration(durationMs);
-          }
+          // Issue #284 (AC5): the duration of the stage that ENDED.
+          //
+          // A stage that measured itself records the measurement on the entry
+          // this transition just wrote (`stageDurationMs` always describes the
+          // stage that ended). The history window is only the fallback, and it
+          // is subtracted by the wait THIS transition consumed — never by the
+          // cumulative `totalHumanWaitMs`.
+          //
+          // A human-wait gate row has no work of its own. Without a
+          // self-measurement it writes NO duration (`undefined`), which leaves
+          // the work stage's cell in place instead of printing the human idle
+          // time as stage work.
+          const exitedStage = prevStage;
+          const writtenMetadata = sm.history[sm.history.length - 1]?.metadata ?? {};
+          const recordedDurationMs =
+            typeof writtenMetadata.stageDurationMs === 'number'
+              ? writtenMetadata.stageDurationMs
+              : undefined;
+          const prevDurationStr: string | undefined =
+            isHumanWaitStage(exitedStage) && recordedDurationMs === undefined
+              ? undefined
+              : deriveStageDuration(sm.history, exitedStage, {
+                  stageDurationMs: recordedDurationMs,
+                  humanWaitMs
+                });
 
           const prevMappedStage = stageMap[prevStage];
           const mappedStage = stageMap[targetStageStr];
 
           // 1. Mark preceding stage as COMPLETED if transitioning forward
           if (prevMappedStage && prevMappedStage !== mappedStage) {
-            this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
-              stage: prevMappedStage,
-              status: SUMMARY_STATUS_COMPLETED,
-              duration: prevDurationStr
-            });
-          } else if (prevMappedStage && prevDurationStr) {
+            if (exitedStage === STAGE_QUALITY_GATE) {
+              // Issue #284 (AC1/AC2): the gate row reports the gate that
+              // actually ran — verdict, build system, test count and measured
+              // duration — from the metadata this transition just wrote, so the
+              // checkpoint and the summary cannot disagree. With no filed
+              // evidence the row says `NOT RECORDED`, never `PENDING`.
+              const writtenVerdict =
+                typeof writtenMetadata.gateVerdict === 'string'
+                  ? writtenMetadata.gateVerdict
+                  : GATE_VERDICT_NOT_RECORDED;
+              const gateRowStatus =
+                writtenVerdict === STATUS_PASSED
+                  ? SUMMARY_STATUS_COMPLETED
+                  : writtenVerdict === STATUS_FAILED
+                    ? SUMMARY_STATUS_FAILED
+                    : SUMMARY_STATUS_NOT_RECORDED;
+
+              this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
+                stage: prevMappedStage,
+                status: gateRowStatus,
+                // The gate ran OUTSIDE this process: only a filed report can
+                // measure its duration. The transition gap is not the gate's
+                // work, so with no evidence the cell is `-`, never a guess.
+                duration:
+                  recordedDurationMs !== undefined && prevDurationStr !== undefined
+                    ? prevDurationStr
+                    : DURATION_NOT_RECORDED,
+                buildStatus: gateEvidence ? gateEvidence.buildStatus : EVIDENCE_NOT_RECORDED,
+                testsStatus: gateEvidence ? gateEvidence.testsStatus : EVIDENCE_NOT_RECORDED,
+                ...(gateEvidence
+                  ? {
+                      buildSystem: gateEvidence.buildSystem,
+                      executedCommands: gateEvidence.executedCommands
+                    }
+                  : {}),
+                ...(gateEvidence && gateEvidence.notRun.length > 0
+                  ? { notRun: gateEvidence.notRun }
+                  : {})
+              });
+            } else {
+              this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
+                stage: prevMappedStage,
+                status: SUMMARY_STATUS_COMPLETED,
+                ...(prevDurationStr !== undefined ? { duration: prevDurationStr } : {})
+              });
+            }
+          } else if (prevMappedStage && prevDurationStr !== undefined) {
             this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
               stage: prevMappedStage,
               duration: prevDurationStr

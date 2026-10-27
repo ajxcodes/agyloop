@@ -29,6 +29,8 @@ import {
   SUMMARY_STATUS_IN_PROGRESS,
   SUMMARY_STATUS_COMPLETED,
   SUMMARY_STATUS_PENDING,
+  SUMMARY_STATUS_SKIPPED,
+  ROLE_DISCOVERY,
   IssueNumber,
   PreFlightHaltError,
   ValidationError,
@@ -185,6 +187,11 @@ export class StartPlanningUseCase {
         });
       }
       if (issueData?.milestone?.title) {
+        // Issue #284 (D6): this only fires once `fetchIssue` ASKS for
+        // `milestone`. The `gh --json` field list omitted it, so every
+        // checkpoint recorded `milestoneTitle: null` — do not "simplify" the
+        // field list back, and do not rely on a milestone arriving unless it
+        // was requested.
         sm.setMilestoneTitle(issueData.milestone.title);
       }
     }
@@ -264,6 +271,16 @@ export class StartPlanningUseCase {
       cwd: workspace
     });
     const plannerDef = this.resolveSubagentUseCase.execute({
+      customConfig: config,
+      workspaceDir: workspace
+    });
+    // Issue #284 (AC4): the Discovery row names the subagent that PERFORMED
+    // discovery, not the planner. Under the default config this resolves to
+    // `inherit` (there is no `models.discovery` mapping), which is the model
+    // actually dispatched — the old `pro` cell came from the planner's
+    // descriptor and was never the discovery subagent's.
+    const discoveryDef = this.resolveSubagentUseCase.execute({
+      role: ROLE_DISCOVERY,
       customConfig: config,
       workspaceDir: workspace
     });
@@ -373,19 +390,17 @@ export class StartPlanningUseCase {
         if (sm.currentStage === STAGE_DISCOVERY) {
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
-            subagent: plannerDef.name,
-            model: plannerDef.model,
+            subagent: discoveryDef.name,
+            model: discoveryDef.model,
             status: SUMMARY_STATUS_IN_PROGRESS
           });
         } else if (sm.currentStage === STAGE_PLAN) {
-          if (!params.skipDiscovery) {
-            this.planGenerator.updateSummaryLog(summaryPath, {
-              stage: SUMMARY_STAGE_DISCOVERY,
-              subagent: plannerDef.name,
-              model: plannerDef.model,
-              status: SUMMARY_STATUS_COMPLETED
-            });
-          }
+          this.planGenerator.updateSummaryLog(summaryPath, {
+            stage: SUMMARY_STAGE_DISCOVERY,
+            subagent: discoveryDef.name,
+            model: discoveryDef.model,
+            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED
+          });
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,
@@ -394,14 +409,12 @@ export class StartPlanningUseCase {
             planRevisionCount: sm.planRevisionCount
           });
         } else {
-          if (!params.skipDiscovery) {
-            this.planGenerator.updateSummaryLog(summaryPath, {
-              stage: SUMMARY_STAGE_DISCOVERY,
-              subagent: plannerDef.name,
-              model: plannerDef.model,
-              status: SUMMARY_STATUS_COMPLETED
-            });
-          }
+          this.planGenerator.updateSummaryLog(summaryPath, {
+            stage: SUMMARY_STAGE_DISCOVERY,
+            subagent: discoveryDef.name,
+            model: discoveryDef.model,
+            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED
+          });
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             status: SUMMARY_STATUS_PENDING

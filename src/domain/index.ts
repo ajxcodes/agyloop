@@ -43,6 +43,8 @@ export * from './value-objects/quality-gate-targets';
 export * from './value-objects/smoke-protocol';
 export * from './value-objects/plan-digest';
 export * from './value-objects/gate-command-plan';
+export * from './value-objects/run-evidence';
+export * from './value-objects/gate-result-report';
 export * from './entities/state-machine';
 
 

@@ -58,6 +58,7 @@ import {
   formatPlanAdvanceCommand,
   formatReviewVerdictChannelCommand,
   formatReviewVerdictChannelNote,
+  formatGateReportChannelNote,
   formatTriageActionList,
   formatTriageActionSideEffects,
   TriageDisposition,
@@ -631,12 +632,12 @@ export class GetNextActionUseCase {
           actionType: 'subagent',
           role: ROLE_GATE,
           title: 'Invoke Quality Gate Verifier Subagent',
-          description: `Run ${commands.length} verification command(s) from source '${commandPlan.source}' (${GATE_COMMAND_PRECEDENCE}) in ${verification.cwd}.`,
+          description: `Run ${commands.length} verification command(s) from source '${commandPlan.source}' (${GATE_COMMAND_PRECEDENCE}) in ${verification.cwd}. ${formatGateReportChannelNote(activeIssue)}`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_GATE} with Model '${subagent.model}' inside ${verification.cwd}; ${commands.length} command(s) from source '${commandPlan.source}'${commandPlan.lintRequired ? ', lint mandatory' : ''}.`
+          humanSummary: `Invoke ${ROLE_TITLE_GATE} with Model '${subagent.model}' inside ${verification.cwd}; ${commands.length} command(s) from source '${commandPlan.source}'${commandPlan.lintRequired ? ', lint mandatory' : ''}. ${formatGateReportChannelNote(activeIssue)}`
         };
       }
 

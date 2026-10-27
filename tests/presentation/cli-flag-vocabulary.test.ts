@@ -50,13 +50,13 @@ function extractedLongFlags(): Set<string> {
 }
 
 describe('flag vocabulary (#248 Wave 1)', () => {
-  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 47 entries and no duplicates', () => {
+  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 49 entries and no duplicates', () => {
     assert.ok(Object.isFrozen(KNOWN_CLI_FLAGS), 'the union must be frozen');
     assert.ok(Object.isFrozen(KNOWN_LONG_FLAGS), 'the long list must be frozen');
     assert.ok(Object.isFrozen(KNOWN_SHORT_FLAGS), 'the short list must be frozen');
-    assert.strictEqual(KNOWN_LONG_FLAGS.length, 41);
+    assert.strictEqual(KNOWN_LONG_FLAGS.length, 43);
     assert.strictEqual(KNOWN_SHORT_FLAGS.length, 6);
-    assert.strictEqual(KNOWN_CLI_FLAGS.length, 47);
+    assert.strictEqual(KNOWN_CLI_FLAGS.length, 49);
     assert.strictEqual(new Set(KNOWN_CLI_FLAGS).size, KNOWN_CLI_FLAGS.length, 'no duplicates');
   });
 
@@ -101,6 +101,8 @@ describe('flag vocabulary (#248 Wave 1)', () => {
       '--review-output',
       '--verdict-stdin',
       '--critique-report',
+      '--report-file',
+      '--report-stdin',
       '--plan-path',
       '--plan-dir'
     ]);

@@ -35,6 +35,8 @@ import {
   FLAG_PLAN_PATH,
   FLAG_QUARANTINE,
   FLAG_REFRESH,
+  FLAG_REPORT_FILE,
+  FLAG_REPORT_STDIN,
   FLAG_REVIEW_OUTPUT,
   FLAG_STAGED,
   FLAG_STAGED_SHORT,
@@ -51,11 +53,12 @@ import {
 } from '../domain';
 
 /**
- * Every long flag this build recognises (41 entries).
+ * Every long flag this build recognises (43 entries).
  *
  * The verdict flags come from their domain constants (issue #269) rather than
  * being re-typed here; `--critique-report` is the hermetic Tier 1 evidence
- * channel (issue #297). `--plan-path` / `--plan-dir` are implemented
+ * channel (issue #297), and `--report-file` / `--report-stdin` are the gate
+ * evidence channel (issue #284). `--plan-path` / `--plan-dir` are implemented
  * (issue #267): they are accepted by plan/implement/yolo and refused, loudly,
  * by every other command.
  */
@@ -84,6 +87,8 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   FLAG_QUARANTINE,
   '--reason',
   FLAG_REFRESH,
+  FLAG_REPORT_FILE,
+  FLAG_REPORT_STDIN,
   '--restart',
   '--retry-after',
   FLAG_REVIEW_OUTPUT,
@@ -113,7 +118,7 @@ export const KNOWN_SHORT_FLAGS: readonly string[] = Object.freeze([
   FLAG_MESSAGE_SHORT
 ]);
 
-/** The union, frozen: 41 long + 6 short = 47. */
+/** The union, frozen: 43 long + 6 short = 49. */
 export const KNOWN_CLI_FLAGS: readonly string[] = Object.freeze([
   ...KNOWN_LONG_FLAGS,
   ...KNOWN_SHORT_FLAGS
@@ -218,6 +223,9 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, CommandCapability>> =
   'opencode:install': { dryRun: 'refused', json: 'refused' },
   triage: { dryRun: 'supported', json: 'supported' },
   review: { dryRun: 'supported', json: 'supported' },
+  // `gate-report` validates AND persists an evidence block (or clears a stale
+  // one), so it has a real simulation path (issue #284).
+  'gate-report': { dryRun: 'supported', json: 'supported' },
   plan: { dryRun: 'supported', json: 'refused' },
   implement: { dryRun: 'supported', json: 'refused' },
   // `commit --json` used to mean "never prompt" while printing human text. The

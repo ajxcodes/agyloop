@@ -12,9 +12,7 @@ import {
   CLI_VERSION,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_QUALITY_GATE,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
@@ -55,6 +53,7 @@ import {
   COMMAND_TRIAGE,
   COMMAND_HALT,
   COMMAND_REVIEW,
+  COMMAND_GATE_REPORT,
   COMMAND_SYNC,
   COMMAND_INIT,
   COMMAND_RESUME,
@@ -63,6 +62,8 @@ import {
   FLAG_VERDICT_STDIN,
   FLAG_CRITIQUE_REPORT,
   CRITIQUE_REPORT_STDIN,
+  FLAG_REPORT_FILE,
+  FLAG_REPORT_STDIN,
   FLAG_PLAN_PATH,
   FLAG_PLAN_DIR,
   VERDICT_INPUT_SOURCE_STDIN,
@@ -156,7 +157,8 @@ import {
   formatTriageDispositionLine,
   ReviewVerdict,
   AiReviewReport,
-  ReviewerSubagentError
+  ReviewerSubagentError,
+  GateResultReport
 } from '../domain';
 import type {
   StateRepository,
@@ -181,7 +183,8 @@ import {
   FileStandardsRepository,
   GitWorktreeManager,
   RunnerFactory,
-  FileProjectScaffolder
+  FileProjectScaffolder,
+  FileGateReportRepository
 } from '../infrastructure';
 import { installOpenCodeIntegration } from './opencode-setup';
 import {
@@ -325,6 +328,15 @@ export interface CliOptions {
   /** True when `--critique-report` was PRESENT, whether or not it carried a value. */
   critiqueReportRequested: boolean;
   /**
+   * The path of the dispatched GATE subagent's evidence block (issue #284), or
+   * the literal `-` for stdin.
+   */
+  reportFile: string | null;
+  /** Read the gate's evidence block from stdin (issue #284). */
+  reportStdin: boolean;
+  /** True when `--report-file` was PRESENT, whether or not it carried a value. */
+  reportFileRequested: boolean;
+  /**
    * An operator-supplied plan file (issue #267). When present it is the plan
    * the lifecycle executes, and no competing plan directory is scaffolded.
    */
@@ -460,6 +472,7 @@ Pipeline Management:
   opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
   triage [action]    Triage PR review comments and route pipeline (${formatTriageActionList('|')}); ${formatTriageActionSideEffects()}
   review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin); with no verdict it runs the critique-based review
+  gate-report       File a dispatched Quality Gate Subagent's GATE_REPORT_JSON evidence block (--report-file <path|-> | --report-stdin); 'transition REVIEW' ingests it
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
@@ -472,6 +485,8 @@ Operational Flags:
       --review-output <text> Pass an AI Reviewer Subagent's verdict block inline (codeloop review)
       --verdict-stdin   Read an AI Reviewer Subagent's verdict block from stdin (codeloop review)
       --critique-report <path|->  Cross-check the verdict against a critique CLI JSON report (codeloop review)
+      --report-file <path|->  Read a Quality Gate Subagent's GATE_REPORT_JSON block from a file (codeloop gate-report)
+      --report-stdin     Read a Quality Gate Subagent's GATE_REPORT_JSON block from stdin (codeloop gate-report)
       --create-pr    Automatically create a PR after commit
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
@@ -488,7 +503,7 @@ Operational Flags:
       --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
       --all          Include/prune all worktrees (used with worktree list/prune/clean)
       --prune-stale  Clear the checkpoint descriptor of a worktree whose directory no longer exists (used with worktree remove <id>)
-      --json         Machine-readable JSON (supported by: init, next, branch-info, status, resume, halt, critique status, triage, review)
+      --json         Machine-readable JSON (supported by: init, next, branch-info, status, resume, halt, critique status, triage, review, gate-report)
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
       --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
@@ -583,6 +598,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     verdictStdin: false,
     critiqueReport: null,
     critiqueReportRequested: false,
+    reportFile: null,
+    reportStdin: false,
+    reportFileRequested: false,
     planPath: null,
     planDir: null,
     planPathRequested: false,
@@ -752,6 +770,21 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     } else if (arg.startsWith(`${FLAG_CRITIQUE_REPORT}=`)) {
       options.critiqueReportRequested = true;
       options.critiqueReport = arg.split('=')[1] || null;
+    } else if (arg === FLAG_REPORT_FILE) {
+      // Issue #284: the gate evidence channel. A literal `-` is a VALUE (stdin).
+      options.reportFileRequested = true;
+      if (i + 1 < args.length && (args[i + 1] === '-' || !args[i + 1].startsWith('-'))) {
+        options.reportFile = args[++i];
+      } else {
+        options.reportFile = null;
+      }
+    } else if (arg.startsWith(`${FLAG_REPORT_FILE}=`)) {
+      options.reportFileRequested = true;
+      options.reportFile = arg.split('=')[1] || null;
+    } else if (arg === FLAG_REPORT_STDIN) {
+      options.reportStdin = true;
+    } else if (arg.startsWith(`${FLAG_REPORT_STDIN}=`)) {
+      options.reportStdin = arg.split('=')[1] !== 'false';
     } else if (arg === '--create-pr') {
       options.createPr = true;
     } else if (arg === '--restart') {
@@ -881,22 +914,6 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
  */
 export function formatVerdictInputMissing(flag: string, hint: string): string {
   return NOTE_VERDICT_INPUT_MISSING.replace('{flag}', flag).replace('{hint}', hint);
-}
-
-/**
- * The reviewer's OWN recorded status, before the two-tier invariant could
- * escalate it (issue #297). Read from the checkpoint history the use case just
- * wrote; null when no reviewer block was supplied.
- */
-function lastRecordedReviewerVerdict(sm: StateMachine): string | null {
-  const history = sm.history;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const reviewerVerdict = history[index].metadata?.reviewerVerdict;
-    if (typeof reviewerVerdict === 'string' && reviewerVerdict.length > 0) {
-      return reviewerVerdict;
-    }
-  }
-  return null;
 }
 
 export function formatStageBadge(stage: string): string {
@@ -1531,7 +1548,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       critique,
       critiqueInstaller,
       confirmationPrompt,
-      worktreeManager
+      worktreeManager,
+      gateReportRepo: new FileGateReportRepository({
+        workspaceDir: options.workspaceDir || process.cwd(),
+        issue: issueValue ?? null
+      })
     });
 
   const makeInferBaseBranchUseCase = (repo: StateRepository): InferBaseBranchUseCase =>
@@ -2276,7 +2297,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           scope.repo,
           worktreeManager,
           makeInferBaseBranchUseCase(scope.repo),
-          planGenerator
+          planGenerator,
+          new FileGateReportRepository({
+            workspaceDir: options.workspaceDir || process.cwd(),
+            issue: issueValue ?? null
+          })
         );
         await transitionUseCase.execute({
           targetStage: options.stageArg as StageName,
@@ -2673,6 +2698,136 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
     }
 
+    case COMMAND_GATE_REPORT: {
+      // The INBOUND CHANNEL for a dispatched GATE subagent's evidence
+      // (issue #284). The gate emits a `GATE_REPORT_JSON:` block; until this
+      // command existed nothing persisted it, so the summary's gate metrics
+      // kept the template's `PENDING` forever.
+      //
+      // It NEVER transitions and NEVER saves the checkpoint: it files one
+      // evidence record, which `codeloop transition REVIEW` then ingests and
+      // consumes. A subagent cannot reach this command (it is in
+      // `STATE_MUTATING_COMMANDS`, with no carve-out): the gate emits text, the
+      // orchestrator files it.
+      try {
+        if (options.reportFileRequested && options.reportFile === null) {
+          console.error(
+            `✗ '${FLAG_REPORT_FILE}' was provided without a value. Nothing was recorded; supply a path, '-' for stdin, or remove the flag.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+        if (options.reportFile !== null && options.reportStdin) {
+          console.error(
+            `✗ '${FLAG_REPORT_FILE}' and '${FLAG_REPORT_STDIN}' both supply a report. Use one of them.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+        if (options.reportFile === null && !options.reportStdin) {
+          console.error(
+            `✗ Gate evidence refused: no report supplied. Pass '${FLAG_REPORT_FILE} <path>' or '${FLAG_REPORT_STDIN}'.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+
+        const scope = await resolveScope(stateRepo, issueValue);
+        const stage = scope.snapshot?.currentStage ?? null;
+        if (stage !== STAGE_QUALITY_GATE && stage !== STAGE_REVIEW) {
+          console.error(
+            `✗ Gate evidence refused: checkpoint is at ${stage ?? '(none)'}; the gate stage is ${STAGE_QUALITY_GATE}.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+
+        let rawReport: string;
+        try {
+          rawReport =
+            options.reportFile !== null && options.reportFile !== '-'
+              ? fs.readFileSync(path.resolve(options.reportFile), 'utf8')
+              : fs.readFileSync(0, 'utf8');
+        } catch (err: unknown) {
+          console.error(
+            `✗ Could not read the gate report: ${err instanceof Error ? err.message : String(err)}`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+
+        // The round is stamped FROM THE CHECKPOINT: a block that certifies a
+        // different round is refused, so a stale PASSED can never certify a
+        // later run.
+        const gateRound = Math.max(
+          1,
+          (scope.snapshot?.history ?? []).filter(
+            (entry: { stage?: string }) => entry.stage === STAGE_QUALITY_GATE
+          ).length
+        );
+
+        let report: GateResultReport;
+        try {
+          report = GateResultReport.parseBlock(rawReport, gateRound);
+        } catch (err: unknown) {
+          console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+          return EXIT_CODE_FAILURE;
+        }
+
+        if (options.dryRun) {
+          if (options.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  dryRun: true,
+                  recorded: false,
+                  verdict: report.verdict,
+                  testsStatus: report.testsStatus,
+                  durationMs: report.durationMs
+                },
+                null,
+                2
+              )
+            );
+            return EXIT_CODE_SUCCESS;
+          }
+          console.log(`[dry-run] Would record gate evidence: ${report.formatConfirmation()}`);
+          console.log('[dry-run] Nothing was written.');
+          return EXIT_CODE_SUCCESS;
+        }
+
+        const issueForEvidence = scope.issue ?? issueValue ?? null;
+        const gateReportRepo = new FileGateReportRepository({
+          workspaceDir: options.workspaceDir || process.cwd(),
+          issue: issueForEvidence
+        });
+        const evidencePath = gateReportRepo.save(issueForEvidence, report);
+
+        if (options.json) {
+          console.log(
+            JSON.stringify(
+              {
+                dryRun: false,
+                recorded: true,
+                verdict: report.verdict,
+                testsStatus: report.testsStatus,
+                durationMs: report.durationMs,
+                evidencePath
+              },
+              null,
+              2
+            )
+          );
+          return EXIT_CODE_SUCCESS;
+        }
+
+        console.log(`✓ Gate evidence recorded: ${report.formatConfirmation()}`);
+        console.log(`  Evidence: ${evidencePath}`);
+        console.log(
+          `  Next: codeloop transition REVIEW${issueForEvidence === null ? '' : ` --issue ${issueForEvidence}`}`
+        );
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
     case COMMAND_REVIEW: {
       // The INBOUND CHANNEL for a dispatched Reviewer subagent's verdict
       // (issue #269). The reviewer produces a `REVIEW_STATUS: APPROVED |
@@ -2826,11 +2981,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           } else {
             payload.currentStage = result.currentStage;
             payload.reviewVerdict = result.verdict.status;
-            // Issue #297: the reviewer's OWN status, before the invariant could
-            // escalate it — only present when a reviewer block was filed.
-            const reviewerVerdict = lastRecordedReviewerVerdict(result.stateMachine);
-            if (reviewerVerdict) {
-              payload.reviewerVerdict = reviewerVerdict;
+            // Issue #284 (D7): THIS round's reviewer status, read from the run
+            // that just computed it. A critique-only re-run supplies no block,
+            // so the key is absent — never the previous round's status, which
+            // is what scanning history backwards reported.
+            if (result.reviewerVerdict) {
+              payload.reviewerVerdict = result.reviewerVerdict;
+            }
+            if (result.reviewedBaseCommit) {
+              payload.reviewedBaseCommit = result.reviewedBaseCommit;
             }
           }
           console.log(JSON.stringify(payload, null, 2));
@@ -3170,8 +3329,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (draftResult.plan.isBreaking) {
           console.log(`\n⚠️  BREAKING CHANGE detected!`);
         }
-        console.log(`\nFiles to commit (${draftResult.plan.modifiedFiles.length}):`);
-        draftResult.plan.modifiedFiles.forEach((f) => console.log(`  - ${f}`));
+        console.log(`\nFiles to commit (${draftResult.listedFiles.length}):`);
+        draftResult.listedFiles.forEach((f) =>
+          console.log(`  - ${f}${draftResult.untrackedFiles.includes(f) ? ' (untracked)' : ''}`)
+        );
 
         if (options.dryRun) {
           console.log(`\n[DRY RUN] Simulated commit. No changes were committed.\n`);
@@ -3229,8 +3390,31 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             // for a non-isolated worktree descriptor.
             console.log(`✓ Git worktree torn down and pruned: ${execResult.worktreeTornDownPath ?? '(unknown)'}${execResult.worktreeTornDownIsolated === true ? ' (isolated)' : ''}.`);
           }
-          if (execResult.prCommand) {
+          if (execResult.prCreated) {
+            // Issue #240/Defect 1: report the PR this run CREATED. The manual
+            // script below is printed only when no PR was created.
+            const headBranch = execResult.stateMachine.worktree?.branch ?? '';
+            console.log(
+              execResult.prUrl
+                ? `\n✓ PR created: ${execResult.prUrl}`
+                : `\n✓ PR created for branch '${headBranch}' (URL unavailable).`
+            );
+          } else if (execResult.prExists) {
+            const headBranch = execResult.stateMachine.worktree?.branch ?? '';
+            console.log(`\n✓ PR already exists for branch '${headBranch}'.`);
+          } else if (execResult.prCommand) {
             console.log(`\nNext Step (Create PR):\n  ${execResult.prCommand}`);
+          }
+          // Issue #240/Defect 3: a closing keyword only auto-closes on the
+          // DEFAULT branch. Say so, and name the compensator, instead of
+          // letting the operator assume `Closes #N` did something.
+          if (execResult.prBaseIsCollector && issueValue) {
+            console.log(
+              `\n⚠ Closing keyword caveat: this PR targets the collector branch '${execResult.prBaseBranch}'.`
+            );
+            console.log(
+              `  \`Closes #${issueValue}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
+            );
           }
           if (execResult.summaryUpdated) {
             console.log(`✓ CodeLoop Summary.md updated with commit hash and timestamp.\n`);
@@ -3269,6 +3453,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // The dry-run message already carries `[dry-run] `; a `✓` here would
           // claim the fetch happened (#248).
           console.log(`${res.dryRun ? '' : '✓ '}${res.message}\n`);
+          // Issue #240/Defect 3: every decision is auditable. A PR that was NOT
+          // closed says why, instead of the run silently doing less than the
+          // operator expects.
+          for (const log of res.logs ?? []) {
+            console.log(`  · ${log}`);
+          }
+          for (const warning of res.warnings ?? []) {
+            console.error(`⚠ ${warning}`);
+          }
           return EXIT_CODE_SUCCESS;
         } else {
           console.error(`✗ ${res.message}\n`);

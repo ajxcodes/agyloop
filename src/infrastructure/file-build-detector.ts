@@ -127,6 +127,7 @@ import {
   CMD_LABEL_MAVEN_TEST,
   CMD_LABEL_DOTNET_TEST,
   CMD_LABEL_ACT,
+  CONTAINER_PROBE_TIMEOUT_MS,
   CMD_PREFIX_CUSTOM,
   CMD_PREFIX_CONFIG,
   CMD_LABEL_CUSTOM,
@@ -155,7 +156,8 @@ import {
   BuildDetectorPort,
   DetectedProject,
   AgyLoopConfig,
-  GateCommandResolutionOptions
+  GateCommandResolutionOptions,
+  ContainerRuntimeProbe
 } from '../ports';
 
 export class FileBuildDetector implements BuildDetectorPort {
@@ -755,11 +757,16 @@ export class FileBuildDetector implements BuildDetectorPort {
    * 1. Podman socket: unix://$XDG_RUNTIME_DIR/podman/podman.sock or /run/user/<uid>/podman/podman.sock
    * 2. Docker host env: DOCKER_HOST — unix-style endpoints (`unix://…` or a bare absolute
    *    path) are verified against the filesystem (must exist and be a socket) before being
-   *    returned; on failure a `[agyloop] Warning: …` is emitted on stderr and resolution
-   *    falls through to the /var/run/docker.sock check. Non-unix schemes (`tcp://`, `ssh://`,
-   *    `http(s)://`, …) cannot be verified via the filesystem and pass through unchanged.
+   *    returned; on failure resolution falls through to the /var/run/docker.sock check.
+   *    Non-unix schemes (`tcp://`, `ssh://`, `http(s)://`, …) cannot be verified via the
+   *    filesystem and pass through unchanged.
    * 3. Docker socket: /var/run/docker.sock
-   * Returns null (container gate skipped) when no verifiable socket is available.
+   * Returns null when no verifiable socket is available.
+   *
+   * PURE as of issue #295: it emits NO warnings. A missing socket is no longer
+   * evidence that the runtime is unusable (rootless podman has none), so
+   * warning here was noise on every read-only command. `resolveActCommand` owns
+   * the one warning, and only where the gate is actually being selected.
    */
   public static resolveContainerSocket(): { socketPath: string; runtime: 'podman' | 'docker' } | null {
     // Check Podman socket
@@ -788,9 +795,8 @@ export class FileBuildDetector implements BuildDetectorPort {
         if (st.isSocket()) {
           return { socketPath: dockerHost, runtime: 'docker' };
         }
-        console.warn(`[agyloop] Warning: DOCKER_HOST '${dockerHost}' exists but is not a socket; skipping container gate.`);
       } catch {
-        console.warn(`[agyloop] Warning: DOCKER_HOST '${dockerHost}' points at a missing socket; skipping act container gate.`);
+        // Missing socket: not fatal (#295). The runtime probe below decides.
       }
       // fall through to /var/run/docker.sock (and ultimately null)
     }
@@ -806,6 +812,65 @@ export class FileBuildDetector implements BuildDetectorPort {
 
   public resolveContainerSocket(): { socketPath: string; runtime: 'podman' | 'docker' } | null {
     return FileBuildDetector.resolveContainerSocket();
+  }
+
+  /**
+   * Probes container runtime HEALTH (issue #295), never just a socket file.
+   *
+   * A working rootless podman answers `podman info` over a fork/exec helper and
+   * has no socket unless `podman system service` was started — so
+   * availability-by-socket-file reported it absent on every run and silently
+   * dropped the act container gate.
+   *
+   * Returns `null` when there is no runtime, or when the runtime does not
+   * answer at all: a dead runtime is a CLEAR SKIP, never a hard failure (#232).
+   */
+  public static probeContainerRuntime(): ContainerRuntimeProbe | null {
+    return new FileBuildDetector().probeContainerRuntime();
+  }
+
+  /**
+   * Probes container runtime HEALTH (issue #295), never just a socket file.
+   *
+   * Instance method on purpose: `resolveContainerRuntime()` and
+   * `resolveContainerSocket()` are the seams tests (and alternate detectors)
+   * override, and `resolveActCommand` must see the same answers it would get
+   * from them.
+   */
+  public probeContainerRuntime(): ContainerRuntimeProbe | null {
+    const runtime = this.resolveContainerRuntime();
+    if (runtime === null) {
+      return null;
+    }
+
+    const socketInfo = this.resolveContainerSocket();
+    if (socketInfo !== null) {
+      return {
+        runtime: socketInfo.runtime,
+        socketPath: socketInfo.socketPath,
+        connection: 'socket'
+      };
+    }
+
+    // No socket: ask the runtime itself whether it is usable.
+    const probeArgs =
+      runtime === 'podman'
+        ? ['info', '--format', '{{.Host.Security.Rootless}}']
+        : ['info', '--format', '{{.ServerVersion}}'];
+
+    try {
+      const res = child_process.spawnSync(runtime, probeArgs, {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        timeout: CONTAINER_PROBE_TIMEOUT_MS
+      });
+      if (res.status === 0) {
+        return { runtime, socketPath: null, connection: 'fork-exec' };
+      }
+    } catch {
+      // Spawn failure = unusable runtime.
+    }
+
+    return null;
   }
 
   /**
@@ -867,9 +932,12 @@ export class FileBuildDetector implements BuildDetectorPort {
       return null;
     }
 
-    // Verify container daemon socket is present
-    const socketInfo = this.resolveContainerSocket();
-    if (!socketInfo) {
+    // Verify a USABLE container runtime (#295). This is the ONLY place the
+    // container-gate warning is emitted: read-only commands never call
+    // `resolveActCommand`, so they are silent.
+    const probe = this.probeContainerRuntime();
+    if (!probe) {
+      console.warn('[agyloop] Warning: no usable container runtime; skipping the act container gate.');
       return null;
     }
 
@@ -882,8 +950,10 @@ export class FileBuildDetector implements BuildDetectorPort {
       cmd += ` -j ${actConfig.job}`;
     }
 
-    if (socketInfo.runtime === 'podman') {
-      cmd += ` --container-daemon-socket ${socketInfo.socketPath}`;
+    // A socket connection must be named; act's default is fork/exec, which is
+    // exactly right for a healthy rootless runtime with no socket.
+    if (probe.connection === 'socket' && probe.runtime === 'podman') {
+      cmd += ` --container-daemon-socket ${probe.socketPath}`;
     }
 
     return {

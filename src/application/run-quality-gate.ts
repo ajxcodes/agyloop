@@ -85,6 +85,7 @@ import {
   SMOKE_STATUS_FAILED,
   SMOKE_STATUS_NOT_DECLARED,
   SMOKE_STATUS_TIMED_OUT,
+  SMOKE_PROTOCOL_NOT_DECLARED,
   PLAN_INTEGRITY_MISMATCH,
   PLAN_INTEGRITY_MISSING,
   PlanIntegrityStatus,
@@ -99,6 +100,8 @@ import {
   HEADER_QUALITY_GATE_REPORT,
   LABEL_OVERALL_VERDICT,
   InvalidTransitionError,
+  GateResultReport,
+  formatStageDuration,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
 } from '../domain';
@@ -107,7 +110,8 @@ import {
   ConfigRepository,
   PlanGeneratorPort,
   CommandExecutorPort,
-  BuildDetectorPort
+  BuildDetectorPort,
+  GateReportRepositoryPort
 } from '../ports';
 
 import { ResolveSubagentUseCase } from './resolve-subagent';
@@ -192,6 +196,12 @@ export class RunQualityGateUseCase {
   private readonly commandExecutor: CommandExecutorPort;
   private readonly buildDetector?: BuildDetectorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  /**
+   * The gate evidence channel (issue #284). Optional so every existing call
+   * site and test keeps working: without it the gate still runs and still
+   * writes the summary itself, it just files no evidence for the transition.
+   */
+  private readonly gateReportRepo?: GateReportRepositoryPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -199,7 +209,8 @@ export class RunQualityGateUseCase {
     planGenerator: PlanGeneratorPort,
     commandExecutor: CommandExecutorPort,
     buildDetector?: BuildDetectorPort,
-    resolveSubagentUseCase?: ResolveSubagentUseCase
+    resolveSubagentUseCase?: ResolveSubagentUseCase,
+    gateReportRepo?: GateReportRepositoryPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -208,6 +219,7 @@ export class RunQualityGateUseCase {
     this.buildDetector = buildDetector;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo);
+    this.gateReportRepo = gateReportRepo;
   }
 
   public async execute(params: QualityGateRunParams = {}): Promise<QualityGateRunResult> {
@@ -509,11 +521,52 @@ export class RunQualityGateUseCase {
       planDir: params.planDir || sm.planDir
     });
 
-    const durationStr = `${(totalDurationMs / MS_PER_SECOND).toFixed(1)}s`;
+    // Issue #284: one recorded duration format, shared with the transition
+    // writer (`196.0s` -> `3m 16s`), so the two paths cannot disagree.
+    const durationStr = formatStageDuration(totalDurationMs);
     const gateStatus = allPassed ? SUMMARY_STATUS_COMPLETED : SUMMARY_STATUS_FAILED;
+
+    // Issue #284: file the SAME evidence the dispatched path files, so an
+    // in-process (yolo) run and a filed run leave identical records. The round
+    // is the count of QUALITY_GATE entries the transition just wrote.
+    const gateRound = Math.max(
+      1,
+      sm.history.filter((entry) => entry.stage === STAGE_QUALITY_GATE).length
+    );
+    const evidence = GateResultReport.fromJSON({
+      verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
+      // A gate run without a detector still has to name SOMETHING: the report
+      // is fail-closed on an empty build system, and `unknown` is the honest id.
+      buildSystem: primaryEcosystemName || ECOSYSTEM_UNKNOWN,
+      buildStatus,
+      testsStatus,
+      testsPassed: testMetricsVO ? testMetricsVO.passed : null,
+      testsFailed: testMetricsVO ? testMetricsVO.failed : null,
+      durationMs: totalDurationMs,
+      executedCommands: reports.map((r) => r.command),
+      smokeProtocol: smokeStatus === SMOKE_STATUS_PASSED
+        ? 'PASSED'
+        : smokeStatus === SMOKE_STATUS_FAILED
+          ? 'FAILED'
+          : smokeStatus === SMOKE_STATUS_NOT_DECLARED
+            ? SMOKE_PROTOCOL_NOT_DECLARED
+            // A timed-out smoke protocol is a failure, never "not declared".
+            : 'FAILED',
+      notRun: [],
+      gateRound
+    });
 
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
+
+      if (this.gateReportRepo) {
+        try {
+          this.gateReportRepo.save(activeIssue, evidence);
+        } catch {
+          // Filing is best effort here: the summary write below still records
+          // the same values for this run.
+        }
+      }
 
       if (resolvedPlan && resolvedPlan.summaryPath) {
         this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
@@ -526,10 +579,7 @@ export class RunQualityGateUseCase {
           testsStatus,
           buildSystem: primaryEcosystemName,
           detectedEcosystems: detectedEcosystemNames,
-          executedCommands: reports.map((r) => r.command),
-          reviewNote: allPassed
-            ? `All quality gates passed successfully in ${durationStr}.`
-            : `Quality gates failed during execution.${primaryDiagnostic?.fileLocation ? ` Failing location: ${primaryDiagnostic.fileLocation}.` : ''} Pipeline reverted to IMPLEMENT.`
+          executedCommands: reports.map((r) => r.command)
         });
       }
     }

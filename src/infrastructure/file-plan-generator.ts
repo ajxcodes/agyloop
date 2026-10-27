@@ -32,6 +32,10 @@ import {
   STAGE_DISCOVERY,
   FILENAME_ALT_DISCOVERY_PLAN,
   FILENAME_ALT_IMPLEMENTATION_PLAN,
+  EVIDENCE_NOT_RECORDED,
+  SUMMARY_STATUS_IN_PROGRESS,
+  SUMMARY_STATUS_NOT_RECORDED,
+  SUMMARY_STATUS_PENDING,
   DiscoveryReport,
   isDiscoveryPlanDocument,
   isPlanContentSubstantive,
@@ -129,7 +133,7 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 
 | Stage | Subagent | Model | Status | Duration |
 |---|---|---|---|---|
-| 1. Discovery | \`planner\` | \`pro\` | COMPLETED | - |
+| 1. Discovery | \`discovery\` | \`inherit\` | PENDING | - |
 | 2. Plan Review | Human Gate | - | PENDING | - |
 | 3. Implementation | \`implementer\` | \`inherit\` | PENDING | - |
 | 4. Quality Gate | \`gate\` | \`flash_lite\` | PENDING | - |
@@ -137,8 +141,8 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 | 6. Commit Gate | Human Gate | - | PENDING | - |
 
 ## Quality Gate Metrics
-- **Build Status:** PENDING
-- **Tests:** -
+- **Build Status:** not recorded
+- **Tests:** not recorded
 
 ## Review Notes
 -
@@ -728,12 +732,36 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         }
       }
 
-      if (updateData.reviewNote) {
+      if (updateData.reviewRecord) {
+        const record = updateData.reviewRecord;
+        const base = record.baseCommit ? record.baseCommit.slice(0, 7) : 'unrecorded';
+        content = this.replaceSection(
+          content,
+          'Review Notes',
+          `- **Round ${record.round} · ${record.verdict} · base \`${base}\` · ${record.timestamp}** — ${record.summary}`
+        );
+      } else if (updateData.reviewNote) {
         if (content.includes('## Review Notes')) {
           content = content.replace(
             /## Review Notes([\s\S]*?)(?=\n##|$)/,
             (match) => `${match.trimEnd()}\n- ${updateData.reviewNote}\n`
           );
+        }
+      }
+
+      if (updateData.notRun && updateData.notRun.length > 0) {
+        // Issue #284: one honest line, inside the metrics section it belongs to.
+        // "Declared but never executed" must be distinguishable from "passed".
+        const rendered = updateData.notRun
+          .map((entry) => `${entry.id} (${entry.reason})`)
+          .join(', ');
+        const line = `- **Not Run:** ${rendered}`;
+        if (content.includes('- **Not Run:**')) {
+          content = content.replace(/- \*\*Not Run:\*\* .*/i, line);
+        } else if (content.includes('- **Tests:**')) {
+          content = content.replace(/((?:- \*\*Tests:\*\* .*\n?)(?:- \*\*Executed Commands:\*\* .*\n?)?)/i, `$1${line}\n`);
+        } else {
+          content = content.trimEnd() + '\n' + line + '\n';
         }
       }
 
@@ -811,11 +839,77 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         content = content.trimEnd() + '\n\n' + abortBlock + '\n';
       }
 
+      if (updateData.finalize === true) {
+        content = this.finalizeSummary(content);
+      }
+
       fs.writeFileSync(summaryFilePath, content, 'utf8');
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Replaces (never appends to) the body of one `## <heading>` section.
+   *
+   * Issue #284 (AC6): the review note is one authoritative bullet. The defect
+   * was that each write appended, so a re-review left two verdicts with no
+   * supersede marker. Headings are preserved exactly — `updateSummaryLog`'s
+   * other section regexes key off them.
+   */
+  private replaceSection(content: string, heading: string, body: string): string {
+    const headingLine = `## ${heading}`;
+    const start = content.indexOf(headingLine);
+    if (start === -1) {
+      return `${content.trimEnd()}\n\n${headingLine}\n${body}\n`;
+    }
+    const bodyStart = start + headingLine.length;
+    const nextSection = content.indexOf('\n## ', bodyStart);
+    const end = nextSection === -1 ? content.length : nextSection;
+    const tail = nextSection === -1 ? '' : content.slice(end);
+    return `${content.slice(0, bodyStart)}\n${body}${tail === '' ? '\n' : tail}`;
+  }
+
+  /**
+   * Makes an unrecorded row honest at the end of a run (issue #284, AC2).
+   *
+   * Any stage row still `PENDING` / `IN PROGRESS` becomes `NOT RECORDED`:
+   * a COMPLETED task must never read as one that has not started. Terminal
+   * statuses (`COMPLETED`, `APPROVED`, `FAILED`, `SKIPPED`, `REJECTED`) are
+   * untouched, as are the values that were actually recorded.
+   */
+  private finalizeSummary(content: string): string {
+    const lines = content.split('\n').map((line) => {
+      if (!line.startsWith('|') || line.includes('---') || line.includes('Stage | Subagent')) {
+        return line;
+      }
+      const parts = line.split('|');
+      if (parts.length < 7) {
+        return line;
+      }
+      const status = parts[4].trim();
+      if (status === SUMMARY_STATUS_PENDING || status === SUMMARY_STATUS_IN_PROGRESS) {
+        parts[4] = ` ${SUMMARY_STATUS_NOT_RECORDED} `;
+        return parts.join('|');
+      }
+      return line;
+    });
+
+    let finalized = lines.join('\n');
+    finalized = finalized.replace(
+      /- \*\*Build Status:\*\* (?:PENDING|-)\s*$/gim,
+      `- **Build Status:** ${EVIDENCE_NOT_RECORDED}`
+    );
+    finalized = finalized.replace(
+      /- \*\*Tests:\*\* -\s*$/gim,
+      `- **Tests:** ${EVIDENCE_NOT_RECORDED}`
+    );
+    finalized = finalized.replace(
+      /- \*\*Tests:\*\* PENDING\s*$/gim,
+      `- **Tests:** ${EVIDENCE_NOT_RECORDED}`
+    );
+    return finalized;
   }
 
   public findPlanDirectory(

@@ -424,6 +424,18 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(sub.Role, ROLE_TITLE_GATE);
     assert.strictEqual(sub.Model, 'flash_lite');
     assert.ok(sub.Prompt.includes('/repo/.worktrees/41'));
+
+    // Issue #284: the directive NAMES the evidence channel, exactly as the
+    // REVIEW directive names the verdict channel (#272's lesson: a channel
+    // nobody is told about is a channel that never gets used).
+    assert.ok(
+      result.description.includes('codeloop gate-report'),
+      `the QUALITY_GATE description must name the evidence channel, got: ${result.description}`
+    );
+    assert.ok(
+      result.humanSummary.includes('codeloop gate-report'),
+      `the QUALITY_GATE summary must name the evidence channel, got: ${result.humanSummary}`
+    );
   });
 
   test('returns gate subagent payload with resolved verification commands for STAGE_QUALITY_GATE', async () => {

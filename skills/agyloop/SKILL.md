@@ -193,9 +193,10 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
     - Ephemeral micro-agent launched via `invoke_subagent` (using payload from `bin/agyloop next --json`).
     - Intended for interactive subagent dispatch when complete conversational context isolation or granular error handling is required.
     - Executes builds, typechecks, test suites, and linters inside `.worktrees/<task-id>`.
-    - Emits structured results: `GATE_STATUS: PASSED | FAILED`.
+    - Emits structured results: `GATE_STATUS: PASSED | FAILED`, plus the machine-readable `GATE_REPORT_JSON:` evidence block described next.
+    - **Filing the gate evidence**: the gate subagent only EMITS the `GATE_REPORT_JSON:` block as the last thing in its response — it is verification-only and never runs `codeloop`. The **orchestrator** writes the block to a file and files it: `bin/agyloop gate-report --issue <n> --report-file <path>` (equivalently `bin/codeloop gate-report …`), or pipes it in with `--report-stdin`. `bin/codeloop gate-report` refuses to run inside a dispatched subagent session. `bin/agyloop transition REVIEW` then ingests the filed report into the checkpoint and the CodeLoop Summary (verdict, build system, test count, measured duration) and consumes it. A gate with nothing filed is recorded as `NOT RECORDED` / `not recorded`, never `PENDING` and never a previous run's pass.
 - **Quality Gate Failure Loop**: If gates fail in either mode, transitions back to `IMPLEMENT` with isolated diagnostics in `selfCorrectionPayload` for a fresh Implementer subagent.
-- Advance state: `bin/agyloop transition QUALITY_GATE`.
+- Advance state: `bin/agyloop transition QUALITY_GATE` to enter the gate, then `bin/agyloop gate-report` and `bin/agyloop transition REVIEW` to leave it with evidence.
 
 ### 7. Two-Tier Review Architecture (`REVIEW`)
 - **Tier 1 (Automated Critique Diagnostics)**:
@@ -256,6 +257,7 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `bin/agyloop branch-info [--json]` | Displays base collector branch, active task branch, worktree directory, and PR target. | `--json` |
 | `bin/agyloop sync` | Fast-forwards the collector branch and closes issues whose PRs merged into it. | `--dry-run` (no fetch, pull, or issue close) |
 | `bin/agyloop review` | Records the dispatched Reviewer subagent's verdict (`APPROVED` advances to COMMIT; `CHANGES_REQUESTED` reverts to IMPLEMENT). | `--issue <id>`, `--verdict-file <path>`, `--review-output "<block>"`, `--verdict-stdin`, `--json`, `--dry-run` |
+| `bin/agyloop gate-report` | Files the dispatched Quality Gate subagent's `GATE_REPORT_JSON:` evidence block; `transition REVIEW` ingests and consumes it, writing the verdict, build system, test count and duration into the summary. Refused to dispatched subagents. | `--issue <id>`, `--report-file <path\|->`, `--report-stdin`, `--json`, `--dry-run` |
 | `bin/agyloop status [--json]` | Displays current pipeline stage, execution mode, active issue, worktree list, and transition history. | `--json` (single JSON document: `dryRun`, `currentStage`, `mode`, `activeTasks`, `skippedCorrupt`, `history`) |
 | `bin/agyloop worktree <subcommand>` | Manages isolated git worktrees. Valid subcommands: `list`, `clean`, `prune`, `remove <id>`. | `list`, `clean`, `prune`, `remove <task-id>`, `--all`, `--subagents`, `--dry-run` (clean/prune/remove; `list` refuses it) |
 | `bin/agyloop critique <subcommand>` | Manages Critique CLI integration and version status. Valid subcommands: `status`, `install`, `update`. | `status`, `install`, `update`, `--force`, `--json` (status only), `--dry-run` (install/update) |

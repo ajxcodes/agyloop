@@ -34,6 +34,22 @@ export interface DetectedProject {
   readonly hasOverrides: boolean;
 }
 
+/**
+ * How a container runtime is reachable (issue #295).
+ *
+ * `socket` means a daemon socket file exists and `act` must be pointed at it;
+ * `fork-exec` means the runtime is HEALTHY but has no socket (rootless podman
+ * connects over a fork/exec helper), so `act` uses its default transport.
+ * Availability is a runtime-health question, never a file-existence question:
+ * a working rootless podman was reported absent on every run.
+ */
+export interface ContainerRuntimeProbe {
+  readonly runtime: 'podman' | 'docker';
+  /** The socket path, or `null` when the runtime has no usable socket. */
+  readonly socketPath: string | null;
+  readonly connection: 'socket' | 'fork-exec';
+}
+
 export interface BuildDetectorPort {
   /**
    * Inspects workspace markers and lockfiles to detect ecosystems and verification commands.
@@ -76,4 +92,13 @@ export interface BuildDetectorPort {
    * Resolves the container daemon socket path and runtime type.
    */
   resolveContainerSocket?(): { socketPath: string; runtime: 'podman' | 'docker' } | null;
+
+  /**
+   * Probes runtime HEALTH, not just a socket file (issue #295).
+   *
+   * Returns `null` when no usable runtime exists (a clear skip, never a hard
+   * failure); returns a `fork-exec` probe when the runtime answers natively but
+   * exposes no socket.
+   */
+  probeContainerRuntime?(): ContainerRuntimeProbe | null;
 }

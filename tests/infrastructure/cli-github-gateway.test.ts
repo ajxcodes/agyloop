@@ -250,7 +250,7 @@ describe('CliGitHubGateway findPullRequest body plumbing (#226)', () => {
 });
 
 describe('CliGitHubGateway fetchIssue', () => {
-  test('invokes gh issue view requesting number,title,body,state,labels', () => {
+  test('invokes gh issue view requesting the full parsed field list (issue #284: milestone,comments)', () => {
     const gateway = new CliGitHubGateway();
     let capturedCmd = '';
     gateway.runGh = (cmd: string) => {
@@ -260,14 +260,16 @@ describe('CliGitHubGateway fetchIssue', () => {
         title: 'Issue 59 title',
         body: 'Issue 59 body',
         state: 'OPEN',
-        labels: [{ name: 'bug' }]
+        labels: [{ name: 'bug' }],
+        milestone: { title: 'Phase 6: CodeLoop' },
+        comments: []
       });
     };
 
     const issue = gateway.fetchIssue(59, { repo: 'ajxcodes/agyloop' });
     assert.strictEqual(
       capturedCmd,
-      "issue view 59 --repo 'ajxcodes/agyloop' --json number,title,body,state,labels"
+      "issue view 59 --repo 'ajxcodes/agyloop' --json number,title,body,state,labels,milestone,comments"
     );
     assert.strictEqual(issue?.number, 59);
     assert.strictEqual(issue?.title, 'Issue 59 title');

@@ -21,6 +21,7 @@ export * from './opencode-agent-runner';
 export * from './failover-agent-runner';
 export * from './runner-factory';
 export * from './file-project-scaffolder';
+export * from './file-gate-report-repository';
 
 
 

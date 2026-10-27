@@ -341,7 +341,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     assert.strictEqual(planReviewUpdate!.status, 'IN PROGRESS');
   });
 
-  test('TransitionStageUseCase subtracts totalHumanWaitMs when computing stage duration', async () => {
+  test('TransitionStageUseCase subtracts ONLY the wait this transition consumed, never the cumulative total', async () => {
     const stateRepo = new MockStateRepository();
     const planGen = new MockPlanGenerator();
     const transitionUseCase = new TransitionStageUseCase(
@@ -351,7 +351,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       planGen
     );
 
-    // Initial state: IMPLEMENT started 100 seconds ago, human wait 40 seconds => 60s active
+    // Issue #284 (AC5): this test used to PIN THE DEFECT — it seeded a 40 s
+    // CUMULATIVE bank and expected it subtracted from a 100 s window. Banked
+    // wait from an earlier gate is not this stage's idle time.
     const hundredSecondsAgo = new Date(Date.now() - 100000).toISOString();
     stateRepo.snapshot = {
       version: '1.0.0',
@@ -376,7 +378,41 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     const implementUpdate = planGen.summaryUpdates.find(u => u.stage === 'Implementation');
     assert.ok(implementUpdate, 'Expected Implementation update in summary');
     assert.strictEqual(implementUpdate!.status, 'COMPLETED');
-    assert.strictEqual(implementUpdate!.duration, '1m 0s');
+    assert.strictEqual(
+      implementUpdate!.duration,
+      '1m 40s',
+      'the cumulative bank must NOT be subtracted from a stage window'
+    );
+
+    // ...and a wait consumed by THIS transition IS subtracted.
+    const stateRepo2 = new MockStateRepository();
+    const planGen2 = new MockPlanGenerator();
+    const transitionUseCase2 = new TransitionStageUseCase(stateRepo2, undefined, undefined, planGen2);
+    stateRepo2.snapshot = {
+      version: '1.0.0',
+      currentStage: 'IMPLEMENT',
+      mode: MODE_STANDARD,
+      issue: 51,
+      createdAt: hundredSecondsAgo,
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: 'APPROVAL', timestamp: hundredSecondsAgo },
+        { stage: 'IMPLEMENT', timestamp: hundredSecondsAgo }
+      ],
+      pausedAtGate: null,
+      pausedAtTimestamp: new Date(Date.now() - 40000).toISOString(),
+      totalHumanWaitMs: 0
+    };
+
+    await transitionUseCase2.execute({
+      targetStage: 'QUALITY_GATE',
+      issue: 51,
+      noWorktree: true
+    });
+
+    const implementUpdate2 = planGen2.summaryUpdates.find(u => u.stage === 'Implementation');
+    assert.ok(implementUpdate2, 'Expected Implementation update in summary');
+    assert.strictEqual(implementUpdate2!.duration, '1m 0s');
   });
 
   // ---- issue #237: entering COMPLETED is bookkeeping, never a teardown -------

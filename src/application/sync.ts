@@ -1,6 +1,24 @@
 import { CommandExecutorPort, GitHubGateway, StateRepository, WorktreeManagerPort } from '../ports';
 import { shellQuote } from '../domain';
 
+/**
+ * Path prefixes that are NOT implementation evidence (issue #240/Defect 3).
+ *
+ * A PR that only touches these cannot prove an issue was fixed: PR #258 closed
+ * #250 on a test-only diff.
+ */
+const NON_SOURCE_PATH_PREFIXES: readonly string[] = Object.freeze([
+  'tests/',
+  'docs/',
+  'artifacts/'
+]);
+
+/** True when a changed path is a non-test source change. */
+function isNonTestSourcePath(filePath: string): boolean {
+  const normalized = filePath.replace(/^\.\//, '');
+  return !NON_SOURCE_PATH_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
 export interface SyncParams {
   readonly workspaceDir?: string;
   /**
@@ -92,27 +110,95 @@ export class SyncUseCase {
       }
 
       // 3. Close issues whose PRs merged into the collector branch
+      //
+      // Issue #240/Defect 3 (escalated): a PR body's `Closes #N` is a CLAIM, not
+      // evidence. PR #258 closed an unfixed issue while its whole diff was one
+      // test file. The compensator therefore requires a non-test source change
+      // in the PR's OWN diff before it closes anything — and fails closed when
+      // the diff cannot be read.
       if (collectorBranch !== 'main') {
         try {
           const prsRes = await this.commandExecutor.execute(`gh pr list --base ${shellQuote(collectorBranch)} --state merged --json number,title,body`, { cwd });
           const prs = JSON.parse(prsRes.stdout);
-          
+
           for (const pr of prs) {
             const body = pr.body || '';
             // Look for Closes #N
             const match = body.match(/Closes #(\d+)/i);
-            if (match) {
-              const issueId = parseInt(match[1], 10);
-              const issue = await this.githubGateway.fetchIssue(issueId, { cwd });
-              if (issue && issue.state !== 'CLOSED') {
-                if (this.githubGateway.closeIssue) {
-                  await this.githubGateway.closeIssue(issueId, { cwd });
+            if (!match) {
+              continue;
+            }
+            const issueId = parseInt(match[1], 10);
+
+            let paths: string[] = [];
+            try {
+              const viewRes = await this.commandExecutor.execute(
+                `gh pr view ${pr.number} --json files --jq '.files[].path'`,
+                { cwd }
+              );
+              if (viewRes.exitCode === 0 && typeof viewRes.stdout === 'string') {
+                const stdout = viewRes.stdout.trim();
+                if (stdout.startsWith('{')) {
+                  // A `gh` that ignored `--jq` (or a gateway that returns the
+                  // raw payload) still yields the same paths.
+                  try {
+                    const parsed = JSON.parse(stdout);
+                    paths = Array.isArray(parsed?.files)
+                      ? parsed.files
+                          .map((entry: { path?: string }) => String(entry?.path ?? ''))
+                          .filter((entry: string) => entry.length > 0)
+                      : [];
+                  } catch {
+                    paths = [];
+                  }
+                } else {
+                  paths = stdout
+                    .split('\n')
+                    .map((line) => line.trim())
+                    .filter((line) => line.length > 0);
                 }
-                if (this.githubGateway.commentOnIssue) {
-                  await this.githubGateway.commentOnIssue(issueId, `Automatically closed by agyloop sync. Implemented and merged via PR #${pr.number} into \`${collectorBranch}\`.`, { cwd });
-                }
-                logs.push(`Closed issue #${issueId} (merged in PR #${pr.number} to ${collectorBranch})`);
               }
+            } catch (e) {
+              warnings.push(
+                `Not closing #${issueId}: could not verify the diff of PR #${pr.number} (${e instanceof Error ? e.message : String(e)}).`
+              );
+              logs.push(`Skipped #${issueId}: unverifiable diff for PR #${pr.number}`);
+              continue;
+            }
+
+            if (paths.length === 0) {
+              warnings.push(
+                `Not closing #${issueId}: could not verify the diff of PR #${pr.number} (no file list returned).`
+              );
+              logs.push(`Skipped #${issueId}: unverifiable diff for PR #${pr.number}`);
+              continue;
+            }
+
+            const sourcePaths = paths.filter(isNonTestSourcePath);
+            if (sourcePaths.length === 0) {
+              warnings.push(
+                `Not closing #${issueId}: PR #${pr.number} contains no non-test source change (files: ${paths.join(', ')}).`
+              );
+              logs.push(`Skipped #${issueId}: no non-test source change in PR #${pr.number}`);
+              continue;
+            }
+
+            const issue = await this.githubGateway.fetchIssue(issueId, { cwd });
+            if (issue && issue.state !== 'CLOSED') {
+              if (this.githubGateway.closeIssue) {
+                await this.githubGateway.closeIssue(issueId, { cwd });
+              }
+              if (this.githubGateway.commentOnIssue) {
+                // The comment states only what the diff proves.
+                await this.githubGateway.commentOnIssue(
+                  issueId,
+                  `Closed by agyloop sync: PR #${pr.number} into \`${collectorBranch}\` changed ${sourcePaths.length} non-test file(s) (Closes #${issueId}).`,
+                  { cwd }
+                );
+              }
+              logs.push(`Closed issue #${issueId} (merged in PR #${pr.number} to ${collectorBranch})`);
+            } else {
+              logs.push(`Skipped #${issueId}: already closed or unreadable`);
             }
           }
         } catch (e) {
