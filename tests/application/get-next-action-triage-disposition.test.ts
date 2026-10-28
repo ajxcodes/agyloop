@@ -284,6 +284,32 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
     );
   });
 
+  test('G6b: the TRIAGE summary names the -m "<notes>" requirement for dismiss (issue #336, AC-4)', async () => {
+    const stateRepo = new MockStateRepo(seedCompleted());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      gatewayWithComments([ACTIONABLE_COMMENT])
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.currentStage, STAGE_TRIAGE);
+    assert.ok(
+      result.humanSummary.includes('-m "<notes>"'),
+      `the summary must name the -m "<notes>" requirement, got: ${result.humanSummary}`
+    );
+    assert.ok(
+      result.humanSummary.includes('dismiss'),
+      `the summary must name dismiss, got: ${result.humanSummary}`
+    );
+    assert.ok(
+      result.humanSummary.includes('This gate ends when the feedback is dispositioned'),
+      `the summary must keep the exit condition, got: ${result.humanSummary}`
+    );
+  });
+
   test('G7: the idle report names the recorded disposition', async () => {
     const stateRepo = new MockStateRepo(seedCompleted());
     const gateway = gatewayWithComments([ACTIONABLE_COMMENT]);

@@ -56,7 +56,7 @@ Valid actions (all five, each with its side effect):
 - `plan` — routes to `PLAN` for structural plan revision.
 - `discovery` — routes to `DISCOVERY` for investigative root-cause analysis.
 - `completed` — records a disposition and posts nothing to the PR (the non-destructive exit).
-- `dismiss` — records a disposition and replies to/resolves the PR threads (writes to GitHub).
+- `dismiss` — records a disposition and replies to/resolves the PR threads using `-m "<notes>"` (writes to GitHub; without `-m` nothing is posted and the dismissal is refused). A dismissal that handles zero items records nothing and stays at `TRIAGE`; the non-destructive exit is `completed`. A thread is skipped only when the tool's own dismissal marker is present — a merely resolved thread is replied to, never skipped.
 
 A routing action requires the checkpoint to be at the **TRIAGE** gate: run `codeloop next --json` first. List mode (`codeloop triage` with no action) is read-only and never mutates state.
 

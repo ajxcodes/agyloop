@@ -107,15 +107,26 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
     sm.transition(STAGE_TRIAGE);
     const stateRepo = makeMockStateRepo(sm.toSnapshot());
 
-    const useCase = new TriagePrCommentsUseCase(stateRepo as any);
+    const gateway = {
+      listUnresolvedReviewThreads: async () => [{ id: 'T1', commentIds: [101] }],
+      replyToThread: async () => {},
+      resolveReviewThread: async () => {}
+    };
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any, gateway as any);
     const result = await useCase.execute({
       issue: 83,
-      action: 'dismiss'
+      prNumber: 5,
+      action: 'dismiss',
+      notes: 'answered inline',
+      comments: [{ id: 101, author: 'reviewer', body: '[error] Fix this bug', category: 'error' }]
     });
 
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.targetStage, STAGE_COMPLETED);
     assert.strictEqual(result.stateMachine.currentStage, STAGE_COMPLETED);
+    assert.strictEqual(result.disposition?.action, 'dismiss');
+    assert.deepStrictEqual(result.disposition?.feedbackKeys, ['id:101']);
   });
 
   test('getNextAction returns subagent for STAGE_TRIAGE prompting triage execution', async () => {
@@ -273,7 +284,7 @@ describe('Issue #136 hardening', () => {
     assert.deepStrictEqual(resolved, ['T1', 'T2']);
   });
 
-  test('thread handling failure emits a warning and the transition still succeeds', async () => {
+  test('thread handling failure emits a warning and the zero-item dismissal is refused', async () => {
     const sm = StateMachine.createInitial({ issue: 83 });
     sm.transition(STAGE_TRIAGE);
     const stateRepo = makeMockStateRepo(sm.toSnapshot());
@@ -294,7 +305,14 @@ describe('Issue #136 hardening', () => {
         notes: 'n',
         comments: [{ id: 101, author: 'r', body: 'x', category: 'general' }]
       });
-      assert.strictEqual(result.stateMachine.currentStage, STAGE_COMPLETED);
+      // Issue #336: a dismissal that performed NOTHING is refused, so the gate
+      // stays at TRIAGE. The failure is still reported — a refusal is not a
+      // silent no-op.
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.refused?.cause, 'nothing-handled');
+      assert.strictEqual(result.stateMachine.currentStage, STAGE_TRIAGE);
+      assert.strictEqual(result.disposition, null);
+      assert.strictEqual(result.dismissal?.failures.length, 1);
     } finally {
       console.warn = origWarn;
     }
@@ -509,8 +527,16 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
     assert.strictEqual(result.dismissal?.conversationsReplied, 0);
   });
 
-  test('dismiss without notes reports that nothing was dismissed', async () => {
+  test('dismiss without notes is REFUSED and writes nothing', async () => {
     const stateRepo = dismissStateRepo();
+    let saves = 0;
+    const countingRepo = {
+      ...stateRepo,
+      save: async (snap: any) => {
+        saves++;
+        await stateRepo.save(snap);
+      }
+    };
     const gateway = {
       listUnresolvedReviewThreads: async () => [],
       replyToThread: async () => {},
@@ -518,7 +544,7 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
       replyToConversationComment: async () => {}
     };
 
-    const useCase = new TriagePrCommentsUseCase(stateRepo as any, gateway as any);
+    const useCase = new TriagePrCommentsUseCase(countingRepo as any, gateway as any);
     const result = await useCase.execute({
       issue: 83,
       prNumber: 5,
@@ -526,9 +552,17 @@ describe('Triage dismissal outcome reporting (dismiss must report what it achiev
       comments: [{ id: 9001, surface: 'conversation', author: 'r', body: 'x' }]
     });
 
-    assert.strictEqual(result.dismissal?.attempted, false);
-    assert.ok(result.dismissal?.skippedReason);
-    assert.strictEqual(result.dismissal?.failures.length, 0);
+    // Issue #336 AC-1: a dismissal with no notes posts nothing, so it must not
+    // record a disposition, transition the gate, or save the checkpoint.
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.refused?.cause, 'missing-notes');
+    assert.ok(result.refused?.reason.includes('-m "<notes>"'));
+    assert.strictEqual(result.dismissal, undefined);
+    assert.strictEqual(result.disposition, null);
+    assert.strictEqual(result.dispositionRecorded, false);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_TRIAGE);
+    assert.strictEqual(result.stateUpdated, false);
+    assert.strictEqual(saves, 0);
   });
 
   test('prFeedbackKey reduces the bot header and the attribution footer away', () => {

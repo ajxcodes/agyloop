@@ -23,8 +23,7 @@ const {
   DISMISS_OUTCOME_PARTIAL,
   DISMISS_OUTCOME_FAILED,
   DISMISS_OUTCOME_NOTHING,
-  NOTE_DISMISS_NO_PR,
-  NOTE_DISMISS_NOTHING_HANDLED
+  DISMISS_OUTCOME_REFUSED
 } = require('../../dist/domain');
 
 /**
@@ -258,7 +257,7 @@ describe('CLI triage dismissal reporting', () => {
  * still lied to the operator — so the call site is exercised here.
  */
 describe('CLI triage dismissal call site', () => {
-  test('triage dismiss never prints an unqualified success line', async () => {
+  test('triage dismiss refuses and writes nothing when there is no PR to dismiss', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-dismiss-callsite-'));
     const prevCwd = process.cwd();
     const prevSubagent = process.env.AGY_SUBAGENT;
@@ -279,6 +278,8 @@ describe('CLI triage dismissal call site', () => {
     // No ambient repository: the gateway must not resolve a PR from the host.
     delete process.env.GH_REPO;
 
+    let checkpointBefore = '';
+    let checkpointAfter = '';
     try {
       process.chdir(tempDir);
       // The routing precondition requires the resolved checkpoint to be at
@@ -286,8 +287,9 @@ describe('CLI triage dismissal call site', () => {
       const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const now = new Date().toISOString();
+      const checkpointPath = path.join(tasksDir, '259.json');
       fs.writeFileSync(
-        path.join(tasksDir, '259.json'),
+        checkpointPath,
         JSON.stringify({
           version: '1.0.0',
           currentStage: 'TRIAGE',
@@ -301,7 +303,9 @@ describe('CLI triage dismissal call site', () => {
           pausedAtTimestamp: null
         })
       );
+      checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
       exitCode = await runCli(['triage', 'dismiss', '-m', 'not applicable', '--issue', '259']);
+      checkpointAfter = fs.readFileSync(checkpointPath, 'utf8');
     } finally {
       process.chdir(prevCwd);
       console.log = originalLog;
@@ -319,23 +323,20 @@ describe('CLI triage dismissal call site', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
-    assert.strictEqual(exitCode, 0, `the dismissal must not fail:\n${output}`);
+    // Issue #336 AC-1: a refusal is a non-write and a non-zero exit.
+    assert.strictEqual(exitCode, 1, `a refusal must exit non-zero:\n${output}`);
 
     const line = actionLine(output);
-    // The OUTCOME CLASS is what is asserted: a green unqualified success line
-    // is the regression this test exists to catch, whatever the wording is.
-    assert.ok(!line.startsWith('✓'), `the dismissal must not be an unqualified success: ${line}`);
-    assert.match(line, /^[⚠✗]/, `the dismissal must be rendered as a non-green outcome: ${line}`);
     assert.ok(
-      line.includes(DISMISS_OUTCOME_NOTHING),
-      `a dismissal that dismissed nothing must say so: ${line}`
+      line.includes(DISMISS_OUTCOME_REFUSED),
+      `the refusal must say DISMISS (REFUSED): ${line}`
     );
-    // ...and it must state a truthful reason for having dismissed nothing:
-    // either no PR was resolved, or the run handled no feedback at all.
-    const zeroCaseReasons = [NOTE_DISMISS_NO_PR, NOTE_DISMISS_NOTHING_HANDLED];
+    assert.ok(!line.startsWith('✓'), `a refusal must not be green: ${line}`);
     assert.ok(
-      zeroCaseReasons.some((reason) => line.includes(reason)),
-      `the dismissal must say why nothing was dismissed: ${line}`
+      output.includes('-m "<notes>"') || output.includes('no pull request'),
+      `the refusal must say why: ${output}`
     );
+    assert.ok(!output.includes('✓ State Updated'), `a refusal must not claim a transition:\n${output}`);
+    assert.strictEqual(checkpointAfter, checkpointBefore, 'the checkpoint must be untouched');
   });
 });
