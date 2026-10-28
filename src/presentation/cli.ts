@@ -549,7 +549,7 @@ Pipeline Management:
   critique [cmd]     Manage Critique CLI installation (status | install | update)
   opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
   triage [action]    Triage PR review comments and route pipeline (${formatTriageActionList('|')}); ${formatTriageActionSideEffects()}
-  review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin); with no verdict it runs the critique-based review
+  review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin | --critique-report <path|->); with no verdict it runs the critique-based review
   gate-report       File a dispatched Quality Gate Subagent's GATE_REPORT_JSON evidence block (--report-file <path|-> | --report-stdin); 'transition REVIEW' ingests it
 
 Operational Flags:

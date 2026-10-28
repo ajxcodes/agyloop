@@ -17,12 +17,12 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Run Critique Reviewer
-        uses: ajxcodes/critique@latest
+        uses: ajxcodes/critique@bc94991d0f3a8ef1c0671e86dbdaaf32060f6ee0 # v0.1.7
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -30,3 +30,12 @@ jobs:
           post_inline_comments: 'true'
           post_summary_comment: 'true'
           strict: 'false'
+          # Issue #242 / Defect A: pass the threshold EXPLICITLY (the action
+          # default is 'error'). 'error' and 'warning' both count `critical`,
+          # and the model applies `critical` to affirmations on safety-critical
+          # LINES (PR #238: 2 criticals, both positive). Only 'none' excludes
+          # `critical`, so this check is ADVISORY by decision: the blocking
+          # signal is `codeloop review`'s two-tier invariant + the Reviewer
+          # verdict. Re-enable a real threshold once ajxcodes/critique fixes
+          # severity to mean defect impact (#242 §5.4).
+          fail_on_severity: 'none'

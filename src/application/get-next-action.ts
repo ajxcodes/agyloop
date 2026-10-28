@@ -41,6 +41,8 @@ import {
   parseIssueToken,
   MAX_IMPLEMENT_GATE_LOOPS,
   MAX_REVIEW_DISPATCH_LOOPS,
+  DispatchCounterKind,
+  formatDispatchCounterUnrecorded,
   GATE_TRIAGE,
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_RESTARTED_FROM_COMPLETED,
@@ -1376,7 +1378,7 @@ export class GetNextActionUseCase {
    */
   private async persistDispatchCounter(
     sm: StateMachine,
-    counter: 'review' | 'discovery' | 'plan' | 'implementation',
+    counter: DispatchCounterKind,
     writesEnabled: boolean,
     wouldWrite: string[]
   ): Promise<void> {
@@ -1390,7 +1392,7 @@ export class GetNextActionUseCase {
       await this.stateRepo.save(sm.toSnapshot());
     } catch {
       console.warn(
-        `[codeloop] Warning: could not record the ${counter} dispatch counter at ${this.stateRepo.getStateFilePath()}; returning the directive unchanged.`
+        formatDispatchCounterUnrecorded(counter, this.stateRepo.getStateFilePath())
       );
     }
   }

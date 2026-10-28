@@ -2,20 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `phase/**` verifies merges ONTO the collector branch too (#242 / NEW-2);
+    # the `tag` job stays main-only, so a collector push can never release.
+    branches: [main, 'phase/**']
   pull_request:
     branches: [main, 'phase/**', 'feature/**']
 
 jobs:
   lint:
     name: Lint Workflows
-    runs-on: ubuntu-latest
+    # Pinned: this job builds the actionlint Docker image, so the runner's
+    # Docker engine must not change without a commit (#242 / Defect B).
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: 'npm'
+      - name: Verify package-lock.json is in sync with package.json
+        run: |
+          npm install --package-lock-only --ignore-scripts
+          git diff --exit-code -- package-lock.json
       - name: Run actionlint
         uses: rhysd/actionlint@v1.7.12
 
@@ -23,8 +31,8 @@ jobs:
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: 'npm'
@@ -35,8 +43,8 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: 'npm'
@@ -55,11 +63,13 @@ jobs:
   # dropping `continue-on-error` here and adding `posix-shell` to `tag.needs`.
   posix-shell:
     name: POSIX Shell (Alpine)
-    runs-on: ubuntu-latest
+    # Pinned: this job bind-mounts $PWD into a container, so the runner's
+    # Docker engine and kernel must not change without a commit (#242 / Defect B).
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: 'npm'
@@ -126,7 +136,9 @@ jobs:
 
   tag:
     name: Auto-Tag & Release
-    runs-on: ubuntu-latest
+    # Pinned: this job force-pushes release tags, so its environment must not
+    # change without a commit (#242 / Defect B).
+    runs-on: ubuntu-24.04
     # posix-shell is intentionally absent: it is still soaking (see above) and a
     # container/network flake there must not block a release from main.
     needs: [lint, typecheck, test]
@@ -134,17 +146,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: 'npm'
       - name: Run Auto-Tag
         id: auto-tag
-        uses: ajxcodes/auto-tag@latest
+        uses: ajxcodes/auto-tag@1c74094c93631b1319390dae21e46b0a325a8bc7 # v1.2.3
         with:
           github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           default-bump: patch

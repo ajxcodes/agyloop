@@ -368,6 +368,37 @@ export const MAX_IMPLEMENT_GATE_LOOPS = 3 as const;
  */
 export const MAX_REVIEW_DISPATCH_LOOPS = 3 as const;
 
+// Dispatch Counter Vocabulary & Warning (issue #242, absorbs #309.2)
+//
+// The counter labels were a repeated inline literal union and the warning was
+// an inline template in `get-next-action.ts`. Both live here so every counter
+// emits the same sentence byte-for-byte, pinned by a test.
+export const DISPATCH_COUNTER_REVIEW = 'review' as const;
+export const DISPATCH_COUNTER_DISCOVERY = 'discovery' as const;
+export const DISPATCH_COUNTER_PLAN = 'plan' as const;
+export const DISPATCH_COUNTER_IMPLEMENTATION = 'implementation' as const;
+
+export const DISPATCH_COUNTER_KINDS = Object.freeze([
+  DISPATCH_COUNTER_REVIEW,
+  DISPATCH_COUNTER_DISCOVERY,
+  DISPATCH_COUNTER_PLAN,
+  DISPATCH_COUNTER_IMPLEMENTATION
+] as const);
+
+export type DispatchCounterKind = (typeof DISPATCH_COUNTER_KINDS)[number];
+
+export const MSG_DISPATCH_COUNTER_UNRECORDED_TEMPLATE =
+  '[codeloop] Warning: could not record the {counter} dispatch counter at {path}; returning the directive unchanged.' as const;
+
+export function formatDispatchCounterUnrecorded(
+  counter: DispatchCounterKind,
+  stateFilePath: string
+): string {
+  return MSG_DISPATCH_COUNTER_UNRECORDED_TEMPLATE
+    .replace('{counter}', counter)
+    .replace('{path}', stateFilePath);
+}
+
 // Circuit Breaker Defaults & Action Types
 export const DEFAULT_CB_MAX_TURNS_PER_SUBAGENT = 15 as const;
 export const DEFAULT_CB_MAX_GATE_RETRIES = 3 as const;
@@ -1851,7 +1882,19 @@ REMEDIATION_GUIDANCE:
 - <Actionable remediation item 1> (or "None" if approved)
 \`\`\`
 
-If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set \`REVIEW_STATUS: APPROVED\`. Otherwise, set \`REVIEW_STATUS: CHANGES_REQUESTED\`.` as const;
+If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set \`REVIEW_STATUS: APPROVED\`. Otherwise, set \`REVIEW_STATUS: CHANGES_REQUESTED\`.
+
+## 4. Recording the verdict
+
+The verdict block above is the **only** record of this review. You have no write tools, so the orchestrator files it for you:
+
+\`\`\`bash
+codeloop review --issue <n> --verdict-file <path>
+\`\`\`
+
+(The orchestrator may instead pass the block inline with \`--review-output "<block>"\`, or pipe it into \`codeloop review --verdict-stdin\`.)
+
+Emit the block verbatim as the **last** thing in your response. \`ReviewVerdict.parse\` refuses a block it cannot read, and a \`CHANGES_REQUESTED\` must never be downgraded to a skip.` as const;
 
 // ============================================================================
 // Conventional Commit Types, Regexes, Tokens & Approval Gate Constants
