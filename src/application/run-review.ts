@@ -206,10 +206,10 @@ export function applyTwoTierInvariant(
   verdict: ReviewVerdict,
   aiReport: AiReviewReport | null
 ): TwoTierInvariantOutcome {
-  if (aiReport && !aiReport.bypassed && (aiReport.hasBlockingIssues() || aiReport.errorCount() > 0)) {
+  if (aiReport && !aiReport.bypassed && aiReport.blockingCount() > 0) {
     const critiqueCriteria: string[] = [];
     const critiqueRemediation: string[] = [];
-    for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking() || f.isError())) {
+    for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking())) {
       critiqueCriteria.push(`[Critique ${finding.severity.toUpperCase()}] ${finding.path}:${finding.line} - ${finding.body}`);
       critiqueRemediation.push(`Fix ${finding.severity} in ${finding.path}:${finding.line}: ${finding.body}`);
     }
@@ -217,7 +217,7 @@ export function applyTwoTierInvariant(
       escalatedBy: 'critique',
       verdict: new ReviewVerdict({
         status: VERDICT_CHANGES_REQUESTED,
-        summary: `Review failed: Automated critique detected ${aiReport.errorCount() + (aiReport.hasBlockingIssues() ? 1 : 0)} blocking/error violation(s). ${verdict.summary}`,
+        summary: `Review failed: Automated critique detected ${aiReport.blockingCount()} blocking/error violation(s). ${verdict.summary}`,
         unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...critiqueCriteria],
         remediationGuidance: [...verdict.remediationGuidance, ...critiqueRemediation],
         confidenceLevel: aiReport.confidence.level,

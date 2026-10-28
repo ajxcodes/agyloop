@@ -19,7 +19,7 @@ To advance or inspect the CodeLoop pipeline:
 2. `codeloop plan <issue>`: Initiate discovery or architectural planning for a GitHub issue.
 3. `codeloop implement`: Begin surgical code implementation inside an isolated worktree.
 4. `codeloop next --json`: Invoke the gate subagent, which runs automated typechecking, linting, and test suites. (The former standalone `gates` subcommand was removed - `codeloop next` is the only entry point.)
-5. `codeloop review --issue <n> --verdict-file <path>`: As the orchestrator, record the dispatched AI Reviewer Subagent's verdict (`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`) into the checkpoint. The reviewer is read-only and only emits the block; write its verdict block to a file and pass it with `--verdict-file` (or pipe it with `--verdict-stdin`). `codeloop review` refuses to run inside a dispatched subagent session. `codeloop review --issue <n>` with no verdict runs the critique-based AI review instead.
+5. `codeloop review --issue <n> --verdict-file <path>`: As the orchestrator, record the dispatched AI Reviewer Subagent's verdict (`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`) into the checkpoint. The reviewer is read-only and only emits the block; write its verdict block to a file and pass it with `--verdict-file` (or pipe it with `--verdict-stdin`). Pass `--critique-report <path|->` when a critique JSON report already exists, so the verdict is cross-checked without running the critique CLI again. `codeloop review` refuses to run inside a dispatched subagent session. `codeloop review --issue <n>` with no verdict runs the critique-based AI review instead.
 6. `codeloop commit`: Draft and execute conventional commits with interactive approval. Add `--create-pr` to have the tool open the PR itself (base = the collector branch, with the sanitized body, `Closes #<id>` and the milestone). Without it the branch is pushed but the run is **not delivered**; the tool prints the single `gh pr create …` command, and delivery completes only when that PR is **merged**. `--commit-after` (including `yolo --commit-after`) implies `--create-pr`.
 7. `codeloop yolo <issue>`: Run the end-to-end autonomous lifecycle pipeline.
 8. `codeloop resume`: Clear a persisted gate pause and checkpoint the wait time.
@@ -39,6 +39,8 @@ The Reviewer subagent runs read-only and only emits the verdict block. The orche
    ```
 2. As the orchestrator, write that block to a file and run `codeloop review --issue <n> --verdict-file <path>` (or pipe it into `codeloop review --issue <n> --verdict-stdin`).
 3. `codeloop next --json` then reports the **actual** verdict at the COMMIT gate — `Review passed.` for `APPROVED`, and the pipeline reverts to `IMPLEMENT` (exit code `1`) for `CHANGES_REQUESTED`.
+
+When the orchestrator already holds a critique JSON report — a previous `critique --json` run, or a deduped CI artifact — pass it with `codeloop review --issue <n> --verdict-file <path> --critique-report <path|->` instead of letting `review` execute the critique CLI again. That cross-checks the verdict against the already-produced report (hermetic Tier 1: no critique subprocess). Use `-` to read the report from stdin.
 
 A verdict block that cannot be parsed is a hard failure: the review is recorded or the run fails — a `CHANGES_REQUESTED` is never silently downgraded to a skip.
 

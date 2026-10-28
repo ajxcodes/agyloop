@@ -101,16 +101,29 @@ export class AiReviewReport {
     return !this.hasBlockingIssues() && this.confidence.isHigh();
   }
 
+  /**
+   * The canonical blocking count (#242 / NEW-1). One finding per entry, and
+   * the only count `applyTwoTierInvariant` may interpolate.
+   */
+  public blockingCount(): number {
+    return this.findings.filter((finding) => finding.isBlocking()).length;
+  }
+
   public hasBlockingIssues(): boolean {
-    return this.findings.some((finding) => finding.isBlocking());
+    return this.blockingCount() > 0;
   }
 
   public hasFindings(): boolean {
     return this.findings.length > 0;
   }
 
+  /**
+   * The critique action's threshold vocabulary alias. `error` and `blocking`
+   * are the same set, so this MUST delegate rather than re-filter (#242 /
+   * NEW-1: the two predicates diverging is what produced the N+1 count).
+   */
   public errorCount(): number {
-    return this.findings.filter((f) => f.isError()).length;
+    return this.blockingCount();
   }
 
   public warningCount(): number {

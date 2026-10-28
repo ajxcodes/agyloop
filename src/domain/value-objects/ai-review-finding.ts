@@ -86,8 +86,13 @@ export class AiReviewFinding {
     return this.severity === SEVERITY_CRITICAL;
   }
 
+  /**
+   * `error` and `blocking` are the same set; the critique action's threshold
+   * vocabulary uses "error", our gate uses "blocking". ONE predicate so the
+   * two can never diverge (#242 / NEW-1).
+   */
   public isError(): boolean {
-    return this.severity === SEVERITY_ERROR || this.severity === SEVERITY_CRITICAL;
+    return this.isBlocking();
   }
 
   public isWarning(): boolean {
