@@ -2849,7 +2849,25 @@ export const NOTE_TRIAGE_DRY_RUN_DISMISS =
  * merged/closed.
  */
 export const NOTE_TRIAGE_GATE_EXIT_CONDITION =
-  "This gate ends when the feedback is dispositioned (the disposition is recorded in the checkpoint) or when the PR is merged/closed. Until then 'codeloop next' reports this gate again." as const;
+  "This gate ends when the feedback is dispositioned (the disposition is recorded in the checkpoint) or when the PR is merged/closed: `codeloop next` then records COMPLETED and reports idle, with no `codeloop resume` needed. Until then 'codeloop next' reports this gate again." as const;
+
+/** The history-metadata marker for a gate that ended because the PR did (issue #351). */
+export const TRIAGE_EXIT_PULL_REQUEST_TERMINAL = 'pr-terminal' as const;
+export type TriageExitCause = typeof TRIAGE_EXIT_PULL_REQUEST_TERMINAL;
+
+/** Rendered on the history note and on the idle report, never duplicated. */
+export const NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE =
+  'Triage gate ended: {pr} is {state}. Open review feedback no longer needs a disposition.' as const;
+
+export function formatTriageGateEndedNote(state: string, prNumber?: number | null): string {
+  const target =
+    prNumber === null || prNumber === undefined
+      ? 'the pull request'
+      : `PR #${prNumber}`;
+  return NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE
+    .replace('{pr}', target)
+    .replace('{state}', state.toUpperCase());
+}
 
 /**
  * The operator-facing label of the triage disposition line.

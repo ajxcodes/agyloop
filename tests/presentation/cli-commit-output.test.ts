@@ -158,6 +158,35 @@ function runCommit(sandbox: Sandbox, extraArgs: string[] = []) {
   );
 }
 
+/**
+ * Issue #351: the pipeline's OWN recommended invocation. The issue comes from
+ * the checkpoint, not from `--issue` — exactly the #350 run that printed no
+ * caveat.
+ */
+function runCommitWithoutIssue(sandbox: Sandbox, extraArgs: string[] = []) {
+  return spawnSync(
+    process.execPath,
+    [
+      path.join(REPO_ROOT, 'bin', 'codeloop.js'),
+      'commit',
+      '-y',
+      '--keep-worktree',
+      ...extraArgs
+    ],
+    {
+      cwd: sandbox.dir,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${sandbox.binDir}${path.delimiter}${process.env.PATH}`,
+        HOME: path.join(sandbox.dir, '.home'),
+        GH_CALL_LOG: sandbox.ghLog,
+        AGY_SUBAGENT: ''
+      }
+    }
+  );
+}
+
 const APPROVED_VERDICT = `REVIEW_STATUS: APPROVED
 REVIEW_SUMMARY: The change set faithfully implements the approved plan.
 UNFULFILLED_AC:
@@ -328,6 +357,49 @@ describe('commit output accuracy (issue #284)', () => {
           `\`Closes #${ISSUE}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
         ),
         `the caveat must name the keyword and the compensator, got:\n${output}`
+      );
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+    }
+  });
+
+  test('the collector-base caveat fires with NO --issue flag (issue #351)', () => {
+    const sandbox = makeSandbox('phase/6-smoke');
+    try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
+      // THE #350 INVOCATION: no `--issue`, no `--create-pr`-less shortcut. The
+      // issue comes from the checkpoint, which is the pipeline's own
+      // recommended path — and it used to suppress the caveat entirely.
+      const run = runCommitWithoutIssue(sandbox, ['--create-pr']);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.status, 0, output);
+
+      assert.ok(
+        output.includes(
+          "⚠ Closing keyword caveat: this PR targets the collector branch 'phase/6-smoke'."
+        ),
+        `the caveat must fire without --issue, got:\n${output}`
+      );
+      assert.ok(
+        output.includes(
+          `\`Closes #${ISSUE}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
+        ),
+        `the caveat must name the keyword and the compensator, got:\n${output}`
+      );
+
+      // The caveat is about the REAL body: the PR the tool created carries the
+      // same `Closes #N` it warns about.
+      const ghCalls = fs
+        .readFileSync(sandbox.ghLog, 'utf8')
+        .split('\n')
+        .filter((line: string) => line.includes('pr create'));
+      assert.strictEqual(ghCalls.length, 1, `exactly one PR creation expected, got: ${JSON.stringify(ghCalls)}`);
+      assert.ok(
+        ghCalls[0].includes(`Closes #${ISSUE}`),
+        `the caveat's issue and the body's keyword must be the same operand, got: ${ghCalls[0]}`
       );
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });

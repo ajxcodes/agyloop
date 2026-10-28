@@ -129,6 +129,18 @@ codeloop commit --create-pr
 codeloop worktree [list | clean | prune]
 ```
 
+### Collector-branch PRs and the closing keyword
+
+A PR that targets a collector branch (`phase/*` / `feature/*`) does **not**
+auto-close its issue on merge: GitHub **closing keywords** (`Closes #N`) fire
+only on the default branch. `codeloop commit` therefore prints a caveat whether
+the issue came from `--issue` or from the checkpoint — the pipeline's own
+recommended invocation — and `codeloop sync` closes the issue after the merge.
+
+Likewise, the TRIAGE gate ends on its own: once the pull request is merged or
+closed, `codeloop next` records `COMPLETED` and reports idle, with no
+`codeloop resume` needed. An open PR keeps the gate.
+
 ### ⚠️ Behaviour change (issue #250): `--issue` is strict
 
 `--issue <num>` accepts **digits only** (an optional leading `#` is allowed, so

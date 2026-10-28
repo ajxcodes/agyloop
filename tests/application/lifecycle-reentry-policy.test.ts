@@ -20,6 +20,7 @@ const {
   COMPLETED_REENTRY_RULES,
   resolveDiscoveryReentry,
   resolveCompletedReentry,
+  resolveTriageReentry,
   shouldRouteToTriage
 } = require('../../dist/application/lifecycle-reentry-policy');
 const {
@@ -336,6 +337,46 @@ describe('Lifecycle Re-Entry Policy (issue #237)', () => {
           shouldRouteToTriage({ currentStage, hasOpenReviewFeedback }),
           legacy,
           `predicate drift at ${currentStage}`
+        );
+      }
+    });
+  });
+
+  describe('TRIAGE re-entry (issue #351)', () => {
+    test('a MERGED or CLOSED pull request ends the gate', () => {
+      for (const pullRequestState of ['MERGED', 'CLOSED']) {
+        assert.strictEqual(
+          resolveTriageReentry({ currentStage: STAGE_TRIAGE, pullRequestState }),
+          'EXIT_TO_COMPLETED',
+          `${pullRequestState} at TRIAGE must exit the gate`
+        );
+      }
+    });
+
+    test('the state is normalised before it is matched', () => {
+      assert.strictEqual(
+        resolveTriageReentry({ currentStage: STAGE_TRIAGE, pullRequestState: 'merged' }),
+        'EXIT_TO_COMPLETED'
+      );
+    });
+
+    test('OPEN, unmeasured and unrecognised states report the gate (fail closed)', () => {
+      for (const pullRequestState of ['OPEN', null, '', 'UNKNOWN']) {
+        assert.strictEqual(
+          resolveTriageReentry({ currentStage: STAGE_TRIAGE, pullRequestState }),
+          'REPORT_TRIAGE_GATE',
+          `${String(pullRequestState)} at TRIAGE must keep the gate`
+        );
+      }
+    });
+
+    test('no other stage is ever exited by this rule', () => {
+      for (const currentStage of ALL_STAGES) {
+        if (currentStage === STAGE_TRIAGE) continue;
+        assert.strictEqual(
+          resolveTriageReentry({ currentStage, pullRequestState: 'MERGED' }),
+          'REPORT_TRIAGE_GATE',
+          `${currentStage} must not be advanced by the TRIAGE exit`
         );
       }
     });
