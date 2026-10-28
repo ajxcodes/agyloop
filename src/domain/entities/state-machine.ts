@@ -15,6 +15,7 @@ import {
   STAGE_COMPLETED,
   STAGE_DISCOVERY,
   STAGE_PLAN,
+  STAGE_IMPLEMENT,
   STAGE_REVIEW,
   MODE_STANDARD,
   STATE_SCHEMA_VERSION,
@@ -89,6 +90,12 @@ export interface StateMachineSnapshot {
    */
   readonly planDispatchCount?: number;
   /**
+   * How many times the current IMPLEMENT stage has dispatched the implementer
+   * without an implementation diff appearing in the task worktree
+   * (issue #327). Optional: a checkpoint written before this field loads as `0`.
+   */
+  readonly implementationDispatchCount?: number;
+  /**
    * How many blank-plan parks the run has recorded at IMPLEMENT (issue #267).
    * Reset when the pipeline re-enters PLAN.
    */
@@ -118,6 +125,7 @@ export interface StateStatusSummary {
   readonly reviewDispatchCount: number;
   readonly discoveryDispatchCount: number;
   readonly planDispatchCount: number;
+  readonly implementationDispatchCount: number;
   readonly planEmptyParkCount: number;
 }
 
@@ -145,6 +153,7 @@ export class StateMachine {
   private _reviewDispatchCount: number;
   private _discoveryDispatchCount: number;
   private _planDispatchCount: number;
+  private _implementationDispatchCount: number;
   private _planEmptyParkCount: number;
 
   constructor(options: {
@@ -171,6 +180,7 @@ export class StateMachine {
     reviewDispatchCount?: number;
     discoveryDispatchCount?: number;
     planDispatchCount?: number;
+    implementationDispatchCount?: number;
     planEmptyParkCount?: number;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
@@ -198,6 +208,10 @@ export class StateMachine {
       typeof options.discoveryDispatchCount === 'number' ? options.discoveryDispatchCount : 0;
     this._planDispatchCount =
       typeof options.planDispatchCount === 'number' ? options.planDispatchCount : 0;
+    this._implementationDispatchCount =
+      typeof options.implementationDispatchCount === 'number'
+        ? options.implementationDispatchCount
+        : 0;
     this._planEmptyParkCount =
       typeof options.planEmptyParkCount === 'number' ? options.planEmptyParkCount : 0;
 
@@ -359,6 +373,20 @@ export class StateMachine {
   /** Records one planner dispatch in the current PLAN stage (issue #292). */
   public recordPlanDispatch(): void {
     this._planDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get implementationDispatchCount(): number {
+    return this._implementationDispatchCount;
+  }
+
+  /**
+   * Records one implementer dispatch in the current IMPLEMENT stage
+   * (issue #327). Mirrors `recordPlanDispatch`: a context field, so `next` may
+   * record it without advancing a stage.
+   */
+  public recordImplementationDispatch(): void {
+    this._implementationDispatchCount++;
     this._updatedAt = new Date().toISOString();
   }
 
@@ -546,6 +574,11 @@ export class StateMachine {
       this._planDispatchCount = 0;
       this._planEmptyParkCount = 0;
     }
+    // A transition INTO IMPLEMENT starts a fresh implementation round, so the
+    // re-dispatch record of the previous round must not leak into it (#327).
+    if (target.value === STAGE_IMPLEMENT) {
+      this._implementationDispatchCount = 0;
+    }
     this._history.push({
       stage: target.value,
       timestamp: now,
@@ -603,6 +636,7 @@ export class StateMachine {
     this._reviewDispatchCount = 0;
     this._discoveryDispatchCount = 0;
     this._planDispatchCount = 0;
+    this._implementationDispatchCount = 0;
     this._planEmptyParkCount = 0;
     this._updatedAt = now;
     this._history = [
@@ -637,6 +671,7 @@ export class StateMachine {
       reviewDispatchCount: this._reviewDispatchCount,
       discoveryDispatchCount: this._discoveryDispatchCount,
       planDispatchCount: this._planDispatchCount,
+      implementationDispatchCount: this._implementationDispatchCount,
       planEmptyParkCount: this._planEmptyParkCount
     };
   }
@@ -667,6 +702,7 @@ export class StateMachine {
       reviewDispatchCount: this._reviewDispatchCount,
       discoveryDispatchCount: this._discoveryDispatchCount,
       planDispatchCount: this._planDispatchCount,
+      implementationDispatchCount: this._implementationDispatchCount,
       planEmptyParkCount: this._planEmptyParkCount
     };
   }
@@ -729,6 +765,10 @@ export class StateMachine {
       discoveryDispatchCount:
         typeof snapshot.discoveryDispatchCount === 'number' ? snapshot.discoveryDispatchCount : 0,
       planDispatchCount: typeof snapshot.planDispatchCount === 'number' ? snapshot.planDispatchCount : 0,
+      implementationDispatchCount:
+        typeof snapshot.implementationDispatchCount === 'number'
+          ? snapshot.implementationDispatchCount
+          : 0,
       planEmptyParkCount:
         typeof snapshot.planEmptyParkCount === 'number' ? snapshot.planEmptyParkCount : 0
     });

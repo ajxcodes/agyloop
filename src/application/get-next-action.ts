@@ -54,8 +54,17 @@ import {
   NOTE_DISCOVERY_DISPATCH_ORDINAL,
   NOTE_PLAN_DISPATCH_ORDINAL,
   NOTE_BLANK_PLAN_DISPATCH_PLANNER,
+  // Issue #327: the IMPLEMENT stage's completion condition, state sentences,
+  // re-dispatch record and advancing command.
+  NOTE_IMPLEMENT_ADVANCE_CONDITION,
+  NOTE_IMPLEMENT_PRESENT,
+  NOTE_IMPLEMENT_ABSENT,
+  NOTE_IMPLEMENT_UNVERIFIED,
+  NOTE_IMPLEMENT_DISPATCH_ORDINAL,
   formatDiscoveryAdvanceCommand,
   formatPlanAdvanceCommand,
+  formatImplementAdvanceCommand,
+  formatPlanReapprovalRecovery,
   formatReviewVerdictChannelCommand,
   formatReviewVerdictChannelNote,
   formatGateReportChannelNote,
@@ -89,6 +98,7 @@ import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
 import { resolveCompletedReentry } from './lifecycle-reentry-policy';
 import { classifyPrFeedback, feedbackKeysOf } from './triage-feedback';
+import type { ImplementationProbe } from './detect-implementation-diff';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
@@ -176,6 +186,19 @@ export interface NextActionResult {
   /** The recorded re-dispatch count for the current PLAN stage (issue #292). */
   readonly planDispatchCount?: number;
   /**
+   * The recorded re-dispatch count for the current IMPLEMENT stage
+   * (issue #327). Additive and optional; populated only at IMPLEMENT.
+   */
+  readonly implementationDispatchCount?: number;
+  /**
+   * Whether an implementation diff exists in the task worktree (issue #327).
+   *
+   * `true` / `false` only when the existing `detectImplementationDiff` probe
+   * could measure the tree; `null` means unverified (absent probe, unreadable
+   * tree, or an unmeasurable branch diff). Never inferred from a failed read.
+   */
+  readonly implementationPresent?: boolean | null;
+  /**
    * The DISCOVERY report state (issue #320).
    *
    * `next` used to render a static completion condition and never read the RCA,
@@ -237,6 +260,12 @@ export class GetNextActionUseCase {
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly buildDetector?: BuildDetectorPort;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  /**
+   * The implementation-evidence probe (issue #327). `next` consults it at
+   * IMPLEMENT to tell "nothing implemented yet" from "implementation present",
+   * using the SAME probe the YOLO path and the gate already use (#259).
+   */
+  private readonly implementationProbe?: ImplementationProbe;
 
   constructor(
     stateRepo: StateRepository,
@@ -250,7 +279,11 @@ export class GetNextActionUseCase {
     // Issue #314: the REVIEW directive resolves Tier 1's binary through this
     // port. Without it the prompt fell back to a hardcoded ~/.local/bin path
     // that `codeloop critique install` never writes.
-    critiquePort?: CritiquePort
+    critiquePort?: CritiquePort,
+    // Issue #327: the implementation-evidence probe. Optional so every existing
+    // call site and test keeps working; without it the directive reports the
+    // implementation state as UNVERIFIED rather than inventing a claim.
+    implementationProbe?: ImplementationProbe
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -262,6 +295,7 @@ export class GetNextActionUseCase {
     this.worktreeManager = worktreeManager;
     this.buildDetector = buildDetector;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
+    this.implementationProbe = implementationProbe;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -680,7 +714,10 @@ export class GetNextActionUseCase {
 
       case STAGE_APPROVAL: {
         if (sm.mode === MODE_YOLO) {
-          return this.buildImplementAction(sm, config, cwd);
+          // The YOLO advancing command is `codeloop implement`, not
+          // `transition QUALITY_GATE`, so the probe and the counter are NOT
+          // touched here (issue #327): this directive is unchanged.
+          return await this.buildImplementAction(sm, config, cwd, writesEnabled, wouldWrite);
         }
 
         const planRecovery = this.buildBlankPlanDiagnosis(sm, cwd, activeIssue);
@@ -711,7 +748,7 @@ export class GetNextActionUseCase {
             humanSummary: `Too many consecutive failures (${sm.implementToGateLoops}). Please inspect the workspace manually and fix the issue before running "agyloop transition QUALITY_GATE" or "agyloop implement".`
           };
         }
-        return this.buildImplementAction(sm, config, cwd);
+        return await this.buildImplementAction(sm, config, cwd, writesEnabled, wouldWrite);
       }
 
       case STAGE_QUALITY_GATE: {
@@ -743,11 +780,25 @@ export class GetNextActionUseCase {
           verification.integrity.status === PLAN_INTEGRITY_MISMATCH ||
           verification.integrity.status === PLAN_INTEGRITY_MISSING
         ) {
-          return this.buildPlanIntegrityGateFailure(verification, baseBranch, taskBranch, worktreePath);
+          return this.buildPlanIntegrityGateFailure(
+            verification,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            activeIssue,
+            sm.planDir
+          );
         }
 
         if (verification.smoke.findings.length > 0) {
-          return this.buildSmokeProtocolGateFailure(verification, baseBranch, taskBranch, worktreePath);
+          return this.buildSmokeProtocolGateFailure(
+            verification,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            activeIssue,
+            sm.planDir
+          );
         }
 
         const commandPlan = verification.commandPlan;
@@ -1210,7 +1261,7 @@ export class GetNextActionUseCase {
    */
   private async persistDispatchCounter(
     sm: StateMachine,
-    counter: 'review' | 'discovery' | 'plan',
+    counter: 'review' | 'discovery' | 'plan' | 'implementation',
     writesEnabled: boolean,
     wouldWrite: string[]
   ): Promise<void> {
@@ -1349,8 +1400,14 @@ export class GetNextActionUseCase {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private buildImplementAction(sm: StateMachine, config: any, cwd: string): DirectiveResult {
+  private async buildImplementAction(
+    sm: StateMachine,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    config: any,
+    cwd: string,
+    writesEnabled: boolean,
+    wouldWrite: string[]
+  ): Promise<DirectiveResult> {
     const activeIssue = sm.issue;
     const worktreePath = sm.worktree?.worktreePath || null;
     const baseBranch = sm.baseBranch || 'main';
@@ -1436,23 +1493,115 @@ export class GetNextActionUseCase {
 
     const nextStage = sm.currentStage === STAGE_IMPLEMENT ? STAGE_QUALITY_GATE : STAGE_IMPLEMENT;
 
+    // Issue #327 (Defect 4): at IMPLEMENT the completion condition is a FACT,
+    // not a static sentence. The existing #259 probe decides it — the SAME one
+    // the gate and the YOLO path use. The counter is recorded only when the
+    // tree was READABLE and the read is not a paused one: a stale descriptor or
+    // a non-git directory is a diagnostic, never a dispatch (#282).
+    let implementationPresent: boolean | null = null;
+    if (sm.currentStage === STAGE_IMPLEMENT) {
+      const probe = await this.probeImplementation(
+        worktreePath,
+        sm.worktree?.baseBranch || sm.baseBranch || baseBranch
+      );
+      const readable = probe !== null && probe.probeError === null;
+      implementationPresent = !readable
+        ? null
+        : probe.hasChanges
+          ? true
+          : probe.measurementError === null
+            ? false
+            : null;
+
+      if (readable && sm.pausedAtGate === null) {
+        sm.recordImplementationDispatch();
+        await this.persistDispatchCounter(sm, 'implementation', writesEnabled, wouldWrite);
+      }
+    }
+
+    const remediationClause = remediation
+      ? ` Includes AI review remediation${remediation.round === null ? '' : ` from round ${remediation.round}`}.`
+      : '';
+
+    if (sm.currentStage !== STAGE_IMPLEMENT) {
+      // YOLO / APPROVAL: the advancing command is `codeloop implement`, not
+      // `transition QUALITY_GATE`, so this directive's operator text is
+      // UNCHANGED (issue #327).
+      return {
+        currentStage: sm.currentStage,
+        nextStage,
+        actionType: 'subagent',
+        role: ROLE_IMPLEMENTER,
+        title: 'Invoke Code Implementer Subagent',
+        description: remediation
+          ? `Execute surgical code modifications adhering strictly to approved plan in dedicated worktree. Includes AI review remediation${remediation.round === null ? '' : ` from round ${remediation.round}`}.`
+          : 'Execute surgical code modifications adhering strictly to approved plan in dedicated worktree.',
+        baseBranch,
+        taskBranch,
+        worktreePath,
+        invocationPayload,
+        humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`,
+        ...(remediation ? { reviewRemediationRound: remediation.round } : {}),
+        planBlank: false
+      };
+    }
+
+    const advanceCommand = formatImplementAdvanceCommand(activeIssue);
+    const condition = NOTE_IMPLEMENT_ADVANCE_CONDITION;
+    const stateSentence =
+      implementationPresent === true
+        ? NOTE_IMPLEMENT_PRESENT
+        : implementationPresent === false
+          ? NOTE_IMPLEMENT_ABSENT
+          : NOTE_IMPLEMENT_UNVERIFIED;
+    // Only a MEASURED non-empty tree ends the stage; every other state keeps
+    // the "once the diff exists" qualifier honest.
+    const advanceSentence =
+      implementationPresent === true
+        ? `Advance with \`${advanceCommand}\`.`
+        : `Advance with \`${advanceCommand}\` once the diff exists.`;
+
     return {
       currentStage: sm.currentStage,
       nextStage,
       actionType: 'subagent',
       role: ROLE_IMPLEMENTER,
       title: 'Invoke Code Implementer Subagent',
-      description: remediation
-        ? `Execute surgical code modifications adhering strictly to approved plan in dedicated worktree. Includes AI review remediation${remediation.round === null ? '' : ` from round ${remediation.round}`}.`
-        : 'Execute surgical code modifications adhering strictly to approved plan in dedicated worktree.',
+      description: `${stateSentence} ${condition} ${advanceSentence}${remediationClause}`,
       baseBranch,
       taskBranch,
       worktreePath,
       invocationPayload,
-      humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`,
+      humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}. ${this.formatDispatchOrdinal(NOTE_IMPLEMENT_DISPATCH_ORDINAL, sm.implementationDispatchCount)} ${stateSentence} ${condition} ${advanceSentence}`,
+      implementationPresent,
+      implementationDispatchCount: sm.implementationDispatchCount,
       ...(remediation ? { reviewRemediationRound: remediation.round } : {}),
       planBlank: false
     };
+  }
+
+  /**
+   * Runs the implementation-evidence probe, failing closed (issue #327).
+   *
+   * A probe that is absent, throws, or returns `probeError` yields `null` — the
+   * directive then says the state is UNVERIFIED instead of inferring one from a
+   * tree nobody could read.
+   */
+  private async probeImplementation(
+    worktreePath: string | null,
+    baseRef: string | null | undefined
+  ): Promise<{ hasChanges: boolean; probeError: string | null; measurementError?: string | null } | null> {
+    if (!this.implementationProbe) {
+      return null;
+    }
+    try {
+      return await this.implementationProbe.execute({
+        workspaceDir: worktreePath ?? undefined,
+        baseRef: baseRef ?? null
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1560,12 +1709,19 @@ export class GetNextActionUseCase {
    * A plan whose digest no longer matches the approved digest (or whose
    * approved file is gone) blocks dispatch: the gate cannot certify an
    * artifact it was not handed (issue #298).
+   *
+   * Issue #327 (Defect 2): the blocker prescribes RE-PLANNING, so it names the
+   * legal sequence — including the fresh-approval hop that re-records the plan
+   * digest — and `nextStage` names that recovery (PLAN), not an advance the run
+   * cannot make.
    */
   private buildPlanIntegrityGateFailure(
     verification: GateVerification,
     baseBranch: string,
     taskBranch: string | null,
-    worktreePath: string | null
+    worktreePath: string | null,
+    issue: number | string | null,
+    planDir: string | null
   ): DirectiveResult {
     const integrity = verification.integrity;
     const template =
@@ -1576,29 +1732,38 @@ export class GetNextActionUseCase {
       .replace('{path}', integrity.planPath ?? '(unknown plan path)')
       .replace('{expected}', integrity.expectedDigest ?? '(none)')
       .replace('{actual}', integrity.actualDigest ?? '(unreadable)');
+    const inspected = integrity.planPath ?? '(unknown plan path)';
+    const recovery = formatPlanReapprovalRecovery(issue, planDir);
 
     return {
       currentStage: STAGE_QUALITY_GATE,
-      nextStage: STAGE_REVIEW,
+      nextStage: STAGE_PLAN,
       actionType: 'human_gate',
       title: 'Plan Integrity Gate',
-      description: `Quality Gate: FAILED — ${detail}`,
+      description: `Quality Gate: FAILED — ${detail} The gate was not dispatched and the plan was not edited.`,
       baseBranch,
       taskBranch,
       worktreePath,
-      humanSummary: `The approved plan is no longer the plan on disk (${integrity.status}). Restore it or re-run planning and approval; the gate was not dispatched.`
+      humanSummary: `The approved plan is no longer the plan on disk (${integrity.status}); inspected \`${inspected}\`. To fix it, ${recovery}. The gate was not dispatched.`
     };
   }
 
   /**
    * A smoke protocol the gate cannot execute as written blocks dispatch
    * (issue #298). The certifier never amends the artifact it certifies.
+   *
+   * Issue #327 (Defect 2): the blocker prescribes fixing the plan and
+   * re-approving it, so it must name a sequence the state machine allows
+   * (`QUALITY_GATE -> PLAN` was widened for exactly this) and point
+   * `nextStage` at that recovery.
    */
   private buildSmokeProtocolGateFailure(
     verification: GateVerification,
     baseBranch: string,
     taskBranch: string | null,
-    worktreePath: string | null
+    worktreePath: string | null,
+    issue: number | string | null,
+    planDir: string | null
   ): DirectiveResult {
     const detail = verification.smoke.findings
       .map((finding) =>
@@ -1612,14 +1777,14 @@ export class GetNextActionUseCase {
 
     return {
       currentStage: STAGE_QUALITY_GATE,
-      nextStage: STAGE_REVIEW,
+      nextStage: STAGE_PLAN,
       actionType: 'human_gate',
       title: 'Manual Smoke Test Protocol Not Executable',
       description: `Quality Gate: FAILED — ${detail}`,
       baseBranch,
       taskBranch,
       worktreePath,
-      humanSummary: `The approved plan's Manual Smoke Test Protocol cannot be executed as written (${verification.smoke.findings.length} finding(s)). Fix the plan and re-approve it; the gate was not dispatched and the plan was not edited.`
+      humanSummary: `The approved plan's Manual Smoke Test Protocol cannot be executed as written (${verification.smoke.findings.length} finding(s)); inspected \`${verification.planPath ?? '(unknown plan path)'}\`. To fix it, ${formatPlanReapprovalRecovery(issue, planDir)}. The gate was not dispatched and the plan was not edited.`
     };
   }
 

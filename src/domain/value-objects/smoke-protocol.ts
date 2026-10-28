@@ -71,7 +71,25 @@ const REQUIRE_PATTERN = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
 const FROM_PATTERN = /\bfrom\s+['"]([^'"]+)['"]/g;
 const RELATIVE_MODULE_EXTENSIONS = /\.(?:js|json|mjs|cjs)$/;
 const QUOTED_COMPARISON = /\[\s*"?\$\(.*\)"?\s*={1,2}\s*"[^"]*"\s*\]/;
-const JSON_QUOTING_HELPER = 'JSON.stringify';
+/**
+ * The commands that emit JSON-QUOTED text (issue #327, Defect 1).
+ *
+ * The old rule was block-scoped: `body.includes('JSON.stringify')` armed the
+ * comparison check for EVERY line in the fence, so a fixture-seeding
+ * `node -e '…JSON.stringify…'` rejected an unrelated
+ * `[ "$(git rev-parse HEAD)" = "$BEFORE" ]`. Attribution is now per command:
+ * a comparison is flagged only when the command it compares is one of these.
+ *
+ * `jq -r` is deliberately NOT a marker — raw output is unquoted text.
+ */
+const JSON_QUOTING_MARKERS: readonly RegExp[] = Object.freeze([
+  /JSON\.stringify/,
+  /\bjson\.dumps\b/,
+  /\bjson_encode\b/,
+  /\bConvertTo-Json\b/i,
+  /\bjq\b[^\n]*?(?:^|\s)(?:-c|--compact-output)(?=\s|$)/
+]);
+const FUNCTION_OPEN = /^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{/;
 const FAIL_WORD = /\bFAIL\b/;
 
 const NODE_BUILTINS: ReadonlySet<string> = new Set([
@@ -371,6 +389,108 @@ export class SmokeProtocol {
   }
 }
 
+/** True when the text routes its output through JSON quoting (issue #327). */
+function hasJsonMarker(text: string): boolean {
+  return JSON_QUOTING_MARKERS.some((marker) => marker.test(text));
+}
+
+/**
+ * Extracts the balanced body of every `$( … )` group on a line (issue #327).
+ *
+ * Single-quoted spans are skipped, so a shell snippet that merely EMBEDS a
+ * `$(…)` inside `node -e '…'` is not mistaken for a substitution. Nested
+ * substitutions (`$(state "$(cat id)")`) yield both bodies. Returns `[]` when
+ * the line's parentheses are unbalanced.
+ */
+function commandSubstitutions(line: string): string[] {
+  const bodies: string[] = [];
+  let inSingleQuote = false;
+
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+
+    if (char === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+    if (char !== '$' || line[index + 1] !== '(') continue;
+
+    let depth = 1;
+    let cursor = index + 2;
+    let nestedSingleQuote = false;
+    for (; cursor < line.length; cursor++) {
+      const inner = line[cursor];
+      if (inner === "'") {
+        nestedSingleQuote = !nestedSingleQuote;
+        continue;
+      }
+      if (nestedSingleQuote) continue;
+      if (inner === '(') {
+        depth++;
+      } else if (inner === ')') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+
+    if (depth !== 0) return [];
+
+    bodies.push(line.slice(index + 2, cursor));
+    index = cursor;
+  }
+
+  // Nested substitutions live inside the bodies just collected.
+  return [...bodies, ...bodies.flatMap((body) => commandSubstitutions(body))];
+}
+
+/**
+ * The shell functions defined in a check whose BODY routes output through JSON
+ * quoting (issue #327). Computed once per check, so a comparison that calls one
+ * of them is still attributed to the JSON-producing command.
+ */
+function jsonQuotingFunctions(bodyLines: readonly string[]): Set<string> {
+  const functions = new Set<string>();
+  let openFunction: string | null = null;
+
+  for (const line of bodyLines) {
+    if (openFunction === null) {
+      const match = FUNCTION_OPEN.exec(line);
+      if (!match) continue;
+      openFunction = match[1];
+    }
+
+    if (hasJsonMarker(line)) {
+      functions.add(openFunction);
+    }
+
+    // A line ending in `}` closes the function, covering both the one-line and
+    // the multi-line definition shape.
+    if (line.trim().endsWith('}')) {
+      openFunction = null;
+    }
+  }
+
+  return functions;
+}
+
+/**
+ * True only when THIS comparison compares JSON-QUOTED output (issue #327,
+ * Defect 1) — not merely because the fence contains a JSON marker somewhere.
+ */
+function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>): boolean {
+  if (!QUOTED_COMPARISON.test(line)) return false;
+  if (hasJsonMarker(line)) return true;
+
+  for (const body of commandSubstitutions(line)) {
+    if (hasJsonMarker(body)) return true;
+    const command = body.trim().split(/\s+/)[0] ?? '';
+    if (jsonFunctions.has(command.replace(/[;"']/g, ''))) return true;
+  }
+
+  return false;
+}
+
 function collectFindings(
   checkIndex: number,
   label: string,
@@ -390,15 +510,15 @@ function collectFindings(
     return;
   }
 
-  const body = bodyLines.join('\n');
-  const usesJsonQuoting = body.includes(JSON_QUOTING_HELPER);
+  // The function set is per CHECK, not per fence-wide substring search.
+  const jsonFunctions = jsonQuotingFunctions(bodyLines);
 
   bodyLines.forEach((line, offset) => {
     const lineNumber = fenceStartLine + 1 + offset;
     const trimmed = line.trim();
     if (isCommentLine(line)) return;
 
-    if (usesJsonQuoting && QUOTED_COMPARISON.test(line)) {
+    if (isQuotedJsonComparison(line, jsonFunctions)) {
       findings.push({
         rule: SMOKE_RULE_QUOTED_JSON_COMPARISON,
         checkIndex,

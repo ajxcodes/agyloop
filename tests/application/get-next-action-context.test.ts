@@ -758,11 +758,17 @@ describe('#301: next is a declared, non-fabricating query', () => {
     await useCase.execute({ workspaceDir: dir, issue: 905 });
 
     const after = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    // Issue #327 adds `implementationDispatchCount` to the snapshot schema. A
+    // first write over a checkpoint that predates the field MATERIALISES it at
+    // its default 0; that is schema materialisation, not a state change, so it
+    // is excluded from the "what changed" set and asserted to stay 0.
     const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((key) => key !== 'implementationDispatchCount')
       .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
       .sort();
     assert.deepStrictEqual(changed, ['baseBranch', 'discoveryDispatchCount', 'updatedAt']);
     assert.strictEqual(after.discoveryDispatchCount, 1);
+    assert.strictEqual(after.implementationDispatchCount, 0);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

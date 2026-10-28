@@ -44,7 +44,9 @@ import {
   PreFlightHaltError,
   HALT_TYPE_MISSING_PLAN_DIR,
   ValidationError,
-  MSG_PLAN_MODIFIED_DURING_GATE
+  MSG_PLAN_MODIFIED_DURING_GATE,
+  formatGateEvidenceRequiredMessage,
+  formatTransitionRecoveryCommands
 } from '../domain';
 import {
   StateRepository,
@@ -148,7 +150,33 @@ export class TransitionStageUseCase {
     if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
       const gateRound = resolveGateRound(sm.history);
       const filed = this.gateReportRepo ? this.gateReportRepo.load(activeIssue) : null;
-      if (filed && filed.gateRound === gateRound) {
+      const usable = filed !== null && filed.gateRound === gateRound;
+
+      // Issue #327 (Defect 3): the exit to REVIEW CERTIFIES a gate round, so it
+      // consumes that round's evidence or it does not exit. The old branch
+      // printed a warning and advanced anyway — and the command it advised
+      // (`gate-report`) then refused, because filing is legal only at
+      // QUALITY_GATE. The refusal below runs BEFORE `sm.transition`, the
+      // worktree provisioning, the save and the summary writer: nothing is
+      // written and the on-disk checkpoint is byte-identical.
+      //
+      // It fails CLOSED when the repository is not injected: a test double may
+      // not certify by omission. Non-certifying exits (-> IMPLEMENT / -> TRIAGE)
+      // keep the honest `NOT RECORDED` record: refusing them would block a
+      // legitimate "the gates failed, go fix it" transition.
+      if (targetStageStr === STAGE_REVIEW && !usable) {
+        throw new ValidationError(
+          'gateEvidence',
+          filed ? filed.gateRound : null,
+          formatGateEvidenceRequiredMessage(
+            activeIssue,
+            gateRound,
+            filed ? filed.gateRound : null
+          )
+        );
+      }
+
+      if (usable) {
         gateEvidence = filed;
         transitionMetadata = {
           ...transitionMetadata,
@@ -161,9 +189,21 @@ export class TransitionStageUseCase {
           ...transitionMetadata,
           gateVerdict: GATE_VERDICT_NOT_RECORDED
         };
+        // Issue #327 (AC-7): advice must be executable from the state that
+        // prints it. After this non-certifying exit the checkpoint sits at the
+        // TARGET, and `gate-report` refuses anywhere but QUALITY_GATE — so the
+        // hint names the legal walk BACK to the gate instead.
+        const walkBack = formatTransitionRecoveryCommands(
+          targetStageStr,
+          STAGE_QUALITY_GATE,
+          activeIssue,
+          sm.mode
+        );
         console.warn(
-          '[agyloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded". ' +
-            'File it with `codeloop gate-report --issue <n> --report-file <path>` before advancing.'
+          '[agyloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded".' +
+            (walkBack === null
+              ? ''
+              : ` To file it, return to the gate: ${walkBack}, then run \`codeloop gate-report --issue <n> --report-file <path>\`.`)
         );
       }
     }
