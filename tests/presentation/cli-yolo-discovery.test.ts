@@ -117,9 +117,13 @@ describe('codeloop yolo DISCOVERY park (issue #234)', () => {
     assertParked(result);
   });
 
-  test('C3: success path surfaces resume + checkpoint guidance', async () => {
+  test('C3: the success path surfaces the next step and checkpoint guidance, with no resume hint when nothing is paused', async () => {
+    // Issue #315 (AC-9): the park does not record a pause, so naming
+    // `codeloop resume` here sent the operator to a no-op. The hint returns
+    // only when the checkpoint really is paused.
     const result = await runYolo(['yolo', '--title', 'Bug: probe', '--type', 'discovery']);
-    assert.match(result.stdout, /codeloop resume/);
+    assert.match(result.stdout, /codeloop next/);
     assert.match(result.stdout, /State is checkpointed/);
+    assert.doesNotMatch(result.stdout, /codeloop resume/);
   });
 });

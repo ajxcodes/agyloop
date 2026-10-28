@@ -65,15 +65,15 @@ class FakeGateReportRepository {
   }
 }
 
-function scaffoldWorkspace(currentStage: string, history: Array<Record<string, unknown>>) {
+function scaffoldWorkspace(
+  currentStage: string,
+  history: Array<Record<string, unknown>>,
+  planContent = '# [Implementation] - Smoke\n\n- [ ] Step 1: probe\n'
+) {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gate-evidence-'));
   const dir = path.join(ws, 'artifacts', 'plans', `${ISSUE}-smoke`);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'implementation_plan.md'),
-    '# [Implementation] - Smoke\n\n- [ ] Step 1: probe\n',
-    'utf8'
-  );
+  fs.writeFileSync(path.join(dir, 'implementation_plan.md'), planContent, 'utf8');
   const summaryPath = path.join(dir, 'CodeLoop Summary.md');
   fs.copyFileSync(path.join(REPO_ROOT, 'templates', 'summary-log.md'), summaryPath);
 
@@ -131,6 +131,46 @@ function row(summary: string, label: string): string {
   return line as string;
 }
 
+/**
+ * The gate row's duration cell, split into the labelled clocks (issue #315,
+ * AC-15/AC-18). A cell that does not name its clock fails here: the defect was
+ * a self-timer posing as the stage's wall clock.
+ */
+function gateRowDuration(summary: string): {
+  reported: string;
+  wallSeconds: number | null;
+} {
+  const cell = (row(summary, '4. Quality Gate').split('|')[5] ?? '').trim();
+  const match: RegExpExecArray | null =
+    /^(.*?) \(gate-reported(?:; (?:(\d+)m )?(\d+)s wall)?\)$/.exec(cell);
+  if (match === null) {
+    throw new Error(`the gate row must label the clock it reports, got: ${cell}`);
+  }
+  const wallSeconds =
+    match[2] === undefined && match[3] === undefined
+      ? null
+      : Number(match[2] ?? 0) * 60 + Number(match[3]);
+  return { reported: match[1], wallSeconds };
+}
+
+/** A plan carrying ONE declared verification target (for the #325 cases). */
+function planWithTargets(): string {
+  return [
+    '# [Implementation] - Smoke',
+    '',
+    '- [ ] Step 1: probe',
+    '',
+    '## 4. Quality Gate & Test Verification',
+    '',
+    '### Quality Gate Targets',
+    '',
+    '```bash',
+    'npm test',
+    '```',
+    ''
+  ].join('\n');
+}
+
 describe('gate evidence ingested on gate exit (issue #284)', () => {
   let warnings: string[] = [];
   const originalWarn = console.warn;
@@ -171,9 +211,13 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         summary.includes('- **Build System:** node'),
         `the build system must be recorded, got:\n${summary}`
       );
-      assert.strictEqual(
-        row(summary, '4. Quality Gate'),
-        '| 4. Quality Gate | `gate` | `flash_lite` | COMPLETED | 3m 16s |'
+      // Issue #315 (AC-15/AC-18): the gate's self-timer is labelled, and the
+      // wall window is derived from the seeded history (entered 200 s ago).
+      const clock = gateRowDuration(summary);
+      assert.strictEqual(clock.reported, '3m 16s');
+      assert.ok(
+        clock.wallSeconds !== null && Math.abs(clock.wallSeconds - 200) <= 5,
+        `the gate row must report the stage wall clock it measured, got: ${clock.wallSeconds}`
       );
       assert.ok(!summary.includes('Build Status:** PENDING'), `PENDING must never survive, got:\n${summary}`);
 
@@ -181,6 +225,14 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       assert.strictEqual(last.stage, STAGE_REVIEW);
       assert.strictEqual(last.metadata.gateVerdict, 'PASSED');
       assert.strictEqual(last.metadata.gateTests, 'PASSED (1408 passed)');
+      // Issue #315 (AC-15): the transport field is renamed so `stageDurationMs`
+      // keeps its single meaning ("this stage measured itself").
+      assert.strictEqual(last.metadata.gateReportedDurationMs, 196000);
+      assert.strictEqual(
+        last.metadata.stageDurationMs,
+        undefined,
+        'a gate duration must never be transported as the entered stage’s own measurement'
+      );
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
@@ -366,13 +418,102 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         `a freshly filed round-1 report must not be discarded, got: ${warnings.join(' | ')}`
       );
       const summary = fs.readFileSync(summaryPath, 'utf8');
+      // No QUALITY_GATE entry existed, so only the next entry's timestamp is
+      // available: the self-timer is labelled, with no wall window claimed.
+      const clock = gateRowDuration(summary);
+      assert.strictEqual(clock.reported, '3m 16s');
       assert.strictEqual(
-        row(summary, '4. Quality Gate'),
-        '| 4. Quality Gate | `gate` | `flash_lite` | COMPLETED | 3m 16s |'
+        clock.wallSeconds,
+        null,
+        'an unmeasurable wall window must not be invented'
       );
       const last = sm.history[sm.history.length - 1];
       assert.strictEqual(last.stage, STAGE_REVIEW);
       assert.strictEqual(last.metadata.gateVerdict, 'PASSED');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('the act not-run reason is the TOOL’s, not the agent’s (#325, AC-19)', async () => {
+    // The #311 gate wrote "this repo is a local TypeScript/Node project with no
+    // CI-workflow simulation in scope" while `.github/workflows/` existed. The
+    // true reason was precedence: plan targets outrank `act`. An agent's
+    // explanation of its own omission is not evidence.
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets()
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          notRun: [
+            {
+              id: 'act',
+              label: 'act',
+              reason: 'this repo is a local TypeScript/Node project with no CI-workflow simulation in scope'
+            }
+          ]
+        },
+        1
+      )
+    );
+
+    try {
+      const sm = await runTransition(ws, STAGE_REVIEW, repo);
+
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      assert.ok(
+        summary.includes('plan targets took precedence'),
+        `the tool must supply the act reason, got:\n${summary}`
+      );
+      assert.ok(
+        !summary.includes('no CI-workflow simulation in scope'),
+        `the agent's prose must never be published as evidence, got:\n${summary}`
+      );
+      const last = sm.history[sm.history.length - 1];
+      assert.ok(
+        JSON.stringify(last.metadata.gateNotRun).includes('plan targets took precedence'),
+        'the checkpoint must record the same reason as the summary'
+      );
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('a not-run entry the tool cannot evidence passes through untouched (#325, AC-19)', async () => {
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+      { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          notRun: [{ id: 'act', label: 'act', reason: 'the runtime is not installed' }, { id: 'e2e', label: 'e2e', reason: 'no fixtures' }]
+        },
+        1
+      )
+    );
+
+    try {
+      await runTransition(ws, STAGE_REVIEW, repo);
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      // No plan targets: the tool cannot claim precedence, so it does not
+      // rewrite the reporter's text into a fact it has not measured.
+      assert.ok(summary.includes('act (the runtime is not installed)'), summary);
+      assert.ok(summary.includes('e2e (no fixtures)'), summary);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }

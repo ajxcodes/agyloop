@@ -36,9 +36,16 @@ import {
   STATUS_PASSED,
   STATUS_FAILED,
   GateResultReport,
+  GateReportNotRun,
   resolveGateRound,
+  normaliseGateTests,
+  splitSmokeChecks,
   consumedHumanWaitMs,
   deriveStageDuration,
+  formatGateReportedDuration,
+  measureStageWindowMs,
+  parseQualityGateTargets,
+  formatActNotRunReason,
   isHumanWaitStage,
   WorktreeCreationError,
   PreFlightHaltError,
@@ -52,7 +59,9 @@ import {
   StateRepository,
   WorktreeManagerPort,
   PlanGeneratorPort,
-  GateReportRepositoryPort
+  GateReportRepositoryPort,
+  SummaryNotRunEntry,
+  SummarySmokeCheck
 } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 
@@ -122,7 +131,7 @@ export class TransitionStageUseCase {
 
     if (targetStageStr === STAGE_PLAN && !sm.planDir) {
       throw new PreFlightHaltError(
-        'Cannot transition to PLAN stage without an active plan directory. Use `bin/agyloop plan` or `bin/agyloop <issue>` to initialize the planning phase.',
+        'Cannot transition to PLAN stage without an active plan directory. Use `codeloop plan` or `codeloop <issue>` to initialize the planning phase.',
         HALT_TYPE_MISSING_PLAN_DIR
       );
     }
@@ -146,6 +155,12 @@ export class TransitionStageUseCase {
     // recorded` rather than inheriting `PENDING` or a previous PASSED.
     const activeIssue = sm.issue || params.issue || null;
     let gateEvidence: GateResultReport | null = null;
+    /** AC-16: the normalised `PASSED (<n> passed)` cell, when a report was ingested. */
+    let gateTestsStatus: string | null = null;
+    /** AC-17: commands only — smoke-check labels are partitioned out at ingest. */
+    let gateCommands: readonly string[] = [];
+    let gateSmokeChecks: readonly SummarySmokeCheck[] = [];
+    let gateNotRun: readonly SummaryNotRunEntry[] = [];
     let transitionMetadata: Record<string, unknown> = { ...(params.metadata || {}) };
     if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
       const gateRound = resolveGateRound(sm.history);
@@ -178,11 +193,44 @@ export class TransitionStageUseCase {
 
       if (usable) {
         gateEvidence = filed;
+
+        // Issue #325 (AC-16, absorbed): `testsPassed` is UNIQUE tests. The #311
+        // gate ran an 86-test targeted subset and then `npm test` (1867, which
+        // already included those 86) and filed the sum: 1953. Normalise once,
+        // here, and warn when the report's own arithmetic was rewritten.
+        const normalisedTests = normaliseGateTests(filed);
+        if (normalisedTests.rewritten) {
+          console.warn(
+            `[codeloop] Warning: the gate's test total was normalised from "${filed.testsStatus}" to "${normalisedTests.testsStatus}" — \`testsPassed\` counts UNIQUE tests, and a targeted subset is already inside the full suite.`
+          );
+        } else if (normalisedTests.suspectDoubleCount) {
+          // No per-command counts: the total cannot be checked, only challenged.
+          console.warn(
+            '[codeloop] Warning: `executedCommands` names a command that contains another. `testsPassed` counts UNIQUE tests, so a targeted subset must not be added to the full suite that already ran it.'
+          );
+        }
+        gateTestsStatus = normalisedTests.testsStatus;
+
+        // Issue #325 (AC-17, absorbed): `executedCommands` holds COMMANDS only.
+        // A legacy block that mixed smoke-check labels into it is partitioned
+        // here so the command count matches the plan's target count.
+        const partitioned = splitSmokeChecks(filed.executedCommands);
+        gateCommands = partitioned.commands;
+        gateSmokeChecks =
+          filed.smokeChecks.length > 0 ? filed.smokeChecks : partitioned.smokeChecks;
+        gateNotRun = this.resolveNotRunReasons(filed.notRun, sm, params);
+
         transitionMetadata = {
           ...transitionMetadata,
           gateVerdict: filed.verdict,
-          gateTests: filed.testsStatus,
-          ...(filed.durationMs !== null ? { stageDurationMs: filed.durationMs } : {})
+          gateTests: gateTestsStatus,
+          // Issue #315 (AC-15): the gate's self-timer travels under its own
+          // name. `stageDurationMs` means "this stage measured itself", and the
+          // gate is a DIFFERENT stage from the one being entered.
+          ...(filed.durationMs !== null ? { gateReportedDurationMs: filed.durationMs } : {}),
+          gateExecutedCommands: gateCommands,
+          ...(gateSmokeChecks.length > 0 ? { gateSmokeChecks } : {}),
+          ...(gateNotRun.length > 0 ? { gateNotRun } : {})
         };
       } else {
         transitionMetadata = {
@@ -193,18 +241,38 @@ export class TransitionStageUseCase {
         // prints it. After this non-certifying exit the checkpoint sits at the
         // TARGET, and `gate-report` refuses anywhere but QUALITY_GATE — so the
         // hint names the legal walk BACK to the gate instead.
-        const walkBack = formatTransitionRecoveryCommands(
-          targetStageStr,
-          STAGE_QUALITY_GATE,
-          activeIssue,
-          sm.mode
-        );
-        console.warn(
-          '[agyloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded".' +
-            (walkBack === null
-              ? ''
-              : ` To file it, return to the gate: ${walkBack}, then run \`codeloop gate-report --issue <n> --report-file <path>\`.`)
-        );
+        //
+        // Issue #315 (AC-10, Defect N1): `-> PLAN` is the "fix the plan and
+        // re-approve it" recovery. Warning it to walk back into the gate it
+        // just abandoned contradicts the action the operator took, so that exit
+        // names the re-plan sequence and nothing else. `-> IMPLEMENT` /
+        // `-> TRIAGE` keep the walk-back (they genuinely are "go fix it" exits
+        // that will need evidence next round).
+        if (targetStageStr === STAGE_PLAN) {
+          const rePlan = formatTransitionRecoveryCommands(
+            STAGE_PLAN,
+            STAGE_IMPLEMENT,
+            activeIssue,
+            sm.mode
+          );
+          console.warn(
+            '[codeloop] Note: this exit records no gate evidence — the plan is being re-worked.' +
+              (rePlan === null || rePlan === '' ? '' : ` Continue with: ${rePlan}.`)
+          );
+        } else {
+          const walkBack = formatTransitionRecoveryCommands(
+            targetStageStr,
+            STAGE_QUALITY_GATE,
+            activeIssue,
+            sm.mode
+          );
+          console.warn(
+            '[codeloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded".' +
+              (walkBack === null
+                ? ''
+                : ` To file it, return to the gate: ${walkBack}, then run \`codeloop gate-report --issue <n> --report-file <path>\`.`)
+          );
+        }
       }
     }
 
@@ -363,7 +431,7 @@ export class TransitionStageUseCase {
             }
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
-            console.warn(`[agyloop] Warning: the plan directory could not be scaffolded: ${msg}`);
+            console.warn(`[codeloop] Warning: the plan directory could not be scaffolded: ${msg}`);
           }
         }
       }
@@ -396,21 +464,31 @@ export class TransitionStageUseCase {
           // is subtracted by the wait THIS transition consumed — never by the
           // cumulative `totalHumanWaitMs`.
           //
+          // Issue #315 (AC-15): the GATE's own timer is NOT a stage
+          // self-measurement — it is `gateReportedDurationMs`, because the gate
+          // ran out of process and the stage the transition enters is a
+          // different one. It is rendered by name (AC-18), never as a plain
+          // `stageDurationMs`.
+          //
           // A human-wait gate row has no work of its own. Without a
           // self-measurement it writes NO duration (`undefined`), which leaves
           // the work stage's cell in place instead of printing the human idle
           // time as stage work.
           const exitedStage = prevStage;
           const writtenMetadata = sm.history[sm.history.length - 1]?.metadata ?? {};
-          const recordedDurationMs =
+          const selfMeasuredMs =
             typeof writtenMetadata.stageDurationMs === 'number'
               ? writtenMetadata.stageDurationMs
               : undefined;
+          const gateReportedMs =
+            typeof writtenMetadata.gateReportedDurationMs === 'number'
+              ? writtenMetadata.gateReportedDurationMs
+              : undefined;
           const prevDurationStr: string | undefined =
-            isHumanWaitStage(exitedStage) && recordedDurationMs === undefined
+            isHumanWaitStage(exitedStage) && selfMeasuredMs === undefined
               ? undefined
               : deriveStageDuration(sm.history, exitedStage, {
-                  stageDurationMs: recordedDurationMs,
+                  stageDurationMs: selfMeasuredMs,
                   humanWaitMs
                 });
 
@@ -439,24 +517,31 @@ export class TransitionStageUseCase {
               this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
                 stage: prevMappedStage,
                 status: gateRowStatus,
+                // Issue #315 (AC-15/AC-18): the cell names the clock it shows.
                 // The gate ran OUTSIDE this process: only a filed report can
-                // measure its duration. The transition gap is not the gate's
-                // work, so with no evidence the cell is `-`, never a guess.
+                // measure its duration, and `(gate-reported; … wall)` keeps the
+                // self-timer from posing as the stage's wall clock. With no
+                // evidence the cell is `-`, never a guess.
                 duration:
-                  recordedDurationMs !== undefined && prevDurationStr !== undefined
-                    ? prevDurationStr
+                  gateReportedMs !== undefined
+                    ? formatGateReportedDuration(
+                        gateReportedMs,
+                        // Measurable once this transition has left the gate: its
+                        // entry is the penultimate one. `null` means the label
+                        // names only the clock it is showing.
+                        measureStageWindowMs(sm.history, STAGE_QUALITY_GATE),
+                      )
                     : DURATION_NOT_RECORDED,
                 buildStatus: gateEvidence ? gateEvidence.buildStatus : EVIDENCE_NOT_RECORDED,
-                testsStatus: gateEvidence ? gateEvidence.testsStatus : EVIDENCE_NOT_RECORDED,
+                testsStatus: gateTestsStatus ?? EVIDENCE_NOT_RECORDED,
                 ...(gateEvidence
                   ? {
                       buildSystem: gateEvidence.buildSystem,
-                      executedCommands: gateEvidence.executedCommands
+                      executedCommands: gateCommands
                     }
                   : {}),
-                ...(gateEvidence && gateEvidence.notRun.length > 0
-                  ? { notRun: gateEvidence.notRun }
-                  : {})
+                ...(gateSmokeChecks.length > 0 ? { smokeChecks: gateSmokeChecks } : {}),
+                ...(gateNotRun.length > 0 ? { notRun: gateNotRun } : {})
               });
             } else {
               this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
@@ -490,6 +575,61 @@ export class TransitionStageUseCase {
     }
 
     return sm;
+  }
+
+  /**
+   * Rewrites the `Not Run` reasons the TOOL can evidence (issue #325.4, AC-19).
+   *
+   * An agent's own explanation for omitting `act` is not evidence: the #311
+   * gate claimed "no CI-workflow simulation in scope" while
+   * `.github/workflows/` existed, and the real cause was precedence — approved
+   * plan targets outrank `resolveActCommand`, and `act` was not installed. So
+   * when the plan DOES declare verification targets, the `act` reason is the
+   * tool's ("plan targets took precedence"). Every other entry, and every case
+   * the tool cannot evidence, passes through untouched.
+   */
+  private resolveNotRunReasons(
+    notRun: readonly GateReportNotRun[],
+    sm: StateMachine,
+    params: TransitionParams
+  ): readonly SummaryNotRunEntry[] {
+    if (!Array.isArray(notRun) || notRun.length === 0) {
+      return [];
+    }
+    const mentionsAct = notRun.some((entry) => TransitionStageUseCase.isActEntry(entry));
+    const planTargetCount = mentionsAct ? this.countPlanTargets(sm, params) : 0;
+    return notRun.map((entry) =>
+      planTargetCount > 0 && TransitionStageUseCase.isActEntry(entry)
+        ? {
+            id: entry.id,
+            label: entry.label,
+            reason: formatActNotRunReason({ planTargetCount, actSkip: 'plan-precedence' })
+          }
+        : { id: entry.id, label: entry.label, reason: entry.reason }
+    );
+  }
+
+  /** The plan's declared verification target count, or 0 when unreadable. */
+  private countPlanTargets(sm: StateMachine, params: TransitionParams): number {
+    if (!this.planGenerator) {
+      return 0;
+    }
+    const resolved = this.resolveCurrentPlan(sm, params);
+    if (!resolved) {
+      return 0;
+    }
+    try {
+      return parseQualityGateTargets(this.planGenerator.readPlanDocument(resolved.planPath)).commands
+        .length;
+    } catch {
+      // An unreadable plan is not a target list; keep the reporter's own text.
+      return 0;
+    }
+  }
+
+  /** True when a not-run entry names the `act` CI simulation. */
+  private static isActEntry(entry: GateReportNotRun): boolean {
+    return /^act\b/i.test(entry.id) || /^act\b/i.test(entry.label);
   }
 
   /** Resolves the current plan document, or null when nothing is resolvable. */

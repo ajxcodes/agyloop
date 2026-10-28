@@ -126,8 +126,10 @@ async function commitGateDescription(
   return result.description;
 }
 
+// Issue #315 (AC-21): the gate's instruction now names the DELIVERY step, so a
+// COMPLETED checkpoint cannot be read as a delivered run.
 const COMMIT_INSTRUCTIONS =
-  'Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.';
+  'Draft conventional commit, prompt for confirmation, push to remote, open the PR, and teardown worktree. The run is NOT delivered until that PR is merged.';
 
 describe('GetNextActionUseCase COMMIT-gate description (issue #259, AC4)', () => {
   test('C1 (AC4): at the COMMIT gate with an APPROVED verdict the description still says "Review passed"', async () => {

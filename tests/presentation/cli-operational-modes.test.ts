@@ -268,7 +268,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       try {
         const exitCode = await runCli(['--version']);
         assert.strictEqual(exitCode, 0);
-        assert.ok(output.includes(`agyloop v${CLI_VERSION}`));
+        assert.ok(output.includes(`codeloop v${CLI_VERSION}`));
       } finally {
         console.log = originalLog;
       }
@@ -342,7 +342,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
         const exitCode = await runCli(['commit']);
         assert.strictEqual(exitCode, 1);
-        assert.ok(errorOutput.includes('[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.'));
+        assert.ok(errorOutput.includes('[codeloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.'));
       } finally {
         process.chdir(prevCwd);
         (process.stdin as any).isTTY = originalIsTTY;

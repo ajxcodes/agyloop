@@ -116,7 +116,9 @@ describe('FileProjectScaffolder', () => {
 
     assert.strictEqual(git('check-ignore', '.codeloop/config.json'), null);
     assert.strictEqual(git('check-ignore', '.agyloop/config.json'), null);
-    assert.ok(git('check-ignore', '.codeloop/state.json'));
+    // Issue #315 (AC-12): state lives in `.agyloop/` only. `.codeloop/` holds
+    // config and nothing writes `.codeloop/state.json`, so no rule claims it.
+    assert.strictEqual(git('check-ignore', '.codeloop/state.json'), null);
     assert.ok(git('check-ignore', '.agyloop/state.json'));
 
     const again = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
@@ -167,14 +169,16 @@ describe('FileProjectScaffolder', () => {
     const agyloopStateIdx = lines.indexOf('.agyloop/state.json');
 
     assert.ok(codeloopNegIdx !== -1 && agyloopNegIdx !== -1);
-    assert.ok(codeloopStateIdx !== -1 && agyloopStateIdx !== -1);
-    assert.ok(codeloopNegIdx < codeloopStateIdx);
+    // Issue #315 (AC-12): the `.codeloop/*` STATE rules are gone — the tool
+    // writes no state there — so only the `.agyloop/` granular rule is emitted.
+    assert.strictEqual(codeloopStateIdx, -1, 'no dead `.codeloop/state.json` rule may be emitted');
+    assert.ok(agyloopStateIdx !== -1);
     assert.ok(agyloopNegIdx < agyloopStateIdx);
 
     // Verify git check-ignore behaves as expected
     assert.strictEqual(git('check-ignore', '.codeloop/config.json'), null);
     assert.strictEqual(git('check-ignore', '.agyloop/config.json'), null);
-    assert.ok(git('check-ignore', '.codeloop/state.json'));
+    assert.strictEqual(git('check-ignore', '.codeloop/state.json'), null);
     assert.ok(git('check-ignore', '.agyloop/state.json'));
     assert.ok(git('check-ignore', '.agyloop/critique-update-cache.json'));
     assert.ok(git('check-ignore', '.agyloop/state.json.bak'));

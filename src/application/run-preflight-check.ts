@@ -165,10 +165,10 @@ export class RunPreFlightCheckUseCase {
               ? `was developed on branch '${pr.headRefName}'`
               : 'references the issue number';
             console.warn(
-              `[agyloop] Warning: merged PR #${pr.number} ('${pr.title}') ${how} but does not ` +
+              `[codeloop] Warning: merged PR #${pr.number} ('${pr.title}') ${how} but does not ` +
               `assert delivery of #${issueId} (no "Closes/Fixes/Resolves #${issueId}" in its body).\n` +
-              `[agyloop]          Issue #${issueId} is still OPEN, so its work is treated as outstanding.\n` +
-              `[agyloop]          If that PR already delivered it, close the issue; otherwise continue.`
+              `[codeloop]          Issue #${issueId} is still OPEN, so its work is treated as outstanding.\n` +
+              `[codeloop]          If that PR already delivered it, close the issue; otherwise continue.`
             );
             pr = null;
           }

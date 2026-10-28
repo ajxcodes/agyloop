@@ -115,7 +115,7 @@ describe('SyncUseCase', () => {
         (c: { issueId: number; body: string }) =>
           c.issueId === 10 &&
           c.body ===
-            'Closed by agyloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
+            'Closed by codeloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
       ),
       `the auto-close comment must carry the collector branch verbatim, got: ${JSON.stringify(github.comments)}`
     );
@@ -382,7 +382,7 @@ describe('SyncUseCase', () => {
     assert.strictEqual(github.comments[0].issueId, 10);
     assert.strictEqual(
       github.comments[0].body,
-      'Closed by agyloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
+      'Closed by codeloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
     );
     assert.strictEqual(result.success, true);
   });

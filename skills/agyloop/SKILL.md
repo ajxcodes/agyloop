@@ -16,15 +16,15 @@ description: >-
 > 1. Directly editing source code files in the primary repository or worktree (`write_to_file`, `replace_file_content` on project files).
 > 2. Directly running quality gate, build, or test commands (`npm test`, `npm run build`, `vitest`, `pytest`, etc.) in the root conversation context.
 > 3. Directly committing or pushing from the root working tree.
-> 4. Manually forcing stage transitions (e.g. `bin/agyloop transition COMMIT` or `COMPLETED`) that bypass the `QUALITY_GATE` or `REVIEW` stages. Forced transitions that skip these stages are forbidden.
+> 4. Manually forcing stage transitions (e.g. `codeloop transition COMMIT` or `COMPLETED`) that bypass the `QUALITY_GATE` or `REVIEW` stages. Forced transitions that skip these stages are forbidden.
 >
 > The root agent's ONLY permitted operational actions are:
-> 1. Running `bin/agyloop` CLI commands (`bin/agyloop transition ...`, `bin/agyloop next [--json]`, `bin/agyloop resume`, `bin/agyloop branch-info`, `bin/agyloop implement`, `bin/agyloop commit`).
-> 2. Querying pipeline next steps via `bin/agyloop next --json` to retrieve pre-configured `invoke_subagent` payloads.
+> 1. Running `codeloop` CLI commands (`codeloop transition ...`, `codeloop next [--json]`, `codeloop resume`, `codeloop branch-info`, `codeloop implement`, `codeloop commit`).
+> 2. Querying pipeline next steps via `codeloop next --json` to retrieve pre-configured `invoke_subagent` payloads.
 > 3. Spawning context-isolated subagents via `invoke_subagent`.
 > 4. Communicating with subagents via `send_message`.
 > 5. Presenting plans, status, and approval gates to the user.
-> 6. When invoking commit in an automated context, the orchestrator MUST use `bin/agyloop commit -y` or `bin/agyloop commit -y -m "<msg>"` after user confirmation, as interactive mode will abort in non-TTY environments.
+> 6. When invoking commit in an automated context, the orchestrator MUST use `codeloop commit -y` or `codeloop commit -y -m "<msg>"` after user confirmation, as interactive mode will abort in non-TTY environments.
 >
 > ### Worker Subagent Contract (Anti-Inception Guardrails)
 > Subagents spawned by agyloop are leaf workers and are STRICTLY PROHIBITED from acting as the orchestrator.
@@ -52,14 +52,14 @@ main (stable production)
    - Symlinks `node_modules` and `artifacts` into `.worktrees/<task-id>` while keeping root working directory clean on its original branch.
    - Ensures both `.worktrees/` and `.agyloop/` are present in `.gitignore`.
 3. **Automated Teardown**:
-   - On `bin/agyloop commit`, prompts to clean up worktree (or cleans automatically in `-y`/`yolo` mode).
+   - On `codeloop commit`, prompts to clean up worktree (or cleans automatically in `-y`/`yolo` mode).
    - Pass `--keep-worktree` to preserve the directory for further inspection.
 
 ---
 
 ## Ready-to-Run Subagent Invocation Payloads
 
-Run `bin/agyloop next --json` at any stage to inspect the next step and obtain the exact JSON payload.
+Run `codeloop next --json` at any stage to inspect the next step and obtain the exact JSON payload.
 
 ### 1. Planning Subagent (`PLAN`)
 ```json
@@ -151,13 +151,13 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
 
 ### 2. PR Review Comments Triage Gate (`TRIAGE`)
 - Halts pipeline execution when resuming on an open PR with review feedback (`pauseAtGate('TRIAGE')`).
-- Inspects categorized review comments: `bin/agyloop triage`.
+- Inspects categorized review comments: `codeloop triage`.
 - Developer selects lifecycle destination:
-  - `bin/agyloop triage implement`: Directs to `IMPLEMENT` with comments context.
-  - `bin/agyloop triage plan`: Directs to `PLAN` for structural plan revision.
-  - `bin/agyloop triage discovery`: Directs to `DISCOVERY` for investigative RCA.
-  - `bin/agyloop triage completed`: Records a disposition and posts nothing to the PR — the non-destructive exit; the gate does not re-open.
-  - `bin/agyloop triage dismiss`: Directs to `COMPLETED` dismissing comments, and **writes to GitHub**; it is not the non-destructive exit. With `-m "<notes>"`, replies to and resolves only the unresolved review threads containing the triaged comments (other threads are untouched), and answers the triaged PR conversation comments. The route has no memory of its own between runs, so "already answered" is derived from the PR's current state: an inline comment whose review thread is **resolved** was answered by an earlier run, and a conversation comment whose id another comment **references** (`...#issuecomment-<id>`, carried by every dismissal reply the tool posts) was answered by an earlier run — both are skipped, never answered twice. A conversation comment is also skipped when its normalised feedback key matches an inline comment that was replied to in the same run; a paraphrase of the same feedback at a different line is a different key and is answered again. The tool's own dismissal replies (the `Dismissing this PR conversation comment:` footer, the id-bearing reference) are ignored. An **unmarked prior answer** — a reply posted before the tool carried a marker, which no rule can attribute — is ignored rather than answered a third time, but only when it predates the newest dismissal answer, so a comment posted afterwards is still answered. Failures never block the transition: the CLI reports how many threads and conversation comments were replied to and resolved, how many were skipped (already answered / duplicate feedback), how many were ignored (the tool's own reply / unmarked prior answer), how many failed, and the failure details — a partial dismissal is reported as `DISMISS (PARTIAL)`, never as an unqualified success.
+  - `codeloop triage implement`: Directs to `IMPLEMENT` with comments context.
+  - `codeloop triage plan`: Directs to `PLAN` for structural plan revision.
+  - `codeloop triage discovery`: Directs to `DISCOVERY` for investigative RCA.
+  - `codeloop triage completed`: Records a disposition and posts nothing to the PR — the non-destructive exit; the gate does not re-open.
+  - `codeloop triage dismiss`: Directs to `COMPLETED` dismissing comments, and **writes to GitHub**; it is not the non-destructive exit. With `-m "<notes>"`, replies to and resolves only the unresolved review threads containing the triaged comments (other threads are untouched), and answers the triaged PR conversation comments. The route has no memory of its own between runs, so "already answered" is derived from the PR's current state: an inline comment whose review thread is **resolved** was answered by an earlier run, and a conversation comment whose id another comment **references** (`...#issuecomment-<id>`, carried by every dismissal reply the tool posts) was answered by an earlier run — both are skipped, never answered twice. A conversation comment is also skipped when its normalised feedback key matches an inline comment that was replied to in the same run; a paraphrase of the same feedback at a different line is a different key and is answered again. The tool's own dismissal replies (the `Dismissing this PR conversation comment:` footer, the id-bearing reference) are ignored. An **unmarked prior answer** — a reply posted before the tool carried a marker, which no rule can attribute — is ignored rather than answered a third time, but only when it predates the newest dismissal answer, so a comment posted afterwards is still answered. Failures never block the transition: the CLI reports how many threads and conversation comments were replied to and resolved, how many were skipped (already answered / duplicate feedback), how many were ignored (the tool's own reply / unmarked prior answer), how many failed, and the failure details — a partial dismissal is reported as `DISMISS (PARTIAL)`, never as an unqualified success.
 
 ### 3. Planning Subagent (`PLAN`)
 - Launch the read-only **`planner`** subagent via `invoke_subagent`.
@@ -167,7 +167,7 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
   - `implementation_plan.md` (the technical specification the planner completes; this is what PLAN/QUALITY_GATE/REVIEW/COMMIT resolve)
   - `CodeLoop Summary.md` (cumulative run log)
 - For a defect scaffold the RCA report and `implementation_plan.md` are DIFFERENT documents: `implementation_plan.md` always starts from the implementation template.
-- Advance state: `bin/agyloop transition APPROVAL` (`bin/agyloop plan` moves DISCOVERY → PLAN).
+- Advance state: `codeloop transition APPROVAL` (`codeloop plan` moves DISCOVERY → PLAN).
 
 ### 4. Human Approval Gate (`APPROVAL`) & Plan Redirection Loops
 - Pause and present plan to the user.
@@ -175,45 +175,45 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
 - **Iterative Plan Redirection Loop (`APPROVAL <-> PLAN`)**:
   - Developer can approve or redirect the plan indefinitely.
   - Redirections transition back to `PLAN` with the previous draft and feedback, spawning a fresh, clean Planner subagent.
-- Advance state: `bin/agyloop transition APPROVAL` (skipped automatically in `yolo` mode).
+- Advance state: `codeloop transition APPROVAL` (skipped automatically in `yolo` mode).
 
 ### 5. Implementation Subagent (`IMPLEMENT`)
 - Verify or auto-provision worktree: `.worktrees/<task-id>` on task branch (idempotent; reuses existing worktree cleanly).
 - Launch the **`implementer`** subagent via `invoke_subagent` targeting `Cwd: .worktrees/<task-id>`.
 - Restrict Implementer `run_command` strictly to syntax validation (`npx tsc --noEmit`). Prohibit full test suites or linters.
 - Implementer signals `IMPLEMENTATION_DONE` upon completing checklist with clean syntax.
-- Advance state: `bin/agyloop transition IMPLEMENT` (or run `bin/agyloop implement`).
+- Advance state: `codeloop transition IMPLEMENT` (or run `codeloop implement`).
 
 ### 6. Quality Gate & Automated Compound Verification (`QUALITY_GATE`)
 - **Dual Execution Modes**:
   - **Gate Subagent Dispatch (`gate`)**:
-    - Run `bin/agyloop next --json` to retrieve the `invoke_subagent` payload, then launch the gate subagent.
+    - Run `codeloop next --json` to retrieve the `invoke_subagent` payload, then launch the gate subagent.
     - The `yolo` runner chains quality gates and Tier 1 critique automatically, advancing to `COMMIT` when clean.
   - **Standalone Subagent Dispatch (`gate`)**:
-    - Ephemeral micro-agent launched via `invoke_subagent` (using payload from `bin/agyloop next --json`).
+    - Ephemeral micro-agent launched via `invoke_subagent` (using payload from `codeloop next --json`).
     - Intended for interactive subagent dispatch when complete conversational context isolation or granular error handling is required.
     - Executes builds, typechecks, test suites, and linters inside `.worktrees/<task-id>`.
     - Emits structured results: `GATE_STATUS: PASSED | FAILED`, plus the machine-readable `GATE_REPORT_JSON:` evidence block described next.
-    - **Filing the gate evidence**: the gate subagent only EMITS the `GATE_REPORT_JSON:` block as the last thing in its response — it is verification-only and never runs `codeloop`. The **orchestrator** writes the block to a file and files it: `bin/agyloop gate-report --issue <n> --report-file <path>` (equivalently `bin/codeloop gate-report …`), or pipes it in with `--report-stdin`. `bin/codeloop gate-report` refuses to run inside a dispatched subagent session. `bin/agyloop transition REVIEW` then ingests the filed report into the checkpoint and the CodeLoop Summary (verdict, build system, test count, measured duration) and consumes it. **The gate exits with evidence or it does not exit at all**: `transition REVIEW` REFUSES (non-zero, nothing written, no `REVIEW` entry) when no same-round `GATE_REPORT_JSON` block is filed, so a gate can never be certified as `PASSED` on nothing. Filing is legal only at `QUALITY_GATE`; if the gate was already left, file late by walking back: `bin/agyloop transition IMPLEMENT`, then `bin/agyloop transition QUALITY_GATE`, then `bin/agyloop gate-report --issue <n> --report-file <path>`, then `bin/agyloop transition REVIEW`. (The non-certifying exits `transition IMPLEMENT` / `transition TRIAGE` still record `NOT RECORDED`.)
+    - **Filing the gate evidence**: the gate subagent only EMITS the `GATE_REPORT_JSON:` block as the last thing in its response — it is verification-only and never runs `codeloop`. The **orchestrator** writes the block to a file and files it: `codeloop gate-report --issue <n> --report-file <path>` (equivalently `bin/codeloop gate-report …`), or pipes it in with `--report-stdin`. `bin/codeloop gate-report` refuses to run inside a dispatched subagent session. `codeloop transition REVIEW` then ingests the filed report into the checkpoint and the CodeLoop Summary (verdict, build system, test count, measured duration) and consumes it. **The gate exits with evidence or it does not exit at all**: `transition REVIEW` REFUSES (non-zero, nothing written, no `REVIEW` entry) when no same-round `GATE_REPORT_JSON` block is filed, so a gate can never be certified as `PASSED` on nothing. Filing is legal only at `QUALITY_GATE`; if the gate was already left, file late by walking back: `codeloop transition IMPLEMENT`, then `codeloop transition QUALITY_GATE`, then `codeloop gate-report --issue <n> --report-file <path>`, then `codeloop transition REVIEW`. (The non-certifying exits `transition IMPLEMENT` / `transition TRIAGE` still record `NOT RECORDED`.)
 - **Quality Gate Failure Loop**: If gates fail in either mode, transitions back to `IMPLEMENT` with isolated diagnostics in `selfCorrectionPayload` for a fresh Implementer subagent.
-- Advance state: `bin/agyloop transition QUALITY_GATE` to enter the gate, then `bin/agyloop gate-report` and `bin/agyloop transition REVIEW` to leave it with evidence.
+- Advance state: `codeloop transition QUALITY_GATE` to enter the gate, then `codeloop gate-report` and `codeloop transition REVIEW` to leave it with evidence.
 
 ### 7. Two-Tier Review Architecture (`REVIEW`)
 - **Tier 1 (Automated Critique Diagnostics)**:
   - Executes `critique` CLI inside `.worktrees/<task-id>` against base branch (`main` or phase collector).
   - Inspects code against repository standards (`.github/critique.md`, clean architecture boundaries, zero magic values).
-  - Automatically performed as part of `bin/agyloop yolo`.
+  - Automatically performed as part of `codeloop yolo`.
 - **Tier 2 (AI Acceptance Criteria & Standards Audit)**:
-  - When deep Acceptance Criteria auditing or isolated evaluation is requested, spawns the read-only **`reviewer`** subagent via `invoke_subagent` (payload from `bin/agyloop next --json`).
+  - When deep Acceptance Criteria auditing or isolated evaluation is requested, spawns the read-only **`reviewer`** subagent via `invoke_subagent` (payload from `codeloop next --json`).
   - Supplied with raw `critique` diagnostics, `git diff`, repo standards, and approved plan Acceptance Criteria.
   - Reviewer verifies criteria fulfillment and emits structured verdict: `REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`.
-  - **Filing the verdict**: the reviewer subagent only EMITS the block — it is read-only and never runs `codeloop`. The **orchestrator** writes the block to a file and files it: `bin/agyloop review --issue <n> --verdict-file <path>` (equivalently `bin/codeloop review --issue <n> --verdict-file <path>`), pipe it in with `bin/agyloop review --issue <n> --verdict-stdin`, or pass it inline with `--review-output "<block>"`. `bin/codeloop review` refuses to run inside a dispatched subagent session, so the write is the orchestrator's alone. The recorded verdict is the reviewer's own: `APPROVED` advances to the COMMIT gate, `CHANGES_REQUESTED` reverts to `IMPLEMENT` (exit code `1`). Tier 1 critique still runs on the filing path, so a `critical`/`error` finding forces `CHANGES_REQUESTED` even when the reviewer approved. `bin/agyloop review` with no verdict flag runs the Tier 1 critique review instead.
+  - **Filing the verdict**: the reviewer subagent only EMITS the block — it is read-only and never runs `codeloop`. The **orchestrator** writes the block to a file and files it: `codeloop review --issue <n> --verdict-file <path>` (equivalently `bin/codeloop review --issue <n> --verdict-file <path>`), pipe it in with `codeloop review --issue <n> --verdict-stdin`, or pass it inline with `--review-output "<block>"`. `bin/codeloop review` refuses to run inside a dispatched subagent session, so the write is the orchestrator's alone. The recorded verdict is the reviewer's own: `APPROVED` advances to the COMMIT gate, `CHANGES_REQUESTED` reverts to `IMPLEMENT` (exit code `1`). Tier 1 critique still runs on the filing path, so a `critical`/`error` finding forces `CHANGES_REQUESTED` even when the reviewer approved. `codeloop review` with no verdict flag runs the Tier 1 critique review instead.
 - **Optional `--commit-after` Behavior**:
-  - Passing `--commit-after` to `bin/agyloop yolo` instructs the runner to automatically draft and execute the conventional commit upon clean quality gates and review approval, seamlessly advancing to `COMPLETED`.
+  - Passing `--commit-after` to `codeloop yolo` instructs the runner to automatically draft and execute the conventional commit upon clean quality gates and review approval, seamlessly advancing to `COMPLETED`.
 - **Mandatory Critique & Review Failure Loop**:
   - Any `critical` or `error` findings from `critique` or unfulfilled ACs mandate `CHANGES_REQUESTED`.
   - Packages diagnostics and remediation actions into `selfCorrectionPayload`, reverting `REVIEW -> IMPLEMENT` for a fresh Implementer subagent.
-- Advance state: `bin/agyloop transition REVIEW`.
+- Advance state: `codeloop transition REVIEW`.
 
 ### 8. Conventional Commit Gate (`COMMIT`) & Rejection Loops
 - Human timer pause: autonomous execution timers pause while awaiting commit sign-off (`pauseAtGate('COMMIT')`).
@@ -223,8 +223,8 @@ $$\text{Open PR Comments} \longrightarrow \text{Triage Gate (TRIAGE)} \longleftr
   - Developer can reject the completed implementation at the commit gate.
   - Rejection with code feedback routes `COMMIT -> IMPLEMENT` for code fixes.
   - Rejection with design feedback routes `COMMIT -> PLAN` for architectural replanning.
-- Upon confirmation: execute commit (`bin/agyloop commit`), push task branch, teardown worktree, and open PR targeting base collector branch: `gh pr create --base <collector>`.
-- Advance state: `bin/agyloop transition COMMIT`, then `COMPLETED`.
+- Upon confirmation: execute commit (`codeloop commit`), push task branch, teardown worktree, and open the PR targeting the base collector branch. **The commit gate is not the delivery step**: run `codeloop commit --create-pr` to have the tool open the PR itself, with the sanitized body, `Closes #<id>` and the milestone. Without `--create-pr` the branch is pushed but the run is **NOT delivered** — the tool prints the single `gh pr create …` command to run, and the run is only delivered once that PR is **merged**. The default is explicit opt-in for `commit`; `--commit-after` (including `yolo --commit-after`) implies `--create-pr`, so an unattended run opens its own PR.
+- Advance state: `codeloop transition COMMIT`, then `COMPLETED`.
 
 ---
 
@@ -241,41 +241,41 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 
 > [!CAUTION]
 > **Anti-Hallucination Directive**:
-> Never guess subcommands or execute `bin/agyloop --help` during automated agent workflows. Reference this cheatsheet directly.
-> Note: `bin/agyloop start` does **NOT** exist. Use `bin/agyloop [issue]` or `bin/agyloop plan --issue <id>`.
+> Never guess subcommands or execute `codeloop --help` during automated agent workflows. Reference this cheatsheet directly.
+> Note: `codeloop start` does **NOT** exist. Use `codeloop [issue]` or `codeloop plan --issue <id>`.
 
 | Command / Invocation | Description & Primary Use Case | Key Flags & Arguments |
 | :--- | :--- | :--- |
-| `bin/agyloop [issue]` | Standard continuous lifecycle orchestrator. Runs Discovery $\rightarrow$ Plan $\rightarrow$ [Approval] $\rightarrow$ Implement $\rightarrow$ Gates $\rightarrow$ Review $\rightarrow$ [Commit]. | `[issue]` (e.g. `113`), `--yolo`, `--commit-after`, `--no-worktree`, `--dry-run` (`--json` is refused) |
-| `bin/agyloop plan [--issue <id>]` | Plan-only mode. Scaffolds/reuses the ONE canonical `artifacts/plans/<issue>-<slug>/` directory, moves the checkpoint to `[PLAN]`, and halts at `[APPROVAL]`. Re-running it adopts the existing directory (a populated RCA report releases the RCA gate). | `--issue <id>`, `--title <text>`, `--type <discovery\|implementation\|auto>`, `--plan-path <file>`, `--plan-dir <dir>`, `--dry-run` |
-| `bin/agyloop implement [--issue <id>]` | Resumes implementation directly from approved plan inside isolated worktree. `next` at IMPLEMENT returns the **planner** while the plan is blank, and the implementer once it is non-blank. | `--issue <id>`, `--plan-path <file>`, `--plan-dir <dir>`, `--no-worktree`, `--base-branch <branch>`, `--dry-run` |
-| `bin/agyloop triage` | Read-only: lists current PR review comments without changing state. | `--issue <id>`, `--json` |
-| `bin/agyloop commit` | Drafts Conventional Commit and prompts for interactive human approval (or commits immediately with `-y`). | `-y` / `--yes`, `-m` / `--message "<msg>"`, `-s` / `--staged`, `--keep-worktree`, `--dry-run` (`--json` is refused) |
-| `bin/agyloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. Re-running `yolo` while parked at `DISCOVERY` **holds** the park until the discovery report is populated — it does not advance to `PLAN` from a pristine scaffold. A blank plan parks at IMPLEMENT with `codeloop next` (planner) or `--plan-path` as the recovery. | `--issue <id>`, `--plan-path <file>`, `--plan-dir <dir>`, `--commit-after`, `--no-worktree`, `--skip-discovery`, `--dry-run` |
-| `bin/agyloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. Reports a gate pause but **never clears one**. Read-only by default: plain `next` never advances or resets a checkpoint. | `--json` (adds `actionable`, `pause`), `--issue <id>`, `--restart` (COMPLETED only: reset and re-open at DISCOVERY). `--dry-run` is refused: `next` can persist a TRIAGE pause, so it has no simulation path |
-| `bin/agyloop resume` | Clears a persisted gate pause (`CIRCUIT_BREAKER`, `APPROVAL`, `COMMIT`, `TRIAGE`) and checkpoints the wait time. The only command that clears a pause. | `--json`, `--dry-run` |
-| `bin/agyloop branch-info [--json]` | Displays base collector branch, active task branch, worktree directory, and PR target. | `--json` |
-| `bin/agyloop sync` | Fast-forwards the collector branch and closes issues whose PRs merged into it. | `--dry-run` (no fetch, pull, or issue close) |
-| `bin/agyloop review` | Records the dispatched Reviewer subagent's verdict (`APPROVED` advances to COMMIT; `CHANGES_REQUESTED` reverts to IMPLEMENT). | `--issue <id>`, `--verdict-file <path>`, `--review-output "<block>"`, `--verdict-stdin`, `--json`, `--dry-run` |
-| `bin/agyloop gate-report` | Files the dispatched Quality Gate subagent's `GATE_REPORT_JSON:` evidence block; `transition REVIEW` ingests and consumes it, writing the verdict, build system, test count and duration into the summary. Refused to dispatched subagents. | `--issue <id>`, `--report-file <path\|->`, `--report-stdin`, `--json`, `--dry-run` |
-| `bin/agyloop status [--json]` | Displays current pipeline stage, execution mode, active issue, worktree list, and transition history. | `--json` (single JSON document: `dryRun`, `currentStage`, `mode`, `activeTasks`, `skippedCorrupt`, `history`) |
-| `bin/agyloop worktree <subcommand>` | Manages isolated git worktrees. Valid subcommands: `list`, `clean`, `prune`, `remove <id>`. | `list`, `clean`, `prune`, `remove <task-id>`, `--all`, `--subagents`, `--dry-run` (clean/prune/remove; `list` refuses it) |
-| `bin/agyloop critique <subcommand>` | Manages Critique CLI integration and version status. Valid subcommands: `status`, `install`, `update`. | `status`, `install`, `update`, `--force`, `--json` (status only), `--dry-run` (install/update) |
-| `bin/agyloop triage <action>` | Routes open PR review comments to lifecycle stages. Valid actions: `implement`, `plan`, `discovery`, `completed`, `dismiss`. `completed` records a disposition and posts nothing to the PR (non-destructive exit); `dismiss` also replies to/resolves the PR threads (writes to GitHub). A routing action requires the checkpoint to be at the TRIAGE gate. | `implement`, `plan`, `discovery`, `completed`, `dismiss`, `--issue <id>`, `-m "<notes>"`, `--json`, `--dry-run` |
-| `bin/agyloop release [phaseBranch]` | Creates a Milestone Release PR from phase collector to main with automated SemVer labeling and changelog. | `[phaseBranch]`, `--base-branch <branch>`, `--dry-run`, `--refresh` |
-| `bin/agyloop reset` | Resets the `.agyloop/state.json` checkpoint for the repository (or a task checkpoint with `--issue`). | `--issue <id>`, `--all`, `--dry-run` (`--json` is refused) |
-| `bin/agyloop transition <TARGET_STAGE>` | Moves the state machine to the TARGET stage (the stage you want to enter, not the current one). Follow the sequence DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED. Calling `transition X` while already in stage `X` throws `InvalidTransitionError`. | `<TARGET_STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
-| `bin/agyloop abort` / `bin/codeloop abort` | Emergency Stop: terminates active subagents, clears git index locks, quarantines uncommitted changes, and shuts down test sandboxes. | `-f` / `--force`, `--quarantine`, `--no-quarantine`, `--reason "<text>"`, `--dry-run` |
+| `codeloop [issue]` | Standard continuous lifecycle orchestrator. Runs Discovery $\rightarrow$ Plan $\rightarrow$ [Approval] $\rightarrow$ Implement $\rightarrow$ Gates $\rightarrow$ Review $\rightarrow$ [Commit]. | `[issue]` (e.g. `113`), `--yolo`, `--commit-after`, `--no-worktree`, `--dry-run` (`--json` is refused) |
+| `codeloop plan [--issue <id>]` | Plan-only mode. Scaffolds/reuses the ONE canonical `artifacts/plans/<issue>-<slug>/` directory, moves the checkpoint to `[PLAN]`, and halts at `[APPROVAL]`. Re-running it adopts the existing directory (a populated RCA report releases the RCA gate). | `--issue <id>`, `--title <text>`, `--type <discovery\|implementation\|auto>`, `--plan-path <file>`, `--plan-dir <dir>`, `--dry-run` |
+| `codeloop implement [--issue <id>]` | Resumes implementation directly from approved plan inside isolated worktree. `next` at IMPLEMENT returns the **planner** while the plan is blank, and the implementer once it is non-blank. | `--issue <id>`, `--plan-path <file>`, `--plan-dir <dir>`, `--no-worktree`, `--base-branch <branch>`, `--dry-run` |
+| `codeloop triage` | Read-only: lists current PR review comments without changing state. | `--issue <id>`, `--json` |
+| `codeloop commit` | Drafts Conventional Commit and prompts for interactive human approval (or commits immediately with `-y`). `--create-pr` opens the PR itself (base = the collector branch) with the sanitized body, `Closes #<id>` and the milestone; without it the branch is pushed but **not delivered** until the printed `gh pr create …` command is run and the PR is merged. `--commit-after` implies `--create-pr`. | `-y` / `--yes`, `-m` / `--message "<msg>"`, `-s` / `--staged`, `--keep-worktree`, `--create-pr`, `--dry-run` (`--json` is refused) |
+| `codeloop yolo [--issue <id>]` | Unattended fast-path execution. Auto-approves plan gate and streams through implementation and compound gates. Re-running `yolo` while parked at `DISCOVERY` **holds** the park until the discovery report is populated — it does not advance to `PLAN` from a pristine scaffold. A blank plan parks at IMPLEMENT with `codeloop next` (planner) or `--plan-path` as the recovery. | `--issue <id>`, `--plan-path <file>`, `--plan-dir <dir>`, `--commit-after`, `--no-worktree`, `--skip-discovery`, `--dry-run` |
+| `codeloop next [--json]` | Inspects current lifecycle state and outputs the next recommended action or machine-readable `invoke_subagent` payload. Reports a gate pause but **never clears one**. Read-only by default: plain `next` never advances or resets a checkpoint. | `--json` (adds `actionable`, `pause`), `--issue <id>`, `--restart` (COMPLETED only: reset and re-open at DISCOVERY). `--dry-run` is refused: `next` can persist a TRIAGE pause, so it has no simulation path |
+| `codeloop resume` | Clears a persisted gate pause (`CIRCUIT_BREAKER`, `APPROVAL`, `COMMIT`, `TRIAGE`) and checkpoints the wait time. The only command that clears a pause. | `--json`, `--dry-run` |
+| `codeloop branch-info [--json]` | Displays base collector branch, active task branch, worktree directory, and PR target. | `--json` |
+| `codeloop sync` | Fast-forwards the collector branch and closes issues whose PRs merged into it. | `--dry-run` (no fetch, pull, or issue close) |
+| `codeloop review` | Records the dispatched Reviewer subagent's verdict (`APPROVED` advances to COMMIT; `CHANGES_REQUESTED` reverts to IMPLEMENT). | `--issue <id>`, `--verdict-file <path>`, `--review-output "<block>"`, `--verdict-stdin`, `--json`, `--dry-run` |
+| `codeloop gate-report` | Files the dispatched Quality Gate subagent's `GATE_REPORT_JSON:` evidence block; `transition REVIEW` ingests and consumes it, writing the verdict, build system, test count and duration into the summary. Refused to dispatched subagents. | `--issue <id>`, `--report-file <path\|->`, `--report-stdin`, `--json`, `--dry-run` |
+| `codeloop status [--json]` | Displays current pipeline stage, execution mode, active issue, worktree list, and transition history. | `--json` (single JSON document: `dryRun`, `currentStage`, `mode`, `activeTasks`, `skippedCorrupt`, `history`) |
+| `codeloop worktree <subcommand>` | Manages isolated git worktrees. Valid subcommands: `list`, `clean`, `prune`, `remove <id>`. | `list`, `clean`, `prune`, `remove <task-id>`, `--all`, `--subagents`, `--dry-run` (clean/prune/remove; `list` refuses it) |
+| `codeloop critique <subcommand>` | Manages Critique CLI integration and version status. Valid subcommands: `status`, `install`, `update`. | `status`, `install`, `update`, `--force`, `--json` (status only), `--dry-run` (install/update) |
+| `codeloop triage <action>` | Routes open PR review comments to lifecycle stages. Valid actions: `implement`, `plan`, `discovery`, `completed`, `dismiss`. `completed` records a disposition and posts nothing to the PR (non-destructive exit); `dismiss` also replies to/resolves the PR threads (writes to GitHub). A routing action requires the checkpoint to be at the TRIAGE gate. | `implement`, `plan`, `discovery`, `completed`, `dismiss`, `--issue <id>`, `-m "<notes>"`, `--json`, `--dry-run` |
+| `codeloop release [phaseBranch]` | Creates a Milestone Release PR from phase collector to main with automated SemVer labeling and changelog. | `[phaseBranch]`, `--base-branch <branch>`, `--dry-run`, `--refresh` |
+| `codeloop reset` | Resets the `.agyloop/state.json` checkpoint for the repository (or a task checkpoint with `--issue`). | `--issue <id>`, `--all`, `--dry-run` (`--json` is refused) |
+| `codeloop transition <TARGET_STAGE>` | Moves the state machine to the TARGET stage (the stage you want to enter, not the current one). Follow the sequence DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED. Calling `transition X` while already in stage `X` throws `InvalidTransitionError`. | `<TARGET_STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
+| `codeloop abort` / `bin/codeloop abort` | Emergency Stop: terminates active subagents, clears git index locks, quarantines uncommitted changes, and shuts down test sandboxes. | `-f` / `--force`, `--quarantine`, `--no-quarantine`, `--reason "<text>"`, `--dry-run` |
 
 ### Gate Pause Recovery
 
 `next` **reports** a pause; `resume` **clears** it. They are not interchangeable.
 
-1. Read `actionable` and `pause` from `bin/agyloop next --json`. When `actionable` is `false`, or `pause` is non-null, the pipeline is halted at a gate (`{ gate, pausedAt, resumeCommand, message }`) and the returned subagent payload is **not** a directive to execute.
+1. Read `actionable` and `pause` from `codeloop next --json`. **`actionable` means "a subagent may be dispatched right now"** — it is `false` for every `human_gate` directive (COMMIT, the DISCOVERY plan-directory park, the missing-worktree gate) *and* for every persisted pause, never merely `pause === null`. A human gate carries a synthesised `pause` object (`{ gate, pausedAt, resumeCommand: null, message }`) because it is a wait on a person, not a checkpoint pause: there is nothing to `resume`. A persisted pause carries the real `resumeCommand` (`codeloop resume`). Either way, a non-null `pause` means the returned payload is **not** a directive to execute.
 2. Resolve the blocking condition — e.g. wait out the provider quota window behind a `CIRCUIT_BREAKER` (exit code `2`, nothing is lost).
-3. Run `bin/agyloop resume`, then re-run `bin/agyloop next --json`.
+3. Run `codeloop resume`, then re-run `codeloop next --json`.
 
-Never re-run `next` in a loop to clear a pause — it only reads the checkpoint and will keep reporting the same halt. Non-human gates (`CIRCUIT_BREAKER`) are consumed automatically once the pipeline transitions again; human gates (`APPROVAL`, `COMMIT`, `TRIAGE`) wait for the developer. `bin/agyloop status` surfaces the same state as `Paused At Gate`, `Paused At`, and a `Recovery:` hint.
+Never re-run `next` in a loop to clear a pause — it only reads the checkpoint and will keep reporting the same halt. Non-human gates (`CIRCUIT_BREAKER`) are consumed automatically once the pipeline transitions again; human gates (`APPROVAL`, `COMMIT`, `TRIAGE`) wait for the developer. `codeloop status` surfaces the same state as `Paused At Gate`, `Paused At`, and a `Recovery:` hint.
 
 ---
 
@@ -284,6 +284,6 @@ Never re-run `next` in a loop to clear a pause — it only reads the checkpoint 
 - `/agyloop [task]` or `/codeloop [task]`: Full end-to-end lifecycle with human approval gates.
 - `/agyloop plan` or `/codeloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
 - `/agyloop implement` or `/codeloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
-- Quality gate stage: run the `gate` subagent from the payload in `bin/agyloop next --json` against the active worktree diff.
+- Quality gate stage: run the `gate` subagent from the payload in `codeloop next --json` against the active worktree diff.
 - `/agyloop yolo` or `/codeloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.
 - `/agyloop abort` or `/codeloop abort`: Emergency Stop halting all active subagents and restoring workspace stability.

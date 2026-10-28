@@ -1,5 +1,5 @@
 ## Description
-During `bin/agyloop commit -y`, the application generates a shell script to help the user create a PR (`Next Step (Create PR)`). This script is built via string concatenation in `src/application/execute-commit.ts`:
+During `codeloop commit -y`, the application generates a shell script to help the user create a PR (`Next Step (Create PR)`). This script is built via string concatenation in `src/application/execute-commit.ts`:
 ```typescript
 prCommandCore += ` --title "${sanitizedTitle}" --body "${sanitizedBody}"`;
 ```

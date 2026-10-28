@@ -1286,7 +1286,10 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(gateCalls(), 0, 'quality gates must never run from DISCOVERY');
       assert.ok(result.planResult, 'planning result must be surfaced');
       assert.match(result.message, /codeloop next/);
-      assert.match(result.message, /codeloop resume/);
+      // Issue #315 (AC-9): the park records NO pause (`pausedAtGate` is
+      // undefined, asserted above), so a resume hint here would be advice the
+      // checkpoint cannot honour. The hint is appended only when a pause exists.
+      assert.doesNotMatch(result.message, /codeloop resume/);
     }
 
     test('A1: --type discovery parks at DISCOVERY before resolveWorktree and the gates', async () => {

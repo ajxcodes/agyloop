@@ -109,3 +109,47 @@ describe('FilePlanGenerator - plan digest (issue #298, AC9)', () => {
     assert.strictEqual(generator.hashPlanDocument(path.join(tempDir, 'missing.md')), null);
   });
 });
+
+describe('FilePlanGenerator - Release Notes dependency (issue #315, AC-32)', () => {
+  let tempDir: string;
+  let generator: any;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-release-notes-'));
+    generator = new FilePlanGenerator();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('a freshly scaffolded summary names the cross-repo dependency', () => {
+    const result = generator.generateSummaryLog({
+      targetDir: tempDir,
+      projectName: 'TestApp',
+      issueNumber: 315
+    });
+
+    const written = fs.readFileSync(result.summaryPath, 'utf8');
+    assert.match(written, /## Release Notes Dependency/);
+    assert.match(written, /ajxcodes\/auto-tag/);
+    assert.match(written, /not fixed here/);
+  });
+
+  test('an older summary gains the dependency without losing its content', () => {
+    const summaryPath = path.join(tempDir, 'CodeLoop Summary.md');
+    fs.writeFileSync(
+      summaryPath,
+      '# CodeLoop Execution Summary\n\n## Quality Gate Metrics\n- **Tests:** PASSED (12 passed)\n',
+      'utf8'
+    );
+
+    const updated = generator.updateSummaryLog(summaryPath, { stage: 'Quality Gate', status: 'COMPLETED' });
+    assert.strictEqual(updated, true);
+
+    const written = fs.readFileSync(summaryPath, 'utf8');
+    assert.match(written, /PASSED \(12 passed\)/, 'the existing content is preserved');
+    assert.match(written, /ajxcodes\/auto-tag/);
+    assert.match(written, /not fixed here/);
+  });
+});

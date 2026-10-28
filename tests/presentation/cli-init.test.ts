@@ -60,4 +60,32 @@ describe('CLI init', () => {
     assert.strictEqual(code, EXIT_CODE_SUCCESS);
     assert.strictEqual(JSON.parse(output).skipped, true);
   });
+
+  test('init gitignores exactly the state paths the tool writes (issue #315, AC-12)', async () => {
+    assert.strictEqual(await runCli(['init', '--yes', '--workspace', dir]), EXIT_CODE_SUCCESS);
+    const gitignore = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
+    const rules = gitignore.split('\n').map((line: string) => line.trim());
+
+    // State lives in `.agyloop/`; those are the paths the tool actually writes.
+    for (const rule of ['.agyloop/state.json', '.agyloop/tasks/', '.agyloop/locks/', '.agyloop/logs/']) {
+      assert.ok(rules.includes(rule), `missing state rule '${rule}', got:\n${gitignore}`);
+    }
+
+    // The dead `.codeloop/*` STATE rules are gone: no code path writes them, so
+    // gitignoring them was a false claim about where state lives.
+    for (const rule of [
+      '.codeloop/state.json',
+      '.codeloop/tasks/',
+      '.codeloop/locks/',
+      '.codeloop/logs/',
+      '.codeloop/critique-update-cache.json',
+      '.codeloop/*.bak'
+    ]) {
+      assert.ok(!rules.includes(rule), `dead state rule '${rule}' must not be written, got:\n${gitignore}`);
+    }
+
+    // Config stays trackable, and it is the only thing in `.codeloop/`.
+    assert.ok(fs.existsSync(path.join(dir, '.codeloop', 'config.json')));
+    assert.ok(!rules.some((rule: string) => rule.endsWith('.codeloop/config.json') && !rule.startsWith('!')));
+  });
 });

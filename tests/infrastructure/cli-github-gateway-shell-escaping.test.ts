@@ -259,12 +259,12 @@ describe('codeloop sync names the collector branch again (#262)', () => {
 
     const bodies = invocations()
       .map((argv) => argv[argv.indexOf('--body') + 1])
-      .filter((body) => body && body.startsWith('Closed by agyloop sync'));
+      .filter((body) => body && body.startsWith('Closed by codeloop sync'));
 
     assert.strictEqual(bodies.length, 1, 'exactly one auto-close comment must be posted');
     assert.strictEqual(
       bodies[0],
-      'Closed by agyloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
+      'Closed by codeloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
     );
   });
 });

@@ -109,7 +109,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.ok(impl.includes('Architectural Design & Impact'));
 
       const summary = generator.loadTemplate(TEMPLATE_FILES.SUMMARY);
-      assert.ok(summary.includes('# AgyLoop Execution Summary'));
+      assert.ok(summary.includes('# CodeLoop Execution Summary'));
       assert.ok(summary.includes('Lifecycle Execution Log'));
     });
 

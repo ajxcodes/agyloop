@@ -42,6 +42,19 @@ export interface SummaryNotRunEntry {
   readonly reason: string;
 }
 
+/**
+ * One declared smoke check and its verdict (issue #325, AC-17).
+ *
+ * Structurally identical to the domain's `GateSmokeCheck`; declared here so the
+ * port stays dependency-free. `passed: null` means "ran without reporting a
+ * verdict" and renders as an unknown mark — never as a pass.
+ */
+export interface SummarySmokeCheck {
+  readonly id: string;
+  readonly label?: string;
+  readonly passed: boolean | null;
+}
+
 export interface SummaryUpdateData {
   readonly stage?: string;
   readonly status?: string;
@@ -82,6 +95,11 @@ export interface SummaryUpdateData {
   readonly buildSystem?: string;
   readonly detectedEcosystems?: readonly string[] | string;
   readonly executedCommands?: readonly string[];
+  /**
+   * Declared smoke checks, each with its own verdict (issue #325, AC-17).
+   * Rendered as its own line so the command list stays commands only.
+   */
+  readonly smokeChecks?: readonly SummarySmokeCheck[];
   readonly commitHash?: string;
   readonly commitMessage?: string;
   readonly commitTimestamp?: string;

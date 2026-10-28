@@ -762,13 +762,17 @@ describe('#301: next is a declared, non-fabricating query', () => {
     // first write over a checkpoint that predates the field MATERIALISES it at
     // its default 0; that is schema materialisation, not a state change, so it
     // is excluded from the "what changed" set and asserted to stay 0.
+    // Issue #315 (AC-24) adds `pullRequest` the same way: an older checkpoint
+    // materialises `null` ("not recorded"), which claims nothing about delivery.
     const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
       .filter((key) => key !== 'implementationDispatchCount')
+      .filter((key) => key !== 'pullRequest')
       .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
       .sort();
     assert.deepStrictEqual(changed, ['baseBranch', 'discoveryDispatchCount', 'updatedAt']);
     assert.strictEqual(after.discoveryDispatchCount, 1);
     assert.strictEqual(after.implementationDispatchCount, 0);
+    assert.strictEqual(after.pullRequest, null);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

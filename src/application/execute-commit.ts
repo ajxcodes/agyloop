@@ -36,7 +36,9 @@ import {
   formatStageDuration,
   isRootWorkspace,
   COMMIT_EXCLUDED_PATHSPECS,
-  isCommitExcludedPath
+  isCommitExcludedPath,
+  GATE_COMMIT,
+  measureStageWindowMs
 } from '../domain';
 import {
   StateRepository,
@@ -385,6 +387,7 @@ export class ExecuteCommitUseCase {
 
     // Check if PR already exists for the active branch
     let prExists = false;
+    let existingPrNumber: number | null = null;
     if (activeBranch) {
       try {
         const prListRes = await this.commandExecutor.execute(`gh pr list --head '${escapeShellQuote(activeBranch)}' --json number`, { cwd });
@@ -392,6 +395,9 @@ export class ExecuteCommitUseCase {
           const prs = JSON.parse(prListRes.stdout.trim());
           if (Array.isArray(prs) && prs.length > 0) {
             prExists = true;
+            if (typeof prs[0]?.number === 'number') {
+              existingPrNumber = prs[0].number;
+            }
           }
         }
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -422,8 +428,11 @@ export class ExecuteCommitUseCase {
         }
       }
 
-      // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
-      prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
+      // Issue #315 (AC-23 / #332): the fallback is ONE copy-pasteable command.
+      // The commit leaves a clean tree, so the stash-wrapped `if ! git diff-index
+      // … then git stash push … fi` line was almost always dead code and never
+      // something an operator could read or safely copy.
+      prCommand = prCommandCore;
     }
 
     // Remote Task Branch Push with Automated Token Fallback
@@ -493,9 +502,28 @@ export class ExecuteCommitUseCase {
       }
     }
 
+    // Issue #315 (AC-24 / #332): record what this run did about delivery BEFORE
+    // the checkpoint is persisted at the gate's exit. A COMPLETED run with no PR
+    // then says so in `status` and in the commit output, instead of letting a
+    // terminal stage imply the work was delivered.
+    const createdPrNumberMatch = prUrl ? /\/pull\/(\d+)/.exec(prUrl) : null;
+    sm.recordPullRequest({
+      number: createdPrNumberMatch ? Number(createdPrNumberMatch[1]) : existingPrNumber,
+      url: prCreated ? prUrl ?? null : null,
+      status: prCreated ? 'created' : prExists ? 'existing' : 'missing'
+    });
+
     // Advance StateMachine
     const transitionNote = isYolo ? NOTE_COMMIT_AUTO_APPROVED : NOTE_COMMIT_CONFIRMED;
     const waitBefore = sm.totalHumanWaitMs;
+    // Issue #315 (AC-13 / #318.1): the COMMIT gate's confirmation wait is
+    // consumed HERE, before the terminal transition. `transition()` would also
+    // resume a human-gate pause (COMPLETED is terminal), but doing it explicitly
+    // makes the value read below independent of that internal ordering — and
+    // makes an abandoned-but-recorded pause impossible to skip.
+    if (sm.pausedAtGate === GATE_COMMIT) {
+      sm.resumeFromGate();
+    }
     sm.transition(STAGE_COMPLETED, {
       note: transitionNote,
       commitHash,
@@ -504,7 +532,17 @@ export class ExecuteCommitUseCase {
     // Issue #284 (AC5): this row IS a human gate with a row of its own, so its
     // wait is the honest measurement — and the value the live `263m 50s` used
     // to contradict.
-    const commitGateWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
+    let commitGateWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
+    if (commitGateWaitMs <= 0) {
+      // Fallback for a checkpoint that records no pause (hand-edited, or written
+      // by a build older than #315): the COMMIT window is measurable from the
+      // history entry that opened the gate, so the row is never a false `0s`.
+      // The COMMIT entry is the penultimate one now that COMPLETED is written.
+      const windowMs = measureStageWindowMs(sm.history, STAGE_COMMIT);
+      if (windowMs !== null) {
+        commitGateWaitMs = windowMs;
+      }
+    }
 
     // Checkpoint state
     await this.stateRepo.save(sm.toSnapshot());

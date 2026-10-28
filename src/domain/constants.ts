@@ -772,7 +772,7 @@ export const SMOKE_SANDBOX_HOME_ANCHOR = '$HOME' as const;
 export const SMOKE_SANDBOX_ROOT_DISPLAY = `${SMOKE_SANDBOX_HOME_ANCHOR}/${SMOKE_SANDBOX_HOME_SEGMENTS.join('/')}`;
 export const SMOKE_SANDBOX_RECOMMENDED_PATH = `${SMOKE_SANDBOX_ROOT_DISPLAY}/${SMOKE_SANDBOX_DIR_PREFIX}<issue>`;
 export const SMOKE_SANDBOX_MANDATE =
-  `If you must execute state-mutating commands (e.g. \`bin/agyloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely at \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`. If it is placed anywhere inside the workspace (e.g. \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.` as const;
+  `If you must execute state-mutating commands (e.g. \`codeloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely at \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`. If it is placed anywhere inside the workspace (e.g. \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.` as const;
 export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
   'If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT` so the root-mutation guard does not block them.' as const;
 
@@ -1950,7 +1950,33 @@ export const NOTE_PAUSED_APPROVAL_GATE = 'Paused at plan approval gate' as const
 export const NOTE_PAUSED_COMMIT_GATE = 'Paused at conventional commit gate' as const;
 export const NOTE_PAUSED_TRIAGE_GATE = 'Paused at PR review comments triage gate' as const;
 export const NOTE_YOLO_PARKED_AT_DISCOVERY =
-  'Bug issue parked at DISCOVERY for RCA — YOLO cannot dispatch subagents inline. Run `codeloop next` to dispatch the discovery subagent, then re-run `codeloop yolo` (use `codeloop resume` first if a pause is recorded). State is checkpointed; nothing is lost.' as const;
+  'Bug issue parked at DISCOVERY for RCA — YOLO cannot dispatch subagents inline. Run `codeloop next` to dispatch the discovery subagent, then re-run `codeloop yolo`. State is checkpointed; nothing is lost.' as const;
+/**
+ * Appended to a park note ONLY when the checkpoint records a pause (issue #315,
+ * AC-9 / Defect G.8).
+ *
+ * The old parenthetical ("`codeloop resume` first if a pause is recorded") was
+ * unconditional, so every parked operator was told to resume at a park where
+ * `next --json` reports `pause: null` — advice the checkpoint could not honour.
+ * The caller knows whether a pause exists; the note must not guess.
+ */
+export const NOTE_RESUME_FIRST_WHEN_PAUSED =
+  'A pause is recorded; run `codeloop resume` first.' as const;
+
+/**
+ * Conditionally appends the resume hint to a park note (issue #315, AC-9).
+ *
+ * A park with no recorded pause returns the note unchanged: a hint to resume a
+ * paused pipeline that is not paused is unreachable advice, which is exactly
+ * Defect G.8.
+ */
+export function withRecordedPauseHint(
+  note: string,
+  pausedAtGate?: string | null
+): string {
+  const gate = (pausedAtGate ?? '').trim();
+  return gate.length > 0 ? `${note} ${NOTE_RESUME_FIRST_WHEN_PAUSED}` : note;
+}
 /**
  * Re-entry park (issue #237): distinct from NOTE_YOLO_PARKED_AT_DISCOVERY because
  * the operator DID re-run after the park, so the outstanding work is the RCA
@@ -1962,7 +1988,7 @@ export const NOTE_YOLO_PARKED_AT_DISCOVERY =
  * appends WHICH evidence is missing and which files were read.
  */
 export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
-  'Parked at DISCOVERY for RCA: the discovery report does not yet contain RCA evidence. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run (`codeloop resume` first if a pause is recorded). Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
+  'Parked at DISCOVERY for RCA: the discovery report does not yet contain RCA evidence. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
 /**
  * Recorded in history metadata when `codeloop next --restart` re-opens a
  * COMPLETED checkpoint, so the destructive reset is auditable from `status`.
@@ -2883,19 +2909,67 @@ export function formatGateReportExample(smokeProtocol: SmokeProtocolWireValue): 
     GATE_REPORT_JSON_MARKER,
     `{ "verdict": "${STATUS_PASSED}", "buildSystem": "<id>", "buildStatus": "${STATUS_PASSED}",`,
     `  "testsStatus": "${STATUS_PASSED} (N passed)", "testsPassed": 0, "testsFailed": 0,`,
-    `  "durationMs": 0, "executedCommands": ["<command>"], "smokeProtocol": "${smokeProtocol}",`,
-    `  "notRun": [] }`
+    `  "durationMs": 0, "executedCommands": ["<command>"],`,
+    `  "commandResults": [{ "command": "<command>", "passed": 0, "failed": 0 }],`,
+    `  "smokeProtocol": "${smokeProtocol}", "notRun": [] }`
   ].join('\n');
 }
 
 /**
- * What the example's `<…>` tokens and zeroes mean (issue #311).
+ * What the example's `<…>` tokens and zeroes mean (issue #311), plus the two
+ * definitions #325 found undefined (issue #315, AC-16/AC-17).
  *
- * Without this, a copying subagent emits the template verbatim and records
- * "zero tests, zero milliseconds" as measured evidence.
+ * Without the first paragraph, a copying subagent emits the template verbatim
+ * and records "zero tests, zero milliseconds" as measured evidence. Without the
+ * definitions, `testsPassed` was whatever arithmetic the agent chose — which is
+ * how 86 targeted tests got added to the 1867-test suite that already ran them.
  */
 export const NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS =
-  `Replace every \`<…>\` placeholder and every placeholder zero above with THIS run's measured values. The example is a shape, not evidence: emitting it verbatim records false measurements.` as const;
+  `Replace every \`<…>\` placeholder and every placeholder zero above with THIS run's measured values. The example is a shape, not evidence: emitting it verbatim records false measurements. ` +
+  `\`testsPassed\` counts UNIQUE tests across the whole run: a targeted subset plus the full suite that already includes it is NOT a valid value (report the full suite's count, and keep each command in \`commandResults\` so the total can be checked). ` +
+  `\`executedCommands\` holds COMMANDS only — a smoke-check result is a protocol step, not a command, and belongs in \`smokeChecks\`.`;
+
+/**
+ * The contexts in which `act` (the CI-workflow simulation) was declared but not
+ * executed (issue #325.4, AC-19).
+ */
+export type ActSkipContext =
+  | 'plan-precedence'
+  | 'runtime-unavailable'
+  | 'no-workflows'
+  | 'disabled';
+
+/**
+ * The TOOL's reason for `act` not running (issue #325.4, AC-19).
+ *
+ * The `Not Run` line used to publish the gate agent's prose, and the #311 gate
+ * wrote "this repo is a local TypeScript/Node project with no CI-workflow
+ * simulation in scope" — false: `.github/workflows/` exists. The true reason was
+ * precedence: approved plan targets outrank `resolveActCommand`. An agent's
+ * explanation of its own omission is not evidence, so the reason is derived
+ * here from what the tool knows.
+ */
+export function formatActNotRunReason(context: {
+  readonly planTargetCount: number;
+  readonly actSkip: ActSkipContext;
+}): string {
+  switch (context.actSkip) {
+    case 'plan-precedence': {
+      const count = Number.isFinite(context.planTargetCount) ? Math.max(0, context.planTargetCount) : 0;
+      return (
+        'plan targets took precedence' +
+        (count > 0 ? ` (${count} verification target${count === 1 ? '' : 's'})` : '')
+      );
+    }
+    case 'no-workflows':
+      return 'no workflow files exist to simulate';
+    case 'disabled':
+      return 'the CI-workflow simulation is disabled for this workspace';
+    case 'runtime-unavailable':
+    default:
+      return 'the container runtime (act) is not available on this host';
+  }
+}
 
 /**
  * The flags that carry a dispatched reviewer verdict to the checkpoint.
@@ -3242,13 +3316,19 @@ export const NOTE_BLANK_PLAN_DISPATCH_PLANNER =
  * unpopulated scaffold".
  *
  * With no arguments it returns `NOTE_DISCOVERY_PARK_AWAITING_RCA` unchanged.
+ *
+ * `pausedAtGate` (issue #315, AC-9) is the checkpoint's recorded pause, if any:
+ * the resume hint is appended only when a pause really exists, because a park
+ * with `pausedAtGate: null` cannot be resumed and `next --json` reports
+ * `pause: null` there.
  */
 export function formatDiscoveryParkAwaitingRca(
   checkedPaths?: string | null,
   missingEvidence?: string | null,
-  evaluatedPath?: string | null
+  evaluatedPath?: string | null,
+  pausedAtGate?: string | null
 ): string {
-  const parts: string[] = [NOTE_DISCOVERY_PARK_AWAITING_RCA];
+  const parts: string[] = [withRecordedPauseHint(NOTE_DISCOVERY_PARK_AWAITING_RCA, pausedAtGate)];
 
   const missing = (missingEvidence ?? '').trim();
   if (missing.length > 0) {
@@ -3365,16 +3445,19 @@ export const CODELOOP_CONFIG_FILE = 'config.json' as const;
 export const DEFAULT_SMOKE_TIMEOUT_SECONDS = 300 as const;
 
 /**
- * Ephemeral runtime paths that must be git-ignored. `.codeloop/config.json` and
- * `.agyloop/config.json` are intentionally absent so project config stays tracked.
+ * Ephemeral runtime paths that must be git-ignored.
+ *
+ * One documented split (issue #315, AC-12): **config in `.codeloop/`, state in
+ * `.agyloop/`.** Every checkpoint the tool reads or writes lands under
+ * `.agyloop/`, so only those state paths are listed. The former
+ * `.codeloop/state.json`, `tasks/`, `locks/`, `logs/`, `critique-update-cache.json`
+ * and `*.bak` rules were dead — no code path ever wrote them — and gitignoring a
+ * path the tool does not use is a false claim about where state lives.
+ *
+ * `.codeloop/config.json` and `.agyloop/config.json` are intentionally absent so
+ * project config stays tracked.
  */
 export const INIT_GITIGNORE_RULES: readonly string[] = Object.freeze([
-  '.codeloop/state.json',
-  '.codeloop/tasks/',
-  '.codeloop/locks/',
-  '.codeloop/logs/',
-  '.codeloop/critique-update-cache.json',
-  '.codeloop/*.bak',
   '.agyloop',        // bare entry matches the .agyloop symlink created in worktrees (git mode 120000)
   '!.agyloop/',      // re-include the real directory so .agyloop/config.json stays trackable
   '.agyloop/state.json',
@@ -3458,6 +3541,17 @@ export const RELEASE_LABELS = Object.freeze({
   PATCH: RELEASE_LABEL_PATCH
 });
 export type ReleaseLabelName = typeof RELEASE_LABELS[keyof typeof RELEASE_LABELS];
+
+/**
+ * The cross-repo half of the release-notes contract (issue #257 / #315 AC-32).
+ *
+ * `ajxcodes/auto-tag` renders the published GitHub Release notes from commit
+ * SUBJECTS only (`--pretty=format:"- %s"`). That generator lives in another
+ * repository and another release train, so the in-repo changelog fix does not
+ * close it — and no artifact this run produces may imply that it did.
+ */
+export const NOTE_RELEASE_NOTES_DEPENDENCY =
+  'GitHub Release notes are generated by ajxcodes/auto-tag from commit subjects only (cross-repo; not fixed here).' as const;
 
 // Pre-Flight Check Actions
 export const PREFLIGHT_ACTION_PROCEED = 'PROCEED' as const;

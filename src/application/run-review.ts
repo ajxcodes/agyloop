@@ -375,7 +375,7 @@ export class RunReviewUseCase {
         STAGE_NONE,
         STAGE_REVIEW,
         MODE_STANDARD,
-        'Cannot run review: No pipeline state found. Run "agyloop implement" and "agyloop next" first.'
+        'Cannot run review: No pipeline state found. Run "codeloop implement" and "codeloop next" first.'
       );
     }
 
@@ -391,11 +391,6 @@ export class RunReviewUseCase {
       sm.history.filter((entry) => entry.stage === STAGE_REVIEW).length
     );
     const activeIssue = params.issue || sm.issue;
-    /**
-     * Whether the COMMIT pause must be restored after the verdict is recorded.
-     * Only set when the review was re-opened from the COMMIT gate.
-     */
-    let reopenRestorePauseAtCommit = false;
     if (activeIssue) {
       sm.setIssue(activeIssue);
     }
@@ -425,14 +420,13 @@ export class RunReviewUseCase {
       // The stale COMMIT pause is consumed here: the human wait at the commit
       // gate is over (a verdict arrived), so it must not keep claiming
       // "waiting for a human" while the machine sits at REVIEW. It is
-      // restored below when the verdict leaves the machine at COMMIT.
-      const wasPausedAtCommit = sm.pausedAtGate === GATE_COMMIT;
+      // re-recorded below, because the verdict leaves the machine at COMMIT
+      // and the operator waits there again (#315).
       if (sm.pausedAtGate) {
         sm.resumeFromGate();
       }
       sm.transition(STAGE_QUALITY_GATE, { note: NOTE_REVIEW_REOPENED_FROM_COMMIT });
       sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
-      reopenRestorePauseAtCommit = wasPausedAtCommit;
     } else {
       throw new InvalidTransitionError(
         sm.currentStage,
@@ -549,7 +543,7 @@ export class RunReviewUseCase {
             timeoutMs: 3000
           });
           if (versionInfo.isOutdated && versionInfo.currentVersion && versionInfo.latestVersion) {
-            updateNotification = `💡 A new version of critique is available (v${versionInfo.currentVersion} -> v${versionInfo.latestVersion}).\n   Run \`agyloop critique update\` to upgrade.`;
+            updateNotification = `💡 A new version of critique is available (v${versionInfo.currentVersion} -> v${versionInfo.latestVersion}).\n   Run \`codeloop critique update\` to upgrade.`;
           }
         } catch {
           // Non-blocking, ignore errors
@@ -706,11 +700,23 @@ export class RunReviewUseCase {
     // stage's entry to be the penultimate one.
     const measuredDurationStr = deriveStageDuration(sm.history, STAGE_REVIEW, { humanWaitMs: 0 });
 
-    // The commit gate's human wait is restored when the verdict leaves the
-    // machine at COMMIT (issue #269): the operator is still waiting there to
-    // run the commit. A verdict that reverted the machine to IMPLEMENT leaves
-    // the pause consumed — it is not waiting at the commit gate any more.
-    if (reopenRestorePauseAtCommit && sm.currentStage === STAGE_COMMIT) {
+    // The commit gate's human wait starts HERE (issue #315, AC-13; #318.1).
+    // The standard REVIEW→COMMIT path used to leave `pausedAtGate` null, so
+    // `ExecuteCommitUseCase` measured a wait of `0s` for a gate the operator
+    // really waited at — and `next --json` reported the gate as
+    // `actionable:true`. Whatever leaves the machine AT COMMIT (APPROVED,
+    // SKIPPED, or a REVIEW reopened from an existing COMMIT pause) is waiting
+    // on the human who runs `codeloop commit`, so the pause is recorded
+    // unconditionally.
+    //
+    // `pauseAtGate` only stamps when no timestamp exists — and the reopen arm
+    // above has ALREADY called `resumeFromGate()`, which banks the elapsed
+    // COMMIT wait into `totalHumanWaitMs` and NULLS the timestamp. So a REVIEW
+    // reopened from an existing COMMIT pause does not keep the original wait
+    // start: that wait is banked as its own interval and this pause starts a
+    // fresh clock (the operator waits again after the verdict arrives). Total
+    // human wait is the sum of both intervals, never a single stretched one.
+    if (sm.currentStage === STAGE_COMMIT) {
       sm.pauseAtGate(GATE_COMMIT);
     }
 

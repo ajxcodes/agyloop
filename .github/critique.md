@@ -9,7 +9,7 @@ This repository adheres to strict software engineering, hexagonal architecture, 
   - `src/ports/`: Inversion of control interfaces and contracts. Depends exclusively on `src/domain/` or other ports. Zero direct I/O.
   - `src/application/`: Orchestrating use cases (`StartPlanningUseCase`, `RunLifecycleUseCase`, `RunQualityGateUseCase`, `RunReviewUseCase`, `DraftCommitUseCase`, etc.). Depends strictly on `src/domain/` and `src/ports/`. Never imports from `src/infrastructure/` or `src/presentation/`. All I/O occurs via injected Ports.
   - `src/infrastructure/`: Concrete adapters implementing port contracts (e.g. `CliGitHubGateway`, `CliCritiqueGateway`, `FileBuildDetector`, `FileStateRepository`).
-  - `src/presentation/`: CLI entrypoints (`bin/agyloop`, `src/presentation/cli.ts`).
+  - `src/presentation/`: CLI entrypoints (`codeloop`, `src/presentation/cli.ts`).
 - **Fitness Verification**: All boundary invariants are verified continuously by `tests/architecture/hexagonal-boundaries.test.ts`.
 
 ## 2. Code Quality & Domain Invariants

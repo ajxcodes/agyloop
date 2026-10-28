@@ -34,6 +34,21 @@ export interface StateHistoryEntry {
   readonly metadata?: Record<string, unknown>;
 }
 
+/**
+ * What this run recorded about its delivery PR (issue #315, AC-24 / #332).
+ *
+ * `missing` is the meaningful case: the branch was pushed and the checkpoint
+ * still reached COMPLETED, so the report must say the run is NOT delivered
+ * rather than let a terminal stage imply it was.
+ */
+export type RecordedPullRequestStatus = 'created' | 'existing' | 'missing';
+
+export interface RecordedPullRequest {
+  readonly number: number | null;
+  readonly url: string | null;
+  readonly status: RecordedPullRequestStatus;
+}
+
 export interface StateMachineSnapshot {
   readonly version: string;
   readonly currentStage: StageName;
@@ -100,6 +115,12 @@ export interface StateMachineSnapshot {
    * Reset when the pipeline re-enters PLAN.
    */
   readonly planEmptyParkCount?: number;
+  /**
+   * The delivery PR this run recorded on reaching COMPLETED (issue #315,
+   * AC-24). Optional: a checkpoint written before this field loads as `null`,
+   * which means "not recorded" — never "delivered".
+   */
+  readonly pullRequest?: RecordedPullRequest | null;
 }
 
 export interface StateStatusSummary {
@@ -155,6 +176,7 @@ export class StateMachine {
   private _planDispatchCount: number;
   private _implementationDispatchCount: number;
   private _planEmptyParkCount: number;
+  private _pullRequest: RecordedPullRequest | null;
 
   constructor(options: {
     stage?: Stage;
@@ -182,6 +204,7 @@ export class StateMachine {
     planDispatchCount?: number;
     implementationDispatchCount?: number;
     planEmptyParkCount?: number;
+    pullRequest?: RecordedPullRequest | null;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -214,6 +237,7 @@ export class StateMachine {
         : 0;
     this._planEmptyParkCount =
       typeof options.planEmptyParkCount === 'number' ? options.planEmptyParkCount : 0;
+    this._pullRequest = options.pullRequest ?? null;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -392,6 +416,27 @@ export class StateMachine {
 
   public get planEmptyParkCount(): number {
     return this._planEmptyParkCount;
+  }
+
+  /** The delivery PR recorded on reaching COMPLETED, or null when none is recorded. */
+  public get pullRequest(): RecordedPullRequest | null {
+    return this._pullRequest;
+  }
+
+  /**
+   * Records what this run did about the delivery PR (issue #315, AC-24).
+   *
+   * Called once, before the checkpoint is persisted at the COMMIT gate's exit,
+   * so `status` and the `commit` output can tell "delivered" from "pushed with
+   * no PR" instead of inferring it from a terminal stage.
+   */
+  public recordPullRequest(pullRequest: RecordedPullRequest): void {
+    this._pullRequest = {
+      number: typeof pullRequest.number === 'number' ? pullRequest.number : null,
+      url: pullRequest.url && pullRequest.url.trim() ? pullRequest.url.trim() : null,
+      status: pullRequest.status
+    };
+    this._updatedAt = new Date().toISOString();
   }
 
   /**
@@ -638,6 +683,7 @@ export class StateMachine {
     this._planDispatchCount = 0;
     this._implementationDispatchCount = 0;
     this._planEmptyParkCount = 0;
+    this._pullRequest = null;
     this._updatedAt = now;
     this._history = [
       {
@@ -703,7 +749,8 @@ export class StateMachine {
       discoveryDispatchCount: this._discoveryDispatchCount,
       planDispatchCount: this._planDispatchCount,
       implementationDispatchCount: this._implementationDispatchCount,
-      planEmptyParkCount: this._planEmptyParkCount
+      planEmptyParkCount: this._planEmptyParkCount,
+      pullRequest: this._pullRequest
     };
   }
 
@@ -739,6 +786,23 @@ export class StateMachine {
     // A legacy checkpoint (no `triageDisposition` key) and a malformed one
     // both load as `null` — `fromJSON` never throws.
     const triageDisposition = TriageDisposition.fromJSON(snapshot.triageDisposition);
+    // A legacy checkpoint has no `pullRequest` key: null means "not recorded",
+    // never "delivered" (issue #315, AC-24). An unrecognised status is treated
+    // as `missing` — the honest reading when the record is unusable.
+    const rawPullRequest = snapshot.pullRequest;
+    const pullRequest: RecordedPullRequest | null =
+      rawPullRequest && typeof rawPullRequest === 'object'
+        ? {
+            number: typeof rawPullRequest.number === 'number' ? rawPullRequest.number : null,
+            url: typeof rawPullRequest.url === 'string' && rawPullRequest.url.trim() ? rawPullRequest.url : null,
+            status:
+              rawPullRequest.status === 'created' ||
+              rawPullRequest.status === 'existing' ||
+              rawPullRequest.status === 'missing'
+                ? rawPullRequest.status
+                : 'missing'
+          }
+        : null;
 
     return new StateMachine({
       stage,
@@ -770,7 +834,8 @@ export class StateMachine {
           ? snapshot.implementationDispatchCount
           : 0,
       planEmptyParkCount:
-        typeof snapshot.planEmptyParkCount === 'number' ? snapshot.planEmptyParkCount : 0
+        typeof snapshot.planEmptyParkCount === 'number' ? snapshot.planEmptyParkCount : 0,
+      pullRequest
     });
   }
 
