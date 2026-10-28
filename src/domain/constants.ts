@@ -308,6 +308,7 @@ export const ERR_AI_REVIEWER = ERR_CRITIQUE;
 export const ERR_CRITIQUE_INSTALL = 'ERR_CRITIQUE_INSTALL' as const;
 export const ERR_CRITIQUE_UPDATE = 'ERR_CRITIQUE_UPDATE' as const;
 export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
+export const ERR_REFUTATION_REFUSED = 'ERR_REFUTATION_REFUSED' as const;
 export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
 export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
 export const ERR_PREFLIGHT_HALT = 'ERR_PREFLIGHT_HALT' as const;
@@ -334,6 +335,7 @@ export const ERROR_CODES = Object.freeze({
   CRITIQUE_INSTALL: ERR_CRITIQUE_INSTALL,
   CRITIQUE_UPDATE: ERR_CRITIQUE_UPDATE,
   REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
+  REFUTATION_REFUSED: ERR_REFUTATION_REFUSED,
   COMMIT_EXECUTION: ERR_COMMIT_EXECUTION,
   WORKTREE: ERR_WORKTREE,
   PREFLIGHT_HALT: ERR_PREFLIGHT_HALT,
@@ -3215,6 +3217,204 @@ export const NOTE_REVIEW_DISPATCH_CAP =
 
 /** The operator-facing label of the re-dispatch count (additive `status` line). */
 export const LABEL_REVIEW_DISPATCHES = 'Review Dispatches' as const;
+
+// ============================================================================
+// Finding actionability (issue #349)
+// ============================================================================
+
+/**
+ * What a critique finding's BODY asks for, independent of its severity label
+ * (issue #349).
+ *
+ * The model labels an affirmation ("Correctly pins actions/checkout@v7") as
+ * `critical` often enough that severity alone is not a safe local gate. The
+ * classification is a deterministic predicate over the body, and the ONLY
+ * thing it decides is whether the finding requests a change:
+ *
+ *  - `change-request` — the body asks for (or names) a defect ⇒ it blocks;
+ *  - `affirmation` — the body asserts the code is fine ⇒ it does NOT block;
+ *  - `ambiguous` — no cue at all ⇒ it blocks (**fail closed**).
+ *
+ * `AiReviewFinding.isBlocking()` stays severity-only and unchanged: it is the
+ * structural predicate the CI threshold vocabulary uses. Actionability is
+ * layered ON TOP of it, never instead of it.
+ */
+export const FINDING_ACTIONABILITY_CHANGE_REQUEST = 'change-request' as const;
+export const FINDING_ACTIONABILITY_AFFIRMATION = 'affirmation' as const;
+export const FINDING_ACTIONABILITY_AMBIGUOUS = 'ambiguous' as const;
+export const FINDING_ACTIONABILITIES = Object.freeze([
+  FINDING_ACTIONABILITY_CHANGE_REQUEST,
+  FINDING_ACTIONABILITY_AFFIRMATION,
+  FINDING_ACTIONABILITY_AMBIGUOUS
+] as const);
+export type FindingActionability = (typeof FINDING_ACTIONABILITIES)[number];
+
+/**
+ * Cues that a finding REQUESTS A CHANGE. Any match wins over an affirmation:
+ * a body that praises and then asks for a fix is a change request.
+ *
+ * NO `g` / `y` flags: a shared RegExp carrying `lastIndex` state across calls
+ * would make the classifier non-deterministic.
+ */
+export const REGEX_FINDING_CHANGE_REQUEST_CUES: readonly RegExp[] = Object.freeze([
+  // imperative openers ("Revert to @v4.", "Add a test for the empty payload")
+  /^(?:please\s+)?(?:add|remove|delete|revert|replace|rename|fix|change|update|refactor|extract|inline|move|switch|use|prefer|avoid|ensure|guard|validate|handle|return|throw|log|document|test|consider|make|keep|drop|bump|pin|wrap|split|dedupe|simplify|reuse|restore)\b/,
+  // obligation modals
+  /\b(?:must|should|shall|needs? to|has to|have to|ought to|is required to|are required to|would be better to|suggest(?:s|ed|ion)?|recommend(?:s|ed|ation)?)\b/,
+  // defect vocabulary
+  /\b(?:bugs?|defects?|error\w*|exception\w*|fail\w*|crash\w*|leak\w*|vulnerab\w*|injection|hazards?|race condition|deadlock\w*|regress\w*|incorrect|invalid|unsafe|insecure|broken|inconsistent|duplicat\w*|redundan\w*|unused|unreachable|undefined|dereferenc\w*|missing|absent|off-by-one|overflow|deprecated|outdated|stale|swallow\w*)\b/,
+  // negated existence / correctness ("does not exist", "isn't handled")
+  /\b(?:does|do|did|is|are|was|were|will|would|can|could|has|have|had)\s+not\b|\b(?:doesn|don|didn|isn|aren|wasn|weren|won|wouldn|can|couldn|hasn|haven|hadn)'t\b|\bnever\b|\bno longer\b/,
+  // explicit change directives
+  /\b(?:instead of|rather than|revert to|replace .{0,60} with|change .{0,60} to|should be|must be|breaks|will break|would break)\b/
+]);
+
+/** Cues that a finding ASSERTS NO DEFECT. Only consulted when no change cue matched. */
+export const REGEX_FINDING_AFFIRMATION_CUES: readonly RegExp[] = Object.freeze([
+  /\b(?:looks? good|lgtm|well[- ](?:written|structured|tested|documented|handled|scoped)|no (?:issues?|problems?|concerns?|defects?|regressions?)|nothing to (?:change|fix)|as expected|matches the (?:plan|spec|specification|standards?)|consistent with)\b/,
+  /\b(?:correct(?:ly)?|proper(?:ly)?|safe(?:ly)?|sound|clean|fine|valid|appropriate|reasonable|idiomatic|robust)\b/,
+  /\b(?:exists?|is present|are present|is defined|are defined|is available|up[- ]to[- ]date|latest|accurate)\b/
+]);
+
+/** How many characters of a finding body a note (and `--json`) prints. */
+export const FINDING_BODY_EXCERPT_CHARS = 160 as const;
+
+/** A finding body, whitespace-collapsed and cut to `FINDING_BODY_EXCERPT_CHARS`. */
+export function excerptFindingBody(body: string): string {
+  const collapsed = String(body ?? '').replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= FINDING_BODY_EXCERPT_CHARS) {
+    return collapsed;
+  }
+  return `${collapsed.slice(0, FINDING_BODY_EXCERPT_CHARS - 3)}...`;
+}
+
+/**
+ * The structural shape of an exempted (affirmation) blocking finding.
+ *
+ * Declared HERE, not in the value object, so this module needs no import from
+ * `value-objects/` (no cycle) and the CLI/use case map `AiReviewFinding` into
+ * it explicitly. It is also the `--json` shape.
+ */
+export interface NonActionableFindingSummary {
+  readonly path: string;
+  readonly line: number;
+  readonly severity: string;
+  readonly actionability: FindingActionability;
+  readonly body: string;
+}
+
+export const NOTE_REVIEW_NON_ACTIONABLE_HEADER =
+  '⚠ Critique reported {n} critical/error finding(s) that request no change; they are NOT counted as blocking (ambiguous findings still block):' as const;
+export const NOTE_REVIEW_NON_ACTIONABLE_LINE =
+  '  • {path}:{line} [{severity}/{actionability}] {body}' as const;
+
+/** Never silent: every exempted finding is named on stderr, both output modes. */
+export function formatNonActionableFindingsNote(
+  findings: readonly NonActionableFindingSummary[]
+): string {
+  if (!findings || findings.length === 0) {
+    return '';
+  }
+  const lines = [NOTE_REVIEW_NON_ACTIONABLE_HEADER.replace('{n}', String(findings.length))];
+  for (const finding of findings) {
+    lines.push(
+      NOTE_REVIEW_NON_ACTIONABLE_LINE
+        .replace('{path}', finding.path)
+        .replace('{line}', String(finding.line))
+        .replace('{severity}', finding.severity)
+        .replace('{actionability}', finding.actionability)
+        .replace('{body}', excerptFindingBody(finding.body))
+    );
+  }
+  return lines.join('\n');
+}
+
+/** The escalation summary's clause when affirmations were exempted (issue #349). */
+export const NOTE_REVIEW_IGNORED_AFFIRMATIONS =
+  'Ignored {n} critical/error finding(s) that request no change.' as const;
+
+export function formatCritiqueIgnoredAffirmations(n: number): string {
+  return NOTE_REVIEW_IGNORED_AFFIRMATIONS.replace('{n}', String(n));
+}
+
+// ============================================================================
+// Operator refutations (issue #349 / #242 AC4)
+// ============================================================================
+
+/**
+ * The explicit refutation channel: `--refute '<path>:<line>[#<severity>]=<reason>'`.
+ *
+ * Content-aware blocking can never refute a FACTUAL false claim ("v7 does not
+ * exist" when it does) — that sentence genuinely requests a change. This flag
+ * is the operator's act of saying "I checked; this finding is false", and it is
+ * deliberately loud: the reason is mandatory, every applied refutation is named
+ * on stderr and recorded under `reviewRefutations` in the checkpoint.
+ */
+export const FLAG_REFUTE = '--refute' as const;
+/** Splits `--refute` at the FIRST occurrence: `<location>=<reason>`. */
+export const REFUTATION_REASON_SEPARATOR = '=' as const;
+/** The optional severity selector, split at the LAST occurrence: `<path>:<line>#<severity>`. */
+export const REFUTATION_SEVERITY_MARKER = '#' as const;
+
+/** The structural shape of one applied refutation (stderr + `--json` + checkpoint). */
+export interface RefutedFindingSummary {
+  readonly target: string;
+  readonly severity: string;
+  readonly actionability: FindingActionability;
+  readonly body: string;
+  readonly reason: string;
+}
+
+export const NOTE_REVIEW_REFUTED_HEADER =
+  '⚠ Operator refuted {n} critique finding(s); they are not counted as blocking for this verdict:' as const;
+export const NOTE_REVIEW_REFUTED_LINE =
+  '  • {target} [{severity}/{actionability}] {body}' as const;
+export const NOTE_REVIEW_REFUTED_REASON_LINE = '    reason: {reason}' as const;
+
+export function formatRefutedFindingsNote(findings: readonly RefutedFindingSummary[]): string {
+  if (!findings || findings.length === 0) {
+    return '';
+  }
+  const lines = [NOTE_REVIEW_REFUTED_HEADER.replace('{n}', String(findings.length))];
+  for (const finding of findings) {
+    lines.push(
+      NOTE_REVIEW_REFUTED_LINE
+        .replace('{target}', finding.target)
+        .replace('{severity}', finding.severity)
+        .replace('{actionability}', finding.actionability)
+        .replace('{body}', excerptFindingBody(finding.body))
+    );
+    lines.push(NOTE_REVIEW_REFUTED_REASON_LINE.replace('{reason}', finding.reason));
+  }
+  return lines.join('\n');
+}
+
+// Every refusal below is a HARD error: exit 1, nothing read into state, nothing
+// recorded (`RefutationRefusedError`, raised before `stateRepo.save()`).
+export const NOTE_REFUTATION_REQUIRES_VALUE =
+  `✗ '${FLAG_REFUTE}' requires a value: ${FLAG_REFUTE} '<path>:<line>[#<severity>]=<reason>'. Nothing was changed; supply the refutation (or remove the flag).` as const;
+export const NOTE_REFUTATION_REASON_REQUIRED =
+  `✗ ${FLAG_REFUTE} requires a reason: '<path>:<line>[#<severity>]=<reason>'. A refutation without a reason is refused, and nothing was recorded.` as const;
+export const NOTE_REFUTATION_MALFORMED_TARGET =
+  `✗ ${FLAG_REFUTE} target is malformed: expected '<path>:<line>[#<severity>]' before the '='. Nothing was changed.` as const;
+export const NOTE_REFUTATION_SCOPE =
+  `✗ '${FLAG_REFUTE}' is only supported by 'review'. Remove the flag from '{command}'.` as const;
+export const NOTE_REFUTATION_REQUIRES_VERDICT =
+  `✗ ${FLAG_REFUTE} requires a filed reviewer verdict: pass --verdict-file (or --review-output/--verdict-stdin) so the reviewer's APPROVED verdict is on record. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_REQUIRES_APPROVED =
+  `✗ ${FLAG_REFUTE} cannot rescue a reviewer 'CHANGES_REQUESTED': only a filed 'APPROVED' verdict can be refuted. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_NO_REPORT =
+  `✗ ${FLAG_REFUTE} requires a critique report with a matching blocking finding: none was available this round. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_NO_MATCH =
+  `✗ ${FLAG_REFUTE} '{target}' matches no blocking finding in the critique report. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_ALREADY_NON_BLOCKING =
+  `✗ ${FLAG_REFUTE} '{target}' matches a finding that requests no change; it is already not counted as blocking. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_SEVERITY_MISMATCH =
+  `✗ ${FLAG_REFUTE} '{target}' selects a severity the finding does not have: the finding at that location is '{actual}'. Retry with '{suggestion}'. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_ALREADY_REFUTED =
+  `✗ ${FLAG_REFUTE} '{target}' was already refuted by an earlier ${FLAG_REFUTE}. Nothing was recorded.` as const;
+export const NOTE_REFUTATION_AMBIGUOUS =
+  `✗ ${FLAG_REFUTE} '{target}' matches {count} blocking findings. Narrow it with #severity:` as const;
 
 // ============================================================================
 // Stage dispatch directives (issue #292)

@@ -43,8 +43,19 @@ import {
   REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED,
   InvalidTransitionError,
   ReviewerSubagentError,
+  RefutationRefusedError,
   AiReviewReport,
   AiReviewFinding,
+  FindingRefutation,
+  AppliedFindingRefutation,
+  RefutationResolution,
+  resolveFindingRefutations,
+  NonActionableFindingSummary,
+  NOTE_REFUTATION_NO_REPORT,
+  NOTE_REFUTATION_REQUIRES_APPROVED,
+  NOTE_REFUTATION_REQUIRES_VERDICT,
+  excerptFindingBody,
+  formatCritiqueIgnoredAffirmations,
   DEFAULT_CRITIQUE_REVIEW_TIMEOUT_MS,
   DIFF_EXCLUDE_ARGS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -94,6 +105,15 @@ export interface RunReviewParams {
    * TTY so a non-interactive session can never block (issue #218 AC6).
    */
   readonly interactive?: boolean;
+  /**
+   * Operator refutations for THIS run (issue #349).
+   *
+   * Each one names a blocking finding (`path:line[#severity]`) that the
+   * operator has verified is false, plus a mandatory reason. They are resolved
+   * AFTER the verdict is parsed and BEFORE anything is saved, so a refused
+   * refutation leaves the checkpoint byte-identical.
+   */
+  readonly refutations?: readonly FindingRefutation[];
 }
 
 export interface RunReviewResult {
@@ -156,6 +176,18 @@ export interface RunReviewResult {
   readonly critiqueReport?: string | null;
   readonly updateNotification?: string | null;
   readonly autoInstalled?: boolean;
+  /**
+   * Every refutation APPLIED this round, in command-line order (issue #349).
+   * Always present: `[]` when the run carried none. This is the machine-readable
+   * mirror of the checkpoint's `reviewRefutations` for the round just computed —
+   * never read back from history (same currency rule as `reviewerVerdict`).
+   */
+  readonly refutations: readonly AppliedFindingRefutation[];
+  /**
+   * The severity-blocking findings that were exempted because their bodies
+   * request no change (issue #349). `[]` for a clean or bypassed report.
+   */
+  readonly nonActionableFindings: readonly NonActionableFindingSummary[];
 }
 
 function cleanBulletLine(rawLine: string): string {
@@ -192,36 +224,65 @@ export interface TwoTierInvariantOutcome {
  * The TWO-TIER INVARIANT: a Tier 1 critique report may ESCALATE a verdict to
  * CHANGES_REQUESTED (issue #269, R3).
  *
- * Any critical or error violation from critique, or an APPROVED verdict whose
- * own block lists unfulfilled Acceptance Criteria, mandates CHANGES_REQUESTED.
- * Bypassed reports carry zero findings, but the guard also guarantees a stray
- * finding on a bypassed report can never overwrite SKIPPED with
- * CHANGES_REQUESTED.
+ * Any actionable critical or error violation from critique, or an APPROVED
+ * verdict whose own block lists unfulfilled Acceptance Criteria, mandates
+ * CHANGES_REQUESTED. Bypassed reports carry zero findings, but the guard also
+ * guarantees a stray finding on a bypassed report can never overwrite SKIPPED
+ * with CHANGES_REQUESTED.
+ *
+ * Issue #349 makes the local gate content-aware: only findings that REQUEST a
+ * change count (`AiReviewReport.blockingFindings()`), and an operator
+ * refutation may exclude a verified-false one from the escalation. Neither
+ * mechanism is silent — the summary names both the ignored affirmations and the
+ * refuted count — and the reviewer's own verdict is never rewritten by them.
  *
  * Extracted as a PURE function so the escalation is testable on its own and
  * so the recorded verdict and the recorded source can never drift apart: the
  * caller derives the source from `escalatedBy`, not from a guess.
+ *
+ * The third parameter is optional on purpose: with it omitted the helper uses
+ * the report's own `blockingFindings()`, so every two-argument caller keeps
+ * the pre-#349 behaviour exactly.
  */
 export function applyTwoTierInvariant(
   verdict: ReviewVerdict,
-  aiReport: AiReviewReport | null
+  aiReport: AiReviewReport | null,
+  refutations?: RefutationResolution
 ): TwoTierInvariantOutcome {
-  if (aiReport && !aiReport.bypassed && aiReport.blockingCount() > 0) {
+  // ONE source for "what still blocks": the resolution when the caller supplied
+  // one (computed from the SAME `blockingFindings()` call), otherwise the
+  // report's own actionability-aware set.
+  const remaining: readonly AiReviewFinding[] = refutations
+    ? refutations.remaining
+    : aiReport && !aiReport.bypassed
+      ? aiReport.blockingFindings()
+      : [];
+
+  if (aiReport && !aiReport.bypassed && remaining.length > 0) {
     const critiqueCriteria: string[] = [];
     const critiqueRemediation: string[] = [];
-    for (const finding of aiReport.findings.filter((f: AiReviewFinding) => f.isBlocking())) {
+    for (const finding of remaining) {
       critiqueCriteria.push(`[Critique ${finding.severity.toUpperCase()}] ${finding.path}:${finding.line} - ${finding.body}`);
       critiqueRemediation.push(`Fix ${finding.severity} in ${finding.path}:${finding.line}: ${finding.body}`);
     }
+    // Neither exemption is ever silent: the escalation names the number it
+    // ignored and the number the operator refuted, so no count silently shrinks.
+    const refutedClause =
+      refutations && refutations.applied.length > 0
+        ? ` (${refutations.applied.length} refuted by the operator)`
+        : '';
+    const ignoredCount = aiReport.nonActionableBlockingFindings().length;
+    const ignoredClause =
+      ignoredCount > 0 ? ` ${formatCritiqueIgnoredAffirmations(ignoredCount)}` : '';
     return {
       escalatedBy: 'critique',
       verdict: new ReviewVerdict({
         status: VERDICT_CHANGES_REQUESTED,
-        summary: `Review failed: Automated critique detected ${aiReport.blockingCount()} blocking/error violation(s). ${verdict.summary}`,
+        summary: `Review failed: Automated critique detected ${remaining.length} blocking/error violation(s)${refutedClause}.${ignoredClause} ${verdict.summary}`,
         unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...critiqueCriteria],
         remediationGuidance: [...verdict.remediationGuidance, ...critiqueRemediation],
         confidenceLevel: aiReport.confidence.level,
-        findings: [...verdict.findings, ...aiReport.findings]
+        findings: [...verdict.findings, ...remaining]
       })
     };
   }
@@ -653,7 +714,46 @@ export class RunReviewUseCase {
     const reviewerVerdict = filingPath ? verdict.status : null;
     const critiqueVerified = Boolean(aiReport && !aiReport.bypassed);
 
-    const invariant = applyTwoTierInvariant(verdict, aiReport);
+    // Issue #349: resolve the operator's refutations BEFORE the invariant and
+    // before ANY write. Every refusal below is fail-closed: it leaves the
+    // checkpoint byte-identical and records nothing.
+    //
+    // Scope limits (deliberate, not incidental): the channel exists to release
+    // a VERIFIED-FALSE Tier 1 finding, so it needs a filed reviewer verdict
+    // (the critique-only path derives the verdict FROM the report — refuting
+    // there would rewrite the verdict itself) and that verdict must be
+    // `APPROVED` (a reviewer's own `CHANGES_REQUESTED` can never be rescued).
+    const requestedRefutations = params.refutations ?? [];
+    if (requestedRefutations.length > 0) {
+      if (!filingPath) {
+        throw new RefutationRefusedError('review', [NOTE_REFUTATION_REQUIRES_VERDICT]);
+      }
+      if (!verdict.isApproved()) {
+        throw new RefutationRefusedError('review', [NOTE_REFUTATION_REQUIRES_APPROVED]);
+      }
+      if (!aiReport || aiReport.bypassed) {
+        throw new RefutationRefusedError('review', [NOTE_REFUTATION_NO_REPORT]);
+      }
+    }
+    const refutationResolution = resolveFindingRefutations(aiReport, requestedRefutations);
+    if (refutationResolution.refusals.length > 0) {
+      throw new RefutationRefusedError('review', refutationResolution.refusals);
+    }
+
+    // Issue #349: the exemptions are never silent — the CLI prints this list on
+    // stderr (both output modes) and `--json` carries it verbatim.
+    const nonActionableFindings: readonly NonActionableFindingSummary[] =
+      aiReport && !aiReport.bypassed
+        ? aiReport.nonActionableBlockingFindings().map((finding) => ({
+            path: finding.path,
+            line: finding.line,
+            severity: finding.severity,
+            actionability: finding.actionability(),
+            body: excerptFindingBody(finding.body)
+          }))
+        : [];
+
+    const invariant = applyTwoTierInvariant(verdict, aiReport, refutationResolution);
     verdict = invariant.verdict;
 
     if (invariant.escalatedBy === 'critique' && reviewSource === REVIEW_SOURCE_REVIEWER_OUTPUT) {
@@ -662,6 +762,10 @@ export class RunReviewUseCase {
 
     // ONE provenance object, spread into every transition arm: the records
     // cannot drift apart (issue #297, AC3/AC10; #284 adds the round + base).
+    //
+    // `reviewRefutations` is ADDITIVE and omitted when nothing was refuted, so
+    // an unrefuted run's checkpoint is byte-identical to the pre-#349 one and
+    // old snapshots (which never carry the key) stay valid (issue #349 §2.5.7b).
     const provenance = {
       reviewVerdict: verdict.status,
       reviewTokens: verdict.formatStructuredTokens(),
@@ -669,7 +773,10 @@ export class RunReviewUseCase {
       critiqueVerified,
       reviewRound,
       ...(reviewedBaseCommit ? { reviewedBaseCommit } : {}),
-      ...(reviewerVerdict ? { reviewerVerdict } : {})
+      ...(reviewerVerdict ? { reviewerVerdict } : {}),
+      ...(refutationResolution.applied.length > 0
+        ? { reviewRefutations: refutationResolution.applied }
+        : {})
     };
 
     const durationMs = Date.now() - startTime;
@@ -763,7 +870,9 @@ export class RunReviewUseCase {
       durationMs,
       critiqueReport: critiqueReportText,
       updateNotification,
-      autoInstalled
+      autoInstalled,
+      refutations: refutationResolution.applied,
+      nonActionableFindings
     };
   }
 

@@ -13,7 +13,13 @@ import {
   SEVERITY_WARNING,
   SEVERITY_SUGGESTION,
   SEVERITY_INFO,
-  SEVERITY_ICONS
+  SEVERITY_ICONS,
+  FindingActionability,
+  FINDING_ACTIONABILITY_CHANGE_REQUEST,
+  FINDING_ACTIONABILITY_AFFIRMATION,
+  FINDING_ACTIONABILITY_AMBIGUOUS,
+  REGEX_FINDING_CHANGE_REQUEST_CUES,
+  REGEX_FINDING_AFFIRMATION_CUES
 } from '../constants';
 import { ValidationError } from '../errors';
 
@@ -24,6 +30,34 @@ export interface AiReviewFindingProps {
   readonly body?: string;
   readonly message?: string;
   readonly rule?: string;
+}
+
+/**
+ * What a finding's BODY asks for (issue #349).
+ *
+ * A PURE predicate over the body string — no I/O, no port, no model call — so
+ * the result is deterministic for a given body. Change-request cues are tested
+ * FIRST: a body that praises and then asks for a fix is a change request.
+ * Bodies with no cue are `ambiguous` and therefore still block (fail closed).
+ */
+export function classifyFindingActionability(body: string): FindingActionability {
+  const normalised = String(body ?? '')
+    .toLowerCase()
+    .replace(/[`*_#>~]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const cue of REGEX_FINDING_CHANGE_REQUEST_CUES) {
+    if (cue.test(normalised)) {
+      return FINDING_ACTIONABILITY_CHANGE_REQUEST;
+    }
+  }
+  for (const cue of REGEX_FINDING_AFFIRMATION_CUES) {
+    if (cue.test(normalised)) {
+      return FINDING_ACTIONABILITY_AFFIRMATION;
+    }
+  }
+  return FINDING_ACTIONABILITY_AMBIGUOUS;
 }
 
 function normalizeSeverity(raw: string): ReviewSeverity {
@@ -80,6 +114,28 @@ export class AiReviewFinding {
 
   public isBlocking(): boolean {
     return this.severity === SEVERITY_CRITICAL || this.severity === SEVERITY_ERROR;
+  }
+
+  /**
+   * What this finding's body asks for (issue #349).
+   *
+   * Layered ON TOP of `isBlocking()`, never instead of it: `isBlocking()` is the
+   * structural severity predicate (and the `error`/`blocking` threshold
+   * vocabulary), while actionability answers the different question "does this
+   * body request a change?".
+   */
+  public actionability(): FindingActionability {
+    return classifyFindingActionability(this.body);
+  }
+
+  /**
+   * True when the body should be treated as a change request.
+   *
+   * Fail closed: `change-request` and `ambiguous` both return true, so only a
+   * body that POSITIVELY asserts no defect stops blocking.
+   */
+  public requestsChange(): boolean {
+    return this.actionability() !== FINDING_ACTIONABILITY_AFFIRMATION;
   }
 
   public isCritical(): boolean {

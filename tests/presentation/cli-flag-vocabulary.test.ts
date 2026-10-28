@@ -21,6 +21,7 @@ const {
   UNIMPLEMENTED_FLAGS,
   COMMAND_CAPABILITIES,
   capabilityKey,
+  validateRefutationScope,
   validateUnknownFlags
 } = require('../../dist/presentation/cli-flags');
 const { CLI_DOCUMENTED_COMMANDS } = require('../../dist/domain');
@@ -50,13 +51,13 @@ function extractedLongFlags(): Set<string> {
 }
 
 describe('flag vocabulary (#248 Wave 1)', () => {
-  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 49 entries and no duplicates', () => {
+  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 50 entries and no duplicates', () => {
     assert.ok(Object.isFrozen(KNOWN_CLI_FLAGS), 'the union must be frozen');
     assert.ok(Object.isFrozen(KNOWN_LONG_FLAGS), 'the long list must be frozen');
     assert.ok(Object.isFrozen(KNOWN_SHORT_FLAGS), 'the short list must be frozen');
-    assert.strictEqual(KNOWN_LONG_FLAGS.length, 43);
+    assert.strictEqual(KNOWN_LONG_FLAGS.length, 44);
     assert.strictEqual(KNOWN_SHORT_FLAGS.length, 6);
-    assert.strictEqual(KNOWN_CLI_FLAGS.length, 49);
+    assert.strictEqual(KNOWN_CLI_FLAGS.length, 50);
     assert.strictEqual(new Set(KNOWN_CLI_FLAGS).size, KNOWN_CLI_FLAGS.length, 'no duplicates');
   });
 
@@ -160,5 +161,19 @@ describe('flag vocabulary (#248 Wave 1)', () => {
       assert.ok(['supported', 'refused'].includes(capability.dryRun), `${key}.dryRun`);
       assert.ok(['supported', 'refused'].includes(capability.json), `${key}.json`);
     }
+  });
+
+  test('T-V6: --refute is registered and scoped to review (issue #349)', () => {
+    assert.ok(KNOWN_LONG_FLAGS.includes('--refute'), '--refute must be in KNOWN_LONG_FLAGS');
+
+    const refused = validateRefutationScope({ command: 'status', refuteRequested: true });
+    assert.strictEqual(refused.length, 1, `exactly one refusal expected, got: ${refused.join('; ')}`);
+    assert.ok(refused[0].includes('review'), `the refusal must name the one command: ${refused[0]}`);
+    assert.ok(refused[0].includes('--refute'), refused[0]);
+
+    assert.deepStrictEqual(validateRefutationScope({ command: 'review', refuteRequested: true }), []);
+    assert.deepStrictEqual(validateRefutationScope({ command: 'review', refuteRequested: false }), []);
+    // A bare `codeloop --refute` is not a review either.
+    assert.strictEqual(validateRefutationScope({ command: null, refuteRequested: true }).length, 1);
   });
 });

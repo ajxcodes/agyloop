@@ -24,6 +24,7 @@ export * from './value-objects/gate-summary-report';
 export * from './value-objects/review-confidence';
 export * from './value-objects/ai-review-finding';
 export * from './value-objects/ai-review-report';
+export * from './value-objects/finding-refutation';
 export * from './value-objects/review-verdict';
 export * from './value-objects/commit-message';
 export * from './value-objects/diff-analyzer';

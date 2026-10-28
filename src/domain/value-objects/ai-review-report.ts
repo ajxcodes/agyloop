@@ -104,9 +104,38 @@ export class AiReviewReport {
   /**
    * The canonical blocking count (#242 / NEW-1). One finding per entry, and
    * the only count `applyTwoTierInvariant` may interpolate.
+   *
+   * Issue #349: a finding is blocking when its severity is `critical`/`error`
+   * AND its body requests a change. An affirmation the model mislabelled as
+   * `critical` is not a blocker; an ambiguous body still is (fail closed).
    */
   public blockingCount(): number {
-    return this.findings.filter((finding) => finding.isBlocking()).length;
+    return this.blockingFindings().length;
+  }
+
+  /**
+   * The findings that actually block: severity-blocking AND actionable.
+   *
+   * ONE predicate for the count, the escalation and the verdict derivation, so
+   * they can never drift apart again (#242 / NEW-1).
+   */
+  public blockingFindings(): readonly AiReviewFinding[] {
+    return this.findings.filter((finding) => finding.isBlocking() && finding.requestsChange());
+  }
+
+  /**
+   * The severity-blocking findings whose bodies assert no defect (issue #349).
+   *
+   * Never silent: the CLI names every one of these on stderr and in `--json`,
+   * so an exemption can never be mistaken for "critique found nothing".
+   */
+  public nonActionableBlockingFindings(): readonly AiReviewFinding[] {
+    return this.findings.filter((finding) => finding.isBlocking() && !finding.requestsChange());
+  }
+
+  /** How many severity-blocking findings were exempted as affirmations. */
+  public affirmationCount(): number {
+    return this.nonActionableBlockingFindings().length;
   }
 
   public hasBlockingIssues(): boolean {
