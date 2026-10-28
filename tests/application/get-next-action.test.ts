@@ -1146,8 +1146,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-292.2: the PLAN directive names the condition, the command and the spec target', async () => {
+    // Issue #337: a NON-BLANK plan is no longer dispatchable (it reports
+    // `advance`), so the dispatch directive this case tests needs a blank one.
     const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(REAL_PLAN));
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -1158,7 +1160,7 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     assert.ok(result.humanSummary.includes('codeloop transition APPROVAL --issue 41'), result.humanSummary);
     assert.ok(result.humanSummary.includes(NOTE_PLAN_ADVANCE_CONDITION), result.humanSummary);
     assert.ok(result.invocationPayload!.Subagents[0].Prompt.includes(PLAN_PATH));
-    assert.match(result.description, /non-blank/);
+    assert.match(result.description, /still blank/);
   });
 
   caseTest('T-292.5: three reads at DISCOVERY name the command and record counts 1, 2, 3', async () => {
@@ -1175,7 +1177,9 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
 
   caseTest('T-292.5: three reads at PLAN record planDispatchCount 1, 2, 3', async () => {
     const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(REAL_PLAN));
+    // Issue #337: a non-blank plan reports `advance`, so the counter case needs
+    // the blank-plan dispatch directive.
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
 
     for (let read = 1; read <= 3; read += 1) {
       const result = await useCase.execute({ workspaceDir: '/repo' });
@@ -1206,7 +1210,7 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     assert.strictEqual((stateRepo.savedSnapshot as any).discoveryDispatchCount, 3);
   });
 
-  caseTest('T-320.7: a populated discovery report is reported and names the advance command', async () => {
+  caseTest('T-320.7 / T-337.D1: a populated discovery report is a MET completion condition', async () => {
     const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
@@ -1216,17 +1220,48 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
-    assert.strictEqual(result.actionType, 'subagent');
+    // Issue #337: the prose said "do not re-dispatch" while the machine fields
+    // still said `subagent` + a payload. The stage is complete, so it reports
+    // `advance` with nothing to dispatch.
+    assert.strictEqual(result.actionType, 'advance');
     assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.nextStage, STAGE_PLAN);
+    assert.strictEqual(result.role, undefined);
+    assert.strictEqual(result.invocationPayload, undefined);
     assert.strictEqual(result.discoveryReportPopulated, true);
     assert.strictEqual(result.discoveryReportPath, DISCOVERY_PATH);
     assert.strictEqual(result.discoveryReportMissingEvidence, null);
+    assert.strictEqual(result.discoveryDispatchCount, 0);
     assert.match(result.description, /populated/);
     assert.match(result.description, /completion condition is met/);
+    assert.match(result.description, /do not re-dispatch discovery/);
     assert.ok(result.description.includes(NOTE_DISCOVERY_ADVANCE_CONDITION), result.description);
     assert.ok(result.description.includes('codeloop plan --issue 41'), result.description);
+    assert.ok(result.humanSummary.includes('codeloop plan --issue 41'), result.humanSummary);
     assert.doesNotMatch(result.description, /still blank/);
-    assert.ok(result.invocationPayload!.Subagents[0].Prompt.includes(DISCOVERY_PATH));
+  });
+
+  caseTest('T-337.P1: a non-blank plan is a MET completion condition', async () => {
+    const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(REAL_PLAN));
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'advance');
+    assert.strictEqual(result.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.nextStage, STAGE_APPROVAL);
+    assert.strictEqual(result.role, undefined);
+    assert.strictEqual(result.invocationPayload, undefined);
+    assert.strictEqual(result.planDispatchCount, 0);
+    assert.match(result.description, /do not re-dispatch the planner/);
+    assert.ok(
+      result.description.includes('codeloop transition APPROVAL --issue 41'),
+      result.description
+    );
+    assert.ok(
+      result.humanSummary.includes('codeloop transition APPROVAL --issue 41'),
+      result.humanSummary
+    );
   });
 
   caseTest('T-320.8: a blank discovery report is reported blank and names the missing evidence', async () => {
@@ -1277,12 +1312,15 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     assert.doesNotMatch(result.invocationPayload!.Subagents[0].Prompt, /Write ONLY/);
   });
 
-  caseTest('T-320.10: the DISCOVERY report state is a read-only projection, never persisted', async () => {
+  caseTest('T-320.10: a BLANK discovery report is a read-only projection, never persisted', async () => {
+    // The projection is a field of the RESULT, not of the checkpoint — this
+    // stays true on the dispatch path (issue #337 moved the populated case to
+    // T-337.D2 below, where the stage is complete and nothing is written).
     const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
       makeMockConfig(),
-      planGen(REAL_PLAN, DISCOVERY_POPULATED)
+      planGen(REAL_PLAN, DISCOVERY_BLANK)
     );
 
     const beforeStage = stateRepo.savedSnapshot!.currentStage;
@@ -1292,7 +1330,7 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
 
     for (let read = 1; read <= 3; read += 1) {
       const result = await useCase.execute({ workspaceDir: '/repo' });
-      assert.strictEqual(result.discoveryReportPopulated, true);
+      assert.strictEqual(result.discoveryReportPopulated, false);
       assert.strictEqual(result.discoveryDispatchCount, read);
     }
 
@@ -1303,6 +1341,26 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     assert.strictEqual((stateRepo.savedSnapshot as any).discoveryDispatchCount, 3);
     assert.strictEqual((stateRepo.savedSnapshot as any).discoveryReportPopulated, undefined);
     assert.strictEqual((stateRepo.savedSnapshot as any).discoveryReportPath, undefined);
+  });
+
+  caseTest('T-337.D2: a populated discovery report writes NOTHING (no dispatch counter)', async () => {
+    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      planGen(REAL_PLAN, DISCOVERY_POPULATED)
+    );
+
+    const before = JSON.stringify(stateRepo.savedSnapshot);
+
+    for (let read = 1; read <= 3; read += 1) {
+      const result = await useCase.execute({ workspaceDir: '/repo' });
+      assert.strictEqual(result.actionType, 'advance');
+      assert.strictEqual(result.discoveryDispatchCount, 0);
+    }
+
+    // A met read is not a dispatch: the checkpoint is byte-identical.
+    assert.strictEqual(JSON.stringify(stateRepo.savedSnapshot), before);
   });
 
   caseTest('T-267.A2: a blank plan at IMPLEMENT offers the PLANNER, a real plan the implementer', async () => {

@@ -525,7 +525,7 @@ Operational Modes:
 
 Pipeline Management:
   next               Inspect state and generate the next invoke_subagent directive (writes only the declared context fields: inferred baseBranch, dispatch counters, updatedAt; --dry-run previews without writing; --restart also resets the checkpoint)
-                     --json adds 'actionable' and 'pause': actionable means "a subagent may be dispatched NOW", so it is false for every human_gate (COMMIT included) and for every persisted pause; pause is null only when neither applies (a human gate carries a synthesised pause with resumeCommand: null)
+                     --json adds 'actionable' and 'pause': actionable is true only for a dispatchable subagent directive with no persisted pause; it is false for every human_gate (COMMIT included), every persisted pause, COMPLETED, INITIALIZED, and every stage whose completion condition is already met (those report actionType 'advance' and carry no invocationPayload); pause is null when neither a persisted pause nor a human gate applies
   branch-info        Display base collector branch, active task branch, and PR target
   status             Display current pipeline stage, active tasks matrix, and checkpoint history
   config             Display active configuration and model routing table
@@ -1786,7 +1786,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         buildDetector,
         makeInferBaseBranchUseCase(scope.repo),
         critique,
-        new DetectImplementationDiffUseCase(commandExecutor)
+        new DetectImplementationDiffUseCase(commandExecutor),
+        new FileGateReportRepository({ workspaceDir: options.workspaceDir || process.cwd() })
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
@@ -1838,10 +1839,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           ? synthesiseHumanGatePause(res, lastHistoryTimestamp(snapshotAfter))
           : null;
       const pause = persistedPause ?? gatePause;
-      // `actionable` means "a subagent may be dispatched NOW". Both conditions
-      // are required: a persisted delay (CIRCUIT_BREAKER at IMPLEMENT) and a
-      // human gate (COMMIT) are equally non-dispatchable.
-      const actionable = persistedPause === null && res.actionType !== 'human_gate';
+      // Issue #337: `actionable` means "a subagent may be dispatched NOW". A
+      // directive whose stage is COMPLETE (`actionType: 'advance'`), an idle
+      // report ('completed') and pre-flight ('preflight') carry NO payload, so
+      // they are not actionable even though none of them is a human gate.
+      const actionable = persistedPause === null && res.actionType === 'subagent';
 
       if (options.json) {
         // Machine-readable output stays a single JSON document: the pause travels as
