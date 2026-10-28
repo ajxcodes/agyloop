@@ -42,6 +42,10 @@ The Reviewer subagent runs read-only and only emits the verdict block. The orche
 
 When the orchestrator already holds a critique JSON report — a previous `critique --json` run, or a deduped CI artifact — pass it with `codeloop review --issue <n> --verdict-file <path> --critique-report <path|->` instead of letting `review` execute the critique CLI again. That cross-checks the verdict against the already-produced report (hermetic Tier 1: no critique subprocess). Use `-` to read the report from stdin.
 
+**What counts as blocking locally.** `codeloop review` counts only `critical`/`error` findings that **request a change**: a finding that asserts no defect (e.g. "correctly pins …") is not counted as blocking and is named on stderr; ambiguous bodies still block.
+
+**Refuting a factually wrong finding.** A critique finding can be **factually wrong** — a change request the operator has verified is false (e.g. "`actions/checkout@v7` does not exist" when the tag exists). For that case only, `codeloop review` accepts `--refute '<path>:<line>[#<severity>]=<reason>'` (repeatable; a **reason is mandatory** and a refutation without one is refused). A refutation suppresses only that finding's Tier 1 escalation: the reviewer's verdict, the recorded source and every count stay as filed, only a filed `APPROVED` verdict can be refuted, and every refuted finding is named on stderr and recorded under `reviewRefutations` in the checkpoint. It is not a way to ignore findings you disagree with — only ones you have checked and found false.
+
 A verdict block that cannot be parsed is a hard failure: the review is recorded or the run fails — a `CHANGES_REQUESTED` is never silently downgraded to a skip.
 
 ## Triaging PR Review Comments

@@ -23,6 +23,7 @@ import {
   ERR_CRITIQUE_INSTALL,
   ERR_CRITIQUE_UPDATE,
   ERR_REVIEWER_SUBAGENT,
+  ERR_REFUTATION_REFUSED,
   ERR_COMMIT_EXECUTION,
   ERR_WORKTREE,
   ERR_PREFLIGHT_HALT,
@@ -290,6 +291,30 @@ export class ReviewerSubagentError extends AgyLoopError {
     if (cause) {
       this.cause = cause;
     }
+  }
+}
+
+/**
+ * An operator `--refute` that could not be honoured (issue #349).
+ *
+ * Raised BEFORE any checkpoint write, so a refused refutation leaves the
+ * checkpoint byte-identical: every condition in the plan's fail-closed table
+ * (no reason, malformed target, unknown/ambiguous/duplicate target, no report,
+ * no filed `APPROVED` verdict) is a hard error that records nothing.
+ *
+ * `refusals` carries one human-readable line per refused spec so the CLI can
+ * print every diagnostic rather than just the first.
+ */
+export class RefutationRefusedError extends AgyLoopError {
+  public readonly code = ERR_REFUTATION_REFUSED;
+  public readonly operation = 'review' as const;
+  public readonly refusals: readonly string[];
+
+  constructor(operation: 'review', refusals: readonly string[]) {
+    const lines = refusals.length > 0 ? refusals : ['A refutation was refused.'];
+    super(lines.join('; '), { operation, refusals: lines });
+    this.operation = operation;
+    this.refusals = Object.freeze([...lines]);
   }
 }
 

@@ -16,6 +16,7 @@
 import {
   COMMAND_IMPLEMENT,
   COMMAND_PLAN,
+  COMMAND_REVIEW,
   COMMAND_YOLO,
   FLAG_COMMIT_AFTER,
   FLAG_CONFIG,
@@ -34,6 +35,8 @@ import {
   FLAG_PLAN_DIR,
   FLAG_PLAN_PATH,
   FLAG_QUARANTINE,
+  FLAG_REFUTE,
+  NOTE_REFUTATION_SCOPE,
   FLAG_REFRESH,
   FLAG_REPORT_FILE,
   FLAG_REPORT_STDIN,
@@ -53,12 +56,13 @@ import {
 } from '../domain';
 
 /**
- * Every long flag this build recognises (43 entries).
+ * Every long flag this build recognises (44 entries).
  *
  * The verdict flags come from their domain constants (issue #269) rather than
  * being re-typed here; `--critique-report` is the hermetic Tier 1 evidence
- * channel (issue #297), and `--report-file` / `--report-stdin` are the gate
- * evidence channel (issue #284). `--plan-path` / `--plan-dir` are implemented
+ * channel (issue #297), `--refute` is the operator refutation channel
+ * (issue #349), and `--report-file` / `--report-stdin` are the gate evidence
+ * channel (issue #284). `--plan-path` / `--plan-dir` are implemented
  * (issue #267): they are accepted by plan/implement/yolo and refused, loudly,
  * by every other command.
  */
@@ -86,6 +90,7 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   '--prune-stale',
   FLAG_QUARANTINE,
   '--reason',
+  FLAG_REFUTE,
   FLAG_REFRESH,
   FLAG_REPORT_FILE,
   FLAG_REPORT_STDIN,
@@ -118,7 +123,7 @@ export const KNOWN_SHORT_FLAGS: readonly string[] = Object.freeze([
   FLAG_MESSAGE_SHORT
 ]);
 
-/** The union, frozen: 43 long + 6 short = 49. */
+/** The union, frozen: 44 long + 6 short = 50. */
 export const KNOWN_CLI_FLAGS: readonly string[] = Object.freeze([
   ...KNOWN_LONG_FLAGS,
   ...KNOWN_SHORT_FLAGS
@@ -177,6 +182,32 @@ export function validatePlanInputScope(subject: {
     );
   }
   return lines;
+}
+
+/** The refutation channel exists on `review` only (issue #349). */
+export const COMMANDS_ACCEPTING_REFUTATIONS: readonly string[] = Object.freeze([COMMAND_REVIEW]);
+
+/**
+ * Refuses `--refute` on any command that does not run a review (issue #349).
+ *
+ * Same defect class as #248/#267: a globally parsed flag that a command
+ * silently ignores. `--refute` is the operator's audited override of a Tier 1
+ * finding, so it may only ever reach the one command that resolves findings.
+ */
+export function validateRefutationScope(subject: {
+  readonly command: string | null;
+  readonly refuteRequested: boolean;
+}): readonly string[] {
+  if (!subject.refuteRequested) {
+    return [];
+  }
+  const key = subject.command === null ? '(default)' : subject.command;
+  if (COMMANDS_ACCEPTING_REFUTATIONS.includes(key)) {
+    return [];
+  }
+  return [
+    NOTE_REFUTATION_SCOPE.replace('{command}', key)
+  ];
 }
 
 /** Whether a command simulates (`supported`) or refuses (`refused`) a flag. */

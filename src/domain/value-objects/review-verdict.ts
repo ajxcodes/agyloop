@@ -380,7 +380,7 @@ export class ReviewVerdict {
     const unfulfilledCriteria: string[] = [];
     const remediationGuidance: string[] = [];
 
-    const blockingFindings = report.findings.filter((f) => f.isBlocking());
+    const blockingFindings = report.blockingFindings();
     for (const finding of blockingFindings) {
       unfulfilledCriteria.push(`[${finding.path}:${finding.line}] ${finding.body}`);
       remediationGuidance.push(`Fix [${finding.path}:${finding.line}]: Address ${finding.severity} finding`);

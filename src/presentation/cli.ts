@@ -58,6 +58,12 @@ import {
   FLAG_VERDICT_STDIN,
   FLAG_CRITIQUE_REPORT,
   CRITIQUE_REPORT_STDIN,
+  FLAG_REFUTE,
+  NOTE_REFUTATION_REQUIRES_VALUE,
+  FindingRefutation,
+  RefutationRefusedError,
+  formatNonActionableFindingsNote,
+  formatRefutedFindingsNote,
   FLAG_REPORT_FILE,
   FLAG_REPORT_STDIN,
   FLAG_PLAN_PATH,
@@ -82,6 +88,7 @@ import {
   MilestoneReleaseError,
   MilestoneSealedError,
   QuotaExhaustedError,
+  ValidationError,
   CircuitBreakerTrippedError,
   InvalidTransitionError,
   QUOTA_RESUME_COMMAND,
@@ -203,6 +210,7 @@ import { installOpenCodeIntegration } from './opencode-setup';
 import {
   validateCapability,
   validatePlanInputScope,
+  validateRefutationScope,
   validateUnknownFlags
 } from './cli-flags';
 import {
@@ -366,6 +374,14 @@ export interface CliOptions {
   planPathRequested: boolean;
   /** True when `--plan-dir` was PRESENT, whether or not it carried a value. */
   planDirRequested: boolean;
+  /**
+   * The operator refutations carried by `--refute` (issue #349), in
+   * command-line order. Parsed into `FindingRefutation` instances at the
+   * `runCli` chokepoint, before any repository is constructed.
+   */
+  refuteSpecs: string[];
+  /** True when `--refute` was PRESENT, whether or not it carried a value. */
+  refuteRequested: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -549,7 +565,7 @@ Pipeline Management:
   critique [cmd]     Manage Critique CLI installation (status | install | update)
   opencode [cmd]     Manage OpenCode integration assets (install: skill + /codeloop command)
   triage [action]    Triage PR review comments and route pipeline (${formatTriageActionList('|')}); ${formatTriageActionSideEffects()}
-  review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin | --critique-report <path|->); with no verdict it runs the critique-based review
+  review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin | --critique-report <path|-> | ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>); with no verdict it runs the critique-based review
   gate-report       File a dispatched Quality Gate Subagent's GATE_REPORT_JSON evidence block (--report-file <path|-> | --report-stdin); 'transition REVIEW' ingests it
 
 Operational Flags:
@@ -563,6 +579,7 @@ Operational Flags:
       --review-output <text> Pass an AI Reviewer Subagent's verdict block inline (codeloop review)
       --verdict-stdin   Read an AI Reviewer Subagent's verdict block from stdin (codeloop review)
       --critique-report <path|->  Cross-check the verdict against a critique CLI JSON report (codeloop review)
+      ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>  Refute a critique finding you have verified is false (repeatable; codeloop review with a filed APPROVED verdict only). The reason is mandatory — a refutation without one is refused, and every refuted finding is named on stderr and recorded as reviewRefutations.
       --report-file <path|->  Read a Quality Gate Subagent's GATE_REPORT_JSON block from a file (codeloop gate-report)
       --report-stdin     Read a Quality Gate Subagent's GATE_REPORT_JSON block from stdin (codeloop gate-report)
       --create-pr    Automatically create a PR after commit
@@ -682,7 +699,9 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     planPath: null,
     planDir: null,
     planPathRequested: false,
-    planDirRequested: false
+    planDirRequested: false,
+    refuteSpecs: [],
+    refuteRequested: false
   };
 
   const positional: string[] = [];
@@ -806,6 +825,20 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     } else if (arg.startsWith(`${FLAG_PLAN_DIR}=`)) {
       options.planDirRequested = true;
       options.planDir = arg.split('=')[1] || null;
+    } else if (arg === '--refute') {
+      // Issue #349: the operator refutation channel. A missing value is
+      // RECORDED (`refuteRequested` with no spec) and refused later, so the
+      // parser never throws and the diagnostic names the flag, not a stack.
+      options.refuteRequested = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.refuteSpecs.push(args[++i]);
+      }
+    } else if (arg.startsWith('--refute=')) {
+      options.refuteRequested = true;
+      const refuteValue = arg.slice('--refute='.length);
+      if (refuteValue.length > 0) {
+        options.refuteSpecs.push(refuteValue);
+      }
     } else if (arg === FLAG_VERDICT_FILE) {
       // A flag whose value is missing sets the option to `null` — never a
       // silent default (issue #269): a verdict that was never read must fail
@@ -1678,6 +1711,44 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   }
   if (planInputViolations.length > 0 || planInputMissing.length > 0) {
     for (const line of [...planInputViolations, ...planInputMissing]) {
+      console.error(line);
+    }
+    return EXIT_CODE_FAILURE;
+  }
+
+  // Issue #349, CHOKEPOINT 2: `--refute` is scoped to `review`, a missing value
+  // is a loud failure, and every token is parsed into a `FindingRefutation`
+  // BEFORE any repository is constructed — so a malformed refutation can never
+  // touch state, and every command gets the same diagnostic.
+  const refutations: FindingRefutation[] = [];
+  const refutationViolations = validateRefutationScope({
+    command: effectiveCommand,
+    refuteRequested: options.refuteRequested
+  });
+  const refutationInvalid: string[] = [];
+  if (refutationViolations.length === 0 && options.refuteRequested) {
+    if (options.refuteSpecs.length === 0) {
+      refutationInvalid.push(NOTE_REFUTATION_REQUIRES_VALUE);
+    } else {
+      for (const spec of options.refuteSpecs) {
+        try {
+          refutations.push(FindingRefutation.parse(spec));
+        } catch (err: unknown) {
+          // A ValidationError wraps the operator-facing note in its `reason`;
+          // printing the wrapper ("Validation failed for field 'refute': …")
+          // would bury the diagnostic the operator has to act on.
+          if (err instanceof ValidationError) {
+            const reason = err.details?.reason;
+            refutationInvalid.push(typeof reason === 'string' ? reason : err.message);
+          } else {
+            refutationInvalid.push(err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+    }
+  }
+  if (refutationViolations.length > 0 || refutationInvalid.length > 0) {
+    for (const line of [...refutationViolations, ...refutationInvalid]) {
       console.error(line);
     }
     return EXIT_CODE_FAILURE;
@@ -3282,12 +3353,33 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           issue: issueValue,
           reviewOutput,
           priorCritiqueReport,
+          refutations,
           baseRef: options.baseBranch || undefined,
           configPath: options.configPath,
           dryRun: options.dryRun,
           interactive: promptsAllowed,
           workspaceDir: options.workspaceDir || process.cwd()
         });
+
+        // Issue #349: BOTH exemptions are never silent, and both notes go to
+        // stderr — printed before the `--json`/human branches so stdout stays
+        // exactly one parseable document (R-5).
+        const nonActionableNote = formatNonActionableFindingsNote(result.nonActionableFindings);
+        if (nonActionableNote) {
+          console.error(nonActionableNote);
+        }
+        const refutedNote = formatRefutedFindingsNote(
+          result.refutations.map((refutation) => ({
+            target: refutation.target,
+            severity: refutation.severity,
+            actionability: refutation.actionability,
+            body: refutation.bodyExcerpt,
+            reason: refutation.reason
+          }))
+        );
+        if (refutedNote) {
+          console.error(refutedNote);
+        }
 
         if (options.json) {
           // A SINGLE JSON document on stdout; warnings go to stderr so stdout
@@ -3303,7 +3395,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             verdict: result.verdict.toJSON(),
             verdictSource: result.reviewSource,
             critiqueVerified: result.critiqueVerified,
-            passed: result.passed
+            passed: result.passed,
+            // Issue #349 (additive, both arms): the machine-readable mirror of
+            // this round's exemptions and audit trail. `[]` when none.
+            nonActionableFindings: result.nonActionableFindings,
+            refutations: result.refutations
           };
           if (dryRun) {
             payload.previousStage = result.previousStage ?? result.currentStage;
@@ -3387,6 +3483,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // silently downgrade a CHANGES_REQUESTED to a SKIPPED.
         if (err instanceof ReviewerSubagentError) {
           console.error(`✗ Reviewer verdict could not be parsed: ${err.message}`);
+          return EXIT_CODE_FAILURE;
+        }
+        // Issue #349: every refused refutation is printed, not just the first.
+        if (err instanceof RefutationRefusedError) {
+          for (const line of err.refusals) {
+            console.error(line);
+          }
           return EXIT_CODE_FAILURE;
         }
         console.error(`✗ Review failed: ${err instanceof Error ? err.message : String(err)}`);
