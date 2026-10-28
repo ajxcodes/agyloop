@@ -13,9 +13,20 @@ jobs:
     name: Lint Workflows
     # Pinned: this job builds the actionlint Docker image, so the runner's
     # Docker engine must not change without a commit (#242 / Defect B).
-    runs-on: ubuntu-24.04
+    # Moved to ubuntu-26.04 in #352 after this exact job went green there; the
+    # recording step below is what makes the NEXT move evidence-led, not a guess.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+      # Issue #352 / AC-1: the pin is only defensible if the environment that
+      # actually ran is in the log — the engine is what #347 was de-risking.
+      - name: Record runner image, engine and kernel
+        run: |
+          . /etc/os-release
+          echo "runner: ${PRETTY_NAME:-unknown}"
+          echo "kernel: $(uname -r)"
+          echo "docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo absent)"
+          echo "podman: $(podman --version 2>/dev/null || echo absent)"
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -65,10 +76,23 @@ jobs:
     name: POSIX Shell (Alpine)
     # Pinned: this job bind-mounts $PWD into a container, so the runner's
     # Docker engine and kernel must not change without a commit (#242 / Defect B).
-    runs-on: ubuntu-24.04
+    # Moved to ubuntu-26.04 in #352 after this exact job went green there. It runs
+    # rootful, so the container is root while /work belongs to the runner
+    # (uid 1001): a future in-container `git` call against /work must pass
+    # safe.directory itself — the runner-side config is invisible in here.
+    runs-on: ubuntu-26.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+      # Issue #352 / AC-2: the pin is only defensible if the environment that
+      # actually ran is in the log — the engine is what #347 was de-risking.
+      - name: Record runner image, engine and kernel
+        run: |
+          . /etc/os-release
+          echo "runner: ${PRETTY_NAME:-unknown}"
+          echo "kernel: $(uname -r)"
+          echo "docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo absent)"
+          echo "podman: $(podman --version 2>/dev/null || echo absent)"
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -137,8 +161,10 @@ jobs:
   tag:
     name: Auto-Tag & Release
     # Pinned: this job force-pushes release tags, so its environment must not
-    # change without a commit (#242 / Defect B).
-    runs-on: ubuntu-24.04
+    # change without a commit (#242 / Defect B). Moved to ubuntu-26.04 in #352
+    # only after the force-push path was replayed on a scratch fork: a wrong tag
+    # here moves silently, so the image must not be the variable.
+    runs-on: ubuntu-26.04
     # posix-shell is intentionally absent: it is still soaking (see above) and a
     # container/network flake there must not block a release from main.
     needs: [lint, typecheck, test]

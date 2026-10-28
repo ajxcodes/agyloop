@@ -12,6 +12,13 @@
  * W5 - the collector branch is a push trigger; `tag` stays main-only
  * W6 - every setup-node step still sets node-version: 24
  * W7 - the lockfile drift guard runs in the lint job
+ * W8 - no workflow names a retired Ubuntu image (#352)
+ * W9 - the three release-relevant jobs run on the validated image, cite the
+ *      run that justified it, and record the engine they ran on
+ * W10 - the canaries stay on ubuntu-latest (never silently pinned)
+ * W11 - the tag namespace has exactly one writer, and it is a main push
+ * W12 - posix-shell stays a soak job with one mount/engine contract
+ * W13 - actionlint knows the validated ubuntu-26.04 label (#352)
  */
 
 const { describe, test } = require('node:test');
@@ -20,8 +27,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
-const CI_PATH = path.join(PROJECT_ROOT, '.github', 'workflows', 'ci.yml');
-const CRITIQUE_PATH = path.join(PROJECT_ROOT, '.github', 'workflows', 'critique.yml');
+const WORKFLOWS_DIR = path.join(PROJECT_ROOT, '.github', 'workflows');
+const CI_PATH = path.join(WORKFLOWS_DIR, 'ci.yml');
+const CRITIQUE_PATH = path.join(WORKFLOWS_DIR, 'critique.yml');
+const ACTIONLINT_CONFIG_PATH = path.join(PROJECT_ROOT, '.github', 'actionlint.yaml');
 
 const ci = fs.readFileSync(CI_PATH, 'utf8');
 const critique = fs.readFileSync(CRITIQUE_PATH, 'utf8');
@@ -60,6 +69,15 @@ function jobBlocks(source: string): Record<string, string> {
   return blocks;
 }
 
+/** The `runs-on:` value of a job body. */
+function runnerOf(body: string): string {
+  const match = body.match(/^ {4}runs-on:\s*(\S+)\s*$/m);
+  if (!match) {
+    throw new Error('a job has no runs-on');
+  }
+  return match[1];
+}
+
 /** Every `uses:` value in a workflow source. */
 function actionUses(source: string): string[] {
   const values: string[] = [];
@@ -86,7 +104,10 @@ function triggerBranches(source: string, event: string): string[] {
   throw new Error(`${event}: trigger has no branches: list`);
 }
 
-const ALLOWED_RUNNERS = ['ubuntu-24.04', 'ubuntu-latest'];
+// The 24.04 → 26.04 migration is complete (#352): only the validated pin and the
+// floating canary are declared. Pinning a job back is a commit that edits this
+// list, exactly like the migration itself.
+const ALLOWED_RUNNERS = ['ubuntu-26.04', 'ubuntu-latest'];
 
 describe('CI workflow hygiene', () => {
   test('W1: every checkout and setup-node action targets @v7', () => {
@@ -110,11 +131,11 @@ describe('CI workflow hygiene', () => {
 
   test('W3: the per-job runner map is exactly the declared allowlist', () => {
     const expectedCi: Record<string, string> = {
-      lint: 'ubuntu-24.04',
+      lint: 'ubuntu-26.04',
       typecheck: 'ubuntu-latest',
       test: 'ubuntu-latest',
-      'posix-shell': 'ubuntu-24.04',
-      tag: 'ubuntu-24.04'
+      'posix-shell': 'ubuntu-26.04',
+      tag: 'ubuntu-26.04'
     };
     const expectedCritique: Record<string, string> = {
       review: 'ubuntu-latest'
@@ -187,5 +208,128 @@ describe('CI workflow hygiene', () => {
     assert.ok(lintJob, 'the lint job is missing');
     assert.match(lintJob, /npm install --package-lock-only --ignore-scripts/);
     assert.match(lintJob, /git diff --exit-code -- package-lock\.json/);
+  });
+
+  test('W8: no workflow names a retired Ubuntu image', () => {
+    assert.ok(
+      !/ubuntu-24\.04/.test(both),
+      'a workflow (or its comment) still names ubuntu-24.04 — the 26.04 migration is done (#352), so a pin-back is a deliberate commit'
+    );
+    assert.match(ci, /runs-on: ubuntu-26\.04/, 'no job runs on the validated 26.04 image');
+  });
+
+  test('W9: the release-relevant jobs run on the validated image and record it', () => {
+    const blocks = jobBlocks(ci);
+    for (const job of ['lint', 'posix-shell', 'tag']) {
+      assert.strictEqual(
+        runnerOf(blocks[job]),
+        'ubuntu-26.04',
+        `${job} must run on the image #352 validated`
+      );
+      assert.match(
+        blocks[job],
+        /#352/,
+        `${job} must cite the validation run that justified its pin`
+      );
+    }
+    for (const job of ['lint', 'posix-shell']) {
+      assert.match(
+        blocks[job],
+        /docker version --format/,
+        `${job} must record the Docker engine version in its log (AC-1/AC-2)`
+      );
+      assert.match(blocks[job], /uname -r/, `${job} must record the kernel in its log`);
+      assert.match(blocks[job], /runner: \$\{PRETTY_NAME/, `${job} must record the image`);
+    }
+  });
+
+  test('W10: the canaries stay on ubuntu-latest', () => {
+    const ciJobs = jobBlocks(ci);
+    for (const job of ['typecheck', 'test']) {
+      assert.strictEqual(
+        runnerOf(ciJobs[job]),
+        'ubuntu-latest',
+        `${job} is a canary: it must follow ubuntu-latest, not be pinned (#352)`
+      );
+    }
+    assert.strictEqual(
+      runnerOf(jobBlocks(critique).review),
+      'ubuntu-latest',
+      'the critique job is a canary: it must follow ubuntu-latest, not be pinned (#352)'
+    );
+  });
+
+  test('W11: the tag namespace has exactly one writer, and it is a main push', () => {
+    const workflowFiles = fs
+      .readdirSync(WORKFLOWS_DIR)
+      .filter((name: string) => /\.ya?ml$/.test(name))
+      .sort();
+    assert.deepStrictEqual(
+      workflowFiles,
+      ['ci.yml', 'critique.yml'],
+      'a validation-only workflow was committed — #352 must not leave one behind'
+    );
+
+    const tagJob = jobBlocks(ci).tag;
+    assert.ok(tagJob, 'the tag job is missing');
+    assert.match(
+      tagJob,
+      /needs: \[lint, typecheck, test\]/,
+      'tag.needs changed — posix-shell is still soaking and must not gate a release'
+    );
+    assert.match(tagJob, /github\.ref == 'refs\/heads\/main'/, 'the tag job must stay main-only');
+    assert.ok(tagJob.includes('git push -f'), 'the force-push must stay inside the main-only tag job');
+
+    const forcePushes = both.match(/git push -f\b/g) ?? [];
+    assert.strictEqual(forcePushes.length, 1, 'exactly one ref force-push site may exist in the workflows');
+    assert.ok(
+      !/^\s+tags:/m.test(both),
+      'a tags: trigger was declared — the tag namespace is written by the main-push job only'
+    );
+  });
+
+  test('W12: posix-shell stays a soak job with one mount and one engine contract', () => {
+    const job = jobBlocks(ci)['posix-shell'];
+    assert.ok(job, 'the posix-shell job is missing');
+    assert.match(job, /continue-on-error:\s*true/, 'posix-shell is still soaking and must not block a release');
+    assert.strictEqual(
+      (job.match(/"\$R" run/g) ?? []).length,
+      5,
+      'the five container invocations must all go through the one engine selector'
+    );
+    assert.strictEqual(
+      (job.match(/-v "\$PWD:\/work" -w \/work/g) ?? []).length,
+      4,
+      'every mounted container step must bind the checkout at /work — one mount contract'
+    );
+    for (const flag of ['--user', '--privileged', '--userns', '--net=host']) {
+      assert.ok(
+        !job.includes(flag),
+        `posix-shell must not pass ${flag} to work around a runner engine change (#352)`
+      );
+    }
+  });
+
+  test('W13: actionlint is told about the validated ubuntu-26.04 label', () => {
+    assert.ok(
+      fs.existsSync(ACTIONLINT_CONFIG_PATH),
+      'actionlint has no config — it would flag ubuntu-26.04 as an unknown runner label and turn the lint job red (#352)'
+    );
+    const config = fs.readFileSync(ACTIONLINT_CONFIG_PATH, 'utf8');
+    assert.match(
+      config,
+      /^self-hosted-runner:\s*$/m,
+      'actionlint.yaml lost its self-hosted-runner: block — the ubuntu-26.04 label declaration is gone (#352)'
+    );
+    assert.match(
+      config,
+      /^ {2}labels:\s*$/m,
+      'actionlint.yaml lost its labels: list — the ubuntu-26.04 declaration is not inside the self-hosted-runner block (#352)'
+    );
+    assert.match(
+      config,
+      /^ {4}- ubuntu-26\.04\s*$/m,
+      'actionlint.yaml no longer declares exactly ubuntu-26.04 — the label is not taught to actionlint, so lint fails or a near-miss label such as ubuntu-26.26 would slip through (#352)'
+    );
   });
 });
