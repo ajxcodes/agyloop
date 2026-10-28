@@ -22,7 +22,8 @@ const {
   STAGE_QUALITY_GATE,
   STAGE_REVIEW,
   STAGE_IMPLEMENT,
-  formatGateReportAdvanceCommand
+  formatGateReportAdvanceCommand,
+  formatGateReportExample
 } = require('../../dist/domain');
 
 const ISSUE = 489;
@@ -404,5 +405,97 @@ describe('gate-report stage guard and Next line (issue #311)', () => {
       formatGateReportAdvanceCommand(STAGE_QUALITY_GATE, ISSUE),
       `codeloop transition ${STAGE_REVIEW} --issue ${ISSUE}`
     );
+  });
+});
+
+describe('the gate prompt example files through the real CLI (issue #338)', () => {
+  /** Replace every documented placeholder, exactly as the prompt instructs. */
+  function filledExample(): string {
+    return formatGateReportExample('PASSED')
+      .replaceAll('<id>', 'node')
+      .replaceAll('<command>', 'npm test')
+      .replaceAll('<check-id>', 'check-1')
+      .replaceAll('<check label>', 'app boots')
+      .replaceAll('<gate-id>', 'e2e')
+      .replaceAll('<gate label>', 'e2e suite')
+      .replaceAll('<why it did not run>', 'no fixtures')
+      .replaceAll('(N passed)', '(3 passed)')
+      .replaceAll('"testsPassed": 0', '"testsPassed": 3')
+      .replaceAll('"durationMs": 0', '"durationMs": 69000');
+  }
+
+  test('#338 T3.1: the documented shape is the ACCEPTED shape', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), filledExample(), 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.txt'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `expected exit 0, got:\n${run.stderr}`);
+      assert.ok(
+        run.stdout.includes('✓ Gate evidence recorded: PASSED — node — PASSED (3 passed) — 1m 9s'),
+        run.stdout
+      );
+
+      const recorded = JSON.parse(fs.readFileSync(evidencePath(sandbox), 'utf8'));
+      assert.strictEqual(recorded.smokeChecks.length, 1);
+      assert.strictEqual(recorded.smokeChecks[0].id, 'check-1');
+      assert.strictEqual(recorded.smokeChecks[0].label, 'app boots');
+      assert.strictEqual(recorded.smokeChecks[0].passed, true);
+      assert.strictEqual(recorded.notRun.length, 1);
+      assert.strictEqual(recorded.notRun[0].id, 'e2e');
+      assert.strictEqual(recorded.notRun[0].reason, 'no fixtures');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#338 T3.2: the shapes the prompt now forbids still fail, naming the field', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      const naturalButUndocumented = `${GATE_REPORT_JSON_MARKER}
+{ "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",
+  "testsStatus": "PASSED (3 passed)", "testsPassed": 3, "testsFailed": 0,
+  "durationMs": 69000, "executedCommands": ["npm test"],
+  "smokeChecks": [{ "check": 1, "planLine": 666, "status": "PASSED" }] }
+`;
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), naturalButUndocumented, 'utf8');
+      const rejected = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.txt'
+      ]);
+      assert.strictEqual(rejected.code, EXIT_CODE_FAILURE);
+      assert.ok(rejected.stderr.includes('smokeChecks.id'), rejected.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a rejected block writes no evidence');
+
+      const bareStrings = `${GATE_REPORT_JSON_MARKER}
+{ "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",
+  "testsStatus": "PASSED (3 passed)", "testsPassed": 3, "testsFailed": 0,
+  "durationMs": 69000, "executedCommands": ["npm test"],
+  "notRun": ["act: no CI-workflow simulation in scope"] }
+`;
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), bareStrings, 'utf8');
+      const rejectedNotRun = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.txt'
+      ]);
+      assert.strictEqual(rejectedNotRun.code, EXIT_CODE_FAILURE);
+      assert.ok(rejectedNotRun.stderr.includes('notRun'), rejectedNotRun.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a rejected block writes no evidence');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
   });
 });

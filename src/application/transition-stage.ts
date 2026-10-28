@@ -44,6 +44,7 @@ import {
   deriveStageDuration,
   formatGateReportedDuration,
   measureStageWindowMs,
+  SMOKE_PROTOCOL_NOT_REPORTED,
   parseQualityGateTargets,
   formatActNotRunReason,
   isHumanWaitStage,
@@ -534,14 +535,17 @@ export class TransitionStageUseCase {
                     : DURATION_NOT_RECORDED,
                 buildStatus: gateEvidence ? gateEvidence.buildStatus : EVIDENCE_NOT_RECORDED,
                 testsStatus: gateTestsStatus ?? EVIDENCE_NOT_RECORDED,
-                ...(gateEvidence
-                  ? {
-                      buildSystem: gateEvidence.buildSystem,
-                      executedCommands: gateCommands
-                    }
-                  : {}),
-                ...(gateSmokeChecks.length > 0 ? { smokeChecks: gateSmokeChecks } : {}),
-                ...(gateNotRun.length > 0 ? { notRun: gateNotRun } : {})
+                // #338: a NOT RECORDED round names no ecosystem, no command and
+                // no reason from an earlier round. Absent evidence is passed as
+                // the CLEARING value, not omitted — omission left the previous
+                // round's lines in place under an honest "not recorded" pair.
+                buildSystem: gateEvidence ? gateEvidence.buildSystem : null,
+                executedCommands: gateCommands,
+                smokeChecks: gateSmokeChecks,
+                smokeProtocol: gateEvidence
+                  ? (gateEvidence.smokeProtocol ?? SMOKE_PROTOCOL_NOT_REPORTED)
+                  : null,
+                notRun: gateNotRun
               });
             } else {
               this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {

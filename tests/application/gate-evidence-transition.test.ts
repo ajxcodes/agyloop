@@ -518,4 +518,83 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
+  test('#338 T5: evidence then none — the second round clears the first round’s metrics', async () => {
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+      { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const repo = new FakeGateReportRepository();
+
+    try {
+      // Round 1: full evidence, certified exit to REVIEW.
+      repo.reports.set(
+        String(ISSUE),
+        GateResultReport.fromJSON(
+          {
+            verdict: 'PASSED',
+            buildSystem: 'node',
+            buildStatus: 'PASSED',
+            testsStatus: 'PASSED (3 passed)',
+            testsPassed: 3,
+            testsFailed: 0,
+            durationMs: 69000,
+            executedCommands: ['npm run lint', 'npm test'],
+            smokeChecks: [{ id: 'check-1', label: 'app boots', passed: null }],
+            smokeProtocol: 'PASSED',
+            notRun: [{ id: 'e2e', label: 'e2e', reason: 'no fixtures' }],
+            gateRound: 1
+          },
+          1
+        )
+      );
+      await runTransition(ws, STAGE_REVIEW, repo);
+
+      const first = fs.readFileSync(summaryPath, 'utf8');
+      for (const line of [
+        '- **Executed Commands:** `npm run lint`, `npm test`',
+        '- **Smoke Checks:** check-1 ❔',
+        '- **Smoke Protocol:** PASSED',
+        '- **Not Run:** e2e (no fixtures)'
+      ]) {
+        assert.ok(first.includes(line), `round 1 is missing: ${line}\n${first}`);
+      }
+      // S3: the `❔` is resolvable because the protocol verdict is on screen.
+      assert.ok(
+        first.indexOf('Smoke Checks') < first.indexOf('Smoke Protocol'),
+        'the protocol verdict must follow the per-check marks'
+      );
+
+      // Round 2: walk back to the gate and exit with NO evidence (the
+      // non-certifying exit — REVIEW refuses an evidence-less certification).
+      await runTransition(ws, STAGE_IMPLEMENT, repo);
+      await runTransition(ws, STAGE_QUALITY_GATE, repo);
+      await runTransition(ws, STAGE_IMPLEMENT, repo);
+
+      const second = fs.readFileSync(summaryPath, 'utf8');
+      assert.strictEqual(
+        row(second, '4. Quality Gate'),
+        '| 4. Quality Gate | `gate` | `flash_lite` | NOT RECORDED | - |'
+      );
+      const stale = second
+        .split('\n')
+        .filter(
+          (line: string) =>
+            line.startsWith('- **Build System:**') ||
+            line.startsWith('- **Executed Commands:**') ||
+            line.startsWith('- **Smoke Checks:**') ||
+            line.startsWith('- **Smoke Protocol:**') ||
+            line.startsWith('- **Not Run:**')
+        );
+      assert.deepStrictEqual(
+        stale,
+        [],
+        `stale metrics survived a NOT RECORDED round: ${stale.join(' | ')}\n${second}`
+      );
+      assert.ok(second.includes('- **Build Status:** not recorded'), second);
+      assert.ok(second.includes('- **Tests:** not recorded'), second);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
 });

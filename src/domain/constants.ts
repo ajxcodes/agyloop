@@ -645,6 +645,13 @@ export const SMOKE_STATUS_TIMED_OUT = 'TIMED_OUT' as const;
 export const SMOKE_PROTOCOL_NOT_DECLARED = 'NOT_DECLARED' as const;
 
 /**
+ * The RENDERED summary value for "an evidence block was filed without a
+ * `smokeProtocol`" (issue #338). Lower case on purpose: it is never a wire
+ * token and must never be accepted by the parser.
+ */
+export const SMOKE_PROTOCOL_NOT_REPORTED = 'not reported' as const;
+
+/**
  * The ONE smoke-protocol vocabulary (issue #311).
  *
  * `GateResultReport.readSmokeProtocol` validates against this list and the gate
@@ -1613,7 +1620,9 @@ Produce a concise, structured Quality Gate report covering:
 1. **Overall Verdict**: \`PASSED\` or \`FAILED\`.
 2. **Execution Matrix**: Table of command label, exit code, duration, and status.
 3. **Test Metrics**: Total tests executed, passed, failed, skipped.
-4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.` as const;
+4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.
+
+The machine-readable \`GATE_REPORT_JSON:\` block appended to your task prompt is the evidence record. Follow the documented \`smokeChecks\` (\`{id, label, passed}\`) and \`notRun\` (\`{id, reason}\`) entry shapes exactly; the filing command rejects any other shape.` as const;
 
 // ============================================================================
 // Review Constants, Confidence Levels, Severities, and Thresholds
@@ -2975,13 +2984,21 @@ export const NOTE_GATE_REPORT_RETURN =
  * plan declares no protocol), and placeholders confined to strings and zeroes.
  */
 export function formatGateReportExample(smokeProtocol: SmokeProtocolWireValue): string {
+  // A plan with no protocol has no check to show: the example must not model
+  // an invented check (issue #338, R6). The shape is still published by
+  // NOTE_GATE_REPORT_EVIDENCE_SHAPES.
+  const smokeChecks =
+    smokeProtocol === SMOKE_PROTOCOL_NOT_DECLARED
+      ? '[]'
+      : '[{ "id": "<check-id>", "label": "<check label>", "passed": true }]';
   return [
     GATE_REPORT_JSON_MARKER,
     `{ "verdict": "${STATUS_PASSED}", "buildSystem": "<id>", "buildStatus": "${STATUS_PASSED}",`,
     `  "testsStatus": "${STATUS_PASSED} (N passed)", "testsPassed": 0, "testsFailed": 0,`,
     `  "durationMs": 0, "executedCommands": ["<command>"],`,
     `  "commandResults": [{ "command": "<command>", "passed": 0, "failed": 0 }],`,
-    `  "smokeProtocol": "${smokeProtocol}", "notRun": [] }`
+    `  "smokeChecks": ${smokeChecks}, "smokeProtocol": "${smokeProtocol}",`,
+    `  "notRun": [{ "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }] }`
   ].join('\n');
 }
 
@@ -2997,7 +3014,24 @@ export function formatGateReportExample(smokeProtocol: SmokeProtocolWireValue): 
 export const NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS =
   `Replace every \`<…>\` placeholder and every placeholder zero above with THIS run's measured values. The example is a shape, not evidence: emitting it verbatim records false measurements. ` +
   `\`testsPassed\` counts UNIQUE tests across the whole run: a targeted subset plus the full suite that already includes it is NOT a valid value (report the full suite's count, and keep each command in \`commandResults\` so the total can be checked). ` +
-  `\`executedCommands\` holds COMMANDS only — a smoke-check result is a protocol step, not a command, and belongs in \`smokeChecks\`.`;
+  `\`executedCommands\` holds COMMANDS only — a smoke-check result is a protocol step, not a command, and belongs in \`smokeChecks\`. ` +
+  `A \`notRun\` entry in the example is a SHAPE, not a claim: emit \`[]\` when no declared gate was skipped, and one object per skipped gate. A \`smokeChecks\` entry is one protocol check; emit \`[]\` when the plan declares no protocol.`;
+
+/**
+ * The exact `smokeChecks` / `notRun` entry shapes `GateResultReport` accepts
+ * (issue #338, absorbing #343).
+ *
+ * The parser was the only place this contract existed: a gate that followed
+ * the prose invented `{check, planLine, status}` and had its whole evidence
+ * block refused at filing, after the verification run was already paid for.
+ */
+export const NOTE_GATE_REPORT_EVIDENCE_SHAPES =
+  `\`smokeChecks\` entries are OBJECTS — { "id": "<check-id>", "label": "<check label>", "passed": true }: ` +
+  `\`id\` is a non-empty string (required); \`label\` is optional and defaults to \`id\`; \`passed\` is a BOOLEAN or \`null\` — ` +
+  `never a status string, so "PASSED" is rejected. \`passed: null\` means "ran, no verdict reported" and is never collapsed into \`true\`. ` +
+  `\`notRun\` entries are OBJECTS — { "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }: ` +
+  `\`id\` and \`reason\` are non-empty strings, \`label\` is optional and defaults to \`id\`; an array of bare strings is rejected. ` +
+  `Emit \`[]\` for either list when this run has no such entry — never invent a check or a skipped gate.`;
 
 /**
  * The contexts in which `act` (the CI-workflow simulation) was declared but not

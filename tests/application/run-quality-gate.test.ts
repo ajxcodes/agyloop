@@ -36,7 +36,10 @@ const {
   LABEL_BASE_FRESHNESS_LINE,
   HEADER_QUALITY_GATE_REPORT,
   LABEL_OVERALL_VERDICT,
-  formatStageDuration
+  formatStageDuration,
+  FilePlanGenerator,
+  SMOKE_PROTOCOL_VALUES,
+  SMOKE_PROTOCOL_NOT_REPORTED
 } = require('../../dist');
 
 type StateRepository = import('../../src').StateRepository;
@@ -424,10 +427,29 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
     assert.strictEqual(planGenerator.updates.length, 1);
     const update = planGenerator.updates[0].updateData;
     assert.strictEqual(update.reviewNote, undefined);
+    // Issue #338 (S4): the in-process cell names its clock, exactly like the
+    // dispatched path. A bare `0s` cannot say whether it is a wall clock or the
+    // gate's self-timer — the defect #325.3 removed from the dispatched row.
+    assert.match(
+      update.duration as string,
+      /^(?:\d+m )?\d+s \(gate-reported(?:; (?:\d+m )?\d+s wall)?\)$/
+    );
     assert.strictEqual(
-      update.duration,
+      (update.duration as string).split(' (gate-reported')[0],
       formatStageDuration(result.totalDurationMs),
-      'the shared formatter renders the measured total'
+      'the reported prefix is the measured total'
+    );
+    // Issue #338 (S1/S3): the in-process round renders the SAME evidence set the
+    // filed record carries — no per-check verdicts exist on this path, so the
+    // lists are empty (and therefore clear an earlier round's lines).
+    assert.deepStrictEqual(update.smokeChecks, []);
+    assert.deepStrictEqual(update.notRun, []);
+    assert.strictEqual(update.buildSystem, saved[0].buildSystem);
+    assert.ok(
+      [...SMOKE_PROTOCOL_VALUES, SMOKE_PROTOCOL_NOT_REPORTED].includes(
+        update.smokeProtocol as string
+      ),
+      `the protocol verdict must be a vocabulary member, got: ${update.smokeProtocol}`
     );
   });
 
@@ -1725,5 +1747,60 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.strictEqual(result.smokeStatus, 'NOT DECLARED');
     assert.strictEqual(result.smokeReport, undefined);
     assert.strictEqual(result.currentStage, STAGE_REVIEW);
+  });
+});
+
+describe('in-process gate row names its clock (issue #338)', () => {
+  test('#338 T6: the REAL summary writer renders a labelled in-process gate row', async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-in-process-gate-'));
+    const planDirRel = 'artifacts/plans/20-test';
+    const planDir = path.join(ws, planDirRel);
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(path.join(planDir, 'implementation_plan.md'), '# Plan\n\n- [ ] Step 1\n', 'utf8');
+    const summaryPath = path.join(planDir, 'CodeLoop Summary.md');
+    fs.copyFileSync(
+      path.join(__dirname, '..', '..', 'templates', 'summary-log.md'),
+      summaryPath
+    );
+
+    const initialSnapshot: StateMachineSnapshot = {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 20,
+      planDir: planDirRel,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+
+    try {
+      const useCase = new RunQualityGateUseCase(
+        new MockStateRepository(initialSnapshot),
+        new MockConfigRepository(),
+        new FilePlanGenerator(),
+        new MockCommandExecutor()
+      );
+
+      const result = await useCase.execute({ issue: 20, workspaceDir: ws, commands: ['true'] });
+      assert.strictEqual(result.passed, true);
+
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      const gateRow =
+        summary.split('\n').find((line: string) => line.startsWith('| 4. Quality Gate |')) ?? '';
+      assert.ok(gateRow.length > 0, `the gate row must exist, got:\n${summary}`);
+      const cell = (gateRow.split('|')[5] ?? '').trim();
+      assert.match(
+        cell,
+        /^(?:\d+m )?\d+s \(gate-reported(?:; (?:\d+m )?\d+s wall)?\)$/,
+        `the in-process row must name its clock, got: "${cell}"`
+      );
+      assert.ok(
+        summary.includes('- **Smoke Protocol:**'),
+        `the in-process round must render the protocol verdict, got:\n${summary}`
+      );
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
   });
 });

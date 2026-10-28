@@ -12,7 +12,9 @@ const assert = require('node:assert');
 const {
   GateResultReport,
   ValidationError,
-  GATE_REPORT_JSON_MARKER
+  GATE_REPORT_JSON_MARKER,
+  formatGateReportExample,
+  SMOKE_PROTOCOL_NOT_DECLARED
 } = require('../../dist/domain');
 
 const VALID_BLOCK = `${GATE_REPORT_JSON_MARKER}
@@ -324,5 +326,70 @@ describe('gate evidence vocabulary and round parity (issue #311)', () => {
       2
     );
     assert.strictEqual(resolveGateRound([{}, { timestamp: 'x' } as any]), 1);
+  });
+});
+
+describe('gate report example is the accepted shape (issue #338)', () => {
+  /**
+   * Fill every documented placeholder with the value the prompt calls for.
+   * The replacements are distinct so one token can never stand in for another.
+   */
+  function fillExample(example: string): string {
+    return example
+      .replaceAll('<id>', 'node')
+      .replaceAll('<command>', 'npm test')
+      .replaceAll('<check-id>', 'check-1')
+      .replaceAll('<check label>', 'app boots')
+      .replaceAll('<gate-id>', 'e2e')
+      .replaceAll('<gate label>', 'e2e suite')
+      .replaceAll('<why it did not run>', 'no fixtures');
+  }
+
+  test('#338 T1.1: the published example carries a smokeChecks entry the parser files', () => {
+    const report = GateResultReport.parseBlock(fillExample(formatGateReportExample('PASSED')), 1);
+
+    assert.strictEqual(report.smokeChecks.length, 1);
+    assert.strictEqual(report.smokeChecks[0].id, 'check-1');
+    assert.strictEqual(report.smokeChecks[0].label, 'app boots');
+    // Strictly a boolean: a `"PASSED"` status string must never become a verdict.
+    assert.strictEqual(report.smokeChecks[0].passed, true);
+    assert.strictEqual(report.notRun.length, 1);
+    assert.strictEqual(report.notRun[0].id, 'e2e');
+    assert.strictEqual(report.notRun[0].reason, 'no fixtures');
+    assert.strictEqual(report.smokeProtocol, 'PASSED');
+  });
+
+  test('#338 T1.2: a no-protocol plan is shown no invented check', () => {
+    const example = formatGateReportExample(SMOKE_PROTOCOL_NOT_DECLARED);
+    assert.ok(example.includes('"smokeChecks": []'), example);
+
+    const report = GateResultReport.parseBlock(fillExample(example), 1);
+    assert.strictEqual(report.smokeChecks.length, 0);
+    assert.strictEqual(report.notRun.length, 1);
+    assert.strictEqual(report.smokeProtocol, SMOKE_PROTOCOL_NOT_DECLARED);
+  });
+
+  test('#338 T1.3: the parser was not widened — the natural-but-undocumented shapes still fail', () => {
+    const withStatusString = `${GATE_REPORT_JSON_MARKER}
+{ "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",
+  "testsStatus": "PASSED (1 passed)", "testsPassed": 1, "testsFailed": 0,
+  "durationMs": 1000, "executedCommands": ["npm test"],
+  "smokeChecks": [{ "id": "check-1", "label": "app boots", "passed": "PASSED" }] }
+`;
+    assert.throws(
+      () => GateResultReport.parseBlock(withStatusString, 1),
+      (err: any) => err instanceof ValidationError && err.field === 'smokeChecks.passed'
+    );
+
+    const withBareStrings = `${GATE_REPORT_JSON_MARKER}
+{ "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",
+  "testsStatus": "PASSED (1 passed)", "testsPassed": 1, "testsFailed": 0,
+  "durationMs": 1000, "executedCommands": ["npm test"],
+  "notRun": ["act: no CI-workflow simulation in scope"] }
+`;
+    assert.throws(
+      () => GateResultReport.parseBlock(withBareStrings, 1),
+      (err: any) => err instanceof ValidationError && err.field === 'notRun'
+    );
   });
 });

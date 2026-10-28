@@ -193,3 +193,168 @@ describe('summary writer evidence (issue #284)', () => {
     }
   });
 });
+
+/**
+ * Issue #338: the summary reports what THIS round measured.
+ *
+ * The writer has three states per metric — untouched (`undefined`), REMOVED
+ * (`null` / `[]`), and replaced (a value) — so a NOT RECORDED round can no
+ * longer inherit the previous round's command list, check marks or reasons.
+ */
+describe('summary writer metrics are this round’s (issue #338)', () => {
+  const FULL_EVIDENCE = {
+    buildStatus: 'PASSED',
+    testsStatus: 'PASSED (1899 passed)',
+    buildSystem: 'node',
+    executedCommands: ['npm run lint', 'npm test'],
+    smokeChecks: [
+      { id: 'check-1', label: 'check-1', passed: null },
+      { id: 'check-2', label: 'check-2', passed: true },
+      { id: 'check-3', label: 'check-3', passed: false }
+    ],
+    smokeProtocol: 'PASSED',
+    notRun: [{ id: 'e2e', label: 'e2e', reason: 'no fixtures' }]
+  };
+
+  const CLEARING = {
+    buildStatus: 'not recorded',
+    testsStatus: 'not recorded',
+    buildSystem: null,
+    executedCommands: [],
+    smokeChecks: [],
+    smokeProtocol: null,
+    notRun: []
+  };
+
+  function read(summaryPath: string): string {
+    return fs.readFileSync(summaryPath, 'utf8');
+  }
+
+  test('#338 T4.1: a NOT RECORDED round removes every metric the previous round named', () => {
+    const { dir, summaryPath } = tempSummary();
+    try {
+      const generator = new FilePlanGenerator();
+      generator.updateSummaryLog(summaryPath, FULL_EVIDENCE);
+      generator.updateSummaryLog(summaryPath, CLEARING);
+
+      const summary = read(summaryPath);
+      for (const label of [
+        'Build System',
+        'Executed Commands',
+        'Smoke Checks',
+        'Smoke Protocol',
+        'Not Run'
+      ]) {
+        assert.ok(
+          !summary.includes(`- **${label}:**`),
+          `a metric no round measured must be gone (${label}), got:\n${summary}`
+        );
+      }
+      assert.ok(summary.includes('- **Build Status:** not recorded'), summary);
+      assert.ok(summary.includes('- **Tests:** not recorded'), summary);
+      assert.ok(summary.includes('## Quality Gate Metrics'), 'the section heading survives');
+      assert.ok(summary.includes('## Review Notes'), 'the next section survives');
+      assert.ok(!summary.includes('\n\n\n'), `the removal must not leave blank runs, got:\n${summary}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#338 T4.2: applying the clearing payload twice is byte-identical', () => {
+    const { dir, summaryPath } = tempSummary();
+    try {
+      const generator = new FilePlanGenerator();
+      generator.updateSummaryLog(summaryPath, FULL_EVIDENCE);
+      generator.updateSummaryLog(summaryPath, CLEARING);
+      const once = read(summaryPath);
+      generator.updateSummaryLog(summaryPath, CLEARING);
+      assert.strictEqual(read(summaryPath), once, 'removal must be idempotent');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#338 T4.3: the protocol verdict renders next to the per-check marks', () => {
+    const { dir, summaryPath } = tempSummary();
+    try {
+      const generator = new FilePlanGenerator();
+      generator.updateSummaryLog(summaryPath, FULL_EVIDENCE);
+      const summary = read(summaryPath);
+
+      const checksLine = '- **Smoke Checks:** check-1 ❔, check-2 ✅, check-3 ❌';
+      assert.ok(summary.includes(checksLine), summary);
+      assert.ok(summary.includes('- **Smoke Protocol:** PASSED'), summary);
+
+      const checksIndex = summary.indexOf('- **Smoke Checks:**');
+      const protocolIndex = summary.indexOf('- **Smoke Protocol:**');
+      const notRunIndex = summary.indexOf('- **Not Run:**');
+      assert.ok(checksIndex < protocolIndex, 'the protocol verdict must follow the check marks');
+      assert.ok(protocolIndex < notRunIndex, 'Not Run stays last');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#338 T4.4: the three readings of a ❔ are distinguishable', () => {
+    for (const value of ['PASSED', 'NOT_DECLARED', 'not reported']) {
+      const { dir, summaryPath } = tempSummary();
+      try {
+        const generator = new FilePlanGenerator();
+        generator.updateSummaryLog(summaryPath, { ...FULL_EVIDENCE, smokeProtocol: value });
+        assert.ok(
+          read(summaryPath).includes(`- **Smoke Protocol:** ${value}`),
+          `smokeProtocol '${value}' must render verbatim`
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('#338 T4.5: a missing metric is inserted in order, inside the metrics section', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-order-'));
+    const summaryPath = path.join(dir, 'CodeLoop Summary.md');
+    fs.writeFileSync(
+      summaryPath,
+      [
+        '# CodeLoop Execution Summary',
+        '',
+        '## Quality Gate Metrics',
+        '- **Tests:** PASSED (12 passed)',
+        '',
+        '## Review Notes',
+        '- looks good',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    try {
+      const generator = new FilePlanGenerator();
+      generator.updateSummaryLog(summaryPath, FULL_EVIDENCE);
+      const summary = read(summaryPath);
+
+      const metricsSection = summary
+        .split('## Quality Gate Metrics')[1]
+        .split('\n## ')[0];
+      const renderedOrder = metricsSection
+        .split('\n')
+        .filter((line: string) => line.startsWith('- **'))
+        .map((line: string) => line.slice(4, line.indexOf(':**')));
+      assert.deepStrictEqual(renderedOrder, [
+        'Build System',
+        'Tests',
+        'Executed Commands',
+        'Smoke Checks',
+        'Smoke Protocol',
+        'Not Run'
+      ]);
+      const reviewIndex = summary.indexOf('## Review Notes');
+      assert.ok(
+        summary.indexOf('- **Not Run:**') < reviewIndex,
+        `metrics must never be appended into the review section, got:\n${summary}`
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

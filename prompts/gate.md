@@ -42,3 +42,5 @@ Produce a concise, structured Quality Gate report covering:
 2. **Execution Matrix**: Table of command label, exit code, duration, and status.
 3. **Test Metrics**: Total tests executed, passed, failed, skipped.
 4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.
+
+The machine-readable `GATE_REPORT_JSON:` block appended to your task prompt is the evidence record. Follow the documented `smokeChecks` (`{id, label, passed}`) and `notRun` (`{id, reason}`) entry shapes exactly; the filing command rejects any other shape.
