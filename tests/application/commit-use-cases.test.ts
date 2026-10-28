@@ -1147,6 +1147,10 @@ diff --git a/src/app.ts b/src/app.ts
       assert.strictEqual(result.prUrl, 'https://example.test/pull/7');
       assert.strictEqual(result.prCommand, undefined, 'a created PR must not print the manual script');
       assert.strictEqual(result.prBaseIsCollector, true);
+      // Issue #351: the value the CLI's collector caveat keys on is the SAME
+      // issue the body's `Closes #N` names — here from the checkpoint, since
+      // `params.issue` is absent.
+      assert.strictEqual(result.resolvedIssue, 92);
       assert.ok(executor.executedCommands.some((cmd: string) => cmd.includes('gh pr create')));
     });
 
@@ -1180,6 +1184,9 @@ diff --git a/src/app.ts b/src/app.ts
       assert.strictEqual(typeof result.prCommand, 'string');
       assert.ok((result.prCommand as string).includes('gh pr create'));
       assert.strictEqual(result.prBaseIsCollector, false);
+      // Issue #351: even when no PR is created, the result names the issue the
+      // body WOULD close — the CLI caveat must describe the same operand.
+      assert.strictEqual(result.resolvedIssue, 93);
       assert.ok(!executor.executedCommands.some((cmd: string) => cmd.includes('gh pr create')));
     });
 

@@ -222,3 +222,36 @@ export interface TriageRoutingInput {
 export function shouldRouteToTriage(input: TriageRoutingInput): boolean {
   return input.hasOpenReviewFeedback && input.currentStage !== STAGE_TRIAGE;
 }
+
+// ---- Triage gate (issue #351) -------------------------------------------
+
+export type TriageReentryDecision = 'REPORT_TRIAGE_GATE' | 'EXIT_TO_COMPLETED';
+
+export interface TriageReentryInput {
+  readonly currentStage: StageName;
+  /** `GitHubPullRequestData.state` verbatim (`'OPEN' | 'MERGED' | 'CLOSED'`), or null when unmeasured. */
+  readonly pullRequestState: string | null;
+}
+
+/**
+ * Decision for a checkpoint already resting at TRIAGE (issue #351).
+ *
+ * `NOTE_TRIAGE_GATE_EXIT_CONDITION` names TWO endings and only the disposition
+ * one was implemented: the TRIAGE directive was built without ever reading the
+ * PR, so a merged/closed PR still demanded `codeloop resume` + `codeloop triage`.
+ *
+ * Fail-closed by construction: `null` (no gateway, gateway threw, no issue, no
+ * PR) and any state the tool does not recognise REPORT the gate. The only input
+ * that ends it is a measured terminal state, spelled exactly as the port spells
+ * it (`GitHubPullRequestData.state`, upper-case, `MERGED` when `mergedAt` is set).
+ */
+export function resolveTriageReentry(input: TriageReentryInput): TriageReentryDecision {
+  if (input.currentStage !== STAGE_TRIAGE) {
+    return 'REPORT_TRIAGE_GATE';
+  }
+  const state = (input.pullRequestState ?? '').toUpperCase();
+  if (state === 'MERGED' || state === 'CLOSED') {
+    return 'EXIT_TO_COMPLETED';
+  }
+  return 'REPORT_TRIAGE_GATE';
+}

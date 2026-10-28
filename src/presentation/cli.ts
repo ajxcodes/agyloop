@@ -412,10 +412,12 @@ export function computePromptsAllowed(
 /**
  * Command that clears a persisted gate pause (issue #218 AC4).
  *
- * `codeloop next` only *reports* a pause — it never clears one. `resumeFromGate()` is
- * reachable from `resume`, `transition` and `triage`, so exit code 2 telling users to
- * "resume with codeloop next" was advice that could not work. Help text, the `next`
- * banner and the `status` recovery hint therefore name this command.
+ * `codeloop next` only *reports* a pause — it never clears one, with the single
+ * exception of the terminal TRIAGE exit (issue #351), where a MERGED/CLOSED pull
+ * request records COMPLETED and consumes the pause. `resumeFromGate()` is reachable
+ * from `resume`, `transition` and `triage`, so exit code 2 telling users to "resume
+ * with codeloop next" was advice that could not work. Help text, the `next` banner
+ * and the `status` recovery hint therefore name this command.
  *
  * It is declared here rather than imported so the help text keeps naming a command that
  * clears the pause even if a domain constant drifts again;
@@ -548,7 +550,8 @@ Operational Modes:
   sync               Fast-forward collector branch and process merged PRs to auto-close issues
 
 Pipeline Management:
-  next               Inspect state and generate the next invoke_subagent directive (writes only the declared context fields: inferred baseBranch, dispatch counters, updatedAt; --dry-run previews without writing; --restart also resets the checkpoint)
+  next               Inspect state and generate the next invoke_subagent directive (writes only the declared context fields: inferred baseBranch, dispatch counters, updatedAt; at TRIAGE a MERGED/CLOSED pull request ENDS the gate — the checkpoint is recorded as COMPLETED and the report is idle; --dry-run previews without writing; --restart also resets the checkpoint)
+                     An OPEN pull request keeps the TRIAGE gate; when the PR is MERGED/CLOSED the gate exits to COMPLETED on the next read, so it never needs \`codeloop resume\` + \`codeloop triage\`
                      --json adds 'actionable' and 'pause': actionable is true only for a dispatchable subagent directive with no persisted pause; it is false for every human_gate (COMMIT included), every persisted pause, COMPLETED, INITIALIZED, and every stage whose completion condition is already met (those report actionType 'advance' and carry no invocationPayload); pause is null when neither a persisted pause nor a human gate applies
   branch-info        Display base collector branch, active task branch, and PR target
   status             Display current pipeline stage, active tasks matrix, and checkpoint history
@@ -582,7 +585,7 @@ Operational Flags:
       ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>  Refute a critique finding you have verified is false (repeatable; codeloop review with a filed APPROVED verdict only). The reason is mandatory — a refutation without one is refused, and every refuted finding is named on stderr and recorded as reviewRefutations.
       --report-file <path|->  Read a Quality Gate Subagent's GATE_REPORT_JSON block from a file (codeloop gate-report)
       --report-stdin     Read a Quality Gate Subagent's GATE_REPORT_JSON block from stdin (codeloop gate-report)
-      --create-pr    Automatically create a PR after commit
+      --create-pr    Automatically create a PR after commit. A PR that targets a collector branch (phase/* or feature/*) does NOT auto-close the issue on merge — closing keywords fire only on the default branch — so \`commit\` prints that caveat whether the issue came from --issue or the checkpoint, and \`codeloop sync\` closes the issue after the merge.
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
       --quarantine   Quarantine uncommitted changes to a dedicated branch during abort
@@ -604,7 +607,7 @@ Operational Flags:
       --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
       --plan-path <f> Supply an existing plan file the lifecycle executes instead of scaffolding a new plan (plan, implement, yolo)
       --plan-dir <d>  Supply an existing plan directory (plan, implement, yolo)
-      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' never advances a stage; it writes only the context fields named above.
+      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' never advances a stage except the documented TRIAGE exit (a MERGED/CLOSED PR ends the gate as COMPLETED); otherwise it writes only the context fields named above.
       --skip-discovery  Explicit opt-in: bypass the DISCOVERY RCA park (auditable in state history).
   -h, --help         Show this help message and exit
   -v, --version      Show version information and exit
@@ -3928,12 +3931,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // Issue #240/Defect 3: a closing keyword only auto-closes on the
           // DEFAULT branch. Say so, and name the compensator, instead of
           // letting the operator assume `Closes #N` did something.
-          if (execResult.prBaseIsCollector && issueValue) {
+          //
+          // Issue #351: the caveat keyed on `issueValue` — the `--issue` flag
+          // only — so the pipeline's OWN recommended invocation (`codeloop
+          // commit --create-pr`, issue taken from the checkpoint) suppressed
+          // it. `resolvedIssue` is the value that produced the body's `Closes
+          // #N`, so the warning can no longer describe a keyword the PR does
+          // not carry, nor stay silent when it does.
+          const caveatIssue = execResult.resolvedIssue ?? issueValue;
+          if (execResult.prBaseIsCollector && caveatIssue) {
             console.log(
               `\n⚠ Closing keyword caveat: this PR targets the collector branch '${execResult.prBaseBranch}'.`
             );
             console.log(
-              `  \`Closes #${issueValue}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
+              `  \`Closes #${caveatIssue}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
             );
           }
           if (execResult.summaryUpdated) {

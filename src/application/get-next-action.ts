@@ -47,6 +47,10 @@ import {
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_RESTARTED_FROM_COMPLETED,
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
+  // Issue #351: the gate also ends when the PR does; one marker and one
+  // renderer so the history note and the idle report cannot drift.
+  TRIAGE_EXIT_PULL_REQUEST_TERMINAL,
+  formatTriageGateEndedNote,
   NOTE_REVIEW_GATE_EXIT_CONDITION,
   NOTE_REVIEW_DISPATCH_ORDINAL,
   NOTE_REVIEW_DISPATCH_CAP,
@@ -108,11 +112,14 @@ import {
   BuildDetectorPort,
   PullRequestReviewComment,
   CritiquePort,
-  GateReportRepositoryPort
+  GateReportRepositoryPort,
+  // Issue #351: the gate's exit reads the SAME guarded PR lookup that routes
+  // INTO it, so the shape is shared rather than re-inferred.
+  GitHubPullRequestData
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
-import { resolveCompletedReentry } from './lifecycle-reentry-policy';
+import { resolveCompletedReentry, resolveTriageReentry } from './lifecycle-reentry-policy';
 import { classifyPrFeedback, feedbackKeysOf } from './triage-feedback';
 import type { ImplementationProbe } from './detect-implementation-diff';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
@@ -431,6 +438,12 @@ export class GetNextActionUseCase {
     // `Plan` straight from a reset machine — bypassing TransitionStageUseCase's
     // planDir precondition. The decision now lives in one chokepoint and depends
     // only on explicit intent plus evidence.
+    //
+    // Issue #351 adds the mirror of that one lifecycle write: a checkpoint at
+    // TRIAGE whose pull request is MERGED/CLOSED is advanced to COMPLETED,
+    // because the exit condition the directive states would otherwise be a lie.
+    // It is the same class of write — evidence-driven, never an invented
+    // advance — and it is also declared in `wouldWrite` under `--dry-run`.
     const restartOptIn = params.restart === true;
 
     if (sm.currentStage === STAGE_COMPLETED) {
@@ -496,6 +509,42 @@ export class GetNextActionUseCase {
       // One of the two fields the query path is always permitted to write.
       sm.setIssue(explicitIssue);
       await this.saveContext(sm, writesEnabled, 'checkpoint: issue', wouldWrite);
+    }
+
+    // ---- TRIAGE exit (issue #351) ------------------------------------------
+    // NOTE_TRIAGE_GATE_EXIT_CONDITION states TWO endings; until now only the
+    // disposition one existed, so a merged/closed PR still demanded `resume` +
+    // `triage`. The gate now consults the SAME lookup that routes INTO it (#269),
+    // and ends by recording COMPLETED — the stage the run actually reached.
+    // Fail closed: an unmeasured state (offline, no gateway, no issue) keeps the
+    // gate; only a measured MERGED/CLOSED ends it.
+    if (sm.currentStage === STAGE_TRIAGE) {
+      const triageIssue = sm.issue ?? activeIssue;
+      const pr = triageIssue ? await this.findPullRequestOrNull(triageIssue, cwd) : null;
+      const triageDecision = resolveTriageReentry({
+        currentStage: sm.currentStage,
+        pullRequestState: pr?.state ?? null
+      });
+      if (triageDecision === 'EXIT_TO_COMPLETED' && pr && sm.canTransition(STAGE_COMPLETED)) {
+        const prNumber = pr.number > 0 ? pr.number : null;
+        // The payload belongs to feedback on a PR that no longer awaits an answer
+        // (same rule as `triage completed`, triage-pr-comments.ts).
+        sm.setTriagePayload(null);
+        sm.transition(STAGE_COMPLETED, {
+          note: formatTriageGateEndedNote(pr.state, prNumber),
+          prNumber,
+          prState: pr.state.toUpperCase(),
+          triageExit: TRIAGE_EXIT_PULL_REQUEST_TERMINAL
+        });
+        // COMPLETED is terminal, so transition() consumes the TRIAGE pause
+        // (StateMachine.transition); the operator needs no `resume`.
+        await this.saveContext(
+          sm,
+          writesEnabled,
+          `checkpoint: stage COMPLETED (triage PR ${pr.state.toUpperCase()})`,
+          wouldWrite
+        );
+      }
     }
 
     // Issue #301: a read of an ABSENT checkpoint must still report the issue it
@@ -1121,6 +1170,17 @@ export class GetNextActionUseCase {
         const dispositionLine = disposition
           ? ` ${formatTriageDispositionLine(disposition, 'idle-report')}`
           : '';
+        // Issue #351: when the gate ended because the PR did, the idle report
+        // must say so — otherwise the operator cannot tell a merged PR's exit
+        // from a disposition (or from "nothing happened").
+        const triageExit = this.lastTriageExit(sm);
+        const exitState = typeof triageExit?.prState === 'string' ? triageExit.prState : null;
+        const triageExitLine = exitState
+          ? ` ${formatTriageGateEndedNote(
+              exitState,
+              typeof triageExit?.prNumber === 'number' ? triageExit.prNumber : null
+            )}`
+          : '';
         return {
           currentStage: sm.currentStage,
           nextStage: STAGE_INITIALIZED,
@@ -1130,9 +1190,31 @@ export class GetNextActionUseCase {
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: NOTE_IDLE_SUMMARY + dispositionLine
+          humanSummary: NOTE_IDLE_SUMMARY + dispositionLine + triageExitLine
         };
       }
+    }
+  }
+
+  /**
+   * The ONE guarded PR lookup (issue #351).
+   *
+   * `next` is a query: an offline, unauthenticated or rate-limited GitHub must
+   * still get an answer, so every failure collapses to `null` — "not measured",
+   * never "closed". Callers decide what null means; this helper never guesses.
+   */
+  private async findPullRequestOrNull(
+    issue: number,
+    cwd: string
+  ): Promise<GitHubPullRequestData | null> {
+    const gateway = this.githubGateway;
+    if (!gateway?.findPullRequest) {
+      return null;
+    }
+    try {
+      return (await gateway.findPullRequest({ issueNumber: issue, cwd })) ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -1168,7 +1250,7 @@ export class GetNextActionUseCase {
     }
 
     try {
-      const pr = await gateway.findPullRequest({ issueNumber: issue, cwd });
+      const pr = await this.findPullRequestOrNull(issue, cwd);
       // Only an OPEN PR's review feedback is actionable: a merged or closed one
       // was already resolved by whatever closed it.
       if (!pr || pr.state !== 'OPEN' || !pr.number) {
@@ -1257,6 +1339,22 @@ export class GetNextActionUseCase {
       }
     }
 
+    return null;
+  }
+
+  /**
+   * The newest recorded TRIAGE exit, or null (issue #351).
+   *
+   * Mirrors `lastReviewMetadata`: the history is scanned backwards, so the
+   * exit the idle report names is the most recent one.
+   */
+  private lastTriageExit(sm: StateMachine): Record<string, unknown> | null {
+    for (let index = sm.history.length - 1; index >= 0; index -= 1) {
+      const metadata = sm.history[index].metadata;
+      if (metadata?.triageExit === TRIAGE_EXIT_PULL_REQUEST_TERMINAL) {
+        return metadata ?? null;
+      }
+    }
     return null;
   }
 

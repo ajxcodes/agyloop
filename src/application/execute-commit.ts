@@ -96,6 +96,15 @@ export interface ExecuteCommitResult {
    * Closing keywords do not fire on a collector-base PR (issue #240/Defect 3).
    */
   readonly prBaseIsCollector?: boolean;
+  /**
+   * The issue the PR body's `Closes #N` names (issue #351).
+   *
+   * `params.issue || sm.issue` — the SAME value that builds the keyword. The
+   * CLI's collector caveat must key on this, not on whether the operator
+   * happened to pass `--issue`: the pipeline's own recommended invocation takes
+   * the issue from the checkpoint.
+   */
+  readonly resolvedIssue?: number | null;
   readonly prCommand?: string;
   readonly worktreeTornDown?: boolean;
   readonly worktreeTornDownPath?: string;
@@ -384,6 +393,15 @@ export class ExecuteCommitUseCase {
     // Resolve milestone and issue for PR generation
     const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
     const issueId = params.issue || sm.issue;
+    // Issue #351: report the issue the body's `Closes` line actually names.
+    // `params.issue` is typed `number | string`; the keyword interpolates it
+    // verbatim, so normalise only a genuinely numeric token and never invent one.
+    const resolvedIssue: number | null =
+      typeof issueId === 'number'
+        ? issueId
+        : typeof issueId === 'string' && /^\d+$/.test(issueId)
+          ? Number(issueId)
+          : null;
 
     // Check if PR already exists for the active branch
     let prExists = false;
@@ -656,6 +674,7 @@ export class ExecuteCommitUseCase {
       prUrl,
       prExists,
       prBaseIsCollector,
+      resolvedIssue,
       prCommand: returnedPrCommand,
       worktreeTornDown,
       worktreeTornDownPath,
