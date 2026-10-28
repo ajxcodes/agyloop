@@ -15,6 +15,8 @@ const {
   STAGE_PLAN,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
   MODE_STANDARD,
   MODE_YOLO,
   PLAN_EMPTY_PARK_REPEAT_THRESHOLD
@@ -95,6 +97,57 @@ describe('stage dispatch counters (#292)', () => {
     assert.strictEqual(sm.discoveryDispatchCount, 0);
     assert.strictEqual(sm.planDispatchCount, 0);
     assert.strictEqual(sm.planEmptyParkCount, 0);
+  });
+});
+
+describe('IMPLEMENT re-dispatch counter (#327)', () => {
+  test('T-327.1: the counter defaults to 0 and increments independently', () => {
+    const sm = StateMachine.createInitial({ issue: 41 });
+    assert.strictEqual(sm.implementationDispatchCount, 0);
+
+    sm.recordImplementationDispatch();
+    sm.recordImplementationDispatch();
+
+    assert.strictEqual(sm.implementationDispatchCount, 2);
+    assert.strictEqual(sm.reviewDispatchCount, 0, 'the REVIEW counter is untouched');
+  });
+
+  test('T-327.2: the counter survives a snapshot round-trip and legacy checkpoints load 0', () => {
+    const sm = atImplementation();
+    sm.recordImplementationDispatch();
+
+    const restored = StateMachine.fromSnapshot(sm.toSnapshot());
+    assert.strictEqual(restored.implementationDispatchCount, 1);
+    assert.strictEqual(restored.getStatus().implementationDispatchCount, 1);
+
+    const legacy = StateMachine.createInitial({ issue: 41 }).toSnapshot() as any;
+    delete legacy.implementationDispatchCount;
+    assert.strictEqual(StateMachine.fromSnapshot(legacy).implementationDispatchCount, 0);
+  });
+
+  test('T-327.3: a transition INTO IMPLEMENT zeroes the counter', () => {
+    const sm = atImplementation();
+    sm.recordImplementationDispatch();
+    sm.recordImplementationDispatch();
+
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    assert.strictEqual(
+      sm.implementationDispatchCount,
+      2,
+      'leaving IMPLEMENT does not clear the record'
+    );
+
+    sm.transition(STAGE_IMPLEMENT);
+    assert.strictEqual(sm.implementationDispatchCount, 0, 'a fresh implementation round starts at 0');
+  });
+
+  test('T-327.4: reset() zeroes the counter', () => {
+    const sm = atImplementation();
+    sm.recordImplementationDispatch();
+
+    sm.reset(MODE_STANDARD, 41);
+    assert.strictEqual(sm.implementationDispatchCount, 0);
   });
 });
 

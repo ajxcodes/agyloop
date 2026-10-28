@@ -67,6 +67,20 @@ export interface ImplementationDiff {
 const DEFAULT_BASE_REF = 'main';
 
 /**
+ * The structural interface of the implementation-evidence probe (issue #327).
+ *
+ * `GetNextActionUseCase` depends on THIS, not on the concrete use case, so an
+ * application test can inject a probe without a nominal class dependency and
+ * the CLI can pass the real one (`new DetectImplementationDiffUseCase(...)`).
+ */
+export interface ImplementationProbe {
+  execute(params?: {
+    workspaceDir?: string;
+    baseRef?: string | null;
+  }): Promise<ImplementationDiff>;
+}
+
+/**
  * A resolved branch point must be a commit SHA. An empty or non-SHA value is
  * NEVER interpolated: `git diff --name-only  -- .` (the empty interpolation)
  * SUCCEEDS and silently compares the index against the working tree.
@@ -149,7 +163,7 @@ function isDiffPathLine(line: string): boolean {
   return true;
 }
 
-export class DetectImplementationDiffUseCase {
+export class DetectImplementationDiffUseCase implements ImplementationProbe {
   private readonly commandExecutor: CommandExecutorPort;
 
   constructor(commandExecutor: CommandExecutorPort) {

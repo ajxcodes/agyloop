@@ -17,6 +17,7 @@ const {
   STAGE_COMMIT,
   STAGE_COMPLETED,
   STAGE_TRIAGE,
+  ALLOWED_TRANSITIONS,
   MODE_STANDARD,
   MODE_YOLO,
   WorktreeDescriptor,
@@ -1638,6 +1639,18 @@ describe('Quality Gate evidence contract (issue #298)', () => {
     assert.match(result.description, /bare-module-path/);
     assert.match(result.description, /Check 1/);
     assert.match(result.description, /plan line \d+/);
+    // Issue #327 (Defect 2): the blocker names the LEGAL re-approval sequence,
+    // including the fresh-approval hop that re-records the plan digest.
+    assert.strictEqual(result.nextStage, STAGE_PLAN);
+    const recovery = `${result.description}\n${result.humanSummary}`;
+    for (const hop of [
+      'codeloop transition PLAN --issue 41',
+      'codeloop transition APPROVAL --issue 41',
+      'codeloop transition IMPLEMENT --issue 41'
+    ]) {
+      assert.ok(recovery.includes(hop), `missing recovery hop '${hop}':\n${recovery}`);
+    }
+    assert.ok(recovery.includes('re-records the plan digest'), recovery);
   });
 
   test('GNA-D1: a digest mismatch blocks dispatch and names both digests', async () => {
@@ -1659,6 +1672,22 @@ describe('Quality Gate evidence contract (issue #298)', () => {
     assert.ok(!blocked.invocationPayload);
     assert.ok(blocked.description.includes('approved-digest'));
     assert.ok(blocked.description.includes('actual-digest'));
+    // Issue #327 (Defect 2): this blocker prescribes re-planning too, so it
+    // must name a sequence the table allows and point at that recovery.
+    assert.strictEqual(blocked.nextStage, STAGE_PLAN);
+    assert.ok(
+      blocked.humanSummary.includes('codeloop transition PLAN --issue 41'),
+      blocked.humanSummary
+    );
+    assert.ok(
+      blocked.humanSummary.includes('codeloop transition APPROVAL --issue 41'),
+      blocked.humanSummary
+    );
+    assert.ok(
+      blocked.humanSummary.includes('codeloop transition IMPLEMENT --issue 41'),
+      blocked.humanSummary
+    );
+    assert.ok(blocked.humanSummary.includes('re-records the plan digest'), blocked.humanSummary);
 
     const matching = gateCheckpoint((machine: any) =>
       machine.recordApprovedPlan(PLAN_HEADER, 'actual-digest')
@@ -1671,5 +1700,37 @@ describe('Quality Gate evidence contract (issue #298)', () => {
 
     assert.strictEqual(dispatched.actionType, 'subagent');
     assert.ok(dispatched.invocationPayload);
+  });
+
+  test('GNA-X1: every transition named in a QUALITY_GATE directive is legal there (#327 AC-7)', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    planGenerator.digest = 'digest-1';
+
+    const sm = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
+    );
+    const result = await new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    ).execute({ workspaceDir: '/repo' });
+
+    const named = new Set<string>();
+    const pattern = /codeloop transition ([A-Z_]+)/g;
+    for (const text of [result.description, result.humanSummary]) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(text)) !== null) {
+        named.add(match[1]);
+      }
+    }
+
+    assert.ok(named.size > 0, 'the gate directive names at least one transition');
+    for (const target of named) {
+      assert.ok(
+        ALLOWED_TRANSITIONS[STAGE_QUALITY_GATE].includes(target),
+        `${target} must be a legal exit from QUALITY_GATE`
+      );
+    }
   });
 });

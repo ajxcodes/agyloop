@@ -131,6 +131,26 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(sm.currentStage, STAGE_PLAN);
   });
 
+  test('allows QUALITY_GATE -> PLAN recovery but keeps QUALITY_GATE -> APPROVAL illegal (#327)', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+
+    assert.strictEqual(sm.canTransition(STAGE_PLAN), true, 're-planning is the documented recovery');
+    assert.strictEqual(
+      sm.canTransition(STAGE_APPROVAL),
+      false,
+      're-approving without a planning pass would approve the broken bytes'
+    );
+    assert.strictEqual(sm.canTransition(STAGE_REVIEW), true);
+
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.currentStage, STAGE_PLAN);
+  });
+
   test('allows direct transition from INITIALIZED to PLAN (bypassing DISCOVERY for features)', () => {
     const sm = StateMachine.createInitial({ mode: 'standard' });
     assert.strictEqual(sm.canTransition(STAGE_PLAN), true);

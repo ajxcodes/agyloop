@@ -13,7 +13,7 @@
  * RR4 - the legacy `selfCorrectionPayload` record is still surfaced (AC1)
  * RR5 - the production `RunReviewUseCase -> next` path survives a JSON
  *       round-trip of the checkpoint (AC1/AC3)
- * RR6 - a first dispatch (no review yet) is unchanged
+ * RR6 - a first dispatch is unchanged apart from the #327 boundary contract
  * RR7 - review remediation and PR triage comments stay separate channels
  */
 
@@ -34,7 +34,9 @@ const {
   STAGE_REVIEW,
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
-  VERDICT_SKIPPED
+  VERDICT_SKIPPED,
+  NOTE_IMPLEMENT_ADVANCE_CONDITION,
+  NOTE_IMPLEMENT_UNVERIFIED
 } = require('../../dist/domain');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
@@ -382,10 +384,16 @@ describe('IMPLEMENT directive review remediation (issue #313)', () => {
     assert.strictEqual(result.role, 'implementer');
     assert.ok(!prompt.includes('Review Remediation'), 'no review has run, so no section is rendered');
     assert.strictEqual('reviewRemediationRound' in result, false);
-    assert.strictEqual(
-      result.description,
-      'Execute surgical code modifications adhering strictly to approved plan in dedicated worktree.'
+    // Issue #327: the operator fields now carry the state, the completion
+    // condition and the advancing command. Without a probe injected, the
+    // implementation state is honestly UNVERIFIED — never an invented claim.
+    assert.ok(result.description.includes(NOTE_IMPLEMENT_UNVERIFIED), result.description);
+    assert.ok(result.description.includes(NOTE_IMPLEMENT_ADVANCE_CONDITION), result.description);
+    assert.ok(
+      result.description.includes('codeloop transition QUALITY_GATE --issue 313'),
+      result.description
     );
+    assert.strictEqual(result.implementationPresent, null);
   });
 
   test('RR7 (AC1/channel separation): review remediation and PR triage comments coexist', async () => {

@@ -19,7 +19,6 @@ import {
   STAGE_INITIALIZED,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_DISCOVERY,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_PLAN,
   STAGE_TRIAGE,
   GATE_APPROVAL,
@@ -150,6 +149,8 @@ import {
   LABEL_DISCOVERY_DISPATCHES,
   LABEL_PLAN_DISPATCHES,
   LABEL_PLAN_EMPTY_PARKS,
+  // Issue #327: the IMPLEMENT re-dispatch record is observable in `status`.
+  LABEL_IMPLEMENT_DISPATCHES,
   COMMAND_OPENCODE,
   // Issue #269 (R5): the ONE renderer for the operator-facing disposition
   // line. The CLI must not hand-render it.
@@ -159,7 +160,11 @@ import {
   ReviewerSubagentError,
   GateResultReport,
   resolveGateRound,
-  formatGateReportAdvanceCommand
+  formatGateReportAdvanceCommand,
+  // Issue #327: the late-filing refusal names a LEGAL walk back to the gate.
+  formatGateReportChannelCommand,
+  formatTransitionRecoveryCommands,
+  findLegalTransitionPath
 } from '../domain';
 import type {
   StateRepository,
@@ -225,8 +230,12 @@ import {
   ResumePipelineUseCase,
   HaltPipelineUseCase,
   resolveCheckpointScope,
-  CheckpointScope
+  CheckpointScope,
+  // Issue #327: `next` consults the SAME implementation-evidence probe the
+  // gate and the YOLO path use, so "nothing implemented yet" is a measurement.
+  DetectImplementationDiffUseCase
 } from '../application';
+import type { ImplementationProbe } from '../application';
 
 export interface CliOptions {
   workspaceDir?: string;
@@ -1102,6 +1111,7 @@ async function printImplementerDirective(
   worktreeManager: WorktreeManagerPort,
   buildDetector: BuildDetectorPort,
   inferBaseBranchUseCase: InferBaseBranchUseCase,
+  implementationProbe: ImplementationProbe,
   configPath: string | null,
   issue: number | undefined,
   critique: CritiquePort
@@ -1116,7 +1126,8 @@ async function printImplementerDirective(
       worktreeManager,
       buildDetector,
       inferBaseBranchUseCase,
-      critique
+      critique,
+      implementationProbe
     );
 
     const directive = await getNextActionUseCase.execute({
@@ -1646,7 +1657,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         worktreeManager,
         buildDetector,
         makeInferBaseBranchUseCase(scope.repo),
-        critique
+        critique,
+        new DetectImplementationDiffUseCase(commandExecutor)
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
@@ -1960,6 +1972,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
         if (result.status.planDispatchCount > 0) {
           console.log(`${LABEL_PLAN_DISPATCHES} : ${result.status.planDispatchCount}`);
+        }
+        // Issue #327: the IMPLEMENT re-dispatch record, so a run that keeps
+        // reading `next` at IMPLEMENT is observable in `status`.
+        if (result.status.implementationDispatchCount > 0) {
+          console.log(`${LABEL_IMPLEMENT_DISPATCHES} : ${result.status.implementationDispatchCount}`);
         }
         if (result.status.planEmptyParkCount > 0) {
           console.log(`${LABEL_PLAN_EMPTY_PARKS} : ${result.status.planEmptyParkCount}`);
@@ -2753,9 +2770,34 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // (`transition-stage.ts`). Accepting REVIEW here wrote a record no
         // transition could ever ingest, which the clear-on-enter hook then
         // deleted as stale — an accepted filing path that was silently orphaned.
+        //
+        // Issue #327 (Defect 3, AC-5): the refusal used to state only that
+        // filing was impossible, which left the operator with no way back after
+        // the gate had already exited. It now names the LEGAL walk-back,
+        // computed from the transition table, plus the filing command it ends
+        // with — so the advice is executable from the stage that prints it.
         if (stage !== STAGE_QUALITY_GATE) {
+          const lateIssue = scope.issue ?? issueValue ?? null;
+          const mode = scope.snapshot?.mode ?? MODE_STANDARD;
+          const walkBack = formatTransitionRecoveryCommands(
+            stage,
+            STAGE_QUALITY_GATE,
+            lateIssue,
+            mode
+          );
+          const crossesPlan =
+            stage !== null &&
+            (findLegalTransitionPath(stage, STAGE_QUALITY_GATE, mode) ?? []).includes(STAGE_PLAN);
+          const planPrerequisite =
+            crossesPlan && !scope.snapshot?.planDir
+              ? `\`codeloop plan --issue ${lateIssue ?? '<n>'} --plan-dir <dir>\` first (the checkpoint records no plan directory), then `
+              : '';
+          const recovery =
+            walkBack === null
+              ? ''
+              : ` To file it, ${planPrerequisite}walk back: ${walkBack}, then re-run \`${formatGateReportChannelCommand(lateIssue)}\`.`;
           console.error(
-            `✗ Gate evidence refused: checkpoint is at ${stage ?? '(none)'}; evidence can only be filed at ${STAGE_QUALITY_GATE}, the one stage whose exit consumes it. Nothing was written.`
+            `✗ Gate evidence refused: checkpoint is at ${stage ?? '(none)'}; evidence can only be filed at ${STAGE_QUALITY_GATE}, the one stage whose exit consumes it.${recovery} Nothing was written.`
           );
           return EXIT_CODE_FAILURE;
         }
@@ -3618,7 +3660,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
             } else {
               console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
-              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), options.configPath, issueValue, critique);
+              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), new DetectImplementationDiffUseCase(commandExecutor), options.configPath, issueValue, critique);
             }
             return EXIT_CODE_SUCCESS;
           }

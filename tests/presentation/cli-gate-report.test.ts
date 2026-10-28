@@ -21,6 +21,7 @@ const {
   ALLOWED_TRANSITIONS,
   STAGE_QUALITY_GATE,
   STAGE_REVIEW,
+  STAGE_IMPLEMENT,
   formatGateReportAdvanceCommand
 } = require('../../dist/domain');
 
@@ -299,9 +300,52 @@ describe('gate-report stage guard and Next line (issue #311)', () => {
         run.stderr.includes('REVIEW') && run.stderr.includes(STAGE_QUALITY_GATE),
         `the refusal must name the observed stage and the legal one, got:\n${run.stderr}`
       );
+      // Issue #327 (AC-5): the refusal names the LEGAL walk-back to the gate
+      // and the filing command it ends with — never an orphaned instruction.
+      assert.ok(
+        run.stderr.includes(`codeloop transition ${STAGE_IMPLEMENT} --issue ${ISSUE}`),
+        `the walk-back must name IMPLEMENT, got:\n${run.stderr}`
+      );
+      assert.ok(
+        run.stderr.includes(`codeloop transition ${STAGE_QUALITY_GATE} --issue ${ISSUE}`),
+        `the walk-back must re-enter the gate, got:\n${run.stderr}`
+      );
+      assert.ok(
+        run.stderr.includes(`codeloop gate-report --issue ${ISSUE} --report-file <path>`),
+        `the walk-back must end with the filing command, got:\n${run.stderr}`
+      );
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a refused filing must write no evidence file');
       assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
       assert.ok(!run.stdout.includes('Next:'), `no Next line at REVIEW, got:\n${run.stdout}`);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('#327: filing at COMMIT is refused with the single direct gate hop', async () => {
+    const sandbox = makeSandbox('COMMIT');
+    try {
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(run.stderr.includes('Gate evidence refused'), run.stderr);
+      assert.ok(
+        run.stderr.includes(`codeloop transition ${STAGE_QUALITY_GATE} --issue ${ISSUE}`),
+        `COMMIT reaches the gate directly, got:\n${run.stderr}`
+      );
+      assert.ok(
+        !run.stderr.includes(`codeloop transition ${STAGE_IMPLEMENT} --issue ${ISSUE}`),
+        `no detour through IMPLEMENT should be named at COMMIT, got:\n${run.stderr}`
+      );
+      assert.ok(!fs.existsSync(evidencePath(sandbox)));
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }

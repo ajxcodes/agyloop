@@ -186,45 +186,47 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
     }
   });
 
-  test('a gate with NO filed evidence says "not recorded" and warns once', async () => {
+  test('a gate with NO filed evidence REFUSES the exit and writes nothing (#327)', async () => {
     const now = Date.now();
     const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
       { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
       { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
     ]);
     const repo = new FakeGateReportRepository();
+    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
 
     try {
-      await runTransition(ws, STAGE_REVIEW, repo);
+      await assert.rejects(
+        async () => runTransition(ws, STAGE_REVIEW, repo),
+        (err: any) => {
+          assert.match(String(err.message), /Gate evidence refused/);
+          assert.match(String(err.message), /gate round 1/);
+          assert.match(String(err.message), /codeloop gate-report --issue 487/);
+          assert.match(String(err.message), /codeloop transition REVIEW --issue 487/);
+          return true;
+        },
+        'a certification exit must consume evidence or not happen'
+      );
 
-      const summary = fs.readFileSync(summaryPath, 'utf8');
+      // NOTHING was written: no checkpoint change, no summary row, no consume.
+      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
+      assert.strictEqual(repo.clears, 0, 'a refused exit must not consume anything');
+      assert.strictEqual(repo.loads, 1, 'the ingest side reads the evidence once');
+      const checkpoint = JSON.parse(checkpointBefore);
       assert.ok(
-        summary.includes('- **Build Status:** not recorded'),
-        `an unrecorded gate must say so, got:\n${summary}`
+        !checkpoint.history.some((entry: any) => entry.stage === STAGE_REVIEW),
+        'no REVIEW entry may be written by a refusal'
       );
-      assert.ok(
-        summary.includes('- **Tests:** not recorded'),
-        `an unrecorded gate must say so, got:\n${summary}`
-      );
-      assert.strictEqual(
-        row(summary, '4. Quality Gate'),
-        '| 4. Quality Gate | `gate` | `flash_lite` | NOT RECORDED | - |'
-      );
-      assert.ok(
-        !summary.includes('Build Status:** PENDING'),
-        `PENDING must never survive, got:\n${summary}`
-      );
-      assert.strictEqual(warnings.length, 1, `exactly one warning expected, got: ${warnings.join(' | ')}`);
-      assert.ok(
-        warnings[0].includes('codeloop gate-report'),
-        `the warning must name the filing command, got: ${warnings[0]}`
-      );
+      assert.strictEqual(warnings.length, 0, `no warning-plus-advance, got: ${warnings.join(' | ')}`);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
 
-  test('a report from a DIFFERENT round is not applied', async () => {
+  test('a report from a DIFFERENT round is REFUSED, not silently discarded (#327)', async () => {
     const now = Date.now();
     const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
       { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 400_000).toISOString() },
@@ -232,6 +234,9 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
     ]);
     const repo = new FakeGateReportRepository();
+    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
     // A stale report for round 0 while the checkpoint is at round 2.
     repo.reports.set(
       String(ISSUE),
@@ -252,17 +257,51 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
     );
 
     try {
-      await runTransition(ws, STAGE_REVIEW, repo);
+      await assert.rejects(
+        async () => runTransition(ws, STAGE_REVIEW, repo),
+        (err: any) => {
+          assert.match(String(err.message), /Gate evidence refused/);
+          assert.match(String(err.message), /certifies gate round 0, not gate round 2/);
+          return true;
+        }
+      );
 
+      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
+      assert.ok(
+        !summaryBefore.includes('9999 passed'),
+        'a stale report must not certify this round'
+      );
+      assert.strictEqual(repo.clears, 0, 'a stale report is not consumed by a refusal');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('a non-certifying exit keeps NOT RECORDED and names a LEGAL walk back (#327 AC-7)', async () => {
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+      { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const repo = new FakeGateReportRepository();
+
+    try {
+      const sm = await runTransition(ws, STAGE_IMPLEMENT, repo);
+
+      assert.strictEqual(sm.currentStage, STAGE_IMPLEMENT);
+      assert.strictEqual(sm.history[sm.history.length - 1].metadata.gateVerdict, 'NOT_RECORDED');
       const summary = fs.readFileSync(summaryPath, 'utf8');
       assert.strictEqual(
         row(summary, '4. Quality Gate'),
         '| 4. Quality Gate | `gate` | `flash_lite` | NOT RECORDED | - |'
       );
+      assert.strictEqual(warnings.length, 1, warnings.join(' | '));
       assert.ok(
-        !summary.includes('9999 passed'),
-        `a stale report must not certify this round, got:\n${summary}`
+        warnings[0].includes('codeloop transition QUALITY_GATE --issue 487'),
+        `the advice must be executable from IMPLEMENT, got: ${warnings[0]}`
       );
+      assert.ok(warnings[0].includes('codeloop gate-report --issue <n>'), warnings[0]);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }

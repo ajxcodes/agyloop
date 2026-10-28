@@ -58,7 +58,14 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
   // IMPLEMENT tells the operator to re-plan, and the planner payload is produced
   // at PLAN. Without this entry the instruction could not be carried out.
   [STAGE_IMPLEMENT]: Object.freeze([STAGE_QUALITY_GATE, STAGE_PLAN, STAGE_TRIAGE]),
-  [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if gates fail
+  // PLAN is a supported recovery target (issue #327, Defect 2): a gate that
+  // refuses to certify a plan must be able to send the run back to planning.
+  // The "Protocol Not Executable" / "Plan Integrity" blockers prescribe
+  // re-planning, and without this entry that instruction could not be carried
+  // out. Mirrors the #267 precedent (`IMPLEMENT -> PLAN`). APPROVAL stays
+  // illegal on purpose: approving again without a planning pass would silently
+  // re-approve the broken bytes.
+  [STAGE_QUALITY_GATE]: Object.freeze([STAGE_REVIEW, STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]), // IMPLEMENT allowed if gates fail
   [STAGE_REVIEW]: Object.freeze([STAGE_COMMIT, STAGE_IMPLEMENT, STAGE_TRIAGE]), // IMPLEMENT allowed if review changes required
   [STAGE_COMMIT]: Object.freeze([STAGE_COMPLETED, STAGE_QUALITY_GATE, STAGE_IMPLEMENT, STAGE_PLAN, STAGE_TRIAGE]),
   [STAGE_COMPLETED]: Object.freeze([
@@ -77,6 +84,28 @@ export const ALLOWED_TRANSITIONS: Readonly<Record<StageName, readonly StageName[
     STAGE_COMPLETED
   ])
 });
+
+/**
+ * The lifecycle's forward order (issue #327).
+ *
+ * Used ONLY to disambiguate EQUALLY SHORT recovery paths: when the transition
+ * table offers several legal ways back to a stage, the path that walks back to
+ * the earliest stage wins, so a recovery names the walk-back an operator
+ * actually performs (`REVIEW -> IMPLEMENT -> QUALITY_GATE`) rather than a
+ * forward detour (`REVIEW -> COMMIT -> QUALITY_GATE`).
+ */
+export const LIFECYCLE_STAGE_ORDER: readonly StageName[] = Object.freeze([
+  STAGE_INITIALIZED,
+  STAGE_DISCOVERY,
+  STAGE_PLAN,
+  STAGE_APPROVAL,
+  STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
+  STAGE_COMPLETED,
+  STAGE_TRIAGE
+]);
 
 export const MODE_STANDARD = 'standard' as const;
 export const MODE_PLAN = 'plan' as const;
@@ -2828,7 +2857,7 @@ export function formatGateReportChannelNote(issue?: number | string | null): str
     issue === null || issue === undefined || String(issue).trim().length === 0
       ? '<n>'
       : String(issue);
-  return `Orchestrator: file the gate's emitted GATE_REPORT_JSON block before advancing: ${command} (or pipe it into \`codeloop ${COMMAND_GATE_REPORT} --issue ${issueToken} ${FLAG_REPORT_STDIN}\`). Until it is filed, the summary reports the gate as not recorded.`;
+  return `Orchestrator: file the gate's emitted GATE_REPORT_JSON block before advancing: ${command} (or pipe it into \`codeloop ${COMMAND_GATE_REPORT} --issue ${issueToken} ${FLAG_REPORT_STDIN}\`). \`codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW} --issue ${issueToken}\` refuses until this round's block is filed, so the gate cannot exit without evidence.`;
 }
 
 /**
@@ -3028,6 +3057,129 @@ export function formatGateReportAdvanceCommand(
     return GATE_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
   }
   return GATE_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/**
+ * ONE renderer for a `codeloop transition <STAGE>` command (issue #327).
+ *
+ * Every recovery path this boundary prints is composed from this, so a named
+ * hop cannot drift from the stage the table actually allows.
+ */
+export const TRANSITION_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} {stage} --issue {issue}` as const;
+export const TRANSITION_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} {stage}` as const;
+
+export function formatTransitionCommand(
+  stage: string,
+  issue?: number | string | null
+): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return TRANSITION_COMMAND_NO_ISSUE_TEMPLATE.replace('{stage}', stage);
+  }
+  return TRANSITION_COMMAND_TEMPLATE.replace('{stage}', stage).replace('{issue}', String(issue));
+}
+
+// ============================================================================
+// IMPLEMENT -> QUALITY_GATE boundary contract (issue #327, Defect 4)
+// ============================================================================
+
+/** The command that ADVANCES the IMPLEMENT stage (issue #327). */
+export const IMPLEMENT_ADVANCE_COMMAND_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} ${STAGE_QUALITY_GATE} --issue {issue}` as const;
+export const IMPLEMENT_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE =
+  `codeloop ${COMMAND_TRANSITION} ${STAGE_QUALITY_GATE}` as const;
+
+export function formatImplementAdvanceCommand(issue?: number | string | null): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return IMPLEMENT_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return IMPLEMENT_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/** What ENDS the IMPLEMENT stage (issue #327). */
+export const NOTE_IMPLEMENT_ADVANCE_CONDITION =
+  'This stage ends when an implementation diff exists in the task worktree.' as const;
+
+/** The state sentence when the probe FOUND an implementation (issue #327). */
+export const NOTE_IMPLEMENT_PRESENT =
+  'Implementation present: An implementation diff exists in the task worktree — the completion condition is met; do not re-dispatch the implementer.' as const;
+
+/** The state sentence when the probe measured a clean tree (issue #327). */
+export const NOTE_IMPLEMENT_ABSENT =
+  'Implementation not present: No implementation diff was detected in the task worktree yet.' as const;
+
+/** The state sentence when the probe could not measure (issue #327). */
+export const NOTE_IMPLEMENT_UNVERIFIED =
+  'The implementation diff could not be measured, so this directive makes no claim about the worktree.' as const;
+
+/** The per-read re-dispatch record for IMPLEMENT: `{n}`. */
+export const NOTE_IMPLEMENT_DISPATCH_ORDINAL =
+  'Implementer dispatch {n} for this stage.' as const;
+
+/** The operator-facing label of the IMPLEMENT re-dispatch count. */
+export const LABEL_IMPLEMENT_DISPATCHES = 'Implementer Dispatches' as const;
+
+/**
+ * The LEGAL re-approval sequence a gate blocker prescribes (issue #327,
+ * Defect 2).
+ *
+ * `QUALITY_GATE -> PLAN` is legal (the table was widened with this issue), and
+ * `PLAN -> APPROVAL -> IMPLEMENT` is the fresh-approval hop that re-records the
+ * plan digest — which is what makes an EDITED plan pass the immutability check
+ * on the next gate exit. Naming only the first hop would leave the operator
+ * stuck one step later.
+ *
+ * `planDir` is the checkpoint's recorded plan directory. `transition PLAN`
+ * halts on `PreFlightHaltError` without one, so the prerequisite is prefixed
+ * instead of printing a hop that cannot run.
+ */
+export function formatPlanReapprovalRecovery(
+  issue?: number | string | null,
+  planDir?: string | null
+): string {
+  const issueToken =
+    issue === null || issue === undefined || String(issue).trim().length === 0
+      ? '<n>'
+      : String(issue);
+  const hops = [
+    formatTransitionCommand(STAGE_PLAN, issue),
+    formatTransitionCommand(STAGE_APPROVAL, issue),
+    formatTransitionCommand(STAGE_IMPLEMENT, issue)
+  ].join(', then ');
+
+  const hasPlanDir = (planDir ?? '').trim().length > 0;
+  const prerequisite = hasPlanDir
+    ? 're-run planning and approval: '
+    : `\`codeloop ${COMMAND_PLAN} --issue ${issueToken} --plan-dir <dir>\` first (the checkpoint records no plan directory), then re-run planning and approval: `;
+
+  return `${prerequisite}${hops} (the fresh-approval hop re-records the plan digest, so the edited plan stops failing the immutability check)`;
+}
+
+/**
+ * The refusal `transition QUALITY_GATE -> REVIEW` raises with no usable
+ * evidence (issue #327, Defect 3).
+ *
+ * It names the filing command that IS accepted at `QUALITY_GATE` and the retry,
+ * so the operator is never told to do something the state machine rejects.
+ */
+export function formatGateEvidenceRequiredMessage(
+  issue: number | string | null | undefined,
+  gateRound: number,
+  filedRound: number | null
+): string {
+  const filing = formatGateReportChannelCommand(issue);
+  const retry = formatTransitionCommand(STAGE_REVIEW, issue);
+  const reason =
+    filedRound === null
+      ? `no GATE_REPORT_JSON block was filed for gate round ${gateRound}, so there is nothing to certify`
+      : `the filed GATE_REPORT_JSON block certifies gate round ${filedRound}, not gate round ${gateRound}, so there is nothing to certify this round`;
+  const action =
+    filedRound === null
+      ? `File it with \`${filing}\``
+      : `File this round's block with \`${filing}\``;
+
+  return `Gate evidence refused: ${reason}. ${action}, then re-run \`${retry}\`. Nothing was written.`;
 }
 
 /** What ENDS the DISCOVERY stage (issue #292). */

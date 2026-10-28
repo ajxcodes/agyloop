@@ -26,11 +26,15 @@ const os = require('node:os');
 const { TransitionStageUseCase } = require('../../dist/application');
 const {
   StateMachine,
+  GateResultReport,
+  resolveGateRound,
   STAGE_INITIALIZED,
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
   MODE_STANDARD,
   MODE_PLAN,
   InvalidTransitionError,
@@ -318,6 +322,51 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     return sm;
   }
 
+  /**
+   * A round-matching gate report filed for this checkpoint (issue #327). The
+   * round is COMPUTED from the history, never a literal: the ingest side reads
+   * `resolveGateRound(sm.history)` and a hardcoded round would make this suite
+   * silently evidence-free.
+   */
+  function filedReport(machine: any, verdict = 'PASSED'): any {
+    const round = resolveGateRound(machine.history);
+    return GateResultReport.fromJSON(
+      {
+        verdict,
+        buildSystem: 'node',
+        buildStatus: verdict,
+        testsStatus: `${verdict} (3 passed)`,
+        testsPassed: 3,
+        testsFailed: 0,
+        durationMs: 1000,
+        executedCommands: ['npm test'],
+        smokeProtocol: 'NOT_DECLARED',
+        notRun: [],
+        gateRound: round
+      },
+      round
+    );
+  }
+
+  function gateRepoWith(machine: any): any {
+    const reports = new Map<string, any>([['16', filedReport(machine)]]);
+    return {
+      reports,
+      clears: 0,
+      load(issue: any) {
+        return reports.get(String(issue)) ?? null;
+      },
+      save(issue: any, report: any) {
+        reports.set(String(issue), report);
+        return `/fake/${issue}.gate.json`;
+      },
+      clear(issue: any) {
+        this.clears += 1;
+        reports.delete(String(issue));
+      }
+    };
+  }
+
   test('TS-D1: entering IMPLEMENT from APPROVAL records the approved digest', async () => {
     const stateRepo = new MockStateRepo(machineAt(STAGE_APPROVAL).toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
@@ -340,7 +389,13 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
     const stateRepo = new MockStateRepo(machine.toSnapshot());
-    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepoWith(machine)
+    );
 
     const result = await useCase.execute({
       targetStage: 'REVIEW',
@@ -350,13 +405,22 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
     assert.strictEqual(result.currentStage, 'REVIEW');
     assert.strictEqual(stateRepo.savedSnapshot?.currentStage, 'REVIEW');
+    assert.strictEqual(result.history[result.history.length - 1].metadata.gateVerdict, 'PASSED');
   });
 
   test('TS-D3: a plan edited after approval refuses QUALITY_GATE -> REVIEW and persists nothing', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
     const stateRepo = new MockStateRepo(machine.toSnapshot());
-    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+    // Round-matching evidence, so the DIGEST check is what refuses: the
+    // evidence gate runs first and would otherwise mask this rule.
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepoWith(machine)
+    );
 
     await assert.rejects(
       async () =>
@@ -369,8 +433,15 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   });
 
   test('TS-D4: a legacy checkpoint with no digest still transitions', async () => {
-    const stateRepo = new MockStateRepo(machineAt('QUALITY_GATE').toSnapshot());
-    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+    const machine = machineAt('QUALITY_GATE');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepoWith(machine)
+    );
 
     const result = await useCase.execute({
       targetStage: 'REVIEW',
@@ -380,6 +451,96 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
     assert.strictEqual(result.currentStage, 'REVIEW');
     assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  test('TS-D5 (#327 AC-3): re-planning re-records the digest on the fresh-approval hop', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    // 1. Edit the plan: it is no longer the approved bytes.
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (edited)\n', 'utf8');
+
+    // 2. The documented recovery, executed hop by hop.
+    await useCase.execute({ targetStage: STAGE_PLAN, issue: 16, workspaceDir: tempDir });
+    await useCase.execute({ targetStage: STAGE_APPROVAL, issue: 16, workspaceDir: tempDir });
+    await useCase.execute({
+      targetStage: STAGE_IMPLEMENT,
+      issue: 16,
+      workspaceDir: tempDir,
+      noWorktree: true
+    });
+
+    const reApproved = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+    assert.strictEqual(
+      stateRepo.savedSnapshot?.approvedPlanDigest,
+      reApproved,
+      'the fresh-approval hop must record the EDITED bytes'
+    );
+
+    // 3. The next gate exit succeeds with same-round evidence.
+    await useCase.execute({ targetStage: STAGE_QUALITY_GATE, issue: 16, workspaceDir: tempDir });
+    const round = resolveGateRound(stateRepo.savedSnapshot?.history);
+    const repo = {
+      reports: new Map(),
+      load: () => null,
+      save: () => '',
+      clear: () => undefined
+    } as any;
+    repo.load = () =>
+      GateResultReport.fromJSON(
+        {
+          verdict: 'PASSED',
+          buildSystem: 'node',
+          buildStatus: 'PASSED',
+          testsStatus: 'PASSED (3 passed)',
+          testsPassed: 3,
+          testsFailed: 0,
+          durationMs: 1000,
+          executedCommands: ['npm test'],
+          smokeProtocol: 'NOT_DECLARED',
+          notRun: [],
+          gateRound: round
+        },
+        round
+      );
+    const reviewing = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      repo
+    );
+
+    const result = await reviewing.execute({
+      targetStage: STAGE_REVIEW,
+      issue: 16,
+      workspaceDir: tempDir
+    });
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+  });
+
+  test('TS-D6 (#327 AC-3): QUALITY_GATE -> PLAN is executable and -> REVIEW without evidence refuses', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({ targetStage: STAGE_REVIEW, issue: 16, workspaceDir: tempDir }),
+      /Gate evidence refused/,
+      'a certification exit must not consume nothing'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, STAGE_QUALITY_GATE);
+
+    const replanned = await useCase.execute({
+      targetStage: STAGE_PLAN,
+      issue: 16,
+      workspaceDir: tempDir
+    });
+    assert.strictEqual(replanned.currentStage, STAGE_PLAN);
   });
 });
 
