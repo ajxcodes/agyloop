@@ -225,6 +225,132 @@ describe('MilestoneReleaseUseCase', () => {
     assert.strictEqual(prCreatedWith.baseBranch, 'main');
     assert.strictEqual(prCreatedWith.headBranch, 'phase/1-bridge');
     assert(prCreatedWith.labels.includes(RELEASE_LABEL_MINOR));
+    // Issue #315 (AC-32): the release PR body names the outstanding cross-repo
+    // Release-notes dependency, so merging it cannot read as "notes are done".
+    assert.match(String(prCreatedWith.body), /ajxcodes\/auto-tag/);
+    assert.match(String(prCreatedWith.body), /not fixed here/);
+  });
+
+  test('an unresolvable base ref is a distinct error, never "nothing to release" (AC-28)', async () => {
+    let commitsRead = false;
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => {
+        commitsRead = true;
+        return [];
+      }
+    });
+    const failingProbe: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => ({
+        command: cmd,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'fatal: Needed a single revision',
+        timedOut: false,
+        durationMs: 1,
+        combinedOutput: ''
+      })
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      {} as any,
+      makeMockConfig(),
+      failingProbe
+    );
+
+    await assert.rejects(
+      async () => {
+        await useCase.execute({ phaseBranch: 'phase/1-bridge', dryRun: true });
+      },
+      (err: any) => {
+        assert(err instanceof MilestoneReleaseError);
+        assert.match(err.message, /Cannot resolve base ref 'main'/);
+        assert.doesNotMatch(err.message, /has no new commits/);
+        return true;
+      }
+    );
+    assert.strictEqual(commitsRead, false, 'no commit read may run against an unresolved ref');
+  });
+
+  test('a missing local base falls back to origin/<base> and names the ref used (AC-29)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+    let rangeBase: string | null = null;
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async (options: any) => {
+        rangeBase = options.baseBranch;
+        return commits;
+      }
+    });
+    const executor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        const isVerify = cmd.startsWith('git rev-parse --verify --quiet');
+        const resolves = isVerify && cmd.includes('"origin/main"');
+        return {
+          command: cmd,
+          exitCode: resolves ? 0 : isVerify ? 1 : 0,
+          stdout: resolves ? 'abc123\n' : '',
+          stderr: '',
+          timedOut: false,
+          durationMs: 1,
+          combinedOutput: ''
+        };
+      }
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      {} as any,
+      makeMockConfig(),
+      executor
+    );
+    const result = await useCase.execute({ phaseBranch: 'phase/1-bridge', dryRun: true });
+
+    assert.strictEqual(result.baseRefUsed, 'origin/main');
+    assert.strictEqual(rangeBase, 'origin/main', 'the range must be computed against the ref actually used');
+  });
+
+  test('neither ref resolving names both and reads no range (AC-29)', async () => {
+    let commitsRead = false;
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => {
+        commitsRead = true;
+        return ['feat: unreachable'];
+      }
+    });
+    const executor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => ({
+        command: cmd,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'fatal: Needed a single revision',
+        timedOut: false,
+        durationMs: 1,
+        combinedOutput: ''
+      })
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      {} as any,
+      makeMockConfig(),
+      executor
+    );
+
+    await assert.rejects(
+      async () => {
+        await useCase.execute({ phaseBranch: 'phase/1-bridge', dryRun: true });
+      },
+      (err: any) => {
+        assert(err instanceof MilestoneReleaseError);
+        assert.match(err.message, /'main'/);
+        assert.match(err.message, /'origin\/main'/);
+        return true;
+      }
+    );
+    assert.strictEqual(commitsRead, false);
   });
 
   test('detects open in-flight PRs targeting the collector branch and counts them', async () => {

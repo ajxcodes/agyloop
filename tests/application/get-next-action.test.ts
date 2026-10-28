@@ -219,7 +219,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_INITIALIZED);
     assert.strictEqual(result.nextStage, STAGE_DISCOVERY);
     assert.strictEqual(result.actionType, 'preflight');
-    assert.ok(result.humanSummary.includes('bin/agyloop transition DISCOVERY --issue 41'));
+    assert.ok(result.humanSummary.includes('codeloop transition DISCOVERY --issue 41'));
   });
 
   test('returns discovery subagent payload for STAGE_DISCOVERY', async () => {
@@ -534,7 +534,31 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
     assert.strictEqual(result.nextStage, STAGE_COMPLETED);
     assert.strictEqual(result.actionType, 'human_gate');
-    assert.ok(result.humanSummary.includes('agyloop commit'));
+    assert.ok(result.humanSummary.includes('codeloop commit'));
+  });
+
+  test('the COMMIT directive names the delivery step (issue #315, AC-21)', async () => {
+    const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+
+    const result = await new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig()
+    ).execute({ workspaceDir: '/repo' });
+
+    const text = `${result.description}\n${result.humanSummary}`;
+    // The gate's definition of done is DELIVERY. An operator who follows only
+    // `next` must be told the PR step exists and that COMPLETED ≠ delivered.
+    assert.match(result.humanSummary, /codeloop commit --create-pr/);
+    assert.match(text, /not delivered/i);
+    assert.match(result.description, /open the PR/);
+    assert.doesNotMatch(text, /\bagyloop\b/);
   });
 
   test('returns completed action for STAGE_COMPLETED', async () => {
@@ -973,7 +997,7 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
     const commitUseCase = new GetNextActionUseCase(commitRepo, makeMockConfig());
     const commitResult = await commitUseCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(commitResult.actionType, 'human_gate');
-    assert.ok(commitResult.humanSummary.includes('agyloop commit'));
+    assert.ok(commitResult.humanSummary.includes('codeloop commit'));
   });
 });
 

@@ -8,6 +8,12 @@
  *   - it never said that `Closes #N` cannot auto-close on a collector-base PR;
  *   - and a completed run's summary still read `PENDING`.
  *
+ * Issue #315 (AC-20) rewrote the duration test to walk the PRODUCTION
+ * REVIEW→COMMIT sequence: the checkpoint is seeded at REVIEW, the verdict is
+ * recorded through `codeloop review`, and the assertion reads the pause the
+ * tool actually wrote — no seeded `pausedAtGate: 'COMMIT'` precondition, which
+ * was a state production never created.
+ *
  * Full CLI, real git repo, bare `origin`, fake `gh`.
  */
 
@@ -88,19 +94,23 @@ function makeSandbox(baseBranch: string, options: { gitignore?: boolean } = {}):
   const tasksDir = path.join(dir, '.agyloop', 'tasks');
   fs.mkdirSync(tasksDir, { recursive: true });
   const now = Date.now();
+  // Issue #315 (AC-20): the checkpoint is seeded at REVIEW — the stage a real
+  // run is in when the reviewer's verdict is recorded — and NOT with a
+  // `pausedAtGate: 'COMMIT'` precondition. The COMMIT pause is produced by
+  // walking the production sequence (`runReviewToCommit`).
   fs.writeFileSync(
     path.join(tasksDir, `${ISSUE}.json`),
     JSON.stringify(
       {
         version: '1.0.0',
-        currentStage: 'COMMIT',
+        currentStage: 'REVIEW',
         mode: 'standard',
         issue: ISSUE,
         baseBranch,
         planDir: `artifacts/plans/${ISSUE}-smoke`,
         createdAt: new Date(now - 1_800_000).toISOString(),
         updatedAt: new Date(now).toISOString(),
-        history: [{ stage: 'COMMIT', timestamp: new Date(now - 84_000).toISOString() }],
+        history: [{ stage: 'REVIEW', timestamp: new Date(now - 3_000).toISOString() }],
         worktree: {
           taskId: ISSUE,
           worktreePath: dir,
@@ -108,8 +118,8 @@ function makeSandbox(baseBranch: string, options: { gitignore?: boolean } = {}):
           baseBranch,
           isIsolated: false
         },
-        pausedAtGate: 'COMMIT',
-        pausedAtTimestamp: new Date(now - 84_000).toISOString(),
+        pausedAtGate: null,
+        pausedAtTimestamp: null,
         totalHumanWaitMs: 0
       },
       null,
@@ -148,6 +158,73 @@ function runCommit(sandbox: Sandbox, extraArgs: string[] = []) {
   );
 }
 
+const APPROVED_VERDICT = `REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: The change set faithfully implements the approved plan.
+UNFULFILLED_AC:
+- None
+REMEDIATION_GUIDANCE:
+- None
+`;
+
+/**
+ * A CLEAN Tier 1 report. `--critique-report` is supplied so the review is
+ * hermetic: the critique CLI is never resolved or executed, and the verdict
+ * cannot be escalated.
+ */
+const CLEAN_CRITIQUE = {
+  summary: 'Clean automated review',
+  confidenceLevel: 'High',
+  confidenceExplanation: 'diff verified',
+  comments: []
+};
+
+/**
+ * Walks the PRODUCTION review→commit sequence (issue #315, AC-20): records an
+ * APPROVED reviewer verdict through `codeloop review`, which must leave the
+ * checkpoint at COMMIT **with a recorded pause** — no seeded precondition.
+ */
+function runReviewToCommit(sandbox: Sandbox) {
+  const inputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-commit-review-input-'));
+  try {
+    const verdictPath = path.join(inputDir, 'verdict.md');
+    const critiquePath = path.join(inputDir, 'critique.json');
+    fs.writeFileSync(verdictPath, APPROVED_VERDICT, 'utf8');
+    fs.writeFileSync(critiquePath, JSON.stringify(CLEAN_CRITIQUE), 'utf8');
+    return spawnSync(
+      process.execPath,
+      [
+        path.join(REPO_ROOT, 'bin', 'codeloop.js'),
+        'review',
+        '--issue',
+        String(ISSUE),
+        '--verdict-file',
+        verdictPath,
+        '--critique-report',
+        critiquePath
+      ],
+      {
+        cwd: sandbox.dir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${sandbox.binDir}${path.delimiter}${process.env.PATH}`,
+          HOME: path.join(sandbox.dir, '.home'),
+          GH_CALL_LOG: sandbox.ghLog,
+          AGY_SUBAGENT: ''
+        }
+      }
+    );
+  } finally {
+    fs.rmSync(inputDir, { recursive: true, force: true });
+  }
+}
+
+function readCheckpoint(sandbox: Sandbox): any {
+  return JSON.parse(
+    fs.readFileSync(path.join(sandbox.dir, '.agyloop', 'tasks', `${ISSUE}.json`), 'utf8')
+  );
+}
+
 
 /** Moves the fake `gh` outside the repo so it is never an untracked change. */
 function externaliseBin(sandbox: Sandbox): { sandbox: Sandbox; binDir: string } {
@@ -162,6 +239,8 @@ describe('commit output accuracy (issue #284)', () => {
   test('--create-pr reports the created URL and never prints the manual script', () => {
     const sandbox = makeSandbox('phase/6-smoke');
     try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
       const run = runCommit(sandbox, ['--create-pr']);
       const output = `${run.stdout}\n${run.stderr}`;
 
@@ -186,9 +265,55 @@ describe('commit output accuracy (issue #284)', () => {
     }
   });
 
+  test('commit without --create-pr prints one gh command and warns the run is not delivered (issue #315, AC-25)', () => {
+    const sandbox = makeSandbox('main');
+    try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
+      const run = runCommit(sandbox);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.status, 0, output);
+
+      const ghLines = run.stdout
+        .split('\n')
+        .map((line: string) => line.trim())
+        .filter((line: string) => line.startsWith('gh pr create'));
+      assert.strictEqual(
+        ghLines.length,
+        1,
+        `exactly one copy-pasteable command expected, got:\n${output}`
+      );
+      assert.ok(!ghLines[0].includes('git stash'), ghLines[0]);
+      assert.ok(!ghLines[0].includes('if !'), ghLines[0]);
+
+      // The warning is the point: a pushed branch is not a delivered run.
+      assert.match(output, /pushed but NOT delivered/i);
+
+      const ghCalls = fs
+        .readFileSync(sandbox.ghLog, 'utf8')
+        .split('\n')
+        .filter((line: string) => line.includes('pr create'));
+      assert.strictEqual(ghCalls.length, 0, `no PR may be created without the flag: ${ghCalls.join('\n')}`);
+
+      const persisted = readCheckpoint(sandbox);
+      assert.strictEqual(persisted.currentStage, 'COMPLETED');
+      assert.deepStrictEqual(persisted.pullRequest, {
+        number: null,
+        url: null,
+        status: 'missing'
+      });
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+    }
+  });
+
   test('the collector-base caveat names the branch, the keyword and `codeloop sync`', () => {
     const sandbox = makeSandbox('phase/6-smoke');
     try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
       const run = runCommit(sandbox, ['--create-pr']);
       const output = `${run.stdout}\n${run.stderr}`;
 
@@ -213,6 +338,8 @@ describe('commit output accuracy (issue #284)', () => {
   test('no caveat is printed for a default-branch base', () => {
     const sandbox = makeSandbox('main');
     try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
       const run = runCommit(sandbox, ['--create-pr']);
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.status, 0, output);
@@ -229,6 +356,8 @@ describe('commit output accuracy (issue #284)', () => {
   test('the uncompressed file list includes the untracked file the commit really contains', () => {
     const sandbox = makeSandbox('phase/6-smoke');
     try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
       const run = runCommit(sandbox, ['--create-pr']);
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.status, 0, output);
@@ -257,9 +386,29 @@ describe('commit output accuracy (issue #284)', () => {
     }
   });
 
-  test('the completed summary carries the measured commit-gate wait, no PENDING, and the real subject once', () => {
+  test('the completed summary carries the measured commit-gate wait, no PENDING, and the real subject once', async () => {
     const sandbox = makeSandbox('phase/6-smoke');
     try {
+      // The PRODUCTION sequence: REVIEW --(APPROVED)--> COMMIT (paused).
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
+      const atCommit = readCheckpoint(sandbox);
+      assert.strictEqual(atCommit.currentStage, 'COMMIT');
+      assert.strictEqual(
+        atCommit.pausedAtGate,
+        'COMMIT',
+        'the standard REVIEW→COMMIT path must record the confirmation pause'
+      );
+      assert.ok(atCommit.pausedAtTimestamp, 'the pause must be timestamped');
+      const pausedAtMs = Date.parse(atCommit.pausedAtTimestamp);
+      assert.ok(Number.isFinite(pausedAtMs), atCommit.pausedAtTimestamp);
+      assert.strictEqual(atCommit.totalHumanWaitMs, 0, 'the wait is banked at the gate exit');
+
+      // A measurable wait: the gate row is rounded to whole seconds.
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      const deltaMs = Date.now() - pausedAtMs;
+
       const run = runCommit(sandbox, ['--create-pr']);
       assert.strictEqual(run.status, 0, `${run.stdout}\n${run.stderr}`);
 
@@ -270,17 +419,29 @@ describe('commit output accuracy (issue #284)', () => {
       assert.ok(row, `the Commit Gate row must exist, got:\n${summary}`);
       assert.match(
         row as string,
-        /^\| 6\. Commit Gate \| Human Gate \| - \| COMPLETED \| \d+m \d+s \|$/,
+        /^\| 6\. Commit Gate \| Human Gate \| - \| COMPLETED \| (?:\d+m )?\d+s \|$/,
         `the row must be terminal with a measured duration, got: ${row}`
       );
-      // The seeded pause is 84 s; process overhead adds a little. What matters
-      // is that the row is the MEASURED wait, not the old `263m 50s` class.
-      const measured = /(\d+)m (\d+)s/.exec(row as string);
+      // The row is the MEASURED confirmation wait, not a constant and not `0s`.
+      const measured = /(?:(\d+)m )?(\d+)s/.exec(row as string);
       assert.ok(measured, `the duration must be readable, got: ${row}`);
-      const measuredMs = Number(measured![1]) * 60_000 + Number(measured![2]) * 1000;
+      const measuredMs = Number(measured![1] ?? 0) * 60_000 + Number(measured![2]) * 1000;
+      assert.ok(measuredMs > 0, `the commit gate wait must be non-zero, got ${measuredMs}ms (${row})`);
+      // Rounding to the nearest second tolerates <1s of drift either way.
       assert.ok(
-        measuredMs >= 84_000 && measuredMs < 100_000,
-        `the duration must match the seeded 84s pause, got ${measuredMs}ms (${row})`
+        measuredMs >= deltaMs - 1_000 && measuredMs <= deltaMs + 2_000,
+        `the duration must match the real confirmation delta (${deltaMs}ms), got ${measuredMs}ms (${row})`
+      );
+
+      const persisted = readCheckpoint(sandbox);
+      assert.strictEqual(persisted.currentStage, 'COMPLETED');
+      assert.ok(
+        persisted.totalHumanWaitMs > 0,
+        `totalHumanWaitMs must include the confirmation wait, got ${persisted.totalHumanWaitMs}`
+      );
+      assert.ok(
+        persisted.totalHumanWaitMs >= measuredMs - 1_000,
+        `totalHumanWaitMs (${persisted.totalHumanWaitMs}) must bank the row's ${measuredMs}ms`
       );
 
       const commitMessageLines = summary
@@ -325,6 +486,9 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
       fs.rmSync(path.join(sandbox.dir, 'tests', 'new.test.ts'), { force: true });
       fs.writeFileSync(path.join(sandbox.dir, 'feature.txt'), 'feature\n', 'utf8');
 
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
       const run = runCommit(sandbox, ['--create-pr']);
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.status, 0, output);
@@ -360,6 +524,10 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
         stdio: 'ignore'
       });
       fs.rmSync(path.join(sandbox.dir, 'tests', 'new.test.ts'), { force: true });
+      // Walk the production path to COMMIT first; the checkpoint must sit at
+      // the gate (paused) before `commit` can run at all.
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
       const before = gitOut(sandbox.dir, ['rev-parse', 'HEAD']).trim();
 
       const run = runCommit(sandbox);
@@ -379,6 +547,8 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
   test('N-33 / AC-8 + AC-10: a descriptor-less COMMIT commits from the workspace root', () => {
     const sandbox = makeSandbox('main');
     try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
       // Issue #307: `worktree: null` is a legal root-scoped run.
       const statePath = path.join(sandbox.dir, '.agyloop', 'tasks', `${ISSUE}.json`);
       const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));

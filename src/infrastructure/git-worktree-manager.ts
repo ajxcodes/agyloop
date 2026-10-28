@@ -11,6 +11,7 @@ import {
   WorktreeDescriptor,
   WorktreeCreationError,
   WorktreeCleanupError,
+  WorktreeError,
   DEFAULT_WORKTREES_DIR,
   DEFAULT_TASK_BRANCH_PREFIX,
   DEFAULT_STATE_DIR,
@@ -589,7 +590,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     if (!actualSha || !expectedSha) {
       console.warn(
-        `[agyloop] createWorktree: unable to verify worktree start point for branch '${context.branch}' at ${worktreePath} (worktree HEAD or base branch '${baseBranch}' could not be read); proceeding without start-point verification.`
+        `[codeloop] createWorktree: unable to verify worktree start point for branch '${context.branch}' at ${worktreePath} (worktree HEAD or base branch '${baseBranch}' could not be read); proceeding without start-point verification.`
       );
       return;
     }
@@ -639,11 +640,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     if (tipSha) {
       console.warn(
-        `[agyloop] createWorktree: reusing existing local branch "${branchName}" at commit ${tipSha} (base: "${baseBranch}")`
+        `[codeloop] createWorktree: reusing existing local branch "${branchName}" at commit ${tipSha} (base: "${baseBranch}")`
       );
     } else {
       console.warn(
-        `[agyloop] createWorktree: reusing existing local branch "${branchName}" (base: "${baseBranch}")`
+        `[codeloop] createWorktree: reusing existing local branch "${branchName}" (base: "${baseBranch}")`
       );
     }
 
@@ -655,7 +656,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       });
       if (merged) {
         console.warn(
-          `[agyloop] createWorktree: branch "${branchName}" is already merged into base "${baseBranch}"; recreating it from the base branch is recommended.`
+          `[codeloop] createWorktree: branch "${branchName}" is already merged into base "${baseBranch}"; recreating it from the base branch is recommended.`
         );
       }
     } catch {
@@ -1435,7 +1436,19 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       { cwd: workspace }
     );
 
-    if (res.exitCode !== 0 || !res.stdout.trim()) {
+    if (res.exitCode !== 0) {
+      // Issue #315 (AC-28 / #294): a FAILED `git log` is not an empty range.
+      // Returning `[]` here made an unresolvable ref read as "nothing to
+      // release" — a success-shaped answer for a git failure. An empty but
+      // VALID range still returns `[]` below.
+      const detail = (res.stderr || res.stdout || 'git log exited non-zero').trim();
+      throw new WorktreeError(
+        'getCommitsBetween',
+        `Cannot resolve ref range '${options.baseBranch}..${options.headBranch}': ${detail}`
+      );
+    }
+
+    if (!res.stdout.trim()) {
       return [];
     }
 

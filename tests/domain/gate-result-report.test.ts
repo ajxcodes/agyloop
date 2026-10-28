@@ -114,6 +114,157 @@ describe('GateResultReport (issue #284)', () => {
   });
 });
 
+describe('normaliseGateTests: testsPassed counts UNIQUE tests (issue #325, AC-16)', () => {
+  const { normaliseGateTests } = require('../../dist/domain');
+
+  function report(json: Record<string, unknown>) {
+    return GateResultReport.fromJSON(
+      {
+        verdict: 'PASSED',
+        buildSystem: 'node',
+        buildStatus: 'PASSED',
+        testsStatus: 'PASSED (0 passed)',
+        testsPassed: 0,
+        testsFailed: 0,
+        durationMs: 1000,
+        executedCommands: [],
+        gateRound: 1,
+        ...json
+      },
+      1
+    );
+  }
+
+  test('a targeted subset plus the full suite that already includes it is NOT summed', () => {
+    // The #311 numbers: 1953 = 1867 + 86, and the 86 are inside the 1867.
+    const normalised = normaliseGateTests(
+      report({
+        testsStatus: 'PASSED (1953 passed)',
+        testsPassed: 1953,
+        executedCommands: ['node --test tests/domain/x.test.ts', 'npm test'],
+        commandResults: [
+          { command: 'node --test tests/domain/x.test.ts', passed: 86, failed: 0 },
+          { command: 'npm test', passed: 1867, failed: 0 }
+        ]
+      })
+    );
+
+    assert.strictEqual(normalised.testsPassed, 1867);
+    assert.strictEqual(normalised.testsStatus, 'PASSED (1867 passed)');
+    assert.strictEqual(normalised.rewritten, true);
+  });
+
+  test('disjoint suites still sum', () => {
+    const normalised = normaliseGateTests(
+      report({
+        testsStatus: 'PASSED (90 passed)',
+        testsPassed: 90,
+        executedCommands: ['node --test tests/unit.test.ts', 'node --test tests/e2e.test.ts'],
+        commandResults: [
+          { command: 'node --test tests/unit.test.ts', passed: 40, failed: 0 },
+          { command: 'node --test tests/e2e.test.ts', passed: 50, failed: 0 }
+        ]
+      })
+    );
+
+    assert.strictEqual(normalised.testsPassed, 90);
+    assert.strictEqual(normalised.testsStatus, 'PASSED (90 passed)');
+    assert.strictEqual(normalised.rewritten, false);
+  });
+
+  test('a testsStatus that contradicts testsPassed is rewritten from the count', () => {
+    const normalised = normaliseGateTests(
+      report({
+        testsStatus: 'PASSED (1953 passed)',
+        testsPassed: 1867,
+        executedCommands: ['npm test']
+      })
+    );
+
+    assert.strictEqual(normalised.testsPassed, 1867);
+    assert.strictEqual(normalised.testsStatus, 'PASSED (1867 passed)');
+    assert.strictEqual(normalised.rewritten, true);
+  });
+
+  test('a covering command pair with no per-command counts is FLAGGED, not silently trusted', () => {
+    const normalised = normaliseGateTests(
+      report({
+        testsStatus: 'PASSED (1953 passed)',
+        testsPassed: 1953,
+        executedCommands: ['node --test tests/domain/x.test.ts', 'npm test']
+      })
+    );
+
+    assert.strictEqual(normalised.testsPassed, 1953, 'the aggregate is still what gets recorded');
+    assert.strictEqual(normalised.rewritten, false);
+    assert.strictEqual(
+      normalised.suspectDoubleCount,
+      true,
+      'a subset beside its superset must be challenged even without a breakdown'
+    );
+  });
+
+  test('an existing report with no commandResults keeps its aggregate', () => {
+    const plain = GateResultReport.parseBlock(VALID_BLOCK, 1);
+    assert.deepStrictEqual([...plain.commandResults], []);
+    assert.deepStrictEqual([...plain.smokeChecks], []);
+
+    const normalised = normaliseGateTests(plain);
+    assert.strictEqual(normalised.testsPassed, 1408);
+    assert.strictEqual(normalised.testsStatus, 'PASSED (1408 passed)');
+    assert.strictEqual(normalised.rewritten, false);
+  });
+
+  test('a FAILED report that declares failures is never rewritten by normalisation', () => {
+    const failed = report({
+      verdict: 'FAILED',
+      testsStatus: 'FAILED (3 failed, 1200 passed)',
+      testsPassed: 1200,
+      testsFailed: 3,
+      executedCommands: ['npm test']
+    });
+    const normalised = normaliseGateTests(failed);
+    assert.strictEqual(normalised.testsPassed, 1200);
+    assert.strictEqual(normalised.testsStatus, 'FAILED (3 failed, 1200 passed)');
+    assert.strictEqual(normalised.rewritten, false);
+  });
+});
+
+describe('splitSmokeChecks: commands stay commands (issue #325, AC-17)', () => {
+  const { splitSmokeChecks } = require('../../dist/domain');
+
+  test('smoke-check labels are partitioned out of executedCommands', () => {
+    const split = splitSmokeChecks([
+      'npm run lint',
+      'npm test',
+      'smoke-check-1: app boots (plan line 385) PASSED',
+      'smoke-check-2: login flow FAILED',
+      'smoke-check-3: dark mode',
+      'node --test tests/x.test.ts'
+    ]);
+
+    assert.deepStrictEqual(
+      [...split.commands],
+      ['npm run lint', 'npm test', 'node --test tests/x.test.ts']
+    );
+    assert.strictEqual(split.smokeChecks.length, 3);
+    assert.strictEqual(split.smokeChecks[0].passed, true);
+    assert.strictEqual(split.smokeChecks[1].passed, false);
+    assert.strictEqual(
+      split.smokeChecks[2].passed,
+      null,
+      'a check that reported no verdict is neither a pass nor a failure'
+    );
+    assert.ok(split.smokeChecks[0].id.startsWith('smoke-check-1'), split.smokeChecks[0].id);
+  });
+
+  test('an untagged command is never mistaken for a smoke check', () => {
+    const split = splitSmokeChecks(['npm test', 'smoke-test-runner']);
+    assert.deepStrictEqual([...split.commands], ['npm test', 'smoke-test-runner']);
+    assert.deepStrictEqual([...split.smokeChecks], []);
+  });
+});
+
 describe('gate evidence vocabulary and round parity (issue #311)', () => {
   const {
     SMOKE_PROTOCOL_VALUES,

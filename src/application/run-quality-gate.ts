@@ -233,7 +233,7 @@ export class RunQualityGateUseCase {
         STAGE_NONE,
         STAGE_QUALITY_GATE,
         MODE_STANDARD,
-        'Cannot run quality gates: No pipeline state found. Run "agyloop implement" first.'
+        'Cannot run quality gates: No pipeline state found. Run "codeloop implement" first.'
       );
     }
 

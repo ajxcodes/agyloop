@@ -195,6 +195,55 @@ describe('GitWorktreeManager Branch & Release Extensions', () => {
     assert(commits[1].includes('fix(bridge): handle reconnect timeout'));
     assert(commits[2].includes('docs: update architecture spec'));
   });
+
+  test('getCommitsBetween rejects when git log fails, naming the ref (issue #315, AC-28)', async () => {
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('git log')) {
+          return makeResult(cmd, {
+            exitCode: 128,
+            stderr: "fatal: ambiguous argument 'nosuchbranch..phase/1-bridge'"
+          });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    await assert.rejects(
+      async () => {
+        await manager.getCommitsBetween({
+          baseBranch: 'nosuchbranch',
+          headBranch: 'phase/1-bridge',
+          workspaceDir: '/repo'
+        });
+      },
+      (err: any) => {
+        assert.match(err.message, /Cannot resolve ref range 'nosuchbranch\.\.phase\/1-bridge'/);
+        assert.match(err.message, /ambiguous argument/);
+        return true;
+      }
+    );
+  });
+
+  test('getCommitsBetween returns [] for an empty but valid range', async () => {
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd.includes('git log')) {
+          return makeResult(cmd, { exitCode: 0, stdout: '' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    const commits = await manager.getCommitsBetween({
+      baseBranch: 'main',
+      headBranch: 'phase/1-bridge',
+      workspaceDir: '/repo'
+    });
+    assert.deepStrictEqual(commits, []);
+  });
 });
 
 describe('GitWorktreeManager.resolveBaseBranch (issue #218 / AC5)', () => {

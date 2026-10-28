@@ -200,6 +200,8 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
       assert.ok(summaryPath, `a summary must be scaffolded, got:\n${run.stdout}`);
       const summary = fs.readFileSync(summaryPath, 'utf8');
 
+      // A fresh INITIALIZED run with --skip-discovery never enters DISCOVERY, so
+      // its window is genuinely unmeasurable: `-` is the truth (#315, AC-14).
       assert.match(discoveryRow(summary), /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| SKIPPED \| - \|$/m);
       assert.ok(!discoveryRow(summary).includes('planner'), `must never name the planner:\n${summary}`);
       assert.ok(!discoveryRow(summary).includes('IN PROGRESS'), `must be terminal:\n${summary}`);
@@ -241,14 +243,17 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
       seedCheckpoint(sandbox, 285, {
         currentStage: 'DISCOVERY',
         planDir,
-        history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
+        // Issue #315 (AC-14): the Discovery window is measurable on this path,
+        // so it must be written. Seeded 5 minutes back to prove the value is
+        // measured, not a constant.
+        history: [{ stage: 'DISCOVERY', timestamp: new Date(Date.now() - 300_000).toISOString() }]
       });
 
       const planRun = await runIn(sandbox, ['plan', '--issue', '285']);
       assert.strictEqual(planRun.code, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${planRun.stderr}`);
 
       let summary = fs.readFileSync(path.join(planDir, 'CodeLoop Summary.md'), 'utf8');
-      assert.match(discoveryRow(summary), /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| COMPLETED \| - \|$/m);
+      assert.match(discoveryRow(summary), /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| COMPLETED \| 5m \d+s \|$/m);
 
       const approvalRun = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', '285']);
       assert.strictEqual(
@@ -265,7 +270,7 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
       );
 
       summary = fs.readFileSync(path.join(planDir, 'CodeLoop Summary.md'), 'utf8');
-      assert.match(discoveryRow(summary), /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| COMPLETED \| - \|$/m);
+      assert.match(discoveryRow(summary), /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| COMPLETED \| 5m \d+s \|$/m);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -291,6 +296,12 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
         `the stalled row must not survive the advance, got:\n${summary}`
       );
       assert.match(discoveryRow(summary), /SKIPPED/);
+      // Issue #315 (AC-14): the `--skip-discovery` advance path still writes the
+      // measured Discovery duration — the row is left terminal AND truthful.
+      assert.match(
+        discoveryRow(summary),
+        /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| SKIPPED \| \d+s \|$/m
+      );
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

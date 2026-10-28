@@ -118,7 +118,11 @@ describe('codeloop next with a missing worktree (#266, absorbs #287)', () => {
       const parsed = JSON.parse(run.stdout);
       assert.strictEqual(parsed.actionType, 'human_gate');
       assert.strictEqual(parsed.worktreePath, null);
-      assert.strictEqual(parsed.actionable, true);
+      // Issue #315 (AC-7): a human gate is NOT actionable work, and it carries
+      // a pause object (synthesised — there is no persisted pause to resume).
+      assert.strictEqual(parsed.actionable, false);
+      assert.ok(parsed.pause && parsed.pause.gate, `a human gate must carry a pause:\n${run.stdout}`);
+      assert.strictEqual(parsed.pause.resumeCommand, null);
       assert.strictEqual(parsed.title, 'Worktree Required');
       assert.ok(
         parsed.humanSummary.includes('codeloop implement'),

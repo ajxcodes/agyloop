@@ -136,7 +136,7 @@ export class StartImplementationUseCase {
         STAGE_NONE,
         STAGE_IMPLEMENT,
         MODE_STANDARD,
-        'Cannot start implementation: No pipeline state found. Run "agyloop plan" first.'
+        'Cannot start implementation: No pipeline state found. Run "codeloop plan" first.'
       );
     }
 

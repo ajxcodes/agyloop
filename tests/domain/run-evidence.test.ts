@@ -15,6 +15,7 @@ const assert = require('node:assert');
 
 const {
   formatStageDuration,
+  formatGateReportedDuration,
   measureStageWindowMs,
   deriveStageDuration,
   isHumanWaitStage,
@@ -44,6 +45,22 @@ describe('formatStageDuration (issue #284)', () => {
     assert.strictEqual(formatStageDuration(NaN), DURATION_NOT_RECORDED);
     assert.strictEqual(formatStageDuration(Infinity), DURATION_NOT_RECORDED);
     assert.strictEqual(formatStageDuration(-Infinity), DURATION_NOT_RECORDED);
+  });
+});
+
+describe('formatGateReportedDuration (issue #315, AC-15/AC-18)', () => {
+  test('names the gate-reported clock, and the wall clock when it is measurable', () => {
+    assert.strictEqual(
+      formatGateReportedDuration(196000, 302000),
+      '3m 16s (gate-reported; 5m 2s wall)'
+    );
+    assert.strictEqual(formatGateReportedDuration(196000, null), '3m 16s (gate-reported)');
+    assert.strictEqual(formatGateReportedDuration(196000), '3m 16s (gate-reported)');
+  });
+
+  test('an unmeasurable self-timer is "-", never a labelled guess', () => {
+    assert.strictEqual(formatGateReportedDuration(NaN, 1000), DURATION_NOT_RECORDED);
+    assert.strictEqual(formatGateReportedDuration(-1), DURATION_NOT_RECORDED);
   });
 });
 

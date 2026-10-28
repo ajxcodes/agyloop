@@ -73,6 +73,7 @@ import {
   NOTE_PAUSED_COMMIT_GATE,
   NOTE_PAUSED_TRIAGE_GATE,
   NOTE_YOLO_PARKED_AT_DISCOVERY,
+  withRecordedPauseHint,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AUTO_APPROVED_PLAN,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -135,6 +136,12 @@ export interface RunLifecycleParams {
   readonly title?: string | null;
   readonly type?: string | null;
   readonly commitAfter?: boolean;
+  /**
+   * Open the delivery PR from the tool (issue #315, AC-22/AC-25). Forwarded to
+   * `ExecuteCommitUseCase`; `yolo --commit-after` implies it, because a hands-off
+   * run that stops one step short of delivery is not hands-off.
+   */
+  readonly createPr?: boolean;
   readonly yes?: boolean;
   readonly staged?: boolean;
   readonly message?: string | null;
@@ -684,7 +691,7 @@ export class RunLifecycleUseCase {
           ? // Re-entry park (issue #237): the RCA never ran, so "advanced to
             // DISCOVERY" would read like progress. Name the outstanding work
             // AND the paths that were actually checked (issue #283, AC3).
-            this.formatDiscoveryParkMessage(planResult)
+            this.formatDiscoveryParkMessage(planResult, sm.pausedAtGate)
           : isApproval
             ? NOTE_PAUSED_APPROVAL_GATE
             : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
@@ -696,12 +703,16 @@ export class RunLifecycleUseCase {
    * were actually read (issues #283, #306). Falls back to the base note when
    * nothing is known.
    */
-  private formatDiscoveryParkMessage(planResult?: StartPlanningResult | null): string {
+  private formatDiscoveryParkMessage(
+    planResult?: StartPlanningResult | null,
+    pausedAtGate?: string | null
+  ): string {
     const evidence = planResult?.discoveryReportEvidence;
     return formatDiscoveryParkAwaitingRca(
       (evidence?.checkedPaths ?? []).join(', '),
       evidence?.missingEvidence ?? null,
-      evidence?.evaluatedPath ?? null
+      evidence?.evaluatedPath ?? null,
+      pausedAtGate
     );
   }
 
@@ -994,7 +1005,8 @@ export class RunLifecycleUseCase {
       issue: sm.issue,
       interactive: params.interactive,
       workspaceDir: activeWorkspace,
-      rootWorkspaceDir: workspace
+      rootWorkspaceDir: workspace,
+      createPr: params.createPr
     });
 
     if (execResult.success) {
@@ -1100,8 +1112,8 @@ export class RunLifecycleUseCase {
         planResult,
         message:
           planResult?.discoveryReentry === 'PARK_AT_DISCOVERY'
-            ? this.formatDiscoveryParkMessage(planResult)
-            : NOTE_YOLO_PARKED_AT_DISCOVERY
+            ? this.formatDiscoveryParkMessage(planResult, sm.pausedAtGate)
+            : withRecordedPauseHint(NOTE_YOLO_PARKED_AT_DISCOVERY, sm.pausedAtGate)
       };
     }
 
@@ -1430,7 +1442,8 @@ export class RunLifecycleUseCase {
         dryRun: params.dryRun,
         issue: sm.issue,
         workspaceDir: activeWorkspace,
-        rootWorkspaceDir: workspace
+        rootWorkspaceDir: workspace,
+        createPr: params.createPr
       });
 
       if (execResult.success) {
@@ -1717,7 +1730,8 @@ export class RunLifecycleUseCase {
           dryRun: params.dryRun,
           issue: sm.issue,
           workspaceDir: activeWorkspace,
-          rootWorkspaceDir: workspace
+          rootWorkspaceDir: workspace,
+          createPr: params.createPr
         });
 
         if (execResult.success) {
@@ -1748,7 +1762,8 @@ export class RunLifecycleUseCase {
           dryRun: params.dryRun,
           issue: sm.issue,
           workspaceDir: activeWorkspace,
-          rootWorkspaceDir: workspace
+          rootWorkspaceDir: workspace,
+          createPr: params.createPr
         });
 
         if (execResult.success) {

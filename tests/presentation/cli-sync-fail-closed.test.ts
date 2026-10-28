@@ -177,6 +177,14 @@ describe('sync fails closed on an unreadable issue (#328)', () => {
       assert.strictEqual(comments.length, 1, `expected one issue comment: ${result.ghCalls.join('\n')}`);
       assert.ok(comments[0].includes('Closes #306'), comments[0]);
       assert.ok(comments[0].includes('`phase/test`'), comments[0]);
+      // Issue #315 (AC-33 / G5): the body is the ONLY string other people see,
+      // so it names the live launcher — never the deprecated `agyloop`.
+      assert.match(
+        comments[0],
+        /--body '?Closed by codeloop sync:/,
+        `the posted body must start with the live launcher name: ${comments[0]}`
+      );
+      assert.ok(!comments[0].includes('agyloop'), comments[0]);
     } finally {
       cleanup(sandbox);
     }

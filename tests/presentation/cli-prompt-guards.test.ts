@@ -218,7 +218,7 @@ describe('runCli prompt guards', () => {
 
     assert.strictEqual(result.code, 1);
     assert.ok(
-      result.stderr.includes('[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.'),
+      result.stderr.includes('[codeloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.'),
       result.stderr
     );
   });

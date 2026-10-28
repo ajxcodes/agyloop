@@ -73,8 +73,12 @@ function seedPausedState(dir: string, gate = GATE_CIRCUIT_BREAKER): void {
   );
 }
 
-/** Seeds a healthy, unpaused checkpoint at the same stage. */
-function seedRunningState(dir: string): void {
+/** Seeds a healthy, unpaused checkpoint at the given stage (default IMPLEMENT). */
+function seedRunningState(
+  dir: string,
+  stage = 'IMPLEMENT',
+  pause?: { readonly gate: string; readonly at: string }
+): void {
   const stateDir = path.join(dir, '.agyloop');
   const worktreePath = path.join(dir, '.worktrees', '99');
   fs.mkdirSync(stateDir, { recursive: true });
@@ -83,7 +87,7 @@ function seedRunningState(dir: string): void {
     path.join(stateDir, 'state.json'),
     JSON.stringify({
       version: '1.0.0',
-      currentStage: 'IMPLEMENT',
+      currentStage: stage,
       mode: 'standard',
       issue: 99,
       baseBranch: 'phase/1-bridge',
@@ -94,9 +98,10 @@ function seedRunningState(dir: string): void {
         baseBranch: 'phase/1-bridge',
         createdAt: PAUSED_AT
       },
+      ...(pause ? { pausedAtGate: pause.gate, pausedAtTimestamp: pause.at } : {}),
       createdAt: PAUSED_AT,
       updatedAt: PAUSED_AT,
-      history: [{ stage: 'IMPLEMENT', timestamp: PAUSED_AT }]
+      history: [{ stage, timestamp: pause?.at ?? PAUSED_AT }]
     })
   );
 }
@@ -215,6 +220,38 @@ describe('next --json surfaces a persisted gate pause as data', () => {
     assert.strictEqual(parsed.pause, null);
     assert.strictEqual(parsed.actionable, true);
     assert.strictEqual(result.stderr, '', 'a healthy pipeline must not warn');
+  });
+
+  test('a persisted COMMIT pause presents as the gate, not a resumable blocker (issue #315, AC-7/AC-13)', async () => {
+    // `run-review` now records `pausedAtGate: 'COMMIT'` + a timestamp on the
+    // standard REVIEW→COMMIT path so the confirmation wait is measurable. That
+    // is the state production writes — the old test seeded a no-pause COMMIT
+    // checkpoint production never created, so it would pass a fix changing
+    // nothing. Here the pause is PERSISTED, and it must still read as a gate:
+    // the next step is `codeloop commit`, never `codeloop resume`.
+    const result = await runCliInSandbox(['next', '--json'], (dir) =>
+      seedRunningState(dir, 'COMMIT', { gate: 'COMMIT', at: PAUSED_AT })
+    );
+    const parsed = JSON.parse(result.stdout.trim());
+
+    assert.strictEqual(parsed.actionType, 'human_gate');
+    assert.strictEqual(parsed.actionable, false, `a human gate must not be actionable:\n${result.stdout}`);
+    assert.ok(parsed.pause, `a human gate must carry a pause object:\n${result.stdout}`);
+    assert.strictEqual(parsed.pause.gate, 'COMMIT');
+    assert.strictEqual(parsed.pause.pausedAt, PAUSED_AT);
+    // The pause is kept for accounting but is NOT resumable: the operator's
+    // step at this gate is the commit itself.
+    assert.strictEqual(parsed.pause.resumeCommand, null);
+    assert.match(parsed.pause.message, /codeloop commit/);
+    assert.doesNotMatch(
+      parsed.pause.message,
+      /codeloop resume/,
+      `the pause must not claim resume is the next step, got: ${parsed.pause.message}`
+    );
+    // No contradictory 🛑 "run codeloop resume" banner: it used to contradict
+    // the directive's own `codeloop commit --create-pr` summary.
+    assert.doesNotMatch(result.stderr, /codeloop resume/, result.stderr);
+    assert.doesNotMatch(result.stderr, /🛑/, result.stderr);
   });
 });
 

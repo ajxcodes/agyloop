@@ -937,7 +937,7 @@ export class FileBuildDetector implements BuildDetectorPort {
     // `resolveActCommand`, so they are silent.
     const probe = this.probeContainerRuntime();
     if (!probe) {
-      console.warn('[agyloop] Warning: no usable container runtime; skipping the act container gate.');
+      console.warn('[codeloop] Warning: no usable container runtime; skipping the act container gate.');
       return null;
     }
 

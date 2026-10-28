@@ -474,7 +474,7 @@ export class GetNextActionUseCase {
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn(`[agyloop] Diagnostic: Failed to infer base branch for issue #${activeIssue}: ${errMsg}`);
+        console.warn(`[codeloop] Diagnostic: Failed to infer base branch for issue #${activeIssue}: ${errMsg}`);
       }
     }
 
@@ -493,7 +493,7 @@ export class GetNextActionUseCase {
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: `Run pre-flight checks: bin/agyloop transition DISCOVERY${activeIssue ? ` --issue ${activeIssue}` : ''}`
+          humanSummary: `Run pre-flight checks: codeloop transition DISCOVERY${activeIssue ? ` --issue ${activeIssue}` : ''}`
         };
       }
 
@@ -730,7 +730,7 @@ export class GetNextActionUseCase {
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: `Present the plan to the user and wait for approval. Once approved, run "agyloop implement" or "agyloop transition IMPLEMENT".${planRecovery ? ` ${planRecovery}` : ''}`
+          humanSummary: `Present the plan to the user and wait for approval. Once approved, run "codeloop implement" or "codeloop transition IMPLEMENT".${planRecovery ? ` ${planRecovery}` : ''}`
         };
       }
 
@@ -745,7 +745,7 @@ export class GetNextActionUseCase {
             baseBranch,
             taskBranch,
             worktreePath,
-            humanSummary: `Too many consecutive failures (${sm.implementToGateLoops}). Please inspect the workspace manually and fix the issue before running "agyloop transition QUALITY_GATE" or "agyloop implement".`
+            humanSummary: `Too many consecutive failures (${sm.implementToGateLoops}). Please inspect the workspace manually and fix the issue before running "codeloop transition QUALITY_GATE" or "codeloop implement".`
           };
         }
         return await this.buildImplementAction(sm, config, cwd, writesEnabled, wouldWrite);
@@ -941,7 +941,10 @@ export class GetNextActionUseCase {
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary: `Execute commit: run "agyloop commit" (targets base branch '${baseBranch}').`,
+          // Issue #315 (AC-21 / #332): the gate's definition of done is
+          // DELIVERY, not "commit, push, teardown". Naming the PR step here is
+          // the only place an operator following `next` is told it exists.
+          humanSummary: `Deliver this run: run "codeloop commit --create-pr" (targets base branch '${baseBranch}'). The branch is pushed but the run is NOT delivered until the PR is merged.`,
           lastReviewSource: recordedSource,
           lastReviewCritiqueVerified: this.lastCritiqueVerified(sm)
         };
@@ -1275,7 +1278,7 @@ export class GetNextActionUseCase {
       await this.stateRepo.save(sm.toSnapshot());
     } catch {
       console.warn(
-        `[agyloop] Warning: could not record the ${counter} dispatch counter at ${this.stateRepo.getStateFilePath()}; returning the directive unchanged.`
+        `[codeloop] Warning: could not record the ${counter} dispatch counter at ${this.stateRepo.getStateFilePath()}; returning the directive unchanged.`
       );
     }
   }
@@ -1330,8 +1333,10 @@ export class GetNextActionUseCase {
     readonly source: string | null;
     readonly critiqueVerified: boolean;
   }): string {
+    // Issue #315 (AC-21 / #332): the delivery step is part of the gate, not an
+    // optional postscript — a pushed branch with no PR is not a delivered run.
     const commitInstructions =
-      'Draft conventional commit, prompt for confirmation, push to remote, and teardown worktree.';
+      'Draft conventional commit, prompt for confirmation, push to remote, open the PR, and teardown worktree. The run is NOT delivered until that PR is merged.';
 
     let verdictLine: string;
     if (record.verdict === VERDICT_APPROVED) {

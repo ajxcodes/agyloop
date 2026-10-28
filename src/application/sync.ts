@@ -347,7 +347,7 @@ export class SyncUseCase {
           // The comment states only what the diff proves.
           await this.githubGateway.commentOnIssue(
             issueId,
-            `Closed by agyloop sync: PR #${pr.number} into \`${collectorBranch}\` changed ${sourcePaths.length} non-test file(s) (Closes #${issueId}).`,
+            `Closed by codeloop sync: PR #${pr.number} into \`${collectorBranch}\` changed ${sourcePaths.length} non-test file(s) (Closes #${issueId}).`,
             { cwd }
           );
           logs.push(`Closed issue #${issueId} (merged in PR #${pr.number} to ${collectorBranch})`);

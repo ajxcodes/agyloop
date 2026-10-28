@@ -290,7 +290,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       () => transitionUseCase.execute({ targetStage: 'PLAN' }),
       {
         name: 'PreFlightHaltError',
-        message: 'Cannot transition to PLAN stage without an active plan directory. Use `bin/agyloop plan` or `bin/agyloop <issue>` to initialize the planning phase.',
+        message: 'Cannot transition to PLAN stage without an active plan directory. Use `codeloop plan` or `codeloop <issue>` to initialize the planning phase.',
         haltType: HALT_TYPE_MISSING_PLAN_DIR
       }
     );

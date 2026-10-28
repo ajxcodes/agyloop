@@ -1256,8 +1256,12 @@ diff --git a/src/app.ts b/src/app.ts
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'phase/v0.6.0\' --head \'task/62\' --title \'feat(pr): automated milestone linking (#62)\' --body \'Closes #62\' --milestone \'v0.6.0\'; git stash pop -q; else gh pr create --base \'phase/v0.6.0\' --head \'task/62\' --title \'feat(pr): automated milestone linking (#62)\' --body \'Closes #62\' --milestone \'v0.6.0\'; fi'
+        'gh pr create --base \'phase/v0.6.0\' --head \'task/62\' --title \'feat(pr): automated milestone linking (#62)\' --body \'Closes #62\' --milestone \'v0.6.0\''
       );
+      // Issue #315 (AC-23): one copy-pasteable line — no stash wrapper, no
+      // conditional shell the operator has to read before pasting.
+      assert.ok(!result.prCommand!.includes('git stash'), result.prCommand);
+      assert.ok(!result.prCommand!.includes('if !'), result.prCommand);
     });
 
     test('generates prCommand with description and Closes #id in body when commit has body, and honors milestoneTitle param override', async () => {
@@ -1295,7 +1299,7 @@ diff --git a/src/app.ts b/src/app.ts
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'main\' --head \'task/62-override\' --title \'feat: commit with body (#62)\' --body \'Detailed feature description.\n\nCloses #62\' --milestone \'v0.7.0\'; git stash pop -q; else gh pr create --base \'main\' --head \'task/62-override\' --title \'feat: commit with body (#62)\' --body \'Detailed feature description.\n\nCloses #62\' --milestone \'v0.7.0\'; fi'
+        'gh pr create --base \'main\' --head \'task/62-override\' --title \'feat: commit with body (#62)\' --body \'Detailed feature description.\n\nCloses #62\' --milestone \'v0.7.0\''
       );
     });
 
@@ -1330,7 +1334,7 @@ diff --git a/src/app.ts b/src/app.ts
       assert.strictEqual(result.success, true);
       assert.strictEqual(
         result.prCommand,
-        'if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; gh pr create --base \'main\' --head \'chore/cleanup\' --title \'chore: ad-hoc task\' --body \'Closes #999\'; git stash pop -q; else gh pr create --base \'main\' --head \'chore/cleanup\' --title \'chore: ad-hoc task\' --body \'Closes #999\'; fi'
+        'gh pr create --base \'main\' --head \'chore/cleanup\' --title \'chore: ad-hoc task\' --body \'Closes #999\''
       );
     });
 
@@ -1425,6 +1429,51 @@ diff --git a/src/app.ts b/src/app.ts
       const reloaded = StateMachine.fromSnapshot(roundTripped);
       assert.strictEqual(reloaded.pausedAtGate, null, 'a reloaded checkpoint must report no pause');
       assert.strictEqual(reloaded.currentStage, STAGE_COMPLETED);
+    });
+
+    // --- issue #315 / #318.1: the COMMIT wait is banked AND rendered ----------
+    test('a recorded COMMIT pause is consumed into totalHumanWaitMs and a non-zero summary row (#315)', async () => {
+      const pausedAt = new Date(Date.now() - 30_000).toISOString();
+      const sm = StateMachine.fromSnapshot({
+        ...new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree }).toSnapshot(),
+        pausedAtGate: GATE_COMMIT,
+        pausedAtTimestamp: pausedAt
+      });
+      const stateRepo = new MockStateRepository(sm);
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'deadbee\n' };
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'fix/999\n' };
+      const planGenerator = new MockPlanGenerator();
+
+      const useCase = new ExecuteCommitUseCase(stateRepo, executor, planGenerator);
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({ type: 'fix', description: 'commit gate wait' }),
+        bypassConfirmation: true,
+        interactive: false
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(
+        result.stateMachine.totalHumanWaitMs >= 30_000,
+        `the use case must consume the recorded pause, got ${result.stateMachine.totalHumanWaitMs}`
+      );
+      assert.ok(
+        (stateRepo.savedSnapshot as any).totalHumanWaitMs >= 30_000,
+        'the consumed wait must be PERSISTED, not only held in memory'
+      );
+
+      // The summary row is the measured wait — never the `0s` the standard
+      // REVIEW→COMMIT path used to render because nothing paused the machine.
+      assert.ok(planGenerator.updatedSummary, 'the summary row must be written');
+      const duration = String(planGenerator.updatedSummary!.data.duration);
+      assert.match(
+        duration,
+        /^(?:\d+m )?\d+s$/,
+        `the Commit Gate duration must be a rendered duration, got: ${duration}`
+      );
+      assert.notStrictEqual(duration, '0s', 'a 30s wait may never render as 0s');
     });
   });
 });

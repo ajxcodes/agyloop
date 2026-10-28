@@ -37,7 +37,8 @@ import {
   VALIDATION_FIELD_PLAN_PATH,
   DiscoveryReport,
   isPlanContentSubstantive,
-  isDiscoveryPlanDocument
+  isDiscoveryPlanDocument,
+  deriveStageDuration
 } from '../domain';
 import {
   StateRepository,
@@ -98,6 +99,14 @@ export interface StartPlanningResult {
   readonly issueData: GitHubIssueData | null;
   readonly scaffoldInfo: ScaffoldResult | null;
   readonly plannerDef: SubagentDescriptor;
+  /**
+   * The descriptor the Discovery role resolved to (issue #315, AC-3).
+   *
+   * It is resolved on EVERY path — a park, an advance and a plain re-entry —
+   * so a caller can attribute the work that actually ran instead of borrowing
+   * the planner's name and model for a stage that never dispatched a planner.
+   */
+  readonly discoveryDef: SubagentDescriptor;
   readonly planTitle: string;
   readonly planType: string;
   /**
@@ -438,6 +447,14 @@ export class StartPlanningUseCase {
 
       const summaryPath = this.resolveSummaryPath(workspace, scaffoldInfo, checkpointPlanDir);
       if (summaryPath) {
+        // Issue #315 (AC-14): the Discovery row's measured duration on the
+        // `codeloop plan` entry path. The window runs from entering DISCOVERY
+        // to the transition that left it, so it is measurable exactly when the
+        // checkpoint has moved on. A stage still IN PROGRESS keeps `-`: the
+        // window has not ended.
+        const discoveryDuration = deriveStageDuration(sm.history, STAGE_DISCOVERY, {
+          humanWaitMs: 0
+        });
         if (sm.currentStage === STAGE_DISCOVERY) {
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
@@ -450,7 +467,8 @@ export class StartPlanningUseCase {
             stage: SUMMARY_STAGE_DISCOVERY,
             subagent: discoveryDef.name,
             model: discoveryDef.model,
-            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED
+            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED,
+            duration: discoveryDuration
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
@@ -464,7 +482,8 @@ export class StartPlanningUseCase {
             stage: SUMMARY_STAGE_DISCOVERY,
             subagent: discoveryDef.name,
             model: discoveryDef.model,
-            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED
+            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED,
+            duration: discoveryDuration
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
@@ -479,6 +498,7 @@ export class StartPlanningUseCase {
       issueData,
       scaffoldInfo,
       plannerDef,
+      discoveryDef,
       planTitle,
       planType,
       discoveryReentry,

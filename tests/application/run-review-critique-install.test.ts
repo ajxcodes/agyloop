@@ -289,7 +289,7 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
 
     assert.ok(result.updateNotification);
     assert.ok(result.updateNotification.includes('v0.1.6 -> v0.2.0'));
-    assert.ok(result.updateNotification.includes('agyloop critique update'));
+    assert.ok(result.updateNotification.includes('codeloop critique update'));
   });
 
   // --- Zero-Hang Invariant (issue #218 / AC6) ------------------------------

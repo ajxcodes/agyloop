@@ -64,7 +64,7 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Exact automated test commands (e.g. `node --test tests/example.test.js`).
    - Lint, typecheck, or build commands.
    - Manual verification steps if applicable.
-   - NOTE: If the smoke test requires state-mutating commands (like `bin/agyloop transition`), clone the repository to the tool's own sandbox at `$HOME/.cache/agyloop/smoke-<issue>` (OUTSIDE the workspace) and run the commands there. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT`. Destroy the directory after the smoke test.
+   - NOTE: If the smoke test requires state-mutating commands (like `codeloop transition`), clone the repository to the tool's own sandbox at `$HOME/.cache/agyloop/smoke-<issue>` (OUTSIDE the workspace) and run the commands there. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT`. Destroy the directory after the smoke test.
 
 ### Historical Context Filtering:
 - Only generate checklist items for work NOT already implemented. Check git history and closed issues, and filter out already implemented features; do not generate redundant checklist items for delivered functionality.

@@ -15,9 +15,7 @@ import {
   STAGE_QUALITY_GATE,
   STAGE_COMMIT,
   STAGE_COMPLETED,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_INITIALIZED,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_TRIAGE,
@@ -92,6 +90,8 @@ import {
   IssueNumber,
   parseIssueToken,
   NOTE_DISCOVERY_PARK_AWAITING_RCA,
+  NOTE_RELEASE_NOTES_DEPENDENCY,
+  withRecordedPauseHint,
   NOTE_IMPLEMENTATION_EVIDENCE_MISSING,
   NOTE_IMPLEMENTATION_PARK_UNCHANGED,
   NOTE_IMPLEMENTATION_PARK_DISPATCH,
@@ -401,6 +401,12 @@ export function computePromptsAllowed(
 export const RESUME_COMMAND = 'codeloop resume';
 
 /**
+ * The COMMIT gate's command (issue #315, AC-7): the step an operator takes at a
+ * persisted COMMIT pause is the commit itself, never `resume`.
+ */
+export const COMMIT_GATE_COMMAND = 'codeloop commit';
+
+/**
  * A gate pause read straight off the persisted checkpoint.
  *
  * Rendered as data (never prose) in `next --json`, and as an extra block in the human
@@ -410,8 +416,43 @@ export const RESUME_COMMAND = 'codeloop resume';
 export interface PersistedGatePause {
   readonly gate: string;
   readonly pausedAt: string | null;
-  readonly resumeCommand: string;
+  /**
+   * The command that clears a PERSISTED pause — `null` for a synthesised human
+   * gate, which is not something `resume` can (or should) clear (issue #315,
+   * AC-7). Overloading this field with a fake command would have made the hint
+   * false; a nullable field keeps it honest.
+   */
+  readonly resumeCommand: string | null;
   readonly message: string;
+}
+
+/**
+ * The pause OBJECT a `human_gate` directive carries (issue #315, AC-7).
+ *
+ * A human gate is a wait on a person, not a persisted checkpoint pause, so
+ * there is nothing to `resume`: `resumeCommand` is `null` and `pausedAt` is the
+ * timestamp of the stage entry that opened the gate. Returning `null` instead
+ * (the old behaviour) forced every consumer to special-case COMMIT.
+ */
+export function synthesiseHumanGatePause(
+  action: { readonly currentStage: string; readonly humanSummary: string },
+  pausedAt: string | null
+): PersistedGatePause {
+  return {
+    gate: action.currentStage,
+    pausedAt,
+    resumeCommand: null,
+    message: `Human gate at ${action.currentStage}: ${action.humanSummary}`
+  };
+}
+
+/** The timestamp of the checkpoint's most recent history entry, or `null`. */
+function lastHistoryTimestamp(snapshot: StateMachineSnapshot | null | undefined): string | null {
+  const history = snapshot?.history;
+  if (!Array.isArray(history) || history.length === 0) {
+    return null;
+  }
+  return history[history.length - 1]?.timestamp ?? null;
 }
 
 /**
@@ -435,6 +476,23 @@ export async function readPersistedGatePause(
     const gate = snapshot?.pausedAtGate ?? null;
     if (!gate) {
       return null;
+    }
+
+    // Issue #315 (AC-7 / AC-13): the COMMIT gate is a HUMAN GATE, not a
+    // resumable blocker. `run-review` persists `pausedAtGate: 'COMMIT'` so the
+    // confirmation wait is measurable, but the operator's next step is
+    // `codeloop commit --create-pr` — never `codeloop resume`. Presenting it as
+    // a resumable pause printed a 🛑 "run codeloop resume" banner next to a
+    // humanSummary that said "run codeloop commit --create-pr": two conflicting
+    // next steps, one of them wrong. The pause stays (accounting), the resume
+    // guidance goes.
+    if (gate === GATE_COMMIT) {
+      return {
+        gate,
+        pausedAt: snapshot?.pausedAtTimestamp ?? null,
+        resumeCommand: null,
+        message: `Pipeline rests at the ${gate} human gate. This is not a resumable blocker: run \`${COMMIT_GATE_COMMAND}\` (add \`--create-pr\` to open the delivery PR).`
+      };
     }
 
     return {
@@ -467,6 +525,7 @@ Operational Modes:
 
 Pipeline Management:
   next               Inspect state and generate the next invoke_subagent directive (writes only the declared context fields: inferred baseBranch, dispatch counters, updatedAt; --dry-run previews without writing; --restart also resets the checkpoint)
+                     --json adds 'actionable' and 'pause': actionable means "a subagent may be dispatched NOW", so it is false for every human_gate (COMMIT included) and for every persisted pause; pause is null only when neither applies (a human gate carries a synthesised pause with resumeCommand: null)
   branch-info        Display base collector branch, active task branch, and PR target
   status             Display current pipeline stage, active tasks matrix, and checkpoint history
   config             Display active configuration and model routing table
@@ -487,7 +546,7 @@ Pipeline Management:
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
-      --commit-after Automatically draft and commit changes if quality gates and AI review pass
+      --commit-after Automatically draft and commit changes if quality gates and AI review pass (implies --create-pr, so the run is delivered)
       --step         Pause compound execution after quality gates (before AI review)
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
   -m, --message <msg> Explicit conventional commit message override
@@ -1262,6 +1321,33 @@ function formatStaleWorktreeNote(worktreePath: string, issue?: number | null): s
 }
 
 /**
+ * Renders the delivery state a COMPLETED run recorded (issue #315, AC-24).
+ *
+ * A terminal stage is NOT proof of delivery: the #327 run reached COMPLETED with
+ * the branch pushed and no PR. `missing` (and an unrecorded legacy checkpoint)
+ * therefore says so explicitly rather than implying the milestone has the work.
+ */
+function formatPullRequestDelivery(
+  pullRequest:
+    | {
+        readonly number: number | null;
+        readonly url: string | null;
+        readonly status: 'created' | 'existing' | 'missing';
+      }
+    | null
+    | undefined
+): string {
+  if (!pullRequest || pullRequest.status === 'missing') {
+    return 'pushed, NOT delivered (no PR recorded)';
+  }
+  const ref = pullRequest.number !== null ? `PR #${pullRequest.number}` : 'PR';
+  if (pullRequest.url) {
+    return `${ref} (${pullRequest.url})`;
+  }
+  return pullRequest.status === 'created' ? `${ref} (created; URL unavailable)` : ref;
+}
+
+/**
  * Removes a stale worktree path from a `next` directive (#282 review).
  *
  * `GetNextActionUseCase` builds its stage-specific prompts and summary from the
@@ -1414,7 +1500,49 @@ function printSuppliedPlanSummary(planPath: string, currentStage?: string): void
   }
 }
 
+/**
+ * Issue #315 (Defect A): a human report piped into a short consumer is normal
+ * usage — `codeloop status | head -n 1`, `| less` (quit early) — and until now
+ * the second write after the reader closed threw an unhandled `EPIPE` and
+ * killed the process with a stack trace and exit 1.
+ *
+ * The guard is installed ONCE, here in the entrypoint, so it covers every human
+ * report rather than `status` alone. It reacts to the stream-level error only:
+ *
+ * - `EPIPE` / `ECONNRESET` — the consumer went away. The report has nowhere
+ *   left to go, and refusing to exit 0 would turn a pager into a failure.
+ * - Any other write error (`EIO`, `ENOSPC`, …) is a REAL failure and is
+ *   re-thrown on the next tick, exactly as Node would have done — the guard
+ *   must never swallow it into a success exit.
+ */
+let streamErrorGuardsInstalled = false;
+
+export function installStreamErrorGuards(): void {
+  if (streamErrorGuardsInstalled) {
+    return;
+  }
+  streamErrorGuardsInstalled = true;
+
+  const handleStreamError = (err: NodeJS.ErrnoException): void => {
+    if (err && (err.code === 'EPIPE' || err.code === 'ECONNRESET')) {
+      process.exitCode = EXIT_CODE_SUCCESS;
+      process.exit(EXIT_CODE_SUCCESS);
+    }
+    process.nextTick(() => {
+      throw err;
+    });
+  };
+
+  process.stdout.on('error', handleStreamError);
+  process.stderr.on('error', handleStreamError);
+}
+
 export async function runCli(rawArgs: readonly string[] = process.argv.slice(2)): Promise<number> {
+  // Issue #315 (Defect A): FIRST statement, before any command can write. The
+  // guard lives in the entrypoint so `bin/codeloop.js` and every in-process
+  // caller (the dist-level suites included) get it.
+  installStreamErrorGuards();
+
   const { command, options, unknownFlags } = parseArguments(rawArgs);
 
   // Issue #248: unknown flags are rejected FIRST — before help, before version
@@ -1434,7 +1562,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
   }
 
   if (options.version) {
-    console.log(`agyloop v${CLI_VERSION}`);
+    console.log(`codeloop v${CLI_VERSION}`);
     return EXIT_CODE_SUCCESS;
   }
 
@@ -1674,9 +1802,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       //
       // The pause is RE-READ from `scope.repo` AFTER the use case ran (no
       // snapshot override): a TRIAGE pause that `next` itself just wrote must
-      // still be reported (#250, R7).
-      const pause = await readPersistedGatePause(scope.repo);
-      const pausedAtBreakerGate = pause?.gate === GATE_CIRCUIT_BREAKER;
+      // still be reported (#250, R7). The snapshot is read once and shared with
+      // the synthesised gate pause below, so `next` cannot describe two
+      // different checkpoints.
+      const snapshotAfter = await Promise.resolve(scope.repo.load()).catch(() => null);
+      const persistedPause = await readPersistedGatePause(scope.repo, snapshotAfter);
+      const pausedAtBreakerGate = persistedPause?.gate === GATE_CIRCUIT_BREAKER;
 
       // Issue #282: a checkpoint can carry a worktree descriptor whose
       // directory is gone. The directive's top-level `worktreePath` must be
@@ -1694,6 +1825,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         staleRemediation
       );
 
+      // Issue #315 (Defect E / AC-7): a HUMAN GATE is not actionable work. The
+      // old rule (`actionable === pause === null`) made every unpaused
+      // `human_gate` — COMMIT, the DISCOVERY plan-directory park, the missing
+      // worktree gate — report `actionable: true` with `pause: null`, so a
+      // harness that gates on `actionable` treated a human gate as automated
+      // work. A gate that is not a PERSISTED pause still carries a pause OBJECT
+      // (synthesised here), so `actionable:false` and a non-null `pause` can
+      // never disagree.
+      const gatePause =
+        res.actionType === 'human_gate'
+          ? synthesiseHumanGatePause(res, lastHistoryTimestamp(snapshotAfter))
+          : null;
+      const pause = persistedPause ?? gatePause;
+      // `actionable` means "a subagent may be dispatched NOW". Both conditions
+      // are required: a persisted delay (CIRCUIT_BREAKER at IMPLEMENT) and a
+      // human gate (COMMIT) are equally non-dispatchable.
+      const actionable = persistedPause === null && res.actionType !== 'human_gate';
+
       if (options.json) {
         // Machine-readable output stays a single JSON document: the pause travels as
         // data, never as prose on stdout. `actionable` is the single boolean a harness
@@ -1710,16 +1859,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               worktreePath: worktreeTruth.livePath,
               worktreeStale: worktreeTruth.stalePath !== null,
               staleWorktreePath: worktreeTruth.stalePath,
-              actionable: pause === null,
+              actionable,
               pause
             },
             null,
             2
           )
         );
-        if (pause) {
+        // The 🛑 banner is for a PERSISTED pause only: a human gate is the
+        // pipeline's normal shape, and warning about it every time would be
+        // noise the operator learns to ignore.
+        //
+        // Issue #315 (AC-7): a persisted COMMIT pause is the human gate's own
+        // accounting record (recorded by `run-review` so the wait is
+        // measurable), not a blocker — a 🛑 "run codeloop resume" banner there
+        // contradicted the directive's "run codeloop commit --create-pr".
+        if (persistedPause && persistedPause.gate !== GATE_COMMIT) {
           // Warnings go to stderr so stdout stays parseable.
-          console.error(`🛑 ${pause.message}`);
+          console.error(`🛑 ${persistedPause.message}`);
         }
         if (worktreeTruth.stalePath) {
           console.error(`⚠ ${worktreeTruth.stalePath}: ${staleRemediation}`);
@@ -1884,6 +2041,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
         const result = await getStatusUseCase.execute({ issue: issueValue });
         const statusPause = await readPersistedGatePause(stateRepo, result.resolvedSnapshot);
+        // Issue #315 (AC-9 / G7): `stateFilePath` is the RESOLUTION TARGET, which
+        // may not exist yet on a fresh install. Printing it as `Checkpoint :` was
+        // a report naming a file that did not exist, so the text path says so and
+        // the JSON path carries the existence explicitly (consumers that need the
+        // target keep reading `stateFilePath`).
+        const checkpointExists = fs.existsSync(result.stateFilePath);
 
         // A skipped row is a diagnostic, not a payload field to swallow: tell
         // the operator on stderr so stdout stays a single JSON document.
@@ -1906,12 +2069,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
                 issue: result.status.issue,
                 updatedAt: result.status.updatedAt,
                 stateFilePath: result.stateFilePath,
+                stateFileExists: checkpointExists,
                 resolvedIssue: result.resolvedIssue,
                 pausedAtGate: statusPause?.gate ?? null,
                 pause: statusPause,
+                // Issue #315 (AC-24 / #332): what the run recorded about its
+                // delivery PR. `null` means "not recorded" — never "delivered".
+                pullRequest: result.resolvedSnapshot?.pullRequest ?? null,
                 reviewDispatchCount: result.status.reviewDispatchCount,
                 discoveryDispatchCount: result.status.discoveryDispatchCount,
                 planDispatchCount: result.status.planDispatchCount,
+                // Issue #315 (AC-11): the fourth counter, under the name the
+                // checkpoint uses. The text renderer and `next --json` already
+                // reported it; the machine-readable status silently omitted it.
+                implementationDispatchCount: result.status.implementationDispatchCount,
                 planEmptyParkCount: result.status.planEmptyParkCount,
                 activeTasks: result.activeTasks.map((task) => ({
                   issue: task.issue,
@@ -1942,12 +2113,19 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.log(`Execution Mode: ${result.status.mode}`);
         console.log(`Active Issue  : ${result.status.issue ? '#' + result.status.issue : 'None'}`);
         console.log(`Updated At    : ${result.status.updatedAt}`);
-        console.log(`Checkpoint    : ${result.stateFilePath}`);
+        console.log(`Checkpoint    : ${checkpointExists ? result.stateFilePath : '(not created yet)'}`);
         if (result.resolvedIssue !== null) {
           // Without this the `Checkpoint` line read like an assertion that the run
           // uses the root file, which is exactly what it did NOT use: the root
           // `.agyloop/state.json` is not read or written by task runs (#226 D5).
           console.log(`              (authoritative for issue #${result.resolvedIssue} — the root .agyloop/state.json is not used by task runs)`);
+        }
+
+        // Issue #315 (AC-24 / #332): a COMPLETED run states whether it was
+        // DELIVERED. Before this, the terminal badge was the only signal, and a
+        // pushed branch with no PR looked exactly like a merged one.
+        if (result.status.currentStage === STAGE_COMPLETED) {
+          console.log(`Delivery      : ${formatPullRequestDelivery(result.resolvedSnapshot?.pullRequest)}`);
         }
 
         if (statusPause) {
@@ -2319,7 +2497,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'transition': {
       if (!options.stageArg) {
-        console.error('Error: Please specify target stage. Example: agyloop transition PLAN');
+        console.error('Error: Please specify target stage. Example: codeloop transition PLAN');
         console.error('Valid stages:', Object.keys(STAGES).join(', '));
         return EXIT_CODE_FAILURE;
       }
@@ -2401,7 +2579,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       if (sub === 'remove' || sub === 'rm') {
         if (!options.worktreeTarget) {
-          console.error('Error: Please specify task ID or worktree path to remove. Example: agyloop worktree remove 87');
+          console.error('Error: Please specify task ID or worktree path to remove. Example: codeloop worktree remove 87');
           return EXIT_CODE_FAILURE;
         }
 
@@ -2534,10 +2712,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
           if (status.versionInfo.isOutdated) {
             console.log(`\n💡 A new version of critique is available (v${status.versionInfo.currentVersion} -> v${status.versionInfo.latestVersion}).`);
-            console.log('   Run `agyloop critique update` to upgrade.\n');
+            console.log('   Run `codeloop critique update` to upgrade.\n');
           } else if (!status.resolution.isAvailable) {
             console.log('\n⚠️  Critique CLI is not installed.');
-            console.log('   Run `agyloop critique install` to install it automatically.\n');
+            console.log('   Run `codeloop critique install` to install it automatically.\n');
           } else {
             console.log('\n✓ Critique CLI is installed and up to date.\n');
           }
@@ -3066,8 +3244,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return result.passed ? EXIT_CODE_SUCCESS : EXIT_CODE_FAILURE;
         }
 
-        console.log('\n=== CodeLoop: AI Review Verdict ===');
-        console.log(result.verdict.formatReportText());
+        // Issue #315 (Defect D, AC-6): `formatReportText()` owns the report's
+        // title, so printing one here rendered TWO headers for one report. The
+        // leading newline is kept so the report still starts on its own line.
+        console.log(`\n${result.verdict.formatReportText()}`);
         console.log('');
         // The stage on disk. On a dry run this is the ONLY stage that exists,
         // so the unwritten next stage is never presented as the current one.
@@ -3169,10 +3349,25 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           workspaceDir: process.cwd()
         });
 
-        console.log(`\nCollector Branch : \x1b[35m${result.phaseBranch}\x1b[0m`);
-        console.log(`Target Base      : \x1b[32m${result.baseBranch}\x1b[0m`);
-        console.log(`Predicted SemVer : \x1b[1m${result.evaluation.bump.toUpperCase()}\x1b[0m (Label: \x1b[36m${result.evaluation.releaseLabel}\x1b[0m)`);
-        console.log(`Commit Metrics   : ${result.evaluation.totalCommits} commits (${result.evaluation.featuresCount} feats, ${result.evaluation.fixesCount} fixes, ${result.evaluation.breakingCount} breaking)`);
+        // Issue #315 (AC-30 / #294): ANSI is for a terminal only. A piped
+        // report (CI, `| less`, a log file) must stay plain text.
+        const paint = (code: string, text: string): string =>
+          process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text;
+
+        // Issue #315 (AC-30): name the RANGE that was validated, and the exact
+        // ref it was computed against, before any metrics.
+        console.log(`\nCollector Branch : ${paint('35', result.phaseBranch)}`);
+        console.log(`Target Base      : ${paint('32', result.baseBranch)}`);
+        console.log(
+          `Range            : ${result.evaluation.commitObjects} commits from ${result.baseRefUsed}..${result.phaseBranch}`
+        );
+        console.log(`Predicted SemVer : ${paint('1', result.evaluation.bump.toUpperCase())} (Label: ${paint('36', result.evaluation.releaseLabel)})`);
+        // Issue #315 (AC-27): the headline counts DELIVERABLES; the git
+        // topology is reported separately so the two can never be confused.
+        console.log(`Commit Metrics   : ${result.evaluation.totalCommits} deliverables (${result.evaluation.featuresCount} feats, ${result.evaluation.fixesCount} fixes, ${result.evaluation.breakingCount} breaking; ${result.evaluation.commitObjects} commit objects)`);
+        // Issue #315 (AC-32): the GitHub Release-notes half lives in another
+        // repository. Say so, so this in-repo change never implies it closed it.
+        console.log(`⚠ ${NOTE_RELEASE_NOTES_DEPENDENCY}`);
 
         if (result.openInFlightPrsCount > 0) {
           console.log(`\n⚠️  Warning: In-flight PRs detected targeting '${result.phaseBranch}'. Ensure all tasks are merged before final release.`);
@@ -3186,8 +3381,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.pullRequest) {
-          console.log(`\n✓ Milestone Pull Request: \x1b[1m${result.pullRequest.url || '#' + result.pullRequest.number}\x1b[0m`);
-          console.log(`✓ Release Label Applied : \x1b[36m${result.evaluation.releaseLabel}\x1b[0m (Triggers ajxcodes/auto-tag@v1 upon merge)`);
+          console.log(`\n✓ Milestone Pull Request: ${paint('1', result.pullRequest.url || '#' + result.pullRequest.number)}`);
+          console.log(`✓ Release Label Applied : ${paint('36', result.evaluation.releaseLabel)} (Triggers ajxcodes/auto-tag@v1 upon merge)`);
         }
 
         console.log(`\n✓ ${result.message}\n`);
@@ -3239,7 +3434,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           }
         }
 
-        if (result.planResult?.plannerDef) {
+        // Issue #315 (Defect B, AC-3/AC-4): the subagent block ADVERTISES the
+        // NEXT dispatch, so it may only be printed when PLAN is the next
+        // actionable stage — that is, when the checkpoint IS at PLAN once this
+        // command returns. A dry run writes nothing, so for it the stage on disk
+        // is the only truth. And it must never fire on an invocation whose work
+        // was Discovery: no planner ran there, and printing `planner`/`pro`
+        // after a run that only read the RCA report is the defect itself (it
+        // fired on the park path too). Those paths name the subagent that
+        // actually ran instead.
+        const previousStage = scope.snapshot?.currentStage ?? null;
+        const stageAfterThisRun = options.dryRun ? previousStage : result.currentStage;
+        const enteredAtDiscoveryWork =
+          previousStage === null ||
+          previousStage === STAGE_INITIALIZED ||
+          previousStage === STAGE_DISCOVERY;
+        const plannerIsNextActionable =
+          stageAfterThisRun === STAGE_PLAN &&
+          !enteredAtDiscoveryWork &&
+          result.pausedAtGate !== GATE_APPROVAL &&
+          result.planResult?.discoveryReentry !== 'PARK_AT_DISCOVERY';
+
+        if (plannerIsNextActionable && result.planResult?.plannerDef) {
           const p = result.planResult.plannerDef;
           console.log(`\nSubagent     : ${p.name} (${p.role})`);
           console.log(`Model Tier   : ${p.model}`);
@@ -3247,11 +3463,23 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(
             `Safety Guard : Scoped plan modification (write_tools=${p.capabilities.enable_write_tools}, mcp_tools=${p.capabilities.enable_mcp_tools})\n`
           );
+        } else if (
+          result.planResult?.discoveryDef &&
+          (previousStage === STAGE_DISCOVERY ||
+            result.planResult.discoveryReentry === 'PARK_AT_DISCOVERY')
+        ) {
+          // The subagent this invocation actually concerned: the Discovery
+          // attribution, never the planner's. `inherit` here is the model the
+          // discovery role resolved to, not a `pro` attribution for work that
+          // did not run.
+          const d = result.planResult.discoveryDef;
+          console.log(`\nSubagent     : ${d.name} (${d.role})`);
+          console.log(`Model Tier   : ${d.model}\n`);
         }
 
         if (result.pausedAtGate === GATE_APPROVAL) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
-          console.log(`Review artifacts in artifacts/plans/ and run 'agyloop implement' to continue.\n`);
+          console.log(`Review artifacts in artifacts/plans/ and run 'codeloop implement' to continue.\n`);
         } else if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
           // Issue #237, finding 3: a parked re-entry looks exactly like a
           // successful advance (`currentStage` is still DISCOVERY), so without
@@ -3260,7 +3488,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // operator was never told the outstanding work is the RCA report.
           // `RunLifecycleUseCase.executePlanMode` already builds the message;
           // the CLI was simply dropping it on every mode but YOLO.
-          console.log(`\n🛑 ${result.message ?? NOTE_DISCOVERY_PARK_AWAITING_RCA}\n`);
+          console.log(`\n🛑 ${result.message ?? withRecordedPauseHint(NOTE_DISCOVERY_PARK_AWAITING_RCA, result.pausedAtGate)}\n`);
+        } else if (options.dryRun) {
+          // Issue #315 (Defect F, AC-5): a dry run writes no checkpoint, so it
+          // must never claim an advance. The stage on disk is the stage it
+          // reports; a fresh install with no checkpoint has none.
+          const unchanged = previousStage
+            ? `still ${formatStageBadge(previousStage)}`
+            : 'no checkpoint exists yet';
+          console.log(`\n[DRY RUN] Stage unchanged: ${unchanged}. No checkpoint was written.`);
+        } else if (previousStage !== null && previousStage === result.currentStage) {
+          // Issue #315 (AC-5): the same success line fired at a stage the run
+          // did not leave (e.g. `plan` at QUALITY_GATE named QUALITY_GATE as an
+          // "advance"). Say what is true: nothing moved.
+          console.log(`\nAlready at ${formatStageBadge(result.currentStage)}; nothing to advance.`);
         } else {
           console.log(`\n✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
         }
@@ -3333,7 +3574,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
           console.log(`Whitelisted  : ${impl.implementerDef.tools.join(', ')}\n`);
         }
-        console.log(`Next Step    : Execute checklist items and run 'agyloop next' when complete.\n`);
+        console.log(`Next Step    : Execute checklist items and run 'codeloop next' when complete.\n`);
         return EXIT_CODE_SUCCESS;
       } catch (err: unknown) {
         const haltCode = lifecycleHaltExitCode(err);
@@ -3414,7 +3655,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // factually false and sends the user hunting for a TTY problem they
           // do not have, so the refusal stays non-zero and names the fix.
           console.error(
-            `\n[agyloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`
+            `\n[codeloop] Non-interactive terminal detected. Re-run with -y/--yes to confirm, or run interactively.\n`
           );
           return EXIT_CODE_FAILURE;
         }
@@ -3446,7 +3687,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
         if (execResult.confirmed && execResult.success) {
           console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
-          console.log(`✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.`);
+          // Issue #315 (AC-24): a terminal stage is not the same claim as
+          // delivery. When the checkpoint recorded no PR, say so on the advance
+          // line instead of letting COMPLETED imply the work shipped.
+          const deliveryRecord = execResult.stateMachine.pullRequest;
+          const noPrRecorded = !deliveryRecord || deliveryRecord.status === 'missing';
+          console.log(
+            `✓ Pipeline advanced to ${formatStageBadge(execResult.currentStage)}.${noPrRecorded ? ' — no PR (see below)' : ''}`
+          );
           // Issue #301/#307: name the tree the commit actually landed in.
           console.log(
             `   ✓ Committed in: ${execResult.commitCwd} (${execResult.worktreeMode === 'isolated' ? 'isolated worktree' : 'workspace root'})`
@@ -3475,7 +3723,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             const headBranch = execResult.stateMachine.worktree?.branch ?? '';
             console.log(`\n✓ PR already exists for branch '${headBranch}'.`);
           } else if (execResult.prCommand) {
-            console.log(`\nNext Step (Create PR):\n  ${execResult.prCommand}`);
+            // Issue #315 (AC-25 / #332): one copy-pasteable command AND the
+            // reason it exists. "Commit succeeded" is not "run delivered".
+            const headBranch = execResult.stateMachine.worktree?.branch ?? '<task branch>';
+            console.log(
+              `\n⚠ Branch '${headBranch}' is pushed but NOT delivered — no PR exists. Run:\n  ${execResult.prCommand}\n`
+            );
           }
           // Issue #240/Defect 3: a closing keyword only auto-closes on the
           // DEFAULT branch. Say so, and name the compensator, instead of
@@ -3563,6 +3816,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           title: options.title,
           type: options.type,
           commitAfter: options.commitAfter,
+          // Issue #315 (AC-22/AC-25 / #332): a hands-off `--commit-after` run
+          // opens the delivery PR itself. Without this, every unattended path
+          // stopped one step short of delivery — pushed branch, no PR, and a
+          // checkpoint claiming COMPLETED. An interactive/forwarded run keeps
+          // the opt-in default and gets the printed `gh pr create …` line.
+          createPr: options.createPr || options.commitAfter === true,
           staged: options.staged,
           message: options.message,
           dryRun: options.dryRun,
@@ -3729,10 +3988,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log('');
         } else if (result.reviewResult?.verdict.status === VERDICT_SKIPPED) {
           console.log(`\n✓ Quality gates passed in YOLO mode. AI review SKIPPED (advisory — no reviewer output or critique report).`);
-          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'codeloop commit' or re-run with '--commit-after'.\n`);
         } else {
           console.log(`\n✓ Quality gates and AI review passed in YOLO mode.`);
-          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' or re-run with '--commit-after'.\n`);
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'codeloop commit' or re-run with '--commit-after'.\n`);
         }
 
         if (result.reviewResult?.updateNotification) {
@@ -3767,7 +4026,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'gate':
     case 'gates':
-      console.error('error: `gate`/`gates` subcommands have been removed. Use `agyloop next` to invoke the gate subagent.');
+      console.error('error: `gate`/`gates` subcommands have been removed. Use `codeloop next` to invoke the gate subagent.');
       return EXIT_CODE_FAILURE;
 
     case COMMAND_OPENCODE: {
@@ -3803,7 +4062,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     default: {
       if (command !== null) {
-        console.error(`Error: Unknown command "${command}". Run "agyloop --help" for available commands.\n`);
+        console.error(`Error: Unknown command "${command}". Run "codeloop --help" for available commands.\n`);
         return EXIT_CODE_FAILURE;
       }
 
@@ -3817,6 +4076,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           title: options.title,
           type: options.type,
           commitAfter: options.commitAfter,
+          // Issue #315 (AC-22/AC-25 / #332): a hands-off `--commit-after` run
+          // opens the delivery PR itself. Without this, every unattended path
+          // stopped one step short of delivery — pushed branch, no PR, and a
+          // checkpoint claiming COMPLETED. An interactive/forwarded run keeps
+          // the opt-in default and gets the printed `gh pr create …` line.
+          createPr: options.createPr || options.commitAfter === true,
           yes: options.yes,
           staged: options.staged,
           message: options.message,
@@ -3839,7 +4104,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             printPlanScaffoldSummary(result.planResult.scaffoldInfo);
           }
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
-          console.log(`Review artifacts and run 'agyloop implement' (or 'agyloop') to continue.\n`);
+          console.log(`Review artifacts and run 'codeloop implement' (or 'codeloop') to continue.\n`);
           return EXIT_CODE_SUCCESS;
         }
 
@@ -3849,7 +4114,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // and never names the outstanding work. `RunLifecycleUseCase.
         // executeStandardMode` builds the message; print it.
         if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
-          console.log(`\n🛑 ${result.message ?? NOTE_DISCOVERY_PARK_AWAITING_RCA}\n`);
+          console.log(`\n🛑 ${result.message ?? withRecordedPauseHint(NOTE_DISCOVERY_PARK_AWAITING_RCA, result.pausedAtGate)}\n`);
           return EXIT_CODE_SUCCESS;
         }
 
@@ -3911,7 +4176,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.pausedAtGate === GATE_COMMIT) {
-          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'agyloop commit' to execute.\n`);
+          console.log(`🛑 Paused at ${formatStageBadge(STAGE_COMMIT)} gate. Run 'codeloop commit' to execute.\n`);
           return EXIT_CODE_SUCCESS;
         }
 

@@ -115,11 +115,18 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 # Automatically commit if all quality gates and reviews pass green
 /agyloop --commit-after
 
+# Commit and open the PR from the tool (base = the collector branch) instead of
+# printing the `gh pr create …` command for you to run. Without it the branch is
+# pushed but the run is NOT delivered until the PR is merged.
+# `--commit-after` (and `yolo --commit-after`) implies `--create-pr`: an
+# unattended run opens the PR itself rather than stopping one step short.
+codeloop commit --create-pr
+
 # PR Review comment triage: inspect and route review feedback
 /agyloop triage [implement | plan | discovery | dismiss]
 
 # Worktree management: list, clean, prune isolated worktrees
-bin/agyloop worktree [list | clean | prune]
+codeloop worktree [list | clean | prune]
 ```
 
 ### ⚠️ Behaviour change (issue #250): `--issue` is strict

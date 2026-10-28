@@ -133,6 +133,31 @@ export function isHumanWaitStage(stage: string): boolean {
 }
 
 /**
+ * The summary cell for a stage that ran OUT OF PROCESS and measured itself
+ * (issue #325.3, AC-18; the transport field is `gateReportedDurationMs` after
+ * issue #315 AC-15).
+ *
+ * The row used to print the gate's self-timer with no label, so
+ * `1m 9s` looked like the stage's wall clock while the checkpoint's window was
+ * `2m 57s` — the difference being agent start-up the gate never self-reports.
+ * The cell now names the clock it shows; when the wall window is measurable the
+ * reader can see both.
+ */
+export function formatGateReportedDuration(
+  reportedMs: number,
+  wallMs?: number | null
+): string {
+  if (typeof reportedMs !== 'number' || !Number.isFinite(reportedMs) || reportedMs < 0) {
+    return DURATION_NOT_RECORDED;
+  }
+  const reported = formatStageDuration(reportedMs);
+  if (typeof wallMs === 'number' && Number.isFinite(wallMs) && wallMs >= 0) {
+    return `${reported} (gate-reported; ${formatStageDuration(wallMs)} wall)`;
+  }
+  return `${reported} (gate-reported)`;
+}
+
+/**
  * The human wait consumed by THIS transition.
  *
  * `totalHumanWaitMs` after minus before the resume. The cumulative total minus
