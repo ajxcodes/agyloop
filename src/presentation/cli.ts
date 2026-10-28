@@ -113,6 +113,7 @@ import {
   DISMISS_OUTCOME_PARTIAL,
   DISMISS_OUTCOME_FAILED,
   DISMISS_OUTCOME_NOTHING,
+  DISMISS_OUTCOME_REFUSED,
   LABEL_DISMISS_THREADS,
   LABEL_DISMISS_CONVERSATION,
   LABEL_DISMISS_FAILURES,
@@ -134,6 +135,10 @@ import {
   // Issue #269: the TRIAGE gate's exit condition and the disposition line.
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
   NOTE_TRIAGE_DISPOSITION_NOT_RECORDED,
+  NOTE_TRIAGE_DISPOSITION_REFUSED,
+  NOTE_TRIAGE_STATE_UNCHANGED,
+  NOTE_TRIAGE_REFUSAL_NO_TRANSITION,
+  NOTE_TRIAGE_DRY_RUN_DISMISS,
   LABEL_TRIAGE_DISPOSITION,
   // Issue #241 (D1/D4): ONE action vocabulary + ONE formatter for the parser,
   // the error text, `--help`, the read-only hint and the stage precondition.
@@ -155,6 +160,7 @@ import {
   // Issue #269 (R5): the ONE renderer for the operator-facing disposition
   // line. The CLI must not hand-render it.
   formatTriageDispositionLine,
+  TriageDisposition,
   ReviewVerdict,
   AiReviewReport,
   ReviewerSubagentError,
@@ -223,6 +229,8 @@ import {
   TriagePrCommentsUseCase,
   TriageAction,
   TriageDismissReport,
+  TriageRefusal,
+  dismissalPerformed,
   SyncUseCase,
   AbortPipelineUseCase,
   AbortPipelineResult,
@@ -549,7 +557,7 @@ Operational Flags:
       --commit-after Automatically draft and commit changes if quality gates and AI review pass (implies --create-pr, so the run is delivered)
       --step         Pause compound execution after quality gates (before AI review)
   -y, --yes          Skip interactive confirmation prompt (auto-approve commit)
-  -m, --message <msg> Explicit conventional commit message override
+  -m, --message <msg> Explicit conventional commit message override; for 'triage dismiss' the dismissal notes — required, since a dismissal without them is refused and writes nothing
       --message-file <path> Read commit message from file
       --verdict-file <path> Read an AI Reviewer Subagent's verdict block from a file (codeloop review)
       --review-output <text> Pass an AI Reviewer Subagent's verdict block inline (codeloop review)
@@ -1014,6 +1022,60 @@ export function formatStageBadge(stage: string): string {
  * over an already-dismissed PR replied to nothing BECAUSE everything was
  * already answered, and the operator must be able to see that.
  */
+/**
+ * The indented count and failure lines of a dismissal report (#336).
+ *
+ * ONE source for both renderers: the success renderer and the refusal
+ * renderer must never disagree about what a run achieved — a refusal that
+ * hides the failures that caused it is the same class of lie as the phantom
+ * dismissal.
+ */
+export function dismissCountLines(report: TriageDismissReport): string[] {
+  const threadFailures = report.failures.filter((f) => f.scope === 'thread').length;
+  const conversationFailures = report.failures.filter((f) => f.scope === 'conversation').length;
+
+  const lines = [
+    `${LABEL_DISMISS_THREADS}  : ${report.threadsReplied} replied, ${report.threadsResolved} resolved, ${report.threadsSkipped} skipped (${NOTE_DISMISS_ALREADY_ANSWERED}), ${threadFailures} failed`,
+    `${LABEL_DISMISS_CONVERSATION} : ${report.conversationsReplied} replied, ${report.conversationsSkipped} skipped (${report.conversationsAlreadyAnswered} ${NOTE_DISMISS_ALREADY_ANSWERED}, ${report.conversationsDuplicate} ${NOTE_DISMISS_DUPLICATE_FEEDBACK}), ${report.conversationsIgnored} ignored (${NOTE_DISMISS_OWN_REPLY}), ${report.conversationsPriorAnswers} ignored (${NOTE_DISMISS_PRIOR_ANSWER}), ${conversationFailures} failed`,
+    `${LABEL_DISMISS_SURFACES}       : ${report.surfaces.length > 0 ? report.surfaces.join(', ') : LABEL_DISMISS_NO_SURFACE}`
+  ];
+
+  if (report.failures.length > 0) {
+    lines.push(`${LABEL_DISMISS_FAILURES}        : ${report.failures.length}`);
+    const shown = report.failures.slice(0, DISMISS_FAILURE_DETAIL_LIMIT);
+    for (const failure of shown) {
+      lines.push(`  - ${failure.scope} ${failure.target}: ${failure.error}`);
+    }
+    if (report.failures.length > shown.length) {
+      lines.push(`  - ... and ${report.failures.length - shown.length} more failure(s)`);
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Renders a REFUSED dismissal, or the dry run that predicts one (#336).
+ *
+ * The refusal is printed to stdout, like the rest of the triage report: the
+ * banner and the fetched comments are already there, and splitting one report
+ * across two streams makes the ordering unpredictable. The exit code is the
+ * machine signal.
+ */
+export function printTriageRefusal(
+  refusal: TriageRefusal,
+  dismissal?: TriageDismissReport,
+  dryRun = false
+): void {
+  const prefix = dryRun ? '[dry-run] ' : '';
+  console.log(`${prefix}✗ Triage Action : ${DISMISS_OUTCOME_REFUSED} — ${refusal.reason}`);
+  if (dismissal) {
+    for (const line of dismissCountLines(dismissal)) {
+      console.log(`  ${line}`);
+    }
+  }
+}
+
 export function printTriageDismissOutcome(report?: TriageDismissReport): void {
   if (!report || !report.attempted) {
     const reason = report?.skippedReason ?? NOTE_DISMISS_NOTHING;
@@ -1021,9 +1083,10 @@ export function printTriageDismissOutcome(report?: TriageDismissReport): void {
     return;
   }
 
-  const threadFailures = report.failures.filter((f) => f.scope === 'thread').length;
-  const conversationFailures = report.failures.filter((f) => f.scope === 'conversation').length;
-  const performed = report.threadsReplied + report.threadsResolved + report.conversationsReplied;
+  // The ONE definition of "performed" (#336): the use case refuses a
+  // zero-item dismissal with the same computation, so the refusal and this
+  // rendering cannot disagree.
+  const performed = dismissalPerformed(report);
 
   // The dismissal ran, but it replied to nothing, resolved nothing and
   // answered nothing. Whatever the failure count says, a dismissal that
@@ -1046,25 +1109,8 @@ export function printTriageDismissOutcome(report?: TriageDismissReport): void {
   } else {
     console.log(`${badge} Triage Action : ${outcome}`);
   }
-  console.log(
-    `  ${LABEL_DISMISS_THREADS}  : ${report.threadsReplied} replied, ${report.threadsResolved} resolved, ${report.threadsSkipped} skipped (${NOTE_DISMISS_ALREADY_ANSWERED}), ${threadFailures} failed`
-  );
-  console.log(
-    `  ${LABEL_DISMISS_CONVERSATION} : ${report.conversationsReplied} replied, ${report.conversationsSkipped} skipped (${report.conversationsAlreadyAnswered} ${NOTE_DISMISS_ALREADY_ANSWERED}, ${report.conversationsDuplicate} ${NOTE_DISMISS_DUPLICATE_FEEDBACK}), ${report.conversationsIgnored} ignored (${NOTE_DISMISS_OWN_REPLY}), ${report.conversationsPriorAnswers} ignored (${NOTE_DISMISS_PRIOR_ANSWER}), ${conversationFailures} failed`
-  );
-  console.log(
-    `  ${LABEL_DISMISS_SURFACES}       : ${report.surfaces.length > 0 ? report.surfaces.join(', ') : LABEL_DISMISS_NO_SURFACE}`
-  );
-
-  if (report.failures.length > 0) {
-    console.log(`  ${LABEL_DISMISS_FAILURES}        : ${report.failures.length}`);
-    const shown = report.failures.slice(0, DISMISS_FAILURE_DETAIL_LIMIT);
-    for (const failure of shown) {
-      console.log(`    - ${failure.scope} ${failure.target}: ${failure.error}`);
-    }
-    if (report.failures.length > shown.length) {
-      console.log(`    - ... and ${report.failures.length - shown.length} more failure(s)`);
-    }
+  for (const line of dismissCountLines(report)) {
+    console.log(`  ${line}`);
   }
 }
 
@@ -1335,9 +1381,16 @@ function formatPullRequestDelivery(
         readonly status: 'created' | 'existing' | 'missing';
       }
     | null
-    | undefined
+    | undefined,
+  disposition?: { readonly prNumber: number } | null
 ): string {
   if (!pullRequest || pullRequest.status === 'missing') {
+    if (disposition) {
+      // The triage PR is evidence that a PR EXISTED; the delivery record is
+      // simply absent. Saying "no PR recorded" would contradict `next`, which
+      // names the same PR (#336 Defect 2).
+      return `pushed, NOT delivered (delivery PR not recorded; triage disposition names PR #${disposition.prNumber})`;
+    }
     return 'pushed, NOT delivered (no PR recorded)';
   }
   const ref = pullRequest.number !== null ? `PR #${pullRequest.number}` : 'PR';
@@ -2043,6 +2096,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
         const result = await getStatusUseCase.execute({ issue: issueValue });
         const statusPause = await readPersistedGatePause(stateRepo, result.resolvedSnapshot);
+        // Issue #336 (Defect 2): the triage disposition is part of what the run
+        // recorded. It is read through the DOMAIN validator, so a corrupt or
+        // hand-edited field renders as "not recorded" instead of
+        // `action=undefined`, and the text and JSON surfaces cannot disagree.
+        const triageDisposition = TriageDisposition.fromJSON(
+          result.resolvedSnapshot?.triageDisposition
+        );
         // Issue #315 (AC-9 / G7): `stateFilePath` is the RESOLUTION TARGET, which
         // may not exist yet on a fresh install. Printing it as `Checkpoint :` was
         // a report naming a file that did not exist, so the text path says so and
@@ -2078,6 +2138,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
                 // Issue #315 (AC-24 / #332): what the run recorded about its
                 // delivery PR. `null` means "not recorded" — never "delivered".
                 pullRequest: result.resolvedSnapshot?.pullRequest ?? null,
+                // Issue #336 (Defect 2): the disposition the checkpoint holds,
+                // under the name the checkpoint uses. `next` already read this
+                // field; `status` dropping it is how the two surfaces
+                // disagreed about the same PR.
+                triageDisposition: triageDisposition ? triageDisposition.toJSON() : null,
                 reviewDispatchCount: result.status.reviewDispatchCount,
                 discoveryDispatchCount: result.status.discoveryDispatchCount,
                 planDispatchCount: result.status.planDispatchCount,
@@ -2127,7 +2192,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // DELIVERED. Before this, the terminal badge was the only signal, and a
         // pushed branch with no PR looked exactly like a merged one.
         if (result.status.currentStage === STAGE_COMPLETED) {
-          console.log(`Delivery      : ${formatPullRequestDelivery(result.resolvedSnapshot?.pullRequest)}`);
+          console.log(`Delivery      : ${formatPullRequestDelivery(result.resolvedSnapshot?.pullRequest, triageDisposition)}`);
+        }
+
+        // Issue #336 (Defect 2): a disposition is recorded by every routing
+        // action, not only at the terminal stage, so it is rendered wherever
+        // it exists. It follows the Delivery line so a COMPLETED run reads the
+        // two facts in the order the operator cares about them.
+        if (triageDisposition) {
+          console.log(formatTriageDispositionLine(triageDisposition, 'status-report'));
         }
 
         if (statusPause) {
@@ -2839,6 +2912,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
                 prNumber: result.prNumber ?? null,
                 comments: result.comments,
                 ...(result.dismissal ? { dismissal: result.dismissal } : {}),
+                refused: result.refused ?? null,
                 disposition: result.disposition ?? null,
                 dispositionRecorded: result.dispositionRecorded === true,
                 message: result.message
@@ -2872,6 +2946,22 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         }
 
+        if (result.refused) {
+          // A refusal writes NOTHING, so the report must never print the
+          // success lines (#336). This branch runs before the dry-run block so
+          // a predicted refusal renders identically to the real one.
+          printTriageRefusal(result.refused, result.dismissal, result.dryRun === true);
+          if (result.dryRun) {
+            console.log('[dry-run] Would NOT transition — the checkpoint stays at its current stage.');
+            console.log('[dry-run] Nothing was written.\n');
+          } else {
+            console.log(`✗ Next Stage    : ${NOTE_TRIAGE_REFUSAL_NO_TRANSITION}`);
+            console.log(`✗ State Updated : ${NOTE_TRIAGE_STATE_UNCHANGED}`);
+            console.log(`⚠ ${LABEL_TRIAGE_DISPOSITION} : ${NOTE_TRIAGE_DISPOSITION_REFUSED}\n`);
+          }
+          return EXIT_CODE_FAILURE;
+        }
+
         if (result.dryRun) {
           // A simulation never says "State Updated" (#248 AC-248.5).
           console.log(`[dry-run] Triage Action : ${action.toUpperCase()}`);
@@ -2880,7 +2970,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             console.log('[dry-run] Would create a worktree');
           }
           if (result.wouldDismiss) {
-            console.log('[dry-run] Would reply to and resolve the PR review threads');
+            console.log(`[dry-run] ${NOTE_TRIAGE_DRY_RUN_DISMISS}`);
           }
           console.log('[dry-run] Nothing was written.\n');
           return EXIT_CODE_SUCCESS;

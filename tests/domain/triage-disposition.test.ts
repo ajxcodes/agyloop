@@ -226,7 +226,7 @@ describe('TriageDisposition value object (issue #269)', () => {
   });
 
   test('TD8: ONE renderer produces every operator-facing disposition line (issue #269, R5)', () => {
-    // The three surfaces used to hand-render the same four facts, so the
+    // The FOUR surfaces used to hand-render the same four facts, so the
     // wording could drift. They now share ONE renderer, and the wording is
     // UNCHANGED — this pins the exact strings the operator sees.
     const disposition = makeDisposition();
@@ -241,6 +241,12 @@ describe('TriageDisposition value object (issue #269)', () => {
     );
     assert.strictEqual(
       formatTriageDispositionLine(disposition, 'triage-cli'),
+      'Triage Disposition : recorded (action=COMPLETED, PR #7, 1 feedback item(s), at 2026-10-21T12:00:00.000Z)'
+    );
+    // Issue #336 (Defect 2): `status` renders the SAME frame, so the two
+    // commands can never tell different stories about the same disposition.
+    assert.strictEqual(
+      formatTriageDispositionLine(disposition, 'status-report'),
       'Triage Disposition : recorded (action=COMPLETED, PR #7, 1 feedback item(s), at 2026-10-21T12:00:00.000Z)'
     );
 

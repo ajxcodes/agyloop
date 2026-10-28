@@ -2415,6 +2415,16 @@ export const DISMISS_OUTCOME_PARTIAL = 'DISMISS (PARTIAL)' as const;
 export const DISMISS_OUTCOME_FAILED = 'DISMISS (FAILED)' as const;
 export const DISMISS_OUTCOME_NOTHING = 'DISMISS (NOTHING DISMISSED)' as const;
 
+/**
+ * The outcome shown when the dismissal was REFUSED before it could do
+ * anything, or when the dry run predicts that refusal (#336).
+ *
+ * It is deliberately distinct from {@link DISMISS_OUTCOME_NOTHING}: that line
+ * reports a run that happened and achieved nothing, while this one reports a
+ * run that was never attempted — and must not be mistaken for one that was.
+ */
+export const DISMISS_OUTCOME_REFUSED = 'DISMISS (REFUSED)' as const;
+
 /** Why the dismissal route had nothing to dismiss. */
 export const NOTE_DISMISS_NO_NOTES = 'no dismissal notes were provided (-m "<notes>")' as const;
 export const NOTE_DISMISS_NO_PR = 'no pull request was resolved for this issue' as const;
@@ -2436,6 +2446,21 @@ export const NOTE_DISMISS_NOTHING = 'nothing was dismissed' as const;
  */
 export const NOTE_DISMISS_NOTHING_HANDLED =
   'the dismissal ran but no review feedback was handled' as const;
+
+/**
+ * Appended to a refusal reason. A refusal is only truthful if the operator is
+ * told that NOTHING was written: the phantom dismissal of #336 printed a
+ * transition it never performed.
+ */
+export const NOTE_DISMISS_REFUSED_SUFFIX =
+  ' — nothing was written and the gate stays at TRIAGE' as const;
+
+/**
+ * Why a dismissal that RAN was refused. It names the non-destructive exit so a
+ * refused dismissal is never a dead end (`completed` is always legal at TRIAGE).
+ */
+export const NOTE_DISMISS_REFUSED_NOTHING =
+  'the dismissal handled no review feedback (nothing was replied to or resolved); use `codeloop triage completed` for the non-destructive exit' as const;
 
 /**
  * The header the review bot puts on a PR conversation summary:
@@ -2630,7 +2655,8 @@ export const TRIAGE_ACTION_SIDE_EFFECTS: Readonly<Record<TriageDispositionAction
   plan: 'routes to PLAN for structural plan revision',
   discovery: 'routes to DISCOVERY for investigative root-cause analysis',
   completed: 'records a disposition and posts nothing to the PR (non-destructive exit)',
-  dismiss: 'records a disposition and replies to/resolves the PR threads (writes to GitHub)'
+  dismiss:
+    'records a disposition and replies to/resolves the PR threads using -m "<notes>" (writes to GitHub; without -m nothing is posted and the dismissal is refused)'
 });
 
 export const TRIAGE_ACTION_LIST_SEPARATOR = '|' as const;
@@ -2729,6 +2755,39 @@ export const NOTE_TRIAGE_DISPOSITION_NOT_RECORDED =
   'no triage disposition recorded — no PR review feedback could be read' as const;
 
 /**
+ * The `State Updated` counterpart of a refusal (#336): the checkpoint was NOT
+ * written, so the line must say exactly that.
+ */
+export const NOTE_TRIAGE_STATE_UNCHANGED =
+  'nothing written — the checkpoint was not changed' as const;
+
+/**
+ * The `Next Stage` counterpart of a refusal: the gate did not move, so naming a
+ * target stage would be the phantom transition #336 reported.
+ */
+export const NOTE_TRIAGE_REFUSAL_NO_TRANSITION =
+  'unchanged — the checkpoint stays at its current stage' as const;
+
+/**
+ * The disposition line of a refusal. A refused action dispositioned nothing,
+ * so the operator must not be shown the "not recorded because no feedback could
+ * be read" sentence — the feedback WAS read; the action was refused.
+ */
+export const NOTE_TRIAGE_DISPOSITION_REFUSED =
+  'not recorded — the action was refused, so no feedback was dispositioned' as const;
+
+/**
+ * The dry-run prediction of a `dismiss` that MAY write (#336).
+ *
+ * The old literal promised "Would reply to and resolve the PR review threads"
+ * even when the real run would have refused and posted nothing — a simulation
+ * is only useful if it predicts the run it simulates.
+ */
+export const NOTE_TRIAGE_DRY_RUN_DISMISS =
+  'Would attempt a dismissal of the PR review threads (a real run refuses and records nothing when it handles no feedback)' as const;
+
+
+/**
  * The exit condition of the TRIAGE gate, stated in the tool's own output.
  *
  * The gate re-opens on every `codeloop next` while the PR is open, so the
@@ -2746,16 +2805,17 @@ export const LABEL_TRIAGE_DISPOSITION = 'Triage Disposition' as const;
 /**
  * The surfaces the triage disposition line is rendered for (issue #269, R5).
  *
- * ONE renderer, THREE surfaces: the CLI's triage output, the idle report and
- * the checkpoint history note each used to hand-render the SAME facts, so the
- * wording could drift apart. The frames live here, beside the note they
- * belong to, and the renderer in `value-objects/triage-disposition.ts` is the
- * single place that fills them.
+ * ONE renderer, FOUR surfaces: the CLI's triage output, the idle report, the
+ * `status` report and the checkpoint history note each used to hand-render the
+ * SAME facts, so the wording could drift apart. The frames live here, beside
+ * the note they belong to, and the renderer in
+ * `value-objects/triage-disposition.ts` is the single place that fills them.
  */
 export const TRIAGE_DISPOSITION_SURFACES = Object.freeze([
   'history-note',
   'idle-report',
-  'triage-cli'
+  'triage-cli',
+  'status-report'
 ] as const);
 
 export type TriageDispositionSurface = (typeof TRIAGE_DISPOSITION_SURFACES)[number];
@@ -2775,12 +2835,22 @@ export type TriageDispositionSurface = (typeof TRIAGE_DISPOSITION_SURFACES)[numb
  * The history note IS `NOTE_TRIAGE_DISPOSITION_RECORDED` — the domain constant
  * that already existed and was used for exactly one surface.
  */
+/**
+ * The disposition line's frame, declared ONCE (#336).
+ *
+ * `status` and the triage CLI render the same sentence about the same
+ * disposition, so a second hand-typed frame is exactly how the two surfaces
+ * would drift into contradicting each other.
+ */
+const TRIAGE_DISPOSITION_RECORDED_FRAME =
+  'recorded (action={actionUpper}, PR #{prNumber}, {count} feedback item(s), at {recordedAt})' as const;
+
 export const TRIAGE_DISPOSITION_LINE_TEMPLATES = Object.freeze({
   'history-note': NOTE_TRIAGE_DISPOSITION_RECORDED,
   'idle-report':
     'Triage disposition recorded: action={action}, PR #{prNumber}, {count} feedback item(s), at {recordedAt}.',
-  'triage-cli':
-    '{label} : recorded (action={actionUpper}, PR #{prNumber}, {count} feedback item(s), at {recordedAt})'
+  'triage-cli': `{label} : ${TRIAGE_DISPOSITION_RECORDED_FRAME}`,
+  'status-report': `{label} : ${TRIAGE_DISPOSITION_RECORDED_FRAME}`
 } as const);
 
 export const COMMAND_PLAN = 'plan' as const;

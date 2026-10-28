@@ -32,6 +32,8 @@ import {
   NOTE_DISMISS_NO_NOTES,
   NOTE_DISMISS_NO_PR,
   NOTE_DISMISS_NO_GATEWAY,
+  NOTE_DISMISS_REFUSED_NOTHING,
+  NOTE_DISMISS_REFUSED_SUFFIX,
   DISMISS_CONVERSATION_REPLY_FOOTER,
   DISMISS_INLINE_REPLY_MARKER,
   DISMISS_FAILURE_DETAIL_LIMIT,
@@ -58,6 +60,7 @@ import {
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 import {
   classifyPrFeedback,
+  feedbackKeyOf,
   feedbackKeysOf,
   prFeedbackKey,
   isDismissalReply,
@@ -127,6 +130,84 @@ export interface TriageDismissReport {
   readonly failures: readonly TriageDismissFailure[];
   /** The GitHub surfaces the dismissal actually acted on. */
   readonly surfaces: readonly string[];
+  /**
+   * The feedback keys this dismissal actually disposed of, in `feedbackKeyOf`
+   * form (`id:<n>` / `body:<text>`) so they are directly comparable with the
+   * disposition's `feedbackKeys` and with the detector's key set.
+   *
+   * A key is here when the route replied to it, resolved it, skipped it because
+   * the PR proves it was answered (the tool's own marker, an id-bearing
+   * reference, or duplicate inline feedback), or ignored it as one of the tool's
+   * own replies / an unattributable prior answer — no run will ever act on those,
+   * so excluding them would keep the disposition permanently incomplete.
+   *
+   * A key is NOT here when its reply or resolve FAILED, or when its thread was
+   * never listed: the feedback was not disposed of, and the gate must re-open
+   * for it (#336, AC-2).
+   */
+  readonly handledFeedbackKeys: readonly string[];
+}
+
+/**
+ * Why a dismissal was refused (#336).
+ *
+ * A refusal is a NON-write: no disposition, no transition, no save. It is
+ * reported on the result instead of thrown so the `--json` document still
+ * describes the run and a dry run can predict the same refusal.
+ */
+export type TriageRefusalCause =
+  | 'missing-notes'
+  | 'no-pull-request'
+  | 'no-gateway'
+  | 'nothing-handled';
+
+export interface TriageRefusal {
+  readonly cause: TriageRefusalCause;
+  /** Operator-facing, always ends with NOTE_DISMISS_REFUSED_SUFFIX. */
+  readonly reason: string;
+}
+
+/**
+ * Why a dismissal cannot possibly achieve anything, or null when it can.
+ *
+ * Pure, and shared by the real path and the dry-run prediction: a simulation
+ * that predicted a dismissal the real run refuses would be the same class of
+ * lie this issue is about (AC-3).
+ */
+export function dismissalPreconditionReason(params: {
+  readonly notes?: string;
+  readonly prNumber: number | null;
+  readonly hasGateway: boolean;
+  readonly comments: readonly PullRequestReviewComment[];
+}): { readonly cause: TriageRefusalCause; readonly note: string } | null {
+  if (!params.notes || params.notes.trim().length === 0) {
+    return { cause: 'missing-notes', note: NOTE_DISMISS_NO_NOTES };
+  }
+  if (!params.prNumber) {
+    return { cause: 'no-pull-request', note: NOTE_DISMISS_NO_PR };
+  }
+  if (!params.hasGateway) {
+    return { cause: 'no-gateway', note: NOTE_DISMISS_NO_GATEWAY };
+  }
+  if (params.comments.length === 0) {
+    return { cause: 'nothing-handled', note: NOTE_DISMISS_REFUSED_NOTHING };
+  }
+  return null;
+}
+
+/**
+ * What a dismissal really performed — the ONE definition (#336, AC-2).
+ *
+ * The use case refuses a dismissal that performed zero items, and the CLI
+ * renders the outcome; if the two computed "performed" differently, "refused
+ * for zero items" and "rendered as NOTHING DISMISSED" could disagree.
+ */
+export function dismissalPerformed(report: {
+  readonly threadsReplied: number;
+  readonly threadsResolved: number;
+  readonly conversationsReplied: number;
+}): number {
+  return report.threadsReplied + report.threadsResolved + report.conversationsReplied;
 }
 
 /**
@@ -159,6 +240,12 @@ interface TriageDismissContext {
    * was answered — whatever the thread's resolution state says.
    */
   readonly resolvedInlineKeys: Set<string>;
+  /**
+   * The feedback keys the dismissal actually disposed of (#336, AC-2). A key
+   * enters only when its feedback was answered or proven answered; a failure
+   * or an unlisted thread contributes nothing.
+   */
+  readonly handledKeys: Set<string>;
   /** The failures of both jobs, in the order they happened. */
   readonly failures: TriageDismissFailure[];
   /** The GitHub surfaces the dismissal acted on, in the order they were met. */
@@ -229,6 +316,13 @@ export interface TriagePrCommentsResult {
   readonly wouldRecordDisposition?: boolean;
   /** Present for the `dismiss` action: what the dismissal really achieved. */
   readonly dismissal?: TriageDismissReport;
+  /**
+   * Why the action was refused (#336), or null/absent when it was not.
+   *
+   * A refusal means NOTHING was written: no disposition, no transition, no
+   * save, and the checkpoint stays where it is.
+   */
+  readonly refused?: TriageRefusal | null;
   /**
    * The recorded triage disposition (issue #269), or `null` when none was
    * recorded (no PR feedback could be read — or this was a dry run).
@@ -485,18 +579,69 @@ export class TriagePrCommentsUseCase {
     const selectedAction: TriageAction = params.action;
 
     // The dismissal route runs BEFORE the state transition so its outcome can
-    // be reported truthfully. It never blocks the transition: a partial
-    // dismissal is reported as partial, not as a failure of the routing.
-    // On a dry run it does not run at all — it posts to GitHub (#248).
+    // be reported truthfully. It never blocks the transition when it did
+    // something: a partial dismissal is reported as partial, not as a failure
+    // of the routing. It DOES refuse — writing nothing — when it cannot
+    // possibly dismiss anything (#336): a dismissal that posted nothing must
+    // never be recorded as a dismissal.
+    // On a dry run it does not post at all (#248); it predicts the same
+    // precondition the real run enforces, so a simulation cannot promise a
+    // dismissal the real run refuses.
+    const clearedNotes = (params.notes ?? '').trim();
     let dismissal: TriageDismissReport | undefined;
-    if (selectedAction === 'dismiss' && !dryRun) {
-      dismissal = await this.performDismissal({
-        prNumber,
+    let refused: TriageRefusal | null = null;
+
+    if (selectedAction === 'dismiss') {
+      const precondition = dismissalPreconditionReason({
         notes: params.notes,
-        comments,
-        cwd,
-        repo: params.trackerRepo
+        prNumber,
+        hasGateway: this.githubGateway !== undefined,
+        comments
       });
+
+      if (precondition) {
+        refused = {
+          cause: precondition.cause,
+          reason: `${precondition.note}${NOTE_DISMISS_REFUSED_SUFFIX}`
+        };
+      } else if (!dryRun) {
+        dismissal = await this.performDismissal({
+          prNumber,
+          notes: clearedNotes,
+          comments,
+          cwd,
+          repo: params.trackerRepo
+        });
+        if (!dismissal.attempted || dismissalPerformed(dismissal) === 0) {
+          // AC-2: a dismissal that handled zero items is not a dismissal. The
+          // report keeps its counts and failures so the operator sees WHY.
+          refused = {
+            cause: 'nothing-handled',
+            reason: `${NOTE_DISMISS_REFUSED_NOTHING}${NOTE_DISMISS_REFUSED_SUFFIX}`
+          };
+        }
+      }
+    }
+
+    if (refused) {
+      // A refusal writes NOTHING: no transition, no disposition, no save, no
+      // worktree. The returned StateMachine is the untouched one.
+      return {
+        success: false,
+        targetStage: sm.currentStage,
+        stateMachine: sm,
+        prNumber,
+        comments,
+        dismissal,
+        refused,
+        dryRun,
+        stateUpdated: false,
+        wouldDismiss: false,
+        disposition: null,
+        dispositionRecorded: false,
+        wouldRecordDisposition: false,
+        message: dryRun ? `Triage simulated: ${refused.reason}` : `Triage refused: ${refused.reason}`
+      };
     }
 
     let targetStage: StageName;
@@ -559,14 +704,20 @@ export class TriagePrCommentsUseCase {
     let dispositionRecorded = false;
     const wouldRecordDisposition = prNumber !== null && comments.length > 0;
 
-    if (!dryRun && prNumber !== null && comments.length > 0) {
-      const classified = classifyPrFeedback(comments);
-      const keys = feedbackKeysOf(classified.actionable);
+    // A dismissal records ONLY the feedback it actually disposed of (#336,
+    // AC-2). The other actions triaged every actionable item, so they keep the
+    // full key set.
+    const dismissedKeys =
+      selectedAction === 'dismiss'
+        ? (dismissal?.handledFeedbackKeys ?? [])
+        : feedbackKeysOf(classifyPrFeedback(comments).actionable);
+
+    if (!dryRun && prNumber !== null && dismissedKeys.length > 0) {
       disposition = TriageDisposition.merge(sm.triageDisposition, {
         prNumber,
         action: selectedAction,
         recordedAt: new Date().toISOString(),
-        feedbackKeys: keys
+        feedbackKeys: dismissedKeys
       });
       dispositionRecorded = true;
     }
@@ -721,7 +872,8 @@ export class TriagePrCommentsUseCase {
       conversationsIgnored: 0,
       conversationsPriorAnswers: 0,
       failures: [],
-      surfaces: []
+      surfaces: [],
+      handledFeedbackKeys: []
     });
 
     if (!params.notes) {
@@ -762,6 +914,8 @@ export class TriagePrCommentsUseCase {
     const answeredInlineKeys = new Set<string>();
     /** The feedback keys of the inline comments whose thread needs no further answer. */
     const resolvedInlineKeys = new Set<string>();
+    /** The feedback keys this dismissal actually disposed of (#336, AC-2). */
+    const handledKeys = new Set<string>();
 
     // The two jobs below share this context: the inline job fills the two
     // feedback-key sets, the conversation job reads them.
@@ -777,6 +931,7 @@ export class TriagePrCommentsUseCase {
       newestAnswerAt,
       answeredInlineKeys,
       resolvedInlineKeys,
+      handledKeys,
       failures,
       surfaces
     };
@@ -809,7 +964,8 @@ export class TriagePrCommentsUseCase {
       conversationsIgnored: conversations.conversationsIgnored,
       conversationsPriorAnswers: conversations.conversationsPriorAnswers,
       failures,
-      surfaces
+      surfaces,
+      handledFeedbackKeys: [...handledKeys]
     };
   }
 
@@ -882,6 +1038,7 @@ export class TriagePrCommentsUseCase {
             const comment = inlineById.get(id);
             if (comment) {
               context.resolvedInlineKeys.add(prFeedbackKey(comment.body));
+              context.handledKeys.add(feedbackKeyOf(comment));
             }
           }
           continue;
@@ -901,6 +1058,9 @@ export class TriagePrCommentsUseCase {
           const comment = inlineById.get(id);
           if (comment) {
             context.answeredInlineKeys.add(prFeedbackKey(comment.body));
+            // The reply landed, so the feedback IS disposed of — this is the
+            // key the disposition may claim (#336, AC-2).
+            context.handledKeys.add(feedbackKeyOf(comment));
             if (thread.isResolved) {
               // The thread is already closed: a reply was what was missing,
               // not a resolve.
@@ -992,6 +1152,7 @@ export class TriagePrCommentsUseCase {
         if (answeredIds.has(comment.id)) {
           conversationsAlreadyAnswered++;
           conversationsSkipped++;
+          context.handledKeys.add(feedbackKeyOf(comment));
           continue;
         }
 
@@ -1004,19 +1165,23 @@ export class TriagePrCommentsUseCase {
         if (resolvedInlineKeys.has(feedbackKey)) {
           conversationsAlreadyAnswered++;
           conversationsSkipped++;
+          context.handledKeys.add(feedbackKeyOf(comment));
           continue;
         }
         if (answeredInlineKeys.has(feedbackKey)) {
           conversationsDuplicate++;
           conversationsSkipped++;
+          context.handledKeys.add(feedbackKeyOf(comment));
           continue;
         }
 
         // A prior answer the tool cannot attribute (it carries neither the
         // tool's footer nor its reference). Answering it again would be a
-        // third reply to the same feedback.
+        // third reply to the same feedback. No later run can answer it either,
+        // so recording it is what makes the disposition terminal (#336).
         if (isUnattributablePriorAnswer(comment, newestAnswerAt)) {
           conversationsPriorAnswers++;
+          context.handledKeys.add(feedbackKeyOf(comment));
           continue;
         }
 
@@ -1028,6 +1193,7 @@ export class TriagePrCommentsUseCase {
             gwOptions
           );
           conversationsReplied++;
+          context.handledKeys.add(feedbackKeyOf(comment));
         } catch (err: unknown) {
           failures.push({
             scope: 'conversation',

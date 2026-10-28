@@ -151,4 +151,48 @@ describe('Triage action-list contract (issue #277)', () => {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });
+
+  test('TA5: the help documents -m as the dismissal notes flag for triage (AC-5)', () => {
+    const help = captureConsole(() => printHelp());
+    const messageLine = help.split('\n').find((line) => line.includes('-m, --message'));
+    const triageLine = help.split('\n').find((line) => line.includes('triage [action]'));
+
+    assert.ok(messageLine, `the help must document -m, got:\n${help}`);
+    assert.ok(
+      messageLine!.includes('triage dismiss'),
+      `the -m line must name triage dismiss: ${messageLine}`
+    );
+    assert.ok(
+      messageLine!.includes('dismissal notes'),
+      `the -m line must name the dismissal notes: ${messageLine}`
+    );
+    assert.ok(triageLine, `the help must document triage [action], got:\n${help}`);
+    assert.ok(
+      triageLine!.includes('-m "<notes>"'),
+      `the triage line must name -m "<notes>": ${triageLine}`
+    );
+  });
+
+  test('TA6: the shipped skill states the real skip rule and the -m requirement (AC-8)', () => {
+    const skill = fs.readFileSync(SKILL_FILE, 'utf8');
+    const openCodeSkill = fs.readFileSync(OPENCODE_SKILL_FILE, 'utf8');
+
+    assert.ok(
+      skill.includes('dismissal marker'),
+      'SKILL.md must name the dismissal marker as the skip proof'
+    );
+    assert.ok(skill.includes('-m "<notes>"'), 'SKILL.md must document -m "<notes>"');
+    assert.ok(
+      !/whose review thread is \*\*resolved\*\* was answered by an earlier run/.test(skill),
+      'SKILL.md must not claim a resolved thread was answered by an earlier run'
+    );
+    assert.ok(
+      !skill.includes('Failures never block the transition'),
+      'SKILL.md must not claim failures never block the transition'
+    );
+    assert.ok(
+      openCodeSkill.includes('-m "<notes>"'),
+      'the opencode skill must document -m "<notes>"'
+    );
+  });
 });

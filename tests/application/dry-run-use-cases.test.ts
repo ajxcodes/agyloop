@@ -466,12 +466,14 @@ describe('TriagePrCommentsUseCase dryRun (#248 AC-248.5, R14)', () => {
     const result = await useCase.execute({
       issue: 901,
       action: 'dismiss',
+      prNumber: 55,
       notes: 'closing',
       comments: [{ author: 'reviewer', body: '[error] fix', category: 'error' }],
       dryRun: true
     });
     assert.strictEqual(spies.calls.dismissal, 0);
     assert.strictEqual(result.wouldDismiss, true);
+    assert.strictEqual(result.refused ?? null, null);
   });
 
   test('negative control: a real run saves exactly once and creates the worktree', async () => {
