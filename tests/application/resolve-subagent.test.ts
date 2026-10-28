@@ -706,4 +706,77 @@ describe('Gate prompt → parser vocabulary contract (issue #311)', () => {
       assert.ok(verdictLine.endsWith(SMOKE_PROTOCOL_VOCABULARY));
     }
   });
+
+  /**
+   * The published evidence shapes (#338, absorbing #343).
+   *
+   * The prompt is the contract: a gate that follows it must emit exactly what
+   * `GateResultReport.parseBlock` files. These cases assert the literals the
+   * gate is shown, in BOTH smoke-protocol branches, and then parse the very
+   * prompt text — so the example and the parser cannot drift apart again.
+   */
+  const SMOKE_CHECKS_SHAPE =
+    '"smokeChecks": [{ "id": "<check-id>", "label": "<check label>", "passed": true }]';
+  const NOT_RUN_SHAPE =
+    '"notRun": [{ "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }]';
+
+  function fillPromptExample(example: string): string {
+    return example
+      .replaceAll('<id>', 'node')
+      .replaceAll('<command>', 'npm test')
+      .replaceAll('<check-id>', 'check-1')
+      .replaceAll('<check label>', 'app boots')
+      .replaceAll('<gate-id>', 'e2e')
+      .replaceAll('<gate label>', 'e2e suite')
+      .replaceAll('<why it did not run>', 'no fixtures');
+  }
+
+  test('#338 T2.1: the prompt example publishes both object shapes', () => {
+    const prompt = gatePrompt({ smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) });
+    assert.ok(prompt.includes(SMOKE_CHECKS_SHAPE), 'the example must show the smokeChecks shape');
+    assert.ok(prompt.includes(NOT_RUN_SHAPE), 'the example must show the notRun shape');
+  });
+
+  test('#338 T2.2: the prose names the accepted types', () => {
+    const prompt = gatePrompt({ smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) });
+    for (const token of [
+      'BOOLEAN or `null`',
+      '"PASSED" is rejected',
+      'defaults to `id`',
+      'never collapsed into `true`',
+      'array of bare strings is rejected'
+    ]) {
+      assert.ok(prompt.includes(token), `the prompt is missing: ${token}`);
+    }
+  });
+
+  test('#338 T2.3: the no-protocol branch publishes the shapes too', () => {
+    const smokeEntryShape = `{ "id": "<check-id>", "label": "<check label>", "passed": true }`;
+    const notRunEntryShape = `{ "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }`;
+    for (const params of [{}, { smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) }]) {
+      const prompt = gatePrompt(params);
+      assert.ok(prompt.includes(smokeEntryShape), 'the smokeChecks shape is never optional');
+      assert.ok(prompt.includes(notRunEntryShape), 'the notRun shape is never optional');
+      assert.ok(
+        !prompt.includes('NOT DECLARED'),
+        'the prompt must never emit the spaced spelling the parser used to reject'
+      );
+    }
+  });
+
+  test('#338 T2.4: the emitted example parses through the parser', () => {
+    for (const params of [{}, { smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) }]) {
+      const report = GateResultReport.parseBlock(
+        fillPromptExample(emittedExample(gatePrompt(params))),
+        1
+      );
+      const expectedChecks = params.smokeProtocol ? 1 : 0;
+      assert.strictEqual(report.smokeChecks.length, expectedChecks);
+      if (expectedChecks > 0) {
+        assert.strictEqual(report.smokeChecks[0].passed, true);
+      }
+      assert.strictEqual(report.notRun.length, 1);
+      assert.strictEqual(report.notRun[0].reason, 'no fixtures');
+    }
+  });
 });

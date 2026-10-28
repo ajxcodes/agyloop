@@ -80,6 +80,7 @@ import {
   SMOKE_PROTOCOL_VOCABULARY,
   formatGateReportExample,
   NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS,
+  NOTE_GATE_REPORT_EVIDENCE_SHAPES,
   formatDiscoveryReportContract,
   shellQuote,
   CRITIQUE_FLAG_JSON,
@@ -988,6 +989,7 @@ export class ResolveSubagentUseCase {
     prompt += `As the LAST thing in your response, emit a ${GATE_REPORT_JSON_MARKER} block:\n\n`;
     prompt += `${formatGateReportExample(exampleSmokeToken)}\n\n`;
     prompt += `${NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_EVIDENCE_SHAPES}\n\n`;
     prompt += `${NOTE_GATE_REPORT_RETURN}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;

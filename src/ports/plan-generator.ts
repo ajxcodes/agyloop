@@ -81,7 +81,8 @@ export interface SummaryUpdateData {
   /**
    * Gates that were declared but NOT executed (issue #284). Rendered as one
    * `- **Not Run:** …` line, so "never attempted" is distinguishable from
-   * "passed".
+   * "passed". Tri-state (issue #338): `undefined` leaves the line untouched,
+   * `[]` removes it, a non-empty list replaces it.
    */
   readonly notRun?: readonly SummaryNotRunEntry[];
   /**
@@ -92,14 +93,30 @@ export interface SummaryUpdateData {
    * as one that has not started.
    */
   readonly finalize?: boolean;
-  readonly buildSystem?: string;
+  /**
+   * The filed report's build system (issue #338). Tri-state, like the list
+   * metrics below: `undefined` leaves the line untouched, `null` REMOVES it
+   * (this round filed no report, so it names no ecosystem).
+   */
+  readonly buildSystem?: string | null;
   readonly detectedEcosystems?: readonly string[] | string;
+  /**
+   * Commands THIS round measured (issue #338). `undefined` leaves the line
+   * untouched, `[]` removes it, a non-empty list replaces it.
+   */
   readonly executedCommands?: readonly string[];
   /**
    * Declared smoke checks, each with its own verdict (issue #325, AC-17).
    * Rendered as its own line so the command list stays commands only.
+   * `undefined` leaves the line untouched, `[]` removes it.
    */
   readonly smokeChecks?: readonly SummarySmokeCheck[];
+  /**
+   * The round's smoke-protocol verdict (issue #338): a wire token
+   * (`PASSED` / `FAILED` / `NOT_DECLARED`) or `SMOKE_PROTOCOL_NOT_REPORTED`.
+   * `undefined` leaves the line untouched; `null` removes it.
+   */
+  readonly smokeProtocol?: string | null;
   readonly commitHash?: string;
   readonly commitMessage?: string;
   readonly commitTimestamp?: string;

@@ -36,6 +36,7 @@ import {
   SUMMARY_STATUS_IN_PROGRESS,
   SUMMARY_STATUS_NOT_RECORDED,
   SUMMARY_STATUS_PENDING,
+  LABEL_SMOKE_PROTOCOL,
   DiscoveryReport,
   isDiscoveryPlanDocument,
   isPlanContentSubstantive,
@@ -165,6 +166,54 @@ function smokeCheckMark(passed: boolean | null | undefined): string {
     return '❌';
   }
   return '❔';
+}
+
+/** The documented order of the `## Quality Gate Metrics` lines (issue #338). */
+const SUMMARY_METRIC_ORDER: readonly string[] = [
+  'Build System',
+  'Build Status',
+  'Tests',
+  'Executed Commands',
+  'Smoke Checks',
+  LABEL_SMOKE_PROTOCOL,
+  'Not Run'
+];
+
+/**
+ * Upserts or REMOVES one `- **<label>:** <value>` metric line (issue #338).
+ *
+ * `value === null` deletes the line: a round that measured nothing must not
+ * inherit an earlier round's number. When the line is missing it is inserted
+ * after the nearest PRECEDING metric of `SUMMARY_METRIC_ORDER`, so the block
+ * keeps one documented order and nothing is ever appended into a later
+ * section.
+ */
+function setSummaryMetric(content: string, label: string, value: string | null): string {
+  const lines = content.split('\n');
+  const prefix = `- **${label}:**`;
+  const index = lines.findIndex((line) => line.startsWith(prefix));
+  if (value === null) {
+    return index === -1 ? content : lines.filter((_, position) => position !== index).join('\n');
+  }
+  const rendered = `${prefix} ${value}`;
+  if (index !== -1) {
+    lines[index] = rendered;
+    return lines.join('\n');
+  }
+  for (let back = SUMMARY_METRIC_ORDER.indexOf(label) - 1; back >= 0; back -= 1) {
+    const anchor = `- **${SUMMARY_METRIC_ORDER[back]}:**`;
+    const anchorIndex = lines.findIndex((line) => line.startsWith(anchor));
+    if (anchorIndex !== -1) {
+      lines.splice(anchorIndex + 1, 0, rendered);
+      return lines.join('\n');
+    }
+  }
+  const headingIndex = lines.findIndex((line) => line.trim() === '## Quality Gate Metrics');
+  if (headingIndex !== -1) {
+    lines.splice(headingIndex + 1, 0, rendered);
+    return lines.join('\n');
+  }
+  return `${content.trimEnd()}\n${rendered}\n`;
 }
 
 export class FilePlanGenerator implements PlanGeneratorPort {
@@ -732,41 +781,53 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         );
       }
 
-      if (updateData.buildSystem || updateData.detectedEcosystems) {
-        const sys = updateData.buildSystem || (Array.isArray(updateData.detectedEcosystems) ? updateData.detectedEcosystems.join(', ') : updateData.detectedEcosystems);
-        if (content.includes('- **Build System:**')) {
-          content = content.replace(/- \*\*Build System:\*\* .*/i, `- **Build System:** ${sys}`);
-        } else if (content.includes('- **Build Status:**')) {
-          content = content.replace(/- \*\*Build Status:\*\*/i, `- **Build System:** ${sys}\n- **Build Status:**`);
+      // Issue #338: every metric line is written through ONE tri-state helper.
+      // `undefined` leaves the line untouched, `null` REMOVES it, a value
+      // replaces or inserts it. The old `if (… && length > 0)` guards made
+      // "this round measured nothing" unrepresentable, so a NOT RECORDED round
+      // kept the previous round's command list, check marks and skip reasons.
+      if (updateData.buildSystem === null) {
+        content = setSummaryMetric(content, 'Build System', null);
+      } else {
+        let sys: string | undefined = updateData.buildSystem ?? undefined;
+        if (!sys && updateData.detectedEcosystems) {
+          sys =
+            typeof updateData.detectedEcosystems === 'string'
+              ? updateData.detectedEcosystems
+              : updateData.detectedEcosystems.join(', ');
+        }
+        if (sys !== undefined) {
+          content = setSummaryMetric(content, 'Build System', sys);
         }
       }
 
-      if (updateData.executedCommands && updateData.executedCommands.length > 0) {
-        const cmds = updateData.executedCommands.map((c) => `\`${c}\``).join(', ');
-        if (content.includes('- **Executed Commands:**')) {
-          content = content.replace(/- \*\*Executed Commands:\*\* .*/i, `- **Executed Commands:** ${cmds}`);
-        } else if (content.includes('- **Tests:**')) {
-          content = content.replace(/- \*\*Tests:\*\* (.*)/i, `- **Tests:** $1\n- **Executed Commands:** ${cmds}`);
-        }
+      if (updateData.executedCommands !== undefined) {
+        const cmds =
+          updateData.executedCommands.length > 0
+            ? updateData.executedCommands.map((c) => `\`${c}\``).join(', ')
+            : null;
+        content = setSummaryMetric(content, 'Executed Commands', cmds);
       }
 
-      if (updateData.smokeChecks && updateData.smokeChecks.length > 0) {
+      if (updateData.smokeChecks !== undefined) {
         // Issue #325 (AC-17): smoke checks are protocol steps, not commands, so
         // they render on their own line with their own verdict. A `null` verdict
         // is `❔` — "ran, no verdict reported" is not a pass.
-        const rendered = updateData.smokeChecks
-          .map((check) => `${check.id} ${smokeCheckMark(check.passed)}`)
-          .join(', ');
-        const line = `- **Smoke Checks:** ${rendered}`;
-        if (content.includes('- **Smoke Checks:**')) {
-          content = content.replace(/- \*\*Smoke Checks:\*\* .*/i, line);
-        } else if (content.includes('- **Executed Commands:**')) {
-          content = content.replace(/(- \*\*Executed Commands:\*\* .*\n?)/i, `$1${line}\n`);
-        } else if (content.includes('- **Tests:**')) {
-          content = content.replace(/(- \*\*Tests:\*\* .*\n?)/i, `$1${line}\n`);
-        } else {
-          content = content.trimEnd() + '\n' + line + '\n';
-        }
+        const rendered =
+          updateData.smokeChecks.length > 0
+            ? updateData.smokeChecks
+                .map((check) => `${check.id} ${smokeCheckMark(check.passed)}`)
+                .join(', ')
+            : null;
+        content = setSummaryMetric(content, 'Smoke Checks', rendered);
+      }
+
+      if (updateData.smokeProtocol !== undefined) {
+        // Issue #338 (S3): the protocol verdict renders NEXT TO the per-check
+        // marks, so a `❔` is resolvable: `PASSED` = protocol passed without a
+        // per-check verdict, `NOT_DECLARED` = no protocol declared, and
+        // `not reported` = a report was filed without a verdict.
+        content = setSummaryMetric(content, LABEL_SMOKE_PROTOCOL, updateData.smokeProtocol);
       }
 
       if (updateData.reviewRecord) {
@@ -786,23 +847,18 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         }
       }
 
-      if (updateData.notRun && updateData.notRun.length > 0) {
+      if (updateData.notRun !== undefined) {
         // Issue #284: one honest line, inside the metrics section it belongs to.
         // "Declared but never executed" must be distinguishable from "passed".
-        const rendered = updateData.notRun
-          .map((entry) => `${entry.id} (${entry.reason})`)
-          .join(', ');
-        const line = `- **Not Run:** ${rendered}`;
-        if (content.includes('- **Not Run:**')) {
-          content = content.replace(/- \*\*Not Run:\*\* .*/i, line);
-        } else if (content.includes('- **Tests:**')) {
-          content = content.replace(
-            /((?:- \*\*Tests:\*\* .*\n?)(?:- \*\*Executed Commands:\*\* .*\n?)?(?:- \*\*Smoke Checks:\*\* .*\n?)?)/i,
-            `$1${line}\n`
-          );
-        } else {
-          content = content.trimEnd() + '\n' + line + '\n';
-        }
+        // Issue #338: `[]` removes the line — a round that declared no skip must
+        // not inherit an earlier round's reason.
+        const rendered =
+          updateData.notRun.length > 0
+            ? updateData.notRun
+                .map((entry) => `${entry.id} (${entry.reason})`)
+                .join(', ')
+            : null;
+        content = setSummaryMetric(content, 'Not Run', rendered);
       }
 
       if (updateData.commitHash || updateData.commitMessage) {

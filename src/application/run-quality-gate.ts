@@ -102,7 +102,9 @@ import {
   InvalidTransitionError,
   GateResultReport,
   resolveGateRound,
-  formatStageDuration,
+  formatGateReportedDuration,
+  measureStageWindowMs,
+  SMOKE_PROTOCOL_NOT_REPORTED,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
 } from '../domain';
@@ -522,9 +524,11 @@ export class RunQualityGateUseCase {
       planDir: params.planDir || sm.planDir
     });
 
-    // Issue #284: one recorded duration format, shared with the transition
-    // writer (`196.0s` -> `3m 16s`), so the two paths cannot disagree.
-    const durationStr = formatStageDuration(totalDurationMs);
+    // Issue #338 (S4): the gate measured ITSELF; the cell must name that clock,
+    // exactly like the dispatched path. The wall window is measurable once this
+    // use case has appended the REVIEW/IMPLEMENT entry.
+    const gateWallMs = measureStageWindowMs(sm.history, STAGE_QUALITY_GATE);
+    const durationStr = formatGateReportedDuration(totalDurationMs, gateWallMs);
     const gateStatus = allPassed ? SUMMARY_STATUS_COMPLETED : SUMMARY_STATUS_FAILED;
 
     // Issue #284: file the SAME evidence the dispatched path files, so an
@@ -575,9 +579,15 @@ export class RunQualityGateUseCase {
           duration: durationStr,
           buildStatus,
           testsStatus,
-          buildSystem: primaryEcosystemName,
+          // One source: the same values the evidence record carries (issue #338).
+          // `smokeChecks`/`notRun` are empty because this runner exposes no
+          // per-check verdicts; an empty list CLEARS an earlier round's lines.
+          buildSystem: evidence.buildSystem,
           detectedEcosystems: detectedEcosystemNames,
-          executedCommands: reports.map((r) => r.command)
+          executedCommands: reports.map((r) => r.command),
+          smokeChecks: [],
+          smokeProtocol: evidence.smokeProtocol ?? SMOKE_PROTOCOL_NOT_REPORTED,
+          notRun: []
         });
       }
     }
