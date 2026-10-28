@@ -6,7 +6,7 @@
  * implementation, named no advancing command, and recorded no re-dispatch.
  *
  * IB1 - a clean worktree names the command + the completion condition, state absent
- * IB2 - a non-empty diff flips the condition to present and says "do not re-dispatch"
+ * IB2 - a non-empty diff is a MET condition: advance, no payload, no write (#337)
  * IB3 - an unreadable tree is UNVERIFIED and records NO dispatch
  * IB4 - consecutive reads persist 1/2/3 and never advance the stage
  * IB5 - a paused read records 0
@@ -14,6 +14,7 @@
  * IB7 - the APPROVAL/YOLO directive is unchanged and uncounted
  * IB8 - the probe receives the task worktree and the descriptor's base branch
  * IB9 - every transition named at IMPLEMENT is legal there
+ * IB10 - a present diff with pending review remediation still dispatches (#337)
  */
 
 const { test, describe } = require('node:test');
@@ -33,8 +34,10 @@ const {
   MODE_YOLO,
   NOTE_IMPLEMENT_ADVANCE_CONDITION,
   NOTE_IMPLEMENT_PRESENT,
+  NOTE_IMPLEMENT_PRESENT_REMEDIATION_PENDING,
   NOTE_IMPLEMENT_ABSENT,
   NOTE_IMPLEMENT_UNVERIFIED,
+  STAGE_REVIEW,
   formatImplementAdvanceCommand
 } = require('../../dist/domain');
 
@@ -261,7 +264,7 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
     assert.strictEqual(stateRepo.savedSnapshot!.implementationDispatchCount, 1);
   });
 
-  test('IB2: a non-empty diff flips the condition to present and forbids re-dispatch', async () => {
+  test('IB2: a non-empty diff is a met condition — advance, no payload, no counter write', async () => {
     const sm = machineAtImplement();
     const probe = new FakeProbe(PRESENT_DIFF);
 
@@ -270,14 +273,22 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe);
 
     const text = `${result.description}\n${result.humanSummary}`;
+    // Issue #337: a present diff with no pending remediation ENDS the stage, so
+    // nothing may be dispatched — and nothing may be written.
+    assert.strictEqual(result.actionType, 'advance');
+    assert.strictEqual(result.nextStage, STAGE_QUALITY_GATE);
+    assert.strictEqual(result.role, undefined);
+    assert.strictEqual(result.invocationPayload, undefined);
     assert.ok(text.includes(ADVANCE), text);
     assert.ok(text.includes(NOTE_IMPLEMENT_ADVANCE_CONDITION), text);
     assert.ok(text.includes(NOTE_IMPLEMENT_PRESENT), text);
     assert.ok(text.includes('do not re-dispatch the implementer'), text);
     assert.ok(!text.includes(NOTE_IMPLEMENT_ABSENT), text);
     assert.strictEqual(result.implementationPresent, true);
-    assert.strictEqual(result.implementationDispatchCount, 2);
+    assert.strictEqual(result.implementationDispatchCount, 1, 'the met read must not record a dispatch');
+    assert.strictEqual(stateRepo.saveCallCount, 0, 'a met read writes nothing');
     assert.strictEqual(stateRepo.savedSnapshot!.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(stateRepo.savedSnapshot!.implementationDispatchCount, 1);
   });
 
   test('IB3: an unreadable tree is UNVERIFIED and records NO dispatch', async () => {
@@ -454,5 +465,33 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
   test('IB9b: the named command is the domain formatter, not a hand-typed string', () => {
     assert.strictEqual(formatImplementAdvanceCommand(ISSUE), ADVANCE);
     assert.ok(ADVANCE.includes(`--issue ${ISSUE}`));
+  });
+
+  test('IB10: a present diff with pending review remediation still dispatches', async () => {
+    // Issue #337: after CHANGES_REQUESTED the rejected diff is ALREADY in the
+    // worktree. A bare `implementationPresent === true` would end the stage and
+    // make #313's remediation flow unreachable through `next`.
+    const sm = machineAtImplement();
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_IMPLEMENT, {
+      reviewVerdict: 'CHANGES_REQUESTED',
+      reviewTokens: '### Review Remediation - Round 2\n- fix the probe',
+      reviewRound: 2
+    });
+
+    const { result, stateRepo } = await readNext(sm.toSnapshot(), new FakeProbe(PRESENT_DIFF));
+
+    const text = `${result.description}\n${result.humanSummary}`;
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.strictEqual(result.role, 'implementer');
+    assert.ok(result.invocationPayload, 'the remediation route must carry a payload');
+    assert.strictEqual(result.implementationPresent, true);
+    assert.strictEqual(result.implementationDispatchCount, 1);
+    assert.ok(text.includes(NOTE_IMPLEMENT_PRESENT_REMEDIATION_PENDING), text);
+    assert.ok(!text.includes('do not re-dispatch the implementer'), text);
+    assert.ok(text.includes(ADVANCE), text);
+    assert.ok(text.includes('once the remediation is applied'), text);
+    assert.strictEqual(stateRepo.savedSnapshot!.implementationDispatchCount, 1);
   });
 });

@@ -3,8 +3,9 @@
  *
  * CB1 - `codeloop next` (NOT --json) names the advancing command and the
  *       completion condition, so an operator reading the terminal can act.
- * CB2 - in a REAL git worktree the same checkpoint flips absent -> present and
- *       the recorded re-dispatch advances 1 -> 2, without advancing the stage.
+ * CB2 - in a REAL git worktree the same checkpoint flips absent -> present; the
+ *       met condition is `advance` (no payload, no write), so the recorded
+ *       re-dispatch stays where the clean read left it (issue #337)
  */
 
 const { describe, test } = require('node:test');
@@ -157,16 +158,23 @@ describe('codeloop next at IMPLEMENT (issue #327)', () => {
       const present = JSON.parse(presentJson.stdout);
       const text = `${present.description}\n${present.humanSummary}`;
 
+      // Issue #337: a present diff with no pending remediation is the met
+      // completion condition — nothing to dispatch, nothing to write.
       assert.strictEqual(present.implementationPresent, true);
+      assert.strictEqual(present.actionType, 'advance');
+      assert.strictEqual(present.actionable, false);
+      assert.strictEqual('invocationPayload' in present, false);
+      assert.strictEqual('role' in present, false);
       assert.ok(text.includes(ADVANCE), text);
       assert.ok(text.includes(CONDITION), text);
       assert.ok(text.includes('Implementation present:'), text);
       assert.ok(text.includes('do not re-dispatch the implementer'), text);
-      assert.strictEqual(present.implementationDispatchCount, 3);
+      // The clean read left the counter at 2; the met read must not move it.
+      assert.strictEqual(present.implementationDispatchCount, 2);
 
       const checkpoint = readCheckpoint(sandbox.checkpointPath);
       assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT', 'next never advances a stage');
-      assert.strictEqual(checkpoint.implementationDispatchCount, 3);
+      assert.strictEqual(checkpoint.implementationDispatchCount, 2);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }

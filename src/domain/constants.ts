@@ -3112,6 +3112,20 @@ export const GATE_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE =
   `codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW}` as const;
 
 /**
+ * The command that ADVANCES the QUALITY_GATE stage (issue #337).
+ *
+ * ONE renderer for the gate exit: `gate-report`'s `Next:` line, the filed-
+ * evidence directive and the stale-block directive all compose it, so the
+ * hop they name cannot drift apart.
+ */
+export function formatGateAdvanceCommand(issue?: number | string | null): string {
+  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
+    return GATE_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
+  }
+  return GATE_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+}
+
+/**
  * The `Next:` line `gate-report` may print, derived from the CHECKPOINT stage
  * (issue #311).
  *
@@ -3127,10 +3141,36 @@ export function formatGateReportAdvanceCommand(
   if (stage !== STAGE_QUALITY_GATE) {
     return null;
   }
-  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
-    return GATE_ADVANCE_COMMAND_NO_ISSUE_TEMPLATE;
-  }
-  return GATE_ADVANCE_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+  return formatGateAdvanceCommand(issue);
+}
+
+/**
+ * What ENDS the QUALITY_GATE stage once this round's block is on record
+ * (issue #337).
+ */
+export const NOTE_GATE_EVIDENCE_FILED =
+  'Gate evidence filed for this round — the completion condition is met; do not re-dispatch the gate.' as const;
+
+/**
+ * The QUALITY_GATE completion note when THIS round's evidence is filed
+ * (issue #337).
+ *
+ * `next` reads the same evidence `transition REVIEW` ingests, so it can no
+ * longer tell the operator to file a block the checkpoint already holds.
+ */
+export function formatGateEvidenceFiledNote(issue?: number | string | null): string {
+  return `${NOTE_GATE_EVIDENCE_FILED} Advance with \`${formatGateAdvanceCommand(issue)}\`.`;
+}
+
+/**
+ * The retry route a filed `FAILED` verdict names (issue #337).
+ *
+ * The stage is still complete — the gate ran and its block is on record — so
+ * the directive stays an `advance`; this only names the legal next hop for a
+ * failed run. Verdict ROUTING policy is out of scope.
+ */
+export function formatGateFailedRetryNote(issue?: number | string | null): string {
+  return `The filed verdict is FAILED: to fix the failures and retry, advance with \`${formatTransitionCommand(STAGE_IMPLEMENT, issue)}\`.`;
 }
 
 /**
@@ -3178,6 +3218,58 @@ export const NOTE_IMPLEMENT_ADVANCE_CONDITION =
 /** The state sentence when the probe FOUND an implementation (issue #327). */
 export const NOTE_IMPLEMENT_PRESENT =
   'Implementation present: An implementation diff exists in the task worktree — the completion condition is met; do not re-dispatch the implementer.' as const;
+
+/**
+ * The state sentence when a diff is present but a review remediation is still
+ * outstanding (issue #337).
+ *
+ * After `CHANGES_REQUESTED` the rejected diff is ALREADY in the worktree, so
+ * the IMPLEMENT completion condition is "a diff exists AND no remediation is
+ * pending". Printing `NOTE_IMPLEMENT_PRESENT` while dispatching the implementer
+ * would tell the operator not to do the thing the payload asks for.
+ */
+export const NOTE_IMPLEMENT_PRESENT_REMEDIATION_PENDING =
+  'Implementation present, but the AI review requested changes: the rejected diff is still in the task worktree, so the completion condition is NOT yet met. Dispatch the implementer to apply the remediation below; do not treat the existing diff as complete.' as const;
+
+/**
+ * The state sentence when a FAILED quality gate returned the pipeline to
+ * IMPLEMENT (issue #337).
+ *
+ * A gate that exits `FAILED` transitions BACK to `IMPLEMENT` and stamps
+ * `gateVerdict: FAILED` on the entry that opens the round. The diff sitting in
+ * the worktree is therefore the diff that FAILED, so the completion condition is
+ * NOT met even though the probe reports a present implementation: the operator
+ * must get a fresh implementer carrying the gate's diagnostics, exactly as
+ * `skills/agyloop/SKILL.md` promises for the gate-failure loop.
+ */
+export const NOTE_IMPLEMENT_GATE_FAILED =
+  'The quality gate FAILED for this IMPLEMENT round: the completion condition is NOT met until its failures are fixed. Dispatch the implementer with the recorded gate diagnostics below; do not treat any existing diff as complete.' as const;
+
+/** The heading of the gate-failure block a re-dispatched implementer receives (issue #337). */
+export const NOTE_IMPLEMENT_GATE_FAILED_HEADING =
+  `### Quality Gate Failure (${STATUS_FAILED})` as const;
+
+/** The framing sentence of the gate-failure block (issue #337). */
+export const NOTE_IMPLEMENT_GATE_FAILED_INTRO =
+  'The quality gate FAILED and returned the pipeline to IMPLEMENT, so the completion condition is NOT met: fix every failure below, then re-run the gate.' as const;
+
+/**
+ * The gate-failure block attached to a re-dispatched implementer (issue #337).
+ *
+ * The recorded diagnostics (`gateTokens` / `selfCorrectionPayload` /
+ * `failureSnippet`) travel VERBATIM under a heading that supplies the context
+ * the raw record lacks — the same rule `buildReviewRemediation` applies to the
+ * reviewer's `reviewTokens`. A gate filed through `gate-report` records the
+ * verdict only, so the block is still emitted (the heading and the framing
+ * sentence) and simply carries no diagnostics.
+ */
+export function formatGateFailureRemediationPayload(
+  diagnostics?: string | null
+): string {
+  const body = (diagnostics ?? '').trim();
+  const head = `${NOTE_IMPLEMENT_GATE_FAILED_HEADING}\n${NOTE_IMPLEMENT_GATE_FAILED_INTRO}`;
+  return body.length > 0 ? `${head}\n\n${body}` : head;
+}
 
 /** The state sentence when the probe measured a clean tree (issue #327). */
 export const NOTE_IMPLEMENT_ABSENT =
@@ -3260,9 +3352,39 @@ export function formatGateEvidenceRequiredMessage(
 export const NOTE_DISCOVERY_ADVANCE_CONDITION =
   'This stage ends when a populated RCA report exists for the issue.' as const;
 
+/**
+ * The DISCOVERY state sentence once the RCA report is populated (issue #337).
+ *
+ * The directive used to print this sentence and STILL emit `actionType:
+ * 'subagent'` with an invocation payload (and record a dispatch), so the prose
+ * and the machine fields disagreed in the same document.
+ */
+export const NOTE_DISCOVERY_COMPLETE =
+  'The discovery report is populated — the completion condition is met; do not re-dispatch discovery.' as const;
+
 /** What ENDS the PLAN stage (issue #292). */
 export const NOTE_PLAN_ADVANCE_CONDITION =
   'This stage ends when the plan file is non-blank.' as const;
+
+/** The PLAN state sentence once the plan is non-blank (issue #337). */
+export const NOTE_PLAN_COMPLETE =
+  'The plan is non-blank — the completion condition is met; do not re-dispatch the planner.' as const;
+
+/**
+ * The real command that starts a new lifecycle (issue #337).
+ *
+ * `codeloop plan --issue <n>` scaffolds the plan directory and halts at the
+ * APPROVAL gate; before #337 the idle directive named the literal placeholder
+ * `codeloop <task>`, which is not a command.
+ */
+export const NEW_LIFECYCLE_COMMAND = `codeloop ${COMMAND_PLAN} --issue <n>` as const;
+
+/** The real command that re-opens a COMPLETED checkpoint (issue #337). */
+export const REOPEN_COMPLETED_COMMAND = `codeloop ${COMMAND_NEXT} --restart --issue <n>` as const;
+
+/** The idle directive's summary: both names are executable commands. */
+export const NOTE_IDLE_SUMMARY =
+  `Pipeline is idle. Start a new lifecycle with \`${NEW_LIFECYCLE_COMMAND}\`, or re-open a COMPLETED task with \`${REOPEN_COMPLETED_COMMAND}\`.` as const;
 
 /** The per-read re-dispatch record for DISCOVERY: `{n}`. */
 export const NOTE_DISCOVERY_DISPATCH_ORDINAL =

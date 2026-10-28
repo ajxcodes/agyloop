@@ -62,7 +62,7 @@ A routing action requires the checkpoint to be at the **TRIAGE** gate: run `code
 
 ## Recovering From a Gate Pause
 
-`codeloop next --json` returns `actionable: false` plus a `pause` object (`{ gate, pausedAt, resumeCommand, message }`) when the pipeline is halted. `actionable` means "a subagent may be dispatched right now": it is `false` for every human gate (COMMIT included) as well as for a persisted pause. A human gate's `resumeCommand` is `null` — there is nothing to resume; run the command its message names. The most common persisted cause is a provider quota rejection (HTTP 429 / `RESOURCE_EXHAUSTED`, exit code `2`), which is checkpointed — nothing is lost.
+`codeloop next --json` returns `actionable: false` plus a `pause` object (`{ gate, pausedAt, resumeCommand, message }`) when the pipeline is halted. `actionable` means "a subagent may be dispatched right now": it is `true` only for a `subagent` directive with no persisted pause. It is `false` for every human gate (COMMIT included), for a persisted pause, for `COMPLETED` and `INITIALIZED`, and for every stage whose completion condition is already met — those report `actionType: "advance"` with no `invocationPayload` and name the command to run instead. A human gate's `resumeCommand` is `null` — there is nothing to resume; run the command its message names. The most common persisted cause is a provider quota rejection (HTTP 429 / `RESOURCE_EXHAUSTED`, exit code `2`), which is checkpointed — nothing is lost.
 
 Resolve the blocking condition, then run `codeloop resume` (accepts `--json` and `--dry-run`) **before** calling `codeloop next --json` again. `next` only *reports* a pause; `resume` is the only command that clears one, so never loop on `next` to clear it.
 

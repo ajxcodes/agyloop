@@ -461,6 +461,22 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
       const modelMatch = /Model Tier\s*:\s*(\S+)/.exec(stdout);
       assert.ok(modelMatch, `the planner block must name a model, got:\n${stdout}`);
 
+      // Issue #337: a NON-BLANK plan is a met completion condition, so `next`
+      // reports `advance` and dispatches nothing. This case exists to compare a
+      // dispatched model with the block's advertised one, so the plan must be
+      // the blank scaffold (the dispatchable state).
+      fs.writeFileSync(
+        path.join(planDir, 'implementation_plan.md'),
+        [
+          '# [Implementation] - Stage boundary output',
+          '',
+          '## 3. Implementation Steps',
+          '- [ ] **Step 1:**',
+          ''
+        ].join('\n'),
+        'utf8'
+      );
+
       const next = await runCliIn(sandbox.dir, ['next', '--issue', String(STAGE_ISSUE), '--json']);
       const directive = JSON.parse(next.stdout);
       assert.strictEqual(directive.role, 'planner', next.stdout);

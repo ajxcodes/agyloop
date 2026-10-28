@@ -255,6 +255,10 @@ describe('codeloop next stage directives (#292, #267)', () => {
       assert.match(read2.description, /completion condition is met/);
       assert.ok(read2.description.includes('codeloop plan --issue 41'));
       assert.doesNotMatch(read2.description, /still blank/);
+      // Issue #337: a met completion condition is not dispatchable.
+      assert.strictEqual(read2.actionType, 'advance');
+      assert.strictEqual(read2.actionable, false);
+      assert.strictEqual('invocationPayload' in read2, false);
 
       // `next` is a query: the stage must not have advanced.
       assert.strictEqual(readState(dir)?.currentStage, 'DISCOVERY');

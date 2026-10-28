@@ -58,9 +58,22 @@ import {
   // re-dispatch record and advancing command.
   NOTE_IMPLEMENT_ADVANCE_CONDITION,
   NOTE_IMPLEMENT_PRESENT,
+  NOTE_IMPLEMENT_PRESENT_REMEDIATION_PENDING,
+  NOTE_IMPLEMENT_GATE_FAILED,
   NOTE_IMPLEMENT_ABSENT,
   NOTE_IMPLEMENT_UNVERIFIED,
   NOTE_IMPLEMENT_DISPATCH_ORDINAL,
+  formatGateFailureRemediationPayload,
+  // Issue #337: a met completion condition ends the stage, so the directive
+  // names the advancing command instead of inviting another dispatch.
+  NOTE_DISCOVERY_COMPLETE,
+  NOTE_PLAN_COMPLETE,
+  NOTE_IDLE_SUMMARY,
+  STATUS_FAILED,
+  formatGateEvidenceFiledNote,
+  formatGateFailedRetryNote,
+  resolveGateRound,
+  GateResultReport,
   formatDiscoveryAdvanceCommand,
   formatPlanAdvanceCommand,
   formatImplementAdvanceCommand,
@@ -92,7 +105,8 @@ import {
   WorktreeManagerPort,
   BuildDetectorPort,
   PullRequestReviewComment,
-  CritiquePort
+  CritiquePort,
+  GateReportRepositoryPort
 } from '../ports';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
@@ -165,7 +179,16 @@ export interface SubagentInvocationPayload {
 export interface NextActionResult {
   readonly currentStage: string;
   readonly nextStage: string;
-  readonly actionType: 'subagent' | 'human_gate' | 'completed' | 'preflight';
+  /**
+   * The KIND of action this directive asks for (issue #337).
+   *
+   * - `subagent`: a subagent may be dispatched now — the only actionable kind;
+   * - `human_gate`: the pipeline waits on a person;
+   * - `advance`: the stage's completion condition is MET; run the named
+   *   command yourself (no payload, no dispatch);
+   * - `completed` / `preflight`: idle and pre-flight reports, nothing to run.
+   */
+  readonly actionType: 'subagent' | 'human_gate' | 'completed' | 'preflight' | 'advance';
   readonly role?: string;
   readonly title: string;
   readonly description: string;
@@ -211,6 +234,16 @@ export interface NextActionResult {
   readonly discoveryReportPath?: string | null;
   /** `DiscoveryReport.describeMissingEvidence()` when blank; null otherwise. */
   readonly discoveryReportMissingEvidence?: string | null;
+  /**
+   * Whether THIS gate round's evidence is filed (issue #337).
+   *
+   * Present only at QUALITY_GATE when a `GateReportRepositoryPort` was
+   * injected: `true` when the loaded block certifies the checkpoint's current
+   * round (the same formula `transition REVIEW` uses), `false` when nothing (or
+   * only a stale block) is on record. Omitted when the evidence could not be
+   * measured.
+   */
+  readonly gateEvidenceFiled?: boolean;
   /** True when the IMPLEMENT directive is the PLANNER because the plan is blank. */
   readonly planBlank?: boolean;
   /**
@@ -267,6 +300,9 @@ export class GetNextActionUseCase {
    */
   private readonly implementationProbe?: ImplementationProbe;
 
+  /** The filed gate evidence `next` reads at QUALITY_GATE (issue #337). */
+  private readonly gateReportRepo?: GateReportRepositoryPort;
+
   constructor(
     stateRepo: StateRepository,
     configRepo: ConfigRepository,
@@ -283,7 +319,11 @@ export class GetNextActionUseCase {
     // Issue #327: the implementation-evidence probe. Optional so every existing
     // call site and test keeps working; without it the directive reports the
     // implementation state as UNVERIFIED rather than inventing a claim.
-    implementationProbe?: ImplementationProbe
+    implementationProbe?: ImplementationProbe,
+    // Issue #337: the gate evidence the QUALITY_GATE directive must READ before
+    // it tells the operator to file it. Optional: without it the directive
+    // keeps its historical dispatch + filing note (unverified).
+    gateReportRepo?: GateReportRepositoryPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -296,6 +336,7 @@ export class GetNextActionUseCase {
     this.buildDetector = buildDetector;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
     this.implementationProbe = implementationProbe;
+    this.gateReportRepo = gateReportRepo;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -540,12 +581,6 @@ export class GetNextActionUseCase {
           };
         }
 
-        const subagent = this.resolveSubagentUseCase.execute({
-          role: ROLE_DISCOVERY,
-          customConfig: config,
-          workspaceDir: cwd
-        });
-
         let resolvedDiscoveryPath: string | null = null;
         if (this.planGenerator) {
           const resolved = this.planGenerator.resolvePlanFile({
@@ -562,6 +597,34 @@ export class GetNextActionUseCase {
         // Project the SAME scored report the gate uses (issue #320). `null`
         // means unverified — no generator was injected.
         const reportState = this.resolveDiscoveryReportState(resolvedDiscoveryPath);
+
+        // Issue #337: a POPULATED report is a met completion condition, so the
+        // stage is not dispatchable. Return BEFORE the subagent resolution, the
+        // payload and the dispatch counter: a met read writes nothing, and the
+        // machine fields finally agree with the prose.
+        if (reportState?.populated === true) {
+          return {
+            currentStage: STAGE_DISCOVERY,
+            nextStage: STAGE_PLAN,
+            actionType: 'advance',
+            title: 'Discovery Complete — Advance to PLAN',
+            description: `Report: \`${reportState.path}\`. ${NOTE_DISCOVERY_COMPLETE} ${condition} Advance with \`${advanceCommand}\`.`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `${NOTE_DISCOVERY_COMPLETE} Advance with \`${advanceCommand}\`.`,
+            discoveryDispatchCount: sm.discoveryDispatchCount,
+            discoveryReportPopulated: true,
+            discoveryReportPath: reportState.path,
+            discoveryReportMissingEvidence: null
+          };
+        }
+
+        const subagent = this.resolveSubagentUseCase.execute({
+          role: ROLE_DISCOVERY,
+          customConfig: config,
+          workspaceDir: cwd
+        });
 
         const prompt = this.resolveSubagentUseCase.buildDiscoveryTaskPrompt({
           issueNumber: activeIssue,
@@ -641,11 +704,6 @@ export class GetNextActionUseCase {
       case STAGE_PLAN: {
         const advanceCommand = formatPlanAdvanceCommand(activeIssue);
         const condition = NOTE_PLAN_ADVANCE_CONDITION;
-        const subagent = this.resolveSubagentUseCase.execute({
-          role: ROLE_PLANNER,
-          customConfig: config,
-          workspaceDir: cwd
-        });
 
         const planDir = sm.planDir;
         let planPath: string | undefined;
@@ -669,6 +727,31 @@ export class GetNextActionUseCase {
         }
 
         const planIsBlank = !isPlanContentSubstantive(planContent);
+
+        // Issue #337: a non-blank plan is a met completion condition. The
+        // `planGenerator` guard is required: an absent generator means the plan
+        // is UNVERIFIED, not "complete" (and not "blank"). Return before the
+        // subagent, the payload and the counter.
+        if (this.planGenerator && !planIsBlank) {
+          return {
+            currentStage: STAGE_PLAN,
+            nextStage: STAGE_APPROVAL,
+            actionType: 'advance',
+            title: 'Plan Complete — Advance to APPROVAL',
+            description: `${planPath ? `Plan: \`${planPath}\`. ` : ''}${NOTE_PLAN_COMPLETE} ${condition} Advance with \`${advanceCommand}\`.`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `${NOTE_PLAN_COMPLETE} Advance with \`${advanceCommand}\`.`,
+            planDispatchCount: sm.planDispatchCount
+          };
+        }
+
+        const subagent = this.resolveSubagentUseCase.execute({
+          role: ROLE_PLANNER,
+          customConfig: config,
+          workspaceDir: cwd
+        });
 
         const prompt = this.resolveSubagentUseCase.buildPlanningTaskPrompt({
           issueNumber: activeIssue,
@@ -801,6 +884,33 @@ export class GetNextActionUseCase {
           );
         }
 
+        // Issue #337: READ the evidence before writing a prompt that tells the
+        // operator to file it. `gate-report` stamps the block with
+        // `resolveGateRound(history)` and `transition REVIEW` accepts it only
+        // when the rounds match, so "filed for this round" here means exactly
+        // what the exit means. This is placed AFTER the integrity/smoke
+        // blockers: those are real blockers and stay human gates.
+        const evidence = this.resolveGateEvidence(activeIssue, sm);
+        if (evidence.status === 'filed') {
+          const evidenceNote = formatGateEvidenceFiledNote(activeIssue);
+          const verdictClause =
+            evidence.report.verdict === STATUS_FAILED
+              ? ` ${formatGateFailedRetryNote(activeIssue)}`
+              : '';
+          return {
+            currentStage: STAGE_QUALITY_GATE,
+            nextStage: STAGE_REVIEW,
+            actionType: 'advance',
+            title: 'Gate Evidence Filed — Advance to REVIEW',
+            description: `Gate evidence filed for round ${evidence.report.gateRound} (verdict ${evidence.report.verdict}). ${evidenceNote}${verdictClause}`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `The gate's GATE_REPORT_JSON block for round ${evidence.report.gateRound} is on record (verdict ${evidence.report.verdict}). ${evidenceNote}${verdictClause}`,
+            gateEvidenceFiled: true
+          };
+        }
+
         const commandPlan = verification.commandPlan;
         const commands = commandPlan.commands.map((command) => command.command);
 
@@ -843,7 +953,11 @@ export class GetNextActionUseCase {
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_GATE} with Model '${subagent.model}' inside ${verification.cwd}; ${commands.length} command(s) from source '${commandPlan.source}'${commandPlan.lintRequired ? ', lint mandatory' : ''}. ${formatGateReportChannelNote(activeIssue)}`
+          humanSummary: `Invoke ${ROLE_TITLE_GATE} with Model '${subagent.model}' inside ${verification.cwd}; ${commands.length} command(s) from source '${commandPlan.source}'${commandPlan.lintRequired ? ', lint mandatory' : ''}. ${formatGateReportChannelNote(activeIssue)}`,
+          // Issue #337: carry the measurement, not a guess. `false` only when
+          // the repository could be read and no this-round block was found;
+          // omitted when no repository was injected (nothing measured).
+          ...(evidence.status === 'missing' ? { gateEvidenceFiled: false } : {})
         };
       }
 
@@ -1014,9 +1128,7 @@ export class GetNextActionUseCase {
           baseBranch,
           taskBranch,
           worktreePath,
-          humanSummary:
-            'Pipeline is idle. Run "codeloop <task>" to start a new lifecycle, or "codeloop next --restart --issue <n>" to re-open a COMPLETED task.' +
-            dispositionLine
+          humanSummary: NOTE_IDLE_SUMMARY + dispositionLine
         };
       }
     }
@@ -1464,12 +1576,85 @@ export class GetNextActionUseCase {
     const taskBranch = sm.worktree?.branch || null;
 
     const remediation = this.buildReviewRemediation(sm);
+    const gateFailure = this.buildGateFailureRemediation(sm);
+
+    // Issue #337: hoisted above the probe so the met return and the dispatch
+    // path name the SAME advancing command and condition.
+    const advanceCommand = formatImplementAdvanceCommand(activeIssue);
+    const condition = NOTE_IMPLEMENT_ADVANCE_CONDITION;
+
+    // Issue #327 (Defect 4): at IMPLEMENT the completion condition is a FACT,
+    // not a static sentence. The existing #259 probe decides it — the SAME one
+    // the gate and the YOLO path use — and it now runs BEFORE the payload so a
+    // met condition can return without building one (issue #337).
+    let implementationPresent: boolean | null = null;
+    let probeReadable = false;
+    if (sm.currentStage === STAGE_IMPLEMENT) {
+      const probe = await this.probeImplementation(
+        worktreePath,
+        sm.worktree?.baseBranch || sm.baseBranch || baseBranch
+      );
+      const readable = probe !== null && probe.probeError === null;
+      probeReadable = readable;
+      implementationPresent = !readable
+        ? null
+        : probe.hasChanges
+          ? true
+          : probe.measurementError === null
+            ? false
+            : null;
+    }
+
+    // Issue #337: a present diff with NO outstanding review remediation and NO
+    // recorded gate failure is the IMPLEMENT completion condition — the stage
+    // is done, so there is nothing to dispatch. This return sits ABOVE the
+    // payload and the counter: a met read writes nothing at all.
+    //
+    // The `remediation === null` conjunct is load-bearing: after
+    // `CHANGES_REQUESTED` the rejected diff is ALREADY in the worktree, so a
+    // bare `implementationPresent === true` would make #313's remediation flow
+    // unreachable through `next`.
+    //
+    // The `gateFailure === null` conjunct is load-bearing for the same reason:
+    // a FAILED gate returns to IMPLEMENT with the failing diff still in the
+    // tree, so treating that diff as complete would re-advance into the same
+    // failing gate and never dispatch the fresh implementer the gate-failure
+    // loop promises.
+    if (
+      sm.currentStage === STAGE_IMPLEMENT &&
+      implementationPresent === true &&
+      remediation === null &&
+      gateFailure === null
+    ) {
+      return {
+        currentStage: STAGE_IMPLEMENT,
+        nextStage: STAGE_QUALITY_GATE,
+        actionType: 'advance',
+        title: 'Implementation Present — Advance to QUALITY_GATE',
+        description: `${NOTE_IMPLEMENT_PRESENT} ${condition} Advance with \`${advanceCommand}\`.`,
+        baseBranch,
+        taskBranch,
+        worktreePath,
+        humanSummary: `Implementation present in ${worktreePath}; do not re-dispatch the implementer. ${condition} Advance with \`${advanceCommand}\`.`,
+        implementationPresent: true,
+        implementationDispatchCount: sm.implementationDispatchCount,
+        planBlank: false
+      };
+    }
 
     const subagent = this.resolveSubagentUseCase.execute({
       role: ROLE_IMPLEMENTER,
       customConfig: config,
       workspaceDir: cwd
     });
+
+    // Issue #313 / #337: the reviewer's remediation AND the gate's recorded
+    // failures must reach the implementer. Both ride the EXISTING self-correction
+    // channel — the same one `codeloop implement` already hydrates from the last
+    // history entry.
+    const selfCorrectionBlocks = [remediation?.payload, gateFailure?.payload].filter(
+      (block): block is string => typeof block === 'string' && block.length > 0
+    );
 
     const prompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
@@ -1478,10 +1663,8 @@ export class GetNextActionUseCase {
       workspaceDir: worktreePath || cwd,
       config,
       prReviewComments: sm.triagePayload,
-      // Issue #313: the reviewer's recorded remediation must reach the
-      // implementer. It rides the EXISTING self-correction channel — the same
-      // one `codeloop implement` already hydrates from the last history entry.
-      selfCorrectionPayload: remediation?.payload ?? null
+      selfCorrectionPayload:
+        selfCorrectionBlocks.length > 0 ? selfCorrectionBlocks.join('\n\n') : null
     });
 
     const invocationPayload: SubagentInvocationPayload = {
@@ -1498,34 +1681,19 @@ export class GetNextActionUseCase {
 
     const nextStage = sm.currentStage === STAGE_IMPLEMENT ? STAGE_QUALITY_GATE : STAGE_IMPLEMENT;
 
-    // Issue #327 (Defect 4): at IMPLEMENT the completion condition is a FACT,
-    // not a static sentence. The existing #259 probe decides it — the SAME one
-    // the gate and the YOLO path use. The counter is recorded only when the
-    // tree was READABLE and the read is not a paused one: a stale descriptor or
-    // a non-git directory is a diagnostic, never a dispatch (#282).
-    let implementationPresent: boolean | null = null;
-    if (sm.currentStage === STAGE_IMPLEMENT) {
-      const probe = await this.probeImplementation(
-        worktreePath,
-        sm.worktree?.baseBranch || sm.baseBranch || baseBranch
-      );
-      const readable = probe !== null && probe.probeError === null;
-      implementationPresent = !readable
-        ? null
-        : probe.hasChanges
-          ? true
-          : probe.measurementError === null
-            ? false
-            : null;
-
-      if (readable && sm.pausedAtGate === null) {
-        sm.recordImplementationDispatch();
-        await this.persistDispatchCounter(sm, 'implementation', writesEnabled, wouldWrite);
-      }
+    // The counter is recorded only when the tree was READABLE and the read is
+    // not a paused one: a stale descriptor or a non-git directory is a
+    // diagnostic, never a dispatch (#282).
+    if (sm.currentStage === STAGE_IMPLEMENT && probeReadable && sm.pausedAtGate === null) {
+      sm.recordImplementationDispatch();
+      await this.persistDispatchCounter(sm, 'implementation', writesEnabled, wouldWrite);
     }
 
     const remediationClause = remediation
       ? ` Includes AI review remediation${remediation.round === null ? '' : ` from round ${remediation.round}`}.`
+      : '';
+    const gateFailureClause = gateFailure
+      ? ' Includes the quality gate failure diagnostics recorded for this round.'
       : '';
 
     if (sm.currentStage !== STAGE_IMPLEMENT) {
@@ -1551,19 +1719,31 @@ export class GetNextActionUseCase {
       };
     }
 
-    const advanceCommand = formatImplementAdvanceCommand(activeIssue);
-    const condition = NOTE_IMPLEMENT_ADVANCE_CONDITION;
+    // Issue #337: the recorded states, because "present with pending
+    // remediation" and "present after a FAILED gate" are dispatches and must
+    // never print "do not re-dispatch". A pending review remediation governs
+    // the sentence when both channels are recorded: it is the NEWEST round.
     const stateSentence =
       implementationPresent === true
-        ? NOTE_IMPLEMENT_PRESENT
-        : implementationPresent === false
-          ? NOTE_IMPLEMENT_ABSENT
-          : NOTE_IMPLEMENT_UNVERIFIED;
-    // Only a MEASURED non-empty tree ends the stage; every other state keeps
-    // the "once the diff exists" qualifier honest.
-    const advanceSentence =
-      implementationPresent === true
-        ? `Advance with \`${advanceCommand}\`.`
+        ? remediation
+          ? NOTE_IMPLEMENT_PRESENT_REMEDIATION_PENDING
+          : gateFailure
+            ? NOTE_IMPLEMENT_GATE_FAILED
+            : NOTE_IMPLEMENT_PRESENT
+        : gateFailure
+          ? NOTE_IMPLEMENT_GATE_FAILED
+          : implementationPresent === false
+            ? NOTE_IMPLEMENT_ABSENT
+            : NOTE_IMPLEMENT_UNVERIFIED;
+    // Only a MEASURED non-empty tree with no pending remediation and no failed
+    // gate ends the stage; every other state keeps a qualifier that is honest
+    // about it.
+    const advanceSentence = gateFailure && !remediation
+      ? `Advance with \`${advanceCommand}\` once the gate's failures are fixed.`
+      : implementationPresent === true
+        ? remediation
+          ? `Advance with \`${advanceCommand}\` once the remediation is applied.`
+          : `Advance with \`${advanceCommand}\`.`
         : `Advance with \`${advanceCommand}\` once the diff exists.`;
 
     return {
@@ -1572,7 +1752,7 @@ export class GetNextActionUseCase {
       actionType: 'subagent',
       role: ROLE_IMPLEMENTER,
       title: 'Invoke Code Implementer Subagent',
-      description: `${stateSentence} ${condition} ${advanceSentence}${remediationClause}`,
+      description: `${stateSentence} ${condition} ${advanceSentence}${remediationClause}${gateFailureClause}`,
       baseBranch,
       taskBranch,
       worktreePath,
@@ -1607,6 +1787,108 @@ export class GetNextActionUseCase {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The gate failure recorded for the CURRENT IMPLEMENT round (issue #337).
+   *
+   * `run-quality-gate` and `transition IMPLEMENT` stamp the gate verdict on the
+   * history entry that OPENS the round they enter, so the newest entry whose
+   * stage is `IMPLEMENT` is the record of the gate run this round is repairing:
+   * `gateVerdict === STATUS_FAILED` means the diff in the worktree is the one
+   * that failed, and the stage's completion condition is therefore NOT met.
+   *
+   * The scan stops at that entry: a `PASSED` verdict, a review remediation or a
+   * fresh approval opens the round with no failed-gate record and yields `null`,
+   * so the ordinary met-condition guard applies.
+   */
+  private lastGateFailure(sm: StateMachine): Record<string, unknown> | null {
+    const history = sm.history;
+
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (entry.stage !== STAGE_IMPLEMENT) {
+        continue;
+      }
+      const verdict = entry.metadata?.gateVerdict;
+      return verdict === STATUS_FAILED ? (entry.metadata ?? null) : null;
+    }
+
+    return null;
+  }
+
+  /**
+   * Builds the gate-failure section for a re-dispatched IMPLEMENT directive
+   * (issue #337).
+   *
+   * A FAILED gate returns the pipeline to IMPLEMENT with its diagnostics
+   * recorded (`gateTokens`, `failureSnippet`, `selfCorrectionPayload`). Those
+   * fields were never read when re-dispatching the implementer, so the operator
+   * got a fresh implementer with no idea what failed. This mirrors
+   * `buildReviewRemediation`: the recorded block travels VERBATIM, and a gate
+   * filed with the verdict alone still yields a block with no diagnostics.
+   */
+  private buildGateFailureRemediation(sm: StateMachine): { readonly payload: string } | null {
+    // Only IMPLEMENT is repaired by this channel; the APPROVAL/YOLO directive is
+    // unchanged (issue #327).
+    if (sm.currentStage !== STAGE_IMPLEMENT) {
+      return null;
+    }
+
+    const metadata = this.lastGateFailure(sm);
+    // Two recorded signals say "the gate that judged this diff FAILED": the
+    // verdict stamped on the entry that opened the round (the dispatched path
+    // and `run-quality-gate` both record it), and the consecutive-failure
+    // counter the in-process loop maintains. Either one blocks the completion
+    // condition — a legacy record without the verdict must not read as done.
+    if (!metadata && sm.implementToGateLoops === 0) {
+      return null;
+    }
+
+    const tokens =
+      typeof metadata?.gateTokens === 'string' ? metadata.gateTokens.trim() : '';
+    const selfCorrection =
+      typeof metadata?.selfCorrectionPayload === 'string'
+        ? metadata.selfCorrectionPayload.trim()
+        : '';
+    const snippet =
+      typeof metadata?.failureSnippet === 'string' ? metadata.failureSnippet.trim() : '';
+    // The structured block is canonical; the raw failing snippet is appended
+    // only when the block does not already contain it, so no failure context
+    // the checkpoint recorded is dropped or duplicated.
+    const primary = tokens || selfCorrection;
+    const parts = [primary];
+    if (snippet.length > 0 && !primary.includes(snippet)) {
+      parts.push(snippet);
+    }
+    const diagnostics = parts.filter((part) => part.length > 0).join('\n\n');
+
+    return { payload: formatGateFailureRemediationPayload(diagnostics) };
+  }
+
+  /**
+   * The gate evidence filed for THIS round (issue #337).
+   *
+   * Returns `unverified` when no repository is injected — nothing to read, so
+   * the directive keeps its historical dispatch + filing note. A stale block
+   * (a previous round's evidence) is `missing`: it cannot certify this round,
+   * exactly as `transition REVIEW` rejects it.
+   */
+  private resolveGateEvidence(
+    issue: number | string | null,
+    sm: StateMachine
+  ):
+    | { status: 'filed'; report: GateResultReport }
+    | { status: 'missing' }
+    | { status: 'unverified' } {
+    if (!this.gateReportRepo) {
+      return { status: 'unverified' };
+    }
+    const round = resolveGateRound(sm.history);
+    const filed = this.gateReportRepo.load(issue);
+    return filed !== null && filed.gateRound === round
+      ? { status: 'filed', report: filed }
+      : { status: 'missing' };
   }
 
   /**
