@@ -3495,6 +3495,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           return EXIT_CODE_SUCCESS;
         } else {
           console.error(`✗ ${res.message}\n`);
+          // An incomplete run must still show WHICH issues were skipped or
+          // closed: the operator cannot audit the run otherwise (#328).
+          for (const log of res.logs ?? []) {
+            console.log(`  · ${log}`);
+          }
+          for (const warning of res.warnings ?? []) {
+            console.error(`⚠ ${warning}`);
+          }
           return EXIT_CODE_FAILURE;
         }
       } catch (err: unknown) {

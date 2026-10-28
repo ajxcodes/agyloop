@@ -436,6 +436,56 @@ export class CliGitHubGateway implements GitHubGateway {
     return null;
   }
 
+  /**
+   * Parses a `gh issue view` payload.
+   *
+   * The state is copied from the payload ONLY: a payload that omits it yields
+   * `state === undefined`, never a fabricated `'OPEN'`/`'UNKNOWN'` (#328).
+   */
+  private buildIssueData(
+    rawJson: string,
+    issueNumber: number,
+    repo: string | null
+  ): GitHubIssueData {
+    interface RawGhIssue {
+      number?: number;
+      title?: string;
+      body?: string;
+      state?: string;
+      labels?: Array<{ name?: string } | string>;
+      comments?: Array<{ author?: { login?: string }; body?: string; createdAt?: string }>;
+      milestone?: { title?: string } | null;
+    }
+
+    const parsed = JSON.parse(rawJson) as RawGhIssue;
+    const labels = (parsed.labels || []).map((l) => (typeof l === 'string' ? l : l.name || ''));
+    const comments: GitHubComment[] = (parsed.comments || []).map((c) => ({
+      author: (c.author && c.author.login) || 'unknown',
+      body: c.body || '',
+      createdAt: c.createdAt
+    }));
+    const state =
+      typeof parsed.state === 'string' && parsed.state.trim().length > 0
+        ? parsed.state.trim().toUpperCase()
+        : undefined;
+
+    return {
+      repo: repo || 'unknown',
+      number: parsed.number || issueNumber,
+      title: parsed.title || '',
+      body: parsed.body || '',
+      state,
+      labels,
+      comments,
+      milestone: parsed.milestone?.title ? { title: parsed.milestone.title } : undefined
+    };
+  }
+
+  /**
+   * LENIENT read: prompt/context building only. On failure this returns a
+   * synthetic object carrying `error` and NO state — it must never authorize a
+   * write (#328).
+   */
   public fetchIssue(
     issueNumber: number,
     options: GitHubGatewayOptions = {}
@@ -453,45 +503,58 @@ export class CliGitHubGateway implements GitHubGateway {
         { cwd: options.cwd }
       );
 
-      interface RawGhIssue {
-        number?: number;
-        title?: string;
-        body?: string;
-        state?: string;
-        labels?: Array<{ name?: string } | string>;
-        comments?: Array<{ author?: { login?: string }; body?: string; createdAt?: string }>;
-        milestone?: { title?: string } | null;
-      }
-
-      const parsed = JSON.parse(rawJson) as RawGhIssue;
-      const labels = (parsed.labels || []).map((l) => (typeof l === 'string' ? l : l.name || ''));
-      const comments: GitHubComment[] = (parsed.comments || []).map((c) => ({
-        author: (c.author && c.author.login) || 'unknown',
-        body: c.body || '',
-        createdAt: c.createdAt
-      }));
-
-      return {
-        repo: repo || 'unknown',
-        number: parsed.number || issueNumber,
-        title: parsed.title || '',
-        body: parsed.body || '',
-        state: (parsed.state || 'OPEN').toUpperCase(),
-        labels,
-        comments,
-        milestone: parsed.milestone?.title ? { title: parsed.milestone.title } : undefined
-      };
+      return this.buildIssueData(rawJson, issueNumber, repo);
     } catch (err: unknown) {
       return {
         repo: repo || 'unknown',
         number: issueNumber,
         title: '',
         body: '',
-        state: 'UNKNOWN',
         labels: [],
         comments: [],
         error: err instanceof Error ? err.message : String(err)
       };
+    }
+  }
+
+  /**
+   * FAIL-CLOSED read (#328, INV-1): the ONLY issue read that may authorize a
+   * write to GitHub.
+   *
+   * It throws unless `gh issue view` succeeded AND reported exactly 'OPEN' or
+   * 'CLOSED'. `sync` therefore cannot close an issue it failed to read.
+   */
+  public fetchIssueStrict(
+    issueNumber: number,
+    options: GitHubGatewayOptions = {}
+  ): GitHubIssueData {
+    try {
+      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        throw new Error(`invalid issue number: ${issueNumber}`);
+      }
+
+      const repo = options.repo || this.getCurrentRepo(options.cwd);
+      const repoFlag = repo ? `--repo ${shellQuote(repo)}` : '';
+
+      const rawJson = this.runGh(
+        `issue view ${issueNumber} ${repoFlag} --json number,title,body,state,labels,milestone,comments`,
+        { cwd: options.cwd }
+      );
+
+      const issue = this.buildIssueData(rawJson, issueNumber, repo);
+      if (issue.state !== 'OPEN' && issue.state !== 'CLOSED') {
+        throw new Error(
+          `issue state was not measured (got ${issue.state === undefined ? 'nothing' : `'${issue.state}'`})`
+        );
+      }
+
+      return issue;
+    } catch (err: unknown) {
+      throw new GitHubContextError(
+        `fetchIssueStrict #${issueNumber}`,
+        { issueNumber, cwd: options.cwd },
+        err
+      );
     }
   }
 

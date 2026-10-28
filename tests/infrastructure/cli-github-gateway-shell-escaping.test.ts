@@ -246,7 +246,16 @@ describe('codeloop sync names the collector branch again (#262)', () => {
     const worktrees = { async resolveBaseBranch() { return 'phase/123'; } };
     const gateway = new CliGitHubGateway();
 
-    await new SyncUseCase(executor, gateway, stateRepo, worktrees).execute({ workspaceDir: workDir });
+    // #328: the read that authorizes the close now FAILS CLOSED, so the fake
+    // `gh` must answer `issue view` with a payload that measures a state. An
+    // empty stdout would (correctly) close nothing and post no comment.
+    fs.writeFileSync(
+      stdoutFile,
+      JSON.stringify({ number: 10, title: 't', body: '', state: 'OPEN', labels: [], comments: [] })
+    );
+
+    const result = await new SyncUseCase(executor, gateway, stateRepo, worktrees).execute({ workspaceDir: workDir });
+    assert.strictEqual(result.success, true, `sync must succeed: ${JSON.stringify(result)}`);
 
     const bodies = invocations()
       .map((argv) => argv[argv.indexOf('--body') + 1])

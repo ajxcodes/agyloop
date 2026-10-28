@@ -151,7 +151,11 @@ export class StartPlanningUseCase {
           this.stateRepo,
           this.worktreeManager
         );
-        await syncUseCase.execute({ workspaceDir: workspace });
+        const syncResult = await syncUseCase.execute({ workspaceDir: workspace });
+        if (!syncResult.success) {
+          // Best-effort: never abort, but never claim success either (#328).
+          console.warn(`Auto-sync before planning is incomplete: ${syncResult.message}`);
+        }
       } catch (e) {
         console.warn('Auto-sync before planning failed:', e instanceof Error ? e.message : String(e));
       }

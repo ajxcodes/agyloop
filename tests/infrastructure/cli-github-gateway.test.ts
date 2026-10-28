@@ -278,6 +278,127 @@ describe('CliGitHubGateway fetchIssue', () => {
     assert.deepStrictEqual(issue?.labels, ['bug']);
     assert.deepStrictEqual(issue?.comments, []);
   });
+
+  /**
+   * #328: a failed lenient read must NOT fabricate a state. `'UNKNOWN'` used to
+   * authorize a destructive close in `sync`.
+   */
+  test('fetchIssue never reports a fabricated state', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () => {
+      throw new Error('HTTP 502: Bad Gateway');
+    };
+
+    const issue = gateway.fetchIssue(306, { repo: 'ajxcodes/agyloop' });
+
+    assert.ok(issue, 'the lenient read returns a synthetic object');
+    assert.match(String(issue?.error), /502/);
+    assert.strictEqual(issue?.state, undefined, 'no UNKNOWN/OPEN may be invented');
+  });
+
+  test('fetchIssue does not default a payload without a state to OPEN', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () => JSON.stringify({ number: 306, title: 't', body: '', labels: [], comments: [] });
+
+    const issue = gateway.fetchIssue(306, { repo: 'ajxcodes/agyloop' });
+    assert.strictEqual(issue?.state, undefined);
+  });
+});
+
+describe('CliGitHubGateway fetchIssueStrict (#328)', () => {
+  const { ERR_GITHUB_CONTEXT } = require('../../dist/domain');
+
+  test('fetchIssueStrict throws instead of returning a synthetic issue', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () => {
+      throw new Error('HTTP 502: Bad Gateway');
+    };
+
+    assert.throws(
+      () => gateway.fetchIssueStrict(306, { repo: 'ajxcodes/agyloop' }),
+      (err: any) => err.code === ERR_GITHUB_CONTEXT && /fetchIssueStrict #306/.test(err.message)
+    );
+  });
+
+  test('fetchIssueStrict refuses a payload without a measured state', () => {
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () => JSON.stringify({ number: 306, title: 't', body: '', labels: [], comments: [] });
+    assert.throws(
+      () => gateway.fetchIssueStrict(306, { repo: 'ajxcodes/agyloop' }),
+      (err: any) => err.code === ERR_GITHUB_CONTEXT && /fetchIssueStrict #306/.test(err.message)
+    );
+
+    gateway.runGh = () =>
+      JSON.stringify({ number: 306, title: 't', body: '', state: 'UNKNOWN', labels: [], comments: [] });
+    assert.throws(
+      () => gateway.fetchIssueStrict(306, { repo: 'ajxcodes/agyloop' }),
+      (err: any) => err.code === ERR_GITHUB_CONTEXT && /fetchIssueStrict #306/.test(err.message)
+    );
+  });
+
+  test('fetchIssueStrict requests the exact same command string as fetchIssue', () => {
+    const gateway = new CliGitHubGateway();
+    let capturedCmd = '';
+    gateway.runGh = (cmd: string) => {
+      capturedCmd = cmd;
+      return JSON.stringify({
+        number: 59,
+        title: 'Issue 59 title',
+        body: 'body',
+        state: 'OPEN',
+        labels: [],
+        comments: []
+      });
+    };
+
+    gateway.fetchIssueStrict(59, { repo: 'ajxcodes/agyloop' });
+    assert.strictEqual(
+      capturedCmd,
+      "issue view 59 --repo 'ajxcodes/agyloop' --json number,title,body,state,labels,milestone,comments"
+    );
+  });
+
+  test('fetchIssueStrict throws for 0, -1 and 2.5', () => {
+    const gateway = new CliGitHubGateway();
+    let invoked = false;
+    gateway.runGh = () => {
+      invoked = true;
+      return '{}';
+    };
+
+    for (const issueNumber of [0, -1, 2.5]) {
+      assert.throws(
+        () => gateway.fetchIssueStrict(issueNumber, { repo: 'ajxcodes/agyloop' }),
+        (err: any) => err.code === ERR_GITHUB_CONTEXT,
+        `expected ${issueNumber} to be rejected`
+      );
+    }
+    assert.strictEqual(invoked, false, 'an invalid number must not reach gh');
+  });
+
+  test('fetchIssueStrict maps labels/comments/milestone like fetchIssue', () => {
+    const payload = JSON.stringify({
+      number: 284,
+      title: 'Title',
+      body: 'Body',
+      state: 'CLOSED',
+      labels: [{ name: 'bug' }, 'phase:6'],
+      milestone: { title: 'Phase 6: CodeLoop' },
+      comments: [{ author: { login: 'ajxcodes' }, body: 'note', createdAt: '2026-10-26T10:00:00Z' }]
+    });
+    const gateway = new CliGitHubGateway();
+    gateway.runGh = () => payload;
+
+    const issue = gateway.fetchIssueStrict(284, { repo: 'ajxcodes/agyloop' });
+
+    assert.strictEqual(issue.number, 284);
+    assert.strictEqual(issue.state, 'CLOSED');
+    assert.deepStrictEqual(issue.labels, ['bug', 'phase:6']);
+    assert.deepStrictEqual(issue.comments, [
+      { author: 'ajxcodes', body: 'note', createdAt: '2026-10-26T10:00:00Z' }
+    ]);
+    assert.deepStrictEqual(issue.milestone, { title: 'Phase 6: CodeLoop' });
+  });
 });
 
 describe('CliGitHubGateway fetchPullRequestComments', () => {
