@@ -24,12 +24,33 @@ class MockGitHubGateway {
   issues: any[] = [];
   closedIssues: number[] = [];
   comments: { issueId: number, body: string }[] = [];
+  /** Issues the fail-closed read refuses to report (drives a thrown read). */
+  strictErrors: Record<number, string> = {};
+  /** Spy: `sync` must never make a write decision from the lenient read (#328). */
+  fetchIssueCalls: number[] = [];
+  closeIssueError?: string;
 
   async fetchIssue(issueId: number) {
-    return this.issues.find(i => i.id === issueId) || null;
+    this.fetchIssueCalls.push(issueId);
+    throw new Error('the lenient read must never authorize a write (#328)');
+  }
+
+  async fetchIssueStrict(issueId: number) {
+    const failure = this.strictErrors[issueId];
+    if (failure) {
+      throw new Error(failure);
+    }
+    const issue = this.issues.find(i => i.id === issueId);
+    if (!issue) {
+      throw new Error(`gh issue view ${issueId} returned nothing`);
+    }
+    return { number: issue.id, state: issue.state };
   }
 
   async closeIssue(issueId: number) {
+    if (this.closeIssueError) {
+      throw new Error(this.closeIssueError);
+    }
     this.closedIssues.push(issueId);
   }
 
@@ -208,5 +229,161 @@ describe('SyncUseCase', () => {
     assert.strictEqual(result.success, true);
     assert.ok(result.warnings !== undefined, 'Result should include warnings metadata');
     assert.ok(result.warnings.some((w: string) => w.includes('Failed to fetch from origin: Network error')));
+  });
+
+  /**
+   * Builds the standard harness: a `phase/123` collector branch, the merged PRs
+   * given, and `src/app.ts` as each PR's verified diff.
+   */
+  function harness(
+    prs: { number: number; body: string }[]
+  ): { executor: MockCommandExecutor; github: MockGitHubGateway; useCase: any } {
+    const executor = new MockCommandExecutor();
+    const github = new MockGitHubGateway();
+    const state = new MockStateRepo();
+    const worktree = new MockWorktreeManager();
+
+    worktree.baseBranch = 'phase/123';
+    executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
+    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
+      stdout: JSON.stringify(prs)
+    };
+    for (const pr of prs) {
+      executor.responses[`gh pr view ${pr.number} --json files --jq '.files[].path'`] = {
+        exitCode: 0,
+        stdout: 'src/app.ts\n'
+      };
+    }
+
+    return { executor, github, useCase: new SyncUseCase(executor, github, state, worktree) };
+  }
+
+  /**
+   * #328 AC-328.1/AC-328.3 — the defect: an unreadable issue used to be closed
+   * and commented on, because the lenient read returned `state: 'UNKNOWN'` and
+   * the guard was `state !== 'CLOSED'`.
+   */
+  it('fails closed when the strict issue read throws', async () => {
+    const { github, useCase } = harness([{ number: 901, body: 'Closes #306' }]);
+    github.strictErrors[306] = 'GitHub context error during \'fetchIssueStrict #306\': HTTP 502: Bad Gateway';
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.deepStrictEqual(github.closedIssues, [], 'an unreadable issue must never be closed');
+    assert.deepStrictEqual(github.comments, [], 'and it must never be commented on');
+    assert.deepStrictEqual(github.fetchIssueCalls, [], 'the lenient read must not be consulted');
+    assert.strictEqual(result.success, false);
+    assert.match(result.message, /#306/);
+    assert.ok(
+      result.logs!.includes(
+        "Skipped #306: unreadable (GitHub context error during 'fetchIssueStrict #306': HTTP 502: Bad Gateway)"
+      ),
+      `the skip must name the issue and the reason, got: ${JSON.stringify(result.logs)}`
+    );
+    assert.ok(
+      result.warnings!.some((w: string) => w.includes('Not closing #306: could not read the issue')),
+      `a warning must explain the skip, got: ${JSON.stringify(result.warnings)}`
+    );
+  });
+
+  it('never consults the lenient fetchIssue for a write decision', async () => {
+    const { github, useCase } = harness([{ number: 42, body: 'Closes #10' }]);
+    github.issues.push({ id: 10, state: 'OPEN' });
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.deepStrictEqual(github.fetchIssueCalls, [], 'fetchIssue is prompt-only (#328, INV-5)');
+    assert.deepStrictEqual(github.closedIssues, [10]);
+    assert.strictEqual(result.success, true);
+  });
+
+  it('an unexpected issue state never authorizes a write', async () => {
+    const { github, useCase } = harness([{ number: 42, body: 'Closes #306' }]);
+    github.issues.push({ id: 306, state: 'UNKNOWN' });
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.deepStrictEqual(github.closedIssues, [], 'only a measured OPEN may authorize a close');
+    assert.deepStrictEqual(github.comments, []);
+    assert.strictEqual(result.success, false);
+    assert.ok(
+      result.logs!.includes("Skipped #306: unreadable (unexpected state 'UNKNOWN')"),
+      `got: ${JSON.stringify(result.logs)}`
+    );
+  });
+
+  it('reports already-closed, unreadable and closed-by-this-run distinctly', async () => {
+    const { github, useCase } = harness([
+      { number: 41, body: 'Closes #10' },
+      { number: 42, body: 'Closes #11' },
+      { number: 43, body: 'Closes #12' }
+    ]);
+    github.issues.push({ id: 10, state: 'OPEN' });
+    github.issues.push({ id: 11, state: 'CLOSED' });
+    github.strictErrors[12] = 'HTTP 502: Bad Gateway';
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    const logs: string[] = result.logs ?? [];
+    assert.ok(logs.includes('Closed issue #10 (merged in PR #41 to phase/123)'), JSON.stringify(logs));
+    assert.ok(logs.includes('Skipped #11: already closed'), JSON.stringify(logs));
+    assert.ok(logs.includes('Skipped #12: unreadable (HTTP 502: Bad Gateway)'), JSON.stringify(logs));
+    for (const log of logs) {
+      assert.ok(
+        !log.includes('already closed or unreadable'),
+        `the conflated sentence must be gone, got: ${log}`
+      );
+    }
+    assert.deepStrictEqual(github.closedIssues, [10]);
+    assert.strictEqual(result.success, false, 'one unreadable candidate makes the run incomplete');
+  });
+
+  it('refuses to write when the gateway has no fail-closed read', async () => {
+    const { github, useCase } = harness([{ number: 42, body: 'Closes #306' }]);
+    github.issues.push({ id: 306, state: 'OPEN' });
+    (github as any).fetchIssueStrict = undefined;
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.deepStrictEqual(github.closedIssues, []);
+    assert.deepStrictEqual(github.comments, []);
+    assert.deepStrictEqual(github.fetchIssueCalls, [], 'the lenient read must not be consulted');
+    assert.strictEqual(result.success, false);
+    assert.ok(
+      result.logs!.some((l: string) => l.includes('unreadable') && l.includes('#306')),
+      `the log must say unreadable, got: ${JSON.stringify(result.logs)}`
+    );
+  });
+
+  it('a failed close/comment marks the run incomplete', async () => {
+    const { github, useCase } = harness([{ number: 42, body: 'Closes #306' }]);
+    github.issues.push({ id: 306, state: 'OPEN' });
+    github.closeIssueError = 'gh issue close failed';
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.strictEqual(result.success, false);
+    assert.match(result.message, /#306/);
+    assert.deepStrictEqual(github.comments, [], 'no comment may follow a failed close');
+    assert.ok(
+      result.logs!.includes('Failed to close #306: gh issue close failed'),
+      `got: ${JSON.stringify(result.logs)}`
+    );
+  });
+
+  it('closes and comments exactly once for a readable open issue', async () => {
+    const { github, useCase } = harness([{ number: 42, body: 'Closes #10' }]);
+    github.issues.push({ id: 10, state: 'OPEN' });
+
+    const result = await useCase.execute({ workspaceDir: '/tmp' });
+
+    assert.deepStrictEqual(github.closedIssues, [10]);
+    assert.strictEqual(github.comments.length, 1);
+    assert.strictEqual(github.comments[0].issueId, 10);
+    assert.strictEqual(
+      github.comments[0].body,
+      'Closed by agyloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
+    );
+    assert.strictEqual(result.success, true);
   });
 });

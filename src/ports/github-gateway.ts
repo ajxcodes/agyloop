@@ -81,10 +81,18 @@ export interface GitHubIssueData {
   readonly number: number;
   readonly title: string;
   readonly body: string;
-  readonly state?: string; // 'OPEN' | 'CLOSED'
+  /**
+   * `'OPEN' | 'CLOSED'`. NEVER synthesised: an absent state means the state was
+   * not measured (#328). A caller that authorizes a write must use
+   * {@link GitHubGateway.fetchIssueStrict}, which refuses such a payload.
+   */
+  readonly state?: string;
   readonly labels: readonly string[];
   readonly comments: readonly GitHubComment[];
   readonly milestone?: GitHubIssueMilestone;
+  /**
+   * Set only when a LENIENT read failed; the rest of this object is synthetic.
+   */
   readonly error?: string;
 }
 
@@ -131,12 +139,31 @@ export interface GitHubGateway {
   getCurrentRepo(cwd?: string): Promise<string | null> | string | null;
 
   /**
-   * Fetches structured issue details from GitHub.
+   * LENIENT read, for prompt/context building ONLY.
+   *
+   * On failure it returns a synthetic object carrying `error` and NO `state`.
+   * Never authorize a write from this result — use {@link fetchIssueStrict}.
    */
   fetchIssue(
     issueNumber: number,
     options?: GitHubGatewayOptions
   ): Promise<GitHubIssueData | null> | GitHubIssueData | null;
+
+  /**
+   * FAIL-CLOSED read, for decisions that write to GitHub (#328).
+   *
+   * Returns the issue when `gh issue view` succeeded AND reported exactly
+   * 'OPEN' or 'CLOSED'; THROWS `GitHubContextError` otherwise (non-zero exit,
+   * malformed JSON, missing/unrecognised state, invalid number).
+   *
+   * Optional, matching this port's convention for capabilities. `SyncUseCase`
+   * REFUSES to write when it is absent rather than falling back to the lenient
+   * read.
+   */
+  fetchIssueStrict?(
+    issueNumber: number,
+    options?: GitHubGatewayOptions
+  ): Promise<GitHubIssueData> | GitHubIssueData;
 
   /**
    * Searches for a pull request by head branch or associated issue number.

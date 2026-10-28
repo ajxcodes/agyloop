@@ -126,19 +126,31 @@ describe('ResetPipelineUseCase dryRun (#248 AC-248.1/2)', () => {
   });
 });
 
-describe('SyncUseCase dryRun (#248 AC-248.3)', () => {
+describe('SyncUseCase dryRun (#248 AC-248.3, #328 AC-328.6)', () => {
   class MockExecutor {
     public commands: string[] = [];
+    public responses: Record<string, any> = {};
     public async execute(command: string) {
       this.commands.push(command);
-      return green(command);
+      return this.responses[command] ?? green(command);
     }
   }
   class MockGitHub {
     public closed: number[] = [];
     public comments: number[] = [];
+    public strictErrors: Record<number, string> = {};
+    public states: Record<number, string> = { 10: 'OPEN' };
     public async fetchIssue() {
-      return { id: 10, state: 'OPEN' };
+      throw new Error('the lenient read must never authorize a write (#328)');
+    }
+    public async fetchIssueStrict(id: number) {
+      if (this.strictErrors[id]) {
+        throw new Error(this.strictErrors[id]);
+      }
+      if (!this.states[id]) {
+        throw new Error(`gh issue view ${id} returned nothing`);
+      }
+      return { number: id, state: this.states[id] };
     }
     public async closeIssue(id: number) {
       this.closed.push(id);
@@ -158,7 +170,29 @@ describe('SyncUseCase dryRun (#248 AC-248.3)', () => {
     }
   }
 
-  test('dry run issues no fetch/pull/gh command and closes no issue', async () => {
+  function harness(candidates: { number: number; body: string }[]) {
+    const executor = new MockExecutor();
+    const github = new MockGitHub();
+    executor.responses["gh pr list --base 'phase/1' --state merged --json number,title,body"] = green(
+      'gh pr list',
+      JSON.stringify(candidates)
+    );
+    for (const candidate of candidates) {
+      executor.responses[`gh pr view ${candidate.number} --json files --jq '.files[].path'`] = green(
+        `gh pr view ${candidate.number}`,
+        'src/app.ts\n'
+      );
+    }
+    const useCase = new SyncUseCase(
+      executor as any,
+      github as any,
+      new MockState() as any,
+      new MockWorktree() as any
+    );
+    return { executor, github, useCase };
+  }
+
+  test('dry run issues no fetch/pull/close and closes no issue', async () => {
     const executor = new MockExecutor();
     const github = new MockGitHub();
     const result = await new SyncUseCase(executor as any, github as any, new MockState() as any, new MockWorktree() as any).execute({
@@ -170,8 +204,58 @@ describe('SyncUseCase dryRun (#248 AC-248.3)', () => {
     assert.strictEqual(result.dryRun, true);
     assert.match(result.message, /\[dry-run\] Would fetch origin/);
     for (const command of executor.commands) {
-      assert.ok(!/fetch|pull|gh pr list/.test(command), `dry run executed: ${command}`);
+      assert.ok(!/git fetch|git pull/.test(command), `dry run executed: ${command}`);
+      assert.ok(!/^issue close|issue close |issue comment /.test(command), `dry run executed: ${command}`);
     }
+    assert.deepStrictEqual(github.closed, []);
+    assert.deepStrictEqual(github.comments, []);
+  });
+
+  test('dry run lists the issues it would close and writes nothing', async () => {
+    const { executor, github, useCase } = harness([{ number: 42, body: 'Closes #10' }]);
+
+    const result = await useCase.execute({ workspaceDir: '/mock', dryRun: true });
+
+    assert.strictEqual(result.success, true);
+    assert.ok(
+      (result.logs ?? []).includes(
+        '[dry-run] Would close issue #10 and post 1 comment (merged in PR #42 into phase/1)'
+      ),
+      `got: ${JSON.stringify(result.logs)}`
+    );
+    // Negative control: the forecast must have READ the merged PRs and the issue.
+    assert.ok(
+      executor.commands.some((command: string) => command.startsWith('gh pr list')),
+      `the read-only scan must still run: ${executor.commands.join('\n')}`
+    );
+    assert.deepStrictEqual(github.closed, []);
+    assert.deepStrictEqual(github.comments, []);
+  });
+
+  test('dry run lists already-closed and unreadable candidates', async () => {
+    const { github, useCase } = harness([
+      { number: 41, body: 'Closes #10' },
+      { number: 42, body: 'Closes #11' },
+      { number: 43, body: 'Closes #12' }
+    ]);
+    github.states[10] = 'CLOSED';
+    github.strictErrors[11] = 'HTTP 502: Bad Gateway';
+    github.states[12] = 'OPEN';
+
+    const result = await useCase.execute({ workspaceDir: '/mock', dryRun: true });
+
+    const logs: string[] = result.logs ?? [];
+    assert.ok(logs.includes('[dry-run] Would skip #10: already closed'), JSON.stringify(logs));
+    assert.ok(
+      logs.includes('[dry-run] Would skip #11: unreadable (HTTP 502: Bad Gateway)'),
+      JSON.stringify(logs)
+    );
+    assert.ok(
+      logs.some((log: string) => log.includes('[dry-run] Would close issue #12')),
+      JSON.stringify(logs)
+    );
+    assert.strictEqual(result.success, false, 'an unreadable candidate makes the forecast incomplete');
+    assert.match(result.message, /#11/);
     assert.deepStrictEqual(github.closed, []);
     assert.deepStrictEqual(github.comments, []);
   });
