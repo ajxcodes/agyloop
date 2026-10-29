@@ -18,6 +18,8 @@
  * P12 - the empty `=` form and a flag-following value fail just as loudly (R1)
  * P13 - `--verdict-file` at a nonexistent path still fails loudly (R1)
  * P14 - `--verdict-stdin` with an empty stdin fails loudly (R1)
+ * P15 - the reviewer's natural "none" phrasing records APPROVED and reaches
+ *      COMMIT (issue #356)
  *
  * Harness: the critique-free PATH shadow copied from `cli-yolo-review-skipped.test.ts`
  * — the Tier 1 critique report must not be able to escalate the verdict under
@@ -212,6 +214,19 @@ REMEDIATION_GUIDANCE:
 - Fix the nil dereference in src/application/resolve-subagent.ts
 `;
 
+/**
+ * The reviewer's OWN words (issue #356): the live #352 block. Before the fix,
+ * `- None in the reviewed in-repo scope (…)` was captured as a criterion and the
+ * two-tier invariant rewrote the reviewer's APPROVED to CHANGES_REQUESTED.
+ */
+const MIXED_NONE_APPROVED_BLOCK = `REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: Every acceptance criterion is met; the diff is in scope.
+UNFULFILLED_AC:
+- None in the reviewed in-repo scope (deferred to post-commit).
+REMEDIATION_GUIDANCE:
+- None required.
+`;
+
 describe('codeloop review (issue #269, Defect 2)', () => {
   test('P1/P2: a verdict file is recorded and the checkpoint lands at COMMIT', async (t: any) => {
     const sandbox = makeSandbox('REVIEW');
@@ -321,6 +336,46 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         !payload.description.includes('No AI review verdict is recorded'),
         `the COMMIT gate must not claim the verdict is missing, got: ${payload.description}`
       );
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('P15: the reviewer\'s natural none phrasing records APPROVED and advances to COMMIT (issue #356)', async (t: any) => {
+    const sandbox = makeSandbox('REVIEW');
+    try {
+      const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
+        new CliCritiqueGateway().resolveReviewer(sandbox.dir)
+      );
+      if (!probe.value || probe.value.source !== 'none') {
+        t.skip(`environment cannot guarantee critique absence: ${JSON.stringify(probe.value)}`);
+        return;
+      }
+
+      const verdictFile = path.join(sandbox.dir, 'verdict.md');
+      fs.writeFileSync(verdictFile, MIXED_NONE_APPROVED_BLOCK, 'utf8');
+
+      const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
+        runCli(['review', '--issue', String(ISSUE), '--verdict-file', verdictFile])
+      );
+
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(
+        run.value,
+        EXIT_CODE_SUCCESS,
+        `the reviewer APPROVED; exit 0 expected, got:\n${output}`
+      );
+      assert.ok(output.includes('APPROVED'), `the verdict must be reported, got:\n${output}`);
+      assert.ok(
+        !output.includes('AI Review requested changes'),
+        `the reviewer's APPROVED was rewritten to CHANGES_REQUESTED, got:\n${output}`
+      );
+
+      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      assert.strictEqual(checkpoint.currentStage, 'COMMIT');
+      const last = checkpoint.history[checkpoint.history.length - 1];
+      assert.strictEqual(last.metadata.reviewVerdict, 'APPROVED');
+      assert.strictEqual(last.metadata.reviewerVerdict, 'APPROVED');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }

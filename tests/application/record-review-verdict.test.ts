@@ -21,6 +21,8 @@
  *      own status and the provenance are persisted (issue #297, AC2/AC3)
  * RV13 - a BYPASSED report never downgrades a real reviewer verdict (#303)
  * RV14 - a supplied prior report is the dedupe: no subprocess, same invariant
+ * RV15 - a verdict written with natural "none" phrasing is recorded APPROVED and
+ *      advances to COMMIT, with NO self-correction payload (issue #356)
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -189,6 +191,18 @@ REMEDIATION_GUIDANCE:
 - Fix the nil dereference in src/application/resolve-subagent.ts
 `;
 
+/**
+ * The reviewer's OWN words (issue #356): both list blocks are filled with
+ * natural "None (…)" phrasing instead of the prompt's sanctioned literal.
+ */
+const MIXED_NONE_APPROVED_BLOCK = `REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: Every acceptance criterion is met; the diff is in scope.
+UNFULFILLED_AC:
+- None in the reviewed in-repo scope (deferred to post-commit).
+REMEDIATION_GUIDANCE:
+- None required.
+`;
+
 describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () => {
   let stateRepo: MockStateRepository;
   let configRepo: MockConfigRepository;
@@ -235,6 +249,31 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     const last = saved.history[saved.history.length - 1];
     assert.strictEqual(last.stage, STAGE_COMMIT);
     assert.strictEqual(last.metadata.reviewVerdict, VERDICT_APPROVED);
+  });
+
+  test('RV15: the reviewer\'s natural none phrasing is recorded APPROVED and advances to COMMIT (issue #356)', async () => {
+    // The live #352 shape: the reviewer said APPROVED and wrote
+    // "- None in the reviewed in-repo scope (deferred to post-commit)." The
+    // parse captured that bullet as a criterion and the two-tier invariant
+    // rewrote the verdict to CHANGES_REQUESTED.
+    const result = await buildUseCase().execute({ reviewOutput: MIXED_NONE_APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.passed, true, 'the reviewer APPROVED; the gate must pass');
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.stage, STAGE_COMMIT);
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_APPROVED);
+    assert.strictEqual(last.metadata.reviewerVerdict, VERDICT_APPROVED);
+    assert.strictEqual(
+      'selfCorrectionPayload' in (last.metadata ?? {}),
+      false,
+      'an approval carries no self-correction payload'
+    );
   });
 
   test('RV2: a CHANGES_REQUESTED reviewer output FAILS the gate and reverts to IMPLEMENT', async () => {
