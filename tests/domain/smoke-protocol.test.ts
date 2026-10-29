@@ -10,6 +10,12 @@
  * SP7 - only the comparison that calls the JSON-producing helper is flagged (#327)
  * SP8 - an inline JSON.stringify inside the compared substitution is still rejected
  * SP9 - `jq -c` is rejected; `jq -r` (raw text) is accepted
+ * SP10 - a /tmp-sandbox check invoking the CLI is rejected at its plan line (#359)
+ * SP11 - the #351-shape smoke-<issue> sandbox still validates with 0 findings (#359)
+ * SP12 - a file-only mktemp helper is not a sandbox (#359)
+ * SP13 - a bare mktemp -d in a CLI check is flagged (implicit OS temp root) (#359)
+ * SP14 - mktemp -d staging with NO CLI invocation is not flagged (#359)
+ * SP15 - the sandbox rule ignores legit mkdir targets, flags reserved/temp ones (#359)
  */
 
 const { test, describe } = require('node:test');
@@ -262,5 +268,132 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       ])
     );
     assert.deepStrictEqual(raw, [], 'raw jq output is unquoted text');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #359: the sandbox-path rule — a CLI check may only sandbox where the
+  // state guard recognises its own sandbox ($HOME/.cache/agyloop/smoke-*).
+  // ---------------------------------------------------------------------------
+
+  function sandboxFindings(markdown: string): any[] {
+    return SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === 'sandbox-path'
+    );
+  }
+
+  test('SP10: a /tmp-sandbox check invoking the CLI is rejected at its plan line (#359)', () => {
+    // The exact #339-shape protocol: mktemp -d under /tmp, then a state-mutating
+    // codeloop call. It used to dispatch with 0 findings and die at gate round 1.
+    const markdown = planOf([
+      '#### Check 1 - transition in a /tmp sandbox',
+      '',
+      '```bash',
+      'SBX=$(mktemp -d /tmp/opencode/smoke339-XXXXXX)',
+      'git clone . "$SBX/repo"',
+      'cd "$SBX/repo"',
+      'node bin/codeloop.js transition --issue 339 --to IMPLEMENT',
+      'rm -rf "$SBX"',
+      '```'
+    ]);
+    const mktempLine = markdown.split('\n').findIndex((line: string) => line.includes('mktemp')) + 1;
+
+    const protocol = SmokeProtocol.fromPlan(markdown);
+
+    assert.strictEqual(protocol.executable, false);
+    const findings = sandboxFindings(markdown);
+    assert.strictEqual(findings.length, 1, JSON.stringify(protocol.findings));
+    const finding = findings[0];
+    assert.strictEqual(finding.checkIndex, 1);
+    assert.ok(finding.label.includes('Check 1'), finding.label);
+    assert.strictEqual(finding.line, mktempLine, 'the finding names the mktemp plan line');
+    assert.ok(finding.excerpt.includes('mktemp -d /tmp'), finding.excerpt);
+    assert.ok(finding.excerpt.includes('$HOME/.cache/agyloop/smoke-'), finding.excerpt);
+  });
+
+  test('SP11: the #351-shape smoke-<issue> sandbox still validates with 0 findings (#359)', () => {
+    const markdown = planOf([
+      '```bash',
+      'mkdir -p "$HOME/.cache/agyloop"',
+      'SBX=$(mktemp -d "$HOME/.cache/agyloop/smoke-351-next-XXXXXX")',
+      'git clone . "$SBX/repo"',
+      'cd "$SBX/repo"',
+      'env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 351 --to IMPLEMENT',
+      'rm -rf "$SBX"',
+      '```'
+    ]);
+
+    const protocol = SmokeProtocol.fromPlan(markdown);
+
+    assert.deepStrictEqual(protocol.findings, []);
+    assert.strictEqual(protocol.executable, true);
+  });
+
+  test('SP12: a file-only mktemp helper is not a sandbox (#359)', () => {
+    // The #351 plan's S4 shape: a bare `mktemp` creates a FILE, never a
+    // directory sandbox, even though the check invokes the CLI.
+    const markdown = planOf([
+      '```bash',
+      'HELP_FILE=$(mktemp)',
+      'node bin/codeloop.js --help > "$HELP_FILE"',
+      'rm -f "$HELP_FILE"',
+      '```'
+    ]);
+
+    assert.deepStrictEqual(sandboxFindings(markdown), []);
+    assert.strictEqual(SmokeProtocol.fromPlan(markdown).executable, true);
+  });
+
+  test('SP13: a bare mktemp -d in a CLI check is flagged (implicit OS temp root) (#359)', () => {
+    const markdown = planOf([
+      '```bash',
+      'SBX=$(mktemp -d)',
+      'git clone . "$SBX/repo"',
+      'cd "$SBX/repo"',
+      'node bin/codeloop.js transition --issue 359 --to IMPLEMENT',
+      'rm -rf "$SBX"',
+      '```'
+    ]);
+
+    const protocol = SmokeProtocol.fromPlan(markdown);
+    assert.strictEqual(protocol.executable, false);
+    const findings = sandboxFindings(markdown);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.ok(findings[0].excerpt.includes('mktemp -d'), findings[0].excerpt);
+    assert.ok(findings[0].excerpt.includes('$HOME/.cache/agyloop/smoke-'), findings[0].excerpt);
+  });
+
+  test('SP14: mktemp -d staging with NO CLI invocation is not flagged (#359)', () => {
+    // I3.1 (negative): the rule is per CHECK — a fixture-staging check that
+    // never invokes the CLI may use temp dirs freely (it is never run by the
+    // guard's state-mutation path through a codeloop command).
+    const markdown = planOf([
+      '```bash',
+      'A=$(mktemp -d)',
+      'B=$(mktemp -d)',
+      'cp -r fixtures/x "$A"',
+      'diff -ru "$A" "$B" && echo "PASS identical"',
+      'rm -rf "$A" "$B"',
+      '```'
+    ]);
+
+    assert.deepStrictEqual(sandboxFindings(markdown), []);
+    assert.strictEqual(SmokeProtocol.fromPlan(markdown).executable, true);
+  });
+
+  test('SP15: the sandbox rule ignores legit mkdir targets and flags reserved/temp ones (#359)', () => {
+    const findingsFor = (body: string[]): any[] =>
+      sandboxFindings(
+        planOf(['```bash', ...body, 'node bin/codeloop.js status --issue 359', '```'])
+      );
+
+    // Negatives: the sandbox ROOT parent is not a sandbox, nor a fixture dir.
+    assert.deepStrictEqual(findingsFor(['mkdir -p "$HOME/.cache/agyloop"']), []);
+    assert.deepStrictEqual(findingsFor(['mkdir -p fixtures/x']), []);
+
+    // Positives: a TMPDIR-rooted mktemp, a /var/tmp root, and the reserved
+    // in-workspace artifacts/smoke path the guard refuses (rule 3).
+    assert.strictEqual(findingsFor(['SBX=$(mktemp -d -p "$TMPDIR" smoke-x)']).length, 1);
+    assert.strictEqual(findingsFor(['mkdir -p /var/tmp/smoke359']).length, 1);
+    assert.strictEqual(findingsFor(['mkdir -p artifacts/smoke359']).length, 1);
   });
 });

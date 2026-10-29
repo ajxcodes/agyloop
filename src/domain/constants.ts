@@ -711,6 +711,8 @@ export const SMOKE_RULE_QUOTED_JSON_COMPARISON = 'quoted-json-comparison' as con
 export const SMOKE_RULE_BARE_MODULE_PATH = 'bare-module-path' as const;
 export const SMOKE_RULE_NO_EXECUTABLE_CHECK = 'no-executable-check' as const;
 export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
+/** Static smoke-protocol findings (issue #359). */
+export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
 
 /** Plan integrity verdicts (issue #298). */
 export const PLAN_INTEGRITY_VERIFIED = 'verified' as const;
@@ -815,6 +817,15 @@ export const SMOKE_SANDBOX_MANDATE =
   `If you must execute state-mutating commands (e.g. \`codeloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely at \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`. If it is placed anywhere inside the workspace (e.g. \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.` as const;
 export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
   'If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT` so the root-mutation guard does not block them.' as const;
+
+/**
+ * The sandbox rule for blocks the PLANNER authors into the plan's
+ * Manual Smoke Test Protocol (issue #359). The self-directed
+ * SMOKE_SANDBOX_MANDATE above governs the subagent's OWN execution;
+ * this note governs the fenced checks the gate will run later.
+ */
+export const NOTE_SMOKE_BLOCK_SANDBOX_RULE =
+  `Every state-mutating check (one that invokes the \`codeloop\` CLI) must create its sandbox under \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`; a \`mktemp -d\` under \`/tmp\` or any sandbox outside that root is refused by the state guard and rejected at dispatch.` as const;
 
 /**
  * The in-repo smoke isolation directory the guard refuses outside a test run

@@ -8,6 +8,11 @@
  * the gate is told to execute, and a failure is attributed to a check label
  * and a plan line — never "go read the plan and run it".
  *
+ * Static rules: quoted-json-comparison, bare-module-path, empty-check,
+ * no-executable-check (issue #298) and sandbox-path (issue #359 — a check that
+ * invokes the CLI must create its directory sandbox where the state guard
+ * recognises it).
+ *
  * No I/O, no external imports.
  */
 
@@ -18,7 +23,12 @@ import {
   SMOKE_RULE_BARE_MODULE_PATH,
   SMOKE_RULE_EMPTY_CHECK,
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
-  SMOKE_RULE_QUOTED_JSON_COMPARISON
+  SMOKE_RULE_QUOTED_JSON_COMPARISON,
+  SMOKE_RULE_SANDBOX_PATH,
+  SMOKE_SANDBOX_DIR_PREFIX,
+  SMOKE_SANDBOX_HOME_ANCHOR,
+  SMOKE_SANDBOX_RECOMMENDED_PATH,
+  SMOKE_SANDBOX_ROOT_DISPLAY
 } from '../constants';
 
 export interface SmokeCheck {
@@ -491,6 +501,186 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Issue #359: the `sandbox-path` rule — a check that invokes the CLI must
+// create its directory sandbox under `$HOME/.cache/agyloop/smoke-*`, the only
+// root the state guard recognises. A purely textual mirror of the guard's
+// semantics; no filesystem probing (SmokeProtocol stays I/O-free).
+// ---------------------------------------------------------------------------
+
+/**
+ * A codeloop CLI invocation, anchored at the command token: bare
+ * (`codeloop transition`), `node <…>/bin/codeloop.js …`, `npx codeloop …`, the
+ * deprecated `agyloop` launcher, each optionally prefixed `env [-u AGY_SUBAGENT] …`.
+ *
+ * Quote-precedence (issue #359, I4) is built into the boundary: a command
+ * token immediately preceded by a quote character — `"node bin/codeloop.js
+ * transition …"` inside a `node -e '…'` fixture-seeding script — is prose, not
+ * an invocation, so a check that seeds plan TEXT never trips the rule it tests.
+ * Quote characters are deliberately absent from the boundary class.
+ */
+const CLI_INVOCATION_PATTERN =
+  /(?:^|[\s;&|(=])(?:env\s+(?:(?:-\S+|[\w=]+)\s+)*|npx\s+)?(?:node\s+\S*bin\/(?:codeloop|agyloop)\.js|(?:codeloop|agyloop)(?![\w-]))/;
+
+/** The guard's recognised root in its three anchor spellings (I5, textual). */
+const RECOGNISED_SANDBOX_PREFIXES: readonly string[] = Object.freeze([
+  `${SMOKE_SANDBOX_ROOT_DISPLAY}/${SMOKE_SANDBOX_DIR_PREFIX}`,
+  `${SMOKE_SANDBOX_ROOT_DISPLAY.replace(SMOKE_SANDBOX_HOME_ANCHOR, '${HOME}')}/${SMOKE_SANDBOX_DIR_PREFIX}`,
+  `${SMOKE_SANDBOX_ROOT_DISPLAY.replace(SMOKE_SANDBOX_HOME_ANCHOR, '~')}/${SMOKE_SANDBOX_DIR_PREFIX}`
+]);
+
+/** The temp roots the guard refuses: `/tmp`, `/var/tmp`, `/dev/shm`, `$TMPDIR`. */
+const TEMP_ROOT_PATTERN = /(?:^|\/)(?:tmp|var\/tmp|dev\/shm)(?:\/|$)|\$\{?TMPDIR\}?/;
+const SMOKE_TOKEN = 'smoke';
+const MKTEMP_TOKEN = /\bmktemp\b/;
+/**
+ * The `mktemp` DIRECTORY mode: `-d`, clustered (`-dt`), parenthesised
+ * (`$(mktemp -d)`), or `--tmpdir[=DIR]`. A bare `mktemp` creates a FILE and is
+ * never a sandbox (issue #359, I3.2).
+ */
+const MKTEMP_DIR_FLAG = /(?:^|[\s)])-[a-zA-Z]*d[a-zA-Z]*(?=[\s)'`"]|$)|--tmpdir(?:=\S*)?/;
+/** An assignment whose value is path-shaped (issue #359, §2.3.3). */
+const PATH_SHAPED_VALUE = /^(?:\/|~|\$HOME|\$\{HOME\}|\$TMPDIR|\$\{TMPDIR\})/;
+const ASSIGNMENT_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+const QUOTE_CHARS = /["'`]/g;
+
+/** One directory-sandbox creation found on a check-body line. */
+interface SandboxCandidate {
+  /** 0-based offset of the offending line within the fence body. */
+  readonly offset: number;
+  /** The created path as written (quotes stripped); the line itself for an implicit temp root. */
+  readonly createdPath: string;
+  /** True when `mktemp -d` names no root: the OS temp dir is implied (I3.3). */
+  readonly implicitTemp: boolean;
+}
+
+function stripQuotes(text: string): string {
+  return text.replace(QUOTE_CHARS, '');
+}
+
+function splitShellTokens(line: string): string[] {
+  return line.trim().split(/\s+/).filter((token) => token.length > 0);
+}
+
+/** True when a non-comment line invokes the codeloop CLI as a command (I3.1). */
+function invokesCodeloopCli(line: string): boolean {
+  if (isCommentLine(line)) return false;
+  return CLI_INVOCATION_PATTERN.test(line);
+}
+
+/** `mktemp -d …` creations: named `-p`/`--tmpdir` root, template, or bare (§2.3.3). */
+function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
+  const tokens = splitShellTokens(line);
+  const start = tokens.findIndex((token) => MKTEMP_TOKEN.test(token));
+  if (start === -1) return [];
+  const command = tokens.slice(start).join(' ');
+  if (!MKTEMP_DIR_FLAG.test(command)) return [];
+
+  let root: string | null = null;
+  const templates: string[] = [];
+  for (let index = start + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === '-p') {
+      const value = tokens[index + 1];
+      if (value !== undefined) {
+        root = stripQuotes(value);
+        index++;
+      }
+      continue;
+    }
+    if (token === '--tmpdir') {
+      root = '$TMPDIR';
+      continue;
+    }
+    if (token.startsWith('--tmpdir=')) {
+      root = stripQuotes(token.slice('--tmpdir='.length));
+      continue;
+    }
+    if (token.startsWith('-') && token !== '-') continue;
+    templates.push(stripQuotes(token));
+  }
+
+  if (root !== null) {
+    if (templates.length === 0) {
+      return [{ offset, createdPath: root, implicitTemp: false }];
+    }
+    return templates.map((template) => ({
+      offset,
+      // A relative template lands under the named root; an absolute one is
+      // itself the created path.
+      createdPath: template.startsWith('/') ? template : `${root}/${template}`,
+      implicitTemp: false
+    }));
+  }
+  if (templates.length === 0) {
+    // `mktemp -d` with no path at all: the implicit OS temp dir (I3.3).
+    return [{ offset, createdPath: line.trim(), implicitTemp: true }];
+  }
+  return templates.map((template) => ({ offset, createdPath: template, implicitTemp: true }));
+}
+
+/** The first non-flag argument of a `mkdir [-p] …` line. */
+function mkdirCandidate(line: string, offset: number): SandboxCandidate | null {
+  const tokens = splitShellTokens(line);
+  const start = tokens.findIndex((token) => token === 'mkdir');
+  if (start === -1) return null;
+  for (let index = start + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === '-m' || token === '--mode') {
+      index++;
+      continue;
+    }
+    if (token.startsWith('-')) continue;
+    return { offset, createdPath: stripQuotes(token), implicitTemp: false };
+  }
+  return null;
+}
+
+/** The explicit target directory of `git clone <url> <dir>` — never the 2-arg form. */
+function gitCloneCandidate(line: string, offset: number): SandboxCandidate | null {
+  const tokens = splitShellTokens(line);
+  const cloneIndex = tokens.findIndex(
+    (token, index) => token === 'clone' && tokens[index - 1] === 'git'
+  );
+  if (cloneIndex === -1) return null;
+  const positional = tokens.slice(cloneIndex + 1).filter((token) => !token.startsWith('-'));
+  const target = positional[1];
+  if (target === undefined) return null;
+  return { offset, createdPath: stripQuotes(target), implicitTemp: false };
+}
+
+/** A path-shaped assignment (`SBX=/tmp/…`, `SBX="$HOME/.cache/agyloop/smoke-x"`). */
+function assignmentCandidate(line: string, offset: number): SandboxCandidate | null {
+  const match = ASSIGNMENT_PATTERN.exec(line);
+  if (!match) return null;
+  const value = stripQuotes(match[2].trim());
+  if (!PATH_SHAPED_VALUE.test(value)) return null;
+  return { offset, createdPath: value, implicitTemp: false };
+}
+
+/** Every sandbox-creation candidate of one check body (§2.3.3). */
+function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
+  const candidates: SandboxCandidate[] = [];
+  bodyLines.forEach((line, offset) => {
+    if (isCommentLine(line)) return;
+    candidates.push(...mktempCandidates(line, offset));
+    for (const candidate of [
+      mkdirCandidate(line, offset),
+      gitCloneCandidate(line, offset),
+      assignmentCandidate(line, offset)
+    ]) {
+      if (candidate !== null) candidates.push(candidate);
+    }
+  });
+  return candidates;
+}
+
+/** True when the path is textually the guard's own sandbox (I5, no I/O). */
+function isRecognisedSandboxPath(text: string): boolean {
+  const path = stripQuotes(text);
+  return RECOGNISED_SANDBOX_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 function collectFindings(
   checkIndex: number,
   label: string,
@@ -539,4 +729,30 @@ function collectFindings(
       });
     }
   });
+
+  // Issue #359, §2.3: a check that invokes the CLI must sandbox where the
+  // state guard recognises it. One finding per offending line (I2: the
+  // analysis never taints a sibling check that does not invoke the CLI).
+  if (bodyLines.some((line) => invokesCodeloopCli(line))) {
+    const flaggedOffsets = new Set<number>();
+    for (const candidate of sandboxCandidates(bodyLines)) {
+      if (flaggedOffsets.has(candidate.offset)) continue;
+      if (isRecognisedSandboxPath(candidate.createdPath)) continue;
+      const offending =
+        candidate.implicitTemp ||
+        TEMP_ROOT_PATTERN.test(candidate.createdPath) ||
+        candidate.createdPath.includes(SMOKE_TOKEN);
+      if (!offending) continue;
+      flaggedOffsets.add(candidate.offset);
+      // The required path rides in `excerpt` AFTER truncation, so the 160-char
+      // cap can never cut it.
+      findings.push({
+        rule: SMOKE_RULE_SANDBOX_PATH,
+        checkIndex,
+        label,
+        line: fenceStartLine + 1 + candidate.offset,
+        excerpt: `${truncate(bodyLines[candidate.offset])} — required sandbox: ${SMOKE_SANDBOX_RECOMMENDED_PATH}`
+      });
+    }
+  }
 }
