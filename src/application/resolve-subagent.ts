@@ -75,6 +75,7 @@ import {
   MSG_GATE_LINT_MISSING,
   HEADING_QUALITY_GATE_TARGETS,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+  NOTE_SMOKE_BLOCK_SANDBOX_RULE,
   STATUS_PASSED,
   SMOKE_PROTOCOL_NOT_DECLARED,
   SMOKE_PROTOCOL_VOCABULARY,
@@ -786,7 +787,7 @@ export class ResolveSubagentUseCase {
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
-    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons).\n\n`;
+    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 

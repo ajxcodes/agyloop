@@ -693,6 +693,19 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     assert.ok(prompt.includes('Strict Container-Only Guardrail'));
     assert.ok(prompt.includes('Use podman (`podman run`) or `act`'));
   });
+
+  test('RS-G6: the planner prompt names the sandbox path for AUTHORED smoke blocks (#359)', () => {
+    const prompt = useCase().buildPlanningTaskPrompt({
+      issueNumber: 359,
+      planDir: 'artifacts/plans/359/',
+      planPath: 'artifacts/plans/359/implementation_plan.md'
+    });
+    // The requirement lives in the TASK prompt (dispatch payload), not only in
+    // the self-directed system-prompt mandate.
+    assert.ok(prompt.includes('.cache/agyloop/smoke-'), 'the required sandbox path must be named');
+    assert.ok(prompt.includes('mktemp'), 'the refusal rule must name mktemp');
+    assert.ok(prompt.includes('rejected at dispatch'), 'the consequence must be stated');
+  });
 });
 
 describe('Discovery evidence contract (issue #306)', () => {
