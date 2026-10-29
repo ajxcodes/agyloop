@@ -55,6 +55,12 @@ export interface OpenCodeInstallOptions {
   readonly configDir?: string;
   /** Set `false` to install the skill without touching any OpenCode config. Defaults to `true`. */
   readonly registerCommand?: boolean;
+  /**
+   * Simulate (#339 item 4): resolve both target paths read-only and write
+   * NOTHING. The refusal gate used to claim this command "does not modify
+   * state" — it writes the skill asset and the `/codeloop` command entry.
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface OpenCodeCommandPayload {
@@ -513,6 +519,37 @@ export function installOpenCodeIntegration(
 
   const skillDir = path.join(skillsDir, OPENCODE_SKILL_NAME);
   const installedPath = path.join(skillDir, OPENCODE_SKILL_FILENAME);
+
+  // #339 (item 4): the dry run stops HERE — every write below (`rmSync`,
+  // `mkdirSync`, the symlink/copy, the legacy-residue cleanup and the command
+  // registration) is skipped. Both target paths are resolved with the SAME
+  // helpers the real install uses, so the preview cannot lie about where the
+  // files would land. `ensureOpenCodeCommandRegistration`'s existing-config
+  // discovery is read-only, so it is mirrored inline.
+  if (options.dryRun) {
+    const configPath =
+      OPENCODE_CONFIG_FILENAMES.map((name) => path.join(configDir, name)).find((candidate) =>
+        fs.existsSync(candidate)
+      ) ?? path.join(configDir, OPENCODE_CONFIG_CREATE_FILENAME);
+    // Same expression the real install uses to decide symlink vs copy (#AC3).
+    const wouldSymlink = !(method === 'none' || isInsideWorktreesDir(path.resolve(baseDir)));
+    return {
+      success: true,
+      installedPath,
+      sourcePath,
+      // A prediction of what the real run would create; nothing was created.
+      isSymlink: wouldSymlink,
+      skillsDir,
+      canonicalBaseDir: baseDir,
+      canonicalizationMethod: method,
+      commandRegistered: false,
+      configPath,
+      degradedReason: null,
+      warnings: [
+        `[dry-run] Nothing was written. The real install would ${wouldSymlink ? 'symlink' : 'copy'} the skill asset and register the /${OPENCODE_COMMAND_NAME} command.`
+      ]
+    };
+  }
 
   // `force` finally means something: purge the whole skill directory, stale siblings included.
   if (options.force) {

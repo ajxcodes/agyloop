@@ -192,10 +192,14 @@ new file mode 100644
       assert.strictEqual(result.commitMessage.scope, 'commit');
       assert.strictEqual(result.commitMessage.issueNumber, 30);
       assert.ok(result.commitMessage.description.includes('implement Interactive Conventional Commit Drafter'));
+      // #339 (AC-4.4): the subject is bounded at 72 chars (word-boundary cut).
+      // The old pin expected the full 89-char title — the unbounded subject
+      // this issue removes; `description` still carries the complete text.
       assert.strictEqual(
         result.commitMessage.toSingleLine(),
-        'feat(commit): implement Interactive Conventional Commit Drafter & Human Approval Gate (#30)'
+        'feat(commit): implement Interactive Conventional Commit Drafter & (#30)'
       );
+      assert.ok(result.commitMessage.toSingleLine().length <= 72);
     });
 
     test('accepts user message override', async () => {

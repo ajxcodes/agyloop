@@ -505,3 +505,69 @@ describe('halt --dry-run (#248)', () => {
     assert.strictEqual(after, before);
   });
 });
+
+// #339 (item 2 / T2.5): `plan --dry-run` had NO case here — the command whose
+// dry run claimed "State is checkpointed" was unpinned. Park and non-park
+// paths both leave the checkpoint tree AND the artifacts byte-identical.
+describe('plan --dry-run (#339 AC-1.2, T2.5)', () => {
+  const PLAN_ISSUE = 33925;
+
+  function combinedHash(dir: string): string {
+    return `${treeHash(path.join(dir, '.agyloop'))}|${treeHash(path.join(dir, 'artifacts'))}`;
+  }
+
+  function seedPlanTree(dir: string, overrides: Record<string, unknown>): void {
+    initGitWorkspace(dir);
+    const planDir = path.join(dir, 'artifacts', 'plans', `${PLAN_ISSUE}-smoke`);
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planDir, 'implementation_plan.md'),
+      '# [Implementation] - dry run contract\n\n## 3. Implementation Steps\n- [ ] Step 1: hold the line\n',
+      'utf8'
+    );
+    fs.writeFileSync(path.join(planDir, 'CodeLoop Summary.md'), 'summary\n', 'utf8');
+    seedTask(dir, PLAN_ISSUE, { planDir, ...overrides });
+  }
+
+  test('a park path (DISCOVERY checkpoint) writes nothing', async () => {
+    let before = '';
+    let after = '';
+    const result = await runCliInSandbox(
+      ['plan', '--issue', String(PLAN_ISSUE), '--dry-run'],
+      (dir) => {
+        seedPlanTree(dir, { currentStage: 'DISCOVERY' });
+        before = combinedHash(dir);
+      },
+      (dir) => {
+        after = combinedHash(dir);
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.match(result.stdout, /\[DRY RUN\]/);
+    assert.match(result.stdout, /No checkpoint was written/);
+    assert.ok(!result.stdout.includes('State is checkpointed'), result.stdout);
+    assert.strictEqual(after, before, 'a dry-run park must write NOTHING');
+  });
+
+  test('a non-park path (PLAN checkpoint) writes nothing', async () => {
+    let before = '';
+    let after = '';
+    const result = await runCliInSandbox(
+      ['plan', '--issue', String(PLAN_ISSUE), '--dry-run'],
+      (dir) => {
+        seedPlanTree(dir, { currentStage: 'PLAN' });
+        before = combinedHash(dir);
+      },
+      (dir) => {
+        after = combinedHash(dir);
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.match(result.stdout, /\[DRY RUN\]/);
+    assert.match(result.stdout, /No checkpoint was written/);
+    assert.ok(!result.stdout.includes('Pipeline advanced to'), result.stdout);
+    assert.strictEqual(after, before, 'a dry run must write NOTHING');
+  });
+});

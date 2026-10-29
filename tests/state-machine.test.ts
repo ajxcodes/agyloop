@@ -508,3 +508,67 @@ describe('Approved plan digest state (issue #298)', () => {
     assert.strictEqual(sm.approvedPlanPath, null);
   });
 });
+
+// #339 (item 11 / T10.1 / AC-3.5): `mode: plan` describes the PLAN phase. The
+// checkpoint FIELD flips to `standard` on the first transition past APPROVAL —
+// `status` prints the raw field, so the field and the rendered cell can never
+// disagree — while a plan-only run halted at APPROVAL keeps `plan`.
+describe('plan mode clears on the first transition out of the plan phase (#339 item 11)', () => {
+  test('a walk ending at APPROVAL keeps mode `plan`', () => {
+    const sm = StateMachine.createInitial({ mode: 'plan' as any });
+    assert.strictEqual(sm.mode, 'plan');
+
+    sm.transition(STAGE_DISCOVERY);
+    assert.strictEqual(sm.mode, 'plan', 'DISCOVERY is inside the plan phase');
+
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.mode, 'plan', 'PLAN is inside the plan phase');
+
+    sm.transition(STAGE_APPROVAL);
+    assert.strictEqual(sm.mode, 'plan', 'a plan-only run halted at APPROVAL is still plan');
+    assert.strictEqual(sm.toSnapshot().mode, 'plan', 'the snapshot mirrors the field');
+  });
+
+  test('PLAN -> APPROVAL -> IMPLEMENT renders standard in the snapshot', () => {
+    const sm = StateMachine.createInitial({ mode: 'plan' as any });
+    sm.transition(STAGE_PLAN); // INITIALIZED -> PLAN is legal; phase membership is what matters
+    sm.transition(STAGE_APPROVAL);
+    assert.strictEqual(sm.mode, 'plan');
+
+    sm.transition(STAGE_IMPLEMENT);
+    assert.strictEqual(sm.mode, 'standard', 'the first transition past APPROVAL clears the field');
+    assert.strictEqual(sm.toSnapshot().mode, 'standard', 'the snapshot mirrors the field');
+  });
+
+  test('COMPLETED reached from plan-mode history carries `standard`', () => {
+    const sm = StateMachine.createInitial({ mode: 'plan' as any });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+    sm.transition(STAGE_COMPLETED);
+
+    assert.strictEqual(sm.currentStage, STAGE_COMPLETED);
+    assert.strictEqual(sm.mode, 'standard');
+    assert.strictEqual(sm.toSnapshot().mode, 'standard');
+  });
+
+  test('other modes are untouched: standard stays standard, and setMode is unaffected', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' as any });
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    assert.strictEqual(sm.mode, 'standard');
+
+    // An operator can still set a mode explicitly; only MODE_PLAN self-clears.
+    const plan = StateMachine.createInitial({ mode: 'plan' as any });
+    plan.transition(STAGE_PLAN);
+    plan.transition(STAGE_APPROVAL);
+    plan.transition(STAGE_IMPLEMENT);
+    plan.setMode('plan' as any);
+    assert.strictEqual(plan.mode, 'plan', 'setMode must not be second-guessed here');
+  });
+});

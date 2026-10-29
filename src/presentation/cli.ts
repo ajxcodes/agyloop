@@ -207,6 +207,7 @@ import {
   FileGateReportRepository
 } from '../infrastructure';
 import { installOpenCodeIntegration } from './opencode-setup';
+import { ColorStream, STAGE_COLOR_CODES, paint } from './color-policy';
 import {
   validateCapability,
   validatePlanInputScope,
@@ -607,7 +608,7 @@ Operational Flags:
       --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
       --plan-path <f> Supply an existing plan file the lifecycle executes instead of scaffolding a new plan (plan, implement, yolo)
       --plan-dir <d>  Supply an existing plan directory (plan, implement, yolo)
-      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open at DISCOVERY. Plain 'next' never advances a stage except the documented TRIAGE exit (a MERGED/CLOSED PR ends the gate as COMPLETED); otherwise it writes only the context fields named above.
+      --restart      Explicit opt-in: on a COMPLETED checkpoint, reset it and re-open — at TRIAGE when the pull request carries undispositioned review feedback (that feedback wins over DISCOVERY), otherwise at DISCOVERY. Plain 'next' never advances a stage except the documented TRIAGE exit (a MERGED/CLOSED PR ends the gate as COMPLETED); otherwise it writes only the context fields named above.
       --skip-discovery  Explicit opt-in: bypass the DISCOVERY RCA park (auditable in state history).
   -h, --help         Show this help message and exit
   -v, --version      Show version information and exit
@@ -641,7 +642,7 @@ Examples:
   codeloop --yolo --commit-after         Equivalent hands-off execution using flag syntax
   codeloop init                          Detect project and scaffold .codeloop/config.json
   codeloop init --dry-run --json         Preview generated config without writing anything
-  codeloop worktree list                 List all active isolated git worktrees
+  codeloop worktree list                 List isolated git worktrees and their status (active | prunable)
   codeloop worktree prune                Prune dangling worktrees and lock metadata
 `);
 }
@@ -1030,22 +1031,21 @@ export function formatVerdictInputMissing(flag: string, hint: string): string {
   return NOTE_VERDICT_INPUT_MISSING.replace('{flag}', flag).replace('{hint}', hint);
 }
 
-export function formatStageBadge(stage: string): string {
-  const colors: Record<string, string> = {
-    INITIALIZED: '\x1b[36m', // Cyan
-    DISCOVERY: '\x1b[34m',   // Blue
-    PLAN: '\x1b[35m',        // Magenta
-    APPROVAL: '\x1b[33m',    // Yellow
-    IMPLEMENT: '\x1b[32m',   // Green
-    QUALITY_GATE: '\x1b[36m',// Cyan
-    REVIEW: '\x1b[34m',      // Blue
-    COMMIT: '\x1b[32m',      // Green
-    COMPLETED: '\x1b[32m\x1b[1m', // Bold Green
-    TRIAGE: '\x1b[33m\x1b[1m'     // Bold Yellow
-  };
-  const reset = '\x1b[0m';
-  const color = colors[stage] || '';
-  return `${color}[${stage}]${reset}`;
+/**
+ * The stage badge, coloured through the ONE colour policy (#339 items 8/9).
+ *
+ * `opts` exists so tests (and only tests) can inject a stream/env pair; the
+ * production call sites pass nothing and get `(process.stdout, process.env)` —
+ * piped output, `NO_COLOR` and `TERM=dumb` therefore all render plain, and a
+ * TTY-attached render keeps its colour. When colour is off NO escape AND NO
+ * reset byte is emitted (the old code always appended the reset sequence).
+ */
+export function formatStageBadge(
+  stage: string,
+  opts?: { readonly stream?: ColorStream; readonly env?: NodeJS.ProcessEnv }
+): string {
+  const code = STAGE_COLOR_CODES[stage];
+  return code ? paint(code, `[${stage}]`, opts?.stream, opts?.env) : `[${stage}]`;
 }
 
 /**
@@ -1571,7 +1571,10 @@ function printPlanScaffoldSummary(info: {
     console.log(`  ✓ Specification (implementation): ${path.basename(info.mirrorPath)}`);
   } else {
     console.log(`  ✓ Specification (implementation): ${path.basename(info.planPath)}`);
-    if (info.mirrorPath) {
+    // #339 (audit extra E4): one path must be named once. The adoption path
+    // hands back `implementation_plan.md` for BOTH `planPath` and
+    // `mirrorPath`, and printing it under two labels read as two files.
+    if (info.mirrorPath && path.basename(info.mirrorPath) !== path.basename(info.planPath)) {
       console.log(`  ✓ Canonical Mirror  : ${path.basename(info.mirrorPath)}`);
     }
   }
@@ -2694,19 +2697,23 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           includeExternal: options.all
         });
         const list = res.data || [];
-        console.log('\n=== CodeLoop: Active Isolated Git Worktrees ===');
+        // #339 (item 5): the header used to claim every row was "Active" while
+        // git itself reported the registration `prunable`, and the table had no
+        // Status column to tell the two apart.
+        console.log('\n=== CodeLoop: Isolated Git Worktrees ===');
         if (list.length === 0) {
           console.log('No isolated worktrees found.\n');
         } else {
-          console.log('--------------------------------------------------------------------------------');
-          console.log('Task ID      Branch                         Worktree Directory');
-          console.log('--------------------------------------------------------------------------------');
+          console.log('---------------------------------------------------------------------------------------------');
+          console.log('Task ID      Branch                         Status    Worktree Directory');
+          console.log('---------------------------------------------------------------------------------------------');
           for (const wt of list) {
             const idPad = wt.taskId.padEnd(12);
             const bPad = wt.branch.padEnd(30);
-            console.log(`${idPad} ${bPad} ${wt.worktreePath}`);
+            const status = wt.prunable ? 'prunable' : 'active';
+            console.log(`${idPad} ${bPad} ${status.padEnd(8)} ${wt.worktreePath}`);
           }
-          console.log('--------------------------------------------------------------------------------\n');
+          console.log('---------------------------------------------------------------------------------------------\n');
         }
         return EXIT_CODE_SUCCESS;
       }
@@ -3547,10 +3554,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           workspaceDir: process.cwd()
         });
 
-        // Issue #315 (AC-30 / #294): ANSI is for a terminal only. A piped
-        // report (CI, `| less`, a log file) must stay plain text.
-        const paint = (code: string, text: string): string =>
-          process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text;
+        // Issue #315 (AC-30) / #339 (items 8/9): ANSI is for a terminal only.
+        // The local `isTTY`-only closure is gone — `paint` is now the ONE
+        // colour policy (`color-policy.ts`), so this renderer also honours
+        // NO_COLOR and TERM=dumb like every other one.
 
         // Issue #315 (AC-30): name the RANGE that was validated, and the exact
         // ref it was computed against, before any metrics.
@@ -3618,9 +3625,22 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (options.dryRun) {
-          console.log(
-            `\n[DRY RUN] Would scaffold artifacts/plans/ for: "${result.planResult?.planTitle}" (type: ${result.planResult?.planType})`
-          );
+          // #339 (item 2 + audit extra E1): the preview mirrors the REAL run's
+          // branch — reuse when the real run adopts an existing directory,
+          // scaffold only when it would create one, the supplied plan when
+          // `--plan-path` is given, and NOTHING when the run would park (a park
+          // scaffolds nothing). The title is the resolved one the real run
+          // would scaffold with, never a placeholder guess.
+          const preview = result.planResult?.dryRunPreview;
+          if (preview?.action === 'supplied') {
+            console.log(`\n[DRY RUN] Would use supplied plan: ${preview.dir}`);
+          } else if (preview?.action === 'reuse') {
+            console.log(`\n[DRY RUN] Would reuse existing plan directory: ${preview.dir}`);
+          } else if (preview?.action === 'scaffold') {
+            console.log(
+              `\n[DRY RUN] Would scaffold artifacts/plans/ for: "${preview.title}" (type: ${preview.type})`
+            );
+          }
         } else {
           const suppliedPlanPath = result.planResult?.suppliedPlanPath ?? null;
           if (suppliedPlanPath) {
@@ -3663,6 +3683,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           );
         } else if (
           result.planResult?.discoveryDef &&
+          // #339 (item 1): `--skip-discovery` exists to SKIP Discovery — the
+          // block must never name the Discovery subagent for a run that
+          // deliberately performed none. It cannot suppress a park attribution:
+          // the skip flag forces `ADVANCE_TO_PLAN`, so a park never coexists
+          // with it (and a populated-report advance keeps its attribution).
+          options.skipDiscovery !== true &&
           (previousStage === STAGE_DISCOVERY ||
             result.planResult.discoveryReentry === 'PARK_AT_DISCOVERY')
         ) {
@@ -3675,7 +3701,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`Model Tier   : ${d.model}\n`);
         }
 
-        if (result.pausedAtGate === GATE_APPROVAL) {
+        // #339 (item 2): the dry-run leg FIRST. It used to sit behind the park
+        // leg, so a dry-run park printed the real park note ("State is
+        // checkpointed") while writing nothing and never reached the
+        // disclaimer. On a dry run the disclaimer ALWAYS prints; park/approval
+        // outcomes follow as `Would …` statements only, and `result.message`
+        // (the real park note) is never printed.
+        if (options.dryRun) {
+          // Issue #315 (Defect F, AC-5): a dry run writes no checkpoint, so it
+          // must never claim an advance. The stage on disk is the stage it
+          // reports; a fresh install with no checkpoint has none.
+          const unchanged = previousStage
+            ? `still ${formatStageBadge(previousStage)}`
+            : 'no checkpoint exists yet';
+          console.log(`\n[DRY RUN] Stage unchanged: ${unchanged}. No checkpoint was written.`);
+          if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
+            console.log(
+              '[DRY RUN] Would park at DISCOVERY for RCA: populate the discovery report (or pass --skip-discovery), then re-run.'
+            );
+          } else if (result.pausedAtGate === GATE_APPROVAL) {
+            console.log(`[DRY RUN] Would pause at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
+          }
+        } else if (result.pausedAtGate === GATE_APPROVAL) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
           console.log(`Review artifacts in artifacts/plans/ and run 'codeloop implement' to continue.\n`);
         } else if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
@@ -3687,14 +3734,6 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // `RunLifecycleUseCase.executePlanMode` already builds the message;
           // the CLI was simply dropping it on every mode but YOLO.
           console.log(`\n🛑 ${result.message ?? withRecordedPauseHint(NOTE_DISCOVERY_PARK_AWAITING_RCA, result.pausedAtGate)}\n`);
-        } else if (options.dryRun) {
-          // Issue #315 (Defect F, AC-5): a dry run writes no checkpoint, so it
-          // must never claim an advance. The stage on disk is the stage it
-          // reports; a fresh install with no checkpoint has none.
-          const unchanged = previousStage
-            ? `still ${formatStageBadge(previousStage)}`
-            : 'no checkpoint exists yet';
-          console.log(`\n[DRY RUN] Stage unchanged: ${unchanged}. No checkpoint was written.`);
         } else if (previousStage !== null && previousStage === result.currentStage) {
           // Issue #315 (AC-5): the same success line fired at a stage the run
           // did not leave (e.g. `plan` at QUALITY_GATE named QUALITY_GATE as an
@@ -3824,7 +3863,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         });
 
         console.log(`\nProposed Conventional Commit:`);
-        console.log(`  \x1b[32m${draftResult.commitMessage.toSingleLine()}\x1b[0m`);
+        console.log(`  ${paint('32', draftResult.commitMessage.toSingleLine())}`);
         if (draftResult.commitMessage.body) {
           console.log(`\nBody:\n${draftResult.commitMessage.body}`);
         }
@@ -3884,7 +3923,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         });
 
         if (execResult.confirmed && execResult.success) {
-          console.log(`\n✓ Successfully committed: \x1b[1m${execResult.commitHash}\x1b[0m`);
+          console.log(`\n✓ Successfully committed: ${paint('1', String(execResult.commitHash))}`);
           // Issue #315 (AC-24): a terminal stage is not the same claim as
           // delivery. When the checkpoint recorded no PR, say so on the advance
           // line instead of letting COMPLETED imply the work shipped.
@@ -4183,7 +4222,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
-          console.log(`\n✓ 100% Unattended Loop Finished: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
+          console.log(`\n✓ 100% Unattended Loop Finished: ${paint('1', String(result.executeCommitResult.commitHash))}`);
           console.log(`✓ Pipeline Stage: ${formatStageBadge(result.currentStage)}.`);
           if (result.executeCommitResult.fallbackUsed) {
             console.log(`✓ Remote push succeeded via HTTPS token fallback.`);
@@ -4239,6 +4278,20 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       const subcmd = options.opencodeSubcommand || 'install';
       if (subcmd === 'install') {
         try {
+          // #339 (item 4): this command WRITES two files (the skill asset and
+          // the `/codeloop` command registration), so `--dry-run` must simulate
+          // instead of refusing it as "read-only". The preview resolves both
+          // target paths through the same helpers the real install uses and
+          // writes nothing.
+          if (options.dryRun) {
+            const preview = installOpenCodeIntegration({ force: options.force, dryRun: true });
+            console.log('\n[dry-run] OpenCode integration install simulated — nothing was written.');
+            if (preview.configPath) {
+              console.log(`[dry-run] Would write: ${preview.configPath}`);
+            }
+            console.log(`[dry-run] Would write: ${preview.installedPath}`);
+            return EXIT_CODE_SUCCESS;
+          }
           const res = installOpenCodeIntegration({ force: options.force });
           console.log('\n✓ OpenCode Integration Assets Installed:');
           console.log(`  Source   : ${res.sourcePath}`);
@@ -4364,7 +4417,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         if (result.executeCommitResult && result.executeCommitResult.success) {
-          console.log(`\n✓ Successfully committed: \x1b[1m${result.executeCommitResult.commitHash}\x1b[0m`);
+          console.log(`\n✓ Successfully committed: ${paint('1', String(result.executeCommitResult.commitHash))}`);
           console.log(`✓ Pipeline advanced to ${formatStageBadge(result.currentStage)}.`);
           if (result.executeCommitResult.fallbackUsed) {
             console.log(`✓ Remote push succeeded via HTTPS token fallback.`);

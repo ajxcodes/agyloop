@@ -274,11 +274,22 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
 
-    // Verify summary log records discovery completed and plan review pending
+    // Verify summary log records discovery status and plan review pending.
+    // #339 (audit extra E6 / T13.2): a fresh run whose RCA never ran (no
+    // populated report, discoveryDispatchCount 0) must record SKIPPED — the old
+    // pin asserted COMPLETED for work that never happened.
     assert.ok(
       planGenerator.summaryUpdates.some(
-        (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY && u.updateData.status === SUMMARY_STATUS_COMPLETED
-      )
+        (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY && u.updateData.status === SUMMARY_STATUS_SKIPPED
+      ),
+      'the Discovery row must be SKIPPED when no RCA ran'
+    );
+    assert.ok(
+      !planGenerator.summaryUpdates.some(
+        (u: any) =>
+          u.updateData.stage === SUMMARY_STAGE_DISCOVERY && u.updateData.status === SUMMARY_STATUS_COMPLETED
+      ),
+      'no Discovery row may claim COMPLETED for an RCA that never ran'
     );
     assert.ok(
       planGenerator.summaryUpdates.some(
@@ -386,6 +397,9 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
 
+    // T13.3 (#339 AC-5.2 negative control): the populated-report DISCOVERY
+    // re-entry still records COMPLETED — evidence is inspected on that path
+    // (`checkedPaths` is non-empty), so no truthful row is ever downgraded.
     // Verify summary log recorded discovery completed and plan review pending
     assert.ok(
       planGenerator.summaryUpdates.some(
@@ -1444,5 +1458,111 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
       'the reopened checkpoint keeps its COMPLETED history'
     );
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+  });
+});
+
+// #339 (audit extra E6 / T13.1 / AC-5.2): the default plan path records the
+// Discovery summary row for an RCA that never ran. COMPLETED iff a populated
+// report exists or a dispatch was recorded; otherwise SKIPPED — and a row that
+// never ran attributes `-`, never a subagent/model pair.
+describe('Discovery summary row never claims a COMPLETED RCA that never ran (#339 E6)', () => {
+  test('T13.1: a fresh MODE_PLAN bug run records SKIPPED with `-` attribution and dispatchCount 0', async () => {
+    const stateRepo = new MockStateRepository();
+    const githubGateway = new MockGitHubGateway();
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+    const result = await useCase.execute({
+      issue: 41,
+      title: 'Fix crash on login screen',
+      type: 'discovery',
+      mode: MODE_PLAN
+    });
+
+    // The fresh plan path lands at PLAN without ever dispatching discovery.
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.discoveryReportEvidence.populated, false);
+
+    const rows = planGenerator.summaryUpdates.filter(
+      (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY
+    );
+    assert.ok(rows.length > 0, 'the Discovery row must be written');
+    for (const row of rows) {
+      assert.notStrictEqual(
+        row.updateData.status,
+        SUMMARY_STATUS_COMPLETED,
+        `no row may claim COMPLETED for an RCA that never ran: ${JSON.stringify(row.updateData)}`
+      );
+    }
+
+    const row = rows[rows.length - 1];
+    assert.strictEqual(row.updateData.status, SUMMARY_STATUS_SKIPPED);
+    assert.strictEqual(row.updateData.subagent, '-', 'no subagent attribution for work that did not run');
+    assert.strictEqual(row.updateData.model, '-', 'no model attribution for work that did not run');
+    assert.strictEqual(stateRepo.savedSnapshot.discoveryDispatchCount, 0);
+  });
+
+  test('T13.1 control: a populated report on the same path still records COMPLETED', async () => {
+    const stateRepo = new MockStateRepository();
+    const githubGateway = new MockGitHubGateway();
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    // The scaffold's own discovery artifact IS populated (a real RCA ran).
+    planGenerator.resolvedPlan = {
+      planDir: '/fake/plans/41',
+      planPath: '/fake/plans/41/[Discovery] - Fix crash on login screen.md',
+      planFileName: '[Discovery] - Fix crash on login screen.md',
+      summaryPath: '/fake/plans/41/Summary.md'
+    };
+    planGenerator.planDocument = [
+      '# [Discovery] - Fix crash on login screen',
+      '',
+      '## 1. Problem Statement & Symptoms',
+      '- **Observed Behavior:** app crashes when the login button is clicked',
+      '- **Expected Behavior:** the login form renders with a validation error',
+      '- **Affected Components / Paths:** src/login.ts',
+      '',
+      '## 2. Root Cause Analysis (RCA)',
+      '- **Investigation Steps:** read src/login.ts end to end',
+      '- **Identified Failure Mode:** nil dereference of the session resolver',
+      '- **Relevant Code References:** src/login.ts:41',
+      '',
+      '## 3. Reproduction Steps & Verification Protocol',
+      '- **Local Reproduction Command:** npm test -- --grep login',
+      '- **Failing Test Target:** tests/login.test.ts',
+      '',
+      '## 4. Remediation Strategy',
+      '- **Recommended Fix Approach:** guard the resolver result before use',
+      '- **Potential Regressions / Side Effects:** none'
+    ].join('\n');
+
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+    const result = await useCase.execute({
+      issue: 41,
+      title: 'Fix crash on login screen',
+      type: 'discovery',
+      mode: MODE_PLAN
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.discoveryReportEvidence.populated, true);
+    const rows = planGenerator.summaryUpdates.filter(
+      (u: any) => u.updateData.stage === SUMMARY_STAGE_DISCOVERY
+    );
+    assert.ok(
+      rows.some((u: any) => u.updateData.status === SUMMARY_STATUS_COMPLETED),
+      'a populated report must still record COMPLETED'
+    );
   });
 });

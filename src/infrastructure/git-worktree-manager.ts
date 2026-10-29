@@ -1091,12 +1091,18 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const lines = block.split('\n');
       let wtPath = '';
       let branchRef = '';
+      let prunable = false;
 
       for (const line of lines) {
         if (line.startsWith('worktree ')) {
           wtPath = line.substring('worktree '.length).trim();
         } else if (line.startsWith('branch ')) {
           branchRef = line.substring('branch '.length).trim();
+        } else if (line.startsWith('prunable')) {
+          // #339 (item 5): git's own marker for a dead registration. The parser
+          // used to drop it, so `list` called the row "active" while
+          // `git worktree list` said `prunable`.
+          prunable = true;
         }
       }
 
@@ -1121,13 +1127,18 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       const branch = branchRef.replace(/^refs\/heads\//, '') || 'HEAD';
       const taskId = path.basename(normalizedWtPath);
 
+      // `isIsolated` deliberately stays `true`: these descriptors ARE isolated
+      // worktrees (the label defect was "active", not "isolated") and the flag
+      // gates commit teardown and abort — widening it would change behaviour no
+      // AC asks for.
       descriptors.push(
         new WorktreeDescriptor({
           taskId,
           worktreePath: normalizedWtPath,
           branch,
           baseBranch: 'HEAD',
-          isIsolated: true
+          isIsolated: true,
+          prunable
         })
       );
     }
@@ -1142,6 +1153,11 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     const dryRun = options?.dryRun === true;
     const workspace = await this.getRepoRoot(options?.workspaceDir);
     const initialList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
+    // #339 (item 5): captured BEFORE any mutation. One shared predicate — a git
+    // `prunable` registration — now drives BOTH paths. The old dry run diffed
+    // registrations only AFTER the real prune, so a `prunable` row could never
+    // be visible to the prediction until it was already gone: predict 0, remove 1.
+    const prunableRegs = initialList.filter((w) => w.prunable === true);
     if (!dryRun) {
       await this.pruneWorktrees({ workspaceDir: workspace });
     }
@@ -1216,12 +1232,20 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
     }
 
-    if (!dryRun) {
-      await this.pruneWorktrees({ workspaceDir: workspace });
+    if (dryRun) {
+      // The directory/external counters above already counted every directory
+      // the real run would `rmSync`; add the dead registrations the real run's
+      // `git worktree prune` would clear. Parity holds in both audit shapes:
+      // dir gone + `prunable` registration -> 1 and 1; orphan dir only -> 1 and 1.
+      return cleaned + prunableRegs.length;
     }
+    await this.pruneWorktrees({ workspaceDir: workspace });
     const finalList = await this.listWorktrees({ workspaceDir: workspace, includeExternal: true });
     const diff = Math.max(0, initialList.length - finalList.length);
-    return Math.max(cleaned, diff);
+    const prunableRemoved = prunableRegs.filter(
+      (w) => !finalList.some((f) => f.worktreePath === w.worktreePath)
+    ).length;
+    return Math.max(cleaned + prunableRemoved, diff);
   }
 
   /**

@@ -247,7 +247,36 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     assert.strictEqual(result.data?.length, 2);
     assert.strictEqual(result.data?.[0].taskId, '1');
     assert.strictEqual(result.data?.[1].taskId, '2');
-    assert.ok(result.message.includes('2 active isolated worktree(s)'));
+    // #339 (item 5 / T5.4): the list message names the prunable count — a
+    // registration git calls `prunable` can no longer be reported as active.
+    assert.ok(result.message.includes('Found 2 isolated worktree(s) (0 prunable).'), result.message);
+  });
+
+  test('list reports the prunable count when a registration is prunable (T5.4)', async () => {
+    const mock = new MockWorktreeManager();
+    mock.mockWorktrees = [
+      new WorktreeDescriptor({
+        taskId: '1',
+        branch: 'task/1-first',
+        worktreePath: '/repo/.worktrees/1',
+        baseBranch: 'main'
+      }),
+      new WorktreeDescriptor({
+        taskId: '2',
+        branch: 'task/2-second',
+        worktreePath: '/repo/.worktrees/2',
+        baseBranch: 'main',
+        prunable: true
+      })
+    ];
+
+    const useCase = new ManageWorktreeUseCase(mock);
+    const result = await useCase.list({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.success, true);
+    assert.ok(result.message.includes('Found 2 isolated worktree(s) (1 prunable).'), result.message);
+    assert.strictEqual(result.data?.[1].prunable, true);
+    assert.strictEqual(result.data?.[0].prunable, false);
   });
 
   test('list forwards includeExternal to manager', async () => {
@@ -524,3 +553,39 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 });
 
+
+// #339 (item 5 / T5.4): the list message names the prunable count (pinned
+// above), and the CLEAN message shapes for 0 / 1 / N are unchanged.
+describe('clean message shapes are unchanged (#339 T5.4)', () => {
+  for (const [count, shape] of [
+    [0, 'Would remove 0 orphaned worktree directories and prune dangling git registrations.'],
+    [1, 'Would remove 1 orphaned worktree directory and prune dangling git registrations.'],
+    [4, 'Would remove 4 orphaned worktree directories and prune dangling git registrations.']
+  ] as const) {
+    test(`dry-run count ${count} keeps its exact wording`, async () => {
+      const mock = new MockWorktreeManager();
+      mock.cleanCount = count;
+      const useCase = new ManageWorktreeUseCase(mock);
+      const result = await useCase.clean({ workspaceDir: '/repo', dryRun: true });
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.message, shape);
+      assert.strictEqual(result.data?.count, count);
+    });
+  }
+
+  for (const [count, shape] of [
+    [0, 'Cleaned 0 orphaned worktree(s) and metadata lock(s).'],
+    [1, 'Cleaned 1 orphaned worktree(s) and metadata lock(s).'],
+    [4, 'Cleaned 4 orphaned worktree(s) and metadata lock(s).']
+  ] as const) {
+    test(`real-run count ${count} keeps its exact wording`, async () => {
+      const mock = new MockWorktreeManager();
+      mock.cleanCount = count;
+      const useCase = new ManageWorktreeUseCase(mock);
+      const result = await useCase.clean({ workspaceDir: '/repo' });
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.message, shape);
+      assert.strictEqual(result.data?.count, count);
+    });
+  }
+});

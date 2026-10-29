@@ -2611,3 +2611,85 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
     );
   });
 });
+
+describe('listWorktrees parses the prunable marker (issue #339 item 5, T5.1 / AC-2.2)', () => {
+  function runList(porcelainOutput: string) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-prunable-'));
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: porcelainOutput, combinedOutput: porcelainOutput });
+        }
+        return makeResult(cmd);
+      }
+    };
+    const manager = new GitWorktreeManager(mockExecutor);
+    return manager.listWorktrees({ workspaceDir: tmpDir }).then((list: any) => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      return list;
+    });
+  }
+
+  test('a porcelain block with a prunable line yields descriptor.prunable === true', async () => {
+    const root = '/repo/root';
+    const porcelain = [
+      `worktree ${root}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${root}/.worktrees/2`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/2',
+      'prunable gitdir file points to non-existent location',
+      ''
+    ].join('\n');
+
+    const list = await runList(porcelain);
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].taskId, '2');
+    assert.strictEqual(list[0].prunable, true);
+    // Conditional key: a prunable descriptor SERIALISES the key…
+    assert.strictEqual(list[0].toJSON().prunable, true);
+    // …and `isIsolated` deliberately stays true (the label defect was
+    // "active", not "isolated" — Step 5 rationale).
+    assert.strictEqual(list[0].isIsolated, true);
+  });
+
+  test('a porcelain block without it yields descriptor.prunable === false (key absent)', async () => {
+    const root = '/repo/root';
+    const porcelain = [
+      `worktree ${root}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${root}/.worktrees/2`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/task/2',
+      ''
+    ].join('\n');
+
+    const list = await runList(porcelain);
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].prunable, false);
+    // Conditional key: an ACTIVE descriptor serialises EXACTLY as before.
+    assert.strictEqual('prunable' in list[0].toJSON(), false);
+  });
+
+  test('a round trip through fromJSON preserves the prunable flag', async () => {
+    const active = new (require('../../dist/domain').WorktreeDescriptor)({
+      taskId: '2',
+      worktreePath: '/repo/root/.worktrees/2',
+      branch: 'task/2',
+      baseBranch: 'main'
+    });
+    const round = require('../../dist/domain').WorktreeDescriptor.fromJSON(active.toJSON());
+    assert.strictEqual(round.prunable, false);
+
+    const prunable = require('../../dist/domain').WorktreeDescriptor.fromJSON({
+      ...active.toJSON(),
+      prunable: true
+    });
+    assert.strictEqual(prunable.prunable, true);
+    assert.strictEqual(prunable.toJSON().prunable, true);
+  });
+});

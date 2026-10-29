@@ -295,8 +295,11 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
       ['prompt', ['prompt', '--dry-run']],
       ['branch-info', ['branch-info', '--dry-run']],
       ['worktree list', ['worktree', 'list', '--dry-run']],
-      ['critique status', ['critique', 'status', '--dry-run']],
-      ['opencode install', ['opencode', 'install', '--dry-run']]
+      ['critique status', ['critique', 'status', '--dry-run']]
+      // `opencode install` was removed here: it WRITES two files, so calling it
+      // read-only was false (#339 item 4). It now SIMULATES — see
+      // `cli-flag-help-contract.test.ts` T4.1-T4.3 (dry run exits 0, prints both
+      // would-write paths, writes nothing; the real run creates both files).
     ];
 
     for (const [label, args] of refusedDryRun) {

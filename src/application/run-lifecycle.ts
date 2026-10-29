@@ -712,7 +712,11 @@ export class RunLifecycleUseCase {
       (evidence?.checkedPaths ?? []).join(', '),
       evidence?.missingEvidence ?? null,
       evidence?.evaluatedPath ?? null,
-      pausedAtGate
+      pausedAtGate,
+      // #339 (item 3): a title-rejected report gets the kind headline naming
+      // the first line the gate saw, never the generic "does not yet contain
+      // RCA evidence" claim its content disproves.
+      evidence?.kindRejection ?? null
     );
   }
 

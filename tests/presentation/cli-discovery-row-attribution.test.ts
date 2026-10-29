@@ -190,6 +190,9 @@ function seedSummary(planDir: string, discoveryStatus: string): string {
 }
 
 describe('Discovery row attribution (issue #284, AC4)', () => {
+  // T13.4 (#339 AC-5.2 regression): the `--skip-discovery` row keeps its
+  // audited shape — `discovery | model | SKIPPED` — unchanged by the E6 rule
+  // (which only rewrites rows for runs that performed no RCA without the flag).
   test('plan --skip-discovery names `discovery` and records SKIPPED (terminal)', async () => {
     const sandbox = makeSandbox();
     try {

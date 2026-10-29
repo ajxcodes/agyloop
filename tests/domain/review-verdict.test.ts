@@ -439,3 +439,29 @@ REMEDIATION_GUIDANCE: Add null check before accessing property
     assert.strictEqual(json.findingsCount, 0);
   });
 });
+
+// #339 (audit extra E5 / T12.3): `findingsCount` is the `--json` surface the
+// AC names — it must reflect the widened escalated set, one count per finding.
+describe('findingsCount mirrors findings on the JSON surface (#339 E5 / T12.3)', () => {
+  test('toJSON().findingsCount equals the findings carried by the verdict', () => {
+    const findings = [
+      new AiReviewFinding({ path: 'src/app.ts', line: 1, severity: 'critical', body: 'a' }),
+      new AiReviewFinding({ path: 'src/app.ts', line: 2, severity: 'warning', body: 'b' }),
+      new AiReviewFinding({ path: 'src/app.ts', line: 3, severity: 'suggestion', body: 'c' }),
+      new AiReviewFinding({ path: 'src/app.ts', line: 4, severity: 'info', body: 'd' })
+    ];
+    const verdict = new ReviewVerdict({
+      status: VERDICT_CHANGES_REQUESTED,
+      summary: 'critique escalated',
+      confidenceLevel: 'High',
+      findings
+    });
+
+    assert.strictEqual(verdict.findings.length, 4);
+    assert.strictEqual(verdict.toJSON().findingsCount, 4);
+
+    // An empty set reports 0 — never undefined.
+    const empty = new ReviewVerdict({ status: VERDICT_APPROVED, summary: 'ok' });
+    assert.strictEqual(empty.toJSON().findingsCount, 0);
+  });
+});
