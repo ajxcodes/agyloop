@@ -14,6 +14,11 @@
  * Contract pinned here: the pause travels as DATA on the `--json` path (stdout stays a
  * single parseable document, diagnostics go to stderr), the human `status` output names
  * the gate and when it was recorded, and help/parsing know about `codeloop resume`.
+ *
+ * PA1 - an APPROVAL pause presents ONE next step: `resumeCommand: null`, a message naming
+ *       `codeloop implement`, no 🛑 banner (issue #362, Finding 3)
+ * PA2 - a TRIAGE pause still advertises `codeloop resume` (issue #362)
+ * PA3 - the shared predicate did not widen: COMMIT is unchanged (issue #315/#362)
  */
 
 const { test, describe } = require('node:test');
@@ -22,7 +27,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { runCli, parseArguments, printHelp, RESUME_COMMAND } = require('../../dist/presentation/cli');
+const {
+  runCli,
+  parseArguments,
+  printHelp,
+  RESUME_COMMAND,
+  COMMIT_GATE_COMMAND,
+  APPROVAL_GATE_COMMAND
+} = require('../../dist/presentation/cli');
 const { GATE_CIRCUIT_BREAKER, QUOTA_RESUME_COMMAND } = require('../../dist/domain');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
@@ -252,6 +264,59 @@ describe('next --json surfaces a persisted gate pause as data', () => {
     // the directive's own `codeloop commit --create-pr` summary.
     assert.doesNotMatch(result.stderr, /codeloop resume/, result.stderr);
     assert.doesNotMatch(result.stderr, /🛑/, result.stderr);
+  });
+});
+
+describe('an APPROVAL pause presents one next step (issue #362, Finding 3)', () => {
+  test('PA1: resumeCommand is null and the message names the approve command', async () => {
+    // Exactly what `transition-stage.ts` writes when it enters APPROVAL:
+    // `pausedAtGate: 'APPROVAL'` plus the timestamp. The persisted pause used to
+    // shadow the synthesised human-gate pause, so `next --json` said "run
+    // codeloop resume" beside a humanSummary that said "run codeloop implement".
+    const result = await runCliInSandbox(['next', '--json'], (dir) =>
+      seedRunningState(dir, 'APPROVAL', { gate: 'APPROVAL', at: PAUSED_AT })
+    );
+    const parsed = JSON.parse(result.stdout.trim());
+
+    assert.strictEqual(parsed.actionType, 'human_gate');
+    assert.strictEqual(parsed.actionable, false, result.stdout);
+    assert.ok(parsed.pause, `expected a pause block, got: ${result.stdout}`);
+    assert.strictEqual(parsed.pause.gate, 'APPROVAL');
+    assert.strictEqual(parsed.pause.pausedAt, PAUSED_AT);
+    // The documented human-gate contract (skills/agyloop/SKILL.md): there is
+    // nothing to resume at a gate.
+    assert.strictEqual(parsed.pause.resumeCommand, null);
+    assert.ok(parsed.pause.message.includes(APPROVAL_GATE_COMMAND), parsed.pause.message);
+    assert.match(parsed.pause.message, /codeloop implement/);
+    assert.match(parsed.pause.message, /codeloop transition IMPLEMENT/);
+    assert.doesNotMatch(parsed.pause.message, /codeloop resume/);
+    assert.match(parsed.humanSummary, /codeloop transition IMPLEMENT/);
+    // No contradictory 🛑 banner: the two next steps must agree.
+    assert.doesNotMatch(result.stderr, /🛑/, result.stderr);
+    assert.doesNotMatch(result.stderr, /codeloop resume/, result.stderr);
+  });
+
+  test('PA2: a TRIAGE pause still advertises codeloop resume', async () => {
+    // A persisted TRIAGE pause genuinely gates re-dispatch, so its hint stays.
+    const result = await runCliInSandbox(['next', '--json'], (dir) =>
+      seedRunningState(dir, 'TRIAGE', { gate: 'TRIAGE', at: PAUSED_AT })
+    );
+    const parsed = JSON.parse(result.stdout.trim());
+
+    assert.strictEqual(parsed.pause.resumeCommand, RESUME_COMMAND, result.stdout);
+    assert.match(parsed.pause.message, /codeloop resume/);
+  });
+
+  test('PA3: the shared predicate did not widen — COMMIT is unchanged', async () => {
+    const result = await runCliInSandbox(['next', '--json'], (dir) =>
+      seedRunningState(dir, 'COMMIT', { gate: 'COMMIT', at: PAUSED_AT })
+    );
+    const parsed = JSON.parse(result.stdout.trim());
+
+    assert.strictEqual(parsed.pause.gate, 'COMMIT');
+    assert.strictEqual(parsed.pause.resumeCommand, null);
+    assert.ok(parsed.pause.message.includes(COMMIT_GATE_COMMAND), parsed.pause.message);
+    assert.doesNotMatch(parsed.pause.message, /codeloop resume/);
   });
 });
 

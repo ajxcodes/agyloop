@@ -162,8 +162,26 @@ function stripNumbering(title: string): string {
   return title.replace(HEADING_NUMBER_PREFIX, '').trim();
 }
 
-function isSmokeHeading(title: string): boolean {
-  return title
+/**
+ * True when a heading opens the smoke-test section (issue #362, Finding 1).
+ *
+ * A level-1 heading is the document TITLE by construction
+ * (`templates/implementation-plan.md`), never a section. Matching it made a plan
+ * whose title carries the phrase scope the section at line 1 with
+ * `sectionLevel = 1`; nothing could ever close the section after that, so every
+ * later fence — reproduction blocks, ASCII-art diagrams, the Quality Gate
+ * Targets list — was frozen as a smoke check. On the #359 plan that turned 3
+ * declared checks into 7 and `toScript()` died at `$: command not found`
+ * (exit 127). The title is the only heading that can never be a section, so
+ * skipping level 1 is principled, not a special case.
+ *
+ * `.includes()` is deliberately kept for levels 2+: a planner may annotate the
+ * heading (`## 6. Manual Smoke Test Protocol — checks`), and losing that match
+ * would turn a loud finding into a silent "no protocol declared" skip.
+ */
+function isSmokeHeading(heading: Heading): boolean {
+  if (heading.level <= 1) return false;
+  return heading.title
     .toLowerCase()
     .includes(HEADING_MANUAL_SMOKE_TEST_PROTOCOL.toLowerCase());
 }
@@ -286,7 +304,7 @@ export class SmokeProtocol {
       const heading = detectHeading(line);
 
       if (!inSection) {
-        if (heading && isSmokeHeading(heading.title)) {
+        if (heading && isSmokeHeading(heading)) {
           inSection = true;
           headingLine = index + 1;
           sectionLevel = heading.level;
@@ -513,14 +531,26 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
  * (`codeloop transition`), `node <…>/bin/codeloop.js …`, `npx codeloop …`, the
  * deprecated `agyloop` launcher, each optionally prefixed `env [-u AGY_SUBAGENT] …`.
  *
- * Quote-precedence (issue #359, I4) is built into the boundary: a command
- * token immediately preceded by a quote character — `"node bin/codeloop.js
- * transition …"` inside a `node -e '…'` fixture-seeding script — is prose, not
- * an invocation, so a check that seeds plan TEXT never trips the rule it tests.
- * Quote characters are deliberately absent from the boundary class.
+ * Quote-precedence (issue #359, I4) is NOT a property of this pattern: for
+ * `"node bin/codeloop.js transition …"` inside a `node -e '…'` fixture-seeding
+ * script no match exists (quote characters are absent from the boundary class),
+ * but for `"env -u AGY_SUBAGENT node bin/codeloop.js …"` the regex re-anchors at
+ * the inner `node` token and the boundary class never sees the quote. Whether a
+ * match is a real invocation is therefore decided by POSITION in
+ * `invokesCodeloopCli` — see `isProseAt`/`chainStart` (issue #362, F2.2).
  */
 const CLI_INVOCATION_PATTERN =
   /(?:^|[\s;&|(=])(?:env\s+(?:(?:-\S+|[\w=]+)\s+)*|npx\s+)?(?:node\s+\S*bin\/(?:codeloop|agyloop)\.js|(?:codeloop|agyloop)(?![\w-]))/;
+
+/** A `g`-flagged copy, so `exec` can iterate every candidate on a line. */
+const CLI_INVOCATION_SCAN = new RegExp(CLI_INVOCATION_PATTERN.source, 'g');
+
+/**
+ * The `env`/`npx` prefix immediately before a command token, whether or not the
+ * prefix is preceded by a quote (issue #362, F2.2). The capture group is the
+ * prefix itself, so the caller can recover the exact chain-start offset.
+ */
+const ENV_CHAIN_TAIL = /(?:^|[\s;&|(='"])((?:env|npx)\s+(?:(?:-\S+|[\w=]+)\s+)*)$/;
 
 /** The guard's recognised root in its three anchor spellings (I5, textual). */
 const RECOGNISED_SANDBOX_PREFIXES: readonly string[] = Object.freeze([
@@ -558,14 +588,172 @@ function stripQuotes(text: string): string {
   return text.replace(QUOTE_CHARS, '');
 }
 
+/**
+ * Removes backslash escapes of quote characters (issue #362, F2.1).
+ *
+ * A `node -e` fixture seeds plan TEXT as a JS string literal, so a correct
+ * sandbox path arrives as `\"$HOME/.cache/agyloop/smoke-…\"`. `stripQuotes`
+ * alone left the backslashes behind (`\$HOME/…`), which failed recognition and
+ * flagged the plan that documents the rule. Escape-then-strip is the correct
+ * order because `\"` in a shell-seeded string IS quote syntax.
+ */
+function unescapeQuotes(text: string): string {
+  return text.replace(/\\(["'`])/g, '$1');
+}
+
+/** A path string as written → the path itself (unescaped, unquoted). */
+function normalisePathText(text: string): string {
+  return stripQuotes(unescapeQuotes(text));
+}
+
 function splitShellTokens(line: string): string[] {
   return line.trim().split(/\s+/).filter((token) => token.length > 0);
 }
 
-/** True when a non-comment line invokes the codeloop CLI as a command (I3.1). */
+/** Index of the `)` matching the `(` at `openIndex`, or -1 when unbalanced. */
+function matchClosingParen(line: string, openIndex: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+
+  for (let index = openIndex; index < line.length; index++) {
+    const char = line[index];
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * True when `target` sits inside a quoted string on `line` — plan TEXT that the
+ * shell never executes (issue #362, F2.2; #359 I4).
+ *
+ * Single quotes are inert. Inside double quotes a `$( … )` or backtick group
+ * still EXECUTES, so those regions are not prose — which keeps
+ * `OUT="$(codeloop next --json)"` an invocation while
+ * `"env -u AGY_SUBAGENT node bin/codeloop.js …"` seeded as data is not.
+ * Deleting quoted spans wholesale was rejected: it loses
+ * `node "$ROOT/bin/codeloop.js"`, whose binary path is itself quoted.
+ */
+function isProseAt(line: string, target: number): boolean {
+  let index = 0;
+
+  while (index < line.length) {
+    const char = line[index];
+
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
+
+    if (char === "'") {
+      const close = line.indexOf("'", index + 1);
+      const end = close === -1 ? line.length : close;
+      if (target > index && target < end) return true;
+      index = end + 1;
+      continue;
+    }
+
+    if (char === '"') {
+      index++;
+      while (index < line.length) {
+        const inner = line[index];
+        if (inner === '\\') {
+          if (index === target) return true;
+          index += 2;
+          continue;
+        }
+        if (inner === '"') {
+          index++;
+          break;
+        }
+        if (inner === '$' && line[index + 1] === '(') {
+          const close = matchClosingParen(line, index + 1);
+          if (close === -1) return false;
+          if (target > index + 1 && target < close) return false;
+          index = close + 1;
+          continue;
+        }
+        if (inner === '`') {
+          const close = line.indexOf('`', index + 1);
+          if (close === -1) return false;
+          if (target > index && target < close) return false;
+          index = close + 1;
+          continue;
+        }
+        if (index === target) return true;
+        index++;
+      }
+      continue;
+    }
+
+    if (char === '`') {
+      const close = line.indexOf('`', index + 1);
+      if (close === -1) return false;
+      // A backtick group is a command substitution: it executes.
+      if (target > index && target < close) return false;
+      index = close + 1;
+      continue;
+    }
+
+    if (index === target) return false;
+    index++;
+  }
+
+  return false;
+}
+
+/**
+ * The offset of the statement that the matched command token belongs to,
+ * including any `env`/`npx` prefix the invocation pattern re-anchored past
+ * (issue #362, F2.2). That is the position quote-precedence must be asked
+ * about: `"env -u AGY_SUBAGENT node …"` starts inside the quoted span even
+ * though the regex matched at the inner `node`.
+ */
+function chainStart(line: string, tokenStart: number): number {
+  const prefix = line.slice(0, tokenStart);
+  const match = ENV_CHAIN_TAIL.exec(prefix);
+  if (!match) return tokenStart;
+  return prefix.length - match[1].length;
+}
+
+/**
+ * True when a non-comment line invokes the codeloop CLI as a command (I3.1).
+ *
+ * Every candidate match is classified by POSITION (issue #362, F2.2): an
+ * `env`-prefixed chain seeded as quoted text is prose even though the pattern
+ * anchored at its inner `node` token, while a real invocation — including
+ * `OUT="$(codeloop next --json)"` — still counts.
+ */
 function invokesCodeloopCli(line: string): boolean {
   if (isCommentLine(line)) return false;
-  return CLI_INVOCATION_PATTERN.test(line);
+
+  CLI_INVOCATION_SCAN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CLI_INVOCATION_SCAN.exec(line)) !== null) {
+    // The pattern consumes one boundary character (unless it matched at `^`).
+    const tokenStart = match.index + (match.index === 0 ? 0 : 1);
+    if (!isProseAt(line, chainStart(line, tokenStart))) return true;
+    if (match[0].length === 0) CLI_INVOCATION_SCAN.lastIndex++;
+  }
+
+  return false;
 }
 
 /** `mktemp -d …` creations: named `-p`/`--tmpdir` root, template, or bare (§2.3.3). */
@@ -583,7 +771,7 @@ function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
     if (token === '-p') {
       const value = tokens[index + 1];
       if (value !== undefined) {
-        root = stripQuotes(value);
+        root = normalisePathText(value);
         index++;
       }
       continue;
@@ -593,11 +781,11 @@ function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
       continue;
     }
     if (token.startsWith('--tmpdir=')) {
-      root = stripQuotes(token.slice('--tmpdir='.length));
+      root = normalisePathText(token.slice('--tmpdir='.length));
       continue;
     }
     if (token.startsWith('-') && token !== '-') continue;
-    templates.push(stripQuotes(token));
+    templates.push(normalisePathText(token));
   }
 
   if (root !== null) {
@@ -616,7 +804,11 @@ function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
     // `mktemp -d` with no path at all: the implicit OS temp dir (I3.3).
     return [{ offset, createdPath: line.trim(), implicitTemp: true }];
   }
-  return templates.map((template) => ({ offset, createdPath: template, implicitTemp: true }));
+  // A NAMED template is not the implicit OS temp dir (issue #362, F2.4): §2.3.4
+  // documents the filter as temp-anchored OR `smoke`-named, so
+  // `mktemp -d "$PWD/fixture-XXXXXX"` is an explicit workspace directory and
+  // only `implicitTemp` (bare `mktemp -d`) is temp by construction.
+  return templates.map((template) => ({ offset, createdPath: template, implicitTemp: false }));
 }
 
 /** The first non-flag argument of a `mkdir [-p] …` line. */
@@ -631,7 +823,7 @@ function mkdirCandidate(line: string, offset: number): SandboxCandidate | null {
       continue;
     }
     if (token.startsWith('-')) continue;
-    return { offset, createdPath: stripQuotes(token), implicitTemp: false };
+    return { offset, createdPath: normalisePathText(token), implicitTemp: false };
   }
   return null;
 }
@@ -646,16 +838,107 @@ function gitCloneCandidate(line: string, offset: number): SandboxCandidate | nul
   const positional = tokens.slice(cloneIndex + 1).filter((token) => !token.startsWith('-'));
   const target = positional[1];
   if (target === undefined) return null;
-  return { offset, createdPath: stripQuotes(target), implicitTemp: false };
+  return { offset, createdPath: normalisePathText(target), implicitTemp: false };
 }
 
-/** A path-shaped assignment (`SBX=/tmp/…`, `SBX="$HOME/.cache/agyloop/smoke-x"`). */
-function assignmentCandidate(line: string, offset: number): SandboxCandidate | null {
-  const match = ASSIGNMENT_PATTERN.exec(line);
-  if (!match) return null;
-  const value = stripQuotes(match[2].trim());
-  if (!PATH_SHAPED_VALUE.test(value)) return null;
-  return { offset, createdPath: value, implicitTemp: false };
+/**
+ * Splits a line at its top-level `;` separators (issue #362, F2.3), so a
+ * multi-statement line yields one statement per assignment. Quote-aware: a `;`
+ * inside a quoted value is data.
+ */
+function splitStatements(line: string): string[] {
+  const statements: string[] = [];
+  let start = 0;
+  let quote: string | null = null;
+
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === ';') {
+      statements.push(line.slice(start, index));
+      start = index + 1;
+    }
+  }
+
+  statements.push(line.slice(start));
+  return statements;
+}
+
+/**
+ * Every path-shaped assignment on a line (`SBX=/tmp/…`,
+ * `SBX="$HOME/.cache/agyloop/smoke-x"`), one per `;`-separated statement.
+ *
+ * The old single-candidate form read
+ * `SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp …)"` as ONE
+ * assignment whose value swallowed the rest of the line, so the trailing
+ * `smoke` token still flagged a correct, runtime-accepted sandbox (#284).
+ */
+function assignmentCandidates(line: string, offset: number): SandboxCandidate[] {
+  const candidates: SandboxCandidate[] = [];
+  for (const statement of splitStatements(line)) {
+    const match = ASSIGNMENT_PATTERN.exec(statement);
+    if (!match) continue;
+    const value = normalisePathText(match[2].trim());
+    if (!PATH_SHAPED_VALUE.test(value)) continue;
+    candidates.push({ offset, createdPath: value, implicitTemp: false });
+  }
+  return candidates;
+}
+
+/**
+ * The `VAR=<path>` assignments visible at each body line (issue #362, F2.3):
+ * cumulative, last assignment wins, only path-shaped values recorded.
+ */
+function assignmentsByLine(
+  bodyLines: readonly string[]
+): ReadonlyMap<number, ReadonlyMap<string, string>> {
+  const byLine = new Map<number, ReadonlyMap<string, string>>();
+  const visible = new Map<string, string>();
+
+  bodyLines.forEach((line, offset) => {
+    if (!isCommentLine(line)) {
+      for (const statement of splitStatements(line)) {
+        const match = ASSIGNMENT_PATTERN.exec(statement);
+        if (!match) continue;
+        const value = normalisePathText(match[2].trim());
+        if (!PATH_SHAPED_VALUE.test(value)) continue;
+        visible.set(match[1], value);
+      }
+    }
+    byLine.set(offset, new Map(visible));
+  });
+
+  return byLine;
+}
+
+/** Expands `$NAME`/`${NAME}` from the assignments visible at that line. */
+function resolveVariables(text: string, assignments: ReadonlyMap<string, string>): string {
+  let resolved = text;
+
+  for (let pass = 0; pass < 5; pass++) {
+    const next = resolved.replace(
+      /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+      (whole, braced: string | undefined, plain: string | undefined) => {
+        const value = assignments.get(braced ?? plain ?? '');
+        return value === undefined ? whole : value;
+      }
+    );
+    if (next === resolved) break;
+    resolved = next;
+  }
+
+  return resolved;
 }
 
 /** Every sandbox-creation candidate of one check body (§2.3.3). */
@@ -666,18 +949,18 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
     candidates.push(...mktempCandidates(line, offset));
     for (const candidate of [
       mkdirCandidate(line, offset),
-      gitCloneCandidate(line, offset),
-      assignmentCandidate(line, offset)
+      gitCloneCandidate(line, offset)
     ]) {
       if (candidate !== null) candidates.push(candidate);
     }
+    candidates.push(...assignmentCandidates(line, offset));
   });
   return candidates;
 }
 
 /** True when the path is textually the guard's own sandbox (I5, no I/O). */
 function isRecognisedSandboxPath(text: string): boolean {
-  const path = stripQuotes(text);
+  const path = normalisePathText(text);
   return RECOGNISED_SANDBOX_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
@@ -734,14 +1017,21 @@ function collectFindings(
   // state guard recognises it. One finding per offending line (I2: the
   // analysis never taints a sibling check that does not invoke the CLI).
   if (bodyLines.some((line) => invokesCodeloopCli(line))) {
+    // Issue #362, F2.3: variables visible at the candidate's line are resolved
+    // BEFORE both tests, so `mktemp -d "$SANDBOX/smoke-…"` (the #284 shape) is
+    // recognised — while a variable that resolves onto `/tmp` is still
+    // flagged, because resolution cannot launder a temp root.
+    const assignments = assignmentsByLine(bodyLines);
     const flaggedOffsets = new Set<number>();
     for (const candidate of sandboxCandidates(bodyLines)) {
       if (flaggedOffsets.has(candidate.offset)) continue;
-      if (isRecognisedSandboxPath(candidate.createdPath)) continue;
+      const path = resolveVariables(
+        candidate.createdPath,
+        assignments.get(candidate.offset) ?? new Map<string, string>()
+      );
+      if (isRecognisedSandboxPath(path)) continue;
       const offending =
-        candidate.implicitTemp ||
-        TEMP_ROOT_PATTERN.test(candidate.createdPath) ||
-        candidate.createdPath.includes(SMOKE_TOKEN);
+        candidate.implicitTemp || TEMP_ROOT_PATTERN.test(path) || path.includes(SMOKE_TOKEN);
       if (!offending) continue;
       flaggedOffsets.add(candidate.offset);
       // The required path rides in `excerpt` AFTER truncation, so the 160-char

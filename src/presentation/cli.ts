@@ -434,6 +434,16 @@ export const RESUME_COMMAND = 'codeloop resume';
 export const COMMIT_GATE_COMMAND = 'codeloop commit';
 
 /**
+ * The APPROVAL gate's command (issue #362, Finding 3): the step an operator
+ * takes at an APPROVAL pause is the approval flow itself — the command the
+ * gate's own `humanSummary` names — never `resume`. `transition-stage.ts` calls
+ * `resumeFromGate()` unconditionally, so `codeloop implement` alone clears the
+ * pause; telling the operator to run `codeloop resume` first was an unnecessary
+ * extra step beside a contradicting summary.
+ */
+export const APPROVAL_GATE_COMMAND = 'codeloop implement';
+
+/**
  * A gate pause read straight off the persisted checkpoint.
  *
  * Rendered as data (never prose) in `next --json`, and as an extra block in the human
@@ -444,10 +454,11 @@ export interface PersistedGatePause {
   readonly gate: string;
   readonly pausedAt: string | null;
   /**
-   * The command that clears a PERSISTED pause — `null` for a synthesised human
-   * gate, which is not something `resume` can (or should) clear (issue #315,
-   * AC-7). Overloading this field with a fake command would have made the hint
-   * false; a nullable field keeps it honest.
+   * The command that clears a PERSISTED pause — `null` for a human gate, which
+   * is not something `resume` can (or should) clear: both a synthesised gate
+   * pause and a persisted one at COMMIT (issue #315, AC-7) or APPROVAL (issue
+   * #362, Finding 3). Overloading this field with a fake command would have
+   * made the hint false; a nullable field keeps it honest.
    */
   readonly resumeCommand: string | null;
   readonly message: string;
@@ -519,6 +530,23 @@ export async function readPersistedGatePause(
         pausedAt: snapshot?.pausedAtTimestamp ?? null,
         resumeCommand: null,
         message: `Pipeline rests at the ${gate} human gate. This is not a resumable blocker: run \`${COMMIT_GATE_COMMAND}\` (add \`--create-pr\` to open the delivery PR).`
+      };
+    }
+
+    // Issue #362 (Finding 3): APPROVAL is the same human-gate class as COMMIT.
+    // Entering APPROVAL persists `pausedAtGate: 'APPROVAL'`
+    // (`transition-stage.ts`), and the persisted pause shadowed the synthesised
+    // human-gate pause, so `next --json` returned a `humanSummary` saying "run
+    // codeloop implement" beside a pause saying "run codeloop resume" — two
+    // conflicting next steps, one of them wrong (the `resume` half of #315,
+    // left unfixed). The pause stays (wait accounting — `resumeFromGate()`
+    // banks `totalHumanWaitMs`), only the false guidance goes.
+    if (gate === GATE_APPROVAL) {
+      return {
+        gate,
+        pausedAt: snapshot?.pausedAtTimestamp ?? null,
+        resumeCommand: null,
+        message: `Pipeline rests at the ${gate} human gate. This is not a resumable blocker: once the plan is approved, run \`${APPROVAL_GATE_COMMAND}\` (or \`codeloop transition IMPLEMENT\`).`
       };
     }
 
@@ -2006,7 +2034,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // accounting record (recorded by `run-review` so the wait is
         // measurable), not a blocker — a 🛑 "run codeloop resume" banner there
         // contradicted the directive's "run codeloop commit --create-pr".
-        if (persistedPause && persistedPause.gate !== GATE_COMMIT) {
+        //
+        // Issue #362 (Finding 3): the predicate is now the pause's own
+        // `resumeCommand` rather than a hard-coded gate exception list, which
+        // is the actual rule — warn only when there is something to resume.
+        // APPROVAL, CIRCUIT_BREAKER and TRIAGE keep their existing behaviour
+        // without growing the list.
+        if (persistedPause && persistedPause.resumeCommand !== null) {
           // Warnings go to stderr so stdout stays parseable.
           console.error(`🛑 ${persistedPause.message}`);
         }
