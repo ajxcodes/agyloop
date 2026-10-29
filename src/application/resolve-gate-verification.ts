@@ -38,8 +38,10 @@ import {
   PLAN_INTEGRITY_MISMATCH,
   PLAN_INTEGRITY_MISSING,
   QualityGateTargetsResult,
+  GateTargetFinding,
   SmokeProtocol,
   isLintCommand,
+  lintQualityGateTargets,
   parseQualityGateTargets
 } from '../domain';
 import {
@@ -75,6 +77,8 @@ export interface GateVerification {
   readonly planPath: string | null;
   readonly planContent: string;
   readonly planTargets: QualityGateTargetsResult;
+  /** Static-rule findings against the SAME targets the gate executes (issue #348). */
+  readonly targetFindings: readonly GateTargetFinding[];
   readonly smoke: SmokeProtocol;
   readonly commandPlan: GateCommandPlan;
   readonly integrity: PlanIntegrityVerdict;
@@ -88,6 +92,7 @@ export async function resolveGateVerification(
   const planPath = resolvePlanPath(params);
   const planContent = readPlanContent(params.planGenerator, planPath);
   const planTargets = parseQualityGateTargets(planContent);
+  const targetFindings = lintQualityGateTargets(planTargets.targets);
   const smoke = SmokeProtocol.fromPlan(planContent);
   const integrity = resolveIntegrity(
     params.planGenerator,
@@ -100,6 +105,7 @@ export async function resolveGateVerification(
     planPath,
     planContent,
     planTargets,
+    targetFindings,
     smoke,
     commandPlan,
     integrity,

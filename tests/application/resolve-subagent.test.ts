@@ -33,7 +33,8 @@ const {
   DISCOVERY_REPORT_MAX_UNFILLED_KEYS,
   DISCOVERY_REPORT_MIN_PROSE_SECTIONS,
   DiscoveryReport,
-  formatDiscoveryReportContract
+  formatDiscoveryReportContract,
+  GATE_COMMAND_WORKTREE_CONTRACT
 } = require('../../dist/domain');
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
@@ -639,6 +640,19 @@ describe('Gate prompt evidence contract (issue #298)', () => {
 
     assert.ok(prompt.includes('### Lint Invariant Violation'));
     assert.match(prompt, /MUST be FAILED/);
+  });
+
+  test('RS-G3a (#348): the gate prompt states the dirty-worktree gate-command contract', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/348'
+    });
+
+    assert.ok(prompt.includes(GATE_COMMAND_WORKTREE_CONTRACT));
+    assert.ok(prompt.includes('UNCOMMITTED'));
+    assert.ok(prompt.includes('before the commit gate'));
+    assert.ok(prompt.includes('No synthetic commit'));
   });
 
   test('RS-G3: the planner prompt requires both exact headings and the implementer forbids edits', () => {

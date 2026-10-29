@@ -99,6 +99,7 @@ import {
   MSG_PLAN_MODIFIED_AFTER_APPROVAL,
   MSG_PLAN_APPROVED_MISSING,
   MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE,
+  formatGateTargetContractViolations,
   GATE_COMMAND_PRECEDENCE,
   DiscoveryReport,
   isDiscoveryPlanDocument
@@ -915,6 +916,17 @@ export class GetNextActionUseCase {
           verification.integrity.status === PLAN_INTEGRITY_MISSING
         ) {
           return this.buildPlanIntegrityGateFailure(
+            verification,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            activeIssue,
+            sm.planDir
+          );
+        }
+
+        if (verification.targetFindings.length > 0) {
+          return this.buildGateTargetContractFailure(
             verification,
             baseBranch,
             taskBranch,
@@ -2142,6 +2154,35 @@ export class GetNextActionUseCase {
       taskBranch,
       worktreePath,
       humanSummary: `The approved plan is no longer the plan on disk (${integrity.status}); inspected \`${inspected}\`. To fix it, ${recovery}. The gate was not dispatched.`
+    };
+  }
+
+  /**
+   * A gate target that asserts a committed-tree invariant can never pass: the
+   * gate runs against the UNCOMMITTED change, before the commit gate
+   * (issue #348). A legacy checkpoint approved by an older build is refused
+   * here instead of being dispatched to a gate that must fail.
+   */
+  private buildGateTargetContractFailure(
+    verification: GateVerification,
+    baseBranch: string,
+    taskBranch: string | null,
+    worktreePath: string | null,
+    issue: number | string | null,
+    planDir: string | null
+  ): DirectiveResult {
+    const detail = formatGateTargetContractViolations(verification.targetFindings);
+
+    return {
+      currentStage: STAGE_QUALITY_GATE,
+      nextStage: STAGE_PLAN,
+      actionType: 'human_gate',
+      title: 'Quality Gate Targets Cannot Pass',
+      description: `Quality Gate: FAILED — ${detail}`,
+      baseBranch,
+      taskBranch,
+      worktreePath,
+      humanSummary: `The approved plan's Quality Gate Targets cannot pass on the worktree this gate runs in: ${detail} Inspected \`${verification.planPath ?? '(unknown plan path)'}\`. Gate commands run in the task worktree against the UNCOMMITTED change, before the commit gate, with no synthetic commit. To fix it, ${formatPlanReapprovalRecovery(issue, planDir)}. The gate was not dispatched and no command ran.`
     };
   }
 

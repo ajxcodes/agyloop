@@ -39,7 +39,8 @@ const {
   formatStageDuration,
   FilePlanGenerator,
   SMOKE_PROTOCOL_VALUES,
-  SMOKE_PROTOCOL_NOT_REPORTED
+  SMOKE_PROTOCOL_NOT_REPORTED,
+  SMOKE_STATUS_NOT_DECLARED
 } = require('../../dist');
 
 type StateRepository = import('../../src').StateRepository;
@@ -1596,6 +1597,41 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.match(result.reports[0].failureSnippet ?? '', /Check 1/);
     assert.match(result.reports[0].failureSnippet ?? '', /plan line \d+/);
     assert.strictEqual(result.smokeStatus, 'FAILED');
+  });
+
+  test('RQG-T1 (#348): a committed-tree target fails preflight with no command executed', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['git diff --exit-code -- package-lock.json']);
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(
+      commandExecutor.executed.length,
+      0,
+      'the gate must fail closed before running a doomed command'
+    );
+    assert.strictEqual(result.reports.length, 1);
+    assert.strictEqual(result.reports[0].id, 'gate-target-contract');
+    assert.strictEqual(result.reports[0].label, 'Quality Gate Target Contract');
+    assert.strictEqual(result.reports[0].passed, false);
+    assert.ok(
+      (result.reports[0].failureSnippet ?? '').includes(
+        'git diff --exit-code -- package-lock.json'
+      )
+    );
+    assert.ok((result.reports[0].failureSnippet ?? '').includes('can never pass'));
+    assert.strictEqual(result.smokeStatus, SMOKE_STATUS_NOT_DECLARED);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
   });
 
   test('RQG-S2: a runtime smoke failure names the failing check and plan line', async () => {

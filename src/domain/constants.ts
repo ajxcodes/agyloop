@@ -655,6 +655,9 @@ export const CMD_ID_SMOKE_PROTOCOL = 'smoke-protocol' as const;
 export const CMD_LABEL_SMOKE_PROTOCOL = 'Manual Smoke Test Protocol' as const;
 export const CMD_ID_PLAN_INTEGRITY = 'plan-integrity' as const;
 export const CMD_LABEL_PLAN_INTEGRITY = 'Approved Plan Integrity' as const;
+/** Synthetic gate report id for a committed-tree gate target (issue #348). */
+export const CMD_ID_GATE_TARGET_CONTRACT = 'gate-target-contract' as const;
+export const CMD_LABEL_GATE_TARGET_CONTRACT = 'Quality Gate Target Contract' as const;
 
 /** Runtime smoke attribution markers (issue #298). */
 export const SMOKE_CHECK_MARKER_PREFIX = '__AGYLOOP_SMOKE_CHECK_' as const;
@@ -714,6 +717,9 @@ export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
 /** Static smoke-protocol findings (issue #359). */
 export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
 
+/** Static Quality Gate Target findings (issue #348). */
+export const GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION = 'committed-tree-assertion' as const;
+
 /** Plan integrity verdicts (issue #298). */
 export const PLAN_INTEGRITY_VERIFIED = 'verified' as const;
 export const PLAN_INTEGRITY_UNVERIFIED = 'unverified' as const;
@@ -753,6 +759,23 @@ export const MSG_SMOKE_PROTOCOL_NO_CHECKS =
   'Manual Smoke Test Protocol declared no executable check; a zero-check protocol cannot pass the gate.' as const;
 export const MSG_GATE_LINT_MISSING =
   'Lint is mandatory for this Node project, but no resolved gate command is a lint command.' as const;
+/**
+ * A gate target that asserts a committed-tree invariant can never pass: the
+ * gate runs in the task worktree against the UNCOMMITTED change, BEFORE the
+ * commit gate (issue #348). ONE template for every enforcement point.
+ */
+export const MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION =
+  'Plan Quality Gate Target {index} at plan line {line} is a committed-tree assertion that can never pass: `{command}`. Gate commands run in the task worktree against the UNCOMMITTED change, before `codeloop commit`, so a comparison of the worktree or the index to HEAD always sees the change under test. Move the invariant to CI, or express it in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Nothing was staged and nothing was committed.' as const;
+
+/**
+ * The documented gate-command contract (issue #348, AC2).
+ *
+ * ONE sentence block rendered in the gate task prompt, the planner system
+ * prompt (both the on-disk copy and the compiled fallback) and the skill doc,
+ * so no plan author or gate subagent has to infer the execution semantics.
+ */
+export const GATE_COMMAND_WORKTREE_CONTRACT =
+  '**Gate command contract.** Gate commands run in the task worktree, in plan order, with that worktree as the working directory, and they run **before the commit gate**. No synthetic commit is created: the commands see the **UNCOMMITTED** change. Every command must therefore pass on that dirty tree. A committed-tree assertion — `git diff --exit-code -- <file>`, `git diff --cached`, `git status --porcelain` — can never pass there and is rejected at plan approval, naming the command. Keep committed-tree invariants in CI (`.github/workflows/ci.yml`), or express them in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Editing the plan after approval invalidates the approved digest, so fix the command *before* approving. Command-list precedence is `explicit > plan > config > act > auto-detect > default` (`GATE_COMMAND_PRECEDENCE`); declaring targets replaces the act container gate.' as const;
 
 export const MAX_FILTERED_LOG_LINES = 30 as const;
 export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;
@@ -1562,6 +1585,11 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Lint, typecheck, or build commands.
    - Manual verification steps if applicable.
    - NOTE: ${SMOKE_SANDBOX_MANDATE} ${SMOKE_SANDBOX_AGY_SUBAGENT_NOTE}
+
+### Quality Gate Targets contract
+${GATE_COMMAND_WORKTREE_CONTRACT}
+
+Author every target so it passes on the uncommitted worktree; a committed-tree assertion is refused before approval and costs a re-plan.
 
 ---
 

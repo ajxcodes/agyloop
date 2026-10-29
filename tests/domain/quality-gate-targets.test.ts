@@ -10,7 +10,12 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
-const { parseQualityGateTargets } = require('../../dist/domain');
+const {
+  parseQualityGateTargets,
+  lintQualityGateTargets,
+  formatGateTargetContractViolations,
+  MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION
+} = require('../../dist/domain');
 
 const FENCED = ['```bash', 'npm run build', 'npm test', '```'].join('\n');
 
@@ -203,6 +208,142 @@ describe('parseQualityGateTargets (issue #298)', () => {
       !result.unparsed.some((line: string) => line.includes('tests/domain/plan-directory.test.ts')),
       'the continuation lines are joined, not reported as fragments'
     );
+  });
+
+  test('QGT8: every target carries the 1-based plan line it was written on (#348)', () => {
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '- `npm run build`',
+      '',
+      '```bash',
+      'npm run typecheck',
+      'node --test \\',
+      '  tests/a.test.ts \\',
+      '  tests/b.test.ts',
+      '```',
+      ''
+    ].join('\n');
+
+    const result = parseQualityGateTargets(markdown);
+
+    assert.deepStrictEqual(
+      result.targets.map((target: any) => ({ command: target.command, line: target.line })),
+      [
+        { command: 'npm run build', line: 5 },
+        { command: 'npm run typecheck', line: 8 },
+        {
+          command: 'node --test tests/a.test.ts tests/b.test.ts',
+          line: 9
+        }
+      ],
+      'a continuation reports the line it STARTED on'
+    );
+    assert.deepStrictEqual(
+      result.commands,
+      result.targets.map((target: any) => target.command),
+      'commands stays derived from targets'
+    );
+  });
+
+  test('QGT9: the committed-tree-assertion rule matches the documented decision table (#348)', () => {
+    const flagged = [
+      'git diff --exit-code -- package-lock.json',
+      'git diff',
+      'git diff --quiet',
+      'git diff HEAD -- f',
+      'git diff --cached --check',
+      'git status --porcelain',
+      'git -C . diff --exit-code -- f'
+    ];
+    const allowed = [
+      'git diff origin/main...HEAD --stat',
+      'git diff HEAD~1 HEAD -- src/',
+      'git diff --no-index a.json b.json',
+      'git log --oneline -1',
+      'git diff-tree -r HEAD',
+      'npm test'
+    ];
+
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '```bash',
+      ...flagged,
+      ...allowed,
+      '```',
+      ''
+    ].join('\n');
+    const parsed = parseQualityGateTargets(markdown);
+    const findings = lintQualityGateTargets(parsed.targets);
+
+    assert.deepStrictEqual(
+      findings.map((finding: any) => finding.command),
+      flagged,
+      'every flagged shape produces exactly one finding, in plan order'
+    );
+    assert.strictEqual(findings.length, flagged.length);
+    for (const finding of findings) {
+      assert.strictEqual(finding.rule, 'committed-tree-assertion');
+      assert.ok(finding.index >= 1 && finding.index <= parsed.targets.length);
+      assert.strictEqual(finding.line, parsed.targets[finding.index - 1].line);
+    }
+    for (const command of allowed) {
+      assert.ok(
+        !findings.some((finding: any) => finding.command === command),
+        `'${command}' must not be flagged`
+      );
+    }
+  });
+
+  test('QGT10: the formatter renders the ONE message template for every finding (#348)', () => {
+    const findings = [
+      {
+        rule: 'committed-tree-assertion',
+        index: 1,
+        line: 5,
+        command: 'git diff --exit-code -- package-lock.json'
+      },
+      {
+        rule: 'committed-tree-assertion',
+        index: 2,
+        line: 7,
+        command: 'git status --porcelain'
+      }
+    ];
+    const rendered = formatGateTargetContractViolations(findings);
+
+    const expectedFirst = MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION.replace('{index}', '1')
+      .replace('{line}', '5')
+      .replace('{command}', 'git diff --exit-code -- package-lock.json');
+    const expectedSecond = MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION.replace('{index}', '2')
+      .replace('{line}', '7')
+      .replace('{command}', 'git status --porcelain');
+
+    assert.strictEqual(rendered, `${expectedFirst} ${expectedSecond}`);
+    assert.ok(rendered.includes('git diff --exit-code -- package-lock.json'));
+    assert.ok(rendered.includes('can never pass'));
+    assert.ok(rendered.includes('UNCOMMITTED'));
+  });
+
+  test('QGT11: a flagged target stays a parsed target, never `unparsed` evidence (#348)', () => {
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '- `git diff --exit-code -- package-lock.json`',
+      ''
+    ].join('\n');
+
+    const result = parseQualityGateTargets(markdown);
+
+    assert.strictEqual(result.found, true);
+    assert.deepStrictEqual(result.commands, ['git diff --exit-code -- package-lock.json']);
+    assert.deepStrictEqual(result.unparsed, [], 'a finding is a refusal, never a silent drop');
   });
 
   test('QGT7: an unterminated continuation is evidence, never a command', () => {

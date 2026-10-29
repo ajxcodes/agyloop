@@ -51,6 +51,21 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('view_file'));
   });
 
+  test('the documented gate-command contract is present in both planner prompt copies (#348)', () => {
+    const prompt = resolveUseCase.getPlannerSystemPrompt();
+    assert.ok(prompt.includes('Quality Gate Targets contract'));
+    assert.ok(prompt.includes('UNCOMMITTED'));
+    assert.ok(prompt.includes('No synthetic commit'));
+
+    // The compiled fallback and the on-disk prompt must not drift.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const onDisk = fs.readFileSync(path.join(__dirname, '../prompts/planner.md'), 'utf8');
+    assert.ok(onDisk.includes('Quality Gate Targets contract'));
+    assert.ok(onDisk.includes('UNCOMMITTED'));
+    assert.ok(onDisk.includes('No synthetic commit'));
+  });
+
   test('getPlannerDefinition integrates with config and resolves model tier', () => {
     const customConfig = {
       models: {

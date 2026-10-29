@@ -66,6 +66,12 @@ Your generated specifications will be read directly by the **Implementation Suba
    - Manual verification steps if applicable.
    - NOTE: If the smoke test requires state-mutating commands (like `codeloop transition`), clone the repository to the tool's own sandbox at `$HOME/.cache/agyloop/smoke-<issue>` (OUTSIDE the workspace) and run the commands there. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT`. Destroy the directory after the smoke test.
 
+### Quality Gate Targets contract
+
+**Gate command contract.** Gate commands run in the task worktree, in plan order, with that worktree as the working directory, and they run **before the commit gate**. No synthetic commit is created: the commands see the **UNCOMMITTED** change. Every command must therefore pass on that dirty tree. A committed-tree assertion — `git diff --exit-code -- <file>`, `git diff --cached`, `git status --porcelain` — can never pass there and is rejected at plan approval, naming the command. Keep committed-tree invariants in CI (`.github/workflows/ci.yml`), or express them in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Editing the plan after approval invalidates the approved digest, so fix the command *before* approving. Command-list precedence is `explicit > plan > config > act > auto-detect > default` (`GATE_COMMAND_PRECEDENCE`); declaring targets replaces the act container gate.
+
+Author every target so it passes on the uncommitted worktree; a committed-tree assertion is refused before approval and costs a re-plan.
+
 ### Historical Context Filtering:
 - Only generate checklist items for work NOT already implemented. Check git history and closed issues, and filter out already implemented features; do not generate redundant checklist items for delivered functionality.
 

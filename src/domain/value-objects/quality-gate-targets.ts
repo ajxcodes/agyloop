@@ -6,16 +6,33 @@
  * looked like verification but was not executable as `unparsed` evidence — an
  * unparsed line is NEVER executed.
  *
+ * Static rule (issue #348): `committed-tree-assertion` — the gate runs in the
+ * task worktree against the UNCOMMITTED change, before the commit gate, so a
+ * command that compares the worktree or the index to HEAD (`git diff`, `git
+ * status`) can never pass there. Such a target is REFUSED at plan approval,
+ * never silently filtered.
+ *
  * No I/O, no external imports: regex and string operations only.
  */
 
 import {
+  GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+  MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION,
   PLAN_TARGET_HEADING_CANDIDATES
 } from '../constants';
 
+/** One executable target: the command and the plan line it was written on. */
+export interface QualityGateTarget {
+  readonly command: string;
+  /** 1-based plan line (the FIRST line of a `\` continuation). */
+  readonly line: number;
+}
+
 export interface QualityGateTargetsResult {
-  /** Executable commands in plan order (deduplicated). */
+  /** Deduplicated targets in plan order, with their plan line (issue #348). */
+  readonly targets: readonly QualityGateTarget[];
+  /** Executable commands in plan order (deduplicated). Equivalent to `targets.map(t => t.command)`. */
   readonly commands: readonly string[];
   /** Section lines that were not executable (prose, tables, rejected shapes). */
   readonly unparsed: readonly string[];
@@ -23,6 +40,15 @@ export interface QualityGateTargetsResult {
   readonly found: boolean;
   /** 1-based line of the section heading, or 0 when absent. */
   readonly sectionLine: number;
+}
+
+/** A static-rule finding against one parsed target (issue #348). */
+export interface GateTargetFinding {
+  readonly rule: typeof GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION;
+  /** 1-based position within `targets` (matches `Plan Target <n>`). */
+  readonly index: number;
+  readonly line: number;
+  readonly command: string;
 }
 
 /**
@@ -259,7 +285,7 @@ function toCommands(candidate: string): string[] | null {
  */
 export function parseQualityGateTargets(markdown: string): QualityGateTargetsResult {
   const lines = (markdown ?? '').split('\n');
-  const commands: string[] = [];
+  const targets: QualityGateTarget[] = [];
   const unparsed: string[] = [];
   const seen = new Set<string>();
 
@@ -268,14 +294,14 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
   let inSection = false;
   let inCommandFence = false;
   let fenceLanguage: string | null = null;
-  let pendingContinuation: string | null = null;
+  let pendingContinuation: { text: string; line: number } | null = null;
 
   const pushUnparsed = (raw: string): void => {
     const evidence = raw.trim();
     if (evidence.length > 0) unparsed.push(evidence);
   };
 
-  const pushCommands = (candidate: string, raw: string): void => {
+  const pushCommands = (candidate: string, raw: string, line: number): void => {
     if (candidate.length === 0) return;
     const resolved = toCommands(candidate);
     if (resolved === null) {
@@ -285,18 +311,18 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
     for (const command of resolved) {
       if (seen.has(command)) continue;
       seen.add(command);
-      commands.push(command);
+      targets.push({ command, line });
     }
   };
 
   /** An unterminated `\` continuation is incomplete: evidence, never execution. */
   const flushContinuation = (): void => {
     if (pendingContinuation === null) return;
-    pushUnparsed(pendingContinuation);
+    pushUnparsed(pendingContinuation.text);
     pendingContinuation = null;
   };
 
-  const pushFenceLine = (raw: string): void => {
+  const pushFenceLine = (raw: string, line: number): void => {
     const trimmed = raw.trim();
     // A blank line or a shell comment ends a pending continuation: joining
     // across it would invent a command the plan never wrote.
@@ -306,15 +332,17 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
     }
 
     const joined =
-      pendingContinuation === null ? trimmed : `${pendingContinuation} ${trimmed}`;
+      pendingContinuation === null ? trimmed : `${pendingContinuation.text} ${trimmed}`;
+    // A continuation reports the line it STARTED on, not where it ended.
+    const joinedLine = pendingContinuation === null ? line : pendingContinuation.line;
 
     if (FENCE_CONTINUATION.test(joined)) {
-      pendingContinuation = joined.replace(FENCE_CONTINUATION, '').trimEnd();
+      pendingContinuation = { text: joined.replace(FENCE_CONTINUATION, '').trimEnd(), line: joinedLine };
       return;
     }
 
     pendingContinuation = null;
-    pushCommands(cleanFenceLine(joined), joined);
+    pushCommands(cleanFenceLine(joined), joined, joinedLine);
   };
 
   for (let index = 0; index < lines.length; index++) {
@@ -329,7 +357,7 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
         fenceLanguage = null;
         inCommandFence = false;
       } else if (inSection && inCommandFence) {
-        pushFenceLine(line);
+        pushFenceLine(line, index + 1);
       }
       continue;
     }
@@ -367,15 +395,110 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
       pushUnparsed(line);
       continue;
     }
-    pushCommands(bullet.text, line);
+    pushCommands(bullet.text, line, index + 1);
   }
 
   flushContinuation();
 
   return {
-    commands,
+    targets,
+    commands: targets.map((target) => target.command),
     unparsed,
-    found: commands.length > 0,
+    found: targets.length > 0,
     sectionLine
   };
+}
+
+/** Git global options that consume the FOLLOWING token as their value. */
+const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--config-env',
+  '--exec-path',
+  '--super-prefix'
+]);
+
+/** The git subcommand and its arguments, skipping global options. */
+function gitSubcommand(tokens: string[]): { subcommand: string; args: string[] } | null {
+  if (tokens[0] !== 'git') return null;
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (GIT_GLOBAL_OPTIONS_WITH_VALUE.has(token)) {
+      i += 2;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      i += 1;
+      continue;
+    }
+    return { subcommand: token, args: tokens.slice(i + 1) };
+  }
+  return null;
+}
+
+/**
+ * True when a command compares the worktree or the index to HEAD (issue #348).
+ *
+ * Pure and textual: the gate runs before the commit, so such a comparison
+ * always sees the change under test and can never pass on a correct tree.
+ */
+export function isCommittedTreeAssertion(command: string): boolean {
+  const parsed = gitSubcommand(command.trim().split(/\s+/));
+  if (parsed === null) return false;
+  // `git status` is always worktree/index-relative.
+  if (parsed.subcommand === 'status') return true;
+  // `diff-tree`, `log`, `show` are commit-based and are legitimate.
+  if (parsed.subcommand !== 'diff') return false;
+
+  const args = parsed.args;
+  // File-to-file comparison: no worktree, no index.
+  if (args.includes('--no-index')) return false;
+  if (args.includes('--cached') || args.includes('--staged')) return true;
+
+  const separator = args.indexOf('--');
+  const before = separator === -1 ? args : args.slice(0, separator);
+  const revisions = before.filter((token) => !token.startsWith('-'));
+  // A two-commit range (`A..B`, `A...B`) never looks at the worktree.
+  if (revisions.some((revision) => revision.includes('..'))) return false;
+  // Zero or one revision: the comparison involves the worktree/index.
+  return revisions.length < 2;
+}
+
+/** Lints the targets the gate will actually execute (one rule, issue #348). */
+export function lintQualityGateTargets(
+  targets: readonly QualityGateTarget[]
+): readonly GateTargetFinding[] {
+  const findings: GateTargetFinding[] = [];
+  targets.forEach((target, idx) => {
+    if (!isCommittedTreeAssertion(target.command)) return;
+    findings.push({
+      rule: GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION,
+      index: idx + 1,
+      line: target.line,
+      command: target.command
+    });
+  });
+  return findings;
+}
+
+/**
+ * Renders every finding through ONE template (issue #348, R6).
+ *
+ * Shared by approval rejection, the dispatch blocker and the in-process gate
+ * preflight, so their messages cannot drift.
+ */
+export function formatGateTargetContractViolations(
+  findings: readonly GateTargetFinding[]
+): string {
+  return findings
+    .map((finding) =>
+      MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION.replace('{index}', String(finding.index))
+        .replace('{line}', String(finding.line))
+        .replace('{command}', finding.command)
+    )
+    .join(' ');
 }

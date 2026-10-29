@@ -33,7 +33,10 @@ import {
   InvalidTransitionError,
   ValidationError,
   WorktreeCreationError,
-  isPlanContentSubstantive
+  isPlanContentSubstantive,
+  lintQualityGateTargets,
+  formatGateTargetContractViolations,
+  parseQualityGateTargets
 } from '../domain';
 import {
   StateRepository,
@@ -168,6 +171,16 @@ export class StartImplementationUseCase {
         sm.mode,
         `Cannot start implementation from stage '${sm.currentStage}'. Pipeline must be in '${STAGE_PLAN}', '${STAGE_APPROVAL}', or '${STAGE_COMPLETED}'.`
       );
+    }
+
+    // Issue #348 (AC1): refuse a plan whose Quality Gate Targets assert a
+    // committed-tree invariant BEFORE the worktree guardrail below, so a
+    // refused approval leaves no orphan `.worktrees/<id>` paired with a
+    // checkpoint that was never written. A resumed IMPLEMENT is a
+    // self-correction retry on an already-approved plan: rewriting it then
+    // would invalidate the digest mid-loop, so the gate-time blockers own it.
+    if (!resumed) {
+      this.assertGateTargetContract(sm, params, workspace);
     }
 
     // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT.
@@ -381,6 +394,48 @@ export class StartImplementationUseCase {
       isSelfCorrection,
       failureDiagnostics: failureDiagnostics ?? null
     };
+  }
+
+  /**
+   * Refuses a plan whose Quality Gate Targets assert a committed-tree invariant
+   * (issue #348, AC1).
+   *
+   * Runs in `codeloop implement`, the second approval entry point, using the
+   * SAME plan resolution the later block uses. The double resolve is
+   * intentional: it keeps the guard before worktree provisioning without
+   * restructuring the plan-resolution flow below.
+   */
+  private assertGateTargetContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: params.issue || sm.issue,
+      planPath: params.planPath || sm.planPath || undefined,
+      planDir: params.planDir || sm.planDir
+    });
+    if (!resolved) return;
+
+    let content: string;
+    try {
+      content = this.planGenerator.readPlanDocument(resolved.planPath);
+    } catch {
+      // An unreadable plan is not a target list; the blank-plan guard reports it.
+      return;
+    }
+
+    const findings = lintQualityGateTargets(parseQualityGateTargets(content).targets);
+    if (findings.length === 0) return;
+
+    const reason = `${formatGateTargetContractViolations(findings)} (plan: ${resolved.planPath})`;
+    if (params.dryRun) {
+      console.warn(`[codeloop] Warning: ${reason}`);
+      return;
+    }
+
+    throw new ValidationError('gateTargets', resolved.planPath, reason);
   }
 
   /**
