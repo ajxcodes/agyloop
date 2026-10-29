@@ -23,6 +23,8 @@ import {
   REGEX_BREAKING_CHANGE_FOOTER,
   REGEX_ISSUE_NUMBER_REF,
   REGEX_LEADING_CONVENTIONAL_PREFIX,
+  REGEX_MILESTONE_TAG,
+  REGEX_KIND_TAG,
   TOKEN_BREAKING_CHANGE,
   DIFF_EXCLUDED_PATTERNS
 } from '../constants';
@@ -244,6 +246,38 @@ export class DiffAnalyzer {
     return REGEX_BREAKING_CHANGE_FOOTER.test(diffText) || diffText.includes(TOKEN_BREAKING_CHANGE);
   }
 
+  /**
+   * Infers the conventional-commit SCOPE from the changed files (#345 in #339).
+   *
+   * A pure function of the SET of files: any permutation yields the same scope.
+   * The rule, stated here because the AC requires the tie-break (including
+   * keyword-before-directory precedence) to live in code, not folklore:
+   *
+   *  1. `explicitScope` wins (unchanged sanitisation).
+   *  2. An empty file set is `null`.
+   *  3. `allMarkdown` := every changed file ends in `.md`.
+   *  4. Per file — ONE score, first match wins:
+   *     a. keyword scopes, matched ONLY against files under `src/` — a test or
+   *        docs filename can no longer out-vote a module (audit extra E3):
+   *        critique|reviewer|review → `reviewer`(3); quality-gate|gate → `gate`(3);
+   *        commit → `commit`(3); planner|discovery → `planner`(3);
+   *        implementer|implementation → `implementer`(3);
+   *        state-machine|state-repository → `state`(2).
+   *        KEYWORD BEFORE DIRECTORY: `src/application/run-review.ts` scores
+   *        `reviewer`, not `app`.
+   *     b. directory scopes (still src/-gated): src/domain → `domain`(2),
+   *        src/ports → `ports`(2), src/application → `app`(2),
+   *        src/infrastructure → `infra`(2), src/presentation|bin → `cli`(2).
+   *     c. `.github/` → `ci`(2).
+   *     d. else, when EVERY changed file is markdown → `docs`(1): a
+   *        documentation scope may only win a markdown-only diff (AC-4.1).
+   *     e. else → no score: `docs` can never win a mixed diff.
+   *  5. Selection: highest total score; ties broken by (i) the scope with the
+   *     higher maximum per-file weight — keyword-backed beats directory-backed
+   *     beats docs — then (ii) the lexicographically smallest scope name.
+   *     Keys are iterated in sorted order: never "first to reach the maximum",
+   *     so the result is independent of the order files appear in the diff.
+   */
   public static inferScope(files: readonly string[], explicitScope?: string | null): string | null {
     if (explicitScope && typeof explicitScope === 'string') {
       // eslint-disable-next-line no-useless-escape
@@ -257,26 +291,39 @@ export class DiffAnalyzer {
       return null;
     }
 
-    const scopeScores = new Map<string, number>();
+    const allMarkdown = files.every((file) => file.toLowerCase().endsWith('.md'));
 
-    const recordScore = (scopeName: string, weight = 1) => {
-      scopeScores.set(scopeName, (scopeScores.get(scopeName) || 0) + weight);
+    // scope -> total score + the highest per-file weight that fed it.
+    const scores = new Map<string, { total: number; maxWeight: number }>();
+    const recordScore = (scopeName: string, weight: number): void => {
+      const entry = scores.get(scopeName);
+      if (entry) {
+        entry.total += weight;
+        if (weight > entry.maxWeight) {
+          entry.maxWeight = weight;
+        }
+      } else {
+        scores.set(scopeName, { total: weight, maxWeight: weight });
+      }
     };
 
     for (const file of files) {
       const lower = file.toLowerCase();
+      // Keyword scopes describe MODULES; they may only match src/ paths, never
+      // the test/docs filenames that merely contain the word (audit extra E3).
+      const underSrc = lower.startsWith('src/');
 
-      if (lower.includes('critique') || lower.includes('reviewer') || lower.includes('review')) {
+      if (underSrc && (lower.includes('critique') || lower.includes('reviewer') || lower.includes('review'))) {
         recordScore('reviewer', 3);
-      } else if (lower.includes('quality-gate') || lower.includes('gate')) {
+      } else if (underSrc && (lower.includes('quality-gate') || lower.includes('gate'))) {
         recordScore('gate', 3);
-      } else if (lower.includes('commit')) {
+      } else if (underSrc && lower.includes('commit')) {
         recordScore('commit', 3);
-      } else if (lower.includes('planner') || lower.includes('discovery')) {
+      } else if (underSrc && (lower.includes('planner') || lower.includes('discovery'))) {
         recordScore('planner', 3);
-      } else if (lower.includes('implementer') || lower.includes('implementation')) {
+      } else if (underSrc && (lower.includes('implementer') || lower.includes('implementation'))) {
         recordScore('implementer', 3);
-      } else if (lower.includes('state-machine') || lower.includes('state-repository')) {
+      } else if (underSrc && (lower.includes('state-machine') || lower.includes('state-repository'))) {
         recordScore('state', 2);
       } else if (lower.startsWith('src/domain/')) {
         recordScore('domain', 2);
@@ -290,18 +337,27 @@ export class DiffAnalyzer {
         recordScore('cli', 2);
       } else if (lower.startsWith('.github/')) {
         recordScore('ci', 2);
-      } else if (lower.endsWith('.md') || lower.startsWith('docs/')) {
+      } else if (allMarkdown) {
+        // Markdown-only diffs only: `docs` never scores in a mixed diff.
         recordScore('docs', 1);
       }
     }
 
-    let topScope: string | null = null;
-    let maxScore = 0;
+    if (scores.size === 0) {
+      return null;
+    }
 
-    for (const [scope, score] of scopeScores.entries()) {
-      if (score > maxScore) {
-        maxScore = score;
+    // Sorted iteration + strict improvement = the stated tie-break (weight
+    // class, then lexicographic), never "first to reach the maximum".
+    let topScope: string | null = null;
+    let topTotal = -1;
+    let topWeight = -1;
+    for (const scope of [...scores.keys()].sort()) {
+      const entry = scores.get(scope) as { total: number; maxWeight: number };
+      if (entry.total > topTotal || (entry.total === topTotal && entry.maxWeight > topWeight)) {
         topScope = scope;
+        topTotal = entry.total;
+        topWeight = entry.maxWeight;
       }
     }
 
@@ -416,6 +472,16 @@ export class DiffAnalyzer {
     // Strip [Task] Phase X:, [Bug], [Feature], etc.
     cleaned = cleaned.replace(REGEX_LEADING_CONVENTIONAL_PREFIX, '');
 
+    // #345 in #339 (AC-4.3): milestone tags (`[Phase 6]`, `[Phase 5]`, …) and
+    // kind tags (`[Bug]`, `[Feature]`, `[Enhancement]`, `[Refactor]`) are
+    // stripped WHEREVER they appear — the anchored prefix strip above only
+    // caught a leading form, so the tags survived mid-string and propagated
+    // into the release notes `ajxcodes/auto-tag` builds from commit subjects.
+    cleaned = cleaned.replace(REGEX_MILESTONE_TAG, ' ').replace(REGEX_KIND_TAG, ' ');
+
+    // Collapse the gaps the global strips left behind.
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
     // Strip trailing periods
     cleaned = cleaned.replace(/\.+$/, '').trim();
 
@@ -453,9 +519,15 @@ export class DiffAnalyzer {
 
     const description = this.cleanDescription(context?.issueTitle, fallbackDescription);
 
+    // #339 (audit extra E2): a markdown-only diff infers type `docs` AND scope
+    // `docs`, which rendered `docs(docs): …`. The scope stays on the plan for
+    // reporting, but the MESSAGE drops the duplicate.
+    const messageScope =
+      inferredType === COMMIT_TYPE_DOCS && inferredScope === 'docs' ? null : inferredScope;
+
     const commitMessage = CommitMessage.create({
       type: inferredType,
-      scope: inferredScope,
+      scope: messageScope,
       description,
       isBreaking,
       issueNumber

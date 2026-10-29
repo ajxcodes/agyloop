@@ -1447,6 +1447,13 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
     test('B1: yolo re-entry after the DISCOVERY park parks and never runs gates', async () => {
       seedDiscoveryCheckpoint();
+      // #339 (item 3): the fixture is the scenario this test's comment names —
+      // a pristine, unpopulated `[Discovery] - ….md` scaffold (proper H1, no
+      // content). The old default content (`# Test Plan`) is an
+      // implementation-shaped document that DISCOVERY-stage resolution can
+      // never return in production and that the kind gate now reports as a
+      // TITLE rejection, not a content park.
+      planGenerator.planContent = PRISTINE_SCAFFOLD;
       const gate = gateMustNotRun();
       let createWorktreeCalls = 0;
       const originalCreateWorktree = worktreeManager.createWorktree;
@@ -1564,6 +1571,9 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     // their OWN park message — the leg the CLI was dropping (finding 3).
     test('B4: plan-mode re-entry parks and names the outstanding RCA work', async () => {
       seedDiscoveryCheckpoint();
+      // See B1: the content-park fixture must carry the discovery H1 — a
+      // foreign first line is now (correctly) reported as a title rejection.
+      planGenerator.planContent = PRISTINE_SCAFFOLD;
       const gate = gateMustNotRun();
 
       const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });
@@ -1591,6 +1601,8 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
     test('B5: standard-mode re-entry parks and names the outstanding RCA work', async () => {
       seedDiscoveryCheckpoint();
+      // See B1: content-park fixture with the discovery H1.
+      planGenerator.planContent = PRISTINE_SCAFFOLD;
       const gate = gateMustNotRun();
 
       const lifecycle = buildYoloLifecycle({ runQualityGateUseCase: gate.useCase });

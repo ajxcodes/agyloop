@@ -252,7 +252,11 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, CommandCapability>> =
   'critique:status': { dryRun: 'refused', json: 'supported' },
   'critique:install': { dryRun: 'supported', json: 'refused' },
   'critique:update': { dryRun: 'supported', json: 'refused' },
-  'opencode:install': { dryRun: 'refused', json: 'refused' },
+  // `opencode install` WRITES two files (the skill asset under
+  // `~/.config/opencode/skills/codeloop/` and the `/codeloop` command entry in
+  // `opencode.json`), so calling it read-only was false (#339 item 4). The
+  // dry-run path resolves both target paths read-only and prints them.
+  'opencode:install': { dryRun: 'supported', json: 'refused' },
   triage: { dryRun: 'supported', json: 'supported' },
   review: { dryRun: 'supported', json: 'supported' },
   // `gate-report` validates AND persists an evidence block (or clears a stale

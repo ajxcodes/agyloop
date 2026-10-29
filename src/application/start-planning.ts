@@ -92,6 +92,31 @@ export interface DiscoveryReportEvidence {
   readonly evaluatedPath?: string | null;
   /** Measured gaps from `DiscoveryReport.describeMissingEvidence()`; null when populated. */
   readonly missingEvidence?: string | null;
+  /**
+   * The FIRST candidate the #320 kind gate rejected for its title (#339 item 3).
+   *
+   * `null` unless a candidate was skipped by `isDiscoveryPlanDocument` and the
+   * report never populated: the park message then names the discriminator (the
+   * first line it found) instead of claiming a title-rejected file lacks RCA
+   * content. The kind gate itself is untouched — only its reason is carried out.
+   */
+  readonly kindRejection?: { readonly path: string; readonly firstLine: string } | null;
+}
+
+/**
+ * What a `plan --dry-run` WOULD do (#339 item 2 + audit extra E1).
+ *
+ * Computed read-only from the same branch the real run takes, so the preview
+ * can never promise a scaffold where the real run reuses (or vice versa), and
+ * absent on a park — a park scaffolds nothing to preview.
+ */
+export interface StartPlanningDryRunPreview {
+  readonly action: 'scaffold' | 'reuse' | 'supplied';
+  /** The directory (or supplied file) the real run would use. */
+  readonly dir?: string;
+  /** The resolved plan title (issue title / --title), never a placeholder guess. */
+  readonly title: string;
+  readonly type: string;
 }
 
 export interface StartPlanningResult {
@@ -120,6 +145,12 @@ export interface StartPlanningResult {
   readonly suppliedPlanPath?: string | null;
   /** The RCA-gate evidence, including every path that was checked. */
   readonly discoveryReportEvidence: DiscoveryReportEvidence;
+  /**
+   * The dry-run preview (#339 item 2 + E1). Set only when `params.dryRun`;
+   * undefined on every real run (the real run prints the scaffold summary it
+   * actually performed instead).
+   */
+  readonly dryRunPreview?: StartPlanningDryRunPreview;
 }
 
 export class StartPlanningUseCase {
@@ -438,12 +469,81 @@ export class StartPlanningUseCase {
       sm.transition(STAGE_PLAN, { note: NOTE_REOPENED_PLAN_FROM_IMPLEMENT });
     }
 
+    // 5b. Dry-run preview (#339 item 2 + audit extra E1): a read-only mirror of
+    // the branch the REAL run takes, computed after the re-entry decision.
+    //
+    // The old preview was an unconditional "Would scaffold …" printed before
+    // the summary legs — false in both directions: it promised a scaffold where
+    // the real run adopts an existing directory, and it printed at a PARK,
+    // where the real run scaffolds nothing. Each arm below names only what the
+    // non-dry path would actually do.
+    let dryRunPreview: StartPlanningDryRunPreview | undefined;
+    if (params.dryRun) {
+      if (discoveryReentry === 'PARK_AT_DISCOVERY') {
+        // A park writes no plan artifacts: nothing to preview.
+        dryRunPreview = undefined;
+      } else if (suppliedPlanPath !== null) {
+        dryRunPreview = {
+          action: 'supplied',
+          dir: suppliedPlanPath,
+          title: planTitle,
+          type: planType
+        };
+      } else {
+        // Stage-less resolution — the same call shape `transition-stage` uses —
+        // so an existing directory resolves whether or not it carries a
+        // discovery file, exactly like the real run's adoption branch.
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: activeIssue,
+          planDir: params.planDir ?? checkpointPlanDir
+        });
+        dryRunPreview =
+          resolved && resolved.planDir
+            ? { action: 'reuse', dir: resolved.planDir, title: planTitle, type: planType }
+            : { action: 'scaffold', title: planTitle, type: planType };
+      }
+    }
+
     // 6. Checkpoint state and update summary log
     //
     // A park is a no-op: a read of a checkpoint that cannot advance must not
     // create or rewrite anything (#301). No save, no summary update.
     if (!params.dryRun && !willPark) {
       await this.stateRepo.save(sm.toSnapshot());
+
+      // #339 (audit extra E6): a run that performed NO RCA must never render
+      // the Discovery row COMPLETED. On the INITIALIZED-entry path (and any
+      // other path that skipped step 5's inspection) no candidate was read yet,
+      // so inspect read-only HERE — the same fail-closed predicate — before the
+      // row is labelled. `--skip-discovery` bypasses it (its row is SKIPPED by
+      // flag, unchanged), and a previously populated report still scores
+      // COMPLETED (evidence is re-inspected, never downgraded).
+      if (!params.skipDiscovery && discoveryReportEvidence.checkedPaths.length === 0) {
+        discoveryReportEvidence = this.inspectDiscoveryReport(
+          workspace,
+          activeIssue,
+          sm,
+          scaffoldInfo,
+          sm.planDir ?? checkpointPlanDir,
+          planTitle
+        );
+      }
+      // ONE rule for both writer sites below: COMPLETED iff a populated report
+      // exists or a discovery dispatch was recorded; otherwise SKIPPED — and a
+      // row that never ran is attributed `-`, never a subagent/model pair for
+      // work that did not happen. `--skip-discovery` keeps its audited
+      // `discovery | model | SKIPPED` shape (issue #284).
+      const discoveryRan =
+        discoveryReportEvidence.populated || sm.discoveryDispatchCount > 0;
+      const discoveryStatus = params.skipDiscovery
+        ? SUMMARY_STATUS_SKIPPED
+        : discoveryRan
+          ? SUMMARY_STATUS_COMPLETED
+          : SUMMARY_STATUS_SKIPPED;
+      const discoverySubagent =
+        params.skipDiscovery || discoveryRan ? discoveryDef.name : '-';
+      const discoveryModel = params.skipDiscovery || discoveryRan ? discoveryDef.model : '-';
 
       const summaryPath = this.resolveSummaryPath(workspace, scaffoldInfo, checkpointPlanDir);
       if (summaryPath) {
@@ -465,9 +565,9 @@ export class StartPlanningUseCase {
         } else if (sm.currentStage === STAGE_PLAN) {
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
-            subagent: discoveryDef.name,
-            model: discoveryDef.model,
-            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED,
+            subagent: discoverySubagent,
+            model: discoveryModel,
+            status: discoveryStatus,
             duration: discoveryDuration
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
@@ -480,9 +580,9 @@ export class StartPlanningUseCase {
         } else {
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
-            subagent: discoveryDef.name,
-            model: discoveryDef.model,
-            status: params.skipDiscovery ? SUMMARY_STATUS_SKIPPED : SUMMARY_STATUS_COMPLETED,
+            subagent: discoverySubagent,
+            model: discoveryModel,
+            status: discoveryStatus,
             duration: discoveryDuration
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
@@ -503,7 +603,8 @@ export class StartPlanningUseCase {
       planType,
       discoveryReentry,
       suppliedPlanPath,
-      discoveryReportEvidence
+      discoveryReportEvidence,
+      dryRunPreview
     };
   }
 
@@ -548,6 +649,7 @@ export class StartPlanningUseCase {
     let populatedPath: string | null = null;
     let bestPath: string | null = null;
     let bestReport: DiscoveryReport | null = null;
+    let kindRejection: { path: string; firstLine: string } | null = null;
 
     try {
       // `findPlanDirectory` ranks a POPULATED candidate first (issue #283), so
@@ -611,6 +713,24 @@ export class StartPlanningUseCase {
           // evidence (issue #320). It stays in `checkedPaths` (attempted ≠
           // evidence) but never names `evaluatedPath`/`populatedPath`.
           if (!isDiscoveryPlanDocument(markdown)) {
+            // #339 (item 3): the gate's REASON is no longer dropped. The first
+            // rejection records the first line it saw, so the park message can
+            // name the title discriminator instead of claiming a file with
+            // perfectly good content "does not yet contain RCA evidence".
+            if (kindRejection === null) {
+              let firstLine = '';
+              for (const rawLine of markdown.split('\n')) {
+                const line = rawLine.replace(/\r$/, '').trim();
+                if (line.length > 0) {
+                  firstLine = line;
+                  break;
+                }
+              }
+              kindRejection = {
+                path: candidate,
+                firstLine: firstLine.length > 0 ? firstLine : '(empty document)'
+              };
+            }
             continue;
           }
           const report = DiscoveryReport.fromMarkdown(markdown);
@@ -643,7 +763,10 @@ export class StartPlanningUseCase {
       populatedPath,
       checkedPaths,
       evaluatedPath: populatedPath ?? bestPath,
-      missingEvidence: populatedPath ? null : (bestReport?.describeMissingEvidence() ?? null)
+      missingEvidence: populatedPath ? null : (bestReport?.describeMissingEvidence() ?? null),
+      // A populated report cannot park, so a rejection recorded before the
+      // winner is irrelevant — surface it only when it shaped the verdict.
+      kindRejection: populatedPath !== null ? null : kindRejection
     };
   }
 

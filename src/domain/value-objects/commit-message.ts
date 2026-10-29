@@ -17,7 +17,8 @@ import {
   REGEX_BREAKING_CHANGE_FOOTER,
   REGEX_ISSUE_NUMBER_REF,
   TOKEN_BREAKING_CHANGE,
-  TOKEN_BREAKING_EXCLAMATION
+  TOKEN_BREAKING_EXCLAMATION,
+  COMMIT_SUBJECT_MAX_LENGTH
 } from '../constants';
 import { ValidationError } from '../errors';
 
@@ -119,20 +120,45 @@ export class CommitMessage {
     Object.freeze(this);
   }
 
+  /**
+   * The conventional-commit SUBJECT (`type(scope): description (#N)`).
+   *
+   * #345 in #339 (AC-4.4): never longer than `COMMIT_SUBJECT_MAX_LENGTH` (72).
+   * The bound lives HERE — not in the drafter — so the drafted subject and the
+   * committed subject agree by construction: `toFullMessage()` headers with
+   * this method. An over-long description is cut at a WORD boundary (the last
+   * space that fits the remaining budget); a hard cut at the budget is used
+   * only when the fitting head contains no space at all. An explicit `-m`
+   * override never reaches this path.
+   */
   public toSingleLine(): string {
     const scopePart = this.scope ? `(${this.scope})` : '';
     const breakingMark = this.isBreaking ? TOKEN_BREAKING_EXCLAMATION : '';
-    let desc = this.description;
+    const desc = this.description;
 
+    let issueSuffix = '';
     if (this.issueNumber !== null) {
       const issueTokenParen = `(#${this.issueNumber})`;
       const issueTokenHash = `#${this.issueNumber}`;
       if (!desc.includes(issueTokenParen) && !desc.includes(issueTokenHash)) {
-        desc = `${desc} ${issueTokenParen}`;
+        issueSuffix = ` ${issueTokenParen}`;
       }
     }
 
-    return `${this.type}${scopePart}${breakingMark}: ${desc}`;
+    const prefix = `${this.type}${scopePart}${breakingMark}: `;
+    const budget = COMMIT_SUBJECT_MAX_LENGTH - prefix.length - issueSuffix.length;
+
+    // budget < 1 is only reachable with a pathological (near-72-char) explicit
+    // scope; refusing to truncate there keeps the tail tokens intact rather
+    // than emitting a malformed empty description.
+    let boundedDesc = desc;
+    if (budget > 0 && prefix.length + desc.length + issueSuffix.length > COMMIT_SUBJECT_MAX_LENGTH) {
+      const head = desc.slice(0, budget);
+      const lastSpace = head.lastIndexOf(' ');
+      boundedDesc = lastSpace > 0 ? head.slice(0, lastSpace) : head;
+    }
+
+    return `${prefix}${boundedDesc}${issueSuffix}`;
   }
 
   public toFullMessage(): string {

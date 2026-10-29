@@ -244,6 +244,29 @@ export interface TwoTierInvariantOutcome {
  * the report's own `blockingFindings()`, so every two-argument caller keeps
  * the pre-#349 behaviour exactly.
  */
+/**
+ * Deduplicates findings by identity key (`path:line:severity:body`) (#339
+ * audit extra E5).
+ *
+ * The escalated verdict now carries the WHOLE tier-2 report beside the
+ * tier-1 verdict's findings, so a finding present in both must not double-count
+ * in `findingsCount`. Blocking behaviour is untouched — this only widens what
+ * the `--json` surface REPORTS.
+ */
+function dedupeFindings(findings: readonly AiReviewFinding[]): AiReviewFinding[] {
+  const seen = new Set<string>();
+  const unique: AiReviewFinding[] = [];
+  for (const finding of findings) {
+    const key = `${finding.path}:${finding.line}:${finding.severity}:${finding.body}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(finding);
+  }
+  return unique;
+}
+
 export function applyTwoTierInvariant(
   verdict: ReviewVerdict,
   aiReport: AiReviewReport | null,
@@ -274,6 +297,20 @@ export function applyTwoTierInvariant(
     const ignoredCount = aiReport.nonActionableBlockingFindings().length;
     const ignoredClause =
       ignoredCount > 0 ? ` ${formatCritiqueIgnoredAffirmations(ignoredCount)}` : '';
+    // #339 (audit extra E5): the escalated verdict keeps EVERY report finding
+    // (deduplicated), not just the surviving blocking ones — `ReviewVerdict.
+    // findingsCount` is `findings.length`, and the JSON surface must distinguish
+    // "1 error + 12 warnings" from "1 error". Two exclusions are deliberate:
+    // an operator-REFUTED finding stays out (issue #349 — a refutation is an
+    // operator fact, U4), and duplicates of tier-1 findings are collapsed.
+    // `remaining` (blocking only) still drives the summary, criteria,
+    // remediation and the escalation decision itself.
+    const refutedIndices = new Set(
+      (refutations?.applied ?? []).map((applied) => applied.findingIndex)
+    );
+    const reportFindings = aiReport.findings.filter(
+      (_finding, index) => !refutedIndices.has(index)
+    );
     return {
       escalatedBy: 'critique',
       verdict: new ReviewVerdict({
@@ -282,7 +319,7 @@ export function applyTwoTierInvariant(
         unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...critiqueCriteria],
         remediationGuidance: [...verdict.remediationGuidance, ...critiqueRemediation],
         confidenceLevel: aiReport.confidence.level,
-        findings: [...verdict.findings, ...remaining]
+        findings: dedupeFindings([...verdict.findings, ...reportFindings])
       })
     };
   }

@@ -131,3 +131,54 @@ describe('applyTwoTierInvariant escalation count', () => {
     assert.strictEqual(outcome.verdict, verdict);
   });
 });
+
+// #339 (audit extra E5 / T12): the escalated verdict's `findingsCount` keeps
+// counting every report finding — N1-N5 above pin that BLOCKING behaviour
+// (summary, criteria, remediation, escalation decision) is unchanged, which is
+// the mandated T12.2 regression: bypassed reports still map to SKIPPED and the
+// summary/criteria still count blocking only.
+describe('escalated verdict findingsCount keeps every report finding (#339 E5)', () => {
+  test('T12.1 (N6): APPROVED verdict + 1 blocking + 3 warnings escalates with findingsCount 4', () => {
+    const outcome: any = applyTwoTierInvariant(
+      approvedVerdict(),
+      report([
+        finding('critical', 10),
+        finding('warning', 11),
+        finding('suggestion', 12),
+        finding('info', 13)
+      ])
+    );
+
+    assert.strictEqual(outcome.escalatedBy, 'critique');
+    assert.strictEqual(outcome.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(outcome.verdict.findings.length, 4, 'all 4 report findings must be kept');
+    // The `--json` surface named by the AC reads the same count.
+    assert.strictEqual(outcome.verdict.toJSON().findingsCount, 4);
+
+    // Blocking behaviour is untouched: the summary and criteria still count
+    // only the blocking finding.
+    assert.ok(
+      outcome.verdict.summary.includes('detected 1 blocking/error violation(s)'),
+      outcome.verdict.summary
+    );
+    assert.strictEqual(outcome.verdict.unfulfilledCriteria.length, 1);
+  });
+
+  test('N7: a duplicate of a tier-1 finding is not double-counted', () => {
+    const shared = finding('critical', 10);
+    const verdict = new ReviewVerdict({
+      status: VERDICT_APPROVED,
+      summary: 'reviewer approved',
+      confidenceLevel: 'High',
+      findings: [shared]
+    });
+    const outcome: any = applyTwoTierInvariant(
+      verdict,
+      report([shared, finding('warning', 11)])
+    );
+
+    assert.strictEqual(outcome.escalatedBy, 'critique');
+    assert.strictEqual(outcome.verdict.findings.length, 2, 'deduplicated: 1 tier-1 + 1 new');
+    assert.strictEqual(outcome.verdict.toJSON().findingsCount, 2);
+  });
+});

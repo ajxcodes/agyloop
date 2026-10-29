@@ -1939,6 +1939,26 @@ export const REGEX_ISSUE_NUMBER_REF = /#(\d+)/;
 export const REGEX_POSITIONAL_ISSUE_ID = /^#?(\d+)$/;
 export const REGEX_LEADING_CONVENTIONAL_PREFIX =
   /^(?:\[(?:task|feat|feature|fix|bug|refactor|chore|perf|docs)\]\s*(?:phase\s*\d+:?\s*)?|feat|fix|refactor|chore|test|perf|docs|style):\s*/i;
+/**
+ * Milestone and kind tags carried in every issue title of a phase milestone
+ * (issue #345 in #339, AC-4.3).
+ *
+ * They are release-notes poison: the commit subject is the only thing
+ * `ajxcodes/auto-tag` consumes, so `[Phase 6]` / `[Bug]` surviving into the
+ * description propagates into the changelog. Stripped GLOBALLY (not only at
+ * position 0) — a milestone/kind tag is never valid description content.
+ */
+export const REGEX_MILESTONE_TAG = /\[Phase\s+\d+\]/gi;
+export const REGEX_KIND_TAG = /\[(?:Bug|Feature|Enhancement|Refactor)\]/gi;
+
+/**
+ * The conventional-commit subject limit (issue #345 in #339, AC-4.4).
+ *
+ * `CommitMessage.toSingleLine()` truncates the DESCRIPTION at a word boundary
+ * to respect it, so the drafted subject and the committed subject agree by
+ * construction (single source).
+ */
+export const COMMIT_SUBJECT_MAX_LENGTH = 72;
 
 export const TOKEN_BREAKING_CHANGE = 'BREAKING CHANGE:' as const;
 export const TOKEN_BREAKING_EXCLAMATION = '!' as const;
@@ -2043,6 +2063,18 @@ export function withRecordedPauseHint(
  */
 export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
   'Parked at DISCOVERY for RCA: the discovery report does not yet contain RCA evidence. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
+/**
+ * The park headline for a report rejected by the KIND gate (its first line is
+ * not the scaffold title), issue #320's message half + #339 item 3.
+ *
+ * Distinct from `NOTE_DISCOVERY_PARK_AWAITING_RCA` on purpose: a file rejected
+ * for its TITLE has fine content, so claiming it "does not yet contain RCA
+ * evidence" is false — and the operator would bisect the wrong thing. The
+ * `{firstLine}` slot names the discriminator the gate actually saw, so the two
+ * rejection reasons are distinguishable at the headline.
+ */
+export const NOTE_DISCOVERY_PARK_KIND_MISMATCH =
+  'Parked at DISCOVERY for RCA: the discovery report\'s first line must be the `# [Discovery] - …` scaffold title (found: \'{firstLine}\'). Run `codeloop next` to dispatch the discovery subagent, fix the title (or populate an existing titled report), then re-run. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
 /**
  * Recorded in history metadata when `codeloop next --restart` re-opens a
  * COMPLETED checkpoint, so the destructive reset is auditable from `status`.
@@ -3808,14 +3840,25 @@ export const NOTE_BLANK_PLAN_DISPATCH_PLANNER =
  * the resume hint is appended only when a pause really exists, because a park
  * with `pausedAtGate: null` cannot be resumed and `next --json` reports
  * `pause: null` there.
+ *
+ * `kindRejection` (#339, item 3): when present the BASE NOTE is the kind
+ * headline naming the first line the gate found, not the generic "does not yet
+ * contain RCA evidence" — a title-rejected report has fine content, so the
+ * content claim would be false. The missing-evidence breakdown is still appended
+ * when a content gap was ALSO measured (a mixed rejection), so the two reasons
+ * stay distinguishable and neither is hidden.
  */
 export function formatDiscoveryParkAwaitingRca(
   checkedPaths?: string | null,
   missingEvidence?: string | null,
   evaluatedPath?: string | null,
-  pausedAtGate?: string | null
+  pausedAtGate?: string | null,
+  kindRejection?: { readonly path: string; readonly firstLine: string } | null
 ): string {
-  const parts: string[] = [withRecordedPauseHint(NOTE_DISCOVERY_PARK_AWAITING_RCA, pausedAtGate)];
+  const baseNote = kindRejection
+    ? NOTE_DISCOVERY_PARK_KIND_MISMATCH.replace('{firstLine}', kindRejection.firstLine)
+    : NOTE_DISCOVERY_PARK_AWAITING_RCA;
+  const parts: string[] = [withRecordedPauseHint(baseNote, pausedAtGate)];
 
   const missing = (missingEvidence ?? '').trim();
   if (missing.length > 0) {

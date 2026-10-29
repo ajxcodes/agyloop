@@ -17,6 +17,7 @@ import {
   STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_REVIEW,
+  MODE_PLAN,
   MODE_STANDARD,
   STATE_SCHEMA_VERSION,
   EXECUTION_MODES,
@@ -33,6 +34,21 @@ export interface StateHistoryEntry {
   readonly timestamp: string;
   readonly metadata?: Record<string, unknown>;
 }
+
+/**
+ * The stages `mode: plan` legitimately DESCRIBES (#339 item 11).
+ *
+ * A plan-only run halted at APPROVAL is exactly that — still plan. The first
+ * transition past APPROVAL is real implementation work, so the CHECKPOINT FIELD
+ * itself flips to `standard`: `status` prints the raw field, and the field and
+ * the rendered `Execution Mode` cell must never disagree.
+ */
+const PLAN_PHASE_STAGES: ReadonlySet<string> = new Set<string>([
+  STAGE_INITIALIZED,
+  STAGE_DISCOVERY,
+  STAGE_PLAN,
+  STAGE_APPROVAL
+]);
 
 /**
  * What this run recorded about its delivery PR (issue #315, AC-24 / #332).
@@ -605,6 +621,17 @@ export class StateMachine {
     const now = new Date().toISOString();
     this._stage = target;
     this._updatedAt = now;
+    // #339 (item 11): `plan` mode describes the PLAN phase. The first
+    // transition past APPROVAL is real implementation work, so the CHECKPOINT
+    // FIELD itself must change — `status` prints the raw field, and the field
+    // and the rendered cell must never disagree (a COMPLETED run that
+    // implemented/gated/reviewed/committed no longer renders `Execution Mode:
+    // plan`). A plan-only run halted at APPROVAL keeps `plan` (truthful).
+    // Only MODE_PLAN is affected; YOLO/standard and `setMode` are untouched,
+    // and `isLegalTransition` is untouched — mode is not a legality input here.
+    if (this._mode === MODE_PLAN && !PLAN_PHASE_STAGES.has(target.value)) {
+      this._mode = MODE_STANDARD;
+    }
     // A transition INTO REVIEW starts a fresh review round, so the dispatch
     // record of the previous round must not leak into it (issue #272).
     if (target.value === STAGE_REVIEW) {

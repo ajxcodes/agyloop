@@ -215,3 +215,49 @@ describe('Skill <-> CLI command contract (issue #269)', () => {
     assert.ok(documented.includes('opencode'), '`opencode` must be in the reconciled registry');
   });
 });
+
+// #339 items 6 & 7: the SKILL row and the capability table must agree, and the
+// `--restart` cell must state the TRIAGE precedence both the help line and the
+// re-entry policy encode (the policy itself is untouched — see
+// lifecycle-reentry-policy.test.ts T7.3).
+describe('Skill flag rows <-> capability table (issue #339, AC-2.3/AC-2.4)', () => {
+  const { COMMAND_CAPABILITIES } = require('../../dist/presentation/cli-flags');
+  // The SHIPPED operator skill (the plan's fix site) — not the OpenCode
+  // `integrations/opencode` asset, which is a different, shorter document.
+  const AGYLOOP_SKILL_FILE = path.join(PROJECT_ROOT, 'skills', 'agyloop', 'SKILL.md');
+
+  function skillRows(): string[] {
+    return fs.readFileSync(AGYLOOP_SKILL_FILE, 'utf8').split('\n');
+  }
+
+  function rowWith(prefix: string): string {
+    const row = skillRows().find((line) => line.startsWith(prefix));
+    assert.ok(row, `the skill must document a row starting with ${prefix}`);
+    return row!;
+  }
+
+  test('T6.1 (AC-2.3): the skill documents next --dry-run with wouldWrite and the table says supported', () => {
+    const nextRow = rowWith('| `codeloop next');
+    // #337 fixed the row; this pins the two halves TOGETHER so they cannot
+    // drift apart again ("tick on verification" — no source edit).
+    assert.ok(nextRow.includes('--dry-run'), `next --dry-run must be documented:\n${nextRow}`);
+    assert.ok(nextRow.includes('wouldWrite'), `wouldWrite must be documented:\n${nextRow}`);
+    assert.strictEqual(
+      COMMAND_CAPABILITIES.next.dryRun,
+      'supported',
+      'the capability table must agree with the skill'
+    );
+  });
+
+  test('T7.2 (AC-2.4): the skill --restart cell states the TRIAGE precedence', () => {
+    const restartRow = skillRows().find((line) => line.includes('`--restart`'));
+    assert.ok(restartRow, 'the skill must document the --restart flag');
+    assert.match(restartRow, /TRIAGE/, `the TRIAGE precedence must be named:\n${restartRow}`);
+    assert.match(
+      restartRow,
+      /undispositioned review feedback/,
+      `the precedence condition must be stated:\n${restartRow}`
+    );
+    assert.match(restartRow, /DISCOVERY/, `DISCOVERY remains the other outcome:\n${restartRow}`);
+  });
+});

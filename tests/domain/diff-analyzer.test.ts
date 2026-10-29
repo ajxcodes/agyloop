@@ -163,10 +163,14 @@ describe('DiffAnalyzer Domain Service', () => {
     assert.strictEqual(plan.commitMessage.type, 'feat');
     assert.strictEqual(plan.commitMessage.scope, 'reviewer');
     assert.strictEqual(plan.commitMessage.issueNumber, 30);
+    // #339 (AC-4.4): the subject is bounded at 72 chars, cut at a WORD
+    // boundary. The old pin expected the whole 89-char title — the defective
+    // behaviour this issue removes (the description itself keeps the full text).
     assert.strictEqual(
       plan.commitMessage.toSingleLine(),
-      'feat(reviewer): implement Interactive Conventional Commit Drafter & Human Approval Gate (#30)'
+      'feat(reviewer): implement Interactive Conventional Commit Drafter (#30)'
     );
+    assert.ok(plan.commitMessage.toSingleLine().length <= 72);
   });
 
   describe('Context Shielding & Diff Filtering', () => {
@@ -271,5 +275,195 @@ index 3333333..4444444 100644
       assert.ok(stat.includes('insertions(+)'));
       assert.ok(stat.includes('deletions(-)'));
     });
+  });
+});
+
+describe('commit draft truthfulness (issue #345 in #339: scope, tags, length)', () => {
+  const rotate = (files: readonly string[], n: number): string[] => [
+    ...files.slice(n),
+    ...files.slice(0, n)
+  ];
+
+  /** The #336 delivery shape: 3 source files, 9 test files, 2 markdown files. */
+  const SET_336 = [
+    'docs/commit-guidelines.md',
+    'skills/agyloop/SKILL.md',
+    'src/application/triage-pr-comments.ts',
+    'src/domain/constants.ts',
+    'src/presentation/cli.ts',
+    'tests/application/triage-pr-comments.test.ts',
+    'tests/application/manage-worktree.test.ts',
+    'tests/domain/constants.test.ts',
+    'tests/infrastructure/git-worktree-manager.test.ts',
+    'tests/presentation/cli-triage-dismiss-report.test.ts',
+    'tests/presentation/cli-status-triage-disposition.test.ts',
+    'tests/domain/value-objects.test.ts',
+    'tests/architecture/operator-strings.test.ts',
+    'tests/presentation/cli-plan-output.test.ts'
+  ];
+
+  test('T11.1 (AC-4.1/4.2/4.5): the #336 file set resolves to a module scope in every order, never docs', () => {
+    assert.strictEqual(SET_336.length, 14);
+    const orders = [
+      [...SET_336].sort(),
+      [...SET_336].sort().reverse(),
+      rotate(SET_336, 3),
+      rotate(SET_336, 7),
+      rotate(SET_336, 11)
+    ];
+    const results = orders.map((files) => DiffAnalyzer.inferScope(files));
+
+    assert.strictEqual(
+      new Set(results).size,
+      1,
+      `scope must be order-independent, got: ${results.join(', ')}`
+    );
+    assert.notStrictEqual(results[0], 'docs', 'two .md files must not outrank the source modules');
+    // app(2) + cli(2) + domain(2): equal totals, equal weight → the stated
+    // tie-break is lexicographic, so `app` — never "first to reach the max".
+    assert.strictEqual(results[0], 'app');
+  });
+
+  test('T11.2 (AC-4.1/4.5): a two-.md-only diff still resolves to docs', () => {
+    assert.strictEqual(DiffAnalyzer.inferScope(['skills/agyloop/SKILL.md', 'docs/x.md']), 'docs');
+  });
+
+  test('T11.3 (AC-4.1/4.5): two .md files plus one src/ file resolve to the module scope in both orders', () => {
+    const files = ['skills/agyloop/SKILL.md', 'docs/x.md', 'src/application/x.ts'];
+    assert.strictEqual(DiffAnalyzer.inferScope(files), 'app');
+    assert.strictEqual(DiffAnalyzer.inferScope([...files].reverse()), 'app');
+    assert.notStrictEqual(DiffAnalyzer.inferScope(files), 'docs');
+  });
+
+  test('T11.4 (AC-4.2 / E3): keyword scopes never match test or docs paths', () => {
+    assert.strictEqual(
+      DiffAnalyzer.inferScope(['tests/application/triage-discovery.test.ts', 'src/application/x.ts']),
+      'app',
+      'a test filename must not out-vote the module with `planner`'
+    );
+    assert.strictEqual(
+      DiffAnalyzer.inferScope(['docs/commit-guidelines.md', 'src/application/x.ts']),
+      'app',
+      'a docs path must not match the `commit` keyword'
+    );
+    assert.strictEqual(
+      DiffAnalyzer.inferScope(['tests/presentation/cli-review.test.ts', 'src/presentation/cli.ts']),
+      'cli',
+      'a test filename must not out-vote the module with `reviewer`'
+    );
+  });
+
+  test('T11.5 (AC-4.2): keyword-before-directory precedence is stated and pinned', () => {
+    // The keyword wins over the `src/application` directory for THIS file.
+    assert.strictEqual(DiffAnalyzer.inferScope(['src/application/run-review.ts']), 'reviewer');
+    // Directory scopes still resolve for files with no keyword.
+    assert.strictEqual(DiffAnalyzer.inferScope(['src/application/alpha.ts']), 'app');
+    assert.strictEqual(DiffAnalyzer.inferScope(['src/domain/constants.ts']), 'domain');
+    assert.strictEqual(DiffAnalyzer.inferScope(['src/presentation/cli.ts']), 'cli');
+    assert.strictEqual(DiffAnalyzer.inferScope(['.github/workflows/ci.yml']), 'ci');
+  });
+
+  test('T11.6 (AC-4.2): the tie-break is weight class, then lexicographic — never first-to-reach', () => {
+    // Equal TOTALS (6 vs 6) with different weight classes: keyword-backed (3)
+    // beats directory-backed (2), in every order.
+    const weighted = [
+      'src/presentation/review-a.ts',
+      'src/domain/review-b.ts',
+      'src/application/alpha.ts',
+      'src/application/beta.ts',
+      'src/application/gamma.ts'
+    ];
+    const weightedResults = [
+      [...weighted].sort(),
+      [...weighted].sort().reverse(),
+      rotate(weighted, 2),
+      rotate(weighted, 4)
+    ].map((files) => DiffAnalyzer.inferScope(files));
+    assert.deepStrictEqual(
+      weightedResults,
+      ['reviewer', 'reviewer', 'reviewer', 'reviewer'],
+      `weight-class tie-break must be order-independent, got: ${weightedResults.join(', ')}`
+    );
+
+    // Equal totals AND equal weight → lexicographic, in every order.
+    const tied = ['src/application/a.ts', 'src/domain/b.ts'];
+    const tiedResults = [
+      [...tied],
+      [...tied].reverse(),
+      rotate(tied, 1)
+    ].map((files) => DiffAnalyzer.inferScope(files));
+    assert.deepStrictEqual(
+      tiedResults,
+      ['app', 'app', 'app'],
+      `lexicographic tie-break must be order-independent, got: ${tiedResults.join(', ')}`
+    );
+  });
+
+  test('T11.7 (AC-4.3/4.5): milestone and kind tags are stripped wherever they appear', () => {
+    const r1 = DiffAnalyzer.cleanDescription(
+      '[Phase 6] [Bug] Operator output is false: plan misreports itself',
+      'fallback'
+    );
+    assert.ok(!/\[Phase\s+\d+\]/.test(r1), `milestone tag survived: ${r1}`);
+    assert.ok(!/\[Bug\]/.test(r1), `kind tag survived: ${r1}`);
+    assert.ok(r1.startsWith('operator output is false'), r1);
+
+    // Mid-string tags (not position 0) are stripped too.
+    const r2 = DiffAnalyzer.cleanDescription('[Phase 5] a middle [Feature] tag case', 'fallback');
+    assert.ok(!/\[Phase\s+\d+\]/.test(r2), `mid-string milestone tag survived: ${r2}`);
+    assert.ok(!/\[Feature\]/.test(r2), `mid-string kind tag survived: ${r2}`);
+    assert.strictEqual(r2, 'a middle tag case');
+
+    // Everything stripped away → the fallback, not an empty subject.
+    const r3 = DiffAnalyzer.cleanDescription('[Phase 6] [Bug]  ', 'fallback');
+    assert.strictEqual(r3, 'fallback');
+
+    // The leading conventional prefix keeps its old behaviour.
+    const r4 = DiffAnalyzer.cleanDescription('fix: Resolve the login crash', 'fallback');
+    assert.strictEqual(r4, 'resolve the login crash');
+  });
+
+  test('T11.9 (AC-4.6 / E2): a markdown-only diff never renders docs(docs):', () => {
+    const diff = ['a.md', 'b.md']
+      .map(
+        (f) =>
+          `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-x\n+y\n`
+      )
+      .join('');
+    const plan = DiffAnalyzer.analyzeDiff(diff, {
+      issueTitle: '[Phase 6] [Bug] markdown-only change'
+    });
+
+    assert.strictEqual(plan.inferredType, COMMIT_TYPE_DOCS);
+    const subject = plan.commitMessage.toSingleLine();
+    assert.ok(subject.startsWith('docs: '), `expected a docs subject, got: ${subject}`);
+    assert.ok(!subject.startsWith('docs(docs):'), `scope duplication is back: ${subject}`);
+    // The scope is still REPORTED for diagnostics…
+    assert.strictEqual(plan.inferredScope, 'docs');
+    // …but the message renders no duplicate.
+    assert.strictEqual(plan.commitMessage.scope, null);
+  });
+
+  test('T11.10 (AC-4.5): inferType is unchanged on the existing fixtures', () => {
+    assert.strictEqual(
+      DiffAnalyzer.inferType(['src/application/run-review.ts'], {
+        issueTitle: '[Bug] Fix parsing error in review verdict'
+      }),
+      COMMIT_TYPE_FIX
+    );
+    assert.strictEqual(DiffAnalyzer.inferType(['tests/application/a.ts', 'tests/domain/b.test.ts']), COMMIT_TYPE_TEST);
+    assert.strictEqual(DiffAnalyzer.inferType(['.github/workflows/ci.yml']), COMMIT_TYPE_CI);
+    assert.strictEqual(DiffAnalyzer.inferType(['package.json', 'package-lock.json']), COMMIT_TYPE_BUILD);
+  });
+
+  test('T11.11 (AC-4.2): an explicit scope still wins with its sanitisation', () => {
+    assert.strictEqual(
+      DiffAnalyzer.inferScope(['src/application/x.ts'], 'MyFeature!'),
+      'myfeature'
+    );
+    // A sanitised-to-empty explicit scope falls back to inference.
+    assert.strictEqual(DiffAnalyzer.inferScope(['src/application/x.ts'], '!!!'), 'app');
+    assert.strictEqual(DiffAnalyzer.inferScope([], 'given'), 'given');
+    assert.strictEqual(DiffAnalyzer.inferScope([]), null);
   });
 });

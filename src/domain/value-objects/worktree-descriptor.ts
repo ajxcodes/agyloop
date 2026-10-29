@@ -21,6 +21,12 @@ export interface WorktreeDescriptorProps {
    * a freshly created branch.
    */
   readonly reusedBranchCommit?: string;
+  /**
+   * Git reports the registration `prunable` (its directory is gone), issue
+   * #340 in #339. Defaults `false`; the key is serialised ONLY when true so
+   * existing fixtures' key sets do not change.
+   */
+  readonly prunable?: boolean;
 }
 
 export class WorktreeDescriptor {
@@ -31,6 +37,7 @@ export class WorktreeDescriptor {
   public readonly slug: string;
   public readonly isIsolated: boolean;
   public readonly reusedBranchCommit: string | undefined;
+  public readonly prunable: boolean;
 
   constructor(props: WorktreeDescriptorProps) {
     if (!props.taskId && props.taskId !== 0) {
@@ -64,6 +71,7 @@ export class WorktreeDescriptor {
     this.isIsolated = props.isIsolated ?? true;
     const cleanReusedCommit = props.reusedBranchCommit ? props.reusedBranchCommit.trim() : '';
     this.reusedBranchCommit = cleanReusedCommit ? cleanReusedCommit : undefined;
+    this.prunable = props.prunable === true;
 
     Object.freeze(this);
   }
@@ -140,7 +148,10 @@ export class WorktreeDescriptor {
       isIsolated: this.isIsolated,
       // Trace metadata: included only when a pre-existing local branch was reused,
       // so the key set of a non-reusing descriptor stays exactly as before (#264).
-      ...(this.reusedBranchCommit !== undefined ? { reusedBranchCommit: this.reusedBranchCommit } : {})
+      ...(this.reusedBranchCommit !== undefined ? { reusedBranchCommit: this.reusedBranchCommit } : {}),
+      // Same conditional-key pattern (#339 item 5): an ACTIVE registration
+      // serialises exactly as it always did; only `prunable` adds the key.
+      ...(this.prunable ? { prunable: true } : {})
     };
   }
 
@@ -164,7 +175,8 @@ export class WorktreeDescriptor {
       baseBranch: json.baseBranch,
       slug: json.slug,
       isIsolated: json.isIsolated,
-      reusedBranchCommit: reusedCommit
+      reusedBranchCommit: reusedCommit,
+      prunable: json.prunable === true
     });
   }
 }

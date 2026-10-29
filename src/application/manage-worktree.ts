@@ -486,7 +486,11 @@ export class ManageWorktreeUseCase {
   }
 
   /**
-   * Lists all active isolated worktrees registered in the repository.
+   * Lists all isolated worktrees registered in the repository.
+   *
+   * #339 (item 5): the message names how many registrations git itself calls
+   * `prunable`, so the summary cannot keep calling a dead registration
+   * "active".
    */
   public async list(
     params: ListWorktreesParams = {}
@@ -495,10 +499,11 @@ export class ManageWorktreeUseCase {
       workspaceDir: params.workspaceDir,
       includeExternal: params.includeExternal
     });
+    const prunableCount = worktrees.filter((wt) => wt.prunable === true).length;
 
     return {
       success: true,
-      message: `Found ${worktrees.length} active isolated worktree(s).`,
+      message: `Found ${worktrees.length} isolated worktree(s) (${prunableCount} prunable).`,
       data: worktrees
     };
   }
