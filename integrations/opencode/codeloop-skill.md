@@ -17,12 +17,12 @@ metadata:
 To advance or inspect the CodeLoop pipeline:
 1. `codeloop next --json`: Inspect the current pipeline stage and get the next recommended action.
 2. `codeloop plan <issue>`: Initiate discovery or architectural planning for a GitHub issue.
-3. `codeloop implement`: Begin surgical code implementation inside an isolated worktree.
+3. `codeloop implement`: Begin surgical code implementation inside an isolated worktree. Consumes a persisted `APPROVAL` pause and banks the wait, so `next --json` is immediately actionable.
 4. `codeloop next --json`: Invoke the gate subagent, which runs automated typechecking, linting, and test suites. (The former standalone `gates` subcommand was removed - `codeloop next` is the only entry point.)
 5. `codeloop review --issue <n> --verdict-file <path>`: As the orchestrator, record the dispatched AI Reviewer Subagent's verdict (`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED`) into the checkpoint. The reviewer is read-only and only emits the block; write its verdict block to a file and pass it with `--verdict-file` (or pipe it with `--verdict-stdin`). Pass `--critique-report <path|->` when a critique JSON report already exists, so the verdict is cross-checked without running the critique CLI again. `codeloop review` refuses to run inside a dispatched subagent session. `codeloop review --issue <n>` with no verdict runs the critique-based AI review instead.
 6. `codeloop commit`: Draft and execute conventional commits with interactive approval. Add `--create-pr` to have the tool open the PR itself (base = the collector branch, with the sanitized body, `Closes #<id>` and the milestone). Without it the branch is pushed but the run is **not delivered**; the tool prints the single `gh pr create …` command, and delivery completes only when that PR is **merged**. `--commit-after` (including `yolo --commit-after`) implies `--create-pr`. A PR that targets a collector branch (`phase/*` / `feature/*`) does **not** auto-close its issue on merge — GitHub **closing keywords** fire only on the default branch — so `commit` prints the caveat (whether the issue came from `--issue` or the checkpoint) and `codeloop sync` closes the issue after the merge.
 7. `codeloop yolo <issue>`: Run the end-to-end autonomous lifecycle pipeline.
-8. `codeloop resume`: Clear a persisted gate pause and checkpoint the wait time.
+8. `codeloop resume`: Clear a persisted gate pause with no forward command (e.g. `CIRCUIT_BREAKER`) and checkpoint the wait time. The command that answers a gate clears its own pause: `implement` → `APPROVAL`, `commit` → `COMMIT`, `next` → terminal `TRIAGE`.
 
 ## Recording a dispatched verdict
 
@@ -72,7 +72,7 @@ A routing action requires the checkpoint to be at the **TRIAGE** gate: run `code
 
 `codeloop next --json` returns `actionable: false` plus a `pause` object (`{ gate, pausedAt, resumeCommand, message }`) when the pipeline is halted. `actionable` means "a subagent may be dispatched right now": it is `true` only for a `subagent` directive with no persisted pause. It is `false` for every human gate (COMMIT included), for a persisted pause, for `COMPLETED` and `INITIALIZED`, and for every stage whose completion condition is already met — those report `actionType: "advance"` with no `invocationPayload` and name the command to run instead. A human gate's `resumeCommand` is `null` — there is nothing to resume; run the command its message names. The most common persisted cause is a provider quota rejection (HTTP 429 / `RESOURCE_EXHAUSTED`, exit code `2`), which is checkpointed — nothing is lost.
 
-Resolve the blocking condition, then run `codeloop resume` (accepts `--json` and `--dry-run`) **before** calling `codeloop next --json` again. `next` never clears a pause other than the terminal TRIAGE exit above; `resume` is the only command that clears any other pause, so never loop on `next` to clear it.
+Resolve the blocking condition, then run the command that ANSWERS the gate — `codeloop implement` for `APPROVAL`, `codeloop commit` for `COMMIT`, `codeloop next` for a terminal `TRIAGE` — or `codeloop resume` (accepts `--json` and `--dry-run`) for a pause with no forward command, **before** calling `codeloop next --json` again. `next` never clears a pause other than the terminal TRIAGE exit above; `resume` is the way out of a pause that no forward command answers (e.g. `CIRCUIT_BREAKER`), so never loop on `next` to clear it.
 
 ## Model Configuration
 OpenCode subagent invocations run with `--model <model>`, defaulting to `ollama/ornith:9b-128k` (or overridden via `OPENCODE_MODEL` environment variable or `--model` CLI argument).

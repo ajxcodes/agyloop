@@ -38,7 +38,8 @@ import {
   COMMIT_EXCLUDED_PATHSPECS,
   isCommitExcludedPath,
   GATE_COMMIT,
-  measureStageWindowMs
+  measureStageWindowMs,
+  IssueNumber
 } from '../domain';
 import {
   StateRepository,
@@ -396,12 +397,14 @@ export class ExecuteCommitUseCase {
     // Issue #351: report the issue the body's `Closes` line actually names.
     // `params.issue` is typed `number | string`; the keyword interpolates it
     // verbatim, so normalise only a genuinely numeric token and never invent one.
+    // Issue #354 (nit 3): `IssueNumber` already owns the definition of a valid
+    // issue number; a second inline `/^\d+$/` here could drift from it. The
+    // value object returns null instead of throwing, which is exactly the
+    // "never invent an operand" contract #351 asked for.
     const resolvedIssue: number | null =
-      typeof issueId === 'number'
-        ? issueId
-        : typeof issueId === 'string' && /^\d+$/.test(issueId)
-          ? Number(issueId)
-          : null;
+      issueId === null || issueId === undefined
+        ? null
+        : IssueNumber.tryFrom(issueId)?.value ?? null;
 
     // Check if PR already exists for the active branch
     let prExists = false;

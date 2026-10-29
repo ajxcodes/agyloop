@@ -527,7 +527,7 @@ export class GetNextActionUseCase {
         pullRequestState: pr?.state ?? null
       });
       if (triageDecision === 'EXIT_TO_COMPLETED' && pr && sm.canTransition(STAGE_COMPLETED)) {
-        const prNumber = pr.number > 0 ? pr.number : null;
+        const prNumber = pr.number ? pr.number : null;
         // The payload belongs to feedback on a PR that no longer awaits an answer
         // (same rule as `triage completed`, triage-pr-comments.ts).
         sm.setTriagePayload(null);

@@ -2924,20 +2924,33 @@ export const NOTE_TRIAGE_GATE_EXIT_CONDITION =
 
 /** The history-metadata marker for a gate that ended because the PR did (issue #351). */
 export const TRIAGE_EXIT_PULL_REQUEST_TERMINAL = 'pr-terminal' as const;
-export type TriageExitCause = typeof TRIAGE_EXIT_PULL_REQUEST_TERMINAL;
 
 /** Rendered on the history note and on the idle report, never duplicated. */
 export const NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE =
   'Triage gate ended: {pr} is {state}. Open review feedback no longer needs a disposition.' as const;
+
+/**
+ * Issue #354 (item 1): a CLOSED pull request was closed WITHOUT merging, so the
+ * gate ending is not a delivery. `MERGED` keeps the neutral frame above — the
+ * note states the measured fact and never claims a release it cannot prove.
+ */
+export const NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE_NOT_DELIVERED =
+  'Triage gate ended: {pr} is {state}. The pull request was closed without merging, so the run was not delivered — the branch/worktree work never landed on the base branch. Open review feedback no longer needs a disposition.' as const;
 
 export function formatTriageGateEndedNote(state: string, prNumber?: number | null): string {
   const target =
     prNumber === null || prNumber === undefined
       ? 'the pull request'
       : `PR #${prNumber}`;
-  return NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE
-    .replace('{pr}', target)
-    .replace('{state}', state.toUpperCase());
+  const normalized = state.toUpperCase();
+  // Only a measured CLOSED state carries the non-delivery clause. MERGED (and
+  // any value the tool does not recognise) keeps the neutral sentence: the note
+  // must never invent a delivery verdict it did not measure.
+  const template =
+    normalized === 'CLOSED'
+      ? NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE_NOT_DELIVERED
+      : NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE;
+  return template.replace('{pr}', target).replace('{state}', normalized);
 }
 
 /**
@@ -3019,10 +3032,12 @@ export const COMMAND_OPENCODE = 'opencode' as const;
 /**
  * CLI sub-command that clears a persisted gate pause.
  *
- * This is the ONLY command that calls `StateMachine.resumeFromGate()` and
- * persists the cleared checkpoint, so it is the only one that may be advertised
- * as "the way out of a pause". `codeloop next` merely prints the next directive;
- * it never touches `pausedAtGate`.
+ * `resume` is the command for a pause with **no forward command** — e.g. a
+ * `CIRCUIT_BREAKER` quota halt. The gates that DO have one consume the pause
+ * they answer: `implement` (`APPROVAL`), `commit` (`COMMIT`), and the terminal
+ * TRIAGE exit performed by `next` (issue #367 corrects the old "ONLY command"
+ * claim, which was already false). `codeloop next` otherwise merely prints the
+ * next directive; it never touches `pausedAtGate`.
  *
  * Declared beside the other `COMMAND_*` constants rather than after
  * `CLI_COMMANDS`: it is a member of that registry (issue #276), and a

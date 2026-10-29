@@ -186,6 +186,26 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
       assert.strictEqual(last.metadata?.prState, state);
       assert.strictEqual(last.metadata?.prNumber, 7);
 
+      // Issue #354 (item 1): the persisted note and the printed report must
+      // distinguish a merged delivery from a closed-without-merge non-delivery.
+      if (state === 'CLOSED') {
+        assert.match(String(last.metadata?.note), /closed without merging/);
+        assert.match(String(last.metadata?.note), /not delivered/);
+        assert.ok(
+          payload.humanSummary.includes('not delivered'),
+          `the CLOSED report must name the non-delivery: ${payload.humanSummary}`
+        );
+      } else {
+        assert.strictEqual(
+          String(last.metadata?.note),
+          'Triage gate ended: PR #7 is MERGED. Open review feedback no longer needs a disposition.'
+        );
+        assert.ok(
+          !payload.humanSummary.includes('not delivered'),
+          `MERGED must not claim a non-delivery: ${payload.humanSummary}`
+        );
+      }
+
       assert.ok(!run.stderr.includes('🛑'), `no gate banner for a finished gate: ${run.stderr}`);
       assert.ok(
         !run.stderr.includes('codeloop resume'),
@@ -228,6 +248,32 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
     assert.ok(
       run.stdout.includes('Triage gate ended: PR #7 is MERGED.'),
       `the report must say why the gate ended, got:\n${run.stdout}`
+    );
+    assert.ok(
+      !run.stdout.includes('not delivered'),
+      `MERGED must not claim a non-delivery, got:\n${run.stdout}`
+    );
+  });
+
+  test('CLI5: the CLOSED human report names the non-delivery (issue #354)', async () => {
+    const sandbox = seedSandbox('CLOSED');
+    sandboxes.push(sandbox.dir);
+
+    const run = await runIn(sandbox, ['next', '--issue', String(ISSUE)]);
+    assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
+
+    assert.match(run.stdout, /\[COMPLETED\]/);
+    assert.ok(
+      run.stdout.includes('closed without merging'),
+      `the report must say the PR was closed without merging, got:\n${run.stdout}`
+    );
+    assert.ok(
+      run.stdout.includes('not delivered'),
+      `the report must say the run was not delivered, got:\n${run.stdout}`
+    );
+    assert.ok(
+      !run.stdout.includes('Invoke Triage Subagent'),
+      `no triage directive may be printed, got:\n${run.stdout}`
     );
   });
 });
