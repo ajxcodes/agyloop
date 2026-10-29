@@ -46,6 +46,8 @@ import {
   measureStageWindowMs,
   SMOKE_PROTOCOL_NOT_REPORTED,
   parseQualityGateTargets,
+  lintQualityGateTargets,
+  formatGateTargetContractViolations,
   formatActNotRunReason,
   isHumanWaitStage,
   WorktreeCreationError,
@@ -277,6 +279,14 @@ export class TransitionStageUseCase {
       }
     }
 
+    // Issue #348: a plan whose Quality Gate Targets assert a committed-tree
+    // invariant is refused BEFORE the approval is recorded. Nothing is
+    // persisted and nothing is provisioned, so the operator fixes the command
+    // and walks PLAN -> APPROVAL -> IMPLEMENT once, before the digest freezes.
+    if (targetStageStr === STAGE_APPROVAL) {
+      this.assertGateTargetContract(sm, params);
+    }
+
     // #226: legality FIRST. `transition()` is the single thrower of
     // `InvalidTransitionError` (`state-machine.ts:332`), and it now runs before the
     // worktree guardrail below, so a rejected target can no longer have created a
@@ -298,6 +308,12 @@ export class TransitionStageUseCase {
     if (targetStageStr === STAGE_IMPLEMENT && !params.dryRun) {
       const fromFreshApproval =
         prevStage === STAGE_PLAN || prevStage === STAGE_APPROVAL || prevStage === STAGE_COMPLETED;
+      // Issue #348 (AC1): a fresh approval may carry a plan approved by an
+      // older build. Refuse before the digest is recorded — a retry/self-
+      // correction (`QUALITY_GATE -> IMPLEMENT`) is deliberately exempt (R5).
+      if (fromFreshApproval) {
+        this.assertGateTargetContract(sm, params);
+      }
       if (fromFreshApproval || !sm.approvedPlanDigest) {
         this.recordApprovedPlanDigest(sm, params);
       }
@@ -660,6 +676,41 @@ export class TransitionStageUseCase {
       return null;
     }
     return this.planGenerator.hashPlanDocument(planPath);
+  }
+
+  /**
+   * Refuses an approved plan whose Quality Gate Targets assert a committed-tree
+   * invariant (issue #348).
+   *
+   * The gate runs in the task worktree against the UNCOMMITTED change, BEFORE
+   * the commit gate, so `git diff --exit-code` / `git status` can never pass
+   * there. Static and git-free: this is the same `lintQualityGateTargets` the
+   * dispatched gate and the in-process gate preflight consult.
+   */
+  private assertGateTargetContract(sm: StateMachine, params: TransitionParams): void {
+    if (!this.planGenerator) return;
+
+    const resolved = this.resolveCurrentPlan(sm, params);
+    if (!resolved) return;
+
+    let content: string;
+    try {
+      content = this.planGenerator.readPlanDocument(resolved.planPath);
+    } catch {
+      // An unreadable plan is not a target list; other guards report that.
+      return;
+    }
+
+    const findings = lintQualityGateTargets(parseQualityGateTargets(content).targets);
+    if (findings.length === 0) return;
+
+    const reason = `${formatGateTargetContractViolations(findings)} (plan: ${resolved.planPath})`;
+    if (params.dryRun) {
+      console.warn(`[codeloop] Warning: ${reason}`);
+      return;
+    }
+
+    throw new ValidationError('gateTargets', resolved.planPath, reason);
   }
 
   private recordApprovedPlanDigest(sm: StateMachine, params: TransitionParams): void {

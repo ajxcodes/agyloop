@@ -542,6 +542,41 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     });
     assert.strictEqual(replanned.currentStage, STAGE_PLAN);
   });
+
+  test('TS-D7 (#348 R5): a retry QUALITY_GATE -> IMPLEMENT is not refused and keeps the digest', async () => {
+    fs.writeFileSync(
+      planPath,
+      [
+        '# Plan',
+        '',
+        '## 5. Quality Gate Targets',
+        '',
+        '- `git diff --exit-code -- package-lock.json`',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const digest = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, digest);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    const result = await useCase.execute({
+      targetStage: STAGE_IMPLEMENT,
+      issue: 16,
+      workspaceDir: tempDir,
+      noWorktree: true
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      result.approvedPlanDigest,
+      digest,
+      'a self-correction retry must not re-bless edited bytes'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
 });
 
 /**

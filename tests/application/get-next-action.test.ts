@@ -1702,6 +1702,42 @@ describe('Quality Gate evidence contract (issue #298)', () => {
     assert.ok(prompt.includes('/repo/.worktrees/41'));
   });
 
+  test('GNA-C2 (#348): a legacy-approved committed-tree target blocks dispatch and names the command', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['git diff --exit-code -- package-lock.json']);
+    planGenerator.digest = 'digest-1';
+
+    const sm = gateCheckpoint((machine: any) =>
+      machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
+    );
+    const useCase = new GetNextActionUseCase(
+      new MockStateRepo(sm.toSnapshot()),
+      makeMockConfig(),
+      planGenerator
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.strictEqual(result.title, 'Quality Gate Targets Cannot Pass');
+    assert.strictEqual(result.nextStage, STAGE_PLAN);
+    assert.ok(!result.invocationPayload, 'a doomed gate must not be dispatched');
+    assert.match(result.description, /Quality Gate: FAILED/);
+    assert.ok(result.description.includes('git diff --exit-code -- package-lock.json'));
+    assert.ok(result.description.includes('can never pass'));
+    assert.ok(result.description.includes('UNCOMMITTED'));
+    for (const hop of [
+      'codeloop transition PLAN --issue 41',
+      'codeloop transition APPROVAL --issue 41',
+      'codeloop transition IMPLEMENT --issue 41'
+    ]) {
+      assert.ok(
+        result.humanSummary.includes(hop),
+        `missing recovery hop '${hop}':\n${result.humanSummary}`
+      );
+    }
+  });
+
   test('GNA-S1: a non-executable smoke protocol blocks dispatch and names the check', async () => {
     const planGenerator = new MockPlanGenerator();
     planGenerator.content = planWithSmoke(['npm test']);

@@ -67,6 +67,7 @@ import {
   SmokeProtocol,
   GateCommandSource,
   GATE_COMMAND_PRECEDENCE,
+  GATE_COMMAND_WORKTREE_CONTRACT,
   GATE_COMMAND_SOURCE_PLAN,
   GATE_REPORT_JSON_MARKER,
   NOTE_GATE_REPORT_RETURN,
@@ -929,6 +930,7 @@ export class ResolveSubagentUseCase {
       prompt += `### Execution Cwd\n`;
       prompt += `\`${params.cwd}\`\n\n`;
       prompt += `Run every command from this directory. Do not cd to the repository root — that tests the root checkout, not this diff. This worktree is the code under test, and a test-run signal (\`NODE_TEST_CONTEXT\`) makes the cross-worktree state guard accept fixtures seeded for another issue.\n\n`;
+      prompt += `${GATE_COMMAND_WORKTREE_CONTRACT}\n\n`;
     }
 
     if (params.commandSource) {

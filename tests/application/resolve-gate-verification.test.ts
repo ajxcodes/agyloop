@@ -468,4 +468,31 @@ describe('resolveGateVerification (issue #298)', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  test('RGV-347: targetFindings lints the executed plan targets and never filters them (#348)', async () => {
+    const clean = await verify({ planGenerator: makePlanGenerator({ content: CLEAN_PLAN }) });
+    assert.deepStrictEqual(clean.targetFindings, [], 'a clean plan has no target findings');
+
+    const badPlan = [
+      '# Plan',
+      '',
+      '## 5. Quality Gate Targets',
+      '',
+      '- `git diff --exit-code -- package-lock.json`',
+      ''
+    ].join('\n');
+    const bad = await verify({
+      planGenerator: makePlanGenerator({ content: badPlan }),
+      buildDetector: makeBuildDetector({ lintCommand: null })
+    });
+
+    assert.strictEqual(bad.targetFindings.length, 1);
+    assert.strictEqual(bad.targetFindings[0].command, 'git diff --exit-code -- package-lock.json');
+    assert.strictEqual(bad.targetFindings[0].line, 5);
+    assert.strictEqual(bad.targetFindings[0].rule, 'committed-tree-assertion');
+    // The resolver reports; it does not gate. The command stays in the plan.
+    assert.deepStrictEqual(bad.commandPlan.commands.map((def: any) => def.command), [
+      'git diff --exit-code -- package-lock.json'
+    ]);
+  });
 });

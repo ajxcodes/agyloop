@@ -408,6 +408,45 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(result.resumed, true);
   });
 
+  test('R5 (#348): a RESUMED implement with a committed-tree target does not throw', async () => {
+    fs.writeFileSync(
+      testPlanPath,
+      [
+        '# Test Implementation Plan',
+        '',
+        '## 5. Quality Gate Targets',
+        '',
+        '- `git diff --exit-code -- package-lock.json`',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    });
+    const planGen = new MockPlanGenerator(testPlanDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new MockConfigRepository(),
+      planGen
+    );
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.resumed, true);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.ok(
+      result.planContent.includes('git diff --exit-code'),
+      'the legacy plan is dispatched unchanged; the gate-time blockers own it'
+    );
+  });
+
   test('allows direct transition from PLAN to IMPLEMENT in YOLO mode', async () => {
     const stateRepo = new MockStateRepository({
       version: '1.0.0',

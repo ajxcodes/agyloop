@@ -79,6 +79,9 @@ import {
   CMD_LABEL_SMOKE_PROTOCOL,
   CMD_ID_PLAN_INTEGRITY,
   CMD_LABEL_PLAN_INTEGRITY,
+  CMD_ID_GATE_TARGET_CONTRACT,
+  CMD_LABEL_GATE_TARGET_CONTRACT,
+  formatGateTargetContractViolations,
   isLintCommand,
   hasLintCommand,
   SMOKE_STATUS_PASSED,
@@ -819,7 +822,7 @@ export class RunQualityGateUseCase {
    */
   private buildPreflightFailure(
     verification: GateVerification
-  ): { kind: 'integrity' | 'smoke' | 'lint'; report: GateCommandReport } | null {
+  ): { kind: 'integrity' | 'target-contract' | 'smoke' | 'lint'; report: GateCommandReport } | null {
     const integrity = verification.integrity;
 
     if (integrity.status === PLAN_INTEGRITY_MISMATCH) {
@@ -847,6 +850,20 @@ export class RunQualityGateUseCase {
           MSG_PLAN_APPROVED_MISSING
             .replace('{path}', integrity.planPath ?? '(unknown plan path)')
             .replace('{expected}', integrity.expectedDigest ?? '(none)')
+        )
+      };
+    }
+
+    // Issue #348: a committed-tree assertion can never pass on the tree the
+    // gate runs in. Fail closed BEFORE executing any command.
+    if (verification.targetFindings.length > 0) {
+      return {
+        kind: 'target-contract',
+        report: this.buildSyntheticReport(
+          CMD_ID_GATE_TARGET_CONTRACT,
+          CMD_LABEL_GATE_TARGET_CONTRACT,
+          verification.targetFindings[0].command,
+          formatGateTargetContractViolations(verification.targetFindings)
         )
       };
     }
