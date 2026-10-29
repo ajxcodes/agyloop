@@ -55,14 +55,13 @@ export interface ReviewVerdictSerialized {
 function isNoneOrEmpty(value: string | undefined | null): boolean {
   if (!value) return true;
   const trimmed = value.trim().toLowerCase();
-  return (
-    trimmed === '' ||
-    trimmed === 'none' ||
-    trimmed === 'none.' ||
-    trimmed === 'n/a' ||
-    trimmed === 'nil' ||
-    trimmed === 'no unfulfilled criteria'
-  );
+  // The structural tokens the reviewer prompt already sanctions, plus the
+  // exact shape of ReviewerTaskPromptParams' contract ("- None").
+  if (trimmed === '' || trimmed === 'n/a') return true;
+  // FIRST-WORD semantics (issue #356): a reviewer's "none" always LEADS with the
+  // word, while a genuine criterion that merely mentions it puts it mid-sentence
+  // ("Test path: none of the retries are bounded").
+  return /^none\b/.test(trimmed) || trimmed === 'nil' || trimmed === 'no unfulfilled criteria';
 }
 
 function cleanBulletItem(rawLine: string): string {

@@ -286,6 +286,142 @@ index 1111111..2222222 100644
     });
   });
 
+  /**
+   * Issue #356, Defect 2: `git diff <base>` cannot see an untracked file, so the
+   * reviewer's ONLY inspection command printed nothing for a change whose
+   * load-bearing part was a NEW file. The dispatch now hands the reviewer the
+   * probe's measured `untrackedFiles`, each with a command that prints its FULL
+   * content — without staging anything.
+   */
+  describe('Untracked implementation files (issue #356)', () => {
+    const HEADING = '### Untracked Implementation Files';
+
+    test('UT1: names an untracked file and gives a command that prints its full content', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ['.github/actionlint.yaml']
+      });
+
+      assert.ok(prompt.includes(`${HEADING} (invisible to \`git diff\`):`), 'the heading must render');
+      assert.ok(prompt.includes('.github/actionlint.yaml'), 'the untracked path must be named');
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null '.github/actionlint.yaml' || true"),
+        `the content command must render, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('READ-ONLY evidence'), 'the reviewer must be told it is read-only');
+      assert.strictEqual(prompt.includes('git add'), false, 'the prompt must not name a staging command');
+      assert.strictEqual(prompt.includes('git stash'), false, 'the prompt must not name a stash command');
+    });
+
+    test('UT2: a collapsed untracked directory expands via ls-files instead of --no-index', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      // `git status --porcelain` collapses a wholly-untracked directory to
+      // `?? src/newdir/`, and `git diff --no-index /dev/null src/newdir/` fails
+      // with "Could not access 'src/newdir//null'".
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ['src/newdir/']
+      });
+
+      assert.ok(
+        prompt.includes(
+          "git ls-files --others --exclude-standard -- 'src/newdir/' | while IFS= read -r f; do"
+        ),
+        `the directory entry must expand, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('cat -- "$f"'), 'the directory command must print file content');
+      assert.ok(
+        !prompt.includes("--no-index -- /dev/null 'src/newdir/'"),
+        'a directory must never be handed to git diff --no-index'
+      );
+    });
+
+    test('UT3: a path containing a space is shell-quoted', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ['docs/my note.md']
+      });
+
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null 'docs/my note.md' || true"),
+        `a space-containing path must be one quoted word, got:\n${prompt}`
+      );
+    });
+
+    test('UT4: an embedded single quote is escaped by shellQuote, not naively interpolated', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ["docs/it's a note.md"]
+      });
+
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null 'docs/it'\\''s a note.md' || true"),
+        `the embedded quote must be escaped, got:\n${prompt}`
+      );
+    });
+
+    test('UT5: a tracked-only change keeps the prompt byte-identical', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const baseline = useCase.buildReviewerTaskPrompt({ issueNumber: 356, baseBranch: 'main' });
+
+      const variants = [
+        useCase.buildReviewerTaskPrompt({
+          issueNumber: 356,
+          baseBranch: 'main',
+          untrackedFiles: undefined
+        }),
+        useCase.buildReviewerTaskPrompt({
+          issueNumber: 356,
+          baseBranch: 'main',
+          untrackedFiles: null
+        }),
+        useCase.buildReviewerTaskPrompt({
+          issueNumber: 356,
+          baseBranch: 'main',
+          untrackedFiles: []
+        })
+      ];
+
+      for (const variant of variants) {
+        assert.strictEqual(variant, baseline, 'an empty untracked list must render nothing');
+        assert.strictEqual(variant.includes(HEADING), false);
+      }
+    });
+
+    test('UT6: the >1,000-line branch renders the untracked section too', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const largeDiff = [
+        'diff --git a/src/heavy.ts b/src/heavy.ts',
+        '--- a/src/heavy.ts',
+        '+++ b/src/heavy.ts',
+        '@@ -1,1 +1,1500 @@'
+      ]
+        .concat(Array.from({ length: 1500 }, (_, i) => `+const line_${i} = ${i};`))
+        .join('\n');
+
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        workingDiff: largeDiff,
+        untrackedFiles: ['.github/actionlint.yaml']
+      });
+
+      assert.ok(prompt.includes('Working diff exceeds 1,000 lines'));
+      assert.ok(prompt.includes(HEADING), 'the omitted-diff branch must still name untracked files');
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null '.github/actionlint.yaml' || true"),
+        'the omitted-diff branch must carry the content command'
+      );
+    });
+  });
+
   describe('Anti-Inception Guardrails', () => {
     test('appends anti-inception guardrail to all subagent task prompts', () => {
       const useCase = new ResolveSubagentUseCase(configRepo);

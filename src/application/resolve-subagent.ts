@@ -274,6 +274,13 @@ export interface ReviewerTaskPromptParams {
   readonly workingDiff?: string | null;
   readonly critiqueReport?: string | null;
   /**
+   * Untracked implementation-evidence paths measured by the SAME probe the
+   * IMPLEMENT boundary uses (issue #356). `git diff <base>` cannot see them, so
+   * the reviewer is handed them explicitly. `undefined`/`null`/`[]` render
+   * NOTHING: a tracked-only change keeps the pre-#356 prompt byte-for-byte.
+   */
+  readonly untrackedFiles?: readonly string[] | null;
+  /**
    * An authoritative critique binary path (issue #314).
    *
    * `run-review` resolves it asynchronously and passes it here; when present it
@@ -308,6 +315,42 @@ function formatCritiqueTierOneCommand(binaryPath: string): string {
   return binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
     ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
     : `${quoted} ${CRITIQUE_FLAG_JSON}`;
+}
+
+/**
+ * A command that prints ONE untracked path's full content (issue #356).
+ *
+ * Files use `git diff --no-index`, which renders the whole body as additions and
+ * exits 1 ("differences found") — the prompt says so, hence `|| true`.
+ *
+ * A path ending in `/` is a directory `git status --porcelain` COLLAPSED (every
+ * file in it is untracked). `git diff --no-index /dev/null <dir>` fails with
+ * "Could not access '<dir>/null'", so directories are expanded with
+ * `git ls-files --others --exclude-standard` and printed file by file.
+ *
+ * The `\\n` inside the printf is load-bearing: a literal newline in the template
+ * would break the one-line command.
+ */
+function formatUntrackedContentCommand(path: string): string {
+  const quoted = shellQuote(path);
+  if (path.endsWith('/')) {
+    return `git ls-files --others --exclude-standard -- ${quoted} | while IFS= read -r f; do printf '\\n===== %s =====\\n' "$f"; cat -- "$f"; done`;
+  }
+  return `git diff --no-index -- /dev/null ${quoted} || true`;
+}
+
+/** Trimmed, de-duplicated, order-preserving; anything that is not a path is dropped. */
+function normalizeUntrackedFiles(files: readonly string[] | null | undefined): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const file of files ?? []) {
+    if (typeof file !== 'string') continue;
+    const trimmed = file.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
 }
 
 export class ResolveSubagentUseCase {
@@ -1125,6 +1168,19 @@ export class ResolveSubagentUseCase {
       prompt += `\`\`\`bash\n`;
       prompt += `${diffInspectionCmd}\n`;
       prompt += `\`\`\`\n\n`;
+    }
+
+    const untrackedFiles = normalizeUntrackedFiles(params.untrackedFiles);
+    if (untrackedFiles.length > 0) {
+      prompt += `### Untracked Implementation Files (invisible to \`git diff\`):\n`;
+      prompt += `\`${diffInspectionCmd}\` does NOT show untracked files. These paths are NEW and part of this change set, so inspect them with ${formatToolProse([TOOL_CAPABILITY_SHELL])} — the commands below print each one's FULL content:\n`;
+      prompt += '```bash\n';
+      for (const file of untrackedFiles) {
+        prompt += `${formatUntrackedContentCommand(file)}\n`;
+      }
+      prompt += '```\n';
+      prompt += '`git diff --no-index` exits non-zero when the files differ: that means the content WAS printed, and is expected. A path ending in `/` is a whole untracked directory, so its command prints every file inside it.\n';
+      prompt += 'These paths are READ-ONLY evidence for your review: do not stage, stash, or modify them — staging changes what the commit draft sees.\n\n';
     }
 
     if (params.userInstructions) {

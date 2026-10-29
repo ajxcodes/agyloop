@@ -6,6 +6,9 @@
  * exit condition. A paused read must not record a dispatch.
  *
  * RV5.
+ *
+ * RV7 (issue #356) proves the live dispatch hands the reviewer the untracked
+ * file its own `git diff` command cannot see — and stages nothing doing it.
  */
 
 const { describe, test } = require('node:test');
@@ -13,6 +16,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { NOTE_REVIEW_GATE_EXIT_CONDITION } = require('../../dist/domain');
@@ -177,6 +181,60 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
         !prompt.includes('~/.local/bin/critique --json'),
         'AC3: the dead hardcoded command must not be rendered'
       );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('RV7: the live dispatch names a real untracked file and stages nothing (issue #356)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-356-'));
+    const sandbox = path.join(root, 'worktree');
+    const git = (args: string[]) =>
+      execFileSync('git', args, { cwd: sandbox, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+    try {
+      fs.mkdirSync(path.join(sandbox, '.github', 'workflows'), { recursive: true });
+      execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: sandbox, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: sandbox, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: sandbox, stdio: 'ignore' });
+
+      // A TRACKED file inside .github/ is what stops `git status --porcelain`
+      // from collapsing the untracked entry to `?? .github/`.
+      fs.writeFileSync(path.join(sandbox, '.github', 'workflows', 'ci.yml'), 'name: CI\n', 'utf8');
+      fs.writeFileSync(path.join(sandbox, 'README.md'), 'probe\n', 'utf8');
+      git(['add', '-A']);
+      git(['commit', '-qm', 'chore: base with a tracked .github directory']);
+
+      // The load-bearing part of the change set, and invisible to `git diff`.
+      fs.writeFileSync(
+        path.join(sandbox, '.github', 'actionlint.yaml'),
+        'self-hosted-runner:\n  labels:\n    - ubuntu-26.04\n',
+        'utf8'
+      );
+      seedCheckpoint(sandbox);
+
+      const run = await runNextJsonIn(sandbox);
+
+      assert.strictEqual(run.code, 0, run.stderr || run.stdout);
+      const payload = JSON.parse(run.stdout);
+      assert.strictEqual(payload.role, 'reviewer', `expected the reviewer directive, got ${payload.role}`);
+
+      const prompt = payload.invocationPayload?.Subagents?.[0]?.Prompt ?? '';
+      assert.ok(
+        prompt.includes('.github/actionlint.yaml'),
+        `the untracked-only implementation file is invisible to the reviewer prompt:\n${prompt.slice(0, 3000)}`
+      );
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null '.github/actionlint.yaml' || true"),
+        `the prompt must carry a content command for the untracked path:\n${prompt.slice(0, 3000)}`
+      );
+      assert.strictEqual(prompt.includes('git add'), false, 'the dispatch must not name staging');
+
+      // The dispatch is READ-ONLY evidence: the path is still untracked AND the
+      // index is untouched (staging changes what the commit draft sees, #240).
+      assert.strictEqual(git(['status', '--porcelain', '--', '.github']), '?? .github/actionlint.yaml');
+      assert.strictEqual(git(['diff', '--cached', '--name-only']), '');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

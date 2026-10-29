@@ -78,6 +78,120 @@ describe('ReviewVerdict Value Object', () => {
     assert.deepStrictEqual([...verdict.remediationGuidance], []);
   });
 
+  test('collapses every natural none-phrasing to zero unfulfilled criteria (issue #356)', () => {
+    // The reviewer's own words, not the prompt's sanctioned literal. Every form
+    // here LEADS with the word "none" (or is a retained exact token), so all of
+    // them mean "nothing to report" — including the live #352 hit.
+    const nonePhrasings = [
+      'None',
+      'None.',
+      'None required',
+      'None (deferred to post-commit)',
+      'None in the reviewed in-repo scope (deferred to post-commit).',
+      'n/a',
+      'N/A',
+      'nil',
+      'no unfulfilled criteria'
+    ];
+
+    const block = (bullets: string[]) =>
+      [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: All acceptance criteria are met.',
+        'UNFULFILLED_AC:',
+        ...bullets,
+        'REMEDIATION_GUIDANCE:',
+        '- None required.'
+      ].join('\n');
+
+    for (const phrase of nonePhrasings) {
+      const bulleted = ReviewVerdict.parse(block([`- ${phrase}`]));
+      assert.deepStrictEqual(
+        [...bulleted.unfulfilledCriteria],
+        [],
+        `bullet "${phrase}" was captured as a criterion`
+      );
+
+      const inline = ReviewVerdict.parse(
+        block([]).replace('UNFULFILLED_AC:\n', `UNFULFILLED_AC: ${phrase}\n`)
+      );
+      assert.deepStrictEqual(
+        [...inline.unfulfilledCriteria],
+        [],
+        `inline "${phrase}" was captured as a criterion`
+      );
+
+      // The constructor is a second entrance: it must filter the same phrasings.
+      const constructed = new ReviewVerdict({
+        status: VERDICT_APPROVED,
+        summary: 'All acceptance criteria are met.',
+        unfulfilledCriteria: [phrase]
+      });
+      assert.deepStrictEqual(
+        [...constructed.unfulfilledCriteria],
+        [],
+        `constructor kept "${phrase}" as a criterion`
+      );
+    }
+  });
+
+  test('filters a none-remediation instead of telling the implementer "None required"', () => {
+    const verdict = ReviewVerdict.parse(
+      [
+        'REVIEW_STATUS: CHANGES_REQUESTED',
+        'REVIEW_SUMMARY: One criterion is unmet.',
+        'UNFULFILLED_AC:',
+        '- AC 1: the retry bound is enforced',
+        'REMEDIATION_GUIDANCE:',
+        '- None required.'
+      ].join('\n')
+    );
+
+    assert.deepStrictEqual([...verdict.remediationGuidance], []);
+
+    const payload = verdict.formatSelfCorrectionPayload();
+    assert.ok(!payload.includes('Required Remediation Actions'));
+    assert.ok(!payload.includes('None required'));
+  });
+
+  test('a criterion that merely mentions none mid-sentence is still captured', () => {
+    // "none" later in the sentence is a real criterion, not an empty marker.
+    const midSentence = 'Test path: none of the retries are bounded';
+    const parsed = ReviewVerdict.parse(
+      [
+        'REVIEW_STATUS: CHANGES_REQUESTED',
+        'REVIEW_SUMMARY: Retry bounds are untested.',
+        'UNFULFILLED_AC:',
+        `- ${midSentence}`,
+        'REMEDIATION_GUIDANCE:',
+        '- Add a bounded-retry test.'
+      ].join('\n')
+    );
+    assert.deepStrictEqual([...parsed.unfulfilledCriteria], [midSentence]);
+
+    const bulleted = ReviewVerdict.parse(
+      [
+        'REVIEW_STATUS: CHANGES_REQUESTED',
+        'REVIEW_SUMMARY: Missing coverage.',
+        'UNFULFILLED_AC:',
+        '- Missing unit test for edge case',
+        'REMEDIATION_GUIDANCE:',
+        '- None'
+      ].join('\n')
+    );
+    assert.deepStrictEqual([...bulleted.unfulfilledCriteria], [
+      'Missing unit test for edge case'
+    ]);
+
+    // "None123" is not a word boundary: `\b` is doing real work.
+    const notNone = new ReviewVerdict({
+      status: VERDICT_APPROVED,
+      summary: 'Approved.',
+      unfulfilledCriteria: ['None123']
+    });
+    assert.deepStrictEqual([...notNone.unfulfilledCriteria], ['None123']);
+  });
+
   test('validates inputs and throws ValidationError on invalid props', () => {
     assert.throws(
       () => new ReviewVerdict(null as any),

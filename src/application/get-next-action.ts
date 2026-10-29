@@ -121,7 +121,7 @@ import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
 import { resolveCompletedReentry, resolveTriageReentry } from './lifecycle-reentry-policy';
 import { classifyPrFeedback, feedbackKeysOf } from './triage-feedback';
-import type { ImplementationProbe } from './detect-implementation-diff';
+import type { ImplementationDiff, ImplementationProbe } from './detect-implementation-diff';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 
 export interface GetNextActionParams {
@@ -1048,11 +1048,21 @@ export class GetNextActionUseCase {
           workspaceDir: cwd
         });
 
+        // Issue #356: `git diff <base>` cannot see a NEW file, so the reviewer's
+        // own inspection command omitted the load-bearing part of the change set.
+        // The SAME probe the IMPLEMENT boundary uses already computes it; an
+        // unreadable tree (`probeError`) or an absent probe degrades to today's
+        // prompt rather than failing the dispatch.
+        const probe = await this.probeImplementation(worktreePath, baseBranch);
+        const untrackedFiles =
+          probe && probe.probeError === null ? probe.untrackedFiles ?? [] : [];
+
         const prompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
           issueNumber: activeIssue,
           baseBranch,
           workspaceDir: worktreePath || cwd,
-          config
+          config,
+          untrackedFiles
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -1875,7 +1885,7 @@ export class GetNextActionUseCase {
   private async probeImplementation(
     worktreePath: string | null,
     baseRef: string | null | undefined
-  ): Promise<{ hasChanges: boolean; probeError: string | null; measurementError?: string | null } | null> {
+  ): Promise<ImplementationDiff | null> {
     if (!this.implementationProbe) {
       return null;
     }
