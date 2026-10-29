@@ -149,6 +149,19 @@ export class StartImplementationUseCase {
       sm.setIssue(activeIssue);
     }
 
+    // Issue #367: entering IMPLEMENT ANSWERS whatever pause the checkpoint
+    // carried. `TransitionStageUseCase` already calls `resumeFromGate()`
+    // unconditionally before its transition (issue #362, Finding 3), which is
+    // why `codeloop transition IMPLEMENT` cleared an APPROVAL pause while
+    // `codeloop implement` did not. The surviving pause made `next --json`
+    // report `actionable: false` with a message naming the very command the
+    // operator had just run — the two documented entry points must agree.
+    //
+    // Nothing is persisted until the final save below, so a refusal after this
+    // point (gate-target contract, missing plan, worktree failure) leaves the
+    // on-disk pause intact, and `--dry-run` never saves at all.
+    sm.resumeFromGate();
+
     // 2. Enforce lifecycle transition rules
     let resumed = false;
     if (sm.currentStage === STAGE_APPROVAL) {

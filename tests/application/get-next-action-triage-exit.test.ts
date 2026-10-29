@@ -15,6 +15,9 @@
  * T6 - `--dry-run` predicts the exit and writes nothing
  * T7 - the idle report says WHY the gate ended (AC-1 legibility)
  * T8 - the directive's own exit-condition text matches the behaviour
+ * T9 - a CLOSED PR's idle report names the non-delivery (issue #354)
+ * T10 - a MERGED PR does not claim a delivery it cannot prove
+ * T11 - one formatter, two frames, normalized state
  */
 
 const { test, describe } = require('node:test');
@@ -28,7 +31,10 @@ const {
   GATE_TRIAGE,
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
   NOTE_IDLE_SUMMARY,
-  TRIAGE_EXIT_PULL_REQUEST_TERMINAL
+  TRIAGE_EXIT_PULL_REQUEST_TERMINAL,
+  NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE,
+  NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE_NOT_DELIVERED,
+  formatTriageGateEndedNote
 } = require('../../dist/domain');
 
 import type { StateRepository, ConfigRepository, AgyLoopConfig } from '../../src/ports';
@@ -154,6 +160,20 @@ function assertTerminalExit(result: any, saved: StateMachineSnapshot | null, sta
   assert.strictEqual(last.metadata?.triageExit, TRIAGE_EXIT_PULL_REQUEST_TERMINAL);
   assert.strictEqual(last.metadata?.prState, state);
   assert.strictEqual(last.metadata?.prNumber, 7);
+
+  // Issue #354 (item 1): the note must distinguish what the PR state MEASURED.
+  // CLOSED was never merged, so it carries the non-delivery clause; MERGED keeps
+  // the neutral sentence and must not invent a delivery verdict.
+  if (state === 'CLOSED') {
+    assert.match(String(last.metadata?.note), /closed without merging/);
+    assert.match(String(last.metadata?.note), /not delivered/);
+  } else {
+    assert.strictEqual(
+      String(last.metadata?.note),
+      'Triage gate ended: PR #7 is MERGED. Open review feedback no longer needs a disposition.'
+    );
+    assert.doesNotMatch(String(last.metadata?.note), /not delivered/);
+  }
 }
 
 describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
@@ -296,5 +316,72 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
     assert.ok(result.description.includes(NOTE_TRIAGE_GATE_EXIT_CONDITION));
     assert.ok(/merged\/closed/.test(NOTE_TRIAGE_GATE_EXIT_CONDITION));
     assert.ok(NOTE_TRIAGE_GATE_EXIT_CONDITION.includes('codeloop next'));
+  });
+
+  test('T9: a CLOSED PR idle report names the non-delivery (issue #354)', async () => {
+    const stateRepo = new MockStateRepo(seedTriage());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      gatewayWithPr('CLOSED')
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    const expected = NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE_NOT_DELIVERED.replace(
+      '{pr}',
+      'PR #7'
+    ).replace('{state}', 'CLOSED');
+    assert.ok(
+      result.humanSummary.includes(expected),
+      `the idle report must state the run was not delivered, got: ${result.humanSummary}`
+    );
+    assert.ok(result.humanSummary.includes('not delivered'));
+    assert.ok(result.humanSummary.includes('closed without merging'));
+    assert.ok(result.humanSummary.includes(NOTE_IDLE_SUMMARY), 'the idle summary is preserved');
+  });
+
+  test('T10: a MERGED PR does not claim a delivery it cannot prove', async () => {
+    const stateRepo = new MockStateRepo(seedTriage());
+    const useCase = new GetNextActionUseCase(
+      stateRepo,
+      makeMockConfig(),
+      undefined,
+      gatewayWithPr('MERGED')
+    );
+
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.ok(
+      result.humanSummary.includes(
+        'Triage gate ended: PR #7 is MERGED. Open review feedback no longer needs a disposition.'
+      ),
+      `MERGED keeps the neutral sentence, got: ${result.humanSummary}`
+    );
+    assert.ok(
+      !result.humanSummary.includes('not delivered'),
+      `MERGED must not claim a non-delivery, got: ${result.humanSummary}`
+    );
+  });
+
+  test('T11: one formatter, two frames, normalized state', () => {
+    assert.strictEqual(
+      formatTriageGateEndedNote('MERGED', 7),
+      'Triage gate ended: PR #7 is MERGED. Open review feedback no longer needs a disposition.'
+    );
+    assert.strictEqual(
+      formatTriageGateEndedNote('closed', 7),
+      NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE_NOT_DELIVERED.replace('{pr}', 'PR #7').replace(
+        '{state}',
+        'CLOSED'
+      )
+    );
+    assert.match(formatTriageGateEndedNote('closed'), /the pull request/);
+    // An unrecognised state must not be mistaken for a measured CLOSED.
+    assert.strictEqual(
+      formatTriageGateEndedNote('DRAFT', 7),
+      NOTE_TRIAGE_GATE_ENDED_BY_PR_STATE.replace('{pr}', 'PR #7').replace('{state}', 'DRAFT')
+    );
   });
 });

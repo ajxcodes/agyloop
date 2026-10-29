@@ -1228,6 +1228,57 @@ diff --git a/src/app.ts b/src/app.ts
       assert.ok(!executor.executedCommands.some((cmd: string) => cmd.includes('gh pr create')));
     });
 
+    test('D2: resolvedIssue is the IssueNumber value, never a fabricated operand (issue #354)', async () => {
+      const cases: Array<{ raw: string; expected: number | null }> = [
+        { raw: '42', expected: 42 },
+        { raw: '0', expected: null },
+        { raw: 'abc', expected: null }
+      ];
+
+      for (const { raw, expected } of cases) {
+        const wt = WorktreeDescriptor.create({
+          taskId: 62,
+          worktreePath: '/mock/repo/.worktrees/62',
+          branch: 'task/62',
+          baseBranch: 'main'
+        });
+        const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: wt });
+        sm.setIssue(42);
+        const stateRepo = new MockStateRepository(sm.toSnapshot());
+        const executor = new MockCommandExecutor();
+        executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+        executor.responses['git add -A'] = { exitCode: 0 };
+        executor.responses['git commit -m "fix: probe (#42)"'] = { exitCode: 0 };
+        executor.responses['git rev-parse HEAD'] = { stdout: 'commit42hash\n' };
+        executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/62\n' };
+        executor.responses['git push -u origin "task/62"'] = { exitCode: 0 };
+        executor.responses["gh pr list --head 'task/62' --json number"] = {
+          exitCode: 0,
+          stdout: '[]'
+        };
+        executor.responses["gh pr view 'task/62' --json url --jq .url"] = {
+          exitCode: 0,
+          stdout: 'https://example.test/pull/8\n'
+        };
+
+        const useCase = new ExecuteCommitUseCase(stateRepo, executor);
+        const result = await useCase.execute({
+          commitMessage: CommitMessage.create({ type: 'fix', description: 'probe', issueNumber: 42 }),
+          confirmed: true,
+          createPr: true,
+          issue: raw
+        });
+
+        assert.strictEqual(result.resolvedIssue, expected, `issue ${JSON.stringify(raw)}`);
+        if (expected === 42) {
+          assert.ok(
+            executor.executedCommands.some((cmd: string) => cmd.includes('Closes #42')),
+            'the body still names the valid issue'
+          );
+        }
+      }
+    });
+
     test('generates prCommand with title, body with Closes #id, and --milestone from sm.milestoneTitle', async () => {
       const wt = WorktreeDescriptor.create({
         taskId: 62,
