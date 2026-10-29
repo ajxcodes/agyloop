@@ -10,10 +10,14 @@
  * RGV7 - a #283-style section yields whole-line commands only (continuations join)
  * RGV8 - a legacy detector's config fallback reports `config` and enforces lint
  * RGV9 - a legacy detector's auto-detect fallback still enforces detected lint
+ * RGV10 - the gate path scopes and validates the declared smoke section (#362)
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { resolveGateVerification } = require('../../dist/application');
 
 const PLAN_PATH = '/repo/.worktrees/41/artifacts/plans/41-task/implementation_plan.md';
@@ -382,5 +386,86 @@ describe('resolveGateVerification (issue #298)', () => {
     );
     assert.strictEqual(result.commandPlan.lintRequired, true);
     assert.deepStrictEqual(result.commandPlan.appended, ['npm run lint']);
+  });
+
+  test('RGV10: the gate path scopes and validates the declared section (#362 AC1.4)', async () => {
+    // The shape #362 Finding 1 froze: the phrase in the H1, pre-section
+    // reproduction/diagram/gate-target fences, then the real section. This is
+    // what `get-next-action.ts` reads before dispatching the gate
+    // (`verification.smoke.findings.length > 0` blocks the dispatch).
+    const plan = [
+      '# [Implementation] - [Phase 6] [Bug] the Manual Smoke Test Protocol heading scoping defect',
+      '',
+      '## 2. Findings',
+      '',
+      '```bash',
+      '$ node -e "console.log(1)"',
+      '```',
+      '',
+      '```bash',
+      '+------+',
+      '| a    |',
+      '+------+',
+      '```',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '```bash',
+      'npm run lint',
+      '```',
+      '',
+      '### Manual Smoke Test Protocol',
+      '',
+      '**S1 one**',
+      '',
+      '```bash',
+      'echo S1',
+      '```',
+      '',
+      '**S2 two**',
+      '',
+      '```bash',
+      'echo S2',
+      '```',
+      '',
+      '**S3 three**',
+      '',
+      '```bash',
+      'echo S3',
+      '```',
+      ''
+    ].join('\n');
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-rgv-362-'));
+    try {
+      const planDir = path.join(tempDir, 'artifacts', 'plans', '362-h1-phrase');
+      fs.mkdirSync(planDir, { recursive: true });
+      const planPath = path.join(planDir, 'implementation_plan.md');
+      fs.writeFileSync(planPath, plan);
+
+      const planGenerator = makePlanGenerator({ content: plan });
+      planGenerator.readPlanDocument = () => fs.readFileSync(planPath, 'utf8');
+      planGenerator.resolvePlanFile = () => ({
+        planDir,
+        planPath,
+        planFileName: 'implementation_plan.md'
+      });
+
+      const result = await verify({
+        projectRoot: tempDir,
+        workspaceDir: tempDir,
+        planGenerator
+      });
+
+      assert.strictEqual(
+        result.smoke.checks.length,
+        3,
+        `frozen checks: ${JSON.stringify(result.smoke.findings)}`
+      );
+      assert.deepStrictEqual(result.smoke.findings, []);
+      assert.ok(result.smoke.headingLine >= 2, `headingLine=${result.smoke.headingLine}`);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

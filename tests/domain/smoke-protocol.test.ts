@@ -16,10 +16,19 @@
  * SP13 - a bare mktemp -d in a CLI check is flagged (implicit OS temp root) (#359)
  * SP14 - mktemp -d staging with NO CLI invocation is not flagged (#359)
  * SP15 - the sandbox rule ignores legit mkdir targets, flags reserved/temp ones (#359)
+ * SP16 - an H1 carrying the section phrase does not scope the section (#362 F1)
+ * SP17 - an H1-only phrase document declares NO protocol (#362 F1)
+ * SP18 - the #359 plan's own S2 shape validates clean, and its script is runnable (#362 F2)
+ * SP19 - the sandbox-path probe matrix classifies every documented shape (#362 F2)
+ * SP20 - same-check $VAR roots are resolved; a /tmp root cannot be laundered (#362 F2)
+ * SP21 - a bare mktemp -d + HOME override stays flagged (accepted limitation) (#362 F2)
+ * SP22 - archived plans keep their frozen heading line and check count (#362 AC1.3/AC2.4)
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { SmokeProtocol } = require('../../dist/domain');
 
 const SMOKE_HEADING = '## 6. Manual Smoke Test Protocol';
@@ -396,4 +405,461 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     assert.strictEqual(findingsFor(['mkdir -p /var/tmp/smoke359']).length, 1);
     assert.strictEqual(findingsFor(['mkdir -p artifacts/smoke359']).length, 1);
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #362, Finding 1: the document H1 is a TITLE, never a smoke section.
+  // ---------------------------------------------------------------------------
+
+  const PHRASE_TITLE =
+    '# [Implementation] - [Phase 6] [Bug] the Manual Smoke Test Protocol heading scoping defect';
+
+  /**
+   * The #362 Finding-1 shape: the phrase in the H1, a pre-section reproduction
+   * fence (`$ node -e …`), an ASCII-art diagram, the gate-target list, and then
+   * the real `###` section with three declared checks.
+   */
+  function phrasePlan(h1: string): string {
+    return [
+      h1,
+      '',
+      '## 2. Findings',
+      '',
+      '```bash',
+      '$ node -e "console.log(1)"',
+      '```',
+      '',
+      '```bash',
+      '+------+',
+      '| a    |',
+      '+------+',
+      '```',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '```bash',
+      'npm run lint',
+      '```',
+      '',
+      '### Manual Smoke Test Protocol',
+      '',
+      '**S1 one**',
+      '',
+      '```bash',
+      'echo S1',
+      '```',
+      '',
+      '**S2 two**',
+      '',
+      '```bash',
+      'echo S2',
+      '```',
+      '',
+      '**S3 three**',
+      '',
+      '```bash',
+      'echo S3',
+      '```',
+      ''
+    ].join('\n');
+  }
+
+  test('SP16: an H1 carrying the phrase does not scope the section (#362 F1)', () => {
+    const withPhrase = SmokeProtocol.fromPlan(phrasePlan(PHRASE_TITLE));
+
+    assert.ok(withPhrase.headingLine >= 2, `headingLine=${withPhrase.headingLine}`);
+    assert.strictEqual(withPhrase.checks.length, 3, JSON.stringify(withPhrase.checks));
+    assert.deepStrictEqual(
+      withPhrase.checks.map((check: any) => check.label),
+      ['S1 one', 'S2 two', 'S3 three']
+    );
+    assert.deepStrictEqual(withPhrase.findings, []);
+    assert.strictEqual(withPhrase.executable, true);
+
+    // SP16b: the H1 phrase changes nothing about extraction.
+    const scrubbed = SmokeProtocol.fromPlan(
+      phrasePlan('# [Implementation] - normalized title')
+    );
+    assert.strictEqual(scrubbed.headingLine, withPhrase.headingLine);
+    assert.deepStrictEqual(
+      scrubbed.checks.map((check: any) => check.label),
+      withPhrase.checks.map((check: any) => check.label)
+    );
+    assert.strictEqual(scrubbed.toScript(), withPhrase.toScript());
+
+    // SP16c: no pre-section fence is frozen into the protocol.
+    const bodies = withPhrase.checks.map((check: any) => check.body).join('\n');
+    assert.ok(!bodies.includes('npm run lint'), bodies);
+    assert.ok(!bodies.includes('+------+'), bodies);
+    assert.ok(!/^\s*\$ /m.test(withPhrase.toScript() ?? ''), 'no shell-prompt line');
+  });
+
+  test('SP17: an H1-only phrase document declares no protocol (#362 F1)', () => {
+    // A title is not a section: the accepted consequence of the level guard is
+    // NOT-DECLARED (true for any plan without a smoke section) rather than a
+    // frozen whole-document protocol.
+    const protocol = SmokeProtocol.fromPlan(
+      `${PHRASE_TITLE}\n\nSome prose about the section.\n`
+    );
+
+    assert.strictEqual(protocol.found, false);
+    assert.strictEqual(protocol.checks.length, 0);
+    assert.strictEqual(protocol.toScript(), null);
+    assert.deepStrictEqual(protocol.findings, []);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #362, Finding 2: the `sandbox-path` rule must not reject correct
+  // sandboxes. The #359 S1/S2/S3 fence bodies are copied verbatim from
+  // `artifacts/plans/359-…/implementation_plan.md`, because the archive is
+  // untracked and therefore absent from a fresh worktree.
+  // ---------------------------------------------------------------------------
+
+  const SMOKE_359_S1 = [
+    'set -u',
+    'REPO_ROOT="${REPO_ROOT:-$PWD}"',
+    'cd "$REPO_ROOT"',
+    "node -e '",
+    'const { SmokeProtocol } = require("./dist/domain");',
+    'const plan = [',
+    '  "# Plan", "",',
+    '  "## 6. Manual Smoke Test Protocol", "",',
+    '  "#### Check 1 - transition in a /tmp sandbox", "",',
+    '  "```bash",',
+    '  "SBX=$(mktemp -d /tmp/opencode/smoke339-XXXXXX)",',
+    '  "git clone . \\"$SBX/repo\\"",',
+    '  "cd \\"$SBX/repo\\"",',
+    '  "node bin/codeloop.js transition --issue 339 --to IMPLEMENT",',
+    '  "rm -rf \\"$SBX\\"",',
+    '  "```", ""',
+    '].join("\\n");',
+    'const p = SmokeProtocol.fromPlan(plan);',
+    'const f = p.findings.find((x) => x.rule === "sandbox-path");',
+    'if (p.executable) { console.log("FAIL: the /tmp-sandbox protocol still validates executable"); process.exit(1); }',
+    'if (!f) { console.log("FAIL: no sandbox-path finding was emitted"); process.exit(1); }',
+    'if (f.checkIndex !== 1) { console.log("FAIL: finding names check " + f.checkIndex + ", expected 1"); process.exit(1); }',
+    'if (!(f.line > 0)) { console.log("FAIL: finding carries no plan line"); process.exit(1); }',
+    'if (!f.excerpt.includes("mktemp -d /tmp")) { console.log("FAIL: excerpt does not name the offending line: " + f.excerpt); process.exit(1); }',
+    'if (!f.excerpt.includes("$HOME/.cache/agyloop/smoke-")) { console.log("FAIL: excerpt does not name the required path: " + f.excerpt); process.exit(1); }',
+    'console.log("OK S1: /tmp sandbox protocol rejected - check " + f.checkIndex + ", plan line " + f.line + ", " + f.excerpt);',
+    "'"
+  ].join('\n');
+
+  const SMOKE_359_S2 = [
+    'set -u',
+    'REPO_ROOT="${REPO_ROOT:-$PWD}"',
+    'cd "$REPO_ROOT"',
+    "node -e '",
+    'const { SmokeProtocol } = require("./dist/domain");',
+    'const correct = [',
+    '  "# Plan", "",',
+    '  "## 6. Manual Smoke Test Protocol", "",',
+    '  "```bash",',
+    '  "mkdir -p \\"$HOME/.cache/agyloop\\"",',
+    '  "SBX=$(mktemp -d \\"$HOME/.cache/agyloop/smoke-359-check-XXXXXX\\")",',
+    '  "git clone . \\"$SBX/repo\\"",',
+    '  "cd \\"$SBX/repo\\"",',
+    '  "env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 359 --to IMPLEMENT",',
+    '  "rm -rf \\"$SBX\\"",',
+    '  "```", ""',
+    '].join("\\n");',
+    'const p = SmokeProtocol.fromPlan(correct);',
+    'if (!p.executable || p.findings.length !== 0) {',
+    '  console.log("FAIL: the #351-shape protocol now has findings: " + JSON.stringify(p.findings));',
+    '  process.exit(1);',
+    '}',
+    'const fileMktemp = [',
+    '  "# Plan", "",',
+    '  "## 6. Manual Smoke Test Protocol", "",',
+    '  "```bash",',
+    '  "HELP_FILE=$(mktemp)",',
+    '  "node bin/codeloop.js --help > \\"$HELP_FILE\\"",',
+    '  "rm -f \\"$HELP_FILE\\"",',
+    '  "```", ""',
+    '].join("\\n");',
+    'const q = SmokeProtocol.fromPlan(fileMktemp);',
+    'const bad = q.findings.filter((x) => x.rule === "sandbox-path");',
+    'if (bad.length !== 0) {',
+    '  console.log("FAIL: a file-only mktemp was flagged as a sandbox: " + JSON.stringify(bad));',
+    '  process.exit(1);',
+    '}',
+    'console.log("OK S2: the correct smoke-<issue> sandbox and the file-only mktemp both validate clean");',
+    "'"
+  ].join('\n');
+
+  const SMOKE_359_S3 = [
+    'set -u',
+    'REPO_ROOT="${REPO_ROOT:-$PWD}"',
+    'cd "$REPO_ROOT"',
+    "node -e '",
+    'const { ResolveSubagentUseCase } = require("./dist/application/resolve-subagent");',
+    'const p = new ResolveSubagentUseCase({}).buildPlanningTaskPrompt({',
+    '  planDir: "artifacts/plans/359-x/",',
+    '  planPath: "artifacts/plans/359-x/implementation_plan.md"',
+    '});',
+    'if (!(p.match(/\\.cache\\/agyloop\\/smoke-/g) || []).length) {',
+    '  console.log("FAIL: the planner prompt never names the required sandbox path");',
+    '  process.exit(1);',
+    '}',
+    'if (!(p.match(/mktemp/g) || []).length) {',
+    '  console.log("FAIL: the planner prompt never states the mktemp/sandbox constraint");',
+    '  process.exit(1);',
+    '}',
+    'console.log("OK S3: the planner task prompt names " + ".cache/agyloop/smoke-<issue>" + " and the mktemp constraint (" + p.length + " chars)");',
+    "'"
+  ].join('\n');
+
+  /** The archived #359 plan's smoke section, title phrase included. */
+  function smoke359Replica(): string {
+    return [
+      '# [Implementation] - [Phase 6] [Bug] the planner can author smoke blocks the state guard refuses the Manual Smoke Test Protocol task prompt and static validator never constrain the sandbox path so gate round 1 fails as it did in 339',
+      '',
+      '## 4. Verification',
+      '',
+      '### Manual Smoke Test Protocol',
+      '',
+      'Run every block from the worktree root, **after `npm run build`**.',
+      '',
+      '**S1 — the #339-shape protocol is rejected before dispatch**',
+      '',
+      '```bash',
+      SMOKE_359_S1,
+      '```',
+      '',
+      '**S2 — the #351-shape sandbox and the file-only `mktemp` helper validate clean**',
+      '',
+      '```bash',
+      SMOKE_359_S2,
+      '```',
+      '',
+      '**S3 — the planner task prompt constrains where authored blocks may sandbox**',
+      '',
+      '```bash',
+      SMOKE_359_S3,
+      '```',
+      ''
+    ].join('\n');
+  }
+
+  test('SP18: the #359 plan S2 shape validates clean and its script is runnable (#362 F2)', () => {
+    const protocol = SmokeProtocol.fromPlan(smoke359Replica());
+
+    assert.deepStrictEqual(protocol.findings, [], JSON.stringify(protocol.findings));
+    assert.strictEqual(protocol.executable, true);
+    assert.strictEqual(protocol.checks.length, 3, 'only the declared fences are checks');
+    assert.ok(protocol.headingLine >= 2, `headingLine=${protocol.headingLine}`);
+
+    const script = protocol.toScript() ?? '';
+    const markers = script.match(/__AGYLOOP_SMOKE_CHECK_[0-9]+__/g) ?? [];
+    assert.strictEqual(markers.length, 3);
+    assert.ok(!/^\s*\$ /m.test(script), 'no shell-prompt line');
+    assert.ok(!script.includes('+------+'));
+    assert.ok(!script.includes('npm run lint'));
+  });
+
+  test('SP19: the sandbox-path probe matrix classifies every documented shape (#362 F2)', () => {
+    const findingsFor = (body: string[]): any[] => sandboxFindings(planOf(['```bash', ...body, '```']));
+
+    const rows: Array<{ name: string; body: string[]; expected: number }> = [
+      {
+        name: 'real invocation + recognised sandbox',
+        body: [
+          'SBX=$(mktemp -d "$HOME/.cache/agyloop/smoke-362-x")',
+          'env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 362'
+        ],
+        expected: 0
+      },
+      {
+        name: 'quoted command text over a /tmp path (I4 baseline)',
+        body: [
+          'SBX=$(mktemp -d /tmp/opencode/smoke362-XXXXXX)',
+          '"node bin/codeloop.js transition --issue 362"'
+        ],
+        expected: 0
+      },
+      {
+        name: 'quoted env-prefixed text over a /tmp path (I4 complete)',
+        body: [
+          'SBX=$(mktemp -d /tmp/opencode/smoke362-XXXXXX)',
+          '"env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 362"'
+        ],
+        expected: 0
+      },
+      {
+        name: 'seeded escaped path + env-prefixed text (the #359 S2 pair)',
+        body: [
+          String.raw`  "SBX=$(mktemp -d \"$HOME/.cache/agyloop/smoke-362-x\")",`,
+          '  "env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 362",'
+        ],
+        expected: 0
+      },
+      {
+        // The F2.1 mechanism on its own: an escaped recognised path in a check
+        // that DOES invoke the CLI must be unescaped, not flagged.
+        name: 'escaped recognised path in a real invocation check',
+        body: [
+          String.raw`SBX=$(mktemp -d \"$HOME/.cache/agyloop/smoke-362-x\")`,
+          'node bin/codeloop.js status --issue 362'
+        ],
+        expected: 0
+      },
+      {
+        name: 'explicit non-temp template under PWD (§2.3.4)',
+        body: [
+          'SBX=$(mktemp -d "$PWD/fixture-XXXXXX")',
+          'node bin/codeloop.js status --issue 362'
+        ],
+        expected: 0
+      },
+      {
+        name: 'bare mktemp -d (implicit OS temp root, SP13 pin)',
+        body: ['SBX=$(mktemp -d)', 'node bin/codeloop.js transition --issue 362'],
+        expected: 1
+      },
+      {
+        name: 'explicit /tmp root (SP10 pin)',
+        body: [
+          'SBX=$(mktemp -d /tmp/opencode/smoke362-XXXXXX)',
+          'node bin/codeloop.js transition --issue 362'
+        ],
+        expected: 1
+      },
+      {
+        name: 'control: quoted binary path in a real invocation',
+        body: [
+          'SBX=$(mktemp -d /tmp/opencode/smoke362-XXXXXX)',
+          `( cd "$work" && AGY_SUBAGENT='' node "$root/bin/codeloop.js" sync )`
+        ],
+        expected: 1
+      },
+      {
+        name: 'control: a command substitution still invokes',
+        body: [
+          'SBX=$(mktemp -d /tmp/opencode/smoke362-XXXXXX)',
+          'OUT="$(codeloop next --json)"'
+        ],
+        expected: 1
+      }
+    ];
+
+    for (const row of rows) {
+      assert.strictEqual(
+        findingsFor(row.body).length,
+        row.expected,
+        `${row.name}: ${JSON.stringify(findingsFor(row.body))}`
+      );
+    }
+  });
+
+  test('SP20: same-check $VAR roots resolve, and a /tmp root cannot be laundered (#362 F2)', () => {
+    // a) The #284 shape: the recognised root arrives through a variable.
+    const indirected = planOf([
+      '```bash',
+      'ROOT="$PWD"; SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp -d "$SANDBOX/smoke-284-XXXXXX")"; cd "$WS"',
+      'node bin/codeloop.js status --issue 284',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(indirected), []);
+
+    // b) Resolution cannot launder a temp root.
+    const tempRoot = planOf([
+      '```bash',
+      'D=/tmp/opencode; W=$(mktemp -d "$D/smoke-362-XXXXXX")',
+      'node bin/codeloop.js status --issue 362',
+      '```'
+    ]);
+    assert.strictEqual(sandboxFindings(tempRoot).length, 1, JSON.stringify(sandboxFindings(tempRoot)));
+
+    // c) The multi-statement line alone (no CLI) stays clean — the statement
+    // splitter must not read the trailing `smoke` token as an assignment value.
+    const statementsOnly = planOf([
+      '```bash',
+      'SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp -d "$SANDBOX/smoke-284-XXXXXX")"',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(statementsOnly), []);
+  });
+
+  test('SP21: a bare mktemp -d + HOME override stays flagged (#362 F2(e), accepted limitation)', () => {
+    // §2.3.3 / I3.3 deliberately flag a bare `mktemp -d` in a CLI check. Honoring
+    // a per-command `HOME="$home"` override would need execution awareness the
+    // value object does not have (it is I/O-free), so this stays a finding.
+    const markdown = planOf([
+      '```bash',
+      'home="$(mktemp -d)"',
+      'HOME="$home" node bin/codeloop.js review --issue 349',
+      '```'
+    ]);
+
+    assert.strictEqual(sandboxFindings(markdown).length, 1, JSON.stringify(sandboxFindings(markdown)));
+  });
+
+  test(
+    'SP22: archived plans keep their frozen heading line and check count (#362 AC1.3/AC2.4)',
+    { skip: !fs.existsSync(path.join(__dirname, '..', '..', 'artifacts', 'plans')) },
+    () => {
+      const archive = path.join(__dirname, '..', '..', 'artifacts', 'plans');
+      const expectedChecks: Record<string, number> = {
+        '242': 6,
+        '248': 2,
+        '283': 1,
+        '284': 12,
+        '297': 7,
+        '298': 4,
+        '301': 9,
+        '306': 5,
+        '311': 4,
+        '313': 5,
+        '314': 5,
+        '315': 15,
+        '320': 4,
+        '327': 5,
+        '328': 3,
+        '336': 9,
+        '337': 6,
+        '338': 4,
+        '339': 13,
+        '349': 7,
+        '351': 4,
+        '352': 3,
+        '356': 5,
+        '359': 3
+      };
+      const expectedSandbox: Record<string, number> = {
+        '284': 0,
+        '328': 3,
+        '349': 4,
+        '352': 2,
+        '359': 0
+      };
+
+      let scanned = 0;
+      for (const entry of fs.readdirSync(archive)) {
+        const planPath = path.join(archive, entry, 'implementation_plan.md');
+        if (!fs.existsSync(planPath)) continue;
+        scanned++;
+
+        const protocol = SmokeProtocol.fromPlan(fs.readFileSync(planPath, 'utf8'));
+        assert.notStrictEqual(
+          protocol.headingLine,
+          1,
+          `${entry}: the document H1 is scoped as the section`
+        );
+
+        const issue = entry.split('-')[0];
+        if (Object.prototype.hasOwnProperty.call(expectedChecks, issue)) {
+          assert.strictEqual(
+            protocol.checks.length,
+            expectedChecks[issue],
+            `${entry}: frozen check count`
+          );
+        }
+        if (Object.prototype.hasOwnProperty.call(expectedSandbox, issue)) {
+          const count = protocol.findings.filter((finding: any) => finding.rule === 'sandbox-path').length;
+          assert.strictEqual(count, expectedSandbox[issue], `${entry}: sandbox findings`);
+        }
+      }
+
+      assert.ok(scanned > 0, 'the archive exists but no plan was scanned');
+    }
+  );
 });
