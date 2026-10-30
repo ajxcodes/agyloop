@@ -19,7 +19,7 @@
  * are unit-testable without a single mock.
  */
 
-import { StageName, STAGE_DISCOVERY, STAGE_COMPLETED, STAGE_TRIAGE } from '../domain';
+import { StageName, STAGE_DISCOVERY, STAGE_COMPLETED, STAGE_TRIAGE, IssueKind } from '../domain';
 
 // ---- Discovery park (Defect 1) ------------------------------------------
 
@@ -254,4 +254,166 @@ export function resolveTriageReentry(input: TriageReentryInput): TriageReentryDe
     return 'EXIT_TO_COMPLETED';
   }
   return 'REPORT_TRIAGE_GATE';
+}
+
+// ---- Plan entry (issue #379) --------------------------------------------
+
+/**
+ * Which stage a `plan` entry takes, and which artifact it scaffolds.
+ *
+ * `PlanArtifactType` is what `scaffoldPlanDirectory` receives, so the artifact
+ * prefix can never disagree with the entry stage.
+ */
+export type PlanEntryStage = 'DISCOVERY' | 'PLAN';
+export type PlanArtifactType = 'discovery' | 'implementation';
+export type PlanEntrySource =
+  | 'skip-discovery'
+  | 'type-override'
+  | 'issue-kind-bug'
+  | 'issue-kind-feature'
+  | 'discovery-report-present'; // assigned by the use case, never by the table
+
+export interface PlanEntryInput {
+  readonly requestedType?: string | null;
+  readonly issueKind: IssueKind;
+  readonly skipDiscovery: boolean;
+}
+
+export interface PlanEntryDecision {
+  readonly stage: PlanEntryStage;
+  readonly artifactType: PlanArtifactType;
+  readonly source: PlanEntrySource;
+  readonly reason: string;
+}
+
+/** One row of the plan-entry table. `'any'` = wildcard. */
+export interface PlanEntryRule {
+  readonly skipDiscovery: boolean | 'any';
+  readonly requestedType: 'discovery' | 'implementation' | 'auto' | 'any';
+  readonly issueKind: IssueKind | 'any';
+  readonly stage: PlanEntryStage;
+  readonly source: PlanEntrySource;
+  readonly reason: string;
+}
+
+/**
+ * Ordered, first-match-wins.
+ *
+ * Precedence is the whole point: the explicit `--skip-discovery` escape hatch
+ * must never be shadowed (R1), then an explicit `--type` override decides
+ * (R2/R3), and only then does the issue kind select the stage (R4/R5).
+ *
+ * R5 closes the `auto` branch for every non-bug kind, so the table is
+ * exhaustive for normalised input. `resolvePlanEntry` still falls back to the
+ * R5-equivalent decision — advancing to PLAN is the historical, non-destructive
+ * default — rather than parking a feature on an RCA requirement that does not
+ * exist.
+ */
+export const PLAN_ENTRY_RULES: readonly PlanEntryRule[] = Object.freeze([
+  {
+    skipDiscovery: true,
+    requestedType: 'any',
+    issueKind: 'any',
+    stage: 'PLAN',
+    source: 'skip-discovery',
+    reason: 'The operator explicitly bypassed the RCA gate with --skip-discovery.'
+  },
+  {
+    skipDiscovery: false,
+    requestedType: 'implementation',
+    issueKind: 'any',
+    stage: 'PLAN',
+    source: 'type-override',
+    reason: 'The operator explicitly requested an implementation plan.'
+  },
+  {
+    skipDiscovery: false,
+    requestedType: 'discovery',
+    issueKind: 'any',
+    stage: 'DISCOVERY',
+    source: 'type-override',
+    reason: 'The operator explicitly requested a discovery (RCA) entry.'
+  },
+  {
+    skipDiscovery: false,
+    requestedType: 'auto',
+    issueKind: 'bug',
+    stage: 'DISCOVERY',
+    source: 'issue-kind-bug',
+    reason: 'A bug issue needs root-cause analysis before a plan can be written.'
+  },
+  {
+    skipDiscovery: false,
+    requestedType: 'auto',
+    issueKind: 'feature',
+    stage: 'PLAN',
+    source: 'issue-kind-feature',
+    reason: 'A feature issue has no defect to root-cause, so planning starts directly.'
+  }
+] as const);
+
+/**
+ * Normalise the `--type` value.
+ *
+ * Only `discovery` and `implementation` are real values; everything else
+ * (including `null`, `undefined`, `''`, `'feature'` and `'auto'` itself) means
+ * "infer from the issue kind". Never throws.
+ */
+export function parseRequestedPlanType(
+  raw?: string | null
+): 'discovery' | 'implementation' | 'auto' {
+  const normalised = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalised === 'discovery' || normalised === 'implementation') {
+    return normalised;
+  }
+  return 'auto';
+}
+
+/**
+ * Resolve the plan entry stage/artifact from the requested type, the issue kind
+ * and the explicit skip flag.
+ *
+ * Total function: never throws, never returns `undefined`, and returns a frozen
+ * decision. The artifact type is computed independently of the entry stage so a
+ * bug with `--skip-discovery` still scaffolds its `[Discovery]` report while
+ * entering PLAN — matching the behaviour that predates this policy.
+ */
+export function resolvePlanEntry(input: PlanEntryInput): PlanEntryDecision {
+  const requestedType = parseRequestedPlanType(input.requestedType);
+
+  const artifactType: PlanArtifactType =
+    requestedType === 'discovery' || requestedType === 'implementation'
+      ? requestedType
+      : input.issueKind === 'bug'
+        ? 'discovery'
+        : 'implementation';
+
+  for (const rule of PLAN_ENTRY_RULES) {
+    if (rule.skipDiscovery !== 'any' && rule.skipDiscovery !== input.skipDiscovery) {
+      continue;
+    }
+    if (rule.requestedType !== 'any' && rule.requestedType !== requestedType) {
+      continue;
+    }
+    if (rule.issueKind !== 'any' && rule.issueKind !== input.issueKind) {
+      continue;
+    }
+    return Object.freeze({
+      stage: rule.stage,
+      artifactType,
+      source: rule.source,
+      reason: rule.reason
+    } as const);
+  }
+
+  // Fail-closed to the historical default: plan, never park, when the table
+  // cannot describe the input (e.g. an unrecognised kind from a future caller).
+  return Object.freeze({
+    stage: 'PLAN',
+    artifactType,
+    source: 'issue-kind-feature',
+    reason: 'Unrecognised entry input: advancing to PLAN is the non-destructive default.'
+  } as const);
 }

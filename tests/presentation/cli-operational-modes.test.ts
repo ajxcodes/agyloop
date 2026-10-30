@@ -372,7 +372,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       }
     });
 
-    test('runCli plan prints pipeline advanced when stage remains at PLAN (bug discovery)', async () => {
+    test('runCli plan parks at DISCOVERY for a bug discovery entry', async () => {
       const prevCwd = process.cwd();
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-discovery-test-'));
       let output = '';
@@ -385,8 +385,11 @@ describe('CLI Operational Modes & Flag Parsing', () => {
         process.chdir(tempDir);
         const exitCode = await runCli(['plan', '--type', 'discovery', '--title', 'Bug Fix RCA']);
         assert.strictEqual(exitCode, 0);
-        // It will now advance to PLAN
-        assert.ok(output.includes(`✓ Pipeline advanced to ${formatStageBadge(STAGE_PLAN)}.`));
+        // Issue #379: an explicit discovery entry parks at DISCOVERY instead of
+        // advancing past an RCA stage whose work never ran.
+        assert.ok(output.includes('Parked at DISCOVERY'), output);
+        assert.ok(output.includes('Subagent     : discovery'), output);
+        assert.ok(!output.includes(`Pipeline advanced to ${formatStageBadge(STAGE_PLAN)}.`), output);
       } finally {
         process.chdir(prevCwd);
         console.log = originalLog;

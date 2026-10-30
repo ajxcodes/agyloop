@@ -18,9 +18,12 @@ const assert = require('node:assert');
 const {
   DISCOVERY_REENTRY_RULES,
   COMPLETED_REENTRY_RULES,
+  PLAN_ENTRY_RULES,
   resolveDiscoveryReentry,
   resolveCompletedReentry,
   resolveTriageReentry,
+  resolvePlanEntry,
+  parseRequestedPlanType,
   shouldRouteToTriage
 } = require('../../dist/application/lifecycle-reentry-policy');
 const {
@@ -380,5 +383,115 @@ describe('Lifecycle Re-Entry Policy (issue #237)', () => {
         );
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #379: the plan entry table. Precedence is skip -> explicit --type ->
+// issue kind, and the artifact type is computed independently so a skipped bug
+// still scaffolds its RCA report.
+// ---------------------------------------------------------------------------
+
+describe('PLAN_ENTRY_RULES (issue #379)', () => {
+  test('PE-1: every row resolves to its declared stage/source', () => {
+    for (const rule of PLAN_ENTRY_RULES) {
+      const decision = resolvePlanEntry({
+        requestedType: rule.requestedType === 'any' ? 'auto' : rule.requestedType,
+        issueKind: rule.issueKind === 'any' ? 'feature' : rule.issueKind,
+        skipDiscovery: rule.skipDiscovery === true
+      });
+      assert.strictEqual(decision.stage, rule.stage, JSON.stringify(rule));
+      assert.strictEqual(decision.source, rule.source, JSON.stringify(rule));
+    }
+  });
+
+  test('PE-2: --skip-discovery is never shadowed', () => {
+    const decision = resolvePlanEntry({
+      requestedType: 'discovery',
+      issueKind: 'bug',
+      skipDiscovery: true
+    });
+    assert.strictEqual(decision.stage, 'PLAN');
+    assert.strictEqual(decision.source, 'skip-discovery');
+    assert.strictEqual(decision.artifactType, 'discovery');
+  });
+
+  test('PE-3: explicit --type overrides the label inference in both directions', () => {
+    const bugImplementation = resolvePlanEntry({
+      requestedType: 'implementation',
+      issueKind: 'bug',
+      skipDiscovery: false
+    });
+    assert.strictEqual(bugImplementation.stage, 'PLAN');
+    assert.strictEqual(bugImplementation.source, 'type-override');
+    assert.strictEqual(bugImplementation.artifactType, 'implementation');
+
+    const featureDiscovery = resolvePlanEntry({
+      requestedType: 'discovery',
+      issueKind: 'feature',
+      skipDiscovery: false
+    });
+    assert.strictEqual(featureDiscovery.stage, 'DISCOVERY');
+    assert.strictEqual(featureDiscovery.source, 'type-override');
+    assert.strictEqual(featureDiscovery.artifactType, 'discovery');
+  });
+
+  test('PE-4: auto infers the entry stage from the issue kind', () => {
+    assert.deepStrictEqual(
+      resolvePlanEntry({ requestedType: 'auto', issueKind: 'bug', skipDiscovery: false }),
+      {
+        stage: 'DISCOVERY',
+        artifactType: 'discovery',
+        source: 'issue-kind-bug',
+        reason: 'A bug issue needs root-cause analysis before a plan can be written.'
+      }
+    );
+    assert.deepStrictEqual(
+      resolvePlanEntry({ requestedType: 'auto', issueKind: 'feature', skipDiscovery: false }),
+      {
+        stage: 'PLAN',
+        artifactType: 'implementation',
+        source: 'issue-kind-feature',
+        reason: 'A feature issue has no defect to root-cause, so planning starts directly.'
+      }
+    );
+  });
+
+  test('PE-5: parseRequestedPlanType normalises and never throws', () => {
+    assert.strictEqual(parseRequestedPlanType('DISCOVERY'), 'discovery');
+    assert.strictEqual(parseRequestedPlanType(' Discovery '), 'discovery');
+    assert.strictEqual(parseRequestedPlanType('implementation'), 'implementation');
+    assert.strictEqual(parseRequestedPlanType('Implementation '), 'implementation');
+    for (const raw of [null, undefined, '', 'auto', 'feature']) {
+      assert.strictEqual(parseRequestedPlanType(raw), 'auto', String(raw));
+    }
+  });
+
+  test('PE-6: artifact type always matches the entry contract', () => {
+    assert.strictEqual(
+      resolvePlanEntry({ requestedType: 'auto', issueKind: 'bug', skipDiscovery: false }).artifactType,
+      'discovery'
+    );
+    assert.strictEqual(
+      resolvePlanEntry({ requestedType: 'auto', issueKind: 'feature', skipDiscovery: false })
+        .artifactType,
+      'implementation'
+    );
+    assert.strictEqual(
+      resolvePlanEntry({ requestedType: 'auto', issueKind: 'bug', skipDiscovery: true }).artifactType,
+      'discovery'
+    );
+  });
+
+  test('PE-7: all combinations are total and frozen', () => {
+    for (const requestedType of ['discovery', 'implementation', 'auto']) {
+      for (const issueKind of ['bug', 'feature']) {
+        for (const skipDiscovery of [true, false]) {
+          const decision = resolvePlanEntry({ requestedType, issueKind, skipDiscovery });
+          assert.ok(decision);
+          assert.ok(Object.isFrozen(decision));
+        }
+      }
+    }
   });
 });

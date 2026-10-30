@@ -153,11 +153,14 @@ describe('plan artifacts end to end (#283, #299, #240/5)', () => {
         stderr += a.map(String).join(' ') + '\n';
       };
 
-      const first = await run(['plan', '--issue', '904', '--title', '[Bug] fresh scaffold']);
+      // Issue #379: a non-bug title keeps this test on the scaffold-then-adopt
+      // path. A `[Bug] …` title now parks at DISCOVERY, whose re-entry is a
+      // deliberate no-op and therefore never prints "Using existing".
+      const first = await run(['plan', '--issue', '904', '--title', 'Feature scaffold']);
       assert.match(first.stdout, /Initialized plan directory/);
       assert.strictEqual(planDirectories(tempDir).length, 1);
 
-      const second = await run(['plan', '--issue', '904', '--title', '[Bug] fresh scaffold']);
+      const second = await run(['plan', '--issue', '904', '--title', 'Feature scaffold']);
       assert.match(second.stdout, /Using existing plan directory/);
       assert.doesNotMatch(second.stdout, /Initialized plan directory/);
       assert.strictEqual(planDirectories(tempDir).length, 1);

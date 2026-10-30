@@ -462,9 +462,10 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
       // Verify StateMachine history contains the full uninterrupted flow
       const history = result.stateMachine.history.map((h: any) => h.stage);
+      // Issue #379: a feature issue enters PLAN directly, so no phantom
+      // DISCOVERY transition appears in the uninterrupted flow.
       assert.deepStrictEqual(history, [
         STAGE_INITIALIZED,
-        STAGE_DISCOVERY,
         STAGE_PLAN,
         STAGE_IMPLEMENT,
         STAGE_QUALITY_GATE,
@@ -582,6 +583,15 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('Step 1 (fresh run for bug/discovery): leaves stage in DISCOVERY and does NOT pause at APPROVAL gate', async () => {
+      // A pristine discovery scaffold: the RCA report exists but is unfilled.
+      planGenerator.planContent = [
+        '# [Discovery] - probe',
+        '',
+        '## 1. Problem Statement & Symptoms',
+        '- **Observed Behavior:**',
+        '- **Expected Behavior:**'
+      ].join('\n');
+
       const result = await lifecycleUseCase.execute({
         mode: MODE_STANDARD,
         issue: 32,
@@ -592,7 +602,12 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
       assert.strictEqual(result.pausedAtGate, undefined);
-      assert.strictEqual(result.message, 'Pipeline advanced to DISCOVERY.');
+      // Issue #379: a discovery entry must not claim it advanced past the RCA
+      // stage; it parks with the evidence message (B5: the standard leg is no
+      // longer silent).
+      assert.strictEqual(result.planResult?.discoveryParked, true);
+      assert.match(result.message ?? '', /Parked at DISCOVERY/);
+      assert.match(result.message ?? '', /Checked:/);
     });
 
     test('Step 2 (resuming from APPROVAL): advances to IMPLEMENT, passes gates & review, halts at COMMIT', async () => {
@@ -693,19 +708,84 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
     });
 
-    test('mode "plan" for bug/discovery advances to PLAN and halts at PLAN gate', async () => {
+    test('mode "plan" for a bug issue parks at DISCOVERY', async () => {
+      // The stub decides the kind from the LABEL, not from --type (issue #379).
+      githubGateway.fetchIssue = async (num: number) =>
+        ({
+          number: num,
+          title: 'Login screen crashes on submit',
+          body: 'Repro steps attached.',
+          labels: ['bug'],
+          comments: [],
+          state: 'OPEN'
+        }) as any;
+      // A pristine discovery scaffold: the report exists but carries no RCA.
+      planGenerator.planContent = [
+        '# [Discovery] - Login screen crashes on submit',
+        '',
+        '## 1. Problem Statement & Symptoms',
+        '- **Observed Behavior:**',
+        '- **Expected Behavior:**',
+        '',
+        '## 2. Root Cause Analysis (RCA)',
+        '- **Investigation Steps:**',
+        '- **Identified Failure Mode:**'
+      ].join('\n');
+
       const result = await lifecycleUseCase.execute({
         mode: MODE_PLAN,
         issue: 32,
-        type: 'discovery',
-        title: 'Bug Fix Plan',
+        title: 'Login screen crashes on submit',
         workspaceDir: '/mock/workspace'
       });
 
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.mode, MODE_PLAN);
+      assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
+      assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.planResult?.discoveryParked, true);
+      assert.ok(
+        result.message?.startsWith(NOTE_DISCOVERY_PARK_AWAITING_RCA),
+        `the bug entry must print the RCA park message, got: ${result.message}`
+      );
+      assert.match(result.message ?? '', /Checked:/);
+      assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
+      assert.strictEqual(planGenerator.scaffoldCalls[0].type, 'discovery');
+      assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
+      assert.ok(
+        !stateRepo.savedSnapshot.history.some((h: any) => h.stage === STAGE_PLAN),
+        'a bug entry must record no PLAN transition'
+      );
+    });
+
+    test('mode "plan" for a bug issue still plans when --type implementation overrides the label', async () => {
+      githubGateway.fetchIssue = async (num: number) =>
+        ({
+          number: num,
+          title: 'Login screen crashes on submit',
+          body: 'Repro steps attached.',
+          labels: ['bug'],
+          comments: [],
+          state: 'OPEN'
+        }) as any;
+
+      const result = await lifecycleUseCase.execute({
+        mode: MODE_PLAN,
+        issue: 32,
+        type: 'implementation',
+        title: 'Login screen crashes on submit',
+        workspaceDir: '/mock/workspace'
+      });
+
+      assert.strictEqual(result.success, true);
       assert.strictEqual(result.currentStage, STAGE_PLAN);
       assert.strictEqual(result.pausedAtGate, undefined);
+      assert.strictEqual(result.planResult?.discoveryParked, false);
+      assert.strictEqual(result.message, `Pipeline advanced to ${STAGE_PLAN}.`);
+      const planEntry = stateRepo.savedSnapshot.history
+        .filter((h: any) => h.stage === STAGE_PLAN)
+        .pop();
+      assert.strictEqual(planEntry.metadata.entrySource, 'type-override');
       assert.strictEqual(planGenerator.scaffoldCalls.length, 1);
     });
 

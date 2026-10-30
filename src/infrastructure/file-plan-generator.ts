@@ -38,6 +38,7 @@ import {
   SUMMARY_STATUS_PENDING,
   LABEL_SMOKE_PROTOCOL,
   DiscoveryReport,
+  detectIssueKind,
   isDiscoveryPlanDocument,
   isPlanContentSubstantive,
   normalizePlanForDigest,
@@ -338,18 +339,12 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       labels = titleOrParams.labels || maybeLabels;
     }
 
-    const bugKeywords = ['bug', 'defect', 'fix', 'rca', 'root-cause', 'regression', 'crash', 'error'];
-    const titleLower = String(title).toLowerCase();
-
-    const labelMatch = (labels || []).some((l) =>
-      bugKeywords.some((kw) => String(l).toLowerCase().includes(kw))
-    );
-
-    const titleMatch = bugKeywords.some((kw) =>
-      titleLower.includes(`[${kw}]`) || titleLower.includes(`${kw}:`) || titleLower.includes(`${kw}/`)
-    );
-
-    return labelMatch || titleMatch ? 'discovery' : 'implementation';
+    // Issue #379: one issue-kind predicate for the entry point and the
+    // generator. The behaviour of the inline rule that used to live here is
+    // preserved, except that labels now match EXACTLY (`not-a-bug` is a
+    // feature) and an undelimited title keyword (`crash on login`) is
+    // recognised per the plan's IK-4 table.
+    return detectIssueKind({ title, labels }).kind === 'bug' ? 'discovery' : 'implementation';
   }
 
   public generatePlan(options: GeneratePlanOptions): GeneratePlanResult {
