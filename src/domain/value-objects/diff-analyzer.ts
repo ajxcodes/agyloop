@@ -49,6 +49,82 @@ export interface DraftCommitPlan {
   readonly isBreaking: boolean;
 }
 
+/**
+ * The class of a diff line (#382, D1). A matcher over a patch must be able to
+ * say WHICH class of line it matched, otherwise a token in a 3-line context
+ * block or a hunk-header trailer is indistinguishable from a real change.
+ */
+type DiffLineKind =
+  | 'meta' // diff --git, index, modes, rename/copy, Binary files, \ No newline, blank
+  | 'file-header' // --- a/x and +++ b/x, seen BEFORE the first hunk of a file section
+  | 'hunk-header' // @@ … @@ (including a trailing "BREAKING CHANGE:" trailer)
+  | 'context' // leading space
+  | 'content-add' // leading +
+  | 'content-remove'; // leading -
+
+interface ClassifiedDiffLine {
+  readonly kind: DiffLineKind;
+  /** The line WITHOUT its one-character diff marker for content/context lines. */
+  readonly content: string;
+}
+
+/** `---`/`+++` file headers, but only before the first hunk of a section. */
+const DIFF_FILE_HEADER = /^(?:---|\+\+\+)(?:[ \t]|$)/;
+
+/** Patch metadata lines: never content, whatever they contain. */
+const DIFF_META_LINE =
+  /^(?:index |new file mode |deleted file mode |old mode |new mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|\\ No newline at end of file)/;
+
+/**
+ * Classifies a raw `git diff` into line kinds. The evaluation ORDER is the
+ * specification (#382 §2.2.1):
+ *
+ * 1. `diff --git ` → meta; reset `inHunk`.
+ * 2. `@@` → hunk-header; `inHunk = true`.
+ * 3. Any `DIFF_META_LINE` → meta.
+ * 4. `---`/`+++` only while `!inHunk` → file-header. After a hunk has begun
+ *    they are content (a removed line whose text starts with `--`, an added
+ *    line whose text starts with `++`).
+ * 5. Leading `+` → content-add. 6. Leading `-` → content-remove.
+ * 7. Leading space → context. 8. Anything else → meta.
+ */
+function* classifyDiffLines(diffText: string): Generator<ClassifiedDiffLine> {
+  let inHunk = false;
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      inHunk = false;
+      yield { kind: 'meta', content: line };
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      inHunk = true;
+      yield { kind: 'hunk-header', content: line };
+      continue;
+    }
+    if (DIFF_META_LINE.test(line)) {
+      yield { kind: 'meta', content: line };
+      continue;
+    }
+    if (!inHunk && DIFF_FILE_HEADER.test(line)) {
+      yield { kind: 'file-header', content: line };
+      continue;
+    }
+    if (line.startsWith('+')) {
+      yield { kind: 'content-add', content: line.slice(1) };
+      continue;
+    }
+    if (line.startsWith('-')) {
+      yield { kind: 'content-remove', content: line.slice(1) };
+      continue;
+    }
+    if (line.startsWith(' ')) {
+      yield { kind: 'context', content: line.slice(1) };
+      continue;
+    }
+    yield { kind: 'meta', content: line };
+  }
+}
+
 export class DiffAnalyzer {
   public static isExcludedDiffPath(
     filePath: string,
@@ -204,23 +280,19 @@ export class DiffAnalyzer {
   }
 
   public static calculateMetrics(diffText: string): { additions: number; deletions: number } {
+    // Which class a diff line belongs to has exactly ONE definition — the
+    // module-level classifier above — so metrics and breaking-change detection
+    // can never disagree about what a `+` means (#382, D1).
     if (!diffText || typeof diffText !== 'string') {
       return { additions: 0, deletions: 0 };
     }
 
     let additions = 0;
     let deletions = 0;
-    const lines = diffText.split('\n');
 
-    for (const line of lines) {
-      if (line.startsWith('+++') || line.startsWith('---')) {
-        continue;
-      }
-      if (line.startsWith('+')) {
-        additions++;
-      } else if (line.startsWith('-')) {
-        deletions++;
-      }
+    for (const { kind } of classifyDiffLines(diffText)) {
+      if (kind === 'content-add') additions++;
+      else if (kind === 'content-remove') deletions++;
     }
 
     return { additions, deletions };
@@ -243,7 +315,17 @@ export class DiffAnalyzer {
       return false;
     }
 
-    return REGEX_BREAKING_CHANGE_FOOTER.test(diffText) || diffText.includes(TOKEN_BREAKING_CHANGE);
+    // #382 D1: match the token and the footer ONLY on a content line. A token
+    // in a context block, a hunk-header trailer, a file-header path or a meta
+    // line merely *appears*; it does not declare the change breaking. Both
+    // tests survive (narrowed, never removed): the `includes` half catches the
+    // bare `BREAKING CHANGE:` footer, which the `(.+)` footer regex cannot.
+    for (const { kind, content } of classifyDiffLines(diffText)) {
+      if (kind !== 'content-add' && kind !== 'content-remove') continue;
+      if (content.includes(TOKEN_BREAKING_CHANGE)) return true;
+      if (REGEX_BREAKING_CHANGE_FOOTER.test(content)) return true;
+    }
+    return false;
   }
 
   /**

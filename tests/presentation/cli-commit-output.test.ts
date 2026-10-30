@@ -644,3 +644,68 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
     }
   });
 });
+
+/**
+ * Issue #382 (D1, was #360) — the commit gate's warning follows the FINAL
+ * message.
+ *
+ * The plan's analysis flag survived an operator override, so `--message-file`
+ * with a non-breaking message still printed `⚠️ BREAKING CHANGE detected!`
+ * directly under the non-breaking subject it had just printed. All three runs
+ * are `--dry-run`: nothing is committed.
+ */
+describe('the breaking-change warning reflects the final message (#382)', () => {
+  const SUBJECT = `docs: probe subject (#${ISSUE})`;
+
+  test('CLI-COMMIT-1: plan flag, non-breaking override, then a breaking override', () => {
+    const sandbox = makeSandbox('main');
+    try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
+      // A tracked line whose ADDED content carries the token: the plan really
+      // is breaking, so (a) must warn.
+      fs.appendFileSync(
+        path.join(sandbox.dir, 'README.md'),
+        'BREAKING CHANGE: probe footer\n',
+        'utf8'
+      );
+      const before = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: sandbox.dir,
+        encoding: 'utf8'
+      }).trim();
+
+      const defaultRun = runCommit(sandbox, ['--dry-run']);
+      const defaultOut = `${defaultRun.stdout}\n${defaultRun.stderr}`;
+      assert.strictEqual(defaultRun.status, 0, defaultOut);
+      assert.ok(defaultOut.includes('BREAKING CHANGE detected'), defaultOut);
+
+      const safeMessage = path.join(sandbox.dir, 'msg-safe.md');
+      fs.writeFileSync(safeMessage, `${SUBJECT}\n`, 'utf8');
+      const safeRun = runCommit(sandbox, ['--dry-run', '--message-file', safeMessage]);
+      const safeOut = `${safeRun.stdout}\n${safeRun.stderr}`;
+      assert.strictEqual(safeRun.status, 0, safeOut);
+      assert.ok(
+        !safeOut.includes('BREAKING CHANGE detected'),
+        `a non-breaking override must silence the warning, got:\n${safeOut}`
+      );
+      assert.ok(safeOut.includes(SUBJECT), safeOut);
+
+      const breakingMessage = path.join(sandbox.dir, 'msg-breaking.md');
+      fs.writeFileSync(breakingMessage, `${SUBJECT}\n\nBREAKING CHANGE: real footer\n`, 'utf8');
+      const breakingRun = runCommit(sandbox, ['--dry-run', '--message-file', breakingMessage]);
+      const breakingOut = `${breakingRun.stdout}\n${breakingRun.stderr}`;
+      assert.strictEqual(breakingRun.status, 0, breakingOut);
+      assert.ok(breakingOut.includes('BREAKING CHANGE detected'), breakingOut);
+
+      const after = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: sandbox.dir,
+        encoding: 'utf8'
+      }).trim();
+      assert.strictEqual(after, before, 'all three runs are --dry-run: HEAD must not move');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+    }
+  });
+});

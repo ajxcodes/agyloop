@@ -786,7 +786,7 @@ export const MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION =
  * command. It is REFUSED, never silently dropped (#369, was #372).
  */
 export const MSG_GATE_TARGET_UNEXECUTABLE_ENTRY =
-  'Plan Quality Gate Target at plan line {line} was NOT silently dropped, but it cannot be executed as approved: `{command}` (reason: {detail}). Every declared verification entry must be a single runnable command. Put it in a fenced `bash` block, use a known runner or a path-like binary (for example `./scripts/check.sh`), and split compound commands (`;`, `|`, `&&` with redirections) into one line each. Nothing was staged and nothing was committed.' as const;
+  'Plan Quality Gate Target at plan line {line} was NOT silently dropped, but it cannot be executed as approved: `{command}` (reason: {detail}). Every declared verification entry must be a single runnable command. Put it in a fenced `bash` block, use a known runner or a path-like binary (for example `./scripts/check.sh`), and remove the separators this parser refuses: `;`, `|`, backticks and `$(`. `&&` chains are split into one target each automatically — do not rewrite them. Nothing was staged and nothing was committed.' as const;
 
 /**
  * The change under test touches workflows, but the composed command list has no
@@ -1522,6 +1522,18 @@ export const CMD_PLAYWRIGHT_YARN = 'yarn playwright test' as const;
 export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;
 /** The plan title a derived folder/filename is refused for (issue #364). */
 export const VALIDATION_FIELD_PLAN_TITLE = 'planTitle' as const;
+/** The plan artifact type an unclassified, unreadable entry refuses (#382). */
+export const VALIDATION_FIELD_PLAN_TYPE = 'type' as const;
+/**
+ * A first-run `plan --issue <n>` whose label lookup failed AND whose title
+ * carries no bug marker cannot infer the kind (#382, D4). Refusing is the
+ * explicit alternative to the silent skip of DISCOVERY.
+ */
+export const MSG_PLAN_ISSUE_KIND_LABELS_UNAVAILABLE =
+  'Issue labels for #{issue} could not be read, so the issue kind cannot be inferred: the resolved title carries no bug marker. Refusing to default to an implementation plan and silently skip DISCOVERY. Pass `--type discovery` to run RCA, `--type implementation` to plan directly, or `--skip-discovery` to bypass RCA explicitly.' as const;
+/** Recorded when the kind was inferred from a title because labels were unreadable (#382). */
+export const NOTE_PLAN_LABELS_UNAVAILABLE =
+  'Issue labels could not be read, so the issue kind came from the title fallback (kind: {kind}). Pass `--type discovery` or `--type implementation` to override the inference.' as const;
 export const PLAN_DEFAULT_SPECIFICATION_TITLE = 'Plan Specification' as const;
 export const PLAN_DEFAULT_TITLE = 'Task Plan' as const;
 
@@ -2136,7 +2148,7 @@ export function withRecordedPauseHint(
  * appends WHICH evidence is missing and which files were read.
  */
 export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
-  'Parked at DISCOVERY for RCA: the discovery report does not yet contain RCA evidence. Run `codeloop next` to dispatch the discovery subagent, populate the report, then re-run. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
+  'Parked at DISCOVERY for RCA: the discovery report does not yet contain RCA evidence. Run `codeloop next` to dispatch the discovery subagent, populate the report, then run `codeloop plan --issue <n>`. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
 /**
  * The park headline for a report rejected by the KIND gate (its first line is
  * not the scaffold title), issue #320's message half + #339 item 3.
@@ -2148,7 +2160,7 @@ export const NOTE_DISCOVERY_PARK_AWAITING_RCA =
  * rejection reasons are distinguishable at the headline.
  */
 export const NOTE_DISCOVERY_PARK_KIND_MISMATCH =
-  'Parked at DISCOVERY for RCA: the discovery report\'s first line must be the `# [Discovery] - …` scaffold title (found: \'{firstLine}\'). Run `codeloop next` to dispatch the discovery subagent, fix the title (or populate an existing titled report), then re-run. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
+  'Parked at DISCOVERY for RCA: the discovery report\'s first line must be the `# [Discovery] - …` scaffold title (found: \'{firstLine}\'). Run `codeloop next` to dispatch the discovery subagent, fix the title (or populate an existing titled report), then run `codeloop plan --issue <n>`. Pass `--skip-discovery` to bypass the RCA gate explicitly. State is checkpointed; nothing is lost.' as const;
 /**
  * Recorded in history metadata when `codeloop next --restart` re-opens a
  * COMPLETED checkpoint, so the destructive reset is auditable from `status`.

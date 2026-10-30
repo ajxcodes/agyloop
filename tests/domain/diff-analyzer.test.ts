@@ -467,3 +467,127 @@ describe('commit draft truthfulness (issue #345 in #339: scope, tags, length)', 
     assert.strictEqual(DiffAnalyzer.inferScope([]), null);
   });
 });
+
+/**
+ * Issue #382 (D1, was #360) — classify the diff line BEFORE matching.
+ *
+ * The detector used to run `diffText.includes('BREAKING CHANGE:')` over the
+ * whole raw patch, so a token in a 3-line context block, a hunk-header trailer,
+ * a file-header path or a `Binary files … differ` meta line declared the change
+ * breaking. The narrowing must not remove the real-detection half: an added or
+ * removed content line, and a bare added footer, stay breaking.
+ */
+describe('breaking-change detection classifies diff lines (issue #382)', () => {
+  const TOKEN = 'BREAKING CHANGE:';
+  const HEADERS = [
+    'diff --git a/docs/x.md b/docs/x.md',
+    '--- a/docs/x.md',
+    '+++ b/docs/x.md'
+  ];
+
+  const diff = (...lines: string[]): string => [...HEADERS, ...lines, ''].join('\n');
+  const analyze = (text: string) =>
+    DiffAnalyzer.analyzeDiff(text, { issueNumber: 1, issueTitle: 'x' });
+
+  test('DA-BREAK-1: a token confined to a context block is not breaking', () => {
+    const contextOnly = diff(
+      '@@ -1,3 +1,4 @@',
+      ` ${TOKEN} silent commits are forbidden.`,
+      ' unchanged',
+      '+new line',
+      ' context'
+    );
+
+    const plan = analyze(contextOnly);
+    assert.strictEqual(plan.isBreaking, false);
+    assert.ok(!plan.commitMessage.toSingleLine().includes('!'), plan.commitMessage.toSingleLine());
+    assert.strictEqual(plan.commitMessage.toSingleLine(), 'docs: x (#1)');
+  });
+
+  test('DA-BREAK-2: a token only in the hunk-header trailer is not breaking', () => {
+    const hunkOnly = diff(`@@ -1 +1 @@ ${TOKEN} trailer`, ' unchanged', '+plain');
+    const plan = analyze(hunkOnly);
+    assert.strictEqual(plan.isBreaking, false);
+    assert.ok(!plan.commitMessage.toSingleLine().includes('!'), plan.commitMessage.toSingleLine());
+  });
+
+  test('DA-BREAK-3: a token only in a file-header path is not breaking', () => {
+    const headerOnly = [
+      `diff --git a/x.md b/${TOKEN} notes.md`,
+      '--- a/x.md',
+      `+++ b/${TOKEN} notes.md`,
+      '@@ -1 +1 @@',
+      '+plain',
+      ''
+    ].join('\n');
+
+    const plan = analyze(headerOnly);
+    assert.strictEqual(plan.isBreaking, false);
+    assert.ok(!plan.commitMessage.toSingleLine().includes('!'), plan.commitMessage.toSingleLine());
+  });
+
+  test('DA-BREAK-4: a token on an added line or a removed line IS breaking', () => {
+    const added = diff('@@ -1 +1,2 @@', ' context', `+${TOKEN} description`);
+    const addedPlan = analyze(added);
+    assert.strictEqual(addedPlan.isBreaking, true);
+    assert.ok(addedPlan.commitMessage.toSingleLine().includes('!:'), addedPlan.commitMessage.toSingleLine());
+
+    const removed = diff('@@ -1,2 +1 @@', `-${TOKEN} description`, ' context');
+    const removedPlan = analyze(removed);
+    assert.strictEqual(removedPlan.isBreaking, true);
+    assert.ok(removedPlan.commitMessage.toSingleLine().includes('!:'), removedPlan.commitMessage.toSingleLine());
+
+    // The pre-existing added-line positive control stays reachable.
+    assert.strictEqual(DiffAnalyzer.detectBreakingChanges(SAMPLE_DIFF_BREAKING), true);
+  });
+
+  test('DA-BREAK-5: a bare added footer (no description) is still breaking', () => {
+    // `REGEX_BREAKING_CHANGE_FOOTER` needs non-empty text after the colon, so
+    // this shape is caught only by the token half — which must survive.
+    const bareFooter = diff('@@ -1 +1,2 @@', ' context', '+BREAKING CHANGE:');
+    assert.strictEqual(analyze(bareFooter).isBreaking, true);
+  });
+
+  test('DA-BREAK-6: a real footer with text on an added line is breaking', () => {
+    const footer = diff('@@ -1 +1,2 @@', ' context', `+${TOKEN} real description`);
+    assert.strictEqual(analyze(footer).isBreaking, true);
+  });
+
+  test('DA-BREAK-7: a token only inside a meta line is not breaking', () => {
+    const metaOnly = diff(
+      '@@ -1 +1 @@',
+      `Binary files a/x and b/${TOKEN} y differ`,
+      '\\ No newline at end of file'
+    );
+    const plan = analyze(metaOnly);
+    assert.strictEqual(plan.isBreaking, false);
+    assert.ok(!plan.commitMessage.toSingleLine().includes('!'), plan.commitMessage.toSingleLine());
+  });
+
+  test('DA-METRICS-1: one line-kind definition keeps the existing totals and fixes ++ content', () => {
+    // The pre-#382 totals for this fixture are { additions: 4, deletions: 0 };
+    // the classifier must not change them.
+    assert.deepStrictEqual(DiffAnalyzer.calculateMetrics(SAMPLE_DIFF_SRC), {
+      additions: 4,
+      deletions: 0
+    });
+
+    // An added line whose CONTENT starts with `++`/`--` is one addition, not a
+    // file header: the classifier reads line kind, not the first three chars.
+    const embeddedDiff = [
+      'diff --git a/src/test.ts b/src/test.ts',
+      '--- a/src/test.ts',
+      '+++ b/src/test.ts',
+      '@@ -1,3 +1,5 @@',
+      '+const mockDiff = `diff --git a/spurious.ts b/spurious.ts',
+      '+--- a/spurious.ts',
+      '++++ b/spurious.ts`',
+      ''
+    ].join('\n');
+
+    assert.deepStrictEqual(DiffAnalyzer.calculateMetrics(embeddedDiff), {
+      additions: 3,
+      deletions: 0
+    });
+  });
+});

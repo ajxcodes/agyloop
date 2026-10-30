@@ -188,6 +188,23 @@ const PREFIX_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
 /** A shell flag carrying `-c` (alone or combined, e.g. `-lc` / `-ec`). */
 const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
 
+/** Long shell options whose value is the NEXT token (#382 D3). */
+const SHELL_LONG_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '--rcfile',
+  '--init-file'
+]);
+
+/**
+ * A clustered short option ending in `o`/`O` consumes the NEXT token: `-o`,
+ * `+o`, `-eo`, `-O` (#382 D3). Without this table the value (`pipefail`,
+ * `extglob`) is read as the wrapped command, so the assertion is neither
+ * rejected at approval nor recognised by `gitSubcommand`.
+ */
+const SHELL_SHORT_OPTION_WITH_VALUE = /^[-+][A-Za-z]*[oO]$/;
+
+/** fish's long command flag: `--command <script>` / `--command=<script>` (#382 D3). */
+const SHELL_LONG_COMMAND_FLAG = '--command';
+
 /** First token of an intended command entry (not structural prose, #369). */
 const COMMAND_ENTRY_PATTERN = /^[A-Za-z0-9_./~][A-Za-z0-9_./~-]*/;
 
@@ -461,13 +478,49 @@ export function unwrapShellPrefix(tokens: readonly string[], depth = 0): string[
     let hasCommandFlag = false;
     while (i < rest.length) {
       const token = rest[i];
+      // The evaluation order IS the specification (#382 §2.4.2): an option that
+      // CONSUMES the following token must be advanced past its value before the
+      // `-c` script can be read. Anything after `--` is an operand, never an
+      // option.
       if (token === '--') {
+        i += 1;
+        break;
+      }
+      if (token === SHELL_LONG_COMMAND_FLAG) {
+        hasCommandFlag = true;
         i += 1;
         continue;
       }
-      if (!token.startsWith('-')) break;
-      if (SHELL_COMMAND_FLAG.test(token)) hasCommandFlag = true;
-      i += 1;
+      if (token.startsWith(`${SHELL_LONG_COMMAND_FLAG}=`)) {
+        const inline = token.slice(SHELL_LONG_COMMAND_FLAG.length + 1);
+        return unwrapShellPrefix(tokenizeShellWords(inline), depth + 1);
+      }
+      if (SHELL_COMMAND_FLAG.test(token)) {
+        hasCommandFlag = true;
+        i += 1;
+        continue;
+      }
+      if (SHELL_LONG_OPTIONS_WITH_VALUE.has(token)) {
+        // An empty value would throw in the shell itself; do not special-case it.
+        i += 2;
+        continue;
+      }
+      if (token.startsWith('--rcfile=') || token.startsWith('--init-file=')) {
+        i += 1;
+        continue;
+      }
+      if (SHELL_SHORT_OPTION_WITH_VALUE.test(token)) {
+        // Consume the value only when it is not itself a flag: this keeps a
+        // flag-only `bash +O -c …` working.
+        const next = rest[i + 1];
+        i += next && !/^[-+]/.test(next) ? 2 : 1;
+        continue;
+      }
+      if (token.startsWith('-') || token.startsWith('+')) {
+        i += 1;
+        continue;
+      }
+      break;
     }
     if (!hasCommandFlag || i >= rest.length) return [...tokens];
     const script = rest.slice(i).join(' ');

@@ -14,11 +14,19 @@
  *  2. A label is a bug label only when it EQUALS `bug`/`defect` or matches the
  *     `type: bug` / `kind/bug` prefix form. This is deliberately exact: a
  *     substring rule classified `not-a-bug` and `fixed-in:2.0` as bugs.
- *  3. Only when no label matches, a title keyword still selects a bug. The
- *     historical delimited markers (`[bug]`, `fix:`, `rca/`) keep working, and
- *     a keyword at the start of any word also matches — so the plan's IK-4
- *     table recognises undelimited phrases such as `crash on login` and
- *     `fixing the loop`.
+ *  3. A bug label wins outright, whatever the title says.
+ *  4. Otherwise a title still selects a bug only when it carries an actual
+ *     MARKER (#382, D4):
+ *       DELIMITED  `[bug]`, `fix:`, `rca/` … — the historical pre-#379
+ *                  `FilePlanGenerator.detectPlanType` predicate, verbatim; or
+ *       STRONG_LEAD a bug-only imperative at position 0 (`crash on login`,
+ *                  `fixing the loop`).
+ *     Ordinary English (`Improve error handling`, `Add a bug reporting
+ *     dashboard`, `Reduce regression test flakiness`) is NOT a marker. #379
+ *     widened the title rule to any word-start keyword; that widening discarded
+ *     the label lookup the same issue added, so it is narrowed here.
+ *  5. When labels were read and none was a bug, the kind is `feature`/`label`
+ *     unless the title carries a marker (marker-over-label precedence, IK-5).
  *
  * Purity note: this module has NO imports at all. It never throws, never reads
  * I/O, and freezes both its tables and the object it returns.
@@ -33,11 +41,19 @@ export type IssueKindSource = 'label' | 'title' | 'none';
 export interface IssueKindInput {
   readonly labels?: readonly string[] | null;
   readonly title?: string | null;
+  /**
+   * True only when an issue lookup was ATTEMPTED and failed (#382). An empty
+   * label set and an unreadable label set must not be indistinguishable: the
+   * former is a fact, the latter is an unknown.
+   */
+  readonly labelsUnavailable?: boolean;
 }
 
 export interface IssueKindResult {
   readonly kind: IssueKind;
   readonly source: IssueKindSource;
+  /** Present only when true, so existing deepEqual pins keep their shape. */
+  readonly labelsUnavailable?: true;
 }
 
 /** Exact bug labels. NOT substring matching: `not-a-bug` is not a bug label. */
@@ -47,9 +63,10 @@ export const BUG_LABELS: readonly string[] = Object.freeze(['bug', 'defect']);
 export const BUG_LABEL_PREFIX_PATTERN = /^(?:type|kind)\s*[:/]\s*(?:bug|defect)$/;
 
 /**
- * Title keywords. They match the historical delimited markers (`[bug]`,
- * `fix:`, `rca/`) and any word that starts with the keyword — the IK-4 table
- * (issue #379) requires `crash on login` and `fixing the loop` to be bugs.
+ * Title keywords for the HISTORICAL DELIMITED markers (`[bug]`, `fix:`,
+ * `rca/`). The list is byte-identical to the pre-#379 `detectPlanType` table
+ * and is NOT a free-floating word matcher: `error` here only matches as
+ * `[error]`, `error:` or `error/` (#382, D4).
  */
 export const BUG_TITLE_KEYWORDS: readonly string[] = Object.freeze([
   'bug',
@@ -62,12 +79,42 @@ export const BUG_TITLE_KEYWORDS: readonly string[] = Object.freeze([
   'error'
 ]);
 
+/**
+ * The only undelimited addition (#382, D4): a bug-only imperative ANCHORED at
+ * index 0. This keeps `crash on login` and `fixing the loop` green while
+ * `Error budget dashboard for SLOs` and `Improve error handling` stay features —
+ * `error` is deliberately absent from the undelimited list.
+ */
+const STRONG_LEAD_BUG = /^\s*(?:crash(?:es|ed|ing)?|fix(?:es|ed|ing)?|regression|regressed)\b/;
+
 /** True when one normalised label identifies a bug. */
 function isBugLabel(label: unknown): boolean {
   const normalised = String(label ?? '')
     .trim()
     .toLowerCase();
   return BUG_LABELS.includes(normalised) || BUG_LABEL_PREFIX_PATTERN.test(normalised);
+}
+
+/**
+ * The pre-#379 delimiter predicate, kept VERBATIM (substring-based, quirks
+ * included: `prefix:` still matches `fix:`). It is the reference point the
+ * two-direction mutation check compares against — do not "improve" it here.
+ */
+function matchesDelimitedMarker(titleLower: string, keyword: string): boolean {
+  return (
+    titleLower.includes(`[${keyword}]`) ||
+    titleLower.includes(`${keyword}:`) ||
+    titleLower.includes(`${keyword}/`)
+  );
+}
+
+/** True when the title carries an actual bug marker (delimited or strong lead). */
+export function hasBugTitleMarker(title?: string | null): boolean {
+  const titleLower = String(title ?? '').toLowerCase();
+  return (
+    BUG_TITLE_KEYWORDS.some((keyword) => matchesDelimitedMarker(titleLower, keyword)) ||
+    STRONG_LEAD_BUG.test(titleLower)
+  );
 }
 
 /**
@@ -78,26 +125,17 @@ function isBugLabel(label: unknown): boolean {
  */
 export function detectIssueKind(input: IssueKindInput = {}): IssueKindResult {
   const labels = Array.isArray(input.labels) ? input.labels : [];
+  const unavailable = input.labelsUnavailable === true;
+  const withFlag = (base: IssueKindResult): IssueKindResult =>
+    Object.freeze(unavailable ? { ...base, labelsUnavailable: true as const } : base);
 
   for (const label of labels) {
-    if (isBugLabel(label)) {
-      return Object.freeze({ kind: 'bug', source: 'label' } as const);
-    }
+    if (isBugLabel(label)) return withFlag({ kind: 'bug', source: 'label' });
   }
 
-  const titleLower = String(input.title ?? '').toLowerCase();
-  // `(?:^|[^a-z0-9])` keeps the match on a word boundary at the START only:
-  // `debug` does not contain the word `bug`, but `buggy` and `fixing` do start
-  // with a keyword. This also subsumes the historical `[bug]`, `fix:` and
-  // `rca/` markers, because their delimiter is a non-alphanumeric character.
-  const titleMatch = BUG_TITLE_KEYWORDS.some((keyword) => {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?:^|[^a-z0-9])${escaped}`).test(titleLower);
-  });
-
-  if (titleMatch) {
-    return Object.freeze({ kind: 'bug', source: 'title' } as const);
-  }
-
-  return Object.freeze({ kind: 'feature', source: 'none' } as const);
+  // Marker-over-label precedence (IK-5) is LIMITED to marker-shaped titles: an
+  // ordinary English word in the title no longer overrides a non-bug label.
+  if (hasBugTitleMarker(input.title)) return withFlag({ kind: 'bug', source: 'title' });
+  if (labels.length > 0) return withFlag({ kind: 'feature', source: 'label' });
+  return withFlag({ kind: 'feature', source: 'none' });
 }

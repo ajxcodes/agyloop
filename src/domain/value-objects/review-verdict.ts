@@ -52,16 +52,33 @@ export interface ReviewVerdictSerialized {
   readonly findingsCount: number;
 }
 
+/**
+ * Whole-bullet sentinels (#382 D2). `none of …` is EXCLUDED: it is a quantified
+ * statement about a set, i.e. a real criterion (#373). The discriminator is the
+ * PREPOSITION, not the first word (amended AC A1).
+ *
+ * `NONE_SCOPE` is deliberately a heuristic: the AC names `None in the reviewed
+ * scope` as a marker, so `none in <scope>` stays a marker even though a
+ * hypothetical `None in the retry tests are bounded` would be swallowed. Pin the
+ * exact #356 string; do not "improve" it into a verb detector (follow-up F-4).
+ */
+const NONE_EXACT = new Set(['none', 'none required', 'nil', 'n/a', 'no unfulfilled criteria']);
+const NONE_PAREN = /^none\s*\([^)]*\)$/; // None (deferred to post-commit)
+const NONE_SCOPE = /^none\s+in\b[^.!?]*$/; // None in the reviewed in-repo scope
+const NONE_OF = /^none\s+of\b/; // a criterion, never a sentinel
+
 function isNoneOrEmpty(value: string | undefined | null): boolean {
   if (!value) return true;
-  const trimmed = value.trim().toLowerCase();
-  // The structural tokens the reviewer prompt already sanctions, plus the
-  // exact shape of ReviewerTaskPromptParams' contract ("- None").
-  if (trimmed === '' || trimmed === 'n/a') return true;
-  // FIRST-WORD semantics (issue #356): a reviewer's "none" always LEADS with the
-  // word, while a genuine criterion that merely mentions it puts it mid-sentence
-  // ("Test path: none of the retries are bounded").
-  return /^none\b/.test(trimmed) || trimmed === 'nil' || trimmed === 'no unfulfilled criteria';
+  const raw = value.trim().toLowerCase();
+  if (raw === '') return true;
+  const normalised = raw.replace(/[.!]+$/, '').trim();
+  // #382 D2: match the WHOLE bullet, never a prefix. `none of the retries are
+  // bounded` leads with the word "none" but states a set of unmet conditions —
+  // dropping it falsified an APPROVED verdict (the opposite direction of #356).
+  if (NONE_OF.test(raw)) return false;
+  return (
+    NONE_EXACT.has(normalised) || NONE_PAREN.test(normalised) || NONE_SCOPE.test(normalised)
+  );
 }
 
 function cleanBulletItem(rawLine: string): string {

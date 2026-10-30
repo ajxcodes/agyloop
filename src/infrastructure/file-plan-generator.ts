@@ -339,11 +339,13 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       labels = titleOrParams.labels || maybeLabels;
     }
 
-    // Issue #379: one issue-kind predicate for the entry point and the
-    // generator. The behaviour of the inline rule that used to live here is
-    // preserved, except that labels now match EXACTLY (`not-a-bug` is a
-    // feature) and an undelimited title keyword (`crash on login`) is
-    // recognised per the plan's IK-4 table.
+    // Issue #379 / #382: one issue-kind predicate for the entry point and the
+    // generator. The historical delimited markers (`[bug]`, `fix:`, `rca/`) are
+    // matched verbatim; the ONLY undelimited form is a LEADING bug imperative
+    // (`crash on login`, `fixing the loop`), never "any word-start keyword".
+    // Labels match exactly (`not-a-bug` is a feature) and a non-bug label is
+    // only overridden by a marker-shaped title. The two consumers cannot drift:
+    // this method is the predicate, it has no second opinion.
     return detectIssueKind({ title, labels }).kind === 'bug' ? 'discovery' : 'implementation';
   }
 

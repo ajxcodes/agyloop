@@ -71,12 +71,19 @@ function makeSandbox(): string {
 }
 
 describe('--plan-path / --plan-dir CLI contract (#267)', () => {
+  // #382 D4 (amended fail-closed rule): these fixtures run OFFLINE, so the
+  // issue lookup fails and the kind cannot be inferred from labels. A first-run
+  // `plan --issue <n>` with no --title/--type/--skip-discovery now REFUSES
+  // rather than silently skipping DISCOVERY, so each fixture passes
+  // `--type implementation` to exercise its stated flag.
+  const PLAN_TYPE = ['--type', 'implementation'];
+
   test('T-267.B1: accepted by plan/implement/yolo and refused by other commands', async () => {
     const dir = makeSandbox();
     try {
       const suppliedPlan = path.join(dir, 'supplied', 'plan.md');
 
-      const plan = await runIn(dir, ['plan', '--issue', '283', '--plan-path', suppliedPlan]);
+      const plan = await runIn(dir, ['plan', '--issue', '283', ...PLAN_TYPE, '--plan-path', suppliedPlan]);
       assert.strictEqual(plan.code, 0, `${plan.stdout}\n${plan.stderr}`);
       assert.doesNotMatch(plan.stderr, /only supported by/);
       assert.doesNotMatch(plan.stderr, /Unknown flag/);
@@ -112,6 +119,7 @@ describe('--plan-path / --plan-dir CLI contract (#267)', () => {
         'plan',
         '--issue',
         '283',
+        ...PLAN_TYPE,
         '--plan-path',
         path.join(dir, 'supplied', 'plan.md')
       ]);
@@ -137,6 +145,7 @@ describe('--plan-path / --plan-dir CLI contract (#267)', () => {
         'plan',
         '--issue',
         '283',
+        ...PLAN_TYPE,
         '--plan-path',
         path.join(dir, 'supplied', 'blank.md')
       ]);
@@ -194,7 +203,7 @@ describe('supplied plan end to end with the real generator (#267)', () => {
 
       const before = rootArtifacts(dir);
 
-      const yolo = await runIn(dir, ['yolo', '--issue', '901', '--plan-path', './myplan.md']);
+      const yolo = await runIn(dir, ['yolo', '--issue', '901', '--type', 'implementation', '--plan-path', './myplan.md']);
       assert.strictEqual(yolo.code, 0, `${yolo.stdout}\n${yolo.stderr}`);
 
       // The supplied plan's DIRECTORY (the repo root) must not receive scaffold
@@ -243,7 +252,15 @@ describe('supplied plan end to end with the real generator (#267)', () => {
     const dir = makeSandbox();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-dir-outside-'));
     try {
-      const result = await runIn(dir, ['plan', '--issue', '906', '--plan-dir', outside]);
+      const result = await runIn(dir, [
+        'plan',
+        '--issue',
+        '906',
+        '--type',
+        'implementation',
+        '--plan-dir',
+        outside
+      ]);
 
       assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
       // The line names where the files really are — never a fabricated
