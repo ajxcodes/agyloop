@@ -517,3 +517,159 @@ describe('Plan entry stage (issue #379)', () => {
     assert.strictEqual(next.role, 'planner');
   });
 });
+
+/**
+ * Issue #382 (D4, was #385) — an unreadable label lookup must not silently skip
+ * DISCOVERY.
+ *
+ * The lenient read returns a synthetic object carrying `error` and empty
+ * labels. Flattening that to `[]` made "the issue has no labels" and "the
+ * labels could not be read" identical, so a bug whose title carried no keyword
+ * inferred `feature` and skipped RCA with no signal. `labelsUnavailable` now
+ * carries the difference: a first-run, unclassified entry refuses and names
+ * `--type`; every explicit path proceeds, warns and records the fact.
+ */
+describe('unreadable label lookup (issue #382)', () => {
+  const FAILED_LOOKUP: GitHubIssueData = {
+    repo: 'owner/repo',
+    number: 999,
+    title: '',
+    body: '',
+    labels: [],
+    comments: [],
+    error: 'gh: not authenticated'
+  } as GitHubIssueData;
+
+  function withWarnings(
+    run: () => Promise<any>
+  ): Promise<{ result: any; warnings: string[] }> {
+    const original = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    return run()
+      .then((result) => ({ result, warnings }))
+      .finally(() => {
+        console.warn = original;
+      });
+  }
+
+  function harness() {
+    const stateRepo = new MockStateRepository();
+    const githubGateway = new MockGitHubGateway();
+    const planGenerator = new MockPlanGenerator();
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      new MockConfigRepository(),
+      planGenerator
+    );
+    return { stateRepo, githubGateway, planGenerator, useCase };
+  }
+
+  function metadataFor(snapshot: any, stage: string): any {
+    return snapshot.history.filter((h: any) => h.stage === stage).pop()?.metadata;
+  }
+
+  test('PE-SP10: a first run with unreadable labels and no --type refuses before scaffolding', async () => {
+    const { stateRepo, githubGateway, planGenerator, useCase } = harness();
+    githubGateway.issueToReturn = FAILED_LOOKUP;
+    const { ValidationError } = require('../../dist/domain');
+
+    await assert.rejects(
+      () => withWarnings(() => useCase.execute({ issue: 999, mode: MODE_PLAN, workspaceDir: '/fake/workspace' })),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'type');
+        assert.ok(err.message.includes('--type discovery'), err.message);
+        assert.ok(err.message.includes('--type implementation'), err.message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCount, 0, 'a refused entry must persist nothing');
+    assert.strictEqual(planGenerator.scaffoldedParams, null, 'a refused entry must scaffold nothing');
+  });
+
+  test('PE-SP11: --type implementation proceeds, warns and records labelsUnavailable', async () => {
+    const { stateRepo, githubGateway, useCase } = harness();
+    githubGateway.issueToReturn = FAILED_LOOKUP;
+
+    const { result, warnings } = await withWarnings(() =>
+      useCase.execute({
+        issue: 999,
+        mode: MODE_PLAN,
+        type: 'implementation',
+        workspaceDir: '/fake/workspace'
+      })
+    );
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    const metadata = metadataFor(stateRepo.savedSnapshot, STAGE_PLAN);
+    assert.strictEqual(metadata.labelsUnavailable, true);
+    assert.ok(
+      warnings.some((line) => line.includes('--type')),
+      `the warning must name --type, got: ${JSON.stringify(warnings)}`
+    );
+  });
+
+  test('PE-SP12: a marker title still parks at DISCOVERY and records labelsUnavailable', async () => {
+    const { stateRepo, githubGateway, useCase } = harness();
+    githubGateway.issueToReturn = FAILED_LOOKUP;
+
+    const { result, warnings } = await withWarnings(() =>
+      useCase.execute({
+        issue: 999,
+        mode: MODE_PLAN,
+        title: '[Bug] x',
+        workspaceDir: '/fake/workspace'
+      })
+    );
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_DISCOVERY);
+    assert.strictEqual(result.discoveryParked, true);
+    const metadata = metadataFor(stateRepo.savedSnapshot, STAGE_DISCOVERY);
+    assert.strictEqual(metadata.labelsUnavailable, true);
+    assert.ok(warnings.length > 0, 'the fallback must be reported, not silent');
+  });
+
+  test('PE-SP13: --skip-discovery is an explicit bypass: PLAN, a warning and the record', async () => {
+    const { stateRepo, githubGateway, useCase } = harness();
+    githubGateway.issueToReturn = FAILED_LOOKUP;
+
+    const { result, warnings } = await withWarnings(() =>
+      useCase.execute({
+        issue: 999,
+        mode: MODE_PLAN,
+        skipDiscovery: true,
+        workspaceDir: '/fake/workspace'
+      })
+    );
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    const metadata = metadataFor(stateRepo.savedSnapshot, STAGE_PLAN);
+    assert.strictEqual(metadata.labelsUnavailable, true);
+    assert.strictEqual(metadata.skipDiscovery, true);
+    assert.ok(warnings.length > 0, 'the fallback must be reported, not silent');
+  });
+
+  test('PE-SP14: a readable non-bug label needs no warning and no refusal', async () => {
+    const { stateRepo, githubGateway, useCase } = harness();
+    githubGateway.issueToReturn = issueWithLabels(999, ['enhancement']);
+    githubGateway.issueToReturn = {
+      ...githubGateway.issueToReturn,
+      title: 'Improve error handling'
+    } as GitHubIssueData;
+
+    const { result, warnings } = await withWarnings(() =>
+      useCase.execute({ issue: 999, mode: MODE_PLAN, workspaceDir: '/fake/workspace' })
+    );
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
+    assert.strictEqual(result.planEntry?.source, 'issue-kind-feature');
+    assert.deepStrictEqual(warnings, [], 'a successful lookup must not warn');
+    const metadata = metadataFor(stateRepo.savedSnapshot, STAGE_PLAN);
+    assert.strictEqual('labelsUnavailable' in (metadata ?? {}), false);
+  });
+});

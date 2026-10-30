@@ -620,3 +620,105 @@ describe('parseQualityGateTargets (issue #298)', () => {
     );
   });
 });
+
+/**
+ * Issue #382 (D3, was #377) — the shell unwrapper reads which flags CONSUME a
+ * value before it reads the wrapped command.
+ *
+ * `bash -o pipefail -c 'git diff --exit-code'` is a committed-tree assertion
+ * behind an option-taking wrapper. The old loop advanced one token per flag, so
+ * `pipefail` was read as the command, `-c` was never seen, and the assertion was
+ * approved to fail at the gate. `bash -o pipefail -c 'npm test'` must stay
+ * accepted (no over-refusal).
+ */
+describe('option-taking shell wrappers (issue #382, was #377)', () => {
+  const REFUSED = [
+    "bash -c 'git diff --exit-code'",
+    "bash -o pipefail -c 'git diff --exit-code'",
+    "bash +o pipefail -c 'git diff --exit-code'",
+    "bash -O extglob -c 'git diff --exit-code'",
+    "bash --rcfile /tmp/rc -c 'git diff --exit-code'",
+    "sh -o errexit -c 'git diff --exit-code'",
+    "bash +O -c 'git diff --exit-code'",
+    "fish --command 'git diff --exit-code'"
+  ];
+  const ALLOWED = [
+    "bash -o pipefail -c 'npm test'",
+    "bash -o pipefail -c 'git diff --stat'",
+    "bash -o pipefail -c 'git status --porcelain'",
+    'bash script.sh'
+  ];
+
+  test('QGT19: every option-taking wrapper is classified like the bare command', () => {
+    for (const command of REFUSED) {
+      assert.strictEqual(isCommittedTreeAssertion(command), true, `must be refused: ${command}`);
+    }
+    for (const command of ALLOWED) {
+      assert.strictEqual(isCommittedTreeAssertion(command), false, `must not be refused: ${command}`);
+    }
+  });
+
+  test('QGT20: refused wrappers stay ONE target each, with no rejection and one finding apiece', () => {
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '```bash',
+      ...REFUSED,
+      ...ALLOWED,
+      '```',
+      ''
+    ].join('\n');
+
+    const parsed = parseQualityGateTargets(markdown);
+
+    assert.deepStrictEqual(parsed.rejections, [], JSON.stringify(parsed.rejections));
+    assert.deepStrictEqual(parsed.commands, [...REFUSED, ...ALLOWED]);
+    assert.deepStrictEqual(
+      lintQualityGateTargets(parsed.targets).map((finding: any) => finding.command),
+      REFUSED,
+      'exactly one committed-tree-assertion finding per refused wrapper, in plan order'
+    );
+  });
+
+  test('QGT21: the unexecutable-entry message no longer asks for `&&` splitting', () => {
+    assert.ok(MSG_GATE_TARGET_UNEXECUTABLE_ENTRY.includes('chains are split'));
+    assert.ok(!MSG_GATE_TARGET_UNEXECUTABLE_ENTRY.includes('split compound commands'));
+    // The three placeholders still render.
+    const rendered = MSG_GATE_TARGET_UNEXECUTABLE_ENTRY.replace('{line}', '7')
+      .replace('{command}', 'frobnicate build --strict')
+      .replace('{detail}', 'unrecognized-command');
+    assert.ok(rendered.includes('plan line 7'), rendered);
+    assert.ok(rendered.includes('frobnicate build --strict'), rendered);
+    assert.ok(rendered.includes('unrecognized-command'), rendered);
+  });
+
+  test('QGT22: `|` inside quotes stays refused; `&&` is split automatically', () => {
+    const piped = parseQualityGateTargets(
+      ['# Plan', '', '### Quality Gate Targets', '```bash', "bash -c 'npm test | tee log'", '```', ''].join(
+        '\n'
+      )
+    );
+    assert.deepStrictEqual(piped.rejections, [
+      {
+        entry: "bash -c 'npm test | tee log'",
+        line: 5,
+        reason: 'compound-syntax'
+      }
+    ]);
+
+    const chained = parseQualityGateTargets(
+      [
+        '# Plan',
+        '',
+        '### Quality Gate Targets',
+        '```bash',
+        'npm test && npm run lint',
+        '```',
+        ''
+      ].join('\n')
+    );
+    assert.deepStrictEqual(chained.rejections, []);
+    assert.deepStrictEqual(chained.commands, ['npm test', 'npm run lint']);
+  });
+});

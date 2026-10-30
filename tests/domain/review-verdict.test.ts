@@ -465,3 +465,137 @@ describe('findingsCount mirrors findings on the JSON surface (#339 E5 / T12.3)',
     assert.strictEqual(empty.toJSON().findingsCount, 0);
   });
 });
+
+/**
+ * Issue #382 (D2, was #373) — the UNFULFILLED_AC sentinel is structural.
+ *
+ * `isNoneOrEmpty` matched a bullet's FIRST WORD (`/^none\b/`), so a real
+ * criterion phrased `none of the retries are bounded` was discarded and an
+ * APPROVED verdict stayed APPROVED. The discriminator is now the PREPOSITION:
+ * `none of <set>` is a criterion; `none`, `none required`, `none (…)` and
+ * `none in <scope>` are empty markers (amended AC A1).
+ */
+describe('whole-bullet none sentinel (issue #382, amended AC A1)', () => {
+  const block = (bullets: string[]) =>
+    [
+      'REVIEW_STATUS: APPROVED',
+      'REVIEW_SUMMARY: All acceptance criteria are met.',
+      'UNFULFILLED_AC:',
+      ...bullets,
+      'REMEDIATION_GUIDANCE:',
+      '- None required.'
+    ].join('\n');
+
+  const SENTINELS = [
+    'None',
+    'None.',
+    'none',
+    'None required',
+    'None required.',
+    'None (deferred to post-commit)',
+    'None (deferred to #999)',
+    'None in the reviewed scope',
+    'None in the reviewed in-repo scope (deferred to post-commit).',
+    'n/a',
+    'N/A',
+    'nil',
+    'no unfulfilled criteria'
+  ];
+
+  test('RV-NONE-1: every marker shape is empty through parse-bullet, inline and constructor', () => {
+    for (const phrase of SENTINELS) {
+      const bulleted = ReviewVerdict.parse(block([`- ${phrase}`]));
+      assert.deepStrictEqual(
+        [...bulleted.unfulfilledCriteria],
+        [],
+        `bullet "${phrase}" was captured as a criterion`
+      );
+
+      const inline = ReviewVerdict.parse(
+        block([]).replace('UNFULFILLED_AC:\n', `UNFULFILLED_AC: ${phrase}\n`)
+      );
+      assert.deepStrictEqual(
+        [...inline.unfulfilledCriteria],
+        [],
+        `inline "${phrase}" was captured as a criterion`
+      );
+
+      const constructed = new ReviewVerdict({
+        status: VERDICT_APPROVED,
+        summary: 'All acceptance criteria are met.',
+        unfulfilledCriteria: [phrase]
+      });
+      assert.deepStrictEqual(
+        [...constructed.unfulfilledCriteria],
+        [],
+        `constructor kept "${phrase}" as a criterion`
+      );
+    }
+  });
+
+  test('RV-NONE-2: `none of <set>` survives as a real criterion, leading or mid-sentence', () => {
+    const criteria = [
+      'none of the retries are bounded',
+      'None of the new rules are tested',
+      // The #356 pin in the opposite direction: mid-sentence `none of …` was
+      // always a criterion and must stay one.
+      'Test path: none of the retries are bounded'
+    ];
+
+    for (const phrase of criteria) {
+      const parsed = ReviewVerdict.parse(block([`- ${phrase}`]));
+      assert.deepStrictEqual(
+        [...parsed.unfulfilledCriteria],
+        [phrase],
+        `"${phrase}" must be a criterion`
+      );
+
+      const constructed = new ReviewVerdict({
+        status: VERDICT_APPROVED,
+        summary: 'All acceptance criteria are met.',
+        unfulfilledCriteria: [phrase]
+      });
+      assert.deepStrictEqual([...constructed.unfulfilledCriteria], [phrase], phrase);
+    }
+  });
+
+  test('RV-NONE-3: the shared predicate protects REMEDIATION_GUIDANCE too', () => {
+    const verdict = ReviewVerdict.parse(
+      [
+        'REVIEW_STATUS: CHANGES_REQUESTED',
+        'REVIEW_SUMMARY: fix it',
+        'UNFULFILLED_AC:',
+        '- None',
+        'REMEDIATION_GUIDANCE:',
+        '- None of the patches applied cleanly'
+      ].join('\n')
+    );
+
+    assert.deepStrictEqual([...verdict.unfulfilledCriteria], []);
+    assert.deepStrictEqual([...verdict.remediationGuidance], [
+      'None of the patches applied cleanly'
+    ]);
+  });
+
+  test('RV-NONE-4: `None123` is not a sentinel and `- None` round-trips', () => {
+    const notNone = new ReviewVerdict({
+      status: VERDICT_APPROVED,
+      summary: 'Approved.',
+      unfulfilledCriteria: ['None123']
+    });
+    assert.deepStrictEqual([...notNone.unfulfilledCriteria], ['None123']);
+
+    const empty = new ReviewVerdict({
+      status: VERDICT_CHANGES_REQUESTED,
+      summary: 'Changes requested.',
+      unfulfilledCriteria: ['None']
+    });
+    const tokens = empty.formatStructuredTokens();
+    assert.ok(tokens.includes(`${TOKEN_UNFULFILLED_AC}:`), tokens);
+    assert.ok(tokens.includes('- None'), tokens);
+
+    const reparsed = ReviewVerdict.parse(tokens);
+    assert.deepStrictEqual([...reparsed.unfulfilledCriteria], []);
+    assert.deepStrictEqual([...reparsed.remediationGuidance], []);
+  });
+});

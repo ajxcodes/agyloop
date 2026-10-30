@@ -644,4 +644,57 @@ describe('Gate target contract (issue #348)', () => {
     );
     assert.strictEqual(stateRepo.saveCallCount, 0);
   });
+
+  test('GTC12: an option-taking wrapper is refused at approval; a real test target is accepted (#382)', async () => {
+    const command = "bash -o pipefail -c 'git diff --exit-code'";
+    fs.writeFileSync(planPath, planWithTarget(command), 'utf8');
+
+    const sm = checkpoint(STAGE_PLAN);
+    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'gateTargets');
+        assert.ok(err.message.includes(command), err.message);
+        assert.ok(err.message.includes('can never pass'), err.message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0, 'the refused transition must not checkpoint');
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN, 'the checkpoint must stay at PLAN');
+    assert.ok(!fs.existsSync(path.join(root, '.worktrees')), 'no worktree may be provisioned');
+
+    // The same wrapper at the OTHER approval entry point also provisions nothing.
+    const approvalSnapshot = checkpoint(STAGE_APPROVAL).toSnapshot();
+    const implementRepo = new MockStateRepository(approvalSnapshot);
+    const worktreeManager = new RecordingWorktreeManager(root);
+    const implement = new StartImplementationUseCase(
+      implementRepo as any,
+      new MockConfigRepository() as any,
+      makePlanGenerator(planDir, planPath),
+      undefined,
+      undefined,
+      worktreeManager as any
+    );
+    await assert.rejects(() => implement.execute({ issue: ISSUE, workspaceDir: root }));
+    assert.strictEqual(implementRepo.saveCallCount, 0);
+    assert.strictEqual(worktreeManager.createWorktreeCallCount, 0);
+    assert.strictEqual(approvalSnapshot.currentStage, STAGE_APPROVAL);
+
+    // Acceptance control: a real test target transitions normally.
+    fs.writeFileSync(planPath, planWithTarget("bash -o pipefail -c 'npm test'"), 'utf8');
+    const approved = await useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root });
+
+    assert.strictEqual(approved.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_APPROVAL);
+  });
 });

@@ -164,3 +164,50 @@ describe('plan entry stage through the CLI (issue #379)', () => {
     }
   });
 });
+
+/**
+ * Issue #382 (D4 nit) — the first-run park names the command to run next.
+ *
+ * "then re-run" told the operator to re-run *something*. After the report is
+ * populated, `next` already says `Advance with codeloop plan --issue <n>`; the
+ * park message must name the same command.
+ */
+describe('first-run park names the command (issue #382)', () => {
+  test('PE-CLI5: the dry-run park literal names `codeloop plan --issue <n>` and writes nothing', async () => {
+    const dir = makeSandbox();
+    try {
+      const run = await runCliIn(dir, [
+        'plan',
+        '--issue',
+        '385',
+        '--title',
+        '[Bug] park probe',
+        '--dry-run'
+      ]);
+
+      assert.strictEqual(run.code, 0, run.stderr);
+      assert.match(run.stdout, /codeloop plan --issue <n>/, run.stdout);
+      assert.match(run.stdout, /\[DRY RUN\] Would park at DISCOVERY/, run.stdout);
+      assert.doesNotMatch(run.stdout, /then re-run/, run.stdout);
+      assert.strictEqual(fs.existsSync(taskStatePath(dir, 385)), false);
+      assert.strictEqual(fs.existsSync(path.join(dir, 'artifacts')), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('PE-CLI6: the real park note names the same command', async () => {
+    const dir = makeSandbox();
+    try {
+      const run = await runCliIn(dir, ['plan', '--issue', '386', '--title', '[Bug] park note probe']);
+
+      assert.strictEqual(run.code, 0, run.stderr);
+      assert.match(run.stdout, /Parked at DISCOVERY/, run.stdout);
+      assert.match(run.stdout, /codeloop plan --issue <n>/, run.stdout);
+      assert.doesNotMatch(run.stdout, /then re-run/, run.stdout);
+      assert.strictEqual(readTaskState(dir, 386)?.currentStage, 'DISCOVERY');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

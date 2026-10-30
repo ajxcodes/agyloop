@@ -104,4 +104,28 @@ describe('applyTwoTierInvariant - natural none phrasing (issue #356)', () => {
       `unexpected escalation summary: ${outcome.verdict.summary}`
     );
   });
+
+  test('NW4: `none of …` under UNFULFILLED_AC escalates APPROVED (#382, was #373)', () => {
+    const criterion = 'none of the retries are bounded';
+    const verdict = ReviewVerdict.parse(
+      [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: Approved, but the retry bounds are unproven.',
+        'UNFULFILLED_AC:',
+        `- ${criterion}`,
+        'REMEDIATION_GUIDANCE:',
+        '- None.'
+      ].join('\n')
+    );
+
+    assert.deepStrictEqual([...verdict.unfulfilledCriteria], [criterion]);
+
+    const outcome: any = applyTwoTierInvariant(verdict, null);
+    assert.strictEqual(outcome.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(outcome.escalatedBy, 'unfulfilled-criteria');
+    assert.ok(
+      outcome.verdict.summary.includes('Unfulfilled Acceptance Criteria detected'),
+      outcome.verdict.summary
+    );
+  });
 });

@@ -43,7 +43,9 @@ describe('detectIssueKind (issue #379)', () => {
     for (const label of ['not-a-bug', 'fixed-in:2.0', 'enhancement', 'priority:p2', 'phase:6']) {
       const result = detectIssueKind({ labels: [label] });
       assert.strictEqual(result.kind, 'feature', label);
-      assert.strictEqual(result.source, 'none', label);
+      // #382: a READ non-bug label set is the source of the feature verdict —
+      // it is no longer indistinguishable from "no labels were read".
+      assert.strictEqual(result.source, 'label', label);
     }
   });
 
@@ -115,5 +117,154 @@ describe('detectIssueKind (issue #379)', () => {
     assert.ok(Object.isFrozen(BUG_LABELS));
     assert.ok(Object.isFrozen(BUG_TITLE_KEYWORDS));
     assert.ok(BUG_LABEL_PREFIX_PATTERN instanceof RegExp);
+  });
+});
+
+/**
+ * Issue #382 (D4, was #385) — the title rule matches a MARKER, not ordinary
+ * English.
+ *
+ * #379 widened the title fallback to `(?:^|[^a-z0-9])<kw>`, which classified
+ * `Improve error handling` as a bug AND overrode a non-bug label. The title rule
+ * is now the historical DELIMITED predicate (verbatim) plus ONE anchored
+ * addition: a leading bug imperative (`crash on login`, `fixing the loop`).
+ *
+ * Amended AC A2: the mutation check has TWO directions, because delimiter-only
+ * passes the false positives (that is why #379 widened it) and the widened rule
+ * passes the markers (that is why they stayed green).
+ */
+describe('marker-shaped title rule (issue #382, amended AC A2)', () => {
+  const FALSE_POSITIVES = [
+    'Improve error handling',
+    'Feature: RCA tooling',
+    'Add a bug reporting dashboard',
+    'Error budget dashboard for SLOs',
+    'Add defect tracking view',
+    'Reduce regression test flakiness'
+  ];
+
+  const MARKERS = [
+    '[Bug] x',
+    'Bug: x',
+    'fix: x',
+    'fixing the loop',
+    'RCA: x',
+    'regression/a',
+    'crash on login',
+    '[error] x'
+  ];
+
+  /** The rule #379 SHIPPED: any word-start keyword. Counterfactual (a). */
+  function widenedRuleIsBug(title: string): boolean {
+    const titleLower = title.toLowerCase();
+    return BUG_TITLE_KEYWORDS.some((keyword: string) => {
+      const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?:^|[^a-z0-9])${escaped}`).test(titleLower);
+    });
+  }
+
+  /** The pre-#379 delimiter-only rule. Counterfactual (b). */
+  function delimiterOnlyIsBug(title: string): boolean {
+    const titleLower = title.toLowerCase();
+    return BUG_TITLE_KEYWORDS.some(
+      (keyword: string) =>
+        titleLower.includes(`[${keyword}]`) ||
+        titleLower.includes(`${keyword}:`) ||
+        titleLower.includes(`${keyword}/`)
+    );
+  }
+
+  test('IK-8: ordinary English titles classify as features', () => {
+    for (const title of FALSE_POSITIVES) {
+      assert.deepStrictEqual(
+        detectIssueKind({ title }),
+        { kind: 'feature', source: 'none' },
+        title
+      );
+    }
+  });
+
+  test('IK-9: marker-limited precedence — a non-bug label is not overridden by ordinary English', () => {
+    assert.deepStrictEqual(
+      detectIssueKind({ labels: ['enhancement'], title: 'Improve error handling' }),
+      { kind: 'feature', source: 'label' }
+    );
+    assert.deepStrictEqual(
+      detectIssueKind({ labels: ['enhancement'], title: '[Bug] x' }),
+      { kind: 'bug', source: 'title' }
+    );
+    assert.deepStrictEqual(
+      detectIssueKind({ labels: ['bug'], title: '[Task] x' }),
+      { kind: 'bug', source: 'label' }
+    );
+  });
+
+  test('IK-10: detectPlanType and detectIssueKind stay in lockstep on every shape', () => {
+    const generator = new FilePlanGenerator();
+    const shapes = [
+      // The pre-existing IK-6 matrix.
+      { title: '[Bug] App crashes on startup', labels: [] },
+      { title: 'fix: memory leak in worker', labels: [] },
+      { title: 'RCA: Investigate latency spike', labels: [] },
+      { title: 'Standard task', labels: ['bug'] },
+      { title: 'Standard task', labels: ['defect', 'urgent'] },
+      { title: '[Task] Implement Auth Module', labels: [] },
+      { title: 'feat: add dark mode support', labels: [] },
+      { title: 'Setup CI/CD pipeline', labels: ['enhancement'] },
+      { title: 'Fix a not-a-bug label', labels: ['not-a-bug'] },
+      { title: 'Crash-free feature', labels: ['fixed-in:2.0'] },
+      // #382: the false positives…
+      ...FALSE_POSITIVES.map((title) => ({ title, labels: [] })),
+      // …the markers…
+      ...MARKERS.map((title) => ({ title, labels: [] })),
+      // …and the precedence pair.
+      { title: 'Improve error handling', labels: ['enhancement'] },
+      { title: '[Bug] x', labels: ['enhancement'] }
+    ];
+
+    for (const shape of shapes) {
+      const expected = detectIssueKind(shape).kind === 'bug' ? 'discovery' : 'implementation';
+      assert.strictEqual(
+        generator.detectPlanType(shape),
+        expected,
+        `${JSON.stringify(shape)} must classify identically`
+      );
+    }
+  });
+
+  test('IK-MUT-1: the shipped widened rule classifies every false positive as a bug', () => {
+    for (const title of FALSE_POSITIVES) {
+      assert.strictEqual(widenedRuleIsBug(title), true, `counterfactual must be red: ${title}`);
+      assert.deepStrictEqual(
+        detectIssueKind({ title }),
+        { kind: 'feature', source: 'none' },
+        `the new rule must keep it a feature: ${title}`
+      );
+    }
+  });
+
+  test('IK-MUT-2: the delimiter-only rule loses the two undelimited markers', () => {
+    for (const title of ['crash on login', 'fixing the loop']) {
+      assert.strictEqual(delimiterOnlyIsBug(title), false, `counterfactual must be red: ${title}`);
+      assert.deepStrictEqual(
+        detectIssueKind({ title }),
+        { kind: 'bug', source: 'title' },
+        `the new rule must keep it a bug: ${title}`
+      );
+    }
+  });
+
+  test('IK-11: labelsUnavailable is present only when true and the result stays frozen', () => {
+    const unavailable = detectIssueKind({ title: 'Add dark mode', labelsUnavailable: true });
+    assert.strictEqual(unavailable.labelsUnavailable, true);
+    assert.strictEqual(unavailable.kind, 'feature');
+    assert.ok(Object.isFrozen(unavailable));
+
+    assert.strictEqual('labelsUnavailable' in detectIssueKind({ title: 'Add dark mode' }), false);
+    assert.strictEqual('labelsUnavailable' in detectIssueKind({ labels: ['bug'] }), false);
+
+    // Totality survives the new field.
+    assert.doesNotThrow(() => detectIssueKind({ labelsUnavailable: true }));
+    assert.doesNotThrow(() => detectIssueKind({ labels: [], title: 'x'.repeat(10000) }));
   });
 });

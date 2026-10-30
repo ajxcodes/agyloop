@@ -35,6 +35,9 @@ import {
   PreFlightHaltError,
   ValidationError,
   VALIDATION_FIELD_PLAN_PATH,
+  VALIDATION_FIELD_PLAN_TYPE,
+  MSG_PLAN_ISSUE_KIND_LABELS_UNAVAILABLE,
+  NOTE_PLAN_LABELS_UNAVAILABLE,
   DiscoveryReport,
   detectIssueKind,
   isPlanContentSubstantive,
@@ -281,6 +284,9 @@ export class StartPlanningUseCase {
 
     const planTitle =
       params.title || (issueData && !issueData.error && issueData.title ? issueData.title : 'Task Plan');
+    // #382 D4: an unreadable lookup is NOT the same fact as "the issue has no
+    // labels". Carry the difference forward instead of flattening it to [].
+    const labelsUnavailable = Boolean(issueVo) && (!issueData || Boolean(issueData.error));
     const planLabels = (issueData && !issueData.error ? issueData.labels : []) || [];
 
     // Issue #379: resolve the issue kind and the plan artifact type ONCE, before
@@ -288,13 +294,44 @@ export class StartPlanningUseCase {
     // never disagree. `--type` is an explicit override; `auto` (and any unknown
     // value) infers from the label/title kind.
     const requestedType = parseRequestedPlanType(params.type);
-    const issueKind = detectIssueKind({ labels: planLabels, title: planTitle });
+    const issueKind = detectIssueKind({
+      labels: planLabels,
+      title: planTitle,
+      labelsUnavailable
+    });
     let planEntry = resolvePlanEntry({
       requestedType,
       issueKind: issueKind.kind,
       skipDiscovery: params.skipDiscovery === true
     });
     const planType: PlanArtifactType = planEntry.artifactType;
+
+    // #382 D4: the fail-open default is now explicit. Without labels AND
+    // without a bug marker the kind falls back to `feature`, which would skip
+    // DISCOVERY silently for a bug whose title carries no keyword. On a
+    // FIRST-RUN entry with no explicit classification input, refuse and name
+    // the flags instead. Deliberately narrow:
+    //  - `--title` is an explicit classification input → warn, proceed;
+    //  - a title marker already selected `bug` → no refusal;
+    //  - `--skip-discovery` / `--type` are explicit operator decisions;
+    //  - a re-entry (DISCOVERY/PLAN/…) already recorded its entry stage.
+    if (
+      issueKind.labelsUnavailable === true &&
+      requestedType === 'auto' &&
+      params.skipDiscovery !== true &&
+      !params.title &&
+      sm.currentStage === STAGE_INITIALIZED &&
+      issueKind.kind === 'feature'
+    ) {
+      throw new ValidationError(
+        VALIDATION_FIELD_PLAN_TYPE,
+        params.type ?? null,
+        MSG_PLAN_ISSUE_KIND_LABELS_UNAVAILABLE.replace('{issue}', String(activeIssue))
+      );
+    }
+    if (issueKind.labelsUnavailable === true) {
+      console.warn(NOTE_PLAN_LABELS_UNAVAILABLE.replace('{kind}', issueKind.kind));
+    }
 
     // 3. Scaffold plan directory (or accept the operator-supplied plan)
     let scaffoldInfo: ScaffoldResult | null = null;
@@ -469,6 +506,7 @@ export class StartPlanningUseCase {
           entryStage: STAGE_PLAN,
           entrySource: planEntry.source,
           issueKind: issueKind.kind,
+          ...(issueKind.labelsUnavailable ? { labelsUnavailable: true } : {}),
           ...(planEntry.source === 'skip-discovery' ? { skipDiscovery: true } : {}),
           ...(planEntry.source === 'discovery-report-present' &&
           discoveryReportEvidence.populatedPath
@@ -480,7 +518,8 @@ export class StartPlanningUseCase {
           note: NOTE_INITIATED_DISCOVERY_RCA,
           entryStage: STAGE_DISCOVERY,
           entrySource: planEntry.source,
-          issueKind: issueKind.kind
+          issueKind: issueKind.kind,
+          ...(issueKind.labelsUnavailable ? { labelsUnavailable: true } : {})
         });
         // NO PLAN transition: the stage's work has not happened yet.
         //

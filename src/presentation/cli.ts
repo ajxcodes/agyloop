@@ -3757,7 +3757,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           console.log(`\n[DRY RUN] Stage unchanged: ${unchanged}. No checkpoint was written.`);
           if (result.planResult?.discoveryParked === true) {
             console.log(
-              '[DRY RUN] Would park at DISCOVERY for RCA: populate the discovery report (or pass --skip-discovery), then re-run.'
+              '[DRY RUN] Would park at DISCOVERY for RCA: populate the discovery report, then run `codeloop plan --issue <n>` (or pass --skip-discovery).'
             );
           } else if (result.pausedAtGate === GATE_APPROVAL) {
             console.log(`[DRY RUN] Would pause at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
@@ -3907,7 +3907,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (draftResult.commitMessage.body) {
           console.log(`\nBody:\n${draftResult.commitMessage.body}`);
         }
-        if (draftResult.plan.isBreaking) {
+        if (draftResult.commitMessage.isBreaking) {
+          // #382 D1: the warning follows the FINAL message, not the analysis
+          // result. `--message-file`/`-m` can replace the plan's message with a
+          // non-breaking one (or a different breaking one), and a warning that
+          // contradicted the subject printed directly above it is worse than no
+          // warning at all. `draftResult.plan.isBreaking` stays for JSON and
+          // reporting only.
           console.log(`\n⚠️  BREAKING CHANGE detected!`);
         }
         console.log(`\nFiles to commit (${draftResult.listedFiles.length}):`);
