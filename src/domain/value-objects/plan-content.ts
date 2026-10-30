@@ -26,7 +26,10 @@
  *   5. a task checkbox whose text is empty —
  *      `^\s*[-*]\s*\[[ xX]\]\s*(\*\*(Step\s+\d+):\*\*)?\s*$`;
  *   6. a labelled bullet whose value is empty —
- *      `^\s*[-*]\s*\*\*(.+?):\*\*\s*$`.
+ *      `^\s*[-*]\s*\*\*(.+?):\*\*\s*$`;
+ *   7. a whole-line HTML comment (`^\s*<!--.*-->\s*$`) — the implementation
+ *      template carries the baseline label contract as a comment, which is a
+ *      structural hint, never executable content (issue #402).
  * The plan is SUBSTANTIVE iff at least one body line exists.
  *
  * Why the rule is fail-safe: "everything else is a body line" means a plan
@@ -62,6 +65,13 @@ const EMPTY_CHECKBOX_PATTERN = /^\s*[-*]\s*\[[ xX]\]\s*(\*\*(Step\s+\d+):\*\*)?\
 const EMPTY_LABELLED_BULLET_PATTERN = /^\s*[-*]\s*\*\*(.+?):\*\*\s*$/;
 
 /**
+ * A whole-line HTML comment: a structural hint, not executable content. The
+ * implementation template carries the baseline label contract this way so it
+ * never arms the YOLO park (issue #402).
+ */
+const HTML_COMMENT_LINE_PATTERN = /^\s*<!--.*-->\s*$/;
+
+/**
  * True when the line carries content an implementer could execute.
  *
  * @param line - A single line of the plan document.
@@ -83,6 +93,9 @@ function isBodyLine(line: string): boolean {
     return false;
   }
   if (EMPTY_LABELLED_BULLET_PATTERN.test(line)) {
+    return false;
+  }
+  if (HTML_COMMENT_LINE_PATTERN.test(line)) {
     return false;
   }
   return true;

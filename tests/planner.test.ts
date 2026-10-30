@@ -11,7 +11,9 @@ const {
   REVIEWER_SUBAGENT_DEF,
   ToolWhitelist,
   ResolveSubagentUseCase,
-  FileConfigRepository
+  FileConfigRepository,
+  BASELINE_DECLARED_SHAPE_SENTENCE,
+  ROOT_BUILD_PROHIBITION_SENTENCE
 } = require('../dist');
 
 
@@ -111,6 +113,11 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('- **Command:**'), prompt);
     assert.ok(prompt.includes('- **Output:**'), prompt);
     assert.ok(prompt.includes('Never declare an unmeasured baseline value'), prompt);
+    // Issue #402: the label contract and the root-build prohibition reach the
+    // planner BEFORE a claim is authored.
+    assert.ok(prompt.includes(BASELINE_DECLARED_SHAPE_SENTENCE), prompt);
+    assert.ok(prompt.includes(ROOT_BUILD_PROHIBITION_SENTENCE), prompt);
+    assert.ok(prompt.includes('npx tsc --outDir'), prompt);
   });
 
   test('getImplementerSystemPrompt returns detailed instructions with write capabilities', () => {

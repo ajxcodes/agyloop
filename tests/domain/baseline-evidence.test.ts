@@ -18,7 +18,16 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
-const { BaselineEvidence, baselineValuesMatch } = require('../../dist/domain');
+const {
+  BASELINE_VERDICT_DECLARED_MISMATCH,
+  BASELINE_VERDICT_MEASURED,
+  BASELINE_VERDICT_OUTPUT_MISMATCH,
+  BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED,
+  BaselineEvidence,
+  baselineValuesMatch,
+  evaluateBaselineClaim,
+  isProseDeclaration
+} = require('../../dist/domain');
 
 const HEADER_CLAIM =
   '**Revision analysed:** `abc1234`. Every baseline value was reproduced through `dist/` before this plan was written.';
@@ -381,5 +390,79 @@ describe('BaselineEvidence.fromPlan (issue #388)', () => {
       partiallyFilled.findings.map((finding: any) => finding.rule),
       ['missing-baseline-command', 'missing-baseline-output']
     );
+  });
+
+  test('BE9: isProseDeclaration accepts only a human sentence, never a value', () => {
+    // Prose: multiple tokens, no digit, no JSON, no {…}/[…] span.
+    assert.strictEqual(isProseDeclaration('the two CJK titles share one folder'), true);
+    assert.strictEqual(isProseDeclaration('both slugs resolve to the same folder'), true);
+
+    // Value-shaped or numeric text is never prose.
+    assert.strictEqual(isProseDeclaration('{ additions: 3 }'), false);
+    assert.strictEqual(isProseDeclaration('["a"]'), false);
+    assert.strictEqual(isProseDeclaration('4'), false);
+    assert.strictEqual(isProseDeclaration('true'), false);
+    assert.strictEqual(isProseDeclaration('static sandbox-path findings: 1'), false);
+    assert.strictEqual(isProseDeclaration(''), false);
+    assert.strictEqual(isProseDeclaration('   '), false);
+  });
+
+  test('BE10: evaluateBaselineClaim implements the five-row matrix', () => {
+    const measured = 'adhoc-phase-6 adhoc-phase-6 true';
+
+    // Row 1 — both match: accepted, measured.
+    const bothMatch = evaluateBaselineClaim(
+      { declared: measured, output: measured },
+      measured
+    );
+    assert.strictEqual(bothMatch.accepted, true);
+    assert.strictEqual(bothMatch.reason, BASELINE_VERDICT_MEASURED);
+    assert.strictEqual(bothMatch.declaredMatchesMeasured, true);
+    assert.strictEqual(bothMatch.outputMatchesMeasured, true);
+    assert.strictEqual(bothMatch.measured, measured);
+
+    // Row 2 — a fabricated Output is refused even when Declared is right.
+    const fabricatedOutput = evaluateBaselineClaim(
+      { declared: measured, output: 'adhoc-phase-6 adhoc-phase-6 false' },
+      measured
+    );
+    assert.strictEqual(fabricatedOutput.accepted, false);
+    assert.strictEqual(fabricatedOutput.reason, BASELINE_VERDICT_OUTPUT_MISMATCH);
+
+    // Row 3 — prose Declared + verified Output: accepted, prose-output-verified.
+    const proseVerified = evaluateBaselineClaim(
+      { declared: 'the two CJK titles share one folder', output: measured },
+      measured
+    );
+    assert.strictEqual(proseVerified.accepted, true);
+    assert.strictEqual(proseVerified.reason, BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED);
+    assert.strictEqual(proseVerified.declaredMatchesMeasured, false);
+
+    // Row 4 — value-shaped wrong Declared + matching Output: refused (#382).
+    const valueMismatch = evaluateBaselineClaim(
+      { declared: '{ additions: 3, deletions: 0 }', output: '{ additions: 4, deletions: 0 }' },
+      '{ additions: 4, deletions: 0 }'
+    );
+    assert.strictEqual(valueMismatch.accepted, false);
+    assert.strictEqual(valueMismatch.reason, BASELINE_VERDICT_DECLARED_MISMATCH);
+
+    // Row 5 — neither field matches: refused as declared-mismatch.
+    const neitherMatches = evaluateBaselineClaim(
+      { declared: 'the two CJK titles share one folder', output: 'something else entirely' },
+      measured
+    );
+    assert.strictEqual(neitherMatches.accepted, false);
+    assert.strictEqual(neitherMatches.reason, BASELINE_VERDICT_DECLARED_MISMATCH);
+  });
+
+  test('BE11: the output comparator accepts the whole stdout or one trimmed line', () => {
+    const {
+      baselineOutputMatches
+    } = require('../../dist/domain');
+
+    assert.strictEqual(baselineOutputMatches('4', '4\n'), true);
+    assert.strictEqual(baselineOutputMatches('4', 'measuring...\n4\n'), true);
+    assert.strictEqual(baselineOutputMatches('4', '5\n'), false);
+    assert.strictEqual(baselineOutputMatches('adhoc true', 'adhoc true\n'), true);
   });
 });

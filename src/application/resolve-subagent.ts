@@ -90,6 +90,9 @@ import {
   NOTE_GATE_REPORT_EVIDENCE_SHAPES,
   formatDiscoveryReportContract,
   formatDiscoveryExecutionContract,
+  formatDiscoveryFallbackContract,
+  BASELINE_DECLARED_SHAPE_SENTENCE,
+  ROOT_BUILD_PROHIBITION_SENTENCE,
   DISCOVERY_REPRODUCTION_HEADING,
   DISCOVERY_REPRODUCTION_KEY,
   shellQuote,
@@ -736,13 +739,17 @@ export class ResolveSubagentUseCase {
       // is now an offer with a runnable recipe.
       prompt += `${formatDiscoveryExecutionContract({ runtime: runtime ?? 'docker', planDir: targetDir })}\n`;
     } else {
-      prompt += `2. **Empirical Verification Fallback**: Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing. Log an informative warning regarding container unavailability.\n`;
+      // Issue #402, Defect 3: #295's fallback sentence stays verbatim, and the
+      // mutation boundary follows it so a host without a container runtime is
+      // still told that every write stays in the plan directory and that the
+      // root build is never rebuilt.
+      prompt += `${formatDiscoveryFallbackContract({ planDir: targetDir })}\n`;
     }
 
     const reproductionDeliverable =
       `You MUST fill out the \`${DISCOVERY_REPRODUCTION_HEADING}\` section — including its \`${DISCOVERY_REPRODUCTION_KEY}\` key — with the exact steps and observed results.`;
 
-    const deliverableNum = isContainerAvailable ? 4 : 3;
+    const deliverableNum = 4;
     if (params.planPath) {
       prompt += `${deliverableNum}. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
       prompt += `   - Write ONLY this file. Do NOT create another directory under \`artifacts/plans/\` and do NOT create a second discovery artifact.\n`;
@@ -876,7 +883,7 @@ export class ResolveSubagentUseCase {
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
     prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE}\n`;
-    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value.\n\n`;
+    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 

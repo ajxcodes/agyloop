@@ -8,15 +8,20 @@
  * additions — an implementer following the plan would have changed a correct
  * metric to a wrong one.
  *
- * This guard has two layers:
+ * This guard has three layers:
  *
  *   - STRUCTURAL: `BaselineEvidence` refuses a header that claims reproduction
  *     without a `### Baseline Evidence` section, an incomplete claim, or a body
  *     line that restates a claim id with a different value. None of that runs a
  *     command.
+ *   - BUILD REFUSAL: every claim's `Command` is scanned for a build-like
+ *     construct BEFORE anything executes. A baseline command must never rebuild
+ *     the workspace root — the root build is the tool executing the gate.
  *   - MEASURED: each claim's `Command` is executed (outside `--dry-run`) with a
- *     bounded timeout, and the declared value is compared with the output by the
- *     ONE shared comparator. A mismatch names the measured value.
+ *     bounded timeout, once per claim, and `evaluateBaselineClaim` decides the
+ *     `Declared`/`Output` verdict against the fresh stdout. `Declared` and
+ *     `Output` are both checked; a prose `Declared` passes only when `Output`
+ *     verifies, and the author is warned to copy the literal stdout.
  *
  * Mirrors `gate-target-contract.ts`: unreadable plans are left to the other
  * guards, and `--dry-run` WARNS instead of throwing so a preview can never
@@ -24,11 +29,14 @@
  */
 
 import {
+  BASELINE_DECLARED_SHAPE_SENTENCE,
   BASELINE_RULE_BODY_MISMATCH,
   BASELINE_RULE_MISSING_COMMAND,
   BASELINE_RULE_MISSING_EVIDENCE,
   BASELINE_RULE_MISSING_OUTPUT,
   BASELINE_RULE_MISSING_VALUE,
+  BASELINE_VERDICT_OUTPUT_MISMATCH,
+  BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED,
   BaselineEvidence,
   BaselineFinding,
   DEFAULT_BASELINE_TIMEOUT_SECONDS,
@@ -37,8 +45,11 @@ import {
   MSG_PLAN_BASELINE_EVIDENCE_MISSING,
   MSG_PLAN_BASELINE_INCOMPLETE,
   MSG_PLAN_BASELINE_MISMATCH,
+  MSG_PLAN_BASELINE_OUTPUT_MISMATCH,
+  MSG_PLAN_BASELINE_ROOT_BUILD,
   ValidationError,
-  baselineValuesMatch
+  detectRootBuildCommand,
+  evaluateBaselineClaim
 } from '../domain';
 import { CommandExecutorPort, PlanGeneratorPort } from '../ports';
 
@@ -92,16 +103,6 @@ function formatStructuralFindings(findings: readonly BaselineFinding[]): string 
     .join('\n');
 }
 
-/** True when the output (whole stdout or one of its non-empty lines) matches. */
-function outputMatches(declared: string, stdout: string): boolean {
-  if (baselineValuesMatch(declared, stdout)) return true;
-  return stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .some((line) => baselineValuesMatch(declared, line));
-}
-
 /**
  * Throws `ValidationError('planBaseline', …)` unless the plan's declared
  * baselines are carried by evidence and match measurement.
@@ -150,6 +151,14 @@ export async function assertPlanBaselineContract(
         `[codeloop] Warning: --dry-run: ${evidence.claims.length} plan baseline claim(s) were NOT measured; a real approval executes each command and refuses a mismatch.`
       );
     }
+    for (const claim of evidence.claims) {
+      if (claim.command.length === 0) continue;
+      const match = detectRootBuildCommand(claim.command, { workspaceDir: params.workspaceDir });
+      if (!match) continue;
+      console.warn(
+        `[codeloop] Warning: --dry-run: claim "${claim.id}" runs a build-like command (${match.label}); a real approval refuses it.`
+      );
+    }
     return;
   }
 
@@ -161,6 +170,26 @@ export async function assertPlanBaselineContract(
       );
     }
     return;
+  }
+
+  // PRE-FLIGHT (issue #402, D2): a build-like baseline command is refused BY
+  // NAME before anything executes, so the guard can never rebuild the root
+  // build — the tool executing the pipeline — mid-run.
+  for (const claim of evidence.claims) {
+    if (claim.command.length === 0) continue;
+    const match = detectRootBuildCommand(claim.command, {
+      workspaceDir: params.workspaceDir
+    });
+    if (!match) continue;
+
+    throw new ValidationError(
+      'planBaseline',
+      planPath,
+      MSG_PLAN_BASELINE_ROOT_BUILD.replace('{claim}', () => claim.id)
+        .replace('{line}', () => String(claim.line))
+        .replace('{command}', () => claim.command)
+        .replace('{match}', () => match.label)
+    );
   }
 
   for (const claim of evidence.claims) {
@@ -185,7 +214,27 @@ export async function assertPlanBaselineContract(
       );
     }
 
-    if (outputMatches(claim.declared, result.stdout)) continue;
+    const verdict = evaluateBaselineClaim(claim, result.stdout);
+
+    if (verdict.reason === BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED) {
+      console.warn(
+        `[codeloop] Warning: plan baseline claim "${claim.id}" was accepted on its verified Output, but its Declared label is prose. ${BASELINE_DECLARED_SHAPE_SENTENCE}`
+      );
+    }
+    if (verdict.accepted) continue;
+
+    if (verdict.reason === BASELINE_VERDICT_OUTPUT_MISMATCH) {
+      throw new ValidationError(
+        'planBaseline',
+        planPath,
+        MSG_PLAN_BASELINE_OUTPUT_MISMATCH.replace('{claim}', () => claim.id)
+          .replace('{line}', () => String(claim.line))
+          .replace('{declared}', () => claim.declared)
+          .replace('{output}', () => claim.output)
+          .replace('{measured}', () => verdict.measured)
+          .replace('{command}', () => claim.command)
+      );
+    }
 
     throw new ValidationError(
       'planBaseline',
@@ -193,7 +242,7 @@ export async function assertPlanBaselineContract(
       MSG_PLAN_BASELINE_MISMATCH.replace('{claim}', () => claim.id)
         .replace('{line}', () => String(claim.line))
         .replace('{declared}', () => claim.declared)
-        .replace('{measured}', () => result.stdout.trim())
+        .replace('{measured}', () => verdict.measured)
         .replace('{command}', () => claim.command)
     );
   }
