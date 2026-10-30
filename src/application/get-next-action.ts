@@ -94,6 +94,7 @@ import {
   assertNotRootWorkspace,
   isRootWorkspace,
   isPlanContentSubstantive,
+  SmokeProtocol,
   PLAN_INTEGRITY_MISMATCH,
   PLAN_INTEGRITY_MISSING,
   MSG_PLAN_MODIFIED_AFTER_APPROVAL,
@@ -1782,6 +1783,7 @@ export class GetNextActionUseCase {
     const prompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
       planPath: planPath || undefined,
+      smokeProtocol: planContent ? SmokeProtocol.fromPlan(planContent) : undefined,
       issueNumber: activeIssue,
       workspaceDir: worktreePath || cwd,
       config,

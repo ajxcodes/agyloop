@@ -9,9 +9,10 @@
  * and a plan line — never "go read the plan and run it".
  *
  * Static rules: quoted-json-comparison, bare-module-path, empty-check,
- * no-executable-check (issue #298) and sandbox-path (issue #359 — a check that
+ * no-executable-check (issue #298), sandbox-path (issue #359 — a check that
  * invokes the CLI must create its directory sandbox where the state guard
- * recognises it).
+ * recognises it) and missing-parent-directory (issue #388 — a check that WRITES
+ * a path must create that path's parent first, or it dies before product code).
  *
  * No I/O, no external imports.
  */
@@ -22,13 +23,19 @@ import {
   SMOKE_CHECK_MARKER_SUFFIX,
   SMOKE_RULE_BARE_MODULE_PATH,
   SMOKE_RULE_EMPTY_CHECK,
+  SMOKE_RULE_MISSING_PARENT_DIRECTORY,
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
   SMOKE_RULE_QUOTED_JSON_COMPARISON,
   SMOKE_RULE_SANDBOX_PATH,
   SMOKE_SANDBOX_RECOMMENDED_PATH
 } from '../constants';
 import { isSmokeSectionHeading } from './smoke-heading';
-import { isWithinSmokeSandbox, resolvePathAgainstCwd } from './smoke-sandbox';
+import {
+  isAnchoredPath,
+  isWithinSmokeSandbox,
+  normaliseLexicalPath,
+  resolvePathAgainstCwd
+} from './smoke-sandbox';
 
 export interface SmokeCheck {
   /** 1-based position within the protocol. */
@@ -321,6 +328,10 @@ export class SmokeProtocol {
 
     // A section that never closed its last fence still describes a check.
     finishFence();
+
+    // Issue #388: a write whose parent no earlier statement creates dies before
+    // any product code runs. Accumulated across checks in protocol order.
+    collectMissingParentFindings(checks, findings);
 
     // `no-executable-check` is reserved for a section that DECLARES a protocol
     // (prose or a fence) but offers nothing runnable. A placeholder-only
@@ -1058,6 +1069,484 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
     });
   });
   return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #388: the `missing-parent-directory` rule.
+//
+// The #382 plan's Smoke 6/7 seeded `.agyloop/tasks/382.json` with a
+// `node -e 'fs.writeFileSync(…)'` one-liner but never created `.agyloop/tasks`.
+// Every assertion downstream died at the write, and the validator still
+// reported `executable: true`, so the gate had to edit the frozen script.
+//
+// The scan is deliberately CONSERVATIVE and I/O-free:
+//
+//   - writes are recognised from shell redirections (`>`, `>>`, `&>`), `tee`
+//     and a bounded list of literal `node -e` fs calls;
+//   - a `path.join(…)` or unresolved `$VAR` path is skipped, never guessed;
+//   - heredoc data is skipped, so a plan TEXT seeded inside `node - <<'NODE'`
+//     is never mistaken for an executed write;
+//   - created directories accumulate in CHECK ORDER (one script, executed in
+//     order) while each check keeps its own `cd`/assignment state;
+//   - a write under `.agyloop/`, `artifacts/plans/` or `.worktrees/` is
+//     exempt after an earlier `codeloop` invocation, because the CLI creates
+//     the checkpoint directory, the plan scaffold or the task worktree.
+// ---------------------------------------------------------------------------
+
+/** Parents that always exist, so a write into them needs no `mkdir` first. */
+const ALWAYS_PRESENT_PARENTS: readonly string[] = Object.freeze(
+  ['/tmp', '/var/tmp', '/dev/shm', '$TMPDIR', '$HOME', '$HOME/.cache/agyloop'].map(
+    (path) => normaliseLexicalPath(path)
+  )
+);
+
+/** The paths the `codeloop` CLI creates on its own (issue #388 §2.2). */
+const TOOL_SCAFFOLD_MARKERS: readonly string[] = Object.freeze([
+  '/.agyloop/',
+  '/artifacts/plans/',
+  '/.worktrees/'
+]);
+
+/** Redirection targets that are not filesystem writes. */
+const NON_WRITE_TARGETS: ReadonlySet<string> = new Set([
+  '/dev/null',
+  '/dev/stdout',
+  '/dev/stderr',
+  '/dev/fd/1',
+  '/dev/fd/2'
+]);
+
+/** The `node -e` fs calls whose first argument can be a literal write path. */
+const LITERAL_WRITE_CALLS: ReadonlySet<string> = new Set([
+  'writeFileSync',
+  'writeFile',
+  'appendFileSync',
+  'appendFile',
+  'createWriteStream',
+  'openSync'
+]);
+
+const HEREDOC_OPEN = /<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/;
+const NODE_EVAL = /\bnode\s+(?:--eval|-e)\s+'([^']*)'/;
+
+interface WriteTarget {
+  /** 0-based offset of the line within the check body. */
+  readonly offset: number;
+  /** 0-based index of the statement on that line. */
+  readonly statement: number;
+  /** The path as written (quotes stripped, variables unresolved). */
+  readonly path: string;
+}
+
+interface CreatedDirectory {
+  readonly path: string;
+  /** `mkdir -p` guarantees every ancestor; plain `mkdir` guarantees only itself. */
+  readonly recursive: boolean;
+}
+
+/** The set of body-line offsets that are heredoc DATA (never executed). */
+function heredocDataLines(bodyLines: readonly string[]): ReadonlySet<number> {
+  const data = new Set<number>();
+  let delimiter: string | null = null;
+  let indented = false;
+
+  bodyLines.forEach((line, offset) => {
+    if (delimiter !== null) {
+      const candidate = indented ? line.trim() : line;
+      data.add(offset);
+      if (candidate === delimiter) delimiter = null;
+      return;
+    }
+
+    HEREDOC_OPEN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = HEREDOC_OPEN.exec(line)) !== null) {
+      if (!isProseAt(line, match.index)) {
+        indented = match[1] === '-';
+        delimiter = match[3];
+        break;
+      }
+    }
+  });
+
+  return data;
+}
+
+/**
+ * Offsets of lines that START inside a multi-line shell quote.
+ *
+ * A common plan shape is `node -e '` followed by a multi-line JS body and a
+ * closing `'`. Those body lines are shell STRING DATA, so an arrow function
+ * (`=>`) or a regex (`/^…/`) inside them must never be read as a shell
+ * redirection. The opening line itself is still scanned: a real write before
+ * the quote (`printf x > out.json; node -e '…'`) stays visible.
+ */
+function quotedContinuationLines(bodyLines: readonly string[]): ReadonlySet<number> {
+  const continuation = new Set<number>();
+  let quote: string | null = null;
+
+  bodyLines.forEach((line, offset) => {
+    if (quote !== null) continuation.add(offset);
+    if (isCommentLine(line)) return;
+
+    let index = 0;
+    while (index < line.length) {
+      const char = line[index];
+      if (char === '\\') {
+        index += 2;
+        continue;
+      }
+      if (quote === null) {
+        if (char === "'" || char === '"' || char === '`') quote = char;
+      } else if (char === quote) {
+        quote = null;
+      }
+      index++;
+    }
+  });
+
+  return continuation;
+}
+
+/** True when `text` starts a new JS string literal at `index`. */
+function isJsQuote(text: string, index: number): boolean {
+  const char = text[index];
+  return char === "'" || char === '"' || char === '`';
+}
+
+/** The offset just past the JS string literal opened at `start`. */
+function skipJsString(text: string, start: number): number {
+  const quote = text[start];
+  let index = start + 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (text[index] === quote) return index + 1;
+    index++;
+  }
+  return text.length;
+}
+
+/**
+ * Literal write paths in a `node -e` script.
+ *
+ * The tiny lexer skips JS string literals, so
+ * `fs.writeFileSync(".agyloop/tasks/382.json", …)` is found while
+ * `const seeded = 'fs.writeFileSync(".agyloop/tasks/x.json", …)'` is not.
+ */
+function literalWritePaths(script: string): string[] {
+  const paths: string[] = [];
+  let index = 0;
+
+  while (index < script.length) {
+    const char = script[index];
+    if (isJsQuote(script, index)) {
+      index = skipJsString(script, index);
+      continue;
+    }
+    if (!/[A-Za-z_$]/.test(char)) {
+      index++;
+      continue;
+    }
+
+    let end = index;
+    while (end < script.length && /[\w$]/.test(script[end])) end++;
+    const name = script.slice(index, end);
+
+    if (LITERAL_WRITE_CALLS.has(name)) {
+      let cursor = end;
+      while (cursor < script.length && /\s/.test(script[cursor])) cursor++;
+      if (script[cursor] === '(') {
+        cursor++;
+        while (cursor < script.length && /\s/.test(script[cursor])) cursor++;
+        const quote = script[cursor];
+        if (quote === "'" || quote === '"') {
+          const close = skipJsString(script, cursor);
+          const literal = script.slice(cursor + 1, close - 1);
+          if (literal.length > 0 && !literal.includes('${')) paths.push(literal);
+          index = close;
+          continue;
+        }
+      }
+    }
+
+    index = end;
+  }
+
+  return paths;
+}
+
+/** Shell redirection targets on a statement (`>`, `>>`, `&>`). */
+function redirectTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  const targets: WriteTarget[] = [];
+
+  for (let index = 0; index < statement.length; index++) {
+    if (statement[index] === '\\') {
+      index++;
+      continue;
+    }
+    if (statement[index] !== '>') continue;
+    if (isProseAt(statement, index)) continue;
+
+    let cursor = index + 1;
+    if (statement[cursor] === '&') {
+      // `>&1` / `>&2` duplicate a file descriptor; `&>` writes a file.
+      if (statement[cursor + 1] !== '>') continue;
+      cursor += 2;
+    } else if (statement[cursor] === '>') {
+      cursor++;
+    }
+
+    while (cursor < statement.length && /\s/.test(statement[cursor])) cursor++;
+    if (cursor >= statement.length) continue;
+
+    let quote: string | null = null;
+    let token = '';
+    while (cursor < statement.length) {
+      const char = statement[cursor];
+      if (quote !== null) {
+        if (char === quote) {
+          quote = null;
+          cursor++;
+          continue;
+        }
+        token += char;
+        cursor++;
+        continue;
+      }
+      if (char === "'" || char === '"') {
+        quote = char;
+        cursor++;
+        continue;
+      }
+      if (/\s/.test(char) || char === ';' || char === '&' || char === '|') break;
+      token += char;
+      cursor++;
+    }
+
+    index = cursor - 1;
+    const target = token.trim();
+    if (target.length === 0) continue;
+    if (target.startsWith('&') || NON_WRITE_TARGETS.has(target)) continue;
+    targets.push({ offset, statement: statementIndex, path: target });
+  }
+
+  return targets;
+}
+
+/** `tee [-a] <path> …` targets. */
+function teeTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  const tokens = splitShellTokens(statement);
+  const start = tokens.findIndex((token) => token === 'tee' || token.endsWith('/tee'));
+  if (start === -1) return [];
+
+  const targets: WriteTarget[] = [];
+  for (let index = start + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.startsWith('-') && token !== '-') continue;
+    const path = normalisePathText(token);
+    if (path.length > 0) targets.push({ offset, statement: statementIndex, path });
+  }
+  return targets;
+}
+
+function nodeEvalTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  const match = NODE_EVAL.exec(statement);
+  if (match === null) return [];
+  return literalWritePaths(match[1]).map((path) => ({ offset, statement: statementIndex, path }));
+}
+
+/** Every write target of one statement. */
+function writeTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  return [
+    ...redirectTargets(statement, offset, statementIndex),
+    ...teeTargets(statement, offset, statementIndex),
+    ...nodeEvalTargets(statement, offset, statementIndex)
+  ];
+}
+
+/** Every directory a statement creates: all `mkdir` args, `mktemp -d`, `git clone`. */
+function createdDirectories(statement: string, offset: number, statementIndex: number): CreatedDirectory[] {
+  const created: CreatedDirectory[] = [];
+  const tokens = splitShellTokens(statement);
+  const mkdirStart = tokens.findIndex((token) => token === 'mkdir');
+
+  if (mkdirStart !== -1) {
+    const recursive = tokens
+      .slice(mkdirStart + 1)
+      .some((token) => token === '--parents' || /^-[a-zA-Z]*p/.test(token));
+    for (let index = mkdirStart + 1; index < tokens.length; index++) {
+      const token = tokens[index];
+      if (token === '-m' || token === '--mode') {
+        index++;
+        continue;
+      }
+      if (token.startsWith('-')) continue;
+      const path = normalisePathText(token);
+      if (path.length > 0) created.push({ path, recursive });
+    }
+  }
+
+  for (const candidate of mktempCandidates(statement, offset, statementIndex)) {
+    if (candidate.implicitTemp) continue;
+    created.push({ path: candidate.createdPath, recursive: true });
+  }
+
+  const clone = gitCloneCandidate(statement, offset, statementIndex);
+  if (clone !== null) created.push({ path: clone.createdPath, recursive: false });
+
+  return created;
+}
+
+/**
+ * Resolves a path for coverage comparison. A relative path under an unknown
+ * cwd is compared RELATIVE-TO-ITSELF: both the write and the `mkdir` that
+ * should cover it are judged the same way, so `mkdir -p .agyloop/tasks` covers
+ * `.agyloop/tasks/382.json` even when no `cd` anchors the check.
+ */
+function resolveComparable(cwd: string | null, path: string): string | null {
+  const text = String(path ?? '').trim();
+  if (text.length === 0) return null;
+  if (isAnchoredPath(text)) return normaliseLexicalPath(text);
+  if (cwd === null || cwd.trim().length === 0) return normaliseLexicalPath(text);
+  return normaliseLexicalPath(`${cwd}/${text}`);
+}
+
+/** The directory containing `path`, or `null` when it has no directory component. */
+function parentDirectory(path: string): string | null {
+  const normalised = normaliseLexicalPath(path);
+  const slash = normalised.lastIndexOf('/');
+  if (slash === -1) return null;
+  if (slash === 0) return '/';
+  return normalised.slice(0, slash);
+}
+
+function isAlwaysPresentParent(parent: string): boolean {
+  return ALWAYS_PRESENT_PARENTS.includes(normaliseLexicalPath(parent));
+}
+
+function isToolScaffolded(
+  parent: string,
+  cliRoots: ReadonlySet<string>,
+  cliInUnknownCwd: boolean
+): boolean {
+  const padded = `/${normaliseLexicalPath(parent)}/`;
+  if (!TOOL_SCAFFOLD_MARKERS.some((marker) => padded.includes(marker))) return false;
+
+  if (isAnchoredPath(parent)) {
+    for (const root of cliRoots) {
+      if (root.length === 0) continue;
+      if (parent === root || parent.startsWith(`${root}/`)) return true;
+    }
+    return false;
+  }
+  // A relative parent can only be scaffolded by a CLI that ALSO ran without a
+  // tracked cwd — the same relative comparison context.
+  return cliInUnknownCwd;
+}
+
+/** True when a resolved path still carries a variable the rule cannot resolve. */
+function hasUnresolvedVariable(path: string): boolean {
+  return /\$[A-Za-z_{]/.test(
+    path.replace(/\$\{HOME\}|\$HOME|\$\{TMPDIR\}|\$TMPDIR/g, '')
+  );
+}
+
+/** Adds a created directory, and every ancestor when the mkdir was recursive. */
+function addCreatedDirectory(
+  covered: Set<string>,
+  directory: CreatedDirectory,
+  cwd: string | null,
+  assignments: ReadonlyMap<string, string>
+): void {
+  const resolved = resolveComparable(cwd, resolveVariables(directory.path, assignments));
+  if (resolved === null || hasUnresolvedVariable(resolved)) return;
+
+  const segments = resolved.split('/');
+  if (!directory.recursive) {
+    covered.add(resolved);
+    return;
+  }
+  // `mkdir -p a/b` guarantees `a` as well; never walk above the anchor.
+  let prefix = resolved.startsWith('/') ? '' : null;
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment.length === 0) continue;
+    prefix = prefix === null ? segment : `${prefix}/${segment}`;
+    if (prefix.length > 0) covered.add(prefix);
+  }
+}
+
+/**
+ * Accumulates created directories and CLI invocations in CHECK ORDER and emits
+ * one `missing-parent-directory` finding per offending write line (issue #388).
+ *
+ * Every write is judged against its OWN path and its OWN `cd`/assignment state;
+ * only the set of created directories and the "a CLI ran earlier" flag carry
+ * across checks, matching the ONE script `toScript()` builds.
+ */
+function collectMissingParentFindings(
+  checks: readonly SmokeCheck[],
+  findings: SmokeFinding[]
+): void {
+  const covered = new Set<string>();
+  const cliRoots = new Set<string>();
+  let cliInUnknownCwd = false;
+
+  for (const check of checks) {
+    const bodyLines = check.body.split('\n');
+    const heredocData = heredocDataLines(bodyLines);
+    const quotedContinuation = quotedContinuationLines(bodyLines);
+    const assignments = assignmentsByLine(bodyLines);
+    const cwds = cwdByStatement(bodyLines, assignments);
+    // One finding per offending write LINE, even when a line carries two writes.
+    const reportedOffsets = new Set<number>();
+
+    bodyLines.forEach((line, offset) => {
+      if (isCommentLine(line) || heredocData.has(offset) || quotedContinuation.has(offset)) return;
+      const lineAssignments = assignments.get(offset) ?? new Map<string, string>();
+
+      splitStatements(line).forEach((statement, statementIndex) => {
+        const key = statementKey(offset, statementIndex);
+        const cwd = cwds.get(key) ?? null;
+        const statementInvokesCli = invokesCodeloopCli(statement);
+
+        for (const directory of createdDirectories(statement, offset, statementIndex)) {
+          addCreatedDirectory(covered, directory, cwd, lineAssignments);
+        }
+
+        for (const target of writeTargets(statement, offset, statementIndex)) {
+          const resolved = resolveComparable(cwd, resolveVariables(target.path, lineAssignments));
+          if (resolved === null || hasUnresolvedVariable(resolved)) continue;
+          const parent = parentDirectory(resolved);
+          // No directory component: the write lands in the current directory.
+          if (parent === null) continue;
+          if (isAlwaysPresentParent(parent)) continue;
+          if (covered.has(parent)) continue;
+          if (isToolScaffolded(parent, cliRoots, cliInUnknownCwd)) continue;
+          if (reportedOffsets.has(offset)) continue;
+
+          reportedOffsets.add(offset);
+          findings.push({
+            rule: SMOKE_RULE_MISSING_PARENT_DIRECTORY,
+            checkIndex: check.index,
+            label: check.label,
+            line: check.planLine + 1 + offset,
+            excerpt: `${truncate(line)} — required parent: ${parent}`
+          });
+        }
+
+        if (statementInvokesCli) {
+          // The CLI creates `.agyloop/`, the plan scaffold and the task worktree
+          // in ITS OWN sandbox — never in a sibling sandbox a later check uses.
+          if (cwd === null) cliInUnknownCwd = true;
+          else cliRoots.add(normaliseLexicalPath(cwd));
+        }
+      });
+    });
+  }
 }
 
 function collectFindings(

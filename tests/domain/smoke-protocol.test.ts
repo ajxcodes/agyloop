@@ -814,6 +814,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     readonly headingLine: number;
     readonly checks: number;
     readonly sandboxFindings: number;
+    readonly missingParentFindings: number;
   }
 
   /** Reads + validates the committed corpus; throws loudly when it is absent. */
@@ -837,7 +838,12 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       (finding: any) => finding.rule === 'sandbox-path'
     ).length;
 
-  test('SP22: the committed corpus keeps its frozen shape (#364 AC-9/AC-11)', () => {
+  const missingParentCount = (markdown: string): number =>
+    SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === 'missing-parent-directory'
+    ).length;
+
+  test('SP22: the committed corpus keeps its frozen shape (#364 AC-9/AC-11, #388)', () => {
     const { entries } = readCorpus(CORPUS_DIR);
     assert.ok(entries.length >= 25, `corpus has only ${entries.length} entries`);
 
@@ -857,6 +863,11 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
         sandboxCount(markdown),
         entry.sandboxFindings,
         `${entry.file}: frozen sandbox-path count`
+      );
+      assert.strictEqual(
+        missingParentCount(markdown),
+        entry.missingParentFindings,
+        `${entry.file}: frozen missing-parent-directory count`
       );
     }
 
@@ -1074,5 +1085,166 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       '```'
     ]);
     assert.deepStrictEqual(sandboxFindings(absoluteThenCd), []);
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #388: a write must create its parent directory first.
+  // -------------------------------------------------------------------------
+
+  const parentFindings = (markdown: string): any[] =>
+    SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === 'missing-parent-directory'
+    );
+
+  test('SP29: the #382 Smoke 6/7 checkpoint seed is refused at its write line (#388 D2)', () => {
+    const seed = planOf([
+      '```bash',
+      'node -e \'const fs=require("fs");fs.writeFileSync(".agyloop/tasks/382.json", "{}")\'',
+      '```'
+    ]);
+
+    const findings = parentFindings(seed);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].checkIndex, 1);
+    assert.ok(findings[0].line > 0);
+    assert.ok(findings[0].excerpt.includes('.agyloop/tasks'), findings[0].excerpt);
+    assert.strictEqual(SmokeProtocol.fromPlan(seed).executable, false);
+  });
+
+  test('SP30: one mkdir line makes the same seed executable (#388 D2)', () => {
+    const fixed = planOf([
+      '```bash',
+      'mkdir -p .agyloop/tasks',
+      'node -e \'const fs=require("fs");fs.writeFileSync(".agyloop/tasks/382.json", "{}")\'',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(fixed), []);
+    assert.strictEqual(SmokeProtocol.fromPlan(fixed).executable, true);
+
+    // A seed under a tracked cd resolves against the same cwd.
+    const tracked = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-388/seed"',
+      'mkdir -p "$SBX/.agyloop/tasks"',
+      'cd "$SBX"',
+      'node -e \'require("fs").writeFileSync(".agyloop/tasks/388.json", "{}")\'',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(tracked), []);
+  });
+
+  test('SP31: generic write shapes are classified (#388 D2 AC1)', () => {
+    const redirect = planOf(['```bash', 'printf x > artifacts/out.json', '```']);
+    assert.strictEqual(parentFindings(redirect).length, 1);
+
+    const redirectFixed = planOf([
+      '```bash',
+      'mkdir -p artifacts',
+      'printf x > artifacts/out.json',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(redirectFixed), []);
+
+    // A file in the current directory needs no directory.
+    const noDirectory = planOf(['```bash', 'printf x > out.json', '```']);
+    assert.deepStrictEqual(parentFindings(noDirectory), []);
+
+    // A `..`-escaped parent is not covered by the mkdir below it.
+    const escaped = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-388/escape"',
+      'mkdir -p "$SBX/artifacts"',
+      'printf x > "$SBX/artifacts/../../escaped/out.json"',
+      '```'
+    ]);
+    assert.strictEqual(parentFindings(escaped).length, 1, JSON.stringify(parentFindings(escaped)));
+  });
+
+  test('SP32: always-present roots are exempt and unresolved variables are skipped (#388 D2 AC1)', () => {
+    const tmp = planOf(['```bash', 'printf x > /tmp/out.log', '```']);
+    assert.deepStrictEqual(parentFindings(tmp), []);
+
+    const smokeRoot = planOf([
+      '```bash',
+      'printf x > "$HOME/.cache/agyloop/out.log"',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(smokeRoot), []);
+
+    // `/tmp/sub/out` is NOT exempt: `sub` must be created.
+    const tmpSub = planOf(['```bash', 'printf x > /tmp/sub-388/out.log', '```']);
+    assert.strictEqual(parentFindings(tmpSub).length, 1);
+
+    // A variable the rule cannot resolve is skipped, never guessed.
+    const unresolved = planOf(['```bash', 'printf x > "$n-388/out.json"', '```']);
+    assert.deepStrictEqual(parentFindings(unresolved), []);
+
+    // `tee` writes a file too.
+    const tee = planOf(['```bash', 'printf x | tee artifacts/out.json', '```']);
+    assert.strictEqual(parentFindings(tee).length, 1);
+  });
+
+  test('SP32b: a dynamic node path is not guessed (#388 limitation)', () => {
+    const dynamic = planOf([
+      '```bash',
+      'node -e \'require("fs").writeFileSync(require("path").join("a", "b.json"), "{}")\'',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(dynamic), []);
+  });
+
+  test('SP32c: heredoc data is never scanned for writes (#388 D2 AC1)', () => {
+    const seededScript = planOf([
+      "```bash",
+      "node - <<'NODE'",
+      'const fs = require("node:fs");',
+      'const plan = \'node -e \\\'require("fs").writeFileSync(".agyloop/tasks/x.json", "{}")\\\'\';',
+      'console.log(plan);',
+      'NODE',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(seededScript), []);
+
+    const seededCat = planOf([
+      '```bash',
+      "cat > plan.md <<'PLAN'",
+      'node -e \'require("fs").writeFileSync(".agyloop/tasks/x.json", "{}")\'',
+      'PLAN',
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(seededCat), []);
+  });
+
+  test('SP32d: a multi-line quoted node script is shell data, not shell writes (#388)', () => {
+    const multiline = planOf([
+      '```bash',
+      "node -e '",
+      'const strip = (p) => String(p).replace(/^\\.\\//, "");',
+      'const start = (line) => /^jobs:\\s*$/.test(line);',
+      "console.log(strip('x'), start('jobs:'));",
+      "'",
+      '```'
+    ]);
+    assert.deepStrictEqual(parentFindings(multiline), []);
+  });
+
+  test('SP33: the #382 corpus entry freezes the two seed findings (#388 D2 AC2)', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(CORPUS_DIR, 'manifest.json'), 'utf8')
+    );
+    const entry = (manifest.entries as CorpusEntry[]).find((candidate) => candidate.file === '382.md');
+    if (!entry) {
+      throw new Error('the #382 corpus entry is committed');
+    }
+    assert.strictEqual(entry.checks, 9);
+    assert.strictEqual(entry.missingParentFindings, 2);
+
+    const markdown = fs.readFileSync(path.join(CORPUS_DIR, '382.md'), 'utf8');
+    const findings = parentFindings(markdown);
+    assert.deepStrictEqual(
+      findings.map((finding) => finding.checkIndex),
+      [6, 7],
+      JSON.stringify(findings)
+    );
   });
 });

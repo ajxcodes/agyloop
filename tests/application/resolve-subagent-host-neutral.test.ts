@@ -117,4 +117,20 @@ describe('Dispatched prompt host neutrality (issue #241, D6)', () => {
     assert.deepStrictEqual([...GATE_SUBAGENT_DEF.tools], ['run_command', 'view_file']);
     assert.ok(DEFAULT_GATE_SYSTEM_PROMPT.includes('run_command'));
   });
+
+  test('HN5: the implementer smoke directive names codeloop, never the deprecated launcher (#388)', () => {
+    const prompt = new ResolveSubagentUseCase({}).buildImplementationTaskPrompt({
+      issueNumber: 388
+    });
+
+    assert.ok(prompt.includes('codeloop'), prompt);
+    assert.ok(prompt.includes('Do not claim smoke results; the gate owns the protocol.'), prompt);
+    assert.strictEqual(
+      /(?:^|[\s`])(?:bin\/)?agyloop\s+(?:transition|implement|next|plan|commit|review|status)\b/.test(
+        prompt
+      ),
+      false,
+      'the directive must not instruct an operator to run the deprecated launcher'
+    );
+  });
 });

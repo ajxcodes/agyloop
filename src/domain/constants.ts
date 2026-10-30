@@ -642,6 +642,8 @@ export const HEADING_QUALITY_GATE_VERIFICATION = 'Quality Gate & Test Verificati
 export const HEADING_AUTOMATED_TEST_TARGETS = 'Automated Test Targets' as const;
 export const HEADING_BUILD_LINT_COMMANDS = 'Build / Lint Commands' as const;
 export const HEADING_MANUAL_SMOKE_TEST_PROTOCOL = 'Manual Smoke Test Protocol' as const;
+/** The optional plan section that backs every declared baseline (issue #388). */
+export const HEADING_BASELINE_EVIDENCE = 'Baseline Evidence' as const;
 
 export const PLAN_TARGET_HEADING_CANDIDATES: readonly string[] = Object.freeze([
   HEADING_QUALITY_GATE_TARGETS,
@@ -716,6 +718,20 @@ export const SMOKE_RULE_NO_EXECUTABLE_CHECK = 'no-executable-check' as const;
 export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
 /** Static smoke-protocol findings (issue #359). */
 export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
+/**
+ * A check writes a path whose parent directory no earlier statement creates
+ * (issue #388). The #382 Smoke 6/7 blocks seeded `.agyloop/tasks/382.json`
+ * without `mkdir -p .agyloop/tasks`, so they died before any product code ran
+ * while the validator still reported `executable: true`.
+ */
+export const SMOKE_RULE_MISSING_PARENT_DIRECTORY = 'missing-parent-directory' as const;
+
+/** Static plan-baseline findings (issue #388). */
+export const BASELINE_RULE_MISSING_EVIDENCE = 'missing-baseline-evidence' as const;
+export const BASELINE_RULE_MISSING_VALUE = 'missing-baseline-value' as const;
+export const BASELINE_RULE_MISSING_COMMAND = 'missing-baseline-command' as const;
+export const BASELINE_RULE_MISSING_OUTPUT = 'missing-baseline-output' as const;
+export const BASELINE_RULE_BODY_MISMATCH = 'baseline-body-mismatch' as const;
 
 /** Static Quality Gate Target findings (issue #348, #369). */
 export const GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION = 'committed-tree-assertion' as const;
@@ -769,6 +785,23 @@ export const MSG_SMOKE_PROTOCOL_FAILED =
   'Manual Smoke Test Protocol failed at check "{check}" (plan line {line}){detail}.' as const;
 export const MSG_SMOKE_PROTOCOL_NO_CHECKS =
   'Manual Smoke Test Protocol declared no executable check; a zero-check protocol cannot pass the gate.' as const;
+
+/**
+ * Plan-baseline contract messages (issue #388). A declared baseline that was
+ * never measured travels through APPROVAL as normative; the first actor asked
+ * to satisfy it is the implementer. These templates name the measured value so
+ * the plan can be corrected before it becomes an instruction.
+ */
+export const MSG_PLAN_BASELINE_EVIDENCE_MISSING =
+  `Plan baseline evidence is missing or unbacked: {detail}. Add a \`### ${HEADING_BASELINE_EVIDENCE}\` section with one \`#### <claim-id>\` per declared number, carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. A plan that claims its baselines were reproduced must carry the command and output that produced each number.` as const;
+export const MSG_PLAN_BASELINE_INCOMPLETE =
+  'Plan baseline claim "{claim}" at plan line {line} is incomplete: {detail}. Every claim needs the declared value, the command that measures it and the output that command printed.' as const;
+export const MSG_PLAN_BASELINE_COMMAND_FAILED =
+  'Plan baseline claim "{claim}" at plan line {line} could not be measured: the command `{command}` {detail}. A baseline that cannot be reproduced cannot be approved; fix the command or remove the claim.' as const;
+export const MSG_PLAN_BASELINE_MISMATCH =
+  'Plan baseline claim "{claim}" at plan line {line} declares {declared}, but the command measured {measured}: `{command}`. A declared baseline must be measured before it becomes normative; correct the declared value (or the command) and re-run approval.' as const;
+export const MSG_PLAN_BASELINE_BODY_MISMATCH =
+  'Plan baseline claim "{claim}" at plan line {line} is restated in the plan body as {restated}, but its evidence declares {declared}: {excerpt}. The body and the evidence must state the same value; correct one of them and re-run approval.' as const;
 export const MSG_GATE_LINT_MISSING =
   'Lint is mandatory for this Node project, but no resolved gate command is a lint command.' as const;
 /**
@@ -882,6 +915,15 @@ export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
  */
 export const NOTE_SMOKE_BLOCK_SANDBOX_RULE =
   `Every state-mutating check (one that invokes the \`codeloop\` CLI) must create its sandbox under \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`; a \`mktemp -d\` under \`/tmp\` or any sandbox outside that root is refused by the state guard and rejected at dispatch.` as const;
+
+/**
+ * The one prohibition shared by the implementer directive and the planner
+ * surface (issue #388, was #386): the frozen protocol belongs to the GATE.
+ * The implementer may RUN it when the directive carries it, but an implementer
+ * that invents or claims smoke results is reporting evidence it does not own.
+ */
+export const NOTE_IMPLEMENTER_SMOKE_OWNERSHIP =
+  'Do not claim smoke results; the gate owns the protocol.' as const;
 
 /**
  * The in-repo smoke isolation directory the guard refuses outside a test run
@@ -4074,6 +4116,8 @@ export const FORGE_GENERIC = 'generic' as const;
 export const CODELOOP_STATE_DIR = '.codeloop' as const;
 export const CODELOOP_CONFIG_FILE = 'config.json' as const;
 export const DEFAULT_SMOKE_TIMEOUT_SECONDS = 300 as const;
+/** Per-command ceiling for measuring a plan's declared baselines (issue #388). */
+export const DEFAULT_BASELINE_TIMEOUT_SECONDS = 60 as const;
 
 /**
  * Ephemeral runtime paths that must be git-ignored.
