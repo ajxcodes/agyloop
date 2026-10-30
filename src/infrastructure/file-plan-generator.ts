@@ -44,6 +44,7 @@ import {
   normalizePlanForDigest,
   planSlug,
   planFolderName,
+  planIssuePart,
   planDirectoryPrefix,
   planArtifactFileName,
   planByteLength,
@@ -568,7 +569,14 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     return this.hasPopulatedDiscoveryReport(dir) || this.hasSubstantiveImplementation(dir);
   }
 
-  /** Candidate `<issue>-*` folder names (unsorted, straight from disk). */
+  /**
+   * Candidate `<issue>-*` folder names (unsorted, straight from disk).
+   *
+   * NOTE: this is the PREFIX scan only. An ad-hoc run is keyed by its TITLE, so
+   * the exact-match filter lives at the call site in `scaffoldPlanDirectory`
+   * (issue #383) — a plain `adhoc-*` scan would let a second title adopt the
+   * first title's folder.
+   */
   private listCandidateDirectories(plansDir: string, issueNum: string): string[] {
     try {
       return fs
@@ -618,6 +626,10 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     const issueNum = params.issue ? String(params.issue) : 'adhoc';
     const rawTitle = params.title || 'Task Plan';
 
+    // Issue #383: an AD-HOC run is keyed by its TITLE, never by a sibling's
+    // prefix. `planIssuePart` is the same normalisation `planFolderName` uses.
+    const adhocRun = planIssuePart(params.issue) === 'adhoc';
+
     // Issue #364 (N5): derive and VALIDATE every name BEFORE the first write.
     // `detectPlanType` reads only the title + labels, so it can move above the
     // target resolution; the type decides which filename prefix is budgeted.
@@ -634,9 +646,14 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     });
     const canonicalDir = path.join(plansDir, canonicalFolderName);
 
+    // Issue #383: the exact-match filter is the ADOPTION half of the lossy-title
+    // fix (the value-object hash is the NAMING half). An ad-hoc title may only
+    // ever adopt its OWN canonical folder — never every `adhoc-*` sibling.
     const ranked = this.rankCandidateDirectories(
       plansDir,
-      this.listCandidateDirectories(plansDir, issueNum),
+      this.listCandidateDirectories(plansDir, issueNum).filter(
+        (name) => !adhocRun || name === canonicalFolderName
+      ),
       issueNum,
       rawTitle
     );
@@ -644,11 +661,25 @@ export class FilePlanGenerator implements PlanGeneratorPort {
       this.isPopulatedPlanDirectory(path.join(plansDir, name))
     );
 
-    const suppliedDir = params.planDir
+    let suppliedDir = params.planDir
       ? path.isAbsolute(params.planDir)
         ? params.planDir
         : path.resolve(projectRoot, params.planDir)
       : null;
+
+    // Issue #383: an ad-hoc run whose CHECKPOINT tracks another title's folder
+    // must derive its own. Only a checkpoint-supplied hint can be ignored — an
+    // explicit `--plan-dir` (planDirIsCheckpoint falsy) always wins.
+    let checkpointDirIgnored = false;
+    if (
+      suppliedDir !== null &&
+      adhocRun &&
+      params.planDirIsCheckpoint === true &&
+      path.basename(suppliedDir) !== canonicalFolderName
+    ) {
+      suppliedDir = null;
+      checkpointDirIgnored = true;
+    }
 
     // §2.4 target resolution. The ONLY branch that creates a directory is the
     // final fallback, so a re-entry can never duplicate an existing one.
@@ -722,7 +753,8 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         summaryPath: summaryResult.summaryPath,
         directoryCreated: !existedBefore,
         filesCreated: planResult.created || planResult.mirrorCreated || summaryResult.created,
-        adoptedExisting: existedBefore
+        adoptedExisting: existedBefore,
+        checkpointDirIgnored
       };
     } catch (error) {
       // AC-4: a failed write must not leave a half-scaffolded folder behind for

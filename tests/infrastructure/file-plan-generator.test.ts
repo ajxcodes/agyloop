@@ -199,3 +199,110 @@ describe('FilePlanGenerator - bounded artifact names (issue #364)', () => {
     assert.ok(fs.existsSync(result.planPath));
   });
 });
+
+// ============================================================================
+// Issue #383: the lossy-slug residuals of #364.
+// ============================================================================
+
+describe('FilePlanGenerator - #383 residuals', () => {
+  let tempDir: string;
+  let generator: any;
+
+  const {
+    planFolderName,
+    planArtifactFileName,
+    PLAN_DIR_NAME_MAX_BYTES,
+    VALIDATION_FIELD_PLAN_TITLE,
+    ValidationError
+  } = require('../../dist/domain');
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-383-'));
+    generator = new FilePlanGenerator();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('FPG-383.1: a raw ENAMETOOLONG becomes the typed plan-title message', () => {
+    // AC-D2-4: the single branch that converts the OS error into a remedy. The
+    // `fs` here is the same module object the generator reads through, so the
+    // property patch is observed.
+    const title = 'A title whose derived names fit the documented budget';
+    const folder = planFolderName(383, title);
+    const file = planArtifactFileName('implementation', title);
+    const originalMkdirSync = fs.mkdirSync;
+    let stubbed = 0;
+    fs.mkdirSync = ((target: any, options: any) => {
+      if (String(target).endsWith(folder)) {
+        stubbed += 1;
+        const error: any = new Error('ENAMETOOLONG: name too long');
+        error.code = 'ENAMETOOLONG';
+        throw error;
+      }
+      return originalMkdirSync(target, options);
+    }) as typeof fs.mkdirSync;
+    try {
+      assert.throws(
+        () => generator.scaffoldPlanDirectory({ projectRoot: tempDir, issue: 383, title }),
+        (error: any) => {
+          assert.ok(error instanceof ValidationError, 'typed');
+          assert.strictEqual(error.field, VALIDATION_FIELD_PLAN_TITLE);
+          assert.ok(error.message.includes(folder), error.message);
+          assert.ok(error.message.includes(file), error.message);
+          assert.ok(error.message.includes(String(PLAN_DIR_NAME_MAX_BYTES)), error.message);
+          assert.ok(error.message.includes('--title'), error.message);
+          assert.match(error.message, /filesystem refused/, 'must not be a bare ENAMETOOLONG');
+          return true;
+        }
+      );
+    } finally {
+      fs.mkdirSync = originalMkdirSync;
+    }
+    assert.strictEqual(stubbed, 1, 'the stub must be the branch under test');
+    assert.ok(
+      !fs.existsSync(path.join(tempDir, 'artifacts', 'plans', folder)),
+      'no half-scaffolded folder'
+    );
+  });
+
+  test('FPG-383.2: a checkpoint hint for another ad-hoc title is ignored', () => {
+    const first = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      title: 'Phase 6 ' + '中'.repeat(40)
+    });
+
+    // The checkpoint tracks the FIRST title's folder while this run names the
+    // second: the hint is stale, so the scaffold derives its own folder.
+    const second = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      title: 'Phase 6 ' + '文'.repeat(40),
+      planDir: first.planDir,
+      planDirIsCheckpoint: true
+    });
+    assert.notStrictEqual(second.planDir, first.planDir);
+    assert.strictEqual(second.checkpointDirIgnored, true);
+    assert.strictEqual(second.folderName, planFolderName(null, 'Phase 6 ' + '文'.repeat(40)));
+
+    // The SAME title with a checkpoint hint adopts its own folder.
+    const adopt = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      title: 'Phase 6 ' + '中'.repeat(40),
+      planDir: first.planDir,
+      planDirIsCheckpoint: true
+    });
+    assert.strictEqual(adopt.planDir, first.planDir);
+    assert.ok(!adopt.checkpointDirIgnored, 'an own-title hint must not be reported as ignored');
+
+    // An EXPLICIT --plan-dir (flag absent) always wins, even for another title.
+    const explicit = generator.scaffoldPlanDirectory({
+      projectRoot: tempDir,
+      title: 'A brand new ad-hoc title',
+      planDir: first.planDir
+    });
+    assert.strictEqual(explicit.planDir, first.planDir);
+    assert.ok(!explicit.checkpointDirIgnored);
+    assert.strictEqual(fs.readdirSync(path.join(tempDir, 'artifacts', 'plans')).length, 2);
+  });
+});
