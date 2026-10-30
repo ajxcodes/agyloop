@@ -45,6 +45,7 @@ export * from './value-objects/quality-gate-targets';
 export * from './value-objects/smoke-heading';
 export * from './value-objects/smoke-sandbox';
 export * from './value-objects/smoke-protocol';
+export * from './value-objects/baseline-evidence';
 export * from './value-objects/plan-digest';
 export * from './value-objects/gate-command-plan';
 export * from './value-objects/run-evidence';

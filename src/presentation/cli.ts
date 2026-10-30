@@ -2700,7 +2700,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           new FileGateReportRepository({
             workspaceDir: options.workspaceDir || process.cwd(),
             issue: issueValue ?? null
-          })
+          }),
+          commandExecutor
         );
         await transitionUseCase.execute({
           targetStage: options.stageArg as StageName,

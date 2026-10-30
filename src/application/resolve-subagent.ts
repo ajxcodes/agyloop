@@ -77,7 +77,9 @@ import {
   MSG_GATE_LINT_MISSING,
   HEADING_QUALITY_GATE_TARGETS,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+  HEADING_BASELINE_EVIDENCE,
   NOTE_SMOKE_BLOCK_SANDBOX_RULE,
+  NOTE_IMPLEMENTER_SMOKE_OWNERSHIP,
   STATUS_PASSED,
   STATUS_FAILED,
   SMOKE_PROTOCOL_NOT_DECLARED,
@@ -234,6 +236,14 @@ export interface PlanningTaskPromptParams {
 export interface ImplementationTaskPromptParams {
   readonly planContent?: string | null;
   readonly planPath?: string | null;
+  /**
+   * The plan's smoke protocol, FROZEN at dispatch (issue #388, was #386).
+   *
+   * When absent, `buildImplementationTaskPrompt` parses `planContent`; when the
+   * plan is not supplied either, the section renders the explicit prohibition.
+   * Backward compatible: every existing call site compiles unchanged.
+   */
+  readonly smokeProtocol?: SmokeProtocol;
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
   readonly issueBody?: string | null;
@@ -357,6 +367,57 @@ function normalizeUntrackedFiles(files: readonly string[] | null | undefined): s
     normalized.push(trimmed);
   }
   return normalized;
+}
+
+/**
+ * Renders the implementer's frozen-protocol section (issue #388, was #386).
+ *
+ * The IMPLEMENT directive used to supply the plan path and "run the automated
+ * test suite" but never the protocol, so an implementer could claim it ran one
+ * that the gate then failed. The checks are copied VERBATIM, with their plan
+ * line, and an unrunnable protocol states that the gate owns it.
+ */
+function formatImplementerSmokeSection(protocol: SmokeProtocol): string {
+  if (!protocol.declared) {
+    return (
+      `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\n` +
+      `${NOTE_IMPLEMENTER_SMOKE_OWNERSHIP}\n` +
+      'Do not invent checks, and never run a state-mutating `codeloop` command against the workspace root.\n\n'
+    );
+  }
+
+  let text = `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} (frozen at dispatch)\n`;
+
+  if (protocol.checks.length === 0) {
+    text += 'No executable check was extracted from the approved plan.\n';
+  } else {
+    for (const check of protocol.checks) {
+      const title = check.label.toLowerCase().startsWith(`check ${check.index}`)
+        ? check.label
+        : `Check ${check.index} — ${check.label}`;
+      text += `#### ${title} (plan line ${check.planLine})\n`;
+      text += `\`\`\`bash\n${check.body}\n\`\`\`\n\n`;
+    }
+  }
+
+  if (protocol.executable) {
+    text +=
+      "Run each check exactly as written, in order, from the worktree root, with the worktree's own `codeloop` build. " +
+      'Never edit the plan or a check; report a failure by check label and plan line. ' +
+      'A check creates its own sandbox; never point a state-mutating check at the workspace root. ' +
+      `${NOTE_IMPLEMENTER_SMOKE_OWNERSHIP} The prohibition is against inventing a check or asserting a result the gate must certify, not against executing the checks above.\n\n`;
+    return text;
+  }
+
+  text +=
+    'This protocol is NOT executable as written, so do not run a check you cannot complete. ' +
+    `${NOTE_IMPLEMENTER_SMOKE_OWNERSHIP} ` +
+    'The prohibition is against inventing or asserting a result the gate must certify; report the defect instead.\n';
+  for (const finding of protocol.findings) {
+    text += `- Rule \`${finding.rule}\`, check "${finding.label}" at plan line ${finding.line}: ${finding.excerpt}\n`;
+  }
+  text += 'Report the defect by check label and plan line; do not edit the frozen check.\n\n';
+  return text;
 }
 
 export class ResolveSubagentUseCase {
@@ -792,7 +853,8 @@ export class ResolveSubagentUseCase {
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
-    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE}\n\n`;
+    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE}\n`;
+    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -871,6 +933,12 @@ export class ResolveSubagentUseCase {
       prompt += `${params.planContent.trim()}\n\n`;
     }
 
+    // Issue #388 (was #386): the protocol the gate will execute must reach the
+    // implementer, or the implementer must be told the gate owns it.
+    const smokeProtocol =
+      params.smokeProtocol ?? SmokeProtocol.fromPlan(params.planContent ?? '');
+    prompt += formatImplementerSmokeSection(smokeProtocol);
+
     if (params.selfCorrectionPayload && params.selfCorrectionPayload.trim()) {
       prompt += `${params.selfCorrectionPayload.trim()}\n\n`;
     } else if (params.failureDiagnostics) {
@@ -904,7 +972,8 @@ export class ResolveSubagentUseCase {
     prompt += `### Definition of Done:\n`;
     prompt += `1. All tasks in the plan checklist are implemented.\n`;
     prompt += `2. All tests pass with 100% pass rate.\n`;
-    prompt += `3. No linting or TypeScript compilation errors remain.\n\n`;
+    prompt += `3. No linting or TypeScript compilation errors remain.\n`;
+    prompt += `4. The plan's literal assertions are satisfied exactly as written — every row of its IK/decision table and every frozen smoke check. A unit test that disagrees with a frozen assertion is a defect in the test, not a licence to change the assertion; do not restate a literal with different punctuation.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 

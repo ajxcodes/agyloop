@@ -119,6 +119,12 @@ class MockConfigRepo {
 }
 
 class MockPlanGenerator {
+  private readonly content: string;
+
+  constructor(content: string = PLAN_CONTENT) {
+    this.content = content;
+  }
+
   resolvePlanFile(): any {
     return {
       planDir: '/repo/artifacts/plans/41-task',
@@ -128,7 +134,7 @@ class MockPlanGenerator {
   }
 
   readPlanDocument(): string {
-    return PLAN_CONTENT;
+    return this.content;
   }
 
   hashPlanDocument(): string {
@@ -219,12 +225,12 @@ function machineAtImplement(options: any = {}) {
   return sm;
 }
 
-function useCaseFor(snapshot: any, probe: any) {
+function useCaseFor(snapshot: any, probe: any, planGenerator: any = new MockPlanGenerator()) {
   const stateRepo = new MockStateRepo(snapshot);
   const useCase = new GetNextActionUseCase(
     stateRepo,
     new MockConfigRepo(),
-    new MockPlanGenerator(),
+    planGenerator,
     undefined,
     undefined,
     undefined,
@@ -236,8 +242,8 @@ function useCaseFor(snapshot: any, probe: any) {
   return { stateRepo, useCase };
 }
 
-async function readNext(snapshot: any, probe: any, params: any = {}) {
-  const { stateRepo, useCase } = useCaseFor(snapshot, probe);
+async function readNext(snapshot: any, probe: any, params: any = {}, planGenerator: any = new MockPlanGenerator()) {
+  const { stateRepo, useCase } = useCaseFor(snapshot, probe, planGenerator);
   const result = await useCase.execute({ workspaceDir: '/repo', ...params });
   return { result, stateRepo };
 }
@@ -493,5 +499,36 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
     assert.ok(text.includes(ADVANCE), text);
     assert.ok(text.includes('once the remediation is applied'), text);
     assert.strictEqual(stateRepo.savedSnapshot!.implementationDispatchCount, 1);
+  });
+
+  test('GNA-SMOKE: the directive carries the frozen protocol from the resolved plan (#388)', async () => {
+    const plan = [
+      '# [Implementation] - smoke handoff',
+      '',
+      '## 3. Implementation Steps',
+      '- [ ] Step 1: do the probe',
+      '',
+      '### Manual Smoke Test Protocol',
+      '',
+      '**GNA smoke label**',
+      '',
+      '```bash',
+      'echo gna-smoke-388',
+      '```',
+      ''
+    ].join('\n');
+    const sm = machineAtImplement();
+    const { result } = await readNext(
+      sm.toSnapshot(),
+      new FakeProbe(CLEAN_DIFF),
+      {},
+      new MockPlanGenerator(plan)
+    );
+
+    const prompt = result.invocationPayload.Subagents[0].Prompt;
+    assert.ok(prompt.includes('### Manual Smoke Test Protocol (frozen at dispatch)'), prompt);
+    assert.ok(prompt.includes('GNA smoke label'), prompt);
+    assert.ok(prompt.includes('echo gna-smoke-388'), prompt);
+    assert.ok(prompt.includes('literal assertions'), prompt);
   });
 });

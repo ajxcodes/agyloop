@@ -61,11 +61,14 @@ import {
   WorktreeManagerPort,
   PlanGeneratorPort,
   GateReportRepositoryPort,
+  CommandExecutorPort,
   SummaryNotRunEntry,
   SummarySmokeCheck
 } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 import { assertGateTargetContract as enforceGateTargetContract } from './gate-target-contract';
+import { assertPlanBaselineContract as enforcePlanBaselineContract } from './plan-baseline-contract';
+import { assertSmokeProtocolContract as enforceSmokeProtocolContract } from './smoke-protocol-contract';
 
 export interface TransitionParams {
   readonly targetStage: string | StageName;
@@ -90,19 +93,28 @@ export class TransitionStageUseCase {
    * as `NOT RECORDED` instead of inheriting a value nobody filed.
    */
   private readonly gateReportRepo?: GateReportRepositoryPort;
+  /**
+   * The command executor used to MEASURE a plan's declared baselines at
+   * approval (issue #388). Optional so every 1–5 argument construction keeps
+   * compiling; the CLI always wires it, so a real approval cannot skip
+   * measurement.
+   */
+  private readonly commandExecutor?: CommandExecutorPort;
 
   constructor(
     stateRepo: StateRepository,
     worktreeManager?: WorktreeManagerPort,
     inferBaseBranchUseCase?: InferBaseBranchUseCase,
     planGenerator?: PlanGeneratorPort,
-    gateReportRepo?: GateReportRepositoryPort
+    gateReportRepo?: GateReportRepositoryPort,
+    commandExecutor?: CommandExecutorPort
   ) {
     this.stateRepo = stateRepo;
     this.worktreeManager = worktreeManager;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
     this.planGenerator = planGenerator;
     this.gateReportRepo = gateReportRepo;
+    this.commandExecutor = commandExecutor;
   }
 
   public async execute(params: TransitionParams): Promise<StateMachine> {
@@ -291,6 +303,10 @@ export class TransitionStageUseCase {
     // Nothing is persisted and nothing is provisioned on either refusal.
     if (targetStageStr === STAGE_APPROVAL) {
       this.assertGateTargetContract(sm, params);
+      // Issues #388: a protocol that dies at seed can never be approved, and a
+      // declared baseline must be measured before it becomes normative.
+      this.assertSmokeProtocolContract(sm, params);
+      await this.assertPlanBaselineContract(sm, params);
     }
 
     // Consume-on-ingest (issue #284): one filed report certifies exactly one
@@ -316,6 +332,8 @@ export class TransitionStageUseCase {
       // refuses. Digest recording stays under `!params.dryRun`.
       if (fromFreshApproval) {
         this.assertGateTargetContract(sm, params);
+        this.assertSmokeProtocolContract(sm, params);
+        await this.assertPlanBaselineContract(sm, params);
       }
       if (!params.dryRun && (fromFreshApproval || !sm.approvedPlanDigest)) {
         this.recordApprovedPlanDigest(sm, params);
@@ -695,6 +713,38 @@ export class TransitionStageUseCase {
     enforceGateTargetContract({
       planGenerator: this.planGenerator,
       planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
+  }
+
+  /**
+   * Refuses a plan whose frozen smoke protocol cannot be executed as written
+   * (issue #388, Defect 2). Order matters: the protocol is validated BEFORE the
+   * baseline commands run, so a protocol that dies at seed never hands the
+   * implementer a script that cannot start.
+   */
+  private assertSmokeProtocolContract(sm: StateMachine, params: TransitionParams): void {
+    const resolved = this.resolveCurrentPlan(sm, params);
+    if (!resolved) return;
+    enforceSmokeProtocolContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
+  }
+
+  /** Measures each declared baseline against the plan's own command (issue #388, Defect 1). */
+  private async assertPlanBaselineContract(
+    sm: StateMachine,
+    params: TransitionParams
+  ): Promise<void> {
+    const resolved = this.resolveCurrentPlan(sm, params);
+    if (!resolved) return;
+    await enforcePlanBaselineContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      workspaceDir: params.workspaceDir || process.cwd(),
+      commandExecutor: this.commandExecutor,
       dryRun: params.dryRun
     });
   }

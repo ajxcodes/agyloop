@@ -1219,3 +1219,66 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
     assert.strictEqual(stateRepo.saveCallCount, 0);
   });
 });
+
+describe('StartImplementationUseCase - frozen smoke directive (issue #388)', () => {
+  let tempDir: string;
+  let planDir: string;
+  let planPath: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-impl-smoke-'));
+    planDir = path.join(tempDir, 'artifacts/plans/388-smoke');
+    fs.mkdirSync(planDir, { recursive: true });
+    planPath = path.join(planDir, 'implementation_plan.md');
+    fs.writeFileSync(
+      planPath,
+      [
+        '# [Implementation] - smoke handoff',
+        '',
+        '## 3. Implementation Steps',
+        '- [ ] **Step 1:** hold',
+        '',
+        '### Manual Smoke Test Protocol',
+        '',
+        '**SI smoke label**',
+        '',
+        '```bash',
+        'echo si-smoke-388',
+        '```',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('SI-SMOKE: the directive carries the protocol parsed from the resolved plan', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new MockConfigRepository(),
+      new MockPlanGenerator(planDir)
+    );
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.ok(
+      result.taskPrompt.includes('### Manual Smoke Test Protocol (frozen at dispatch)'),
+      result.taskPrompt
+    );
+    assert.ok(result.taskPrompt.includes('SI smoke label'), result.taskPrompt);
+    assert.ok(result.taskPrompt.includes('echo si-smoke-388'), result.taskPrompt);
+    assert.ok(result.taskPrompt.includes('(plan line '), result.taskPrompt);
+  });
+});

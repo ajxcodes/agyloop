@@ -33,6 +33,7 @@ import {
   InvalidTransitionError,
   ValidationError,
   WorktreeCreationError,
+  SmokeProtocol,
   isPlanContentSubstantive
 } from '../domain';
 import {
@@ -48,6 +49,8 @@ import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 import { SyncUseCase } from './sync';
 import { assertGateTargetContract } from './gate-target-contract';
+import { assertPlanBaselineContract } from './plan-baseline-contract';
+import { assertSmokeProtocolContract } from './smoke-protocol-contract';
 
 export interface StartImplementationParams {
   readonly issue?: number | string | null;
@@ -192,6 +195,11 @@ export class StartImplementationUseCase {
     // would invalidate the digest mid-loop, so the gate-time blockers own it.
     if (!resumed) {
       this.assertGateTargetContract(sm, params, workspace);
+      // Issue #388: the protocol must be runnable BEFORE the implementer gets
+      // it, and every declared baseline must be measured before it is normative.
+      // Both run before worktree provisioning, so a refusal leaves no orphan.
+      this.assertSmokeProtocolContract(sm, params, workspace);
+      await this.assertPlanBaselineContract(sm, params, workspace);
     }
 
     // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT.
@@ -366,6 +374,7 @@ export class StartImplementationUseCase {
     const taskPrompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
       planPath: resolved?.planPath,
+      smokeProtocol: planContent ? SmokeProtocol.fromPlan(planContent) : undefined,
       issueNumber: activeIssue,
       issueTitle: issueData && !issueData.error ? issueData.title : undefined,
       issueBody: issueData && !issueData.error ? issueData.body : undefined,
@@ -435,6 +444,59 @@ export class StartImplementationUseCase {
     assertGateTargetContract({
       planGenerator: this.planGenerator,
       planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
+  }
+
+  /** Resolves the plan the SAME way the later block does (issue #388). */
+  private resolvePlanForContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): { readonly planPath: string } | null {
+    const resolved = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: params.issue || sm.issue,
+      planPath: params.planPath || sm.planPath || undefined,
+      planDir: params.planDir || sm.planDir
+    });
+    return resolved ? { planPath: resolved.planPath } : null;
+  }
+
+  /**
+   * Refuses a plan whose frozen smoke protocol cannot run as written
+   * (issue #388, Defect 2), before any worktree is provisioned.
+   */
+  private assertSmokeProtocolContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    assertSmokeProtocolContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
+  }
+
+  /**
+   * Measures the plan's declared baselines (issue #388, Defect 1), before the
+   * implementer is dispatched a number nobody checked.
+   */
+  private async assertPlanBaselineContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): Promise<void> {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    await assertPlanBaselineContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      workspaceDir: workspace,
+      commandExecutor: this.commandExecutor,
       dryRun: params.dryRun
     });
   }

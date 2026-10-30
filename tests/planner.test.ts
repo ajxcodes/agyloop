@@ -105,6 +105,12 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('artifacts/plans/'));
     assert.ok(prompt.includes('User / Developer Directives:'));
     assert.ok(prompt.includes('Refactor database client to use connection pooling.'));
+    // Issue #388: the planner is told how to carry a declared baseline.
+    assert.ok(prompt.includes('### Baseline Evidence'), prompt);
+    assert.ok(prompt.includes('- **Declared:**'), prompt);
+    assert.ok(prompt.includes('- **Command:**'), prompt);
+    assert.ok(prompt.includes('- **Output:**'), prompt);
+    assert.ok(prompt.includes('Never declare an unmeasured baseline value'), prompt);
   });
 
   test('getImplementerSystemPrompt returns detailed instructions with write capabilities', () => {
