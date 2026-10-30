@@ -23,6 +23,9 @@
  * RV14 - a supplied prior report is the dedupe: no subprocess, same invariant
  * RV15 - a verdict written with natural "none" phrasing is recorded APPROVED and
  *      advances to COMMIT, with NO self-correction payload (issue #356)
+ * RV16 - exactly ONE critique invocation per recorded verdict in the dispatched
+ *      flow: the reviewer's own run, passed back as a prior report (issue #397)
+ * RV17 - with no report supplied, `review` still runs critique (never SKIPPED)
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -611,5 +614,36 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
     assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
     assert.strictEqual(result.critiqueVerified, true);
+  });
+
+  test('RV16: the dispatched flow spends exactly ONE critique invocation per recorded verdict (issue #397)', async () => {
+    // The reviewer subagent's own Tier 1, inside its session.
+    const reviewerReport = await critique.review();
+    assert.strictEqual(critique.reviewCalls, 1, 'the reviewer run is the first invocation');
+
+    // The orchestrator files with the report the reviewer produced. The second
+    // Tier 1 must NOT happen: the supplied report IS the evidence.
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport: reviewerReport
+    });
+
+    assert.strictEqual(critique.reviewCalls, 1, 'the supplied report must not spawn a second critique run');
+    assert.strictEqual(result.critiqueVerified, true);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+  });
+
+  test('RV17: with no report supplied, `review` still runs critique exactly once (issue #397, D2-AC3)', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(critique.reviewCalls, 1, 'the fallback must still run Tier 1');
+    assert.strictEqual(result.critiqueVerified, true);
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.notStrictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
   });
 });

@@ -132,7 +132,8 @@ import {
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
 import { resolveCompletedReentry, resolveTriageReentry } from './lifecycle-reentry-policy';
-import { classifyPrFeedback, feedbackKeysOf } from './triage-feedback';
+import { actionableReviewFeedback, feedbackKeysOf } from './triage-feedback';
+import { critiqueReportPathFor } from './critique-report-path';
 import type { ImplementationDiff, ImplementationProbe } from './detect-implementation-diff';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 
@@ -1161,12 +1162,20 @@ export class GetNextActionUseCase {
         const untrackedFiles =
           probe && probe.probeError === null ? probe.untrackedFiles ?? [] : [];
 
+        // Issue #397: the SAME path goes to the reviewer (where to write) and to
+        // the orchestrator (where to read). Two voices, one artifact.
+        const critiqueReportPath = critiqueReportPathFor(
+          this.stateRepo.getStateFilePath(),
+          activeIssue
+        );
+
         const prompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
           issueNumber: activeIssue,
           baseBranch,
           workspaceDir: worktreePath || cwd,
           config,
-          untrackedFiles
+          untrackedFiles,
+          critiqueReportPath
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -1191,12 +1200,12 @@ export class GetNextActionUseCase {
           // records a verdict. The instruction used to live only inside the
           // dispatched prompt, so an operator following `next` re-dispatched the
           // reviewer forever.
-          description: `Run critique analysis and verify Acceptance Criteria fulfillment against the isolated diff. ${formatReviewVerdictChannelNote(activeIssue)}`,
+          description: `Run critique analysis and verify Acceptance Criteria fulfillment against the isolated diff. ${formatReviewVerdictChannelNote(activeIssue, critiqueReportPath)}`,
           baseBranch,
           taskBranch,
           worktreePath,
           invocationPayload,
-          humanSummary: `Invoke ${ROLE_TITLE_REVIEWER} with Model '${subagent.model}' against base '${baseBranch}'. ${this.formatReviewDispatchOrdinal(sm.reviewDispatchCount)} ${formatReviewVerdictChannelNote(activeIssue)} ${NOTE_REVIEW_GATE_EXIT_CONDITION}`,
+          humanSummary: `Invoke ${ROLE_TITLE_REVIEWER} with Model '${subagent.model}' against base '${baseBranch}'. ${this.formatReviewDispatchOrdinal(sm.reviewDispatchCount)} ${formatReviewVerdictChannelNote(activeIssue, critiqueReportPath)} ${NOTE_REVIEW_GATE_EXIT_CONDITION}`,
           reviewDispatchCount: sm.reviewDispatchCount
         };
       }
@@ -1396,9 +1405,11 @@ export class GetNextActionUseCase {
 
       // The ACTIONABLE comments are the only ones that can route the pipeline
       // (issue #269): the tool's own replies and the repository's automated
-      // summaries are not feedback.
-      const classified = classifyPrFeedback(comments);
-      if (classified.actionable.length === 0) {
+      // summaries are not feedback. The selector is SHARED with the TRIAGE
+      // command (issue #397), so the dispatched set and the acted-on set are
+      // the same predicate.
+      const actionable = actionableReviewFeedback(comments);
+      if (actionable.length === 0) {
         return null;
       }
 
@@ -1413,15 +1424,15 @@ export class GetNextActionUseCase {
       // when the PR changes — but the rule "for that PR" is explicit, and a
       // disposition for another PR leaves the feedback undispositioned, so it
       // routes to TRIAGE exactly as it would without any disposition.
-      const keys = feedbackKeysOf(classified.actionable);
+      const keys = feedbackKeysOf(actionable);
       if (disposition && disposition.prNumber === pr.number && disposition.coversAll(keys)) {
         return null;
       }
 
       return {
         prNumber: pr.number,
-        commentCount: classified.actionable.length,
-        payload: classified.actionable.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n')
+        commentCount: actionable.length,
+        payload: actionable.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n')
       };
     } catch {
       return null;

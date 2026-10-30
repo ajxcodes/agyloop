@@ -53,12 +53,14 @@ If all Acceptance Criteria are met, repository standards are respected, and no c
 
 ### Recording the verdict
 
-The verdict block above is the **only** record of this review, and there must be a channel for it to reach the checkpoint. You have no write tools, so the channel is a **command** the orchestrator runs with your block:
+The verdict block above is the **only** record of this review, and there must be a channel for it to reach the checkpoint. You have no write tools for the repository, so the channel is a **command** the orchestrator runs with your block:
 
 ```bash
 codeloop review --issue <n> --verdict-file <path>
 ```
 
 (The orchestrator may instead pass the block inline with `--review-output "<block>"`, or pipe it into `codeloop review --verdict-stdin`.)
+
+The reviewer may write exactly one file — the Tier 1 evidence at the absolute path the directive gives — and must name it with `CRITIQUE_REPORT:`; the orchestrator passes it back with `--critique-report <path>` so Tier 1 is not run twice.
 
 Emit the block verbatim as the **last** thing in your response. Do not wrap the `REVIEW_STATUS:` line in anything else — `ReviewVerdict.parse` refuses a block it cannot read, and a `CHANGES_REQUESTED` must never be downgraded to a skip.
