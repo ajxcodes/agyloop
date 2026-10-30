@@ -6,6 +6,8 @@
  * Strictly avoids magic strings and magic numbers across the entire system.
  */
 
+import type { StageFinding } from './value-objects/workspace-mutation';
+
 export const STAGE_NONE = 'NONE' as const;
 export const STAGE_INITIALIZED = 'INITIALIZED' as const;
 export const STAGE_DISCOVERY = 'DISCOVERY' as const;
@@ -1347,6 +1349,118 @@ function summariseEvidenceNames(names: readonly string[], quote = ''): string {
     .map((name) => `${quote}${name}${quote}`);
   const extra = names.length - shown.length;
   return extra > 0 ? `${shown.join(', ')} (+${extra} more)` : shown.join(', ');
+}
+
+// ---- DISCOVERY scoped-write boundary (issue #389) -------------------------
+//
+// The dispatch prompt used to state a container-only guardrail as a MANDATE and
+// a scoped write as prose, and nothing read either. A host-run harness cannot
+// satisfy "container-only" while also satisfying "reproduce the issue
+// empirically", and a rebuild of the repository-root `dist/` is gitignored, so
+// `git status` could not see it. These constants own the one source of truth:
+// a MUTATION boundary (reads are free, writes stay in the plan directory), an
+// explicit container recipe for a subagent that chooses containment, and the
+// finding wording the orchestrator reads back.
+
+/** The image the discovery recipe names, so a subagent never invents one. */
+export const DISCOVERY_CONTAINER_IMAGE = 'docker.io/library/node:24-bookworm-slim';
+
+/** The template heading a discovery report must actually carry (AC1c). */
+export const DISCOVERY_REPRODUCTION_HEADING = '## 3. Reproduction Steps & Verification Protocol';
+
+/** The one key inside that heading the directive names. */
+export const DISCOVERY_REPRODUCTION_KEY = '- **Local Reproduction Command:**';
+
+/** The human-gate title for a tracked write outside the plan directory. */
+export const TITLE_DISCOVERY_BOUNDARY_VIOLATION = 'Discovery Boundary Violation' as const;
+
+/**
+ * The roots the boundary probe watches.
+ *
+ * `dist`/`build` are ignored build artefacts (invisible to `git status`), which
+ * is exactly the reported defect class; `artifacts` is where the plan directory
+ * lives, so an escape above the plan directory is still measured. `node_modules`
+ * is deliberately absent: it is unbounded and not a candidate root build.
+ */
+export const WORKSPACE_MUTATION_WATCHED_ROOTS: readonly string[] = Object.freeze([
+  'dist',
+  'build',
+  'artifacts'
+]);
+
+/** Upper bound on the files digested per root, so a read stays cheap. */
+export const WORKSPACE_MUTATION_MAX_FILES_PER_ROOT = 20000;
+
+/** Upper bound on the tracked paths a single comparison reports. */
+export const WORKSPACE_MUTATION_MAX_REPORTED_PATHS = 20;
+
+/** Warned when the dispatch-time baseline could not be captured. */
+export const MSG_DISCOVERY_BASELINE_UNRECORDED =
+  'Discovery boundary baseline unrecorded: a write outside the plan directory will not be measured for this dispatch.' as const;
+
+/**
+ * Directives 2 and 3 for the container-available DISCOVERY branch (issue #389).
+ *
+ * The boundary is the invariant; containment is an OFFER with a runnable
+ * command, because the evidence contract ("reproduce the issue empirically")
+ * legitimately needs a build. `runtime` is interpolated so the recipe names the
+ * runtime the detector actually found.
+ */
+export function formatDiscoveryExecutionContract(params: {
+  readonly runtime: string;
+  readonly planDir: string;
+}): string {
+  const runtime = params.runtime;
+  const planDir = params.planDir;
+  const inspect =
+    `${runtime} run --rm --network=none -v "$PWD":/repo:ro -w /repo ` +
+    `${DISCOVERY_CONTAINER_IMAGE} bash -lc '<read-only command>'`;
+  const build =
+    `${runtime} run --rm -v "$PWD":/repo:ro -w /tmp ` +
+    `${DISCOVERY_CONTAINER_IMAGE} bash -lc 'cp -a /repo /tmp/w && cd /tmp/w && npm ci && npm run build'`;
+  return (
+    `2. **Mutation Boundary**: You may read anything and run read-only host commands, but every WRITE must land inside \`${planDir}\`. Never create, edit or delete a file outside it. Never rebuild the repository root — the root build is what the installed \`codeloop\` executes, so a rebuild mid-run changes the pipeline's own tool.\n` +
+    `3. **Container-Preferred Empirical Verification**: Empirical reproduction often needs a build; run it in a container when the runtime is reachable. Use ${runtime}:\n` +
+    `   - Inspect (read-only mount): \`${inspect}\`\n` +
+    `   - Build (copy out of the read-only mount): \`${build}\`\n` +
+    `   If the runtime is unreachable when you run it, fall back to host reads plus static RCA and record why in the report.`
+  );
+}
+
+/**
+ * Renders measured boundary findings for a directive's description/summary.
+ *
+ * The installed-CLI consequence is appended only when a ROOT BUILD changed:
+ * that is the failure mode the guardrail exists to prevent (#389), and saying
+ * it on an unrelated `artifacts/` change would be noise.
+ */
+export function formatDiscoveryBoundaryFindings(findings: readonly StageFinding[]): string {
+  if (findings.length === 0) {
+    return '';
+  }
+  const listed = findings.map((finding) => `${finding.path} (${finding.detail})`).join('; ');
+  const rootBuildChanged = findings.some(
+    (finding) =>
+      finding.path === 'dist/' ||
+      finding.path === 'build/' ||
+      finding.path === 'dist' ||
+      finding.path === 'build'
+  );
+  const consequence = rootBuildChanged
+    ? ' The root build is what the installed `codeloop` executes; a rebuild mid-run changes the pipeline\'s own tool.'
+    : '';
+  return `Discovery boundary findings: ${listed}.${consequence}`;
+}
+
+/** Renders the remediation wording of the tracked-write human gate (#389, AC3b). */
+export function formatDiscoveryBoundaryGate(findings: readonly StageFinding[]): string {
+  const listed = findings.map((finding) => `${finding.path} (${finding.detail})`).join('; ');
+  return (
+    `A DISCOVERY stage wrote outside its plan directory: ${listed}. ` +
+    'Discovery may read anything but may only write inside its plan directory; ' +
+    'a new tracked write can corrupt every downstream gate, so the run is paused. ' +
+    'Revert the change (or move it into the plan directory), then run `codeloop next` again.'
+  );
 }
 
 // Ecosystem Identifiers

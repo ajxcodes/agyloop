@@ -103,7 +103,14 @@ import {
   formatGateTargetContractViolations,
   GATE_COMMAND_PRECEDENCE,
   DiscoveryReport,
-  isDiscoveryPlanDocument
+  isDiscoveryPlanDocument,
+  // Issue #389: the scoped-write boundary DISCOVERY reports against.
+  StageFinding,
+  STAGE_FINDING_RULE_TRACKED_WRITE_OUTSIDE_SCOPE,
+  formatDiscoveryBoundaryFindings,
+  formatDiscoveryBoundaryGate,
+  TITLE_DISCOVERY_BOUNDARY_VIOLATION,
+  MSG_DISCOVERY_BASELINE_UNRECORDED
 } from '../domain';
 import {
   StateRepository,
@@ -115,6 +122,9 @@ import {
   PullRequestReviewComment,
   CritiquePort,
   GateReportRepositoryPort,
+  // Issue #389: the boundary probe. Optional, so every existing call site and
+  // test stays byte-identical when it is not injected.
+  WorkspaceMutationProbePort,
   // Issue #351: the gate's exit reads the SAME guarded PR lookup that routes
   // INTO it, so the shape is shared rather than re-inferred.
   GitHubPullRequestData
@@ -286,6 +296,15 @@ export interface NextActionResult {
    * sees exactly what the write set is (#301, absorbing #304).
    */
   readonly wouldWrite: readonly string[];
+  /**
+   * Writes measured OUTSIDE the stage's sanctioned scope (issue #389).
+   *
+   * Present only when a `WorkspaceMutationProbePort` was injected AND it
+   * measured at least one change; the key is ABSENT (never `[]`) otherwise, so
+   * consumers that gate on key presence keep working — the same contract as
+   * `implementationPresent` / `discoveryReportPopulated`.
+   */
+  readonly stageFindings?: readonly StageFinding[];
 }
 
 /**
@@ -314,6 +333,12 @@ export class GetNextActionUseCase {
   /** The filed gate evidence `next` reads at QUALITY_GATE (issue #337). */
   private readonly gateReportRepo?: GateReportRepositoryPort;
 
+  /**
+   * The DISCOVERY scoped-write probe (issue #389). When injected, the boundary
+   * is measured against a dispatch-time baseline instead of being prose.
+   */
+  private readonly workspaceMutationProbe?: WorkspaceMutationProbePort;
+
   constructor(
     stateRepo: StateRepository,
     configRepo: ConfigRepository,
@@ -334,7 +359,11 @@ export class GetNextActionUseCase {
     // Issue #337: the gate evidence the QUALITY_GATE directive must READ before
     // it tells the operator to file it. Optional: without it the directive
     // keeps its historical dispatch + filing note (unverified).
-    gateReportRepo?: GateReportRepositoryPort
+    gateReportRepo?: GateReportRepositoryPort,
+    // Issue #389: the DISCOVERY scoped-write probe. Optional so every existing
+    // 1–11 arg call site keeps compiling; without it the boundary is
+    // unmeasured and `stageFindings` is absent (never an empty claim).
+    workspaceMutationProbe?: WorkspaceMutationProbePort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -348,6 +377,7 @@ export class GetNextActionUseCase {
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
     this.implementationProbe = implementationProbe;
     this.gateReportRepo = gateReportRepo;
+    this.workspaceMutationProbe = workspaceMutationProbe;
   }
 
   public async execute(params: GetNextActionParams = {}): Promise<NextActionResult> {
@@ -446,6 +476,13 @@ export class GetNextActionUseCase {
     // because the exit condition the directive states would otherwise be a lie.
     // It is the same class of write — evidence-driven, never an invented
     // advance — and it is also declared in `wouldWrite` under `--dry-run`.
+    //
+    // Issue #389 adds ONE more permitted context-field write:
+    // `discoveryMutationBaseline`. It is captured at the FIRST real DISCOVERY
+    // dispatch read (never while paused at a gate), at most once per round, so
+    // the next read can measure writes against it instead of trusting a prompt.
+    // It never advances a stage, `transition()` clears it when the round ends,
+    // and `--dry-run` declares it in `wouldWrite` rather than persisting it.
     const restartOptIn = params.restart === true;
 
     if (sm.currentStage === STAGE_COMPLETED) {
@@ -651,25 +688,57 @@ export class GetNextActionUseCase {
         // means unverified — no generator was injected.
         const reportState = this.resolveDiscoveryReportState(resolvedDiscoveryPath);
 
+        // Issue #389: measure the SCOPED-WRITE boundary before deciding what
+        // this read asks for. The baseline is the dispatch-time reference, so a
+        // pre-existing dirty root is never a violation. A tracked write outside
+        // the plan directory is BLOCKING: it can corrupt every downstream gate.
+        const stageFindings = await this.compareDiscoveryBoundary(sm, cwd, resolvedPlanDir);
+        const trackedViolation = stageFindings.find(
+          (finding) => finding.rule === STAGE_FINDING_RULE_TRACKED_WRITE_OUTSIDE_SCOPE
+        );
+        if (trackedViolation) {
+          return {
+            currentStage: STAGE_DISCOVERY,
+            nextStage: STAGE_PLAN,
+            actionType: 'human_gate',
+            title: TITLE_DISCOVERY_BOUNDARY_VIOLATION,
+            description: `${formatDiscoveryBoundaryGate(stageFindings)} ${condition}`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `${formatDiscoveryBoundaryGate(stageFindings)} ${condition}`,
+            discoveryDispatchCount: sm.discoveryDispatchCount,
+            discoveryReportPopulated: reportState?.populated ?? false,
+            discoveryReportPath: reportState?.path ?? null,
+            discoveryReportMissingEvidence: reportState?.missingEvidence ?? null,
+            stageFindings
+          };
+        }
+
         // Issue #337: a POPULATED report is a met completion condition, so the
         // stage is not dispatchable. Return BEFORE the subagent resolution, the
         // payload and the dispatch counter: a met read writes nothing, and the
         // machine fields finally agree with the prose.
         if (reportState?.populated === true) {
+          // Issue #389: a recorded (non-blocking) finding still travels with
+          // the advance directive so the orchestrator is told before planning.
+          const boundaryNote = formatDiscoveryBoundaryFindings(stageFindings);
+          const boundarySuffix = boundaryNote ? ` ${boundaryNote}` : '';
           return {
             currentStage: STAGE_DISCOVERY,
             nextStage: STAGE_PLAN,
             actionType: 'advance',
             title: 'Discovery Complete — Advance to PLAN',
-            description: `Report: \`${reportState.path}\`. ${NOTE_DISCOVERY_COMPLETE} ${condition} Advance with \`${advanceCommand}\`.`,
+            description: `Report: \`${reportState.path}\`. ${NOTE_DISCOVERY_COMPLETE} ${condition} Advance with \`${advanceCommand}\`.${boundarySuffix}`,
             baseBranch,
             taskBranch,
             worktreePath,
-            humanSummary: `${NOTE_DISCOVERY_COMPLETE} Advance with \`${advanceCommand}\`.`,
+            humanSummary: `${NOTE_DISCOVERY_COMPLETE} Advance with \`${advanceCommand}\`.${boundarySuffix}`,
             discoveryDispatchCount: sm.discoveryDispatchCount,
             discoveryReportPopulated: true,
             discoveryReportPath: reportState.path,
-            discoveryReportMissingEvidence: null
+            discoveryReportMissingEvidence: null,
+            ...(stageFindings.length > 0 ? { stageFindings } : {})
           };
         }
 
@@ -701,9 +770,20 @@ export class GetNextActionUseCase {
           ]
         };
 
+        // Issue #389: the baseline is captured ONCE per DISCOVERY round, at the
+        // dispatch that establishes it — never while paused at a gate, and never
+        // overwritten by a later dispatch (eligible only when absent).
+        const baselineCaptured = await this.captureDiscoveryBaseline(sm, cwd, resolvedPlanDir);
+
         if (sm.pausedAtGate === null) {
           sm.recordDiscoveryDispatch();
-          await this.persistDispatchCounter(sm, 'discovery', writesEnabled, wouldWrite);
+          await this.persistDispatchCounter(
+            sm,
+            'discovery',
+            writesEnabled,
+            wouldWrite,
+            baselineCaptured ? 'checkpoint: discoveryMutationBaseline + updatedAt' : undefined
+          );
         }
 
         // State → text (issue #320). Every verified state keeps the static
@@ -731,6 +811,15 @@ export class GetNextActionUseCase {
           stateSummary = `No discovery-shaped report was resolved. ${condition} Advance with \`${advanceCommand}\` once one exists.`;
         }
 
+        // Issue #389: a recorded (non-blocking) finding travels with the
+        // dispatch so the orchestrator learns the root build changed before it
+        // acts on the next directive. Absent when nothing was measured.
+        const boundaryNote = formatDiscoveryBoundaryFindings(stageFindings);
+        if (boundaryNote) {
+          description = `${description} ${boundaryNote}`;
+          stateSummary = `${stateSummary} ${boundaryNote}`;
+        }
+
         return {
           currentStage: STAGE_DISCOVERY,
           nextStage: STAGE_PLAN,
@@ -750,7 +839,8 @@ export class GetNextActionUseCase {
                 discoveryReportPopulated: reportState.populated,
                 discoveryReportPath: reportState.path,
                 discoveryReportMissingEvidence: reportState.missingEvidence
-              })
+              }),
+          ...(stageFindings.length > 0 ? { stageFindings } : {})
         };
       }
 
@@ -1489,6 +1579,69 @@ export class GetNextActionUseCase {
   }
 
   /**
+   * Measures writes outside the DISCOVERY plan directory (issue #389).
+   *
+   * Returns `[]` — never a guessed violation — when no probe is injected, no
+   * baseline was captured, or the comparison itself failed. The plan directory
+   * is excluded by resolved path, so the legal report write is never a finding.
+   */
+  private async compareDiscoveryBoundary(
+    sm: StateMachine,
+    cwd: string,
+    resolvedPlanDir: string | null
+  ): Promise<readonly StageFinding[]> {
+    if (!this.workspaceMutationProbe) {
+      return [];
+    }
+    const baseline = sm.discoveryMutationBaseline;
+    if (!baseline) {
+      return [];
+    }
+    try {
+      return await this.workspaceMutationProbe.compare({
+        workspaceDir: cwd,
+        baseline,
+        excludePaths: [resolvedPlanDir ?? 'artifacts/plans']
+      });
+    } catch (err: unknown) {
+      // A boundary that could not be measured must not claim a violation.
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[codeloop] Diagnostic: discovery boundary unmeasured: ${message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Captures the dispatch-time boundary reference exactly once per round
+   * (issue #389).
+   *
+   * A paused read is not a dispatch, so it captures nothing; a second dispatch
+   * does NOT overwrite an existing baseline, otherwise the first run's writes
+   * would be laundered by the second. Returns `true` when a baseline was set.
+   */
+  private async captureDiscoveryBaseline(
+    sm: StateMachine,
+    cwd: string,
+    resolvedPlanDir: string | null
+  ): Promise<boolean> {
+    if (!this.workspaceMutationProbe || sm.discoveryMutationBaseline || sm.pausedAtGate !== null) {
+      return false;
+    }
+    try {
+      const baseline = await this.workspaceMutationProbe.snapshot({
+        workspaceDir: cwd,
+        excludePaths: [resolvedPlanDir ?? 'artifacts/plans']
+      });
+      sm.setDiscoveryMutationBaseline(baseline);
+      return true;
+    } catch {
+      // Best-effort observability: never turn a read into a crash.
+      console.warn(`[codeloop] ${MSG_DISCOVERY_BASELINE_UNRECORDED}`);
+      return false;
+    }
+  }
+
+  /**
    * Persists a re-dispatch counter (issues #292/#272/#291).
    *
    * Best-effort BY DESIGN: the counter is observability, and a failed write
@@ -1502,12 +1655,17 @@ export class GetNextActionUseCase {
     sm: StateMachine,
     counter: DispatchCounterKind,
     writesEnabled: boolean,
-    wouldWrite: string[]
+    wouldWrite: string[],
+    extraContextWrite?: string
   ): Promise<void> {
     if (!writesEnabled) {
       // A suppressed write is DECLARED, never silent (issue #301 / #304): the
-      // counter and `updatedAt` are the only keys this read would have changed.
+      // counter and `updatedAt` are the only keys this read would have changed,
+      // plus any additional context field (issue #389's baseline).
       wouldWrite.push(`checkpoint: ${counter}DispatchCount + updatedAt`);
+      if (extraContextWrite) {
+        wouldWrite.push(extraContextWrite);
+      }
       return;
     }
     try {

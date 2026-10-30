@@ -27,6 +27,10 @@ import { Stage } from '../value-objects/stage';
 import { IssueNumber } from '../value-objects/issue-number';
 import { WorktreeDescriptor } from '../value-objects/worktree-descriptor';
 import { TriageDisposition, TriageDispositionSerialized } from '../value-objects/triage-disposition';
+import {
+  WorkspaceMutationBaseline,
+  isWorkspaceMutationBaseline
+} from '../value-objects/workspace-mutation';
 import { InvalidTransitionError, ValidationError } from '../errors';
 
 export interface StateHistoryEntry {
@@ -137,6 +141,12 @@ export interface StateMachineSnapshot {
    * which means "not recorded" — never "delivered".
    */
   readonly pullRequest?: RecordedPullRequest | null;
+  /**
+   * The dispatch-time scoped-write reference for the current DISCOVERY round
+   * (issue #389). Optional: a checkpoint written before this field loads as
+   * `null`, which means "not measured" — never "clean".
+   */
+  readonly discoveryMutationBaseline?: WorkspaceMutationBaseline | null;
 }
 
 export interface StateStatusSummary {
@@ -193,6 +203,7 @@ export class StateMachine {
   private _implementationDispatchCount: number;
   private _planEmptyParkCount: number;
   private _pullRequest: RecordedPullRequest | null;
+  private _discoveryMutationBaseline: WorkspaceMutationBaseline | null;
 
   constructor(options: {
     stage?: Stage;
@@ -221,6 +232,7 @@ export class StateMachine {
     implementationDispatchCount?: number;
     planEmptyParkCount?: number;
     pullRequest?: RecordedPullRequest | null;
+    discoveryMutationBaseline?: WorkspaceMutationBaseline | null;
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -254,6 +266,10 @@ export class StateMachine {
     this._planEmptyParkCount =
       typeof options.planEmptyParkCount === 'number' ? options.planEmptyParkCount : 0;
     this._pullRequest = options.pullRequest ?? null;
+    this._discoveryMutationBaseline =
+      options.discoveryMutationBaseline && isWorkspaceMutationBaseline(options.discoveryMutationBaseline)
+        ? options.discoveryMutationBaseline
+        : null;
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -403,6 +419,27 @@ export class StateMachine {
    */
   public recordDiscoveryDispatch(): void {
     this._discoveryDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * The scoped-write reference captured at the current DISCOVERY dispatch
+   * (issue #389). `null` means unmeasured.
+   */
+  public get discoveryMutationBaseline(): WorkspaceMutationBaseline | null {
+    return this._discoveryMutationBaseline;
+  }
+
+  /**
+   * Records the dispatch-time boundary reference (issue #389).
+   *
+   * A context field on the read path, like `recordDiscoveryDispatch`: `next`
+   * may record it without advancing a stage. The use case captures it at most
+   * once per round (earliest wins) so a second dispatch cannot launder the
+   * first run's writes.
+   */
+  public setDiscoveryMutationBaseline(baseline: WorkspaceMutationBaseline | null): void {
+    this._discoveryMutationBaseline = baseline;
     this._updatedAt = new Date().toISOString();
   }
 
@@ -614,6 +651,8 @@ export class StateMachine {
       throw new InvalidTransitionError(this._stage.value, target.value, this._mode);
     }
 
+    const previousStage = this._stage.value;
+
     if (this._stage.value === STAGE_APPROVAL && target.value === STAGE_PLAN) {
       this._planRevisionCount++;
     }
@@ -641,6 +680,13 @@ export class StateMachine {
     // transition INTO the stage starts a fresh round.
     if (target.value === STAGE_DISCOVERY) {
       this._discoveryDispatchCount = 0;
+      // A new DISCOVERY round has a new boundary reference (issue #389).
+      this._discoveryMutationBaseline = null;
+    }
+    // Leaving DISCOVERY ends the measurement window: later stages legitimately
+    // build, so they must never be measured against a discovery baseline.
+    if (previousStage === STAGE_DISCOVERY && target.value !== STAGE_DISCOVERY) {
+      this._discoveryMutationBaseline = null;
     }
     if (target.value === STAGE_PLAN) {
       this._planDispatchCount = 0;
@@ -711,6 +757,7 @@ export class StateMachine {
     this._implementationDispatchCount = 0;
     this._planEmptyParkCount = 0;
     this._pullRequest = null;
+    this._discoveryMutationBaseline = null;
     this._updatedAt = now;
     this._history = [
       {
@@ -777,7 +824,8 @@ export class StateMachine {
       planDispatchCount: this._planDispatchCount,
       implementationDispatchCount: this._implementationDispatchCount,
       planEmptyParkCount: this._planEmptyParkCount,
-      pullRequest: this._pullRequest
+      pullRequest: this._pullRequest,
+      discoveryMutationBaseline: this._discoveryMutationBaseline
     };
   }
 
@@ -862,7 +910,12 @@ export class StateMachine {
           : 0,
       planEmptyParkCount:
         typeof snapshot.planEmptyParkCount === 'number' ? snapshot.planEmptyParkCount : 0,
-      pullRequest
+      pullRequest,
+      discoveryMutationBaseline:
+        snapshot.discoveryMutationBaseline &&
+        isWorkspaceMutationBaseline(snapshot.discoveryMutationBaseline)
+          ? snapshot.discoveryMutationBaseline
+          : null
     });
   }
 

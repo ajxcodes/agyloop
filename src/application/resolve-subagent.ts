@@ -88,6 +88,9 @@ import {
   NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS,
   NOTE_GATE_REPORT_EVIDENCE_SHAPES,
   formatDiscoveryReportContract,
+  formatDiscoveryExecutionContract,
+  DISCOVERY_REPRODUCTION_HEADING,
+  DISCOVERY_REPRODUCTION_KEY,
   shellQuote,
   CRITIQUE_FLAG_JSON,
   CRITIQUE_JS_EXTENSION,
@@ -714,24 +717,30 @@ export class ResolveSubagentUseCase {
     prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
 
     if (isContainerAvailable) {
-      prompt += `2. **Strict Container-Only Guardrail**: Command execution in Discovery can ONLY run containerized invocations (\`act\`, \`podman run\`, \`docker run\`). Uncontained host mutations or native executions on the host are strictly prohibited to prevent host environment pollution.\n`;
-      prompt += `3. **Empirical Verification via Ephemeral Container**: Use ${runtime} (\`${runtime} run\`) or \`act\` to empirically reproduce the issue in an isolated container environment and record exact steps and results.\n`;
+      // Issue #389: the boundary is MUTATION, not containment. The old
+      // container-only mandate contradicted the evidence contract (empirical
+      // reproduction needs a build) and was unenforced anyway, so containment
+      // is now an offer with a runnable recipe.
+      prompt += `${formatDiscoveryExecutionContract({ runtime: runtime ?? 'docker', planDir: targetDir })}\n`;
     } else {
       prompt += `2. **Empirical Verification Fallback**: Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing. Log an informative warning regarding container unavailability.\n`;
     }
+
+    const reproductionDeliverable =
+      `You MUST fill out the \`${DISCOVERY_REPRODUCTION_HEADING}\` section — including its \`${DISCOVERY_REPRODUCTION_KEY}\` key — with the exact steps and observed results.`;
 
     const deliverableNum = isContainerAvailable ? 4 : 3;
     if (params.planPath) {
       prompt += `${deliverableNum}. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
       prompt += `   - Write ONLY this file. Do NOT create another directory under \`artifacts/plans/\` and do NOT create a second discovery artifact.\n`;
-      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+      prompt += `   - ${reproductionDeliverable}\n\n`;
     } else if (params.planDir) {
       prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification INSIDE this existing directory: \`${params.planDir}\`, matching \`templates/discovery-plan.md\`.\n`;
       prompt += `   - Do NOT create another directory under \`artifacts/plans/\`.\n`;
-      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+      prompt += `   - ${reproductionDeliverable}\n\n`;
     } else {
       prompt += `${deliverableNum}. **Deliverable**: Run \`codeloop plan --issue <n>\` first to scaffold the canonical plan directory, then create the discovery specification there matching \`templates/discovery-plan.md\`.\n`;
-      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+      prompt += `   - ${reproductionDeliverable}\n\n`;
     }
 
     if (issueContextBlock) {
@@ -759,7 +768,7 @@ export class ResolveSubagentUseCase {
     prompt += `### Expected Output Structure:\n`;
     prompt += `- **Summary & Symptoms**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Root Cause Analysis**: Detailed breakdown of failure mechanisms.\n`;
-    prompt += `- **Manual Bug Smoke Test**: Exact reproduction steps and results.\n`;
+    prompt += `- **Reproduction Steps & Verification Protocol**: Exact reproduction steps and results.\n`;
     prompt += `- **Remediation Strategy**: Cleanest fix approach.\n\n`;
 
     prompt += `### Evidence Contract:\n`;

@@ -18,6 +18,7 @@ export * from './worktree-manager';
 export * from './agent-runner';
 export * from './project-scaffolder';
 export * from './gate-report-repository';
+export * from './workspace-mutation-probe';
 
 
 

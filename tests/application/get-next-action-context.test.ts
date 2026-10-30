@@ -764,15 +764,19 @@ describe('#301: next is a declared, non-fabricating query', () => {
     // is excluded from the "what changed" set and asserted to stay 0.
     // Issue #315 (AC-24) adds `pullRequest` the same way: an older checkpoint
     // materialises `null` ("not recorded"), which claims nothing about delivery.
+    // Issue #389 adds `discoveryMutationBaseline` the same way: `null` means
+    // "not measured", and no probe is injected in this read.
     const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
       .filter((key) => key !== 'implementationDispatchCount')
       .filter((key) => key !== 'pullRequest')
+      .filter((key) => key !== 'discoveryMutationBaseline')
       .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
       .sort();
     assert.deepStrictEqual(changed, ['baseBranch', 'discoveryDispatchCount', 'updatedAt']);
     assert.strictEqual(after.discoveryDispatchCount, 1);
     assert.strictEqual(after.implementationDispatchCount, 0);
     assert.strictEqual(after.pullRequest, null);
+    assert.strictEqual(after.discoveryMutationBaseline, null);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
