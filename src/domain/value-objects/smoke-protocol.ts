@@ -25,11 +25,10 @@ import {
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
   SMOKE_RULE_QUOTED_JSON_COMPARISON,
   SMOKE_RULE_SANDBOX_PATH,
-  SMOKE_SANDBOX_DIR_PREFIX,
-  SMOKE_SANDBOX_HOME_ANCHOR,
-  SMOKE_SANDBOX_RECOMMENDED_PATH,
-  SMOKE_SANDBOX_ROOT_DISPLAY
+  SMOKE_SANDBOX_RECOMMENDED_PATH
 } from '../constants';
+import { isSmokeSectionHeading } from './smoke-heading';
+import { isWithinSmokeSandbox, resolvePathAgainstCwd } from './smoke-sandbox';
 
 export interface SmokeCheck {
   /** 1-based position within the protocol. */
@@ -162,30 +161,6 @@ function stripNumbering(title: string): string {
   return title.replace(HEADING_NUMBER_PREFIX, '').trim();
 }
 
-/**
- * True when a heading opens the smoke-test section (issue #362, Finding 1).
- *
- * A level-1 heading is the document TITLE by construction
- * (`templates/implementation-plan.md`), never a section. Matching it made a plan
- * whose title carries the phrase scope the section at line 1 with
- * `sectionLevel = 1`; nothing could ever close the section after that, so every
- * later fence — reproduction blocks, ASCII-art diagrams, the Quality Gate
- * Targets list — was frozen as a smoke check. On the #359 plan that turned 3
- * declared checks into 7 and `toScript()` died at `$: command not found`
- * (exit 127). The title is the only heading that can never be a section, so
- * skipping level 1 is principled, not a special case.
- *
- * `.includes()` is deliberately kept for levels 2+: a planner may annotate the
- * heading (`## 6. Manual Smoke Test Protocol — checks`), and losing that match
- * would turn a loud finding into a silent "no protocol declared" skip.
- */
-function isSmokeHeading(heading: Heading): boolean {
-  if (heading.level <= 1) return false;
-  return heading.title
-    .toLowerCase()
-    .includes(HEADING_MANUAL_SMOKE_TEST_PROTOCOL.toLowerCase());
-}
-
 function isCommentLine(line: string): boolean {
   const trimmed = line.trim();
   return trimmed.length === 0 || trimmed.startsWith(COMMENT_PREFIX);
@@ -304,7 +279,7 @@ export class SmokeProtocol {
       const heading = detectHeading(line);
 
       if (!inSection) {
-        if (heading && isSmokeHeading(heading)) {
+        if (heading && isSmokeSectionHeading(heading)) {
           inSection = true;
           headingLine = index + 1;
           sectionLevel = heading.level;
@@ -524,6 +499,12 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
 // create its directory sandbox under `$HOME/.cache/agyloop/smoke-*`, the only
 // root the state guard recognises. A purely textual mirror of the guard's
 // semantics; no filesystem probing (SmokeProtocol stays I/O-free).
+//
+// Issue #364: the rule tracks `cd` per check at STATEMENT granularity (see
+// `cwdByStatement`), so a RELATIVE
+// `mkdir`/`mktemp` under a sandbox `cd` is recognised, while a `..`-escaped
+// path that resolves outside the sandbox is refused. The token heuristic is
+// retained only for paths no `cd` can anchor.
 // ---------------------------------------------------------------------------
 
 /**
@@ -552,14 +533,11 @@ const CLI_INVOCATION_SCAN = new RegExp(CLI_INVOCATION_PATTERN.source, 'g');
  */
 const ENV_CHAIN_TAIL = /(?:^|[\s;&|(='"])((?:env|npx)\s+(?:(?:-\S+|[\w=]+)\s+)*)$/;
 
-/** The guard's recognised root in its three anchor spellings (I5, textual). */
-const RECOGNISED_SANDBOX_PREFIXES: readonly string[] = Object.freeze([
-  `${SMOKE_SANDBOX_ROOT_DISPLAY}/${SMOKE_SANDBOX_DIR_PREFIX}`,
-  `${SMOKE_SANDBOX_ROOT_DISPLAY.replace(SMOKE_SANDBOX_HOME_ANCHOR, '${HOME}')}/${SMOKE_SANDBOX_DIR_PREFIX}`,
-  `${SMOKE_SANDBOX_ROOT_DISPLAY.replace(SMOKE_SANDBOX_HOME_ANCHOR, '~')}/${SMOKE_SANDBOX_DIR_PREFIX}`
-]);
-
-/** The temp roots the guard refuses: `/tmp`, `/var/tmp`, `/dev/shm`, `$TMPDIR`. */
+/**
+ * The temp roots the guard refuses: `/tmp`, `/var/tmp`, `/dev/shm`, `$TMPDIR`.
+ * (The guard's recognised ROOT lives in `smoke-sandbox.ts` since #364 — the old
+ * textual prefix list here could not see `cd` or `..`.)
+ */
 const TEMP_ROOT_PATTERN = /(?:^|\/)(?:tmp|var\/tmp|dev\/shm)(?:\/|$)|\$\{?TMPDIR\}?/;
 const SMOKE_TOKEN = 'smoke';
 const MKTEMP_TOKEN = /\bmktemp\b/;
@@ -572,12 +550,16 @@ const MKTEMP_DIR_FLAG = /(?:^|[\s)])-[a-zA-Z]*d[a-zA-Z]*(?=[\s)'`"]|$)|--tmpdir(
 /** An assignment whose value is path-shaped (issue #359, §2.3.3). */
 const PATH_SHAPED_VALUE = /^(?:\/|~|\$HOME|\$\{HOME\}|\$TMPDIR|\$\{TMPDIR\})/;
 const ASSIGNMENT_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+/** A statement whose entire text is `cd <target>` (issue #364). */
+const CD_STATEMENT = /^cd(?:\s+(.*))?$/;
 const QUOTE_CHARS = /["'`]/g;
 
 /** One directory-sandbox creation found on a check-body line. */
 interface SandboxCandidate {
   /** 0-based offset of the offending line within the fence body. */
   readonly offset: number;
+  /** 0-based index of the STATEMENT on that line that performs the creation. */
+  readonly statement: number;
   /** The created path as written (quotes stripped); the line itself for an implicit temp root. */
   readonly createdPath: string;
   /** True when `mktemp -d` names no root: the OS temp dir is implied (I3.3). */
@@ -757,8 +739,12 @@ function invokesCodeloopCli(line: string): boolean {
 }
 
 /** `mktemp -d …` creations: named `-p`/`--tmpdir` root, template, or bare (§2.3.3). */
-function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
-  const tokens = splitShellTokens(line);
+function mktempCandidates(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate[] {
+  const tokens = splitShellTokens(statement);
   const start = tokens.findIndex((token) => MKTEMP_TOKEN.test(token));
   if (start === -1) return [];
   const command = tokens.slice(start).join(' ');
@@ -790,10 +776,11 @@ function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
 
   if (root !== null) {
     if (templates.length === 0) {
-      return [{ offset, createdPath: root, implicitTemp: false }];
+      return [{ offset, statement: statementIndex, createdPath: root, implicitTemp: false }];
     }
     return templates.map((template) => ({
       offset,
+      statement: statementIndex,
       // A relative template lands under the named root; an absolute one is
       // itself the created path.
       createdPath: template.startsWith('/') ? template : `${root}/${template}`,
@@ -802,18 +789,34 @@ function mktempCandidates(line: string, offset: number): SandboxCandidate[] {
   }
   if (templates.length === 0) {
     // `mktemp -d` with no path at all: the implicit OS temp dir (I3.3).
-    return [{ offset, createdPath: line.trim(), implicitTemp: true }];
+    return [
+      {
+        offset,
+        statement: statementIndex,
+        createdPath: statement.trim(),
+        implicitTemp: true
+      }
+    ];
   }
   // A NAMED template is not the implicit OS temp dir (issue #362, F2.4): §2.3.4
   // documents the filter as temp-anchored OR `smoke`-named, so
   // `mktemp -d "$PWD/fixture-XXXXXX"` is an explicit workspace directory and
   // only `implicitTemp` (bare `mktemp -d`) is temp by construction.
-  return templates.map((template) => ({ offset, createdPath: template, implicitTemp: false }));
+  return templates.map((template) => ({
+    offset,
+    statement: statementIndex,
+    createdPath: template,
+    implicitTemp: false
+  }));
 }
 
-/** The first non-flag argument of a `mkdir [-p] …` line. */
-function mkdirCandidate(line: string, offset: number): SandboxCandidate | null {
-  const tokens = splitShellTokens(line);
+/** The first non-flag argument of a `mkdir [-p] …` statement. */
+function mkdirCandidate(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate | null {
+  const tokens = splitShellTokens(statement);
   const start = tokens.findIndex((token) => token === 'mkdir');
   if (start === -1) return null;
   for (let index = start + 1; index < tokens.length; index++) {
@@ -823,14 +826,23 @@ function mkdirCandidate(line: string, offset: number): SandboxCandidate | null {
       continue;
     }
     if (token.startsWith('-')) continue;
-    return { offset, createdPath: normalisePathText(token), implicitTemp: false };
+    return {
+      offset,
+      statement: statementIndex,
+      createdPath: normalisePathText(token),
+      implicitTemp: false
+    };
   }
   return null;
 }
 
 /** The explicit target directory of `git clone <url> <dir>` — never the 2-arg form. */
-function gitCloneCandidate(line: string, offset: number): SandboxCandidate | null {
-  const tokens = splitShellTokens(line);
+function gitCloneCandidate(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate | null {
+  const tokens = splitShellTokens(statement);
   const cloneIndex = tokens.findIndex(
     (token, index) => token === 'clone' && tokens[index - 1] === 'git'
   );
@@ -838,13 +850,20 @@ function gitCloneCandidate(line: string, offset: number): SandboxCandidate | nul
   const positional = tokens.slice(cloneIndex + 1).filter((token) => !token.startsWith('-'));
   const target = positional[1];
   if (target === undefined) return null;
-  return { offset, createdPath: normalisePathText(target), implicitTemp: false };
+  return {
+    offset,
+    statement: statementIndex,
+    createdPath: normalisePathText(target),
+    implicitTemp: false
+  };
 }
 
 /**
- * Splits a line at its top-level `;` separators (issue #362, F2.3), so a
- * multi-statement line yields one statement per assignment. Quote-aware: a `;`
- * inside a quoted value is data.
+ * Splits a line at its top-level `;` and `&&` separators (issue #362, F2.3;
+ * `&&` added by #364 so `cd "$SBX" && mkdir -p artifacts/x` yields two
+ * statements and the cwd can be tracked). Quote-aware: a separator inside a
+ * quoted value is data. `||` is deliberately NOT a separator — `cd A || cd B`
+ * is ambiguous, so the cwd stays unknown rather than guessed.
  */
 function splitStatements(line: string): string[] {
   const statements: string[] = [];
@@ -868,6 +887,12 @@ function splitStatements(line: string): string[] {
     if (char === ';') {
       statements.push(line.slice(start, index));
       start = index + 1;
+      continue;
+    }
+    if (char === '&' && line[index + 1] === '&') {
+      statements.push(line.slice(start, index));
+      index++;
+      start = index + 1;
     }
   }
 
@@ -876,24 +901,24 @@ function splitStatements(line: string): string[] {
 }
 
 /**
- * Every path-shaped assignment on a line (`SBX=/tmp/…`,
- * `SBX="$HOME/.cache/agyloop/smoke-x"`), one per `;`-separated statement.
+ * Every path-shaped assignment in a STATEMENT (`SBX=/tmp/…`,
+ * `SBX="$HOME/.cache/agyloop/smoke-x"`).
  *
  * The old single-candidate form read
  * `SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp …)"` as ONE
  * assignment whose value swallowed the rest of the line, so the trailing
  * `smoke` token still flagged a correct, runtime-accepted sandbox (#284).
  */
-function assignmentCandidates(line: string, offset: number): SandboxCandidate[] {
-  const candidates: SandboxCandidate[] = [];
-  for (const statement of splitStatements(line)) {
-    const match = ASSIGNMENT_PATTERN.exec(statement);
-    if (!match) continue;
-    const value = normalisePathText(match[2].trim());
-    if (!PATH_SHAPED_VALUE.test(value)) continue;
-    candidates.push({ offset, createdPath: value, implicitTemp: false });
-  }
-  return candidates;
+function assignmentCandidates(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate[] {
+  const match = ASSIGNMENT_PATTERN.exec(statement);
+  if (!match) return [];
+  const value = normalisePathText(match[2].trim());
+  if (!PATH_SHAPED_VALUE.test(value)) return [];
+  return [{ offset, statement: statementIndex, createdPath: value, implicitTemp: false }];
 }
 
 /**
@@ -922,6 +947,78 @@ function assignmentsByLine(
   return byLine;
 }
 
+/**
+ * The `cd <target>` a statement performs, if any (issue #364).
+ *
+ * @returns `undefined` when the statement is not a `cd`; `null` when the cwd
+ *          becomes UNKNOWN (bare `cd`, `cd -`, a subshell/pipeline/backtick
+ *          `cd`, or an unresolvable variable) — never guessed; otherwise the
+ *          resolved target (still possibly relative).
+ */
+function cdTarget(
+  statement: string,
+  assignments: ReadonlyMap<string, string>
+): string | null | undefined {
+  const trimmed = statement.trim();
+  const match = CD_STATEMENT.exec(trimmed);
+  if (!match) return undefined;
+
+  // A subshell, backtick, or pipeline `cd` never changes the PARENT's cwd.
+  if (trimmed.includes('$(') || trimmed.includes('`') || trimmed.includes('(') || trimmed.includes('|')) {
+    return null;
+  }
+
+  const rawTarget = (match[1] ?? '').trim();
+  if (rawTarget.length === 0) return null;
+  // `cd -` and `$OLDPWD` depend on shell history the rule cannot see.
+  if (rawTarget === '-' || rawTarget === '$OLDPWD' || rawTarget === '${OLDPWD}' || rawTarget === '~-') {
+    return null;
+  }
+
+  const resolved = resolveVariables(normalisePathText(rawTarget), assignments);
+  if (resolved.trim().length === 0) return null;
+  // A variable the rule could not resolve (other than the documented `$HOME`
+  // anchor) leaves the cwd unknown rather than guessed.
+  if (/\$[A-Za-z_{]/.test(resolved.replace(/\$\{HOME\}|\$HOME/g, ''))) return null;
+  return resolved;
+}
+
+/**
+ * The tracked working directory IN EFFECT BEFORE each statement (issue #364).
+ *
+ * Keyed `${lineOffset}:${statementIndex}`. Walked once, in statement order: a
+ * resolvable `cd` moves the cwd only for the statements that FOLLOW it, so
+ * `cd "$SBX" && mkdir -p artifacts/x` judges the mkdir against the sandbox
+ * while `mkdir -p artifacts/x && cd "$SBX"` still judges the mkdir against the
+ * cwd before the cd (unknown, hence flagged — the mkdir really did run outside
+ * the sandbox). The map is per CHECK (one `bodyLines` array), so a `cd` in
+ * check 1 can never leak into check 2. The cwd starts UNKNOWN.
+ */
+function cwdByStatement(
+  bodyLines: readonly string[],
+  assignments: ReadonlyMap<number, ReadonlyMap<string, string>>
+): ReadonlyMap<string, string | null> {
+  const byStatement = new Map<string, string | null>();
+  let cwd: string | null = null;
+
+  bodyLines.forEach((line, offset) => {
+    if (isCommentLine(line)) return;
+    splitStatements(line).forEach((statement, index) => {
+      byStatement.set(statementKey(offset, index), cwd);
+      const target = cdTarget(statement, assignments.get(offset) ?? new Map<string, string>());
+      if (target === undefined) return;
+      cwd = target === null ? null : resolvePathAgainstCwd(cwd, target);
+    });
+  });
+
+  return byStatement;
+}
+
+/** The key of one statement in a check body: `<line offset>:<statement index>`. */
+function statementKey(offset: number, statement: number): string {
+  return `${offset}:${statement}`;
+}
+
 /** Expands `$NAME`/`${NAME}` from the assignments visible at that line. */
 function resolveVariables(text: string, assignments: ReadonlyMap<string, string>): string {
   let resolved = text;
@@ -946,22 +1043,21 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
   const candidates: SandboxCandidate[] = [];
   bodyLines.forEach((line, offset) => {
     if (isCommentLine(line)) return;
-    candidates.push(...mktempCandidates(line, offset));
-    for (const candidate of [
-      mkdirCandidate(line, offset),
-      gitCloneCandidate(line, offset)
-    ]) {
-      if (candidate !== null) candidates.push(candidate);
-    }
-    candidates.push(...assignmentCandidates(line, offset));
+    // Statement granularity (issue #364 review): the cwd a creation is judged
+    // against is the one in effect BEFORE its own statement, so a trailing
+    // `&& cd "$SBX"` can no longer launder a mkdir that ran elsewhere.
+    splitStatements(line).forEach((statement, statementIndex) => {
+      candidates.push(...mktempCandidates(statement, offset, statementIndex));
+      for (const candidate of [
+        mkdirCandidate(statement, offset, statementIndex),
+        gitCloneCandidate(statement, offset, statementIndex)
+      ]) {
+        if (candidate !== null) candidates.push(candidate);
+      }
+      candidates.push(...assignmentCandidates(statement, offset, statementIndex));
+    });
   });
   return candidates;
-}
-
-/** True when the path is textually the guard's own sandbox (I5, no I/O). */
-function isRecognisedSandboxPath(text: string): boolean {
-  const path = normalisePathText(text);
-  return RECOGNISED_SANDBOX_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
 function collectFindings(
@@ -1021,17 +1117,27 @@ function collectFindings(
     // BEFORE both tests, so `mktemp -d "$SANDBOX/smoke-…"` (the #284 shape) is
     // recognised — while a variable that resolves onto `/tmp` is still
     // flagged, because resolution cannot launder a temp root.
+    //
+    // Issue #364: the cwd is tracked per check, so a RELATIVE path under a
+    // sandbox `cd` is recognised (#354 shape) and a `..`-escaped path that
+    // resolves outside the sandbox is refused. A path no `cd` can anchor keeps
+    // the token heuristic (SP15: a bare relative `artifacts/smoke359` stays
+    // flagged).
     const assignments = assignmentsByLine(bodyLines);
+    const cwds = cwdByStatement(bodyLines, assignments);
     const flaggedOffsets = new Set<number>();
     for (const candidate of sandboxCandidates(bodyLines)) {
       if (flaggedOffsets.has(candidate.offset)) continue;
-      const path = resolveVariables(
+      const resolved = resolveVariables(
         candidate.createdPath,
         assignments.get(candidate.offset) ?? new Map<string, string>()
       );
-      if (isRecognisedSandboxPath(path)) continue;
+      const cwdBefore = cwds.get(statementKey(candidate.offset, candidate.statement)) ?? null;
+      const absolute = resolvePathAgainstCwd(cwdBefore, resolved);
+      if (absolute !== null && isWithinSmokeSandbox(absolute)) continue;
+      const display = absolute ?? resolved;
       const offending =
-        candidate.implicitTemp || TEMP_ROOT_PATTERN.test(path) || path.includes(SMOKE_TOKEN);
+        candidate.implicitTemp || TEMP_ROOT_PATTERN.test(display) || display.includes(SMOKE_TOKEN);
       if (!offending) continue;
       flaggedOffsets.add(candidate.offset);
       // The required path rides in `excerpt` AFTER truncation, so the 160-char

@@ -38,7 +38,10 @@ import {
   DiscoveryReport,
   isPlanContentSubstantive,
   isDiscoveryPlanDocument,
-  deriveStageDuration
+  deriveStageDuration,
+  planFolderName,
+  planArtifactFileName,
+  assertPlanNameWithinLimits
 } from '../domain';
 import {
   StateRepository,
@@ -114,6 +117,10 @@ export interface StartPlanningDryRunPreview {
   readonly action: 'scaffold' | 'reuse' | 'supplied';
   /** The directory (or supplied file) the real run would use. */
   readonly dir?: string;
+  /** The bounded folder the real run would create (#364, AC-7). */
+  readonly folderName?: string;
+  /** The bounded artifact filename the real run would create (#364, AC-7). */
+  readonly fileName?: string;
   /** The resolved plan title (issue title / --title), never a placeholder guess. */
   readonly title: string;
   readonly type: string;
@@ -498,10 +505,36 @@ export class StartPlanningUseCase {
           issue: activeIssue,
           planDir: params.planDir ?? checkpointPlanDir
         });
-        dryRunPreview =
-          resolved && resolved.planDir
-            ? { action: 'reuse', dir: resolved.planDir, title: planTitle, type: planType }
-            : { action: 'scaffold', title: planTitle, type: planType };
+        if (resolved && resolved.planDir) {
+          dryRunPreview = {
+            action: 'reuse',
+            dir: resolved.planDir,
+            title: planTitle,
+            type: planType
+          };
+        } else {
+          // Issue #364 (AC-7): derive and validate the SAME bounded names the
+          // real run derives, so a dry run can no longer certify a scaffold the
+          // real run would refuse. `--type auto` is resolved by the generator's
+          // own predicate, so the previewed artifact prefix matches the file the
+          // real run writes (review minor). A port without the optional hook
+          // falls back to the type `scaffoldPlanDirectory` defaults to.
+          const scaffoldType =
+            planType === 'discovery' || planType === 'implementation'
+              ? planType
+              : this.planGenerator.detectPlanType?.(planTitle, planLabels) ?? 'implementation';
+          const folderName = planFolderName(activeIssue, planTitle);
+          const fileName = planArtifactFileName(scaffoldType, planTitle);
+          assertPlanNameWithinLimits({ folderName, fileName, title: planTitle });
+          dryRunPreview = {
+            action: 'scaffold',
+            dir: params.planDir ?? checkpointPlanDir ?? undefined,
+            folderName,
+            fileName,
+            title: planTitle,
+            type: planType
+          };
+        }
       }
     }
 

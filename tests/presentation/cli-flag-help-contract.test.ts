@@ -304,3 +304,15 @@ describe('AC-2.5: the capability table, the help line and the skill agree', () =
     );
   });
 });
+
+describe('--title help (#364 AC-6)', () => {
+  test('HELP-364.1: --title documents the derived, bounded folder', () => {
+    const help = captureHelp();
+    const line = help
+      .split('\n')
+      .find((candidate) => candidate.includes('--title'));
+    assert.ok(line, 'the help must document --title');
+    assert.match(line!, /derived/);
+    assert.match(line!, /(bounded|truncat)/);
+  });
+});

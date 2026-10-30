@@ -1,0 +1,181 @@
+{
+  "generatedAt": "2026-10-30",
+  "source": "artifacts/plans/<issue>-*/implementation_plan.md (gitignored; extracted at #364)",
+  "entries": [
+    {
+      "issue": "242",
+      "file": "242.md",
+      "headingLine": 7,
+      "checks": 6,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "248",
+      "file": "248.md",
+      "headingLine": 7,
+      "checks": 2,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "283",
+      "file": "283.md",
+      "headingLine": 7,
+      "checks": 1,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "284",
+      "file": "284.md",
+      "headingLine": 7,
+      "checks": 12,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "297",
+      "file": "297.md",
+      "headingLine": 7,
+      "checks": 7,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "298",
+      "file": "298.md",
+      "headingLine": 7,
+      "checks": 4,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "301",
+      "file": "301.md",
+      "headingLine": 7,
+      "checks": 9,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "306",
+      "file": "306.md",
+      "headingLine": 7,
+      "checks": 5,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "311",
+      "file": "311.md",
+      "headingLine": 7,
+      "checks": 4,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "313",
+      "file": "313.md",
+      "headingLine": 7,
+      "checks": 5,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "314",
+      "file": "314.md",
+      "headingLine": 7,
+      "checks": 5,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "315",
+      "file": "315.md",
+      "headingLine": 7,
+      "checks": 15,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "320",
+      "file": "320.md",
+      "headingLine": 7,
+      "checks": 4,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "327",
+      "file": "327.md",
+      "headingLine": 7,
+      "checks": 5,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "328",
+      "file": "328.md",
+      "headingLine": 7,
+      "checks": 3,
+      "sandboxFindings": 3
+    },
+    {
+      "issue": "336",
+      "file": "336.md",
+      "headingLine": 7,
+      "checks": 9,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "337",
+      "file": "337.md",
+      "headingLine": 7,
+      "checks": 6,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "338",
+      "file": "338.md",
+      "headingLine": 7,
+      "checks": 4,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "339",
+      "file": "339.md",
+      "headingLine": 7,
+      "checks": 13,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "349",
+      "file": "349.md",
+      "headingLine": 7,
+      "checks": 7,
+      "sandboxFindings": 4
+    },
+    {
+      "issue": "351",
+      "file": "351.md",
+      "headingLine": 7,
+      "checks": 4,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "352",
+      "file": "352.md",
+      "headingLine": 7,
+      "checks": 3,
+      "sandboxFindings": 2
+    },
+    {
+      "issue": "356",
+      "file": "356.md",
+      "headingLine": 7,
+      "checks": 5,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "359",
+      "file": "359.md",
+      "headingLine": 7,
+      "checks": 3,
+      "sandboxFindings": 0
+    },
+    {
+      "issue": "362",
+      "file": "362.md",
+      "headingLine": 7,
+      "checks": 4,
+      "sandboxFindings": 0
+    }
+  ]
+}

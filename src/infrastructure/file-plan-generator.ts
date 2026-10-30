@@ -43,7 +43,14 @@ import {
   normalizePlanForDigest,
   planSlug,
   planFolderName,
-  planDirectoryPrefix
+  planDirectoryPrefix,
+  planArtifactFileName,
+  planByteLength,
+  sanitizePlanTitle,
+  assertPlanNameWithinLimits,
+  PLAN_DIR_NAME_MAX_BYTES,
+  VALIDATION_FIELD_PLAN_TITLE,
+  ValidationError
 } from '../domain';
 
 export const LEGACY_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
@@ -216,6 +223,20 @@ function setSummaryMetric(content: string, label: string, value: string | null):
   return `${content.trimEnd()}\n${rendered}\n`;
 }
 
+/** True when a filesystem call rejected a name for exceeding the OS limit. */
+function isNameTooLongError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'ENAMETOOLONG'
+  );
+}
+
+/** A human-readable one-line description of an unknown thrown value. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class FilePlanGenerator implements PlanGeneratorPort {
   private readonly defaultTemplatesDir: string;
 
@@ -229,12 +250,15 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     return planSlug(text);
   }
 
+  /**
+   * The filesystem-safe title body (issue #364).
+   *
+   * Delegates to the domain so the sanitisation grammar is shared with the
+   * derived folder; the FILENAME authority is `planArtifactFileName`, which
+   * additionally bounds the result.
+   */
   public sanitizeFilename(title: string): string {
-    if (!title || typeof title !== 'string') return 'untitled';
-    return title
-      .replace(/[<>:"/\\|?*]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return sanitizePlanTitle(title);
   }
 
   public ensurePlanDirectory(projectRoot: string = process.cwd()): string {
@@ -357,9 +381,24 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     };
 
     const content = this.renderTemplate(rawTemplate, mergedVariables);
-    const safeTitle = this.sanitizeFilename(title);
-    const prefix = isDiscovery ? '[Discovery] - ' : '[Implementation] - ';
-    const planFileName = `${prefix}${safeTitle}.md`;
+    // Issue #364: the filename is DERIVED (bounded), never merely sanitised, so
+    // a long/CJK title cannot die on `open … ENAMETOOLONG` after the folder was
+    // already created. Both write legs share this one function.
+    const planFileName = planArtifactFileName(
+      isDiscovery ? 'discovery' : 'implementation',
+      title
+    );
+    // Fail BEFORE the write if a future caller bypasses the bound. The FOLDER
+    // budget is checked only when THIS call derived the component (#364
+    // review): `targetDir` is often an ADOPTED pre-#364 directory whose name is
+    // 154–211 bytes, and asserting on `path.basename(targetDir)` turned every
+    // re-entry into a bogus "pass a shorter --title". `scaffoldPlanDirectory`
+    // asserts the canonical name before it resolves a target.
+    assertPlanNameWithinLimits({
+      folderName: options.folderName ?? null,
+      fileName: planFileName,
+      title
+    });
     const planPath =
       options.planPath && String(options.planPath).length > 0
         ? options.planPath
@@ -567,7 +606,21 @@ export class FilePlanGenerator implements PlanGeneratorPort {
 
     const issueNum = params.issue ? String(params.issue) : 'adhoc';
     const rawTitle = params.title || 'Task Plan';
+
+    // Issue #364 (N5): derive and VALIDATE every name BEFORE the first write.
+    // `detectPlanType` reads only the title + labels, so it can move above the
+    // target resolution; the type decides which filename prefix is budgeted.
+    const type =
+      params.type === 'discovery' || params.type === 'implementation'
+        ? params.type
+        : this.detectPlanType(rawTitle, params.labels || []);
     const canonicalFolderName = planFolderName(params.issue, rawTitle);
+    const primaryFileName = planArtifactFileName(type, rawTitle);
+    assertPlanNameWithinLimits({
+      folderName: canonicalFolderName,
+      fileName: primaryFileName,
+      title: rawTitle
+    });
     const canonicalDir = path.join(plansDir, canonicalFolderName);
 
     const ranked = this.rankCandidateDirectories(
@@ -607,66 +660,92 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     }
 
     const existedBefore = fs.existsSync(targetDir);
-    if (!existedBefore) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
+    try {
+      if (!existedBefore) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
 
-    const type =
-      params.type === 'discovery' || params.type === 'implementation'
-        ? params.type
-        : this.detectPlanType(rawTitle, params.labels || []);
+      // §2.4 existing-primary reuse: never write a SECOND primary artifact
+      // beside one that already exists (a re-entry with a different title would
+      // otherwise add an empty `[Discovery] - <new title>.md` that can sort first).
+      let primaryPath: string;
+      if (type === 'discovery') {
+        const artifacts = this.listDiscoveryArtifacts(targetDir);
+        const populatedArtifact = artifacts.find((artifact) => {
+          try {
+            return DiscoveryReport.fromMarkdown(fs.readFileSync(artifact, 'utf8')).isPopulated;
+          } catch {
+            return false;
+          }
+        });
+        primaryPath =
+          populatedArtifact ?? artifacts[0] ?? path.join(targetDir, primaryFileName);
+      } else {
+        const artifacts = this.listImplementationArtifacts(targetDir);
+        primaryPath = artifacts[0] ?? path.join(targetDir, primaryFileName);
+      }
 
-    // §2.4 existing-primary reuse: never write a SECOND primary artifact
-    // beside one that already exists (a re-entry with a different title would
-    // otherwise add an empty `[Discovery] - <new title>.md` that can sort first).
-    let primaryPath: string;
-    if (type === 'discovery') {
-      const artifacts = this.listDiscoveryArtifacts(targetDir);
-      const populatedArtifact = artifacts.find((artifact) => {
-        try {
-          return DiscoveryReport.fromMarkdown(fs.readFileSync(artifact, 'utf8')).isPopulated;
-        } catch {
-          return false;
-        }
+      const planResult = this.generatePlan({
+        targetDir,
+        folderName: canonicalFolderName,
+        type,
+        title: rawTitle,
+        issueNumber: issueNum,
+        planPath: primaryPath,
+        templatesDir: params.templatesDir
       });
-      primaryPath =
-        populatedArtifact ??
-        artifacts[0] ??
-        path.join(targetDir, `[Discovery] - ${this.sanitizeFilename(rawTitle)}.md`);
-    } else {
-      const artifacts = this.listImplementationArtifacts(targetDir);
-      primaryPath =
-        artifacts[0] ??
-        path.join(targetDir, `[Implementation] - ${this.sanitizeFilename(rawTitle)}.md`);
+
+      const summaryResult = this.generateSummaryLog({
+        targetDir,
+        projectName: path.basename(projectRoot),
+        issueNumber: issueNum,
+        templatesDir: params.templatesDir
+      });
+
+      return {
+        planDir: targetDir,
+        folderName: path.basename(targetDir),
+        type,
+        planPath: planResult.planPath,
+        mirrorPath: planResult.mirrorPath || path.join(targetDir, 'implementation_plan.md'),
+        summaryPath: summaryResult.summaryPath,
+        directoryCreated: !existedBefore,
+        filesCreated: planResult.created || planResult.mirrorCreated || summaryResult.created,
+        adoptedExisting: existedBefore
+      };
+    } catch (error) {
+      // AC-4: a failed write must not leave a half-scaffolded folder behind for
+      // a later run to adopt. The directory did NOT exist before this call, so
+      // everything inside it was created here — removing it cannot destroy
+      // pre-existing work. A directory that existed before is adopted, and is
+      // NEVER removed (R6).
+      if (!existedBefore) {
+        try {
+          fs.rmSync(targetDir, { recursive: true, force: true });
+        } catch {
+          // Best effort: leave the evidence if the filesystem refuses.
+        }
+      }
+
+      if (isNameTooLongError(error)) {
+        // AC-5: never surface a bare `ENAMETOOLONG`. If a name still overflows
+        // a budget (only reachable if a future caller bypasses the bound), the
+        // validator produces the precise message; otherwise the filesystem
+        // refused a within-budget name, which is reported with the same remedy.
+        assertPlanNameWithinLimits({
+          folderName: canonicalFolderName,
+          fileName: primaryFileName,
+          title: rawTitle
+        });
+        throw new ValidationError(
+          VALIDATION_FIELD_PLAN_TITLE,
+          rawTitle,
+          `the derived plan folder "${canonicalFolderName}" (${planByteLength(canonicalFolderName)} bytes) and file "${primaryFileName}" (${planByteLength(primaryFileName)} bytes) are within the ${PLAN_DIR_NAME_MAX_BYTES}-byte limit, but the filesystem refused the name (${errorMessage(error)}); pass a shorter --title, or choose the folder with --plan-dir`
+        );
+      }
+
+      throw error;
     }
-
-    const planResult = this.generatePlan({
-      targetDir,
-      type,
-      title: rawTitle,
-      issueNumber: issueNum,
-      planPath: primaryPath,
-      templatesDir: params.templatesDir
-    });
-
-    const summaryResult = this.generateSummaryLog({
-      targetDir,
-      projectName: path.basename(projectRoot),
-      issueNumber: issueNum,
-      templatesDir: params.templatesDir
-    });
-
-    return {
-      planDir: targetDir,
-      folderName: path.basename(targetDir),
-      type,
-      planPath: planResult.planPath,
-      mirrorPath: planResult.mirrorPath || path.join(targetDir, 'implementation_plan.md'),
-      summaryPath: summaryResult.summaryPath,
-      directoryCreated: !existedBefore,
-      filesCreated: planResult.created || planResult.mirrorCreated || summaryResult.created,
-      adoptedExisting: existedBefore
-    };
   }
 
   public updateSummaryLog(summaryFilePath: string, updateData: SummaryUpdateData): boolean {

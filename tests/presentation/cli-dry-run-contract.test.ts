@@ -571,3 +571,66 @@ describe('plan --dry-run (#339 AC-1.2, T2.5)', () => {
     assert.strictEqual(after, before, 'a dry run must write NOTHING');
   });
 });
+
+describe('plan --dry-run derives bounded names (#364 AC-7)', () => {
+  test('CLI-DRY-364.1: a 372-char title previews the derived folder and writes nothing', async () => {
+    const { planFolderName } = require('../../dist/domain');
+    const title = 'q'.repeat(372);
+    let artifactsExist = true;
+
+    const result = await runCliInSandbox(
+      ['plan', '--dry-run', '--title', title, '--type', 'implementation'],
+      undefined,
+      (dir) => {
+        artifactsExist = fs.existsSync(path.join(dir, 'artifacts'));
+      }
+    );
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.match(result.stdout, /\[DRY RUN\] Would scaffold/);
+    assert.ok(
+      result.stdout.includes(planFolderName(null, title)),
+      `the preview must name the derived folder:\n${result.stdout}`
+    );
+    assert.strictEqual(artifactsExist, false, 'a dry run must create no artifacts tree');
+  });
+
+  test('CLI-DRY-364.2: a legacy over-budget folder is reused by the dry run and adopted by the real run', async () => {
+    const issue = 36402;
+    // 184 bytes: every pre-#364 plan folder is 154-211 bytes (the live #364
+    // folder is 183 B, #359 is 211 B), so re-entry must adopt, never re-derive.
+    const legacy = `364-${'legacy-folder-'.repeat(13)}`.slice(0, 184);
+    assert.ok(Buffer.byteLength(legacy) > 143);
+
+    const seed = (dir: string): void => {
+      initGitWorkspace(dir);
+      const planDir = path.join(dir, 'artifacts', 'plans', legacy);
+      fs.mkdirSync(planDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(planDir, 'implementation_plan.md'),
+        '# [Implementation] - legacy folder\n\n## 3. Implementation Steps\n- [ ] Step 1: hold the line\n',
+        'utf8'
+      );
+      seedTask(dir, issue, { currentStage: 'PLAN', planDir });
+    };
+
+    const dry = await runCliInSandbox(
+      ['plan', '--issue', String(issue), '--title', 'legacy folder', '--dry-run'],
+      seed
+    );
+    assert.strictEqual(dry.code, 0, dry.stderr);
+    assert.match(dry.stdout, /Would reuse existing plan directory/, dry.stdout);
+    assert.ok(!/Would scaffold/.test(dry.stdout), dry.stdout);
+
+    let planDirs: string[] = [];
+    const real = await runCliInSandbox(
+      ['plan', '--issue', String(issue), '--title', 'legacy folder'],
+      seed,
+      (dir) => {
+        planDirs = fs.readdirSync(path.join(dir, 'artifacts', 'plans'));
+      }
+    );
+    assert.strictEqual(real.code, 0, real.stderr);
+    assert.deepStrictEqual(planDirs, [legacy], 'the real run adopts the legacy folder');
+  });
+});

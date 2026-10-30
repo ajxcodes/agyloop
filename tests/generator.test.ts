@@ -59,6 +59,29 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.strictEqual(generator.sanitizeFilename(''), 'untitled');
       assert.strictEqual(generator.sanitizeFilename(null as unknown as string), 'untitled');
     });
+
+    test('GEN-364.1: sanitizeFilename delegates to the domain sanitizePlanTitle (#364)', () => {
+      // Issue #364 moved the body into `plan-directory.ts` so the folder and
+      // the artifact filename share ONE grammar. The exact strings above stay
+      // byte-identical; this pins the delegation itself.
+      const { sanitizePlanTitle, planArtifactFileName, planByteLength } = require('../dist/domain');
+      for (const title of [
+        'Feature: Phase 2 <Plan> *? "quoted" | test',
+        'clean-title',
+        '',
+        'path/to/something',
+        "The base's own new commits"
+      ]) {
+        assert.strictEqual(generator.sanitizeFilename(title), sanitizePlanTitle(title), title);
+      }
+
+      // The FILENAME authority is the bounded `planArtifactFileName` (#364).
+      assert.strictEqual(
+        planArtifactFileName('discovery', 'A short title'),
+        '[Discovery] - A short title.md'
+      );
+      assert.ok(planByteLength(planArtifactFileName('implementation', 'x'.repeat(400))) <= 143);
+    });
   });
 
   describe('ensurePlanDirectory() & .gitignore Enforcement', () => {

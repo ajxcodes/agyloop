@@ -41,6 +41,8 @@ export * from './value-objects/critique-version';
 export * from './value-objects/tool-vocabulary';
 export * from './value-objects/shell-quoting';
 export * from './value-objects/quality-gate-targets';
+export * from './value-objects/smoke-heading';
+export * from './value-objects/smoke-sandbox';
 export * from './value-objects/smoke-protocol';
 export * from './value-objects/plan-digest';
 export * from './value-objects/gate-command-plan';

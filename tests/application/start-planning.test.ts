@@ -1566,3 +1566,148 @@ describe('Discovery summary row never claims a COMPLETED RCA that never ran (#33
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #364 (AC-7): the dry run derives and validates the SAME bounded names
+// the real run derives, so a pre-flight check can no longer certify a scaffold
+// the real run refuses.
+// ---------------------------------------------------------------------------
+
+describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const {
+    planFolderName,
+    planArtifactFileName,
+    planByteLength,
+    PLAN_DIR_NAME_MAX_BYTES
+  } = require('../../dist/domain');
+  const { FilePlanGenerator } = require('../../dist/infrastructure/file-plan-generator');
+
+  const LONG = 'z'.repeat(372);
+
+  test('DRY-364.1: the scaffold preview carries the derived bounded names', async () => {
+    const stateRepo = new MockStateRepository();
+    const configRepo = new MockConfigRepository();
+    const planGenerator = new MockPlanGenerator();
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      new MockGitHubGateway(),
+      configRepo,
+      planGenerator
+    );
+
+    const result = await useCase.execute({
+      issue: 364,
+      title: LONG,
+      type: 'implementation',
+      dryRun: true
+    });
+
+    const preview = result.dryRunPreview;
+    assert.ok(preview, 'a dry run must produce a preview');
+    assert.strictEqual(preview!.action, 'scaffold');
+    assert.strictEqual(preview!.folderName, planFolderName(364, LONG));
+    assert.ok(planByteLength(preview!.folderName!) <= PLAN_DIR_NAME_MAX_BYTES);
+    assert.strictEqual(preview!.fileName, planArtifactFileName('implementation', LONG));
+    assert.strictEqual(planGenerator.scaffoldedParams, null, 'a dry run must not scaffold');
+  });
+
+  test('DRY-364.2: preview and real run name the same folder', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-dry-364-'));
+    const realGenerator = new FilePlanGenerator();
+    try {
+      const dry = await new StartPlanningUseCase(
+        new MockStateRepository(),
+        new MockGitHubGateway(),
+        new MockConfigRepository(),
+        realGenerator
+      ).execute({
+        issue: 364,
+        title: LONG,
+        type: 'implementation',
+        dryRun: true,
+        workspaceDir: workspace
+      });
+      assert.strictEqual(dry.dryRunPreview?.action, 'scaffold');
+
+      const real = await new StartPlanningUseCase(
+        new MockStateRepository(),
+        new MockGitHubGateway(),
+        new MockConfigRepository(),
+        realGenerator
+      ).execute({
+        issue: 364,
+        title: LONG,
+        type: 'implementation',
+        workspaceDir: workspace
+      });
+
+      assert.ok(real.scaffoldInfo, 'the real run must scaffold');
+      assert.strictEqual(
+        path.basename(real.scaffoldInfo!.planDir),
+        dry.dryRunPreview!.folderName,
+        'the preview and the real run must derive the same folder'
+      );
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('DRY-364.3: a legacy over-budget folder is previewed and adopted alike', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-dry-legacy-364-'));
+    const plansDir = path.join(workspace, 'artifacts', 'plans');
+    // 184 bytes: the shape of every plan folder written before #364 (the live
+    // #364 folder is 183 B and #359 is 211 B). The workspace is a temp
+    // sandbox — the main checkout is never touched.
+    const legacy = `364-${'legacy-folder-'.repeat(13)}`.slice(0, 184);
+    fs.mkdirSync(path.join(plansDir, legacy), { recursive: true });
+    fs.writeFileSync(
+      path.join(plansDir, legacy, 'implementation_plan.md'),
+      '# Legacy Plan\n\n- **Step 1:** Ship the existing spec.\n',
+      'utf8'
+    );
+
+    const realGenerator = new FilePlanGenerator();
+    try {
+      const dry = await new StartPlanningUseCase(
+        new MockStateRepository(),
+        new MockGitHubGateway(),
+        new MockConfigRepository(),
+        realGenerator
+      ).execute({
+        issue: 364,
+        title: 'Phase 6 a brand new title',
+        type: 'implementation',
+        dryRun: true,
+        workspaceDir: workspace
+      });
+
+      assert.strictEqual(dry.dryRunPreview?.action, 'reuse');
+      assert.strictEqual(dry.dryRunPreview?.dir, path.join(plansDir, legacy));
+
+      const real = await new StartPlanningUseCase(
+        new MockStateRepository(),
+        new MockGitHubGateway(),
+        new MockConfigRepository(),
+        realGenerator
+      ).execute({
+        issue: 364,
+        title: 'Phase 6 a brand new title',
+        type: 'implementation',
+        workspaceDir: workspace
+      });
+
+      assert.strictEqual(
+        real.scaffoldInfo?.planDir,
+        dry.dryRunPreview?.dir,
+        'dry run and real run must agree on the adopted directory'
+      );
+      assert.strictEqual(path.basename(real.scaffoldInfo!.planDir), legacy);
+      assert.deepStrictEqual(fs.readdirSync(plansDir), [legacy], 'no second folder');
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});

@@ -620,7 +620,7 @@ Operational Flags:
       --quarantine   Quarantine uncommitted changes to a dedicated branch during abort
       --no-quarantine  Abort without stashing worktrees (alias: --keep-worktrees)
       --issue <num>  Associate execution with GitHub issue number (digits only; e.g. --issue 250)
-      --title <text> Specify plan title for persistent artifact scaffolding
+      --title <text>  Specify the plan title; the artifact folder and filename are derived from it and bounded (long titles are truncated and hashed)
       --type <type>  Specify plan type (discovery | implementation | auto)
       --config <path> Path to custom configuration file (.agyloop.json)
       --model <name> Override agent runner model (e.g. ornith:9b-128k)
@@ -3671,8 +3671,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           } else if (preview?.action === 'reuse') {
             console.log(`\n[DRY RUN] Would reuse existing plan directory: ${preview.dir}`);
           } else if (preview?.action === 'scaffold') {
+            // Issue #364 (AC-7): name the SAME bounded folder and file the real
+            // run would create, so the pre-flight check cannot report success
+            // for a scaffold the real run refuses.
+            const scaffoldTarget =
+              preview.dir ??
+              `artifacts/plans/${preview.folderName ? `${preview.folderName}/` : ''}`;
+            const createdFile = preview.fileName ? ` and create ${preview.fileName}` : '';
             console.log(
-              `\n[DRY RUN] Would scaffold artifacts/plans/ for: "${preview.title}" (type: ${preview.type})`
+              `\n[DRY RUN] Would scaffold ${scaffoldTarget}${createdFile} for: "${preview.title}" (type: ${preview.type})`
             );
           }
         } else {
