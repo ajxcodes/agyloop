@@ -41,7 +41,9 @@ import {
   GateTargetFinding,
   SmokeProtocol,
   isLintCommand,
+  lintGateTargetRejections,
   lintQualityGateTargets,
+  lintWorkflowGateComposition,
   parseQualityGateTargets
 } from '../domain';
 import {
@@ -92,7 +94,6 @@ export async function resolveGateVerification(
   const planPath = resolvePlanPath(params);
   const planContent = readPlanContent(params.planGenerator, planPath);
   const planTargets = parseQualityGateTargets(planContent);
-  const targetFindings = lintQualityGateTargets(planTargets.targets);
   const smoke = SmokeProtocol.fromPlan(planContent);
   const integrity = resolveIntegrity(
     params.planGenerator,
@@ -100,6 +101,14 @@ export async function resolveGateVerification(
     params.approvedPlanDigest ?? null
   );
   const commandPlan = await resolveCommandPlan(params, planTargets, planPath);
+  // #369: every declared target is either executed or refused — a committed-tree
+  // assertion, an entry the parser could not execute, or a workflow change the
+  // chosen list cannot lint. All three fail the gate closed before it runs.
+  const targetFindings: readonly GateTargetFinding[] = [
+    ...lintQualityGateTargets(planTargets.targets),
+    ...lintGateTargetRejections(planTargets),
+    ...lintWorkflowGateComposition(commandPlan)
+  ];
 
   return {
     planPath,

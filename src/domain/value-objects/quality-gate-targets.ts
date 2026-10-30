@@ -1,24 +1,33 @@
 /**
- * agyloop - QualityGateTargets parser (issue #298)
+ * agyloop - QualityGateTargets parser (issue #298, revised by #369)
  *
  * Pure parser for the approved plan's verification section. It extracts the
  * commands the gate MUST execute, in plan order, and returns everything that
  * looked like verification but was not executable as `unparsed` evidence — an
  * unparsed line is NEVER executed.
  *
- * Static rule (issue #348): `committed-tree-assertion` — the gate runs in the
- * task worktree against the UNCOMMITTED change, before the commit gate, so a
- * command that compares the worktree or the index to HEAD (`git diff`, `git
- * status`) can never pass there. Such a target is REFUSED at plan approval,
- * never silently filtered.
+ * Static rule (issue #348, narrowed by #369): `committed-tree-assertion` — the
+ * gate runs in the task worktree against the UNCOMMITTED change, before the
+ * commit gate, so a command that ASSERTS the worktree or the index matches HEAD
+ * (`git diff --exit-code`, `git diff --quiet`) can never pass there. Listing
+ * forms (`git diff --stat`, `git status --porcelain`) exit 0 and are allowed.
+ * Such a target is REFUSED at plan approval, never silently filtered.
+ *
+ * A declared entry the parser cannot execute is a typed `rejection` (issue
+ * #369): it is refused at approval, never silently dropped into auto-detect.
  *
  * No I/O, no external imports: regex and string operations only.
  */
 
 import {
   GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION,
+  GATE_TARGET_RULE_UNEXECUTABLE_TARGET,
+  GATE_TARGET_RULE_WORKFLOW_LINT_MISSING,
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+  MAX_SHELL_WRAPPER_DEPTH,
   MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION,
+  MSG_GATE_TARGET_UNEXECUTABLE_ENTRY,
+  MSG_GATE_TARGET_WORKFLOW_LINT_MISSING,
   PLAN_TARGET_HEADING_CANDIDATES
 } from '../constants';
 
@@ -29,6 +38,24 @@ export interface QualityGateTarget {
   readonly line: number;
 }
 
+/** Why a declared entry could not be turned into an executable command (#369). */
+export type GateTargetRejectionReason =
+  /** `;`, `|`, backticks or `$(` — never inferred into an execution plan. */
+  | 'compound-syntax'
+  /** The first token is not a known runner and is not path-like. */
+  | 'unrecognized-command'
+  /** An unterminated `\` continuation. */
+  | 'incomplete-continuation';
+
+/** A declared entry that was classified as a command and then rejected (#369). */
+export interface GateTargetRejection {
+  /** The line as written (bullets and inline-code markers removed). */
+  readonly entry: string;
+  /** 1-based plan line. */
+  readonly line: number;
+  readonly reason: GateTargetRejectionReason;
+}
+
 export interface QualityGateTargetsResult {
   /** Deduplicated targets in plan order, with their plan line (issue #348). */
   readonly targets: readonly QualityGateTarget[];
@@ -36,24 +63,38 @@ export interface QualityGateTargetsResult {
   readonly commands: readonly string[];
   /** Section lines that were not executable (prose, tables, rejected shapes). */
   readonly unparsed: readonly string[];
+  /**
+   * The actionable subset of `unparsed` (issue #369): a line that was
+   * classified as a command and then refused. NEVER silently dropped.
+   */
+  readonly rejections: readonly GateTargetRejection[];
   /** True when the section exists AND yielded at least one executable target. */
   readonly found: boolean;
   /** 1-based line of the section heading, or 0 when absent. */
   readonly sectionLine: number;
 }
 
-/** A static-rule finding against one parsed target (issue #348). */
+/** The static-rule vocabulary one finding may carry (#348, #369). */
+export type GateTargetRule =
+  | typeof GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION
+  | typeof GATE_TARGET_RULE_UNEXECUTABLE_TARGET
+  | typeof GATE_TARGET_RULE_WORKFLOW_LINT_MISSING;
+
+/** A static-rule finding against one parsed target or rejected entry. */
 export interface GateTargetFinding {
-  readonly rule: typeof GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION;
-  /** 1-based position within `targets` (matches `Plan Target <n>`). */
+  readonly rule: GateTargetRule;
+  /** 1-based position within `targets` (matches `Plan Target <n>`); 0 for rejections. */
   readonly index: number;
   readonly line: number;
   readonly command: string;
+  /** Rule-specific evidence: the rejection reason, the affected files, … */
+  readonly detail?: string;
 }
 
 /**
- * The first token a verification line may start with. Anything else is prose
- * and is reported as `unparsed` instead of being executed.
+ * The first token a verification line may start with. Anything else is either
+ * prose (reported as `unparsed`) or a refused entry (reported as a rejection,
+ * #369). Path-like first tokens are accepted separately.
  */
 const COMMAND_FIRST_TOKENS: ReadonlySet<string> = new Set([
   'npm',
@@ -84,8 +125,71 @@ const COMMAND_FIRST_TOKENS: ReadonlySet<string> = new Set([
   'tsc',
   'bin/agyloop',
   'codeloop',
-  'agyloop'
+  'agyloop',
+  // Polyglot runners (#369, was #372): a declared target outside the old
+  // allowlist is now executed, not silently dropped into auto-detect.
+  'uv',
+  'uvx',
+  'poetry',
+  'pipenv',
+  'tox',
+  'nox',
+  'php',
+  'composer',
+  'deno',
+  'bundle',
+  'rake',
+  'rspec',
+  'mix',
+  'swift',
+  'flutter',
+  'just',
+  'bazel',
+  'turbo',
+  'nx',
+  'tsx',
+  'ts-node',
+  'vitest',
+  'jest',
+  'mocha',
+  'playwright'
 ]);
+
+/** A `NAME=value` prefix accepted by `env`. */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** Prefixes that run their remainder unchanged. */
+const TRANSPARENT_PREFIXES: ReadonlySet<string> = new Set([
+  'env',
+  'command',
+  'exec',
+  'nohup',
+  'time'
+]);
+
+/** Shells whose `-c` argument is itself a command. */
+const SHELL_WRAPPERS: ReadonlySet<string> = new Set([
+  'bash',
+  'sh',
+  'dash',
+  'zsh',
+  'ksh',
+  'fish'
+]);
+
+/** Options that consume the FOLLOWING token as their value. */
+const PREFIX_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-u',
+  '--unset',
+  '-C',
+  '--chdir'
+]);
+
+/** A shell flag carrying `-c` (alone or combined, e.g. `-lc` / `-ec`). */
+const SHELL_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+
+/** First token of an intended command entry (not structural prose, #369). */
+const COMMAND_ENTRY_PATTERN = /^[A-Za-z0-9_./~][A-Za-z0-9_./~-]*/;
 
 /** Fence languages whose bodies are harvested as commands. */
 const COMMAND_FENCE_LANGUAGES: ReadonlySet<string> = new Set([
@@ -251,26 +355,175 @@ function splitAndChain(command: string): string[] {
   return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
-function isAllowedFirstToken(command: string): boolean {
-  if (command.startsWith('./')) return true;
-  const first = command.split(/\s+/)[0];
-  return COMMAND_FIRST_TOKENS.has(first);
+/**
+ * Splits a command into words, honouring single and double quotes and
+ * backslash escapes outside single quotes (#369).
+ */
+export function tokenizeShellWords(command: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let started = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+
+    if (quote === "'") {
+      if (char === "'") {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null;
+      } else if (char === '\\' && i + 1 < command.length) {
+        current += command[++i];
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+      continue;
+    }
+
+    if (char === '\\' && i + 1 < command.length) {
+      current += command[++i];
+      started = true;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (started) {
+        tokens.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+
+    current += char;
+    started = true;
+  }
+
+  if (started) tokens.push(current);
+  return tokens;
 }
 
 /**
- * Returns the individual commands of a candidate line, or null when the line
- * is not safely executable as written.
+ * Unwraps transparent prefixes (`env`, `command`, `exec`, `nohup`, `time`) and
+ * shell `-c` wrappers so a wrapped assertion is classified exactly like the
+ * bare command (#369).
+ *
+ * Past `MAX_SHELL_WRAPPER_DEPTH` the wrapper is opaque: the tokens are returned
+ * as-is and are therefore NOT classified as an assertion.
  */
-function toCommands(candidate: string): string[] | null {
+export function unwrapShellPrefix(tokens: readonly string[], depth = 0): string[] {
+  if (tokens.length === 0) return [];
+  if (depth > MAX_SHELL_WRAPPER_DEPTH) return [...tokens];
+
+  const [head, ...rest] = tokens;
+
+  if (TRANSPARENT_PREFIXES.has(head)) {
+    let i = 0;
+    while (i < rest.length) {
+      const token = rest[i];
+      if (token === '--') {
+        i += 1;
+        break;
+      }
+      if (PREFIX_OPTIONS_WITH_VALUE.has(token)) {
+        i += 2;
+        continue;
+      }
+      if (token.startsWith('-')) {
+        i += 1;
+        continue;
+      }
+      if (head === 'env' && ENV_ASSIGNMENT.test(token)) {
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    return unwrapShellPrefix(rest.slice(i), depth + 1);
+  }
+
+  if (SHELL_WRAPPERS.has(head)) {
+    let i = 0;
+    let hasCommandFlag = false;
+    while (i < rest.length) {
+      const token = rest[i];
+      if (token === '--') {
+        i += 1;
+        continue;
+      }
+      if (!token.startsWith('-')) break;
+      if (SHELL_COMMAND_FLAG.test(token)) hasCommandFlag = true;
+      i += 1;
+    }
+    if (!hasCommandFlag || i >= rest.length) return [...tokens];
+    const script = rest.slice(i).join(' ');
+    return unwrapShellPrefix(tokenizeShellWords(script), depth + 1);
+  }
+
+  return [...tokens];
+}
+
+/**
+ * True when the line looks like an INTENDED command entry rather than
+ * structural prose (#369): a Markdown table row, a blockquote or a horizontal
+ * rule is evidence, never a dropped target.
+ */
+function looksLikeCommandEntry(candidate: string): boolean {
+  const text = candidate.trim();
+  if (text.length === 0) return false;
+  if (text.startsWith('|') || text.startsWith('>')) return false;
+  if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(text)) return false;
+  return COMMAND_ENTRY_PATTERN.test(text);
+}
+
+function isAllowedFirstToken(command: string): boolean {
+  if (command.startsWith('./')) return true;
+  // #369: transparent prefixes and shell wrappers are unwrapped first, so
+  // `env git diff …` / `bash -c 'npm test'` are classified by the command they
+  // actually run. An unknown command behind a wrapper is still a rejection.
+  const first = unwrapShellPrefix(tokenizeShellWords(command))[0];
+  if (first === undefined || first.length === 0) return false;
+  if (COMMAND_FIRST_TOKENS.has(first)) return true;
+  // Path-like binaries: `node_modules/.bin/tsc`, `vendor/bin/phpunit`,
+  // `/usr/local/bin/make` (#369, was #372).
+  return first.includes('/');
+}
+
+type CommandResolution =
+  | { readonly commands: readonly string[] }
+  | { readonly rejection: GateTargetRejectionReason };
+
+/**
+ * Returns the individual commands of a candidate line, or the reason the line
+ * cannot be executed as written (#369).
+ */
+function toCommands(candidate: string): CommandResolution | null {
   if (candidate.length === 0) return null;
   // Compound shell syntax is never inferred into an execution plan.
-  if (/[;|`]/.test(candidate)) return null;
-  if (candidate.includes('$(')) return null;
+  if (/[;|`]/.test(candidate) || candidate.includes('$(')) {
+    return { rejection: 'compound-syntax' };
+  }
 
   const parts = splitAndChain(candidate);
   if (parts.length === 0) return null;
-  if (parts.some((part) => !isAllowedFirstToken(part))) return null;
-  return parts;
+  if (parts.some((part) => !isAllowedFirstToken(part))) {
+    return { rejection: 'unrecognized-command' };
+  }
+  return { commands: parts };
 }
 
 /**
@@ -287,6 +540,7 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
   const lines = (markdown ?? '').split('\n');
   const targets: QualityGateTarget[] = [];
   const unparsed: string[] = [];
+  const rejections: GateTargetRejection[] = [];
   const seen = new Set<string>();
 
   let sectionLine = 0;
@@ -301,14 +555,30 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
     if (evidence.length > 0) unparsed.push(evidence);
   };
 
+  /**
+   * Records a refused entry ONLY when the line was an intended command (#369).
+   * Structural prose stays evidence-only, so a plan's own decision table is
+   * never mistaken for a dropped target.
+   */
+  const pushRejection = (
+    candidate: string,
+    line: number,
+    reason: GateTargetRejectionReason
+  ): void => {
+    if (!looksLikeCommandEntry(candidate)) return;
+    rejections.push({ entry: candidate.trim(), line, reason });
+  };
+
   const pushCommands = (candidate: string, raw: string, line: number): void => {
     if (candidate.length === 0) return;
     const resolved = toCommands(candidate);
-    if (resolved === null) {
+    if (resolved === null) return;
+    if ('rejection' in resolved) {
       pushUnparsed(raw);
+      pushRejection(candidate, line, resolved.rejection);
       return;
     }
-    for (const command of resolved) {
+    for (const command of resolved.commands) {
       if (seen.has(command)) continue;
       seen.add(command);
       targets.push({ command, line });
@@ -319,6 +589,7 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
   const flushContinuation = (): void => {
     if (pendingContinuation === null) return;
     pushUnparsed(pendingContinuation.text);
+    pushRejection(pendingContinuation.text, pendingContinuation.line, 'incomplete-continuation');
     pendingContinuation = null;
   };
 
@@ -380,7 +651,18 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
     }
 
     if (heading) {
-      if (isSmokeHeading(heading.title) || heading.level <= sectionLevel) {
+      if (isSmokeHeading(heading.title)) {
+        break;
+      }
+      // #369: a deeper heading that is ITSELF a target heading re-anchors the
+      // section, so the most specific declaration wins and a following
+      // same-level subheading ends collection instead of swallowing the rest.
+      if (TARGET_HEADINGS.has(heading.title) && heading.level > sectionLevel) {
+        sectionLine = index + 1;
+        sectionLevel = heading.level;
+        continue;
+      }
+      if (heading.level <= sectionLevel) {
         break;
       }
       // A deeper structural heading inside the section is not a target.
@@ -404,6 +686,7 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
     targets,
     commands: targets.map((target) => target.command),
     unparsed,
+    rejections,
     found: targets.length > 0,
     sectionLine
   };
@@ -422,7 +705,7 @@ const GIT_GLOBAL_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
 ]);
 
 /** The git subcommand and its arguments, skipping global options. */
-function gitSubcommand(tokens: string[]): { subcommand: string; args: string[] } | null {
+function gitSubcommand(tokens: readonly string[]): { subcommand: string; args: string[] } | null {
   if (tokens[0] !== 'git') return null;
   let i = 1;
   while (i < tokens.length) {
@@ -441,30 +724,44 @@ function gitSubcommand(tokens: string[]): { subcommand: string; args: string[] }
 }
 
 /**
- * True when a command compares the worktree or the index to HEAD (issue #348).
+ * The #369 decision table: a target is refused iff it is a `git diff` that
+ * ASSERTS there is no difference (`--exit-code` / `--quiet`) over the worktree
+ * or the index. Everything else is a listing and exits 0 on a dirty tree.
  *
- * Pure and textual: the gate runs before the commit, so such a comparison
- * always sees the change under test and can never pass on a correct tree.
+ * | Shape | Verdict | Rationale |
+ * |---|---|---|
+ * | `git diff`, `--stat`, `--check`, `--name-only HEAD` | allowed | listing |
+ * | `git status [--porcelain]` | allowed | status is a listing |
+ * | `git diff HEAD` | allowed | one-revision listing |
+ * | `git diff --cached [--stat]` | allowed | index listing |
+ * | `git diff --exit-code` / `--quiet` | REFUSED | assertion vs worktree |
+ * | `git diff HEAD --exit-code` | REFUSED | one-revision assertion |
+ * | `git diff --cached --exit-code` | REFUSED | index assertion |
+ * | `git diff HEAD~1 HEAD --exit-code` | allowed | committed pair only |
+ * | `git diff --no-index a b --exit-code` | allowed | file-to-file |
+ * | `git log` / `git diff-tree` | allowed | not a worktree diff |
+ *
+ * Exported name and signature are unchanged (#348 compatibility).
  */
 export function isCommittedTreeAssertion(command: string): boolean {
-  const parsed = gitSubcommand(command.trim().split(/\s+/));
+  const parsed = gitSubcommand(unwrapShellPrefix(tokenizeShellWords(command.trim())));
   if (parsed === null) return false;
-  // `git status` is always worktree/index-relative.
-  if (parsed.subcommand === 'status') return true;
-  // `diff-tree`, `log`, `show` are commit-based and are legitimate.
+  // `status` is a listing: it exits 0 on a dirty tree.
   if (parsed.subcommand !== 'diff') return false;
 
   const args = parsed.args;
   // File-to-file comparison: no worktree, no index.
   if (args.includes('--no-index')) return false;
-  if (args.includes('--cached') || args.includes('--staged')) return true;
+  // A listing (`--stat`, `--name-only`, `--cached` alone) exits 0.
+  const asserts = args.includes('--exit-code') || args.includes('--quiet');
+  if (!asserts) return false;
 
   const separator = args.indexOf('--');
   const before = separator === -1 ? args : args.slice(0, separator);
   const revisions = before.filter((token) => !token.startsWith('-'));
   // A two-commit range (`A..B`, `A...B`) never looks at the worktree.
   if (revisions.some((revision) => revision.includes('..'))) return false;
-  // Zero or one revision: the comparison involves the worktree/index.
+  // Zero or one revision: the assertion involves the worktree/index.
   return revisions.length < 2;
 }
 
@@ -486,7 +783,23 @@ export function lintQualityGateTargets(
 }
 
 /**
- * Renders every finding through ONE template (issue #348, R6).
+ * Lints the entries the parser REFUSED (#369): the consumer that makes a
+ * rejection a refusal instead of a silent fall-through to auto-detect.
+ */
+export function lintGateTargetRejections(
+  result: Pick<QualityGateTargetsResult, 'rejections'>
+): readonly GateTargetFinding[] {
+  return result.rejections.map((rejection) => ({
+    rule: GATE_TARGET_RULE_UNEXECUTABLE_TARGET,
+    index: 0,
+    line: rejection.line,
+    command: rejection.entry,
+    detail: rejection.reason
+  }));
+}
+
+/**
+ * Renders every finding through ONE formatter (issue #348, R6; #369).
  *
  * Shared by approval rejection, the dispatch blocker and the in-process gate
  * preflight, so their messages cannot drift.
@@ -495,10 +808,25 @@ export function formatGateTargetContractViolations(
   findings: readonly GateTargetFinding[]
 ): string {
   return findings
-    .map((finding) =>
-      MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION.replace('{index}', String(finding.index))
-        .replace('{line}', String(finding.line))
-        .replace('{command}', finding.command)
-    )
+    .map((finding) => {
+      switch (finding.rule) {
+        case GATE_TARGET_RULE_UNEXECUTABLE_TARGET:
+          return MSG_GATE_TARGET_UNEXECUTABLE_ENTRY.replace('{line}', String(finding.line))
+            .replace('{command}', finding.command)
+            .replace('{detail}', finding.detail ?? 'unexecutable');
+        case GATE_TARGET_RULE_WORKFLOW_LINT_MISSING:
+          return MSG_GATE_TARGET_WORKFLOW_LINT_MISSING.replace(
+            '{detail}',
+            finding.detail ?? '(unknown files)'
+          ).replace('{command}', finding.command);
+        default:
+          return MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION.replace(
+            '{index}',
+            String(finding.index)
+          )
+            .replace('{line}', String(finding.line))
+            .replace('{command}', finding.command);
+      }
+    })
     .join(' ');
 }

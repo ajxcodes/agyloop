@@ -33,10 +33,7 @@ import {
   InvalidTransitionError,
   ValidationError,
   WorktreeCreationError,
-  isPlanContentSubstantive,
-  lintQualityGateTargets,
-  formatGateTargetContractViolations,
-  parseQualityGateTargets
+  isPlanContentSubstantive
 } from '../domain';
 import {
   StateRepository,
@@ -50,6 +47,7 @@ import {
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 import { SyncUseCase } from './sync';
+import { assertGateTargetContract } from './gate-target-contract';
 
 export interface StartImplementationParams {
   readonly issue?: number | string | null;
@@ -410,13 +408,16 @@ export class StartImplementationUseCase {
   }
 
   /**
-   * Refuses a plan whose Quality Gate Targets assert a committed-tree invariant
-   * (issue #348, AC1).
+   * Refuses a plan whose Quality Gate Targets cannot be executed as written
+   * (issues #348, #369).
    *
    * Runs in `codeloop implement`, the second approval entry point, using the
    * SAME plan resolution the later block uses. The double resolve is
    * intentional: it keeps the guard before worktree provisioning without
    * restructuring the plan-resolution flow below.
+   *
+   * Enforcement is the ONE shared `assertGateTargetContract` (issue #369), so
+   * this entry point and `transition APPROVAL` cannot drift.
    */
   private assertGateTargetContract(
     sm: StateMachine,
@@ -431,24 +432,11 @@ export class StartImplementationUseCase {
     });
     if (!resolved) return;
 
-    let content: string;
-    try {
-      content = this.planGenerator.readPlanDocument(resolved.planPath);
-    } catch {
-      // An unreadable plan is not a target list; the blank-plan guard reports it.
-      return;
-    }
-
-    const findings = lintQualityGateTargets(parseQualityGateTargets(content).targets);
-    if (findings.length === 0) return;
-
-    const reason = `${formatGateTargetContractViolations(findings)} (plan: ${resolved.planPath})`;
-    if (params.dryRun) {
-      console.warn(`[codeloop] Warning: ${reason}`);
-      return;
-    }
-
-    throw new ValidationError('gateTargets', resolved.planPath, reason);
+    assertGateTargetContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
   }
 
   /**
