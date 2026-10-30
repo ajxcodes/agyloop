@@ -321,4 +321,65 @@ describe('BaselineEvidence.fromPlan (issue #388)', () => {
     );
     assert.strictEqual(baselineValuesMatch('', '4'), false);
   });
+
+  test('BE8: the untouched `<claim-id>` scaffold stub is not a claim, but any real id or filled label is', () => {
+    // BE8a - the template's own stub: exact placeholder id, every label empty.
+    const stub = BaselineEvidence.fromPlan(
+      planOf([
+        '## 1. Context & Objectives',
+        '- **Feature Overview:** probe',
+        '',
+        '### Baseline Evidence',
+        '',
+        '#### <claim-id>',
+        '',
+        '- **Declared:**',
+        '- **Command:**',
+        '- **Output:**'
+      ])
+    );
+    assert.strictEqual(stub.found, true, JSON.stringify(stub));
+    assert.strictEqual(stub.claims.length, 0, JSON.stringify(stub));
+    assert.deepStrictEqual(stub.findings, [], JSON.stringify(stub.findings));
+
+    // BE8b - a real id with no labels keeps the strict validation.
+    const realId = BaselineEvidence.fromPlan(
+      planOf([
+        '## 1. Context & Objectives',
+        '- **Feature Overview:** probe',
+        '',
+        '### Baseline Evidence',
+        '',
+        '#### DA-METRICS-1',
+        '',
+        '- **Declared:**',
+        '- **Command:**',
+        '- **Output:**'
+      ])
+    );
+    assert.strictEqual(realId.claims.length, 1, JSON.stringify(realId));
+    assert.deepStrictEqual(
+      realId.findings.map((finding: any) => finding.rule),
+      ['missing-baseline-value', 'missing-baseline-command', 'missing-baseline-output']
+    );
+
+    // BE8c - the stub skip is all-or-nothing: one filled label makes a claim.
+    const partiallyFilled = BaselineEvidence.fromPlan(
+      planOf([
+        '## 1. Context & Objectives',
+        '- **Feature Overview:** probe',
+        '',
+        '### Baseline Evidence',
+        '',
+        '#### <claim-id>',
+        '',
+        '- **Declared:** `3`'
+      ])
+    );
+    assert.strictEqual(partiallyFilled.claims.length, 1, JSON.stringify(partiallyFilled));
+    assert.deepStrictEqual(
+      partiallyFilled.findings.map((finding: any) => finding.rule),
+      ['missing-baseline-command', 'missing-baseline-output']
+    );
+  });
 });

@@ -65,6 +65,12 @@ export const LEGACY_SUMMARY_FILENAME = 'AgyLoop Summary.md' as const;
  * the metrics block carries no verdict. The two copies are kept in step by the
  * drift guard in `tests/generator.test.ts` (case `G4`) — change one, change
  * the other.
+ *
+ * The `TEMPLATE_IMPLEMENTATION` entry MIRRORS `templates/implementation-plan.md`
+ * and is kept in step by the drift guard in `tests/generator.test.ts` (case
+ * `G5`, issue #392) — change one, change the other. Both copies carry the
+ * `### Baseline Evidence` scaffold in the shape `BaselineEvidence.fromPlan`
+ * reads, so D1's guard measures a plan authored from either copy.
  */
 export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freeze({
   [TEMPLATE_DISCOVERY]: `# [Discovery] - {Title}
@@ -128,6 +134,14 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 
 ### Manual Smoke Test Protocol
 - **Check 1:** 
+
+### Baseline Evidence
+
+#### <claim-id>
+
+- **Declared:**
+- **Command:**
+- **Output:**
 `,
 
   [TEMPLATE_SUMMARY]: `# CodeLoop Execution Summary

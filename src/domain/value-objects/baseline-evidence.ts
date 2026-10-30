@@ -15,7 +15,9 @@
  *     before the first level-2 heading), so a problem statement in §1 cannot
  *     silently arm the rule.
  *   - `### Baseline Evidence` carries one `#### <claim-id>` per declared number,
- *     each with `- **Declared:**`, `- **Command:**` and `- **Output:**`.
+ *     each with `- **Declared:**`, `- **Command:**` and `- **Output:**`. The
+ *     template's own untouched `<claim-id>` stub, with no label filled in,
+ *     declares no number and is therefore not a claim (issue #392).
  *   - Fenced blocks (``` / ~~~) are DATA: a plan fixture embedded in a smoke
  *     block is never parsed as evidence.
  *   - A declared number appearing in the body without an evidence carrier is a
@@ -93,6 +95,12 @@ const VALUE_SPAN = /\{[^{}]*\}|\[[^[\]]*\]/g;
 
 /** `- **Declared:** value`, `- **Command:** value`, `- **Output:** value`. */
 const LABEL_PATTERN = /^\s*[-*]\s*\*\*(Declared|Command|Output):?\s*\*\*\s*:?\s*(.*)$/i;
+
+/**
+ * The literal placeholder id seeded by `templates/implementation-plan.md`
+ * (issue #392). An untouched stub declares no number.
+ */
+const SCAFFOLD_STUB_CLAIM_ID = '<claim-id>';
 
 interface Heading {
   readonly level: number;
@@ -407,6 +415,17 @@ export class BaselineEvidence implements BaselineEvidenceResult {
           else if (key === 'command') command = value;
           else output = value;
         }
+
+        // The untouched scaffold stub: the template's own `<claim-id>` heading
+        // with no label filled in declares no number, so it is not a claim and
+        // must not refuse every plan that declares no baseline. Any real id, or
+        // any single filled label, keeps the strict validation below.
+        const untouchedStub =
+          id === SCAFFOLD_STUB_CLAIM_ID &&
+          declared.length === 0 &&
+          command.length === 0 &&
+          output.length === 0;
+        if (untouchedStub) continue;
 
         const claim: BaselineClaim = {
           id,

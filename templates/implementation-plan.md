@@ -31,4 +31,9 @@
 - **Check 1:**
 
 ### Baseline Evidence
-- **Claim:**
+
+#### <claim-id>
+
+- **Declared:**
+- **Command:**
+- **Output:**

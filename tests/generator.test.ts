@@ -144,6 +144,35 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       assert.strictEqual(content, FALLBACK_TEMPLATES[TEMPLATE_FILES.DISCOVERY]);
     });
 
+    test('G5 (issue #392): the embedded IMPLEMENTATION fallback mirrors templates/implementation-plan.md and carries the parser-readable Baseline Evidence scaffold', () => {
+      const onDisk = fs.readFileSync(
+        path.resolve(__dirname, '..', 'templates', 'implementation-plan.md'),
+        'utf8'
+      );
+      const fallback = FALLBACK_TEMPLATES[TEMPLATE_FILES.IMPLEMENTATION];
+      const normalise = (text: string): string =>
+        text
+          .split('\n')
+          .map((line) => line.replace(/[ \t]+$/, ''))
+          .join('\n')
+          .replace(/\n+$/, '');
+
+      assert.strictEqual(
+        normalise(fallback),
+        normalise(onDisk),
+        'the implementation fallback and templates/implementation-plan.md must not drift'
+      );
+
+      for (const [label, source] of [['fallback', fallback], ['on-disk', onDisk]] as const) {
+        assert.ok(source.includes('### Baseline Evidence'), `${label} must seed the evidence section`);
+        assert.ok(source.includes('#### <claim-id>'), `${label} must seed a claim heading`);
+        assert.ok(source.includes('- **Declared:**'), `${label} must seed Declared`);
+        assert.ok(source.includes('- **Command:**'), `${label} must seed Command`);
+        assert.ok(source.includes('- **Output:**'), `${label} must seed Output`);
+        assert.ok(!source.includes('- **Claim:**'), `${label} must not seed the unparseable Claim bullet`);
+      }
+    });
+
     test('throws error for unknown template name with no fallback', () => {
       assert.throws(
         () => generator.loadTemplate('unknown-template.md'),
