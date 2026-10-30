@@ -22,12 +22,19 @@
  * SP19 - the sandbox-path probe matrix classifies every documented shape (#362 F2)
  * SP20 - same-check $VAR roots are resolved; a /tmp root cannot be laundered (#362 F2)
  * SP21 - a bare mktemp -d + HOME override stays flagged (accepted limitation) (#362 F2)
- * SP22 - archived plans keep their frozen heading line and check count (#362 AC1.3/AC2.4)
+ * SP22 - the COMMITTED corpus keeps its frozen shape (#362 AC1.3/AC2.4, #364 AC-9/10/11)
+ * SP23 - a tracked cd into the sandbox makes a relative mkdir clean (#364 6a)
+ * SP24 - a relative mktemp under the sandbox root is clean (#364 6b)
+ * SP25 - a ..-escaped path is refused; one that normalises back inside is not (#364 6c)
+ * SP26 - an unanchored relative path stays flagged; the cwd map is per check (#364)
+ * SP27 - cwd tracking cannot launder a temp root (#364)
+ * SP28 - the cwd judged is the one BEFORE the creating statement (#364 review)
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { SmokeProtocol } = require('../../dist/domain');
 
@@ -793,73 +800,279 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     assert.strictEqual(sandboxFindings(markdown).length, 1, JSON.stringify(sandboxFindings(markdown)));
   });
 
-  test(
-    'SP22: archived plans keep their frozen heading line and check count (#362 AC1.3/AC2.4)',
-    { skip: !fs.existsSync(path.join(__dirname, '..', '..', 'artifacts', 'plans')) },
-    () => {
-      const archive = path.join(__dirname, '..', '..', 'artifacts', 'plans');
-      const expectedChecks: Record<string, number> = {
-        '242': 6,
-        '248': 2,
-        '283': 1,
-        '284': 12,
-        '297': 7,
-        '298': 4,
-        '301': 9,
-        '306': 5,
-        '311': 4,
-        '313': 5,
-        '314': 5,
-        '315': 15,
-        '320': 4,
-        '327': 5,
-        '328': 3,
-        '336': 9,
-        '337': 6,
-        '338': 4,
-        '339': 13,
-        '349': 7,
-        '351': 4,
-        '352': 3,
-        '356': 5,
-        '359': 3
-      };
-      const expectedSandbox: Record<string, number> = {
-        '284': 0,
-        '328': 3,
-        '349': 4,
-        '352': 2,
-        '359': 0
-      };
+  // -------------------------------------------------------------------------
+  // Issue #364: the corpus is COMMITTED (artifacts/plans is gitignored, so the
+  // old environmental SKIP made this pin dead on every fresh clone, including
+  // CI). Missing/empty corpus now fails loudly instead of skipping.
+  // -------------------------------------------------------------------------
 
-      let scanned = 0;
-      for (const entry of fs.readdirSync(archive)) {
-        const planPath = path.join(archive, entry, 'implementation_plan.md');
-        if (!fs.existsSync(planPath)) continue;
-        scanned++;
+  const CORPUS_DIR = path.join(__dirname, '..', 'fixtures', 'plan-smoke-corpus');
 
-        const protocol = SmokeProtocol.fromPlan(fs.readFileSync(planPath, 'utf8'));
-        assert.notStrictEqual(
-          protocol.headingLine,
-          1,
-          `${entry}: the document H1 is scoped as the section`
-        );
+  interface CorpusEntry {
+    readonly issue: string;
+    readonly file: string;
+    readonly headingLine: number;
+    readonly checks: number;
+    readonly sandboxFindings: number;
+  }
 
-        const issue = entry.split('-')[0];
-        if (Object.prototype.hasOwnProperty.call(expectedChecks, issue)) {
-          assert.strictEqual(
-            protocol.checks.length,
-            expectedChecks[issue],
-            `${entry}: frozen check count`
-          );
-        }
-        if (Object.prototype.hasOwnProperty.call(expectedSandbox, issue)) {
-          const count = protocol.findings.filter((finding: any) => finding.rule === 'sandbox-path').length;
-          assert.strictEqual(count, expectedSandbox[issue], `${entry}: sandbox findings`);
-        }
-      }
-
-      assert.ok(scanned > 0, 'the archive exists but no plan was scanned');
+  /** Reads + validates the committed corpus; throws loudly when it is absent. */
+  function readCorpus(dir: string): { readonly entries: CorpusEntry[] } {
+    const manifestPath = path.join(dir, 'manifest.json');
+    assert.ok(fs.existsSync(manifestPath), `corpus missing: ${manifestPath}`);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const entries: CorpusEntry[] = Array.isArray(manifest.entries) ? manifest.entries : [];
+    assert.ok(entries.length > 0, `corpus empty: ${manifestPath} declares no entries`);
+    for (const entry of entries) {
+      assert.ok(
+        fs.existsSync(path.join(dir, entry.file)),
+        `corpus entry missing: ${entry.file}`
+      );
     }
-  );
+    return { entries };
+  }
+
+  const sandboxCount = (markdown: string): number =>
+    SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === 'sandbox-path'
+    ).length;
+
+  test('SP22: the committed corpus keeps its frozen shape (#364 AC-9/AC-11)', () => {
+    const { entries } = readCorpus(CORPUS_DIR);
+    assert.ok(entries.length >= 25, `corpus has only ${entries.length} entries`);
+
+    let scanned = 0;
+    for (const entry of entries) {
+      const markdown = fs.readFileSync(path.join(CORPUS_DIR, entry.file), 'utf8');
+      const protocol = SmokeProtocol.fromPlan(markdown);
+      scanned++;
+
+      assert.ok(
+        protocol.headingLine >= 2,
+        `${entry.file}: the document H1 is scoped as the section`
+      );
+      assert.strictEqual(protocol.headingLine, entry.headingLine, `${entry.file}: frozen heading line`);
+      assert.strictEqual(protocol.checks.length, entry.checks, `${entry.file}: frozen check count`);
+      assert.strictEqual(
+        sandboxCount(markdown),
+        entry.sandboxFindings,
+        `${entry.file}: frozen sandbox-path count`
+      );
+    }
+
+    // The assertion that was dead behind the old environmental SKIP (AC-11).
+    assert.strictEqual(scanned, entries.length, 'every corpus entry was scanned');
+  });
+
+  test('SP22b: a level-1 heading rule mutation would break every corpus entry (#364 AC-10)', () => {
+    // The corpus H1s either carry the section phrase already (#359) or gain it
+    // here. Removing the `level > 1` guard makes the H1 itself the section, so
+    // headingLine collapses to 1 and the section never closes — every one of
+    // these assertions then differs. That is the deliberate-mutation proof.
+    const { entries } = readCorpus(CORPUS_DIR);
+    for (const entry of entries) {
+      const lines = fs.readFileSync(path.join(CORPUS_DIR, entry.file), 'utf8').split('\n');
+      lines[0] = `${lines[0]} — Manual Smoke Test Protocol`;
+      const mutated = SmokeProtocol.fromPlan(lines.join('\n'));
+      assert.strictEqual(mutated.headingLine, entry.headingLine, `${entry.file}: mutated heading line`);
+      assert.strictEqual(mutated.checks.length, entry.checks, `${entry.file}: mutated check count`);
+    }
+  });
+
+  test('SP22c: a missing or empty corpus fails loudly (#364 AC-11)', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-empty-corpus-'));
+    try {
+      assert.throws(() => readCorpus(empty), /corpus .*(missing|empty)/);
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #364: the sandbox-path rule tracks `cd` per check.
+  // -------------------------------------------------------------------------
+
+  test('SP23: a tracked cd into the sandbox makes a relative mkdir clean (#364 6a)', () => {
+    const withCd = planOf([
+      '```bash',
+      'SANDBOX="$HOME/.cache/agyloop/smoke-354/implement-pause"',
+      'cd "$SANDBOX"',
+      'mkdir -p artifacts/plans/354-smoke .agyloop/tasks',
+      'env -u AGY_SUBAGENT node bin/codeloop.js implement --issue 354',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(withCd), []);
+    assert.strictEqual(SmokeProtocol.fromPlan(withCd).executable, true);
+
+    // The same block WITHOUT the cd is the unanchored shape SP15 pins.
+    const withoutCd = planOf([
+      '```bash',
+      'SANDBOX="$HOME/.cache/agyloop/smoke-354/implement-pause"',
+      'mkdir -p artifacts/plans/354-smoke .agyloop/tasks',
+      'env -u AGY_SUBAGENT node bin/codeloop.js implement --issue 354',
+      '```'
+    ]);
+    assert.strictEqual(
+      sandboxFindings(withoutCd).length,
+      1,
+      JSON.stringify(sandboxFindings(withoutCd))
+    );
+  });
+
+  test('SP24: a relative mktemp under the sandbox root is clean (#364 6b)', () => {
+    const relative = planOf([
+      '```bash',
+      'cd "$HOME/.cache/agyloop"',
+      'SBX="$(mktemp -d smoke-354-XXXXXX)"',
+      'node bin/codeloop.js transition --issue 354',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(relative), []);
+
+    // The absolute form is unchanged.
+    const absolute = planOf([
+      '```bash',
+      'SBX="$(mktemp -d "$HOME/.cache/agyloop/smoke-354-XXXXXX")"',
+      'node bin/codeloop.js transition --issue 354',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(absolute), []);
+
+    // A relative template nested under an explicit sandbox cd.
+    const nested = planOf([
+      '```bash',
+      'SANDBOX="$HOME/.cache/agyloop/smoke-354"',
+      'cd "$SANDBOX"',
+      'SBX="$(mktemp -d repo-XXXXXX)"',
+      'node bin/codeloop.js transition --issue 354',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(nested), []);
+  });
+
+  test('SP25: a ..-escaped path is refused (#364 6c)', () => {
+    const escaped = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-362/../../../tmp/evil"',
+      'node bin/codeloop.js transition --issue 362',
+      '```'
+    ]);
+    assert.strictEqual(
+      sandboxFindings(escaped).length,
+      1,
+      JSON.stringify(sandboxFindings(escaped))
+    );
+
+    // A `..` that normalises back INSIDE the sandbox matches the runtime guard.
+    const inside = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-362/../smoke-362/x"',
+      'node bin/codeloop.js transition --issue 362',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(inside), []);
+  });
+
+  test('SP26: an unanchored relative path stays flagged (#359 SP15 preserved)', () => {
+    const bare = planOf([
+      '```bash',
+      'mkdir -p artifacts/smoke359',
+      'node bin/codeloop.js status --issue 359',
+      '```'
+    ]);
+    assert.strictEqual(sandboxFindings(bare).length, 1);
+
+    const otherCd = planOf([
+      '```bash',
+      'cd "$HOME/other"',
+      'mkdir -p artifacts/plans/364-smoke',
+      'node bin/codeloop.js status --issue 364',
+      '```'
+    ]);
+    assert.strictEqual(sandboxFindings(otherCd).length, 1);
+
+    // The cwd map is per CHECK: check 1's sandbox cd cannot launder check 2.
+    const twoChecks = [
+      '# Plan',
+      '',
+      SMOKE_HEADING,
+      '',
+      '#### Check 1 — sandboxed',
+      '',
+      '```bash',
+      'cd "$HOME/.cache/agyloop/smoke-364"',
+      'mkdir -p artifacts/plans/364-smoke',
+      'node bin/codeloop.js status --issue 364',
+      '```',
+      '',
+      '#### Check 2 — unanchored',
+      '',
+      '```bash',
+      'mkdir -p artifacts/smoke359',
+      'node bin/codeloop.js status --issue 359',
+      '```',
+      ''
+    ].join('\n');
+    const findings = sandboxFindings(twoChecks);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].checkIndex, 2, JSON.stringify(findings[0]));
+  });
+
+  test('SP27: cwd tracking cannot launder a temp root', () => {
+    const absoluteTmp = planOf([
+      '```bash',
+      'cd "$HOME/.cache/agyloop/smoke-364"',
+      'mkdir -p /tmp/evil',
+      'node bin/codeloop.js status --issue 364',
+      '```'
+    ]);
+    assert.strictEqual(sandboxFindings(absoluteTmp).length, 1);
+
+    const tmpdir = planOf([
+      '```bash',
+      'cd "$HOME/.cache/agyloop"',
+      'mkdir -p "$TMPDIR/smoke-x"',
+      'node bin/codeloop.js status --issue 364',
+      '```'
+    ]);
+    assert.strictEqual(sandboxFindings(tmpdir).length, 1);
+  });
+
+  test('SP28: the cwd in force is the one BEFORE the creating statement (#364 review)', () => {
+    // A `cd` that FOLLOWS the mkdir cannot launder it: on one line the mkdir
+    // really ran in the old cwd, so the relative path is unanchored.
+    for (const separator of ['&&', ';']) {
+      const trailingCd = planOf([
+        '```bash',
+        'SBX="$HOME/.cache/agyloop/smoke-364"',
+        `mkdir -p artifacts/smoke364 ${separator} cd "$SBX"`,
+        'node bin/codeloop.js status --issue 364',
+        '```'
+      ]);
+      const findings = sandboxFindings(trailingCd);
+      assert.strictEqual(findings.length, 1, `${separator}: ${JSON.stringify(findings)}`);
+      assert.match(findings[0].excerpt, /artifacts\/smoke364/);
+    }
+
+    // The forward order is the shape AC-1 blesses: the cd is in force first.
+    const leadingCd = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-364"',
+      'cd "$SBX" && mkdir -p artifacts/plans/364-smoke',
+      'node bin/codeloop.js status --issue 364',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(leadingCd), []);
+
+    // An ABSOLUTE sandbox path is clean in either order — nothing depends on
+    // the cwd, so the statement index is irrelevant.
+    const absoluteThenCd = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-364"',
+      'mkdir -p "$SBX/reports" && cd "$SBX"',
+      'node bin/codeloop.js status --issue 364',
+      '```'
+    ]);
+    assert.deepStrictEqual(sandboxFindings(absoluteThenCd), []);
+  });
 });

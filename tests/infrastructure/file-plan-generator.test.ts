@@ -153,3 +153,49 @@ describe('FilePlanGenerator - Release Notes dependency (issue #315, AC-32)', () 
     assert.match(written, /not fixed here/);
   });
 });
+
+describe('FilePlanGenerator - bounded artifact names (issue #364)', () => {
+  let tempDir: string;
+  let generator: any;
+
+  const { planArtifactFileName, planByteLength, PLAN_FILE_NAME_MAX_BYTES } = require('../../dist/domain');
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-name-test-'));
+    generator = new FilePlanGenerator();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("FPG-364.1: scaffoldPlanDirectory's artifact basename is planArtifactFileName", () => {
+    const titles = ['A short title', `Phase 6 ${'\u4e2d'.repeat(300)}`];
+    for (let index = 0; index < titles.length; index++) {
+      const root = path.join(tempDir, `run-${index}`);
+      const info = generator.scaffoldPlanDirectory({
+        projectRoot: root,
+        issue: 364,
+        title: titles[index]
+      });
+      assert.strictEqual(
+        path.basename(info.planPath),
+        planArtifactFileName(info.type, titles[index]),
+        titles[index]
+      );
+    }
+  });
+
+  test('FPG-364.2: generatePlan called without planPath uses the bounded name', () => {
+    const title = `Phase 6 ${'\u4e2d'.repeat(300)}`;
+    const result = generator.generatePlan({
+      targetDir: tempDir,
+      type: 'implementation',
+      title
+    });
+
+    assert.ok(planByteLength(path.basename(result.planPath)) <= PLAN_FILE_NAME_MAX_BYTES);
+    assert.strictEqual(path.basename(result.planPath), planArtifactFileName('implementation', title));
+    assert.ok(fs.existsSync(result.planPath));
+  });
+});

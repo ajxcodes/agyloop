@@ -23,13 +23,13 @@ import {
   GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION,
   GATE_TARGET_RULE_UNEXECUTABLE_TARGET,
   GATE_TARGET_RULE_WORKFLOW_LINT_MISSING,
-  HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
   MAX_SHELL_WRAPPER_DEPTH,
   MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION,
   MSG_GATE_TARGET_UNEXECUTABLE_ENTRY,
   MSG_GATE_TARGET_WORKFLOW_LINT_MISSING,
   PLAN_TARGET_HEADING_CANDIDATES
 } from '../constants';
+import { isManualSmokeTestProtocolTitle } from './smoke-heading';
 
 /** One executable target: the command and the plan line it was written on. */
 export interface QualityGateTarget {
@@ -267,9 +267,9 @@ const TARGET_HEADINGS: ReadonlySet<string> = new Set(
   PLAN_TARGET_HEADING_CANDIDATES.map((heading) => normalizeTitle(heading))
 );
 
-function isSmokeHeading(title: string): boolean {
-  return title.includes(normalizeTitle(HEADING_MANUAL_SMOKE_TEST_PROTOCOL));
-}
+// The heading predicate is shared with `smoke-protocol.ts` since #364: this
+// module uses the LEVEL-AGNOSTIC title form and supplies its own level rule at
+// the section loop below (a section ends at `heading.level <= sectionLevel`).
 
 /** Strips list markers, labels, prompts and comments from a fenced line. */
 function cleanFenceLine(raw: string): string {
@@ -651,7 +651,7 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
     }
 
     if (heading) {
-      if (isSmokeHeading(heading.title)) {
+      if (isManualSmokeTestProtocolTitle(heading.title)) {
         break;
       }
       // #369: a deeper heading that is ITSELF a target heading re-anchors the

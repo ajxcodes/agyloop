@@ -1520,6 +1520,8 @@ export const CMD_PLAYWRIGHT_YARN = 'yarn playwright test' as const;
 
 // Validation & Plan Constants
 export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;
+/** The plan title a derived folder/filename is refused for (issue #364). */
+export const VALIDATION_FIELD_PLAN_TITLE = 'planTitle' as const;
 export const PLAN_DEFAULT_SPECIFICATION_TITLE = 'Plan Specification' as const;
 export const PLAN_DEFAULT_TITLE = 'Task Plan' as const;
 

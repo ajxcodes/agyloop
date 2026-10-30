@@ -139,6 +139,13 @@ export interface SummaryUpdateData {
 export interface GeneratePlanOptions {
   readonly targetDir: string;
   /**
+   * The canonical folder name DERIVED by this call, when the caller derived
+   * one (issue #364 review). Omit it when `targetDir` is an ADOPTED directory:
+   * a pre-#364 folder name can exceed the 143-byte bound, and the filesystem
+   * accepting the name is proof enough. The filename assertion always runs.
+   */
+  readonly folderName?: string | null;
+  /**
    * The exact primary artifact to write (issue #283). When supplied, the
    * existing-primary reuse has already chosen it (e.g. a populated
    * `[Discovery] - <title>.md` that must be reused byte-for-byte).
@@ -201,6 +208,16 @@ export interface PlanGeneratorPort {
    * Scaffolds an issue plan directory with templates and execution summary.
    */
   scaffoldPlanDirectory(params: ScaffoldParams): ScaffoldResult;
+
+  /**
+   * The plan type a scaffold would resolve from a title + labels (issue #364).
+   *
+   * `--type auto` delegates here, so a `--dry-run` can preview the SAME
+   * artifact prefix the real run writes (`[Discovery] - ` vs
+   * `[Implementation] - `) instead of always guessing implementation.
+   * Optional so existing fake generators need no change.
+   */
+  detectPlanType?(title: string, labels?: readonly string[]): 'discovery' | 'implementation';
 
   /**
    * Generates a plan document in targetDir.
