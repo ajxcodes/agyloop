@@ -65,6 +65,7 @@ import {
   TOOL_CAPABILITY_EDIT,
   TOOL_CAPABILITY_SHELL,
   SmokeProtocol,
+  GateCommandComposition,
   GateCommandSource,
   GATE_COMMAND_PRECEDENCE,
   GATE_COMMAND_WORKTREE_CONTRACT,
@@ -78,6 +79,7 @@ import {
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
   NOTE_SMOKE_BLOCK_SANDBOX_RULE,
   STATUS_PASSED,
+  STATUS_FAILED,
   SMOKE_PROTOCOL_NOT_DECLARED,
   SMOKE_PROTOCOL_VOCABULARY,
   formatGateReportExample,
@@ -260,6 +262,8 @@ export interface GateTaskPromptParams {
   readonly commandSourceDetail?: string;
   readonly appendedCommands?: readonly string[];
   readonly requiredLint?: boolean;
+  /** The composed workflow-lint step, when the change touches workflows (#369). */
+  readonly composition?: GateCommandComposition;
   /** The smoke checks FROZEN at dispatch (issue #298). */
   readonly smokeProtocol?: SmokeProtocol;
   readonly planIntegrity?: PlanIntegrityVerdict;
@@ -944,6 +948,18 @@ export class ResolveSubagentUseCase {
         prompt += `- Mandatory commands appended: ${params.appendedCommands.map((cmd) => `\`${cmd}\``).join(', ')}\n`;
       }
       prompt += `\n`;
+    }
+
+    const composition = params.composition;
+    if (composition && composition.required) {
+      prompt += `### Workflow Lint Composition\n`;
+      if (composition.command !== null) {
+        prompt += `- Workflow lint composed: the change touches ${composition.files.map((file) => `\`${file}\``).join(', ')}; appended \`${composition.command}\`.\n`;
+        prompt += `This step is MANDATORY: the approved plan declares gate targets, which replace the act container gate, so the workflow diff is only exercised by this linter.\n\n`;
+      } else {
+        prompt += `- Workflow lint REQUIRED but unavailable: ${composition.unavailableReason ?? 'no workflow linter could be resolved'}.\n`;
+        prompt += `The verdict MUST be \`${STATUS_FAILED}\`: the change touches ${composition.files.map((file) => `\`${file}\``).join(', ')} and no resolved command lints it.\n\n`;
+      }
     }
 
     if (params.commands && params.commands.length > 0) {

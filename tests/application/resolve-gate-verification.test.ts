@@ -113,7 +113,11 @@ function makePlanGenerator(options: {
   return generator;
 }
 
-function makeBuildDetector(options: { ambient?: any[]; lintCommand?: string | null } = {}): any {
+function makeBuildDetector(options: {
+  ambient?: any[];
+  lintCommand?: string | null;
+  composition?: any;
+} = {}): any {
   const detector: any = {
     ambient: options.ambient ?? [
       { id: 'ambient', label: 'Ambient Runner', command: 'ambient-command' }
@@ -185,7 +189,8 @@ function makeBuildDetector(options: { ambient?: any[]; lintCommand?: string | nu
         appended,
         lintRequired,
         lintCommand,
-        planPath: resolveOptions.planPath ?? null
+        planPath: resolveOptions.planPath ?? null,
+        ...(options.composition ? { composition: options.composition } : {})
       };
     }
   };
@@ -494,5 +499,70 @@ describe('resolveGateVerification (issue #298)', () => {
     assert.deepStrictEqual(bad.commandPlan.commands.map((def: any) => def.command), [
       'git diff --exit-code -- package-lock.json'
     ]);
+  });
+
+  test('RGV-369-1: an available workflow composition adds no finding (#369)', async () => {
+    const composition = {
+      required: true,
+      files: ['.github/workflows/ci.yml'],
+      command: 'actionlint',
+      unavailableReason: null
+    };
+    const result = await verify({
+      buildDetector: makeBuildDetector({ composition })
+    });
+
+    assert.deepStrictEqual(result.targetFindings, []);
+    assert.deepStrictEqual(result.commandPlan.composition, composition);
+  });
+
+  test('RGV-369-2: a required-but-unavailable composition fails closed naming the file (#369)', async () => {
+    const { formatGateTargetContractViolations } = require('../../dist/domain');
+    const composition = {
+      required: true,
+      files: ['.github/workflows/ci.yml'],
+      command: null,
+      unavailableReason: 'no linter installed'
+    };
+    const result = await verify({
+      buildDetector: makeBuildDetector({ composition })
+    });
+
+    assert.strictEqual(result.targetFindings.length, 1);
+    assert.strictEqual(result.targetFindings[0].rule, 'workflow-lint-missing');
+    const rendered = formatGateTargetContractViolations(result.targetFindings);
+    assert.ok(rendered.includes('.github/workflows/ci.yml'), rendered);
+    assert.ok(rendered.includes('actionlint'), rendered);
+  });
+
+  test('RGV-369-3: an unexecutable target is surfaced, never silently auto-detected (#369)', async () => {
+    const plan = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '- `frobnicate build --strict`',
+      ''
+    ].join('\n');
+    const { formatGateTargetContractViolations } = require('../../dist/domain');
+    const result = await verify({ planGenerator: makePlanGenerator({ content: plan }) });
+
+    assert.strictEqual(result.planTargets.found, false);
+    assert.strictEqual(result.targetFindings.length, 1);
+    assert.strictEqual(result.targetFindings[0].rule, 'unexecutable-target');
+    assert.strictEqual(result.targetFindings[0].command, 'frobnicate build --strict');
+    const rendered = formatGateTargetContractViolations(result.targetFindings);
+    assert.ok(rendered.includes('frobnicate build --strict'), rendered);
+    assert.ok(rendered.includes('was NOT silently dropped'), rendered);
+  });
+
+  test('RGV-369-4: no targets section still auto-detects with no findings (#369)', async () => {
+    const result = await verify({
+      planGenerator: makePlanGenerator({ content: '# Plan\n\n## Context\n' })
+    });
+
+    assert.strictEqual(result.commandPlan.source, 'auto-detect');
+    assert.deepStrictEqual(result.targetFindings, []);
+    assert.strictEqual(result.commandPlan.composition, undefined);
   });
 });

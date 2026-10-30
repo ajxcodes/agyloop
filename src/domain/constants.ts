@@ -717,8 +717,20 @@ export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
 /** Static smoke-protocol findings (issue #359). */
 export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
 
-/** Static Quality Gate Target findings (issue #348). */
+/** Static Quality Gate Target findings (issue #348, #369). */
 export const GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION = 'committed-tree-assertion' as const;
+/** A declared entry the parser could not turn into an executable command (#369). */
+export const GATE_TARGET_RULE_UNEXECUTABLE_TARGET = 'unexecutable-target' as const;
+/** The change touches workflows but the composed command list has no linter (#369). */
+export const GATE_TARGET_RULE_WORKFLOW_LINT_MISSING = 'workflow-lint-missing' as const;
+
+/** Workflow-lint composition definition (issue #369). */
+export const CMD_ID_WORKFLOW_LINT = 'workflow-lint' as const;
+export const CMD_LABEL_WORKFLOW_LINT = 'Workflow Lint (actionlint)' as const;
+export const WORKFLOW_LINT_BINARY = 'actionlint' as const;
+
+/** Shell-wrapper unwrap cap: deeper nesting is opaque, never an assertion (#369). */
+export const MAX_SHELL_WRAPPER_DEPTH = 3 as const;
 
 /** Plan integrity verdicts (issue #298). */
 export const PLAN_INTEGRITY_VERIFIED = 'verified' as const;
@@ -760,22 +772,43 @@ export const MSG_SMOKE_PROTOCOL_NO_CHECKS =
 export const MSG_GATE_LINT_MISSING =
   'Lint is mandatory for this Node project, but no resolved gate command is a lint command.' as const;
 /**
- * A gate target that asserts a committed-tree invariant can never pass: the
+ * A gate target that ASSERTS a committed-tree invariant can never pass: the
  * gate runs in the task worktree against the UNCOMMITTED change, BEFORE the
- * commit gate (issue #348). ONE template for every enforcement point.
+ * commit gate (issue #348, narrowed by #369). Listing forms (`git diff`,
+ * `git diff --stat`, `git status --porcelain`) exit 0 there and are allowed.
+ * ONE template for every enforcement point.
  */
 export const MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION =
-  'Plan Quality Gate Target {index} at plan line {line} is a committed-tree assertion that can never pass: `{command}`. Gate commands run in the task worktree against the UNCOMMITTED change, before `codeloop commit`, so a comparison of the worktree or the index to HEAD always sees the change under test. Move the invariant to CI, or express it in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Nothing was staged and nothing was committed.' as const;
+  'Plan Quality Gate Target {index} at plan line {line} is a committed-tree assertion that can never pass: `{command}`. Gate commands run in the task worktree against the UNCOMMITTED change, before `codeloop commit`, so an assertion that the worktree or the index matches HEAD (`git diff --exit-code`, `git diff --quiet`, `git diff HEAD --exit-code`, also behind a shell wrapper such as `bash -c`) always sees the change under test. Listing forms (`git diff`, `git diff --stat`, `git diff --check`, `git status --porcelain`) exit 0 on that dirty tree and are allowed. Move the invariant to CI, or express it in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Nothing was staged and nothing was committed.' as const;
 
 /**
- * The documented gate-command contract (issue #348, AC2).
+ * A declared verification entry the parser could not turn into an executable
+ * command. It is REFUSED, never silently dropped (#369, was #372).
+ */
+export const MSG_GATE_TARGET_UNEXECUTABLE_ENTRY =
+  'Plan Quality Gate Target at plan line {line} was NOT silently dropped, but it cannot be executed as approved: `{command}` (reason: {detail}). Every declared verification entry must be a single runnable command. Put it in a fenced `bash` block, use a known runner or a path-like binary (for example `./scripts/check.sh`), and split compound commands (`;`, `|`, `&&` with redirections) into one line each. Nothing was staged and nothing was committed.' as const;
+
+/**
+ * The change under test touches workflows, but the composed command list has no
+ * workflow linter (#369, was #368). Plan targets replace the act container gate,
+ * so the linter must be composed or the gate must refuse.
+ */
+export const MSG_GATE_TARGET_WORKFLOW_LINT_MISSING =
+  'The change under test touches workflow files ({detail}), but the approved plan targets declare no workflow linter. Declaring targets replaces the act container gate, so a workflow edit additionally requires `{command}` (or `act -j <job>`): no local lint target can see a workflow schema error, and CI rejects it. Add `{command}` to the plan Quality Gate Targets, or remove the workflow edit from this change.' as const;
+
+/** Why a required workflow-lint composition could not resolve a command (#369). */
+export const MSG_WORKFLOW_LINT_UNAVAILABLE =
+  'no workflow linter could be resolved: `act` is unavailable or has no usable container runtime, and `actionlint` is not installed. Install one of them, or declare `actionlint` explicitly in the plan Quality Gate Targets.' as const;
+
+/**
+ * The documented gate-command contract (issue #348, AC2; composed by #369).
  *
  * ONE sentence block rendered in the gate task prompt, the planner system
  * prompt (both the on-disk copy and the compiled fallback) and the skill doc,
  * so no plan author or gate subagent has to infer the execution semantics.
  */
 export const GATE_COMMAND_WORKTREE_CONTRACT =
-  '**Gate command contract.** Gate commands run in the task worktree, in plan order, with that worktree as the working directory, and they run **before the commit gate**. No synthetic commit is created: the commands see the **UNCOMMITTED** change. Every command must therefore pass on that dirty tree. A committed-tree assertion — `git diff --exit-code -- <file>`, `git diff --cached`, `git status --porcelain` — can never pass there and is rejected at plan approval, naming the command. Keep committed-tree invariants in CI (`.github/workflows/ci.yml`), or express them in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Editing the plan after approval invalidates the approved digest, so fix the command *before* approving. Command-list precedence is `explicit > plan > config > act > auto-detect > default` (`GATE_COMMAND_PRECEDENCE`); declaring targets replaces the act container gate.' as const;
+  '**Gate command contract.** Gate commands run in the task worktree, in plan order, with that worktree as the working directory, and they run **before the commit gate**. No synthetic commit is created: the commands see the **UNCOMMITTED** change. Every command must therefore pass on that dirty tree. A committed-tree **assertion** — `git diff --exit-code`, `git diff --quiet`, `git diff HEAD --exit-code` (bare or behind a shell wrapper such as `bash -c`) — can never pass there and is rejected at plan approval, naming the command. **Listing** forms are allowed because they exit 0 on a dirty tree: `git diff`, `git diff --stat`, `git diff --name-only HEAD`, `git diff --check`, `git diff --cached`, `git diff HEAD`, `git status --porcelain`. Keep committed-tree invariants in CI (`.github/workflows/ci.yml`), or express them in a script the gate can run (`bash scripts/<name>.sh`) that snapshots the pre-state and compares after. Editing the plan after approval invalidates the approved digest, so fix the command *before* approving. Command-list precedence is `explicit > plan > config > act > auto-detect > default` (`GATE_COMMAND_PRECEDENCE`). Declaring targets replaces the act container gate, so when the change under test touches `.github/workflows/**` a plan-sourced list is COMPOSED with a workflow linter (`act -j <job>` first, then `actionlint`) with visible provenance, and the gate refuses when neither can be resolved.' as const;
 
 export const MAX_FILTERED_LOG_LINES = 30 as const;
 export const MAX_FILTERED_OUTPUT_CHARS = 2500 as const;

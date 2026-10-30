@@ -332,6 +332,30 @@ class LintMissingBuildDetector extends MockBuildDetector {
   }
 }
 
+/**
+ * A detector whose plan-sourced list carries a required workflow-lint
+ * composition with no resolved command (#369): the gate must fail closed.
+ */
+class CompositionMissingBuildDetector extends MockBuildDetector {
+  public async resolveCommandPlan(
+    workspaceDir: string,
+    config?: AgyLoopConfig,
+    options?: import('../../src/ports').GateCommandResolutionOptions
+  ): Promise<import('../../src/domain').GateCommandPlan> {
+    const plan = await super.resolveCommandPlan(workspaceDir, config, options);
+    if (plan.source !== 'plan') return plan;
+    return {
+      ...plan,
+      composition: {
+        required: true,
+        files: ['.github/workflows/ci.yml'],
+        command: null,
+        unavailableReason: 'no workflow linter available'
+      }
+    };
+  }
+}
+
 describe('RunQualityGateUseCase (Application Layer)', () => {
   test('executes successful gates and advances from IMPLEMENT to REVIEW', async () => {
     const initialSnapshot: StateMachineSnapshot = {
@@ -1632,6 +1656,33 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.strictEqual(result.smokeStatus, SMOKE_STATUS_NOT_DECLARED);
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
     assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+  });
+
+  test('RQG-T3 (#369): a required-but-unavailable workflow composition fails preflight', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run lint']);
+    const commandExecutor = new MockCommandExecutor();
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new CompositionMissingBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(
+      commandExecutor.executed.length,
+      0,
+      'the gate must fail closed before running anything the composition cannot lint'
+    );
+    assert.strictEqual(result.reports.length, 1);
+    assert.strictEqual(result.reports[0].id, 'gate-target-contract');
+    const snippet = result.reports[0].failureSnippet ?? '';
+    assert.ok(snippet.includes('.github/workflows/ci.yml'), snippet);
+    assert.ok(snippet.includes('actionlint'), snippet);
   });
 
   test('RQG-S2: a runtime smoke failure names the failing check and plan line', async () => {

@@ -134,15 +134,22 @@ import {
   CMD_LABEL_CONFIG,
   CMD_ID_PLAN_TARGET_PREFIX,
   CMD_LABEL_PLAN_TARGET,
+  CMD_ID_WORKFLOW_LINT,
+  CMD_LABEL_WORKFLOW_LINT,
+  WORKFLOW_LINT_BINARY,
   GATE_COMMAND_SOURCE_EXPLICIT,
   GATE_COMMAND_SOURCE_PLAN,
   GATE_COMMAND_SOURCE_CONFIG,
   GATE_COMMAND_SOURCE_ACT,
   GATE_COMMAND_SOURCE_AUTO_DETECT,
   GATE_COMMAND_SOURCE_DEFAULT,
+  GateCommandComposition,
   GateCommandPlan,
   GateCommandSource,
   isLintCommand,
+  isWorkflowLintCommand,
+  isWorkflowPath,
+  MSG_WORKFLOW_LINT_UNAVAILABLE,
   SCRIPT_NAME_TYPECHECK,
   SCRIPT_NAME_BUILD,
   SCRIPT_NAME_LINT,
@@ -159,6 +166,39 @@ import {
   GateCommandResolutionOptions,
   ContainerRuntimeProbe
 } from '../ports';
+
+/** Timeout for the `git status` probe that finds changed workflow files (#369). */
+const WORKFLOW_STATUS_TIMEOUT_MS = 5000;
+
+/** The composition plus the definition to append (internal, #369). */
+interface WorkflowLintComposition {
+  readonly composition: GateCommandComposition;
+  readonly definition: GateCommandDefinition | null;
+}
+
+/**
+ * Parses `git status --porcelain -z` output into changed workflow files (#369).
+ *
+ * NUL-separated records are `XY path`; a rename/copy record is followed by its
+ * original path, which is skipped.
+ */
+function parseChangedWorkflowFiles(output: string): string[] {
+  const fields = output.split('\0');
+  const files: string[] = [];
+  for (let index = 0; index < fields.length; index++) {
+    const record = fields[index];
+    if (record.length < 4) continue;
+    const status = record.slice(0, 2);
+    const filePath = record.slice(3);
+    if (status.includes('R') || status.includes('C')) {
+      index += 1;
+    }
+    if (isWorkflowPath(filePath) && !files.includes(filePath)) {
+      files.push(filePath);
+    }
+  }
+  return files;
+}
 
 export class FileBuildDetector implements BuildDetectorPort {
   /**
@@ -380,8 +420,10 @@ export class FileBuildDetector implements BuildDetectorPort {
     const finalize = (
       commands: readonly GateCommandDefinition[],
       source: GateCommandSource,
-      sourceDetail: string
-    ): GateCommandPlan => this.buildCommandPlan(commands, source, sourceDetail, planPath, detectedLint);
+      sourceDetail: string,
+      composition: WorkflowLintComposition | null = null
+    ): GateCommandPlan =>
+      this.buildCommandPlan(commands, source, sourceDetail, planPath, detectedLint, composition);
 
     // 1. Explicit CLI / parameter commands (Highest precedence)
     if (options.explicitCommands && options.explicitCommands.length > 0) {
@@ -392,19 +434,27 @@ export class FileBuildDetector implements BuildDetectorPort {
       );
     }
 
-    // 2. Approved plan Quality Gate Targets
+    // 2. Approved plan Quality Gate Targets.
+    //
+    // #369 (was #368): declaring targets REPLACES the act container gate, so a
+    // change that edits `.github/workflows/**` would be certified without a
+    // workflow linter. Composition happens HERE, at gate resolution, because
+    // at approval time the implementation diff does not exist yet. Only the
+    // plan tier composes: explicit/config/act/auto-detect/default are untouched.
     if (options.planTargets && options.planTargets.length > 0) {
       const planCommands = options.planTargets.map((command, idx) => ({
         id: `${CMD_ID_PLAN_TARGET_PREFIX}${idx + 1}`,
         label: `${CMD_LABEL_PLAN_TARGET} ${idx + 1}`,
         command
       }));
+      const composition = this.composeWorkflowLint(workspaceDir, config, planCommands);
       return finalize(
         planCommands,
         GATE_COMMAND_SOURCE_PLAN,
         planPath
           ? `approved plan Quality Gate Targets from ${planPath}`
-          : 'approved plan Quality Gate Targets'
+          : 'approved plan Quality Gate Targets',
+        composition
       );
     }
 
@@ -461,7 +511,8 @@ export class FileBuildDetector implements BuildDetectorPort {
     source: GateCommandSource,
     sourceDetail: string,
     planPath: string | null,
-    detectedLint: GateCommandDefinition | null
+    detectedLint: GateCommandDefinition | null,
+    workflowLint: WorkflowLintComposition | null = null
   ): GateCommandPlan {
     const finalCommands: GateCommandDefinition[] = [...commands];
     const appended: string[] = [];
@@ -480,6 +531,13 @@ export class FileBuildDetector implements BuildDetectorPort {
       }
     }
 
+    // #369: the composed workflow lint runs AFTER the detected lint, and its
+    // provenance is visible in `appended` and in `composition`.
+    if (workflowLint?.definition) {
+      finalCommands.push(workflowLint.definition);
+      appended.push(workflowLint.definition.command);
+    }
+
     return {
       commands: finalCommands,
       source,
@@ -487,7 +545,83 @@ export class FileBuildDetector implements BuildDetectorPort {
       appended,
       lintRequired,
       lintCommand,
-      planPath
+      planPath,
+      ...(workflowLint ? { composition: workflowLint.composition } : {})
+    };
+  }
+
+  /**
+   * Detects workflow files the change under test touches (#369).
+   *
+   * Fast path: no `.github/workflows` directory means no git call at all. Any
+   * probe failure returns `[]`: a probe error must never fabricate a
+   * requirement.
+   */
+  public detectChangedWorkflowFiles(workspaceDir: string): string[] {
+    const workflowsDir = path.join(workspaceDir, MARKER_GITHUB_WORKFLOWS);
+    if (!fs.existsSync(workflowsDir)) return [];
+
+    try {
+      const result = child_process.spawnSync(
+        'git',
+        ['status', '--porcelain', '-z', '--untracked-files=all'],
+        { cwd: workspaceDir, encoding: 'utf8', timeout: WORKFLOW_STATUS_TIMEOUT_MS }
+      );
+      if (result.status !== 0 || typeof result.stdout !== 'string') return [];
+      return parseChangedWorkflowFiles(result.stdout);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Composes the workflow lint onto a plan-sourced list when the change touches
+   * workflows and the list declares no workflow linter (#369).
+   *
+   * `act` (the whole CI job, including the actionlint step) is preferred, then a
+   * standalone `actionlint`. When neither can be resolved the composition
+   * carries no command, and the gate fails closed naming the file.
+   */
+  private composeWorkflowLint(
+    workspaceDir: string,
+    config: AgyLoopConfig | undefined,
+    commands: readonly GateCommandDefinition[]
+  ): WorkflowLintComposition | null {
+    const files = this.detectChangedWorkflowFiles(workspaceDir);
+    if (files.length === 0) {
+      // No workflow-touching change: a plan declaring targets is UNaffected.
+      return {
+        composition: { required: false, files: [], command: null, unavailableReason: null },
+        definition: null
+      };
+    }
+
+    if (commands.some((def) => isWorkflowLintCommand(def.command))) {
+      return {
+        composition: { required: false, files: [], command: null, unavailableReason: null },
+        definition: null
+      };
+    }
+
+    const actCommand = this.resolveActCommand(workspaceDir, config);
+    const definition: GateCommandDefinition | null =
+      actCommand ??
+      (this.hasActionlintBinary()
+        ? {
+            id: CMD_ID_WORKFLOW_LINT,
+            label: CMD_LABEL_WORKFLOW_LINT,
+            command: WORKFLOW_LINT_BINARY
+          }
+        : null);
+
+    return {
+      definition,
+      composition: {
+        required: true,
+        files,
+        command: definition ? definition.command : null,
+        unavailableReason: definition ? null : MSG_WORKFLOW_LINT_UNAVAILABLE
+      }
     };
   }
 
@@ -882,6 +1016,17 @@ export class FileBuildDetector implements BuildDetectorPort {
 
   public hasActBinary(): boolean {
     return FileBuildDetector.hasActBinary();
+  }
+
+  /**
+   * Checks if the `actionlint` CLI binary is available on PATH (#369).
+   */
+  public static hasActionlintBinary(): boolean {
+    return FileBuildDetector.isBinaryAvailable(WORKFLOW_LINT_BINARY);
+  }
+
+  public hasActionlintBinary(): boolean {
+    return FileBuildDetector.hasActionlintBinary();
   }
 
   /**

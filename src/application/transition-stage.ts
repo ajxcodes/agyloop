@@ -46,8 +46,6 @@ import {
   measureStageWindowMs,
   SMOKE_PROTOCOL_NOT_REPORTED,
   parseQualityGateTargets,
-  lintQualityGateTargets,
-  formatGateTargetContractViolations,
   formatActNotRunReason,
   isHumanWaitStage,
   WorktreeCreationError,
@@ -67,6 +65,7 @@ import {
   SummarySmokeCheck
 } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import { assertGateTargetContract as enforceGateTargetContract } from './gate-target-contract';
 
 export interface TransitionParams {
   readonly targetStage: string | StageName;
@@ -279,20 +278,20 @@ export class TransitionStageUseCase {
       }
     }
 
-    // Issue #348: a plan whose Quality Gate Targets assert a committed-tree
-    // invariant is refused BEFORE the approval is recorded. Nothing is
-    // persisted and nothing is provisioned, so the operator fixes the command
-    // and walks PLAN -> APPROVAL -> IMPLEMENT once, before the digest freezes.
-    if (targetStageStr === STAGE_APPROVAL) {
-      this.assertGateTargetContract(sm, params);
-    }
-
     // #226: legality FIRST. `transition()` is the single thrower of
-    // `InvalidTransitionError` (`state-machine.ts:332`), and it now runs before the
-    // worktree guardrail below, so a rejected target can no longer have created a
+    // `InvalidTransitionError` (`state-machine.ts:332`), and it now runs before
+    // every guardrail below, so a rejected target can no longer have created a
     // worktree and a branch on disk. Nothing is persisted until the save below, so
     // the on-disk checkpoint is byte-identical on the failure path either way.
     sm.transition(params.targetStage, transitionMetadata);
+
+    // Issue #348 (guard order fixed by #369): the target contract runs AFTER
+    // `sm.transition`, so an ILLEGAL hop still raises `InvalidTransitionError`
+    // — the class an operator uses to tell "wrong stage" from "wrong plan".
+    // Nothing is persisted and nothing is provisioned on either refusal.
+    if (targetStageStr === STAGE_APPROVAL) {
+      this.assertGateTargetContract(sm, params);
+    }
 
     // Consume-on-ingest (issue #284): one filed report certifies exactly one
     // gate round, so the same PASSED can never be applied to a later run. A
@@ -305,16 +304,20 @@ export class TransitionStageUseCase {
     // Issue #298: the approved plan is frozen for the whole IMPLEMENT ->
     // QUALITY_GATE -> REVIEW loop. Entering IMPLEMENT from a fresh approval
     // records the digest; entering from a retry/self-correction preserves it.
-    if (targetStageStr === STAGE_IMPLEMENT && !params.dryRun) {
+    if (targetStageStr === STAGE_IMPLEMENT) {
       const fromFreshApproval =
         prevStage === STAGE_PLAN || prevStage === STAGE_APPROVAL || prevStage === STAGE_COMPLETED;
       // Issue #348 (AC1): a fresh approval may carry a plan approved by an
       // older build. Refuse before the digest is recorded — a retry/self-
       // correction (`QUALITY_GATE -> IMPLEMENT`) is deliberately exempt (R5).
+      //
+      // Issue #369: the guard runs under `--dry-run` too (it WARNS instead of
+      // throwing), so a preview can never report a transition the real run
+      // refuses. Digest recording stays under `!params.dryRun`.
       if (fromFreshApproval) {
         this.assertGateTargetContract(sm, params);
       }
-      if (fromFreshApproval || !sm.approvedPlanDigest) {
+      if (!params.dryRun && (fromFreshApproval || !sm.approvedPlanDigest)) {
         this.recordApprovedPlanDigest(sm, params);
       }
     }
@@ -679,38 +682,21 @@ export class TransitionStageUseCase {
   }
 
   /**
-   * Refuses an approved plan whose Quality Gate Targets assert a committed-tree
-   * invariant (issue #348).
+   * Refuses an approved plan whose Quality Gate Targets cannot be executed as
+   * written (issues #348, #369).
    *
-   * The gate runs in the task worktree against the UNCOMMITTED change, BEFORE
-   * the commit gate, so `git diff --exit-code` / `git status` can never pass
-   * there. Static and git-free: this is the same `lintQualityGateTargets` the
-   * dispatched gate and the in-process gate preflight consult.
+   * Resolution stays here (this use case resolves plans from the checkpoint);
+   * enforcement is the ONE shared `assertGateTargetContract`, so `codeloop
+   * implement` and `transition APPROVAL` cannot drift.
    */
   private assertGateTargetContract(sm: StateMachine, params: TransitionParams): void {
-    if (!this.planGenerator) return;
-
     const resolved = this.resolveCurrentPlan(sm, params);
     if (!resolved) return;
-
-    let content: string;
-    try {
-      content = this.planGenerator.readPlanDocument(resolved.planPath);
-    } catch {
-      // An unreadable plan is not a target list; other guards report that.
-      return;
-    }
-
-    const findings = lintQualityGateTargets(parseQualityGateTargets(content).targets);
-    if (findings.length === 0) return;
-
-    const reason = `${formatGateTargetContractViolations(findings)} (plan: ${resolved.planPath})`;
-    if (params.dryRun) {
-      console.warn(`[codeloop] Warning: ${reason}`);
-      return;
-    }
-
-    throw new ValidationError('gateTargets', resolved.planPath, reason);
+    enforceGateTargetContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
   }
 
   private recordApprovedPlanDigest(sm: StateMachine, params: TransitionParams): void {

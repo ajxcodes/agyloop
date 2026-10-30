@@ -8,9 +8,12 @@ const fs = require('fs');
 const net = require('node:net');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('node:child_process');
 
 const {
   FileBuildDetector,
+  ResolveSubagentUseCase,
+  FileConfigRepository,
   ECOSYSTEM_NODE,
   ECOSYSTEM_GO,
   ECOSYSTEM_RUST,
@@ -958,5 +961,195 @@ describe('FileBuildDetector - lint and command-plan provenance (issue #298)', ()
       DEFAULT_GATE_COMMANDS.map((cmd: any) => cmd.command)
     );
     assert.deepStrictEqual(resolved.appended, []);
+  });
+});
+
+describe('Workflow lint composition (#369, was #368)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-workflow-lint-'));
+  });
+
+  afterEach(() => {
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  function git(args: string[]): any {
+    return spawnSync('git', args, { cwd: tempDir, encoding: 'utf8' });
+  }
+
+  function gitOk(args: string[]): string {
+    const result = git(args);
+    assert.strictEqual(
+      result.status,
+      0,
+      `git ${args.join(' ')} failed (${result.status}): ${result.stderr || result.stdout}`
+    );
+    return result.stdout;
+  }
+
+  /** A real repo whose committed workflow file may be left MODIFIED. */
+  function seedRepo(options: { modified?: boolean } = {}): void {
+    gitOk(['init', '-q']);
+    gitOk(['config', 'user.email', 'smoke@example.test']);
+    gitOk(['config', 'user.name', 'smoke']);
+    fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, '.github', 'workflows', 'ci.yml'), 'name: CI\n', 'utf8');
+    fs.writeFileSync(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'probe', scripts: { lint: 'eslint .' } }),
+      'utf8'
+    );
+    gitOk(['add', '-A']);
+    gitOk(['commit', '-qm', 'seed']);
+    if (options.modified !== false) {
+      fs.appendFileSync(path.join(tempDir, '.github', 'workflows', 'ci.yml'), '# touched\n');
+    }
+  }
+
+  function stubbedDetector(options: {
+    act?: boolean;
+    actionlint?: boolean;
+  } = {}): any {
+    const detector = new FileBuildDetector();
+    detector.hasActBinary = () => options.act === true;
+    detector.hasActionlintBinary = () => options.actionlint === true;
+    detector.probeContainerRuntime = () =>
+      options.act
+        ? { runtime: 'docker', socketPath: null, connection: 'fork-exec' }
+        : null;
+    return detector;
+  }
+
+  test('FBD-W1: a workflow diff + a plan with lint only appends actionlint (#369, AC-14)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: false, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.strictEqual(resolved.source, 'plan');
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint', 'actionlint']
+    );
+    assert.deepStrictEqual(resolved.appended, ['actionlint']);
+    assert.deepStrictEqual(resolved.composition, {
+      required: true,
+      files: ['.github/workflows/ci.yml'],
+      command: 'actionlint',
+      unavailableReason: null
+    });
+  });
+
+  test('FBD-W2: act is preferred over actionlint when it can run the CI job (#369)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: true, actionlint: true });
+    const config = {
+      options: { containerGates: true, act: { enabled: true, job: 'lint' } }
+    };
+
+    const resolved = await detector.resolveCommandPlan(tempDir, config, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint', 'act -j lint']
+    );
+    assert.strictEqual(resolved.composition.required, true);
+    assert.strictEqual(resolved.composition.command, 'act -j lint');
+    assert.ok(!resolved.commands.some((cmd: any) => cmd.command.includes('actionlint')));
+  });
+
+  test('FBD-W3: a plan that already declares actionlint is not duplicated (#369)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: false, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint', 'actionlint']
+    });
+
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint', 'actionlint']
+    );
+    assert.strictEqual(resolved.composition.required, false);
+    assert.deepStrictEqual(resolved.appended, []);
+  });
+
+  test('FBD-W4: a clean workflow change requires no composition (#369, AC-12)', async () => {
+    seedRepo({ modified: false });
+    const detector = stubbedDetector({ act: false, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.strictEqual(resolved.source, 'plan');
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint']
+    );
+    assert.strictEqual(resolved.composition.required, false);
+    assert.deepStrictEqual(resolved.composition.files, []);
+  });
+
+  test('FBD-W5: a plan with no targets keeps the act tier unchanged (#369, AC-15)', async () => {
+    seedRepo({ modified: false });
+    const detector = stubbedDetector({ act: true, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir);
+
+    assert.strictEqual(resolved.source, 'act');
+    assert.strictEqual(resolved.commands[0].command, 'act');
+    assert.strictEqual(resolved.composition, undefined);
+  });
+
+  test('FBD-W6: no available linter marks the composition unavailable (#369)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: false, actionlint: false });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.strictEqual(resolved.composition.required, true);
+    assert.strictEqual(resolved.composition.command, null);
+    assert.ok(resolved.composition.unavailableReason, 'an unavailable composition states why');
+    assert.deepStrictEqual(resolved.composition.files, ['.github/workflows/ci.yml']);
+  });
+
+  test('PL-369: both planner prompt copies state the composition rule (#369)', () => {
+    const useCase = new ResolveSubagentUseCase(new FileConfigRepository());
+    const prompt = useCase.getPlannerSystemPrompt();
+    const onDisk = fs.readFileSync(path.join(__dirname, '../../prompts/planner.md'), 'utf8');
+
+    for (const text of [prompt, onDisk]) {
+      assert.ok(text.includes('Declaring targets replaces the act container gate'), 'composition rule');
+      assert.ok(text.includes('.github/workflows/**'), 'workflow path glob');
+      assert.ok(text.includes('actionlint'), 'the linter the gate composes');
+    }
+  });
+
+  test('SUB-369: the gate prompt renders the composition provenance (#369)', () => {
+    const useCase = new ResolveSubagentUseCase(new FileConfigRepository());
+    const prompt = useCase.buildGateTaskPrompt({
+      commands: ['npm run lint', 'actionlint'],
+      composition: {
+        required: true,
+        files: ['.github/workflows/ci.yml'],
+        command: 'actionlint',
+        unavailableReason: null
+      }
+    });
+
+    assert.ok(prompt.includes('Workflow lint composed'), prompt);
+    assert.ok(prompt.includes('.github/workflows/ci.yml'), prompt);
+    assert.ok(prompt.includes('actionlint'), prompt);
   });
 });

@@ -989,6 +989,7 @@ export class GetNextActionUseCase {
           commandSourceDetail: commandPlan.sourceDetail,
           appendedCommands: commandPlan.appended,
           requiredLint: commandPlan.lintRequired,
+          composition: commandPlan.composition,
           smokeProtocol: verification.smoke,
           planIntegrity: verification.integrity
         });
@@ -2158,10 +2159,12 @@ export class GetNextActionUseCase {
   }
 
   /**
-   * A gate target that asserts a committed-tree invariant can never pass: the
-   * gate runs against the UNCOMMITTED change, before the commit gate
-   * (issue #348). A legacy checkpoint approved by an older build is refused
-   * here instead of being dispatched to a gate that must fail.
+   * A gate target the gate cannot execute as approved: a committed-tree
+   * assertion (#348), an entry the parser refused (#369, was #372), or a
+   * workflow change the composed list cannot lint (#369, was #368).
+   *
+   * A legacy checkpoint approved by an older build is refused here instead of
+   * being dispatched to a gate that must fail. The pinned title is unchanged.
    */
   private buildGateTargetContractFailure(
     verification: GateVerification,
@@ -2182,7 +2185,7 @@ export class GetNextActionUseCase {
       baseBranch,
       taskBranch,
       worktreePath,
-      humanSummary: `The approved plan's Quality Gate Targets cannot pass on the worktree this gate runs in: ${detail} Inspected \`${verification.planPath ?? '(unknown plan path)'}\`. Gate commands run in the task worktree against the UNCOMMITTED change, before the commit gate, with no synthetic commit. To fix it, ${formatPlanReapprovalRecovery(issue, planDir)}. The gate was not dispatched and no command ran.`
+      humanSummary: `The approved plan's Quality Gate Targets cannot be executed as approved: ${detail} Inspected \`${verification.planPath ?? '(unknown plan path)'}\`. Gate commands run in the task worktree against the UNCOMMITTED change, before the commit gate, with no synthetic commit. To fix it, ${formatPlanReapprovalRecovery(issue, planDir)}. The gate was not dispatched and no command ran.`
     };
   }
 

@@ -13,8 +13,12 @@ const assert = require('node:assert');
 const {
   parseQualityGateTargets,
   lintQualityGateTargets,
+  lintGateTargetRejections,
+  isCommittedTreeAssertion,
   formatGateTargetContractViolations,
-  MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION
+  MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION,
+  MSG_GATE_TARGET_UNEXECUTABLE_ENTRY,
+  MSG_GATE_TARGET_WORKFLOW_LINT_MISSING
 } = require('../../dist/domain');
 
 const FENCED = ['```bash', 'npm run build', 'npm test', '```'].join('\n');
@@ -248,32 +252,49 @@ describe('parseQualityGateTargets (issue #298)', () => {
     );
   });
 
-  test('QGT9: the committed-tree-assertion rule matches the documented decision table (#348)', () => {
-    const flagged = [
-      'git diff --exit-code -- package-lock.json',
-      'git diff',
-      'git diff --quiet',
-      'git diff HEAD -- f',
-      'git diff --cached --check',
-      'git status --porcelain',
-      'git -C . diff --exit-code -- f'
+  test('QGT9: the decision table refuses assertions and allows listings (#348, #369)', () => {
+    // Each row carries its rationale (§2.1 D1). The verdict is the contract.
+    const rows = [
+      { command: 'git diff', verdict: 'allowed', why: 'listing; exits 0 on a dirty tree' },
+      { command: 'git diff --stat', verdict: 'allowed', why: 'listing' },
+      { command: 'git diff --name-only HEAD', verdict: 'allowed', why: 'one-revision listing' },
+      { command: 'git diff --check', verdict: 'allowed', why: 'whitespace check, not a change assertion' },
+      { command: 'git diff --cached', verdict: 'allowed', why: 'index listing' },
+      { command: 'git diff --cached --stat', verdict: 'allowed', why: 'index listing' },
+      { command: 'git diff HEAD', verdict: 'allowed', why: 'one-revision listing' },
+      { command: 'git status', verdict: 'allowed', why: 'status is a listing' },
+      { command: 'git status --porcelain', verdict: 'allowed', why: 'status is a listing' },
+      { command: 'git diff HEAD~1 HEAD --exit-code', verdict: 'allowed', why: 'committed pair only' },
+      { command: 'git diff --no-index a.json b.json --exit-code', verdict: 'allowed', why: 'file-to-file' },
+      { command: 'git log --oneline -1', verdict: 'allowed', why: 'not a diff worktree comparison' },
+      { command: 'git diff-tree -r HEAD', verdict: 'allowed', why: 'not a diff worktree comparison' },
+      { command: 'git diff --exit-code', verdict: 'refused', why: 'assertion vs worktree' },
+      { command: 'git diff --quiet', verdict: 'refused', why: 'assertion vs worktree' },
+      {
+        command: 'git diff --exit-code -- package-lock.json',
+        verdict: 'refused',
+        why: 'assertion vs worktree, scoped to one path'
+      },
+      { command: 'git diff HEAD --exit-code', verdict: 'refused', why: 'one-revision assertion' },
+      { command: 'git diff --cached --exit-code', verdict: 'refused', why: 'index assertion' },
+      { command: 'git -C . diff --quiet', verdict: 'refused', why: 'global option does not hide the assertion' }
     ];
-    const allowed = [
-      'git diff origin/main...HEAD --stat',
-      'git diff HEAD~1 HEAD -- src/',
-      'git diff --no-index a.json b.json',
-      'git log --oneline -1',
-      'git diff-tree -r HEAD',
-      'npm test'
-    ];
+    const refused = rows.filter((row: any) => row.verdict === 'refused').map((row: any) => row.command);
+
+    for (const row of rows) {
+      assert.strictEqual(
+        isCommittedTreeAssertion(row.command),
+        row.verdict === 'refused',
+        `${row.command}: ${row.why}`
+      );
+    }
 
     const markdown = [
       '# Plan',
       '',
       '### Quality Gate Targets',
       '```bash',
-      ...flagged,
-      ...allowed,
+      ...rows.map((row: any) => row.command),
       '```',
       ''
     ].join('\n');
@@ -282,20 +303,14 @@ describe('parseQualityGateTargets (issue #298)', () => {
 
     assert.deepStrictEqual(
       findings.map((finding: any) => finding.command),
-      flagged,
-      'every flagged shape produces exactly one finding, in plan order'
+      refused,
+      'every refused shape produces exactly one finding, in plan order'
     );
-    assert.strictEqual(findings.length, flagged.length);
+    assert.strictEqual(findings.length, refused.length);
     for (const finding of findings) {
       assert.strictEqual(finding.rule, 'committed-tree-assertion');
       assert.ok(finding.index >= 1 && finding.index <= parsed.targets.length);
       assert.strictEqual(finding.line, parsed.targets[finding.index - 1].line);
-    }
-    for (const command of allowed) {
-      assert.ok(
-        !findings.some((finding: any) => finding.command === command),
-        `'${command}' must not be flagged`
-      );
     }
   });
 
@@ -344,6 +359,225 @@ describe('parseQualityGateTargets (issue #298)', () => {
     assert.strictEqual(result.found, true);
     assert.deepStrictEqual(result.commands, ['git diff --exit-code -- package-lock.json']);
     assert.deepStrictEqual(result.unparsed, [], 'a finding is a refusal, never a silent drop');
+  });
+
+  test('QGT14: shell wrappers are unwrapped before classification (#369, was #372)', () => {
+    const wrapped = [
+      "bash -c 'git diff --exit-code'",
+      'sh -c "git diff --quiet"',
+      'env git diff --exit-code',
+      'env CI=1 git diff --quiet',
+      "bash -lc 'git diff HEAD --exit-code'"
+    ];
+    const notAssertions = ["bash -c 'npm test'", 'env npm test', 'sh scripts/check.sh'];
+
+    for (const command of wrapped) {
+      assert.strictEqual(isCommittedTreeAssertion(command), true, `must be refused: ${command}`);
+    }
+    for (const command of notAssertions) {
+      assert.strictEqual(isCommittedTreeAssertion(command), false, `must not be refused: ${command}`);
+    }
+
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '```bash',
+      ...wrapped,
+      ...notAssertions,
+      '```',
+      ''
+    ].join('\n');
+    const parsed = parseQualityGateTargets(markdown);
+
+    assert.ok(
+      parsed.commands.includes("bash -c 'git diff --exit-code'"),
+      'the parser keeps the quoted wrapper as ONE target'
+    );
+    assert.deepStrictEqual(
+      lintQualityGateTargets(parsed.targets).map((finding: any) => finding.command),
+      wrapped,
+      'wrapped assertions are refused by exactly the same rule'
+    );
+  });
+
+  test('QGT15: polyglot targets outside the old allowlist are executed, not dropped (#369)', () => {
+    const commands = [
+      'uv run pytest -q',
+      './scripts/check.sh',
+      'php vendor/bin/phpunit',
+      'deno test',
+      'node_modules/.bin/tsc -p .',
+      'poetry run pytest'
+    ];
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '```bash',
+      ...commands,
+      '```',
+      ''
+    ].join('\n');
+
+    const parsed = parseQualityGateTargets(markdown);
+
+    assert.deepStrictEqual(parsed.commands, commands);
+    assert.strictEqual(parsed.found, true);
+    assert.deepStrictEqual(parsed.rejections, []);
+  });
+
+  test('QGT16: an unexecutable entry is a typed rejection and keeps its evidence (#369, was #372)', () => {
+    const markdown = [
+      '# Plan',
+      '',
+      '### Quality Gate Targets',
+      '```bash',
+      'frobnicate build --strict',
+      'npm test; rm -rf dist',
+      '```',
+      ''
+    ].join('\n');
+
+    const parsed = parseQualityGateTargets(markdown);
+
+    assert.strictEqual(parsed.found, false);
+    assert.deepStrictEqual(parsed.commands, []);
+    assert.deepStrictEqual(
+      parsed.rejections.map((rejection: any) => ({
+        entry: rejection.entry,
+        line: rejection.line,
+        reason: rejection.reason
+      })),
+      [
+        { entry: 'frobnicate build --strict', line: 5, reason: 'unrecognized-command' },
+        { entry: 'npm test; rm -rf dist', line: 6, reason: 'compound-syntax' }
+      ]
+    );
+    assert.ok(
+      parsed.unparsed.some((line: string) => line.includes('frobnicate build --strict')),
+      'a rejected entry is still `unparsed` evidence'
+    );
+    assert.ok(
+      parsed.unparsed.some((line: string) => line.includes('npm test; rm -rf dist')),
+      'a rejected compound entry is still `unparsed` evidence'
+    );
+
+    const findings = lintGateTargetRejections(parsed);
+    assert.strictEqual(findings.length, 2);
+    assert.deepStrictEqual(
+      findings.map((finding: any) => ({
+        rule: finding.rule,
+        line: finding.line,
+        command: finding.command,
+        detail: finding.detail
+      })),
+      [
+        {
+          rule: 'unexecutable-target',
+          line: 5,
+          command: 'frobnicate build --strict',
+          detail: 'unrecognized-command'
+        },
+        {
+          rule: 'unexecutable-target',
+          line: 6,
+          command: 'npm test; rm -rf dist',
+          detail: 'compound-syntax'
+        }
+      ]
+    );
+  });
+
+  test('QGT17: the formatter renders all three rules through one join (#369)', () => {
+    const findings = [
+      {
+        rule: 'committed-tree-assertion',
+        index: 1,
+        line: 5,
+        command: 'git diff --exit-code'
+      },
+      {
+        rule: 'unexecutable-target',
+        index: 0,
+        line: 7,
+        command: 'frobnicate build --strict',
+        detail: 'unrecognized-command'
+      },
+      {
+        rule: 'workflow-lint-missing',
+        index: 0,
+        line: 0,
+        command: 'actionlint',
+        detail: '.github/workflows/ci.yml'
+      }
+    ];
+
+    const rendered = formatGateTargetContractViolations(findings);
+    const expected = [
+      MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION.replace('{index}', '1')
+        .replace('{line}', '5')
+        .replace('{command}', 'git diff --exit-code'),
+      MSG_GATE_TARGET_UNEXECUTABLE_ENTRY.replace('{line}', '7')
+        .replace('{command}', 'frobnicate build --strict')
+        .replace('{detail}', 'unrecognized-command'),
+      MSG_GATE_TARGET_WORKFLOW_LINT_MISSING.replace('{detail}', '.github/workflows/ci.yml').replace(
+        '{command}',
+        'actionlint'
+      )
+    ].join(' ');
+
+    assert.strictEqual(rendered, expected, 'one join, no separator drift');
+    assert.ok(rendered.includes('frobnicate build --strict'));
+    assert.ok(rendered.includes('unrecognized-command'));
+    assert.ok(rendered.includes('.github/workflows/ci.yml'));
+    assert.ok(rendered.includes('actionlint'));
+    assert.ok(rendered.includes('can never pass'));
+  });
+
+  test('QGT18: structural prose never becomes a rejection, and a deeper target heading re-anchors (#369)', () => {
+    const markdown = [
+      '# Plan',
+      '',
+      '## 4. Quality Gate & Test Verification',
+      '',
+      '| Command | Notes |',
+      '|---|---|',
+      '| `npm test` | all |',
+      '',
+      '> A note quoting `npm run lint` must not become a target.',
+      '',
+      '---',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '- `npm run build`',
+      '',
+      '### 4.1 Decision table',
+      '',
+      '- `npm run lint`',
+      ''
+    ].join('\n');
+
+    const parsed = parseQualityGateTargets(markdown);
+
+    assert.deepStrictEqual(parsed.rejections, [], 'tables, blockquotes and rules are prose');
+    assert.deepStrictEqual(parsed.commands, ['npm run build']);
+    const headingLine = markdown.split('\n').indexOf('### Quality Gate Targets') + 1;
+    assert.strictEqual(
+      parsed.sectionLine,
+      headingLine,
+      'the deeper target heading re-anchors the section'
+    );
+    assert.ok(
+      parsed.unparsed.some((line: string) => line.includes('| `npm test` | all |')),
+      'a table row stays evidence'
+    );
+    assert.ok(
+      parsed.unparsed.some((line: string) => line.includes('> A note quoting')),
+      'a blockquote stays evidence'
+    );
+    assert.ok(!parsed.commands.includes('npm run lint'), 'the following subheading ends collection');
   });
 
   test('QGT7: an unterminated continuation is evidence, never a command', () => {
