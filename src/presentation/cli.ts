@@ -204,7 +204,8 @@ import {
   GitWorktreeManager,
   RunnerFactory,
   FileProjectScaffolder,
-  FileGateReportRepository
+  FileGateReportRepository,
+  FileWorkspaceMutationProbe
 } from '../infrastructure';
 import { installOpenCodeIntegration } from './opencode-setup';
 import { ColorStream, STAGE_COLOR_CODES, paint } from './color-policy';
@@ -1945,7 +1946,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         makeInferBaseBranchUseCase(scope.repo),
         critique,
         new DetectImplementationDiffUseCase(commandExecutor),
-        new FileGateReportRepository({ workspaceDir: options.workspaceDir || process.cwd() })
+        new FileGateReportRepository({ workspaceDir: options.workspaceDir || process.cwd() }),
+        // Issue #389: DISCOVERY's scoped-write boundary is measured, not prose.
+        new FileWorkspaceMutationProbe(commandExecutor)
       );
       const res = await getNextActionUseCase.execute({
         configPath: options.configPath,
@@ -2073,7 +2076,16 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         console.error(`⚠ ${worktreeTruth.stalePath}: ${staleRemediation}`);
       }
       console.log(`Description   : ${truthful.description}`);
-      console.log(`Summary       : ${truthful.humanSummary}\n`);
+      console.log(`Summary       : ${truthful.humanSummary}`);
+      // Issue #389: a measured write outside the stage's scope must be visible
+      // in the human-readable directive, not only in `--json`.
+      if (truthful.stageFindings && truthful.stageFindings.length > 0) {
+        console.log(`Findings      : ${truthful.stageFindings.length}`);
+        truthful.stageFindings.forEach((finding) => {
+          console.log(`  ⚠ [${finding.rule}] ${finding.path} — ${finding.detail}`);
+        });
+      }
+      console.log('');
 
       // Issue #301: a dry run reads and declares, never writes.
       if (options.dryRun) {

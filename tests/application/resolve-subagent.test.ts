@@ -507,7 +507,7 @@ index 1111111..2222222 100644
   });
 
   describe('Discovery Subagent Container Execution & Fallback (AC6 - AC8)', () => {
-    test('AC6 & AC7: injects container execution capabilities and Strict Container-Only Guardrail when container runtime/daemon is available', () => {
+    test('AC6 & AC7: injects the mutation boundary and a runnable container recipe when container runtime/daemon is available', () => {
       const mockDetector: any = {
         resolveContainerRuntime: () => 'podman',
         resolveContainerSocket: () => ({ socketPath: 'unix:///run/user/1000/podman/podman.sock', runtime: 'podman' })
@@ -518,10 +518,24 @@ index 1111111..2222222 100644
         issueNumber: 119
       });
 
-      assert.ok(prompt.includes('Strict Container-Only Guardrail'));
-      assert.ok(prompt.includes('Command execution in Discovery can ONLY run containerized invocations (`act`, `podman run`, `docker run`)'));
-      assert.ok(prompt.includes('Empirical Verification via Ephemeral Container'));
-      assert.ok(prompt.includes('Use podman (`podman run`) or `act` to empirically reproduce'));
+      // Issue #389: the boundary is MUTATION, not containment — a host-run
+      // harness cannot satisfy "container-only" and "reproduce empirically" at
+      // the same time, so the mandate became a boundary plus an offer.
+      assert.ok(prompt.includes('**Mutation Boundary**'));
+      assert.ok(prompt.includes('every WRITE must land inside'));
+      assert.ok(prompt.includes('Never rebuild the repository root'));
+      assert.ok(prompt.includes('the root build is what the installed `codeloop` executes'));
+      assert.ok(prompt.includes('**Container-Preferred Empirical Verification**'));
+      assert.ok(prompt.includes('docker.io/library/node:24-bookworm-slim'));
+      assert.ok(prompt.includes('-v "$PWD":/repo:ro'));
+      assert.ok(prompt.includes('podman run --rm --network=none'));
+      assert.ok(
+        prompt.includes(
+          'If the runtime is unreachable when you run it, fall back to host reads plus static RCA and record why in the report.'
+        )
+      );
+      assert.strictEqual(prompt.includes('can ONLY run containerized invocations'), false);
+      assert.strictEqual(prompt.includes('Strict Container-Only Guardrail'), false);
     });
 
     test('AC8: injects graceful fallback to static RCA code tracing when container runtime/daemon is unavailable', () => {
@@ -688,7 +702,7 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     assert.ok(prompt.indexOf('GATE_REPORT_JSON:') > prompt.indexOf('### Required Verdict Output'));
   });
 
-  test('RS-G5: a healthy runtime with no socket selects the container guardrail (#295)', () => {
+  test('RS-G5: a healthy runtime with no socket selects the container recipe (#295)', () => {
     const mockDetector: any = {
       probeContainerRuntime: () => ({ runtime: 'podman', socketPath: null, connection: 'fork-exec' }),
       resolveContainerRuntime: () => 'podman',
@@ -704,8 +718,11 @@ describe('Gate prompt evidence contract (issue #298)', () => {
 
     const prompt = selection.buildDiscoveryTaskPrompt({ issueNumber: 119 });
 
-    assert.ok(prompt.includes('Strict Container-Only Guardrail'));
-    assert.ok(prompt.includes('Use podman (`podman run`) or `act`'));
+    // #295's rule survives: a working fork-exec runtime is still detected and
+    // still yields the explicit recipe. Only the MANDATE (#389) is gone.
+    assert.ok(prompt.includes('**Mutation Boundary**'));
+    assert.ok(prompt.includes('podman run --rm --network=none'));
+    assert.ok(prompt.includes('docker.io/library/node:24-bookworm-slim'));
   });
 
   test('RS-G6: the planner prompt names the sandbox path for AUTHORED smoke blocks (#359)', () => {
