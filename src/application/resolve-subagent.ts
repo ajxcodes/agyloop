@@ -57,6 +57,7 @@ import {
   formatTriageActionSideEffects,
   formatTriageRoutingCommand,
   NOTE_REVIEW_VERDICT_RETURN,
+  formatCritiqueEvidenceReturnNote,
   formatToolProse,
   TOOL_CAPABILITY_READ,
   TOOL_CAPABILITY_SEARCH,
@@ -300,6 +301,11 @@ export interface ReviewerTaskPromptParams {
    */
   readonly untrackedFiles?: readonly string[] | null;
   /**
+   * Where the reviewer writes its Tier 1 evidence (issue #397). When absent the
+   * prompt is byte-identical to the pre-#397 wording — no path, no push.
+   */
+  readonly critiqueReportPath?: string | null;
+  /**
    * An authoritative critique binary path (issue #314).
    *
    * `run-review` resolves it asynchronously and passes it here; when present it
@@ -329,11 +335,18 @@ export interface TriageTaskPromptParams {
  * No `PATH` export: the path is absolute, and `~/.local/bin` is not where the
  * installer writes.
  */
-function formatCritiqueTierOneCommand(binaryPath: string): string {
+function formatCritiqueTierOneCommand(binaryPath: string, reportPath?: string | null): string {
   const quoted = shellQuote(binaryPath);
-  return binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
+  const command = binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
     ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
     : `${quoted} ${CRITIQUE_FLAG_JSON}`;
+  if (!reportPath) return command;
+  // Issue #397: `tee`, not `>`: the reviewer must still read the findings to
+  // reconcile the two tiers. `dirname` is used rather than splitting the path
+  // in JS: the evidence path is absolute and may be Windows- or POSIX-shaped,
+  // and the shell that runs it is the same shell the reviewer already uses.
+  const quotedReport = shellQuote(reportPath);
+  return `mkdir -p "$(dirname ${quotedReport})" && ${command} | tee ${quotedReport}`;
 }
 
 /**
@@ -1151,8 +1164,13 @@ export class ResolveSubagentUseCase {
     prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
 
+    const critiqueReportPath = params.critiqueReportPath || null;
+    const readOnlyRule = critiqueReportPath
+      ? 'Never attempt to write or edit files in the repository. The ONE write this review permits is the Tier 1 evidence file named in the Two-Tier section below: it lives outside the worktree and is written by shell redirection. Write nothing else.'
+      : 'Never attempt to write or edit files.';
+
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_SHELL], { plural: true })}). Never attempt to write or edit files.\n`;
+    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_SHELL], { plural: true })}). ${readOnlyRule}\n`;
     prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
 
@@ -1160,11 +1178,15 @@ export class ResolveSubagentUseCase {
     prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
     if (resolvedCritiquePath) {
       prompt += `   \`\`\`bash\n`;
-      prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath)}\n`;
+      prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath, critiqueReportPath)}\n`;
       prompt += `   \`\`\`\n`;
       prompt += `   - The command above quotes the path resolved for this workspace. Do not substitute a PATH lookup or a guessed location.\n`;
     } else {
       prompt += `${NOTE_CRITIQUE_TIER_ONE_UNRESOLVED}\n`;
+    }
+    if (critiqueReportPath) {
+      prompt += `   - ${formatCritiqueEvidenceReturnNote(critiqueReportPath)}\n`;
+      prompt += `   - The path above is authoritative; do not invent another location and do not delete it.\n`;
     }
     prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector).\n`;
     prompt += `   - Invariant: Any \`critical\` or \`error\` findings mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n`;

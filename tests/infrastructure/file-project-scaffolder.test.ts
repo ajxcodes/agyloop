@@ -127,6 +127,39 @@ describe('FileProjectScaffolder', () => {
     assert.deepStrictEqual(scaffolder.previewGitIgnore(dir, INIT_GITIGNORE_RULES), { added: [], replaced: [] });
   });
 
+  test('SC1: the dispatched-review evidence directory is ignored and config stays trackable (issue #397)', () => {
+    const git = (...args: string[]) => {
+      try {
+        return execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+      } catch {
+        return null; // exit 1 => not ignored
+      }
+    };
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+
+    assert.ok(
+      INIT_GITIGNORE_RULES.includes('.agyloop/critique/'),
+      'INIT_GITIGNORE_RULES lost the Tier 1 evidence rule'
+    );
+
+    const first = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
+    assert.ok(first.added.includes('.agyloop/critique/'));
+
+    assert.ok(
+      git('check-ignore', '.agyloop/critique/397.json'),
+      'the Tier 1 evidence file would be committed as review evidence'
+    );
+    // The re-inclusions the rule must not disturb.
+    assert.strictEqual(git('check-ignore', '.agyloop/config.json'), null);
+    assert.ok(git('check-ignore', '.agyloop/tasks/397.json'));
+
+    const content = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
+    const again = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
+    assert.deepStrictEqual(again, { added: [], replaced: [] });
+    assert.strictEqual(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), content);
+    assert.ok(content.includes('!.agyloop/'));
+  });
+
   test('replaces blanket .codeloop/ directory ignore with granular rules', () => {
     fs.writeFileSync(path.join(dir, '.gitignore'), '/.codeloop/\n');
     const res = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);

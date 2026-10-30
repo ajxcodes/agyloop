@@ -30,6 +30,10 @@
  * The three helpers that used to live in `triage-pr-comments.ts` were MOVED
  * here verbatim (`prFeedbackKey`, `isDismissalReply`, `isInlineDismissalReply`);
  * `triage-pr-comments.ts` re-exports them so the public API is unchanged.
+ *
+ * The selector is shared by the DISPATCHERS and the TRIAGE COMMAND (issue
+ * #397): one predicate decides what the subagent evaluates and what the
+ * command answers, so the two can never drift.
  */
 
 import {
@@ -213,4 +217,21 @@ export function classifyPrFeedback(
     statusPosts: Object.freeze(statusPosts),
     ownReplies: Object.freeze(ownReplies)
   };
+}
+
+/**
+ * The ACTIONABLE subset of a PR's comments — the ONE selector (issue #397).
+ *
+ * `classifyPrFeedback` already partitions correctly; the defect was that only
+ * the DISPATCHER called it. The command re-derived its own set from the raw
+ * port response, so the subagent evaluated N items and the dismissal answered
+ * N+M. Every consumer now comes through here, so a fourth call site cannot
+ * re-derive the set.
+ *
+ * The elements are the SAME object references as `comments`: callers rely on
+ * identity for membership tests and on `id`/`author`/`body` for rendering.
+ */
+export function actionableReviewFeedback<T extends PrFeedbackLike>(comments: readonly T[]): T[] {
+  const selected = new Set<PrFeedbackLike>(classifyPrFeedback(comments).actionable);
+  return comments.filter((comment) => selected.has(comment));
 }

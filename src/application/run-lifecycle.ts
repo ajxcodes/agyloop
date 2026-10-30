@@ -128,6 +128,7 @@ import { ResolveSubagentUseCase } from './resolve-subagent';
 import { RunPreFlightCheckUseCase } from './run-preflight-check';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 import { shouldRouteToTriage } from './lifecycle-reentry-policy';
+import { actionableReviewFeedback } from './triage-feedback';
 import type { PreFlightCheckResult } from '../domain';
 
 export interface RunLifecycleParams {
@@ -559,22 +560,28 @@ export class RunLifecycleUseCase {
     // `GetNextActionUseCase`'s COMPLETED path can never drift apart: today's
     // condition was `isResume && (comments.length > 0 || changesRequested) && stage !== TRIAGE`,
     // which is exactly `shouldRouteToTriage({ currentStage, hasOpenReviewFeedback })`.
+    // Issue #397: this dispatcher built its payload from the UNCLASSIFIED
+    // preflight comments, so a YOLO/lifecycle route put the repository's own
+    // summary INSIDE the payload (`commentsCount: 3`) while `next` kept it
+    // outside (`commentsCount: 2`). One selector, three call sites.
+    const actionableReviewComments = actionableReviewFeedback(
+      preflightResult?.prReviewComments ?? []
+    );
     const hasOpenReviewFeedback = Boolean(
       preflightResult &&
         preflightResult.isResume &&
-        ((preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) ||
-          preflightResult.prHasChangesRequested)
+        (actionableReviewComments.length > 0 || preflightResult.prHasChangesRequested)
     );
 
     if (preflightResult && shouldRouteToTriage({ currentStage: sm.currentStage, hasOpenReviewFeedback })) {
       if (sm.canTransition(STAGE_TRIAGE)) {
-        if (preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) {
-          sm.setTriagePayload(preflightResult.prReviewComments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n'));
+        if (actionableReviewComments.length > 0) {
+          sm.setTriagePayload(actionableReviewComments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n'));
         }
         sm.transition(STAGE_TRIAGE, {
           note: NOTE_PAUSED_TRIAGE_GATE,
           prNumber: preflightResult.resumePrNumber,
-          commentsCount: preflightResult.prReviewComments?.length ?? 0
+          commentsCount: actionableReviewComments.length
         });
       } else {
         return withAdvisory({

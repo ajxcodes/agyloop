@@ -59,11 +59,12 @@ import {
 } from '../ports';
 import type { InferBaseBranchUseCase } from './infer-base-branch';
 import {
-  classifyPrFeedback,
+  actionableReviewFeedback,
   feedbackKeyOf,
   feedbackKeysOf,
   prFeedbackKey,
   isDismissalReply,
+  isAutomatedSummaryPost,
   isInlineDismissalReply
 } from './triage-feedback';
 
@@ -119,7 +120,7 @@ export interface TriageDismissReport {
    * THIS run.
    */
   readonly conversationsDuplicate: number;
-  /** Conversation comments ignored because they are the tool's own dismissal replies. */
+  /** Conversation comments ignored because they are not review feedback — the tool's own dismissal reply or the repository's automated summary. */
   readonly conversationsIgnored: number;
   /**
    * Conversation comments ignored because they are prior answers the tool
@@ -562,6 +563,12 @@ export class TriagePrCommentsUseCase {
       }
     }
 
+    // Issue #397: the command acts on the SAME set the dispatcher handed the
+    // subagent. `comments` stays the RAW fetch because it is also EVIDENCE
+    // (own replies prove "already answered"); `actionable` is the set the
+    // subagent saw and the only set this command may answer or count.
+    const actionable = actionableReviewFeedback(comments);
+
     // Read-only list mode: no action means display comments without mutating state
     if (!params.action) {
       return {
@@ -569,10 +576,10 @@ export class TriagePrCommentsUseCase {
         targetStage: sm.currentStage,
         stateMachine: sm,
         prNumber,
-        comments,
+        comments: actionable,
         dryRun,
         stateUpdated: false,
-        message: `Listed ${comments.length} PR review comment(s) (read-only).`
+        message: `Listed ${actionable.length} PR review comment(s) (read-only).`
       };
     }
 
@@ -631,7 +638,7 @@ export class TriagePrCommentsUseCase {
         targetStage: sm.currentStage,
         stateMachine: sm,
         prNumber,
-        comments,
+        comments: actionable,
         dismissal,
         refused,
         dryRun,
@@ -665,8 +672,8 @@ export class TriagePrCommentsUseCase {
 
     if (targetStage === STAGE_COMPLETED) {
       sm.setTriagePayload(null);
-    } else if (comments.length > 0) {
-      const formattedComments = comments
+    } else if (actionable.length > 0) {
+      const formattedComments = actionable
         .map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`)
         .join('\n');
       sm.setTriagePayload(formattedComments);
@@ -679,7 +686,7 @@ export class TriagePrCommentsUseCase {
       sm.transition(STAGE_TRIAGE, {
         note: 'Entering PR comment triage',
         prNumber,
-        commentCount: comments.length
+        commentCount: actionable.length
       });
     } else if (sm.currentStage !== STAGE_TRIAGE) {
       throw new Error(`Cannot transition to TRIAGE from ${sm.currentStage}`);
@@ -702,7 +709,7 @@ export class TriagePrCommentsUseCase {
     // disposition WOULD be recorded instead of serialising one.
     let disposition: TriageDisposition | null = null;
     let dispositionRecorded = false;
-    const wouldRecordDisposition = prNumber !== null && comments.length > 0;
+    const wouldRecordDisposition = prNumber !== null && actionable.length > 0;
 
     // A dismissal records ONLY the feedback it actually disposed of (#336,
     // AC-2). The other actions triaged every actionable item, so they keep the
@@ -710,7 +717,7 @@ export class TriagePrCommentsUseCase {
     const dismissedKeys =
       selectedAction === 'dismiss'
         ? (dismissal?.handledFeedbackKeys ?? [])
-        : feedbackKeysOf(classifyPrFeedback(comments).actionable);
+        : feedbackKeysOf(actionable);
 
     if (!dryRun && prNumber !== null && dismissedKeys.length > 0) {
       disposition = TriageDisposition.merge(sm.triageDisposition, {
@@ -760,7 +767,7 @@ export class TriagePrCommentsUseCase {
               targetStage: sm.currentStage,
               stateMachine: sm,
               prNumber,
-              comments,
+              comments: actionable,
               dryRun,
               stateUpdated: false,
               message: `Failed to construct worktree for implementation: ${msg}`
@@ -773,7 +780,7 @@ export class TriagePrCommentsUseCase {
         note: params.notes || NOTE_TRIAGE_ROUTED,
         prNumber,
         triageAction: selectedAction,
-        commentCount: comments.length,
+        commentCount: actionable.length,
         // Data only: the history records THAT a disposition was taken, and the
         // note says which one. The authoritative copy is the snapshot field.
         ...(dispositionRecorded && disposition
@@ -797,7 +804,7 @@ export class TriagePrCommentsUseCase {
         targetStage,
         stateMachine: sm,
         prNumber,
-        comments,
+        comments: actionable,
         dismissal,
         // A prediction, never a written fact: no `disposition` (its
         // `recordedAt` would timestamp a write that did not happen) and
@@ -810,7 +817,7 @@ export class TriagePrCommentsUseCase {
         wouldTransitionTo: targetStage,
         wouldCreateWorktree,
         wouldDismiss: selectedAction === 'dismiss',
-        message: `Triage simulated: would route to ${targetStage} with ${comments.length} comment(s); nothing was written.`
+        message: `Triage simulated: would route to ${targetStage} with ${actionable.length} comment(s); nothing was written.`
       };
     }
 
@@ -821,13 +828,13 @@ export class TriagePrCommentsUseCase {
       targetStage,
       stateMachine: sm,
       prNumber,
-      comments,
+      comments: actionable,
       dismissal,
       disposition: disposition ? disposition.toJSON() : null,
       dispositionRecorded,
       dryRun: false,
       stateUpdated: true,
-      message: `Triage complete: routed to ${targetStage} with ${comments.length} comment(s).`
+      message: `Triage complete: routed to ${targetStage} with ${actionable.length} comment(s).`
     };
   }
 
@@ -1027,7 +1034,9 @@ export class TriagePrCommentsUseCase {
         const ownReplies = matched.filter((id) =>
           isInlineDismissalReply(inlineById.get(id)?.body || '')
         );
-        const feedback = matched.filter((id) => !ownReplies.includes(id));
+        const feedback = matched.filter(
+          (id) => !ownReplies.includes(id) && !isAutomatedSummaryPost(inlineById.get(id)?.body || '')
+        );
 
         if (ownReplies.length > 0) {
           // A reply the TOOL posted is the proof that the feedback was
@@ -1041,6 +1050,15 @@ export class TriagePrCommentsUseCase {
               context.handledKeys.add(feedbackKeyOf(comment));
             }
           }
+          continue;
+        }
+
+        // Issue #397: every comment this thread matched was a status post (an
+        // automated summary), so there is no dispatched feedback to answer.
+        // Without this guard the empty `feedback` loop would still post a
+        // reply — the same public side effect the conversation surface is
+        // being fixed for.
+        if (feedback.length === 0) {
           continue;
         }
 
@@ -1134,6 +1152,17 @@ export class TriagePrCommentsUseCase {
         // The tool's own dismissal replies are not review feedback: answering
         // them would make the tool talk to itself.
         if (isDismissalReply(comment.body)) {
+          conversationsIgnored++;
+          continue;
+        }
+
+        // Issue #397, AC3: the repository's own automated summary is a STATUS
+        // POST, not feedback. Answering it posts a public reply on a bot
+        // banner the subagent was never shown. This guard is independent of
+        // the boundary filter in `execute`: a caller that hands us an
+        // unfiltered list still cannot make the tool talk to its own build
+        // output.
+        if (isAutomatedSummaryPost(comment.body)) {
           conversationsIgnored++;
           continue;
         }

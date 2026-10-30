@@ -12,12 +12,14 @@
  * TF6 - feedbackKeyOf returns `id:<n>` / a content key
  * TF7 - feedbackKeysOf de-duplicates
  * TF8 - the three moved helpers behave IDENTICALLY to their pre-move bodies
+ * TF9 - actionableReviewFeedback is the ONE selector: identity, order, exclusions (issue #397)
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 
 const {
+  actionableReviewFeedback,
   classifyPrFeedback,
   feedbackKeyOf,
   feedbackKeysOf,
@@ -195,5 +197,30 @@ describe('PR feedback classification (issue #269)', () => {
         `isInlineDismissalReply drifted for: ${JSON.stringify(body)}`
       );
     }
+  });
+
+  test('TF9: actionableReviewFeedback is the ONE selector (issue #397)', () => {
+    const actionableOne = { id: 4427630468, author: 'critique', body: HUMAN_BODY };
+    const summary = { id: 6531579688, author: 'github-actions[bot]', body: SUMMARY_BODY };
+    const ownReply = { id: 4427630609, author: 'me', body: INLINE_REPLY_BODY };
+    const actionableTwo = { id: 4427630608, author: 'critique', body: 'Please rename this.' };
+    const comments = [actionableOne, summary, ownReply, actionableTwo];
+
+    const selected = actionableReviewFeedback(comments);
+
+    // Identity, not a copy: the callers rely on membership tests.
+    assert.deepStrictEqual(selected.map((c: any) => c.id), [4427630468, 4427630608]);
+    assert.strictEqual(selected[0], actionableOne);
+    assert.strictEqual(selected[1], actionableTwo);
+    assert.strictEqual(
+      selected.length,
+      classifyPrFeedback(comments).actionable.length,
+      'the selector diverged from classifyPrFeedback'
+    );
+
+    assert.deepStrictEqual(
+      actionableReviewFeedback([summary, { id: 4, body: SUMMARY_BODY }]),
+      []
+    );
   });
 });

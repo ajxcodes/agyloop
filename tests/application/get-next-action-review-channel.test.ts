@@ -9,6 +9,9 @@
  * RV2 - three reads name the channel and record counts 1, 2, 3
  * RV3 - the fourth read is the breaker, names the cap AND the way out
  * RV4 - a paused read never increments the counter
+ * RV5 - the directive AND the reviewer prompt name the SAME Tier 1 evidence
+ *       path, passed back with `--critique-report` (issue #397, D2-AC1)
+ * RV6 - the evidence path is derived from the checkpoint, never auto-discovered
  */
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
@@ -17,7 +20,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { GetNextActionUseCase } = require('../../dist/application');
+const { GetNextActionUseCase, critiqueReportPathFor } = require('../../dist/application');
 const { FileStateRepository } = require('../../dist/infrastructure');
 const {
   NOTE_REVIEW_GATE_EXIT_CONDITION,
@@ -145,6 +148,43 @@ describe('REVIEW directive names its verdict channel (issue #272)', () => {
     assert.strictEqual(result.reviewDispatchCount, 0);
     assert.strictEqual(readCheckpoint(stateFile).reviewDispatchCount, 0);
     assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+  });
+
+  test('RV5: the directive and the reviewer prompt name the SAME Tier 1 evidence path (issue #397)', async () => {
+    const result = await executeRead();
+    const expected = critiqueReportPathFor(stateFile, ISSUE);
+
+    for (const field of [result.description, result.humanSummary]) {
+      assert.ok(field.includes('--critique-report'), `a directive field omits --critique-report: ${field}`);
+      assert.ok(field.includes(expected), `a directive field omits ${expected}: ${field}`);
+    }
+
+    const prompt = result.invocationPayload.Subagents[0].Prompt;
+    assert.ok(prompt.includes(expected), 'the reviewer prompt names a different evidence path');
+    assert.strictEqual(
+      /codeloop\s+review/.test(prompt),
+      false,
+      'the read-only reviewer must not be told to file its own verdict'
+    );
+  });
+
+  test('RV6: critiqueReportPathFor derives the path from the checkpoint, beside tasks/', () => {
+    assert.strictEqual(
+      critiqueReportPathFor('/repo/.agyloop/tasks/397.json', 397),
+      '/repo/.agyloop/critique/397.json'
+    );
+    assert.strictEqual(
+      critiqueReportPathFor('/repo/.agyloop/state.json', 397),
+      '/repo/.agyloop/critique/397.json'
+    );
+    assert.strictEqual(
+      critiqueReportPathFor('/repo/.agyloop/tasks/397.json', null),
+      '/repo/.agyloop/critique/adhoc.json'
+    );
+    assert.strictEqual(
+      critiqueReportPathFor('C:\\repo\\.agyloop\\tasks\\397.json', 397),
+      'C:\\repo\\.agyloop\\critique\\397.json'
+    );
   });
 });
 

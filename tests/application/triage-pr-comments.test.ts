@@ -1341,4 +1341,31 @@ describe('TriagePrCommentsUseCase disposition recording (issue #269)', () => {
     assert.ok(last.metadata.dispositionNote.includes('PR #7'));
     assert.ok(last.metadata.dispositionNote.includes('1 feedback item(s)'));
   });
+
+  test('TP5: the conversation sink ignores an automated summary even on an unfiltered list (issue #397, D1-AC3)', async () => {
+    const sm = StateMachine.createInitial({ issue: 900 });
+    sm.transition(STAGE_TRIAGE);
+    const stateRepo = makeMockStateRepo(sm.toSnapshot());
+
+    const replied: number[] = [];
+    const gateway = {
+      replyToConversationComment: async (_pr: number, id: number) => {
+        replied.push(id);
+      }
+    };
+
+    const useCase = new TriagePrCommentsUseCase(stateRepo as any, gateway as any);
+    const result = await useCase.execute({
+      issue: 900,
+      prNumber: PR,
+      action: 'dismiss',
+      notes: 'Addressed.',
+      comments: [ACTIONABLE_COMMENT, SUMMARY_COMMENT]
+    });
+
+    assert.deepStrictEqual(replied, [ACTIONABLE_COMMENT.id]);
+    assert.strictEqual(result.dismissal!.conversationsIgnored, 1);
+    assert.strictEqual(result.comments.length, 1);
+    assert.deepStrictEqual([...result.disposition!.feedbackKeys], ['id:101']);
+  });
 });

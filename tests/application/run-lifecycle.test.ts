@@ -1238,7 +1238,10 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     const { STAGE_TRIAGE, GATE_TRIAGE, ALLOWED_TRANSITIONS } = require('../../dist/domain');
     const fromStages = [STAGE_DISCOVERY, STAGE_PLAN, STAGE_APPROVAL, STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW];
 
-    function buildLifecycle(stage: string) {
+    function buildLifecycle(
+      stage: string,
+      prReviewComments: any[] = [{ author: 'r', body: 'fix', category: 'error' }]
+    ) {
       const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32, worktree: mockWorktree });
       (sm as any)._currentStage = stage;
       stateRepo.savedSnapshot = { ...sm.toSnapshot(), currentStage: stage };
@@ -1246,7 +1249,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         execute: async () => ({
           isResume: true,
           resumePrNumber: 5,
-          prReviewComments: [{ author: 'r', body: 'fix', category: 'error' }]
+          prReviewComments
         })
       };
       return new RunLifecycleUseCase({
@@ -1302,6 +1305,55 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
         stateRepo.savedSnapshot.triagePayload,
         '- [r]: fix'
       );
+    });
+
+    test('G15: the preflight dispatcher counts the SAME actionable set as `next` (issue #397, D1-AC5)', async () => {
+      const actionable = {
+        id: 4427630468,
+        author: 'critique',
+        body: '- [critique]: SUGGESTION - prefer a readonly field.'
+      };
+      const summary = {
+        id: 6531579688,
+        author: 'github-actions[bot]',
+        body: '### Critique AI Review Run Summary\n\nNo critical, error or warning findings.'
+      };
+
+      const lifecycle = buildLifecycle(STAGE_IMPLEMENT, [actionable, summary]);
+      const result = await lifecycle.execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: '/mock/workspace' });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.currentStage, STAGE_TRIAGE);
+
+      const payload = stateRepo.savedSnapshot.triagePayload;
+      assert.strictEqual(
+        payload.split('\n').filter((line: string) => line.trim()).length,
+        1,
+        `the payload must carry only the actionable item, got: ${payload}`
+      );
+      assert.ok(
+        !payload.includes('Critique AI Review Run Summary'),
+        'the repository summary must not be routed as feedback'
+      );
+
+      const triageEntry = stateRepo.savedSnapshot.history
+        .filter((h: any) => h.stage === STAGE_TRIAGE)
+        .pop();
+      assert.strictEqual(triageEntry.metadata.commentsCount, 1);
+    });
+
+    test('G15b: a preflight carrying only the automated summary does not route to TRIAGE (issue #397)', async () => {
+      const lifecycle = buildLifecycle(STAGE_DISCOVERY, [
+        {
+          id: 6531579688,
+          author: 'github-actions[bot]',
+          body: '### Critique AI Review Run Summary\n\nNo critical, error or warning findings.'
+        }
+      ]);
+      const result = await lifecycle.execute({ mode: MODE_PLAN, issue: 32, workspaceDir: '/mock/workspace' });
+
+      assert.notStrictEqual(result.currentStage, STAGE_TRIAGE);
+      assert.notStrictEqual(stateRepo.savedSnapshot.pausedAtGate, GATE_TRIAGE);
     });
   });
 

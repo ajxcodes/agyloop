@@ -504,6 +504,46 @@ index 1111111..2222222 100644
         prompt.includes('Any `critical` or `error` findings mandate `REVIEW_STATUS: CHANGES_REQUESTED`')
       );
     });
+
+    test('PS3: a named Tier 1 evidence path is written by the Tier 1 command (issue #397, D2-AC1)', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const reportPath = '/repo/.agyloop/critique/397.json';
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 397,
+        critiquePath: '/opt/custom/bin/critique',
+        critiqueReportPath: reportPath
+      });
+
+      assert.ok(prompt.includes(reportPath), 'the prompt must name the exact evidence path');
+      assert.ok(prompt.includes('mkdir -p'), 'the Tier 1 command must create the evidence directory');
+      assert.ok(
+        prompt.includes(`tee '${reportPath}'`),
+        `the Tier 1 command must write the report, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('CRITIQUE_REPORT:'), 'the prompt must require the return line');
+      assert.ok(
+        prompt.includes('The ONE write this review permits is the Tier 1 evidence file'),
+        'the carve-out must name the evidence file as the only permitted write'
+      );
+      assert.strictEqual(
+        /codeloop\s+review/.test(prompt),
+        false,
+        'the read-only reviewer must not be told to file its own verdict'
+      );
+    });
+
+    test('PS4: without a report path the prompt stays byte-identical to the pre-#397 wording', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 397,
+        critiquePath: '/opt/custom/bin/critique'
+      });
+
+      assert.strictEqual(prompt.includes('CRITIQUE_REPORT:'), false);
+      assert.strictEqual(prompt.includes('tee '), false);
+      assert.ok(prompt.includes('Never attempt to write or edit files'));
+      assert.ok(prompt.includes(NOTE_REVIEW_VERDICT_RETURN));
+    });
   });
 
   describe('Discovery Subagent Container Execution & Fallback (AC6 - AC8)', () => {

@@ -135,6 +135,27 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
     }
   });
 
+  test('RV5b (issue #397): the terminal render names the Tier 1 evidence path and --critique-report', async () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-397-'));
+    try {
+      seedCheckpoint(sandbox);
+      const run = await runNextIn(sandbox);
+      const expected = path.join(sandbox, '.agyloop', 'critique', `${ISSUE}.json`);
+
+      assert.strictEqual(run.code, 0, run.output);
+      assert.ok(
+        run.output.includes('--critique-report'),
+        `the terminal directive omits --critique-report:\n${run.output}`
+      );
+      assert.ok(
+        run.output.includes(expected),
+        `the terminal directive omits the evidence path ${expected}:\n${run.output}`
+      );
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   test('RV5b: a paused read does not record a dispatch', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-'));
     try {

@@ -21,6 +21,10 @@
  *       NOT go blind)
  * G11 - a disposition recorded for ANOTHER pull request does not suppress the
  *       feedback (issue #269, R4)
+ * G12 - the dispatch count, the list count, the recorded count and the handled
+ *       keys agree on the 3-comment fixture (issue #397, D1-AC1/2/4, S-AC1)
+ * G13 - a dismissal never answers the automated summary (issue #397, D1-AC3)
+ * G14 - legitimate conversation feedback is still answered and recorded (S-AC2)
  */
 
 const { test, describe } = require('node:test');
@@ -152,6 +156,71 @@ const DISMISSAL_REPLY = {
   body: `Reviewed — dismissing.\n\n${DISMISS_CONVERSATION_REPLY_FOOTER}\n> Please fix the nil dereference`,
   created_at: '2026-10-21T11:05:00Z'
 };
+
+/**
+ * The issue's real 3-comment fixture (issue #397): two inline actionable
+ * findings and one conversation automated summary.
+ */
+const THREE_COMMENT_PR = [
+  {
+    id: 4427630468,
+    surface: 'inline',
+    author: 'critique',
+    path: 'src/a.ts',
+    line: 10,
+    body: '- [critique]: SUGGESTION - prefer a readonly field.'
+  },
+  {
+    id: 4427630608,
+    surface: 'inline',
+    author: 'critique',
+    path: 'src/b.ts',
+    line: 4,
+    body: '- [critique]: INFO - the helper is unused in this diff.'
+  },
+  {
+    id: 6531579688,
+    surface: 'conversation',
+    author: 'github-actions[bot]',
+    body: '### 🤖 Critique AI Review Run Summary\n\nNo critical, error or warning findings.'
+  }
+];
+
+/**
+ * A gateway that ALSO supports the dismissal sinks (issue #397).
+ */
+function dismissalGateway(comments: readonly any[]): any {
+  const repliedThreads: string[] = [];
+  const repliedConversation: number[] = [];
+  return {
+    repliedThreads,
+    repliedConversation,
+    getCurrentRepo: () => 'owner/repo',
+    fetchIssue: async () => null,
+    findPullRequest: async () => ({
+      number: 7,
+      title: 'Task #900',
+      state: 'OPEN',
+      baseRefName: 'main',
+      headRefName: 'task/900',
+      url: 'https://example.invalid/pr/7',
+      merged: false,
+      labels: []
+    }),
+    fetchPullRequestComments: async () => comments,
+    listReviewThreads: async () =>
+      comments
+        .filter((c: any) => c.surface === 'inline')
+        .map((c: any) => ({ id: `thread-${c.id}`, commentIds: [c.id], isResolved: false })),
+    replyToThread: async (id: string) => {
+      repliedThreads.push(id);
+    },
+    resolveReviewThread: async () => undefined,
+    replyToConversationComment: async (_pr: number, id: number) => {
+      repliedConversation.push(id);
+    }
+  };
+}
 
 describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   test('G1: a COMPLETED checkpoint with an OPEN PR carrying one actionable comment routes to TRIAGE', async () => {
@@ -467,5 +536,130 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
     assert.strictEqual(saved!.currentStage, STAGE_TRIAGE);
     assert.strictEqual(saved!.pausedAtGate, GATE_TRIAGE);
     assert.ok(saved!.triagePayload!.includes('nil dereference'));
+  });
+
+  test('G12: the dispatch, the list, the record and the handled keys agree (issue #397)', async () => {
+    const stateRepo = new MockStateRepo(seedCompleted());
+    const gateway = dismissalGateway(THREE_COMMENT_PR);
+
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    await next.execute({ workspaceDir: '/repo' });
+
+    const dispatched = await stateRepo.load();
+    const triageEntry = dispatched!.history.filter((h: any) => h.stage === STAGE_TRIAGE).pop();
+    const dispatchCount = (triageEntry!.metadata as any).commentsCount;
+    assert.strictEqual(dispatchCount, 2, 'the dispatcher counted the summary as feedback');
+    assert.strictEqual(
+      dispatched!.triagePayload!.split('\n').filter((line: string) => line.trim()).length,
+      2,
+      `the triage payload must carry the 2 actionable items, got: ${dispatched!.triagePayload}`
+    );
+
+    const triage = new TriagePrCommentsUseCase(stateRepo, gateway);
+
+    const listed = await triage.execute({ issue: 900, workspaceDir: '/repo' });
+    assert.strictEqual(listed.comments.length, 2, 'the list surface diverged from the dispatch');
+    assert.ok(
+      listed.message.includes('Listed 2'),
+      `the list message diverged from the acted-on set: ${listed.message}`
+    );
+
+    const dismissed = await triage.execute({
+      issue: 900,
+      workspaceDir: '/repo',
+      action: 'dismiss',
+      notes: 'Addressed.'
+    });
+
+    const after = await stateRepo.load();
+    const routedEntry = after!.history.filter((h: any) => h.stage === STAGE_COMPLETED).pop();
+    const recordedCount = (routedEntry!.metadata as any).commentCount;
+
+    assert.strictEqual(recordedCount, 2, 'the routed history recorded a different count');
+    assert.strictEqual(
+      dismissed.dismissal!.handledFeedbackKeys.length,
+      2,
+      `the dismissal handled a different set: ${JSON.stringify(dismissed.dismissal!.handledFeedbackKeys)}`
+    );
+    assert.strictEqual(
+      dispatchCount,
+      listed.comments.length,
+      'the dispatched set and the listed set diverged'
+    );
+    assert.strictEqual(
+      listed.comments.length,
+      recordedCount,
+      'the listed set and the recorded set diverged'
+    );
+    assert.strictEqual(
+      recordedCount,
+      dismissed.dismissal!.handledFeedbackKeys.length,
+      'the recorded set and the handled keys diverged'
+    );
+  });
+
+  test('G13: a dismissal never answers the automated summary post (issue #397, D1-AC3)', async () => {
+    const stateRepo = new MockStateRepo(seedCompleted());
+    const gateway = dismissalGateway(THREE_COMMENT_PR);
+
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    await next.execute({ workspaceDir: '/repo' });
+
+    const triage = new TriagePrCommentsUseCase(stateRepo, gateway);
+    const dismissed = await triage.execute({
+      issue: 900,
+      workspaceDir: '/repo',
+      action: 'dismiss',
+      notes: 'Addressed.'
+    });
+
+    assert.ok(
+      !gateway.repliedConversation.includes(6531579688),
+      'the dismissal posted a public reply on the automated summary banner'
+    );
+    // Order-insensitive by construction: thread iteration order must not make
+    // the assertion brittle, but the SET must be exactly the 2 dispatched items.
+    assert.deepStrictEqual(
+      new Set(dismissed.disposition!.feedbackKeys),
+      new Set(['id:4427630608', 'id:4427630468'])
+    );
+  });
+
+  test('G14: legitimate conversation feedback is still answered and recorded (S-AC2)', async () => {
+    const prose = {
+      id: 777,
+      surface: 'conversation',
+      author: 'alice',
+      body: 'please rebase and re-run the tests'
+    };
+    const stateRepo = new MockStateRepo(seedCompleted());
+    const gateway = dismissalGateway([...THREE_COMMENT_PR, prose]);
+
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    await next.execute({ workspaceDir: '/repo' });
+
+    const dispatched = await stateRepo.load();
+    const triageEntry = dispatched!.history.filter((h: any) => h.stage === STAGE_TRIAGE).pop();
+    assert.strictEqual((triageEntry!.metadata as any).commentsCount, 3);
+
+    const triage = new TriagePrCommentsUseCase(stateRepo, gateway);
+    const listed = await triage.execute({ issue: 900, workspaceDir: '/repo' });
+    assert.strictEqual(listed.comments.length, 3);
+
+    const dismissed = await triage.execute({
+      issue: 900,
+      workspaceDir: '/repo',
+      action: 'dismiss',
+      notes: 'Addressed.'
+    });
+
+    assert.ok(
+      gateway.repliedConversation.includes(777),
+      'genuine conversation feedback was not answered'
+    );
+    assert.ok(
+      dismissed.dismissal!.handledFeedbackKeys.includes('id:777'),
+      'genuine conversation feedback was not recorded as handled'
+    );
   });
 });

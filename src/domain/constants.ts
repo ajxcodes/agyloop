@@ -471,6 +471,8 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
 export const DEFAULT_STATE_DIR = '.agyloop' as const;
 export const DEFAULT_STATE_FILE = 'state.json' as const;
 export const DEFAULT_TASKS_STATE_DIR = 'tasks' as const;
+/** The directory holding dispatched-review Tier 1 evidence (issue #397). */
+export const CRITIQUE_REPORT_DIRECTORY = 'critique' as const;
 export const DEFAULT_PLANS_DIR = 'artifacts/plans' as const;
 export const DEFAULT_SUMMARY_FILENAME = 'CodeLoop Summary.md' as const;
 export const DEFAULT_TEMPLATES_DIRNAME = 'templates' as const;
@@ -2130,13 +2132,15 @@ If all Acceptance Criteria are met, repository standards are respected, and no c
 
 ## 4. Recording the verdict
 
-The verdict block above is the **only** record of this review. You have no write tools, so the orchestrator files it for you:
+The verdict block above is the **only** record of this review. You have no write tools for the repository, so the orchestrator files it for you:
 
 \`\`\`bash
 codeloop review --issue <n> --verdict-file <path>
 \`\`\`
 
 (The orchestrator may instead pass the block inline with \`--review-output "<block>"\`, or pipe it into \`codeloop review --verdict-stdin\`.)
+
+The reviewer may write exactly one file — the Tier 1 evidence at the absolute path the directive gives — and must name it with \`CRITIQUE_REPORT:\`; the orchestrator passes it back with \`--critique-report <path>\` so Tier 1 is not run twice.
 
 Emit the block verbatim as the **last** thing in your response. \`ReviewVerdict.parse\` refuses a block it cannot read, and a \`CHANGES_REQUESTED\` must never be downgraded to a skip.` as const;
 
@@ -3444,6 +3448,8 @@ export const FLAG_VERDICT_STDIN = '--verdict-stdin' as const;
 export const FLAG_CRITIQUE_REPORT = '--critique-report' as const;
 /** The `--critique-report` value that means "read the report from stdin". */
 export const CRITIQUE_REPORT_STDIN = '-' as const;
+/** The response line a dispatched reviewer uses to name its Tier 1 evidence. */
+export const CRITIQUE_REPORT_RETURN_PREFIX = 'CRITIQUE_REPORT:' as const;
 
 /**
  * The verdict-filing channel, named in the REVIEW directive's OPERATOR fields
@@ -3460,11 +3466,15 @@ export const REVIEW_VERDICT_CHANNEL_COMMAND_TEMPLATE =
 export const REVIEW_VERDICT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE =
   `codeloop ${COMMAND_REVIEW} --issue <n> ${FLAG_VERDICT_FILE} <path>` as const;
 
-export function formatReviewVerdictChannelCommand(issue?: number | string | null): string {
-  if (issue === null || issue === undefined || String(issue).trim().length === 0) {
-    return REVIEW_VERDICT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE;
-  }
-  return REVIEW_VERDICT_CHANNEL_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+export function formatReviewVerdictChannelCommand(
+  issue?: number | string | null,
+  critiqueReportPath?: string | null
+): string {
+  const base =
+    issue === null || issue === undefined || String(issue).trim().length === 0
+      ? REVIEW_VERDICT_CHANNEL_COMMAND_NO_ISSUE_TEMPLATE
+      : REVIEW_VERDICT_CHANNEL_COMMAND_TEMPLATE.replace('{issue}', String(issue));
+  return critiqueReportPath ? `${base} ${FLAG_CRITIQUE_REPORT} '${critiqueReportPath}'` : base;
 }
 
 /**
@@ -3479,13 +3489,37 @@ export function formatReviewVerdictChannelCommand(issue?: number | string | null
  * Every snippet interpolates the real issue when it is known, so the operator
  * is handed strings they can paste.
  */
-export function formatReviewVerdictChannelNote(issue?: number | string | null): string {
-  const command = formatReviewVerdictChannelCommand(issue);
+export function formatReviewVerdictChannelNote(
+  issue?: number | string | null,
+  critiqueReportPath?: string | null
+): string {
+  const command = formatReviewVerdictChannelCommand(issue, critiqueReportPath);
   const issueToken =
     issue === null || issue === undefined || String(issue).trim().length === 0
       ? '<n>'
       : String(issue);
-  return `Orchestrator: file the reviewer's emitted verdict block before the COMMIT gate: ${command} (or \`codeloop ${COMMAND_REVIEW} --issue ${issueToken} ${FLAG_REVIEW_OUTPUT} "<block>"\`, or pipe the block into \`codeloop ${COMMAND_REVIEW} --issue ${issueToken} ${FLAG_VERDICT_STDIN}\`).`;
+  const base = `Orchestrator: file the reviewer's emitted verdict block before the COMMIT gate: ${command} (or \`codeloop ${COMMAND_REVIEW} --issue ${issueToken} ${FLAG_REVIEW_OUTPUT} "<block>"\`, or pipe the block into \`codeloop ${COMMAND_REVIEW} --issue ${issueToken} ${FLAG_VERDICT_STDIN}\`).`;
+  if (!critiqueReportPath) {
+    return base;
+  }
+  return `${base} Tier 1 evidence: the reviewer writes it to the path above and names it on a \`${CRITIQUE_REPORT_RETURN_PREFIX}\` line. Pass that exact path with \`${FLAG_CRITIQUE_REPORT}\`; never auto-discover a file. If the reviewer named none, file without the flag — \`review\` will run critique itself.`;
+}
+
+/**
+ * The reviewer-side instruction that carries the Tier 1 artifact (issue #397).
+ *
+ * The dispatched reviewer already runs critique. Without a named path the
+ * report died inside its session and `codeloop review` spawned a SECOND run;
+ * this note makes the evidence transferable, and names the fallback so an
+ * absent report is never mistaken for a clean one.
+ */
+export function formatCritiqueEvidenceReturnNote(reportPath: string): string {
+  return (
+    `Write the critique JSON to \`${reportPath}\` (that is the ONLY file you may write; ` +
+    `it lives outside the worktree) and name it on a line of its own: ` +
+    `\`${CRITIQUE_REPORT_RETURN_PREFIX} ${reportPath}\`. If the command fails or the file ` +
+    `is empty, say so and OMIT that line — the orchestrator will run Tier 1 itself.`
+  );
 }
 
 /**
@@ -4251,6 +4285,7 @@ export const INIT_GITIGNORE_RULES: readonly string[] = Object.freeze([
   '!.agyloop/',      // re-include the real directory so .agyloop/config.json stays trackable
   '.agyloop/state.json',
   '.agyloop/tasks/',
+  '.agyloop/critique/',     // dispatched-review Tier 1 evidence (issue #397)
   '.agyloop/locks/',
   '.agyloop/logs/',
   '.agyloop/critique-update-cache.json',
