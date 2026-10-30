@@ -564,7 +564,9 @@ describe('YOLO implementation park (issue #259)', () => {
     assert.strictEqual(last.history[last.history.length - 1].stage, STAGE_IMPLEMENT);
     assert.deepStrictEqual(
       last.history.map((entry: any) => entry.stage),
-      [STAGE_INITIALIZED, STAGE_DISCOVERY, STAGE_PLAN, STAGE_IMPLEMENT],
+      // Issue #379: a feature issue enters PLAN directly, so no phantom
+      // DISCOVERY transition is recorded.
+      [STAGE_INITIALIZED, STAGE_PLAN, STAGE_IMPLEMENT],
       'the persisted history must end at IMPLEMENT and contain nothing beyond it'
     );
     assert.ok(

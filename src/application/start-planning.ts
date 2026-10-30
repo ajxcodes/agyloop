@@ -36,6 +36,7 @@ import {
   ValidationError,
   VALIDATION_FIELD_PLAN_PATH,
   DiscoveryReport,
+  detectIssueKind,
   isPlanContentSubstantive,
   isDiscoveryPlanDocument,
   deriveStageDuration,
@@ -55,7 +56,14 @@ import {
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { SyncUseCase } from './sync';
-import { DiscoveryReentryDecision, resolveDiscoveryReentry } from './lifecycle-reentry-policy';
+import {
+  DiscoveryReentryDecision,
+  PlanArtifactType,
+  PlanEntryDecision,
+  parseRequestedPlanType,
+  resolveDiscoveryReentry,
+  resolvePlanEntry
+} from './lifecycle-reentry-policy';
 
 export interface StartPlanningParams {
   readonly mode?: ExecutionMode;
@@ -140,7 +148,22 @@ export interface StartPlanningResult {
    */
   readonly discoveryDef: SubagentDescriptor;
   readonly planTitle: string;
+  /**
+   * The RESOLVED plan artifact type (`'discovery' | 'implementation'`), not the
+   * raw `--type`/`'auto'` value. Surfaced so the dry-run preview and callers can
+   * name the artifact the run actually scaffolds (issue #379).
+   */
   readonly planType: string;
+  /**
+   * The entry decision this invocation took; absent on any re-entry (issue #379).
+   */
+  readonly planEntry?: PlanEntryDecision;
+  /**
+   * True when this invocation left the checkpoint at DISCOVERY with outstanding
+   * RCA work — a first-run bug entry OR a DISCOVERY re-entry park (issue #379).
+   * Additive and optional: absent/stub results mean false.
+   */
+  readonly discoveryParked?: boolean;
   /**
    * Set only when this invocation was a re-entry into a checkpoint already
    * resting at DISCOVERY (issue #237). Undefined on every other path, so
@@ -259,7 +282,19 @@ export class StartPlanningUseCase {
     const planTitle =
       params.title || (issueData && !issueData.error && issueData.title ? issueData.title : 'Task Plan');
     const planLabels = (issueData && !issueData.error ? issueData.labels : []) || [];
-    const planType = params.type || 'auto';
+
+    // Issue #379: resolve the issue kind and the plan artifact type ONCE, before
+    // anything is scaffolded, so the entry stage and the artifact prefix can
+    // never disagree. `--type` is an explicit override; `auto` (and any unknown
+    // value) infers from the label/title kind.
+    const requestedType = parseRequestedPlanType(params.type);
+    const issueKind = detectIssueKind({ labels: planLabels, title: planTitle });
+    let planEntry = resolvePlanEntry({
+      requestedType,
+      issueKind: issueKind.kind,
+      skipDiscovery: params.skipDiscovery === true
+    });
+    const planType: PlanArtifactType = planEntry.artifactType;
 
     // 3. Scaffold plan directory (or accept the operator-supplied plan)
     let scaffoldInfo: ScaffoldResult | null = null;
@@ -371,28 +406,10 @@ export class StartPlanningUseCase {
       workspaceDir: workspace
     });
 
-    // Detect if task is a bug/defect requiring deep discovery RCA
-    const bugKeywords = ['bug', 'defect', 'fix', 'rca', 'root-cause', 'regression', 'crash', 'error'];
-    const isBugFromParams = params.type === 'discovery';
-    const isBugFromLabels = planLabels.some((l) =>
-      bugKeywords.some((kw) => String(l).toLowerCase().includes(kw))
-    );
-    const titleLower = String(planTitle).toLowerCase();
-    const isBugFromTitle = bugKeywords.some((kw) =>
-      titleLower.includes(`[${kw}]`) || titleLower.includes(`${kw}:`) || titleLower.includes(`${kw}/`)
-    );
-    const isBugFromState =
-      sm.currentStage === STAGE_DISCOVERY || sm.history.some((h) => h.stage === STAGE_DISCOVERY);
-    const isBug =
-      isBugFromParams ||
-      isBugFromLabels ||
-      isBugFromTitle ||
-      isBugFromState ||
-      scaffoldInfo?.type === 'discovery';
-
     // 5. State Machine Transitions
     // Only set when this invocation re-enters a checkpoint already resting at
     // DISCOVERY (issue #237); undefined on every other path.
+    const wasInitialized = sm.currentStage === STAGE_INITIALIZED;
     let discoveryReentry: DiscoveryReentryDecision | undefined;
     let discoveryReportEvidence: DiscoveryReportEvidence = {
       populated: false,
@@ -421,15 +438,56 @@ export class StartPlanningUseCase {
         previousPlanContent: params.previousPlanContent
       });
     } else if (sm.currentStage === STAGE_INITIALIZED) {
-      if (params.skipDiscovery) {
-        sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+      // Issue #379: the entry stage comes from the plan-entry policy, not from
+      // the execution mode. A bug issue enters DISCOVERY and STAYS there — this
+      // park is the point of the stage, so its RCA work can be dispatched by
+      // `codeloop next`. Only a non-bug (or an explicit --type/skip override)
+      // enters PLAN. No PLAN transition is issued while RCA work is outstanding.
+      if (planEntry.stage === STAGE_DISCOVERY) {
+        // Evidence before transition: a checkpoint re-opened at INITIALIZED for
+        // an issue whose RCA report is already populated must not park on a met
+        // condition.
+        discoveryReportEvidence = this.inspectDiscoveryReport(
+          workspace,
+          activeIssue,
+          sm,
+          scaffoldInfo,
+          checkpointPlanDir,
+          planTitle
+        );
+        if (discoveryReportEvidence.populated) {
+          planEntry = {
+            ...planEntry,
+            stage: STAGE_PLAN,
+            source: 'discovery-report-present'
+          } satisfies PlanEntryDecision;
+        }
+      }
+      if (planEntry.stage === STAGE_PLAN) {
+        sm.transition(STAGE_PLAN, {
+          note: NOTE_GENERATING_SPECS,
+          entryStage: STAGE_PLAN,
+          entrySource: planEntry.source,
+          issueKind: issueKind.kind,
+          ...(planEntry.source === 'skip-discovery' ? { skipDiscovery: true } : {}),
+          ...(planEntry.source === 'discovery-report-present' &&
+          discoveryReportEvidence.populatedPath
+            ? { discoveryReportPath: discoveryReportEvidence.populatedPath }
+            : {})
+        });
       } else {
         sm.transition(STAGE_DISCOVERY, {
-          note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
+          note: NOTE_INITIATED_DISCOVERY_RCA,
+          entryStage: STAGE_DISCOVERY,
+          entrySource: planEntry.source,
+          issueKind: issueKind.kind
         });
-        if (!isBug || targetMode === MODE_PLAN) {
-          sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-        }
+        // NO PLAN transition: the stage's work has not happened yet.
+        //
+        // Unlike the #301 re-entry park, this first-run entry MUST scaffold and
+        // persist its checkpoint: without a recorded planDir, `codeloop next`
+        // would fall back to the "Plan Directory Required" human gate instead of
+        // dispatching the discovery subagent.
       }
     } else if (sm.currentStage === STAGE_DISCOVERY) {
       // One rule, one chokepoint: the RCA gate is no longer implied by "the
@@ -515,16 +573,11 @@ export class StartPlanningUseCase {
         } else {
           // Issue #364 (AC-7): derive and validate the SAME bounded names the
           // real run derives, so a dry run can no longer certify a scaffold the
-          // real run would refuse. `--type auto` is resolved by the generator's
-          // own predicate, so the previewed artifact prefix matches the file the
-          // real run writes (review minor). A port without the optional hook
-          // falls back to the type `scaffoldPlanDirectory` defaults to.
-          const scaffoldType =
-            planType === 'discovery' || planType === 'implementation'
-              ? planType
-              : this.planGenerator.detectPlanType?.(planTitle, planLabels) ?? 'implementation';
+          // real run would refuse. Issue #379: the type is already the RESOLVED
+          // artifact type (the issue-kind inference ran before the scaffold), so
+          // the previewed artifact prefix matches the file the real run writes.
           const folderName = planFolderName(activeIssue, planTitle);
-          const fileName = planArtifactFileName(scaffoldType, planTitle);
+          const fileName = planArtifactFileName(planType, planTitle);
           assertPlanNameWithinLimits({ folderName, fileName, title: planTitle });
           dryRunPreview = {
             action: 'scaffold',
@@ -626,6 +679,12 @@ export class StartPlanningUseCase {
       }
     }
 
+    // Additive, mode-independent park signal (issue #379): it covers BOTH the
+    // first-run bug entry (which persists its scaffold and checkpoint) and the
+    // #301 re-entry park (which is a no-op). `--skip-discovery` can never park.
+    const discoveryParked =
+      sm.currentStage === STAGE_DISCOVERY && params.skipDiscovery !== true;
+
     return {
       stateMachine: sm,
       issueData,
@@ -634,6 +693,8 @@ export class StartPlanningUseCase {
       discoveryDef,
       planTitle,
       planType,
+      planEntry: wasInitialized && suppliedPlanPath === null ? planEntry : undefined,
+      discoveryParked,
       discoveryReentry,
       suppliedPlanPath,
       discoveryReportEvidence,

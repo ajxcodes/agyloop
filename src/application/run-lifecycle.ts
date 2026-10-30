@@ -687,10 +687,11 @@ export class RunLifecycleUseCase {
       pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
       planResult,
       message:
-        planResult.discoveryReentry === 'PARK_AT_DISCOVERY'
-          ? // Re-entry park (issue #237): the RCA never ran, so "advanced to
-            // DISCOVERY" would read like progress. Name the outstanding work
-            // AND the paths that were actually checked (issue #283, AC3).
+        planResult.discoveryParked === true
+          ? // Discovery park (issues #237, #379): the RCA never ran, so
+            // "advanced to DISCOVERY" would read like progress. Name the
+            // outstanding work AND the paths that were actually checked
+            // (issue #283, AC3). This now covers the first-run bug entry too.
             this.formatDiscoveryParkMessage(planResult, sm.pausedAtGate)
           : isApproval
             ? NOTE_PAUSED_APPROVAL_GATE
@@ -1105,8 +1106,9 @@ export class RunLifecycleUseCase {
     //
     // #237: the park now also holds on RE-ENTRY, when the operator re-ran `yolo`
     // after a first-run park but the discovery report is still an unpopulated
-    // scaffold. Two distinct messages, so the operator is told the outstanding
-    // work is the RCA report itself rather than "dispatch the discovery subagent".
+    // scaffold. Issue #379: a first-run bug entry and a re-entry park are both
+    // "parked" (both leave outstanding RCA work), so both get the evidence
+    // message naming what is missing and which paths were read.
     if (sm.currentStage === STAGE_DISCOVERY) {
       return {
         success: true, // deliberate halt, not a failure
@@ -1115,7 +1117,7 @@ export class RunLifecycleUseCase {
         stateMachine: sm,
         planResult,
         message:
-          planResult?.discoveryReentry === 'PARK_AT_DISCOVERY'
+          planResult?.discoveryParked === true
             ? this.formatDiscoveryParkMessage(planResult, sm.pausedAtGate)
             : withRecordedPauseHint(NOTE_YOLO_PARKED_AT_DISCOVERY, sm.pausedAtGate)
       };
@@ -1524,7 +1526,7 @@ export class RunLifecycleUseCase {
         pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
         planResult,
         message:
-          planResult.discoveryReentry === 'PARK_AT_DISCOVERY'
+          planResult.discoveryParked === true
             ? this.formatDiscoveryParkMessage(planResult)
             : isApproval
               ? NOTE_PAUSED_APPROVAL_GATE

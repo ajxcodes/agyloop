@@ -255,7 +255,7 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     assert.strictEqual(stateRepo.savedSnapshot.mode, 'yolo');
   });
 
-  test('preserves DISCOVERY in history and advances to APPROVAL for features', async () => {
+  test('enters PLAN directly for features and records the skip', async () => {
     const useCase = new StartPlanningUseCase(
       stateRepo,
       githubGateway,
@@ -270,9 +270,18 @@ describe('StartPlanningUseCase (Application Layer)', () => {
     });
 
     assert.strictEqual(result.stateMachine.currentStage, STAGE_PLAN);
-    assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_DISCOVERY), true);
+    // Issue #379: a non-bug has no defect to root-cause, so the entry goes
+    // straight to PLAN and records NO phantom DISCOVERY transition.
+    assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_DISCOVERY), false);
     assert.strictEqual(result.stateMachine.history.some((h: any) => h.stage === STAGE_PLAN), true);
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_PLAN);
+
+    const planEntry = result.stateMachine.history.filter((h: any) => h.stage === STAGE_PLAN).pop();
+    assert.strictEqual(planEntry.metadata.entryStage, STAGE_PLAN);
+    assert.strictEqual(planEntry.metadata.entrySource, 'issue-kind-feature');
+    assert.strictEqual(planEntry.metadata.issueKind, 'feature');
+    assert.strictEqual(result.planEntry?.source, 'issue-kind-feature');
+    assert.strictEqual(result.discoveryParked, false);
 
     // Verify summary log records discovery status and plan review pending.
     // #339 (audit extra E6 / T13.2): a fresh run whose RCA never ran (no
@@ -1466,7 +1475,7 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
 // report exists or a dispatch was recorded; otherwise SKIPPED — and a row that
 // never ran attributes `-`, never a subagent/model pair.
 describe('Discovery summary row never claims a COMPLETED RCA that never ran (#339 E6)', () => {
-  test('T13.1: a fresh MODE_PLAN bug run records SKIPPED with `-` attribution and dispatchCount 0', async () => {
+  test('T13.1: a fresh MODE_PLAN run records SKIPPED with `-` attribution and dispatchCount 0', async () => {
     const stateRepo = new MockStateRepository();
     const githubGateway = new MockGitHubGateway();
     const configRepo = new MockConfigRepository();
@@ -1481,7 +1490,10 @@ describe('Discovery summary row never claims a COMPLETED RCA that never ran (#33
     const result = await useCase.execute({
       issue: 41,
       title: 'Fix crash on login screen',
-      type: 'discovery',
+      // Issue #379: `type: 'discovery'` now parks a fresh run at DISCOVERY, so
+      // the explicit implementation override keeps this test on the PLAN path
+      // whose truthful SKIPPED row it is pinning.
+      type: 'implementation',
       mode: MODE_PLAN
     });
 

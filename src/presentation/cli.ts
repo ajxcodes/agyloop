@@ -572,7 +572,7 @@ Operational Modes:
   init               Scaffold .codeloop/config.json (git, verification profile) and update .gitignore; migrates legacy .agyloop config
   (default)          Run continuous lifecycle (Discovery -> Plan -> [Approval] -> Implement -> Gates -> Review -> [Commit])
   yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
-  plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate
+  plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate. Bug-labelled issues enter DISCOVERY first and park until the RCA report is populated.
   implement          Resume implementation directly from approved plan specification
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
@@ -621,7 +621,7 @@ Operational Flags:
       --no-quarantine  Abort without stashing worktrees (alias: --keep-worktrees)
       --issue <num>  Associate execution with GitHub issue number (digits only; e.g. --issue 250)
       --title <text>  Specify the plan title; the artifact folder and filename are derived from it and bounded (long titles are truncated and hashed)
-      --type <type>  Specify plan type (discovery | implementation | auto)
+      --type <type>  Specify plan type (discovery | implementation | auto); auto infers from the issue kind (bug -> DISCOVERY entry, otherwise -> PLAN), and an explicit value also selects the entry stage
       --config <path> Path to custom configuration file (.agyloop.json)
       --model <name> Override agent runner model (e.g. ornith:9b-128k)
       --worktree     Enable git worktree isolation for task execution (default: true)
@@ -3712,7 +3712,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           stageAfterThisRun === STAGE_PLAN &&
           !enteredAtDiscoveryWork &&
           result.pausedAtGate !== GATE_APPROVAL &&
-          result.planResult?.discoveryReentry !== 'PARK_AT_DISCOVERY';
+          result.planResult?.discoveryParked !== true;
 
         if (plannerIsNextActionable && result.planResult?.plannerDef) {
           const p = result.planResult.plannerDef;
@@ -3730,8 +3730,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // the skip flag forces `ADVANCE_TO_PLAN`, so a park never coexists
           // with it (and a populated-report advance keeps its attribution).
           options.skipDiscovery !== true &&
-          (previousStage === STAGE_DISCOVERY ||
-            result.planResult.discoveryReentry === 'PARK_AT_DISCOVERY')
+          (previousStage === STAGE_DISCOVERY || result.planResult.discoveryParked === true)
         ) {
           // The subagent this invocation actually concerned: the Discovery
           // attribution, never the planner's. `inherit` here is the model the
@@ -3756,7 +3755,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             ? `still ${formatStageBadge(previousStage)}`
             : 'no checkpoint exists yet';
           console.log(`\n[DRY RUN] Stage unchanged: ${unchanged}. No checkpoint was written.`);
-          if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
+          if (result.planResult?.discoveryParked === true) {
             console.log(
               '[DRY RUN] Would park at DISCOVERY for RCA: populate the discovery report (or pass --skip-discovery), then re-run.'
             );
@@ -3766,7 +3765,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         } else if (result.pausedAtGate === GATE_APPROVAL) {
           console.log(`🛑 Paused at ${formatStageBadge(STAGE_APPROVAL)} gate.`);
           console.log(`Review artifacts in artifacts/plans/ and run 'codeloop implement' to continue.\n`);
-        } else if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
+        } else if (result.planResult?.discoveryParked === true) {
           // Issue #237, finding 3: a parked re-entry looks exactly like a
           // successful advance (`currentStage` is still DISCOVERY), so without
           // this leg `codeloop plan` printed "✓ Pipeline advanced to
@@ -4413,7 +4412,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // so the "Pipeline at stage: DISCOVERY" line below reads like progress
         // and never names the outstanding work. `RunLifecycleUseCase.
         // executeStandardMode` builds the message; print it.
-        if (result.planResult?.discoveryReentry === 'PARK_AT_DISCOVERY') {
+        if (result.planResult?.discoveryParked === true) {
           console.log(`\n🛑 ${result.message ?? withRecordedPauseHint(NOTE_DISCOVERY_PARK_AWAITING_RCA, result.pausedAtGate)}\n`);
           return EXIT_CODE_SUCCESS;
         }
