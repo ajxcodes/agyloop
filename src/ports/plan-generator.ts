@@ -16,8 +16,17 @@ export interface ScaffoldParams {
    * The checkpoint's tracked directory (issue #283). Explicit intent wins over
    * the derived slug — but a populated sibling report still wins over an empty
    * tracked directory, which is what heals the orphaned-report case.
+   *
+   * A checkpoint hint may additionally be IGNORED for an ad-hoc run whose
+   * folder belongs to another title — see `planDirIsCheckpoint` (issue #383).
    */
   readonly planDir?: string | null;
+  /**
+   * True when `planDir` is the CHECKPOINT's tracked directory rather than an
+   * explicit `--plan-dir` (issue #383). An ad-hoc run is keyed by its TITLE, so
+   * a checkpoint tracking a DIFFERENT title's folder is a stale hint.
+   */
+  readonly planDirIsCheckpoint?: boolean;
 }
 
 export interface ScaffoldResult {
@@ -33,6 +42,8 @@ export interface ScaffoldResult {
   readonly filesCreated: boolean;
   /** The target directory already existed and was reused. */
   readonly adoptedExisting: boolean;
+  /** The checkpoint's folder was ignored because it names another ad-hoc title (issue #383). */
+  readonly checkpointDirIgnored?: boolean;
 }
 
 /** One gate that was declared but never executed (issue #284). */

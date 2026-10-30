@@ -17,7 +17,9 @@
  * folder/filename from it verbatim reaches `ENAMETOOLONG` (> 255 bytes) and
  * PLAN cannot start. Every derived name is therefore bounded here — the ONE
  * place the bound lives — and long titles are truncated at a word boundary and
- * stamped with a deterministic hash so two long titles never share a folder.
+ * stamped with a deterministic hash so two long titles never share a folder. A
+ * LOSSY (non-ASCII) projection is stamped the same way (issue #383): the hash
+ * is not a length remedy but a collision remedy.
  *
  * Purity note: this module imports NOTHING external and no Node module — no
  * `node:path`, no `fs`, no `process` access, and deliberately no `node:crypto`
@@ -46,7 +48,7 @@ export const PLAN_FILE_NAME_MAX_BYTES = 143;
 /** The slug budget before the collision hash is appended. */
 export const PLAN_SLUG_MAX_BYTES = 100;
 
-/** Hex chars of the FNV-1a disambiguator appended when a slug is truncated. */
+/** Hex chars of the FNV-1a disambiguator appended when a slug is truncated or lossy. */
 export const PLAN_NAME_HASH_HEX = 8;
 
 /** The issue component is clamped too, so a pathological `--issue` is bounded. */
@@ -63,6 +65,15 @@ export const PLAN_FILE_EXTENSION = '.md' as const;
 
 /** The placeholder a sanitised title collapses to when nothing survives. */
 export const PLAN_UNTITLED_TITLE = 'untitled' as const;
+
+/**
+ * The slug stem used when a title projects onto nothing (issue #383).
+ *
+ * The old grammar returned `''` here, so every purely non-Latin title became
+ * the literal folder `adhoc-/`. The stem keeps the name readable; the hash
+ * keeps it distinct.
+ */
+export const PLAN_EMPTY_SLUG_STEM = 'plan' as const;
 
 /**
  * The UTF-8 byte length of `text`.
@@ -178,21 +189,49 @@ export function planSlug(text: string): string {
 }
 
 /**
- * The bounded slug used inside a plan folder name (issue #364).
+ * True when `planSlug` would DROP a code point (issue #383).
  *
- * A slug within {@link PLAN_SLUG_MAX_BYTES} is returned unchanged, so every
- * legacy folder name is byte-identical. A longer slug is cut at the last `-`
- * at or below the budget when that boundary keeps at least half the budget
- * (a word cut, which real issue titles get); otherwise it is hard-cut. Because
- * truncation alone would make `'x'.repeat(372)` and `'x'.repeat(371) + 'y'`
- * share a folder, a cut slug is stamped with `-<8 hex of FNV-1a over the FULL
- * raw title>`, which is deterministic and therefore adoptable on re-entry.
+ * `planSlug` deletes every non-ASCII character, so two unrelated multi-byte
+ * titles can project onto the same ASCII slug (or onto nothing). Deletion is
+ * LOSS; whitespace/punctuation collapse and case folding are normalisation and
+ * must NOT trigger the disambiguator (that would move every pre-#364 folder).
+ *
+ * A code-point scan rather than a regex, so the domain needs no control-regex
+ * class and no `\x00` handling.
+ */
+function planSlugDropsText(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  for (const char of text) {
+    if ((char.codePointAt(0) as number) > 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * The bounded slug used inside a plan folder name (issue #364, #383).
+ *
+ * A slug within {@link PLAN_SLUG_MAX_BYTES} whose projection lost nothing is
+ * returned unchanged, so every legacy folder name is byte-identical. A longer
+ * slug is cut at the last `-` at or below the budget when that boundary keeps
+ * at least half the budget (a word cut, which real issue titles get); otherwise
+ * it is hard-cut. Because truncation alone would make `'x'.repeat(372)` and
+ * `'x'.repeat(371) + 'y'` share a folder, a cut **or lossy** slug is stamped
+ * with `-<8 hex of FNV-1a over the FULL raw title>`; the trigger is truncation,
+ * an empty projection, or a dropped non-ASCII code point. The stamp is
+ * deterministic and therefore adoptable on re-entry.
  *
  * @param text - The issue title.
  */
 export function planSlugBounded(text: string): string {
   const slug = planSlug(text);
-  if (planByteLength(slug) <= PLAN_SLUG_MAX_BYTES) return slug;
+  const overBudget = planByteLength(slug) > PLAN_SLUG_MAX_BYTES;
+  // Issue #383: a LOSSY projection collides exactly like a truncated one, so
+  // the hash is appended whenever the projection DROPPED a code point (or
+  // produced nothing) — not only when it was cut. ASCII case/punctuation
+  // collapsing is normalisation, not loss: hashing it would move every
+  // pre-#364 folder (`283-the-base-s-own-new-commits`).
+  const lossy = slug.length === 0 || planSlugDropsText(text);
+  if (!overBudget && !lossy) return slug;
 
   const hashSuffix = `-${fnv1aHex(text)}`;
   const available = PLAN_SLUG_MAX_BYTES - planByteLength(hashSuffix);
@@ -200,12 +239,15 @@ export function planSlugBounded(text: string): string {
 
   // A word boundary at or below the budget, when it keeps at least half the
   // budget, reads far better than a hard cut (`…-the-planner-can` not `…-the-p`).
-  const boundary = head.lastIndexOf('-');
-  if (boundary >= 0 && boundary >= PLAN_SLUG_MAX_BYTES / 2) {
-    head = head.slice(0, boundary);
+  if (head.length < slug.length) {
+    const boundary = head.lastIndexOf('-');
+    if (boundary >= 0 && boundary >= PLAN_SLUG_MAX_BYTES / 2) {
+      head = head.slice(0, boundary);
+    }
   }
   head = head.replace(/-+$/, '');
-  if (head.length === 0) head = 'plan';
+  // An empty component is never a valid folder name (issue #383).
+  if (head.length === 0) head = PLAN_EMPTY_SLUG_STEM;
   return `${head}${hashSuffix}`;
 }
 
@@ -277,12 +319,34 @@ export function sanitizePlanTitle(title: string): string {
 }
 
 /**
+ * Punctuation a derived FILENAME head must not end on (issue #383).
+ *
+ * A code-point cut that lands on the comma before the next clause reads as a
+ * truncated title: `… die at seed,.md`. The retained head is trimmed before
+ * `.md` is appended, never after.
+ */
+const PLAN_FILENAME_TRAILING_PUNCTUATION = /[,;:\u2014.\s-]+$/u;
+
+/** Removes trailing punctuation/whitespace from a derived filename head. */
+function trimPlanHeadPunctuation(head: string): string {
+  return head.replace(PLAN_FILENAME_TRAILING_PUNCTUATION, '');
+}
+
+/**
  * The canonical artifact filename for a plan of `type`, bounded to
- * {@link PLAN_FILE_NAME_MAX_BYTES} bytes (issue #364).
+ * {@link PLAN_FILE_NAME_MAX_BYTES} bytes (issue #364, #383).
  *
  * `'[Discovery] - '` / `'[Implementation] - '` + the sanitised title, truncated
  * on a code-point boundary to leave room for `.md`. A CJK title therefore
  * cannot die on `open … ENAMETOOLONG` after its folder was already created.
+ *
+ * Two deterministic post-steps run AFTER the cut, so the budget proof is
+ * unchanged (both only ever remove characters):
+ *
+ * 1. a cut that landed mid-word backs off to the last space when that keeps at
+ *    least half the retained head (`… is ine` → `… is`);
+ * 2. trailing punctuation/whitespace is trimmed, so the head never ends on a
+ *    truncated `,`/`;`/`:`/`-`/`—`/`.` before the extension.
  *
  * @param type - The plan type.
  * @param title - The raw plan title.
@@ -295,7 +359,23 @@ export function planArtifactFileName(
     type === 'discovery' ? PLAN_DISCOVERY_FILE_PREFIX : PLAN_IMPLEMENTATION_FILE_PREFIX;
   const budget =
     PLAN_FILE_NAME_MAX_BYTES - planByteLength(prefix) - planByteLength(PLAN_FILE_EXTENSION);
-  const head = truncateUtf8(sanitizePlanTitle(title), budget).trimEnd();
+  const sanitised = sanitizePlanTitle(title);
+  let head = truncateUtf8(sanitised, budget);
+
+  // Issue #383: a code-point cut can land mid-word (#392: `… is ine`). Back off
+  // to the last space when it keeps at least half the head, so the retained
+  // title ends on a whole word instead of a fragment.
+  if (head.length < sanitised.length) {
+    const next = sanitised.charAt(head.length);
+    if (next !== '' && next !== ' ') {
+      const boundary = head.lastIndexOf(' ');
+      if (boundary >= 0 && boundary >= Math.floor(head.length / 2)) {
+        head = head.slice(0, boundary);
+      }
+    }
+  }
+
+  head = trimPlanHeadPunctuation(head);
   const safeHead = head.length === 0 ? PLAN_UNTITLED_TITLE : head;
   return `${prefix}${safeHead}${PLAN_FILE_EXTENSION}`;
 }

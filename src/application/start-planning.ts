@@ -44,6 +44,7 @@ import {
   isDiscoveryPlanDocument,
   deriveStageDuration,
   planFolderName,
+  planIssuePart,
   planArtifactFileName,
   assertPlanNameWithinLimits
 } from '../domain';
@@ -306,6 +307,11 @@ export class StartPlanningUseCase {
     });
     const planType: PlanArtifactType = planEntry.artifactType;
 
+    // Issue #383: an ad-hoc run is keyed by its title (see
+    // `scaffoldPlanDirectory`), so the preview and the checkpoint rule below
+    // must not treat a tracked folder as identity.
+    const adhocRun = planIssuePart(activeIssue) === 'adhoc';
+
     // #382 D4: the fail-open default is now explicit. Without labels AND
     // without a bug marker the kind falls back to `feature`, which would skip
     // DISCOVERY silently for a bug whose title carries no keyword. On a
@@ -403,7 +409,10 @@ export class StartPlanningUseCase {
         title: planTitle,
         type: planType,
         labels: planLabels,
-        planDir: params.planDir ?? checkpointPlanDir
+        planDir: params.planDir ?? checkpointPlanDir,
+        // Issue #383: tag a CHECKPOINT-supplied hint (never an explicit
+        // `--plan-dir`) so an ad-hoc run can ignore one that names another title.
+        planDirIsCheckpoint: !params.planDir && Boolean(checkpointPlanDir)
       });
       // Adopt the returned directory when:
       //  - the checkpoint has no plan directory of its own (first run), or
@@ -417,7 +426,12 @@ export class StartPlanningUseCase {
       // Issue #301: `setPlanDir` always bumps `updatedAt`, so a no-op adoption
       // must not be issued at all.
       const shouldAdopt =
-        !sm.planDir || Boolean(params.planDir) || scaffoldInfo?.adoptedExisting === true;
+        !sm.planDir ||
+        Boolean(params.planDir) ||
+        scaffoldInfo?.adoptedExisting === true ||
+        // Issue #383: this run deliberately superseded a stale ad-hoc checkpoint
+        // hint, so the checkpoint must follow the title it actually planned.
+        scaffoldInfo?.checkpointDirIgnored === true;
       if (shouldAdopt && scaffoldInfo?.planDir && sm.planDir !== scaffoldInfo.planDir) {
         sm.setPlanDir(scaffoldInfo.planDir);
       }
@@ -600,7 +614,9 @@ export class StartPlanningUseCase {
         const resolved = this.planGenerator.resolvePlanFile({
           projectRoot: workspace,
           issue: activeIssue,
-          planDir: params.planDir ?? checkpointPlanDir
+          // Issue #383: an ad-hoc preview must not promise a reuse the real run
+          // refuses — a checkpoint folder belongs to the title that created it.
+          planDir: params.planDir ?? (adhocRun ? null : checkpointPlanDir)
         });
         if (resolved && resolved.planDir) {
           dryRunPreview = {

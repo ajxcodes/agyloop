@@ -1468,6 +1468,63 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
     );
     assert.strictEqual(stateRepo.savedSnapshot.currentStage, STAGE_DISCOVERY);
   });
+
+  caseTest('T-383.11: two ad-hoc titles produce two folders and the checkpoint follows the last', async () => {
+    // Issue #383: an ad-hoc run is keyed by its TITLE. The checkpoint tracked the
+    // first title's folder, so the second run must supersede that stale hint (the
+    // old folder is left on disk, never deleted), and re-running the first title
+    // must return to the first folder.
+    const titleZh = `Phase 6 ${'中'.repeat(40)}`;
+    const titleWen = `Phase 6 ${'文'.repeat(40)}`;
+    const useCase = new StartPlanningUseCase(
+      stateRepo,
+      githubGateway,
+      configRepo,
+      planGenerator
+    );
+
+    const first = await useCase.execute({
+      issue: null,
+      title: titleZh,
+      type: 'implementation',
+      mode: MODE_PLAN,
+      workspaceDir: workspace
+    });
+    assert.strictEqual(planDirectories().length, 1);
+    const zhFolder = pathReal.basename(first.stateMachine.planDir as string);
+
+    const second = await useCase.execute({
+      issue: null,
+      title: titleWen,
+      type: 'implementation',
+      mode: MODE_PLAN,
+      workspaceDir: workspace
+    });
+    assert.strictEqual(planDirectories().length, 2, 'two titles must never share one folder');
+    const wenFolder = pathReal.basename(second.stateMachine.planDir as string);
+    assert.notStrictEqual(wenFolder, zhFolder);
+    assert.ok(stateRepo.savedSnapshot.planDir.endsWith(wenFolder), 'the checkpoint follows the last title');
+
+    const specs = (folder: string): string[] =>
+      fsReal
+        .readdirSync(pathReal.join(plansDir(), folder))
+        .filter((name: string) => name.startsWith('[Implementation] - '));
+    assert.strictEqual(specs(zhFolder).length, 1, JSON.stringify(fsReal.readdirSync(pathReal.join(plansDir(), zhFolder))));
+    assert.strictEqual(specs(wenFolder).length, 1, JSON.stringify(fsReal.readdirSync(pathReal.join(plansDir(), wenFolder))));
+    assert.match(specs(zhFolder)[0], /中/);
+    assert.match(specs(wenFolder)[0], /文/);
+
+    const third = await useCase.execute({
+      issue: null,
+      title: titleZh,
+      type: 'implementation',
+      mode: MODE_PLAN,
+      workspaceDir: workspace
+    });
+    assert.ok(third.stateMachine.planDir!.endsWith(zhFolder), 'the first title returns to its own folder');
+    assert.strictEqual(planDirectories().length, 2, 'no third folder, and the sibling is kept');
+    assert.strictEqual(third.scaffoldInfo?.directoryCreated, false);
+  });
 });
 
 // #339 (audit extra E6 / T13.1 / AC-5.2): the default plan path records the
