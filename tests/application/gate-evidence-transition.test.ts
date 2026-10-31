@@ -518,6 +518,48 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
+  test('T-D2-3 (#408 D2): a PASSED report that skips a declared target is refused and writes nothing', async () => {
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets()
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        { ...PASSED_REPORT.toJSON(), executedCommands: ['npm run lint'] },
+        1
+      )
+    );
+    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
+
+    try {
+      await assert.rejects(
+        async () => runTransition(ws, STAGE_REVIEW, repo),
+        (err: any) => {
+          assert.match(String(err.message), /Missing 1 of 1 declared commands/);
+          assert.match(String(err.message), /npm test/);
+          assert.match(String(err.message), /NOT consumed/);
+          return true;
+        }
+      );
+
+      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
+      assert.strictEqual(repo.clears, 0, 'a coverage refusal must not consume the report');
+      assert.ok(repo.load(ISSUE) !== null, 'the report stays readable for a corrected refile');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
   test('#338 T5: evidence then none — the second round clears the first round’s metrics', async () => {
     const now = Date.now();
     const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [

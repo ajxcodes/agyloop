@@ -499,3 +499,203 @@ describe('the gate prompt example files through the real CLI (issue #338)', () =
     }
   });
 });
+
+/**
+ * Issue #408 (D2): filing a PASSED block that does not cover the plan's
+ * declared `### Quality Gate Targets` is refused — at filing and on
+ * `--dry-run` — and a plan with no targets keeps today's behaviour.
+ */
+describe('gate-report declared-command coverage (issue #408)', () => {
+  const PLAN_DIR = `artifacts/plans/${ISSUE}-smoke`;
+  const FOUR_TARGETS = ['npm run build', 'npm run typecheck', 'npm run lint', 'npm test'];
+
+  /** Writes a plan declaring `commands`, and points the checkpoint at it. */
+  function seedPlanWithTargets(sandbox: Sandbox, commands: readonly string[]): void {
+    const planDir = path.join(sandbox.dir, PLAN_DIR);
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planDir, 'implementation_plan.md'),
+      ['# [Implementation] - probe', '', '### Quality Gate Targets', '', '```bash', ...commands, '```', ''].join(
+        '\n'
+      ),
+      'utf8'
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+    checkpoint.planDir = PLAN_DIR;
+    fs.writeFileSync(sandbox.checkpointPath, JSON.stringify(checkpoint, null, 2), 'utf8');
+  }
+
+  /** Writes a full valid `GATE_REPORT_JSON` block and returns its path. */
+  function writeReport(
+    sandbox: Sandbox,
+    options: {
+      verdict?: string;
+      executedCommands: readonly string[];
+      commandResults?: ReadonlyArray<{ command: string; passed: number | null; failed: number | null }>;
+    }
+  ): string {
+    const verdict = options.verdict ?? 'PASSED';
+    const passed = verdict === 'PASSED';
+    const payload = {
+      verdict,
+      buildSystem: 'node',
+      buildStatus: verdict,
+      testsStatus: passed ? 'PASSED (4 passed)' : 'FAILED (1 failed)',
+      testsPassed: passed ? 4 : 0,
+      testsFailed: passed ? 0 : 1,
+      durationMs: 1000,
+      executedCommands: options.executedCommands,
+      commandResults: options.commandResults ?? [],
+      smokeProtocol: 'NOT_DECLARED',
+      notRun: []
+    };
+    const file = path.join(sandbox.dir, 'gate.json');
+    fs.writeFileSync(
+      file,
+      `${GATE_REPORT_JSON_MARKER}\n${JSON.stringify(payload)}\n`,
+      'utf8'
+    );
+    return file;
+  }
+
+  test('T-CLI-1: full coverage over four declared targets files the evidence', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithTargets(sandbox, FOUR_TARGETS);
+      writeReport(sandbox, { executedCommands: FOUR_TARGETS });
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(run.stdout.includes('✓ Gate evidence recorded'), run.stdout);
+      assert.ok(fs.existsSync(evidencePath(sandbox)), 'full coverage must be filed');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-CLI-2: one missing command is refused, naming the other three', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithTargets(sandbox, FOUR_TARGETS);
+      writeReport(sandbox, { executedCommands: ['npm run build'] });
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      for (const command of ['npm run typecheck', 'npm run lint', 'npm test']) {
+        assert.ok(run.stderr.includes(command), `stderr must name ${command}:\n${run.stderr}`);
+      }
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a partial report writes no evidence');
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-CLI-3: empty coverage is refused, naming all four commands', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithTargets(sandbox, FOUR_TARGETS);
+      writeReport(sandbox, { executedCommands: [], commandResults: [] });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      for (const command of FOUR_TARGETS) {
+        assert.ok(run.stderr.includes(command), `stderr must name ${command}:\n${run.stderr}`);
+      }
+      assert.ok(!fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-CLI-4: a plan with no targets heading keeps today’s behaviour', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeReport(sandbox, { executedCommands: ['npm run build'] });
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-CLI-5: --dry-run reports the same missing commands and writes nothing', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithTargets(sandbox, FOUR_TARGETS);
+      writeReport(sandbox, { executedCommands: ['npm run build'] });
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json',
+        '--dry-run'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.ok(output.includes('[dry-run]'), output);
+      for (const command of ['npm run typecheck', 'npm run lint', 'npm test']) {
+        assert.ok(output.includes(command), `the dry run must name ${command}:\n${output}`);
+      }
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a dry run writes no evidence');
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.ok(!output.includes('Next:'), `a refused dry run prints no Next line:\n${output}`);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-CLI-6: a FAILED report is not coverage-checked (only PASSED certifies)', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithTargets(sandbox, FOUR_TARGETS);
+      writeReport(sandbox, { verdict: 'FAILED', executedCommands: ['npm run build'] });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+});

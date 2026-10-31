@@ -54,6 +54,8 @@ import {
   ValidationError,
   MSG_PLAN_MODIFIED_DURING_GATE,
   formatGateEvidenceRequiredMessage,
+  formatGateTargetCoverageRefusal,
+  formatGateReportPreservedNote,
   formatTransitionRecoveryCommands
 } from '../domain';
 import {
@@ -66,6 +68,7 @@ import {
   SummarySmokeCheck
 } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import { assessGateEvidenceCoverage } from './gate-evidence-coverage';
 import { assertGateTargetContract as enforceGateTargetContract } from './gate-target-contract';
 import { assertPlanBaselineContract as enforcePlanBaselineContract } from './plan-baseline-contract';
 import { assertSmokeProtocolContract as enforceSmokeProtocolContract } from './smoke-protocol-contract';
@@ -309,13 +312,11 @@ export class TransitionStageUseCase {
       await this.assertPlanBaselineContract(sm, params);
     }
 
-    // Consume-on-ingest (issue #284): one filed report certifies exactly one
-    // gate round, so the same PASSED can never be applied to a later run. A
-    // report whose round did not match is discarded too — it is stale evidence.
-    // A dry run only READS: it must never consume evidence it did not use.
-    if (!params.dryRun && prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
-      this.gateReportRepo?.clear(activeIssue);
-    }
+    // Issue #408 (D1): the consume-on-ingest clear is NOT here. It used to run
+    // at this point — before the digest guard and before worktree provisioning —
+    // so a REFUSED certification deleted the very report the operator still
+    // needed. It now runs on the committed path only, immediately before the
+    // checkpoint save (see the `!params.dryRun` block below).
 
     // Issue #298: the approved plan is frozen for the whole IMPLEMENT ->
     // QUALITY_GATE -> REVIEW loop. Entering IMPLEMENT from a fresh approval
@@ -347,7 +348,27 @@ export class TransitionStageUseCase {
       targetStageStr === STAGE_REVIEW &&
       !params.dryRun
     ) {
-      this.assertApprovedPlanUnchanged(sm, params);
+      this.assertApprovedPlanUnchanged(
+        sm,
+        params,
+        gateEvidence !== null ? gateEvidence.gateRound : null
+      );
+    }
+
+    // Issue #408 (D2): a PASSED report must have executed the plan's declared
+    // Verification Targets. The DIGEST guard runs FIRST, so an edited plan is
+    // refused with the precise digest diagnostic rather than a derived
+    // "commands missing" one. Restricted to REVIEW: that is the one certifying
+    // exit; `QUALITY_GATE -> IMPLEMENT/PLAN/TRIAGE` are "go fix it" exits and
+    // must not be blocked by a coverage check. `--dry-run` skips it for parity
+    // with the digest guard; the filing-side dry run is the diagnostic surface.
+    if (
+      prevStage === STAGE_QUALITY_GATE &&
+      targetStageStr === STAGE_REVIEW &&
+      !params.dryRun &&
+      gateEvidence !== null
+    ) {
+      this.assertGateReportCoversDeclaredTargets(gateEvidence, sm, params);
     }
 
     // Issue #283: DISCOVERY is where the RCA report is written, so the stage
@@ -434,6 +455,27 @@ export class TransitionStageUseCase {
       if (targetStageStr === STAGE_QUALITY_GATE && prevStage !== STAGE_QUALITY_GATE) {
         this.gateReportRepo?.clear(activeIssue);
       }
+
+      // Issue #408 (D1): leaving the gate CONSUMES the round's report, but only
+      // here — after every guard and after worktree provisioning, immediately
+      // before the checkpoint save. The old site ran before the digest guard, so
+      // a refused certification deleted the very evidence the operator still
+      // needed. One filed report still certifies exactly one gate round
+      // (#284/#311).
+      //
+      // Reachability audit (do not "simplify" this order): on the transition
+      // table, `ALLOWED_TRANSITIONS[QUALITY_GATE]` is
+      // `[REVIEW, IMPLEMENT, PLAN, TRIAGE]`; `assertGateTargetContract`,
+      // `assertSmokeProtocolContract` and `assertPlanBaselineContract` run only
+      // for the APPROVAL target and for IMPLEMENT from a fresh approval, so a
+      // QUALITY_GATE exit cannot reach them. The two reachable post-ingest
+      // refusals are the digest guard and worktree provisioning; keeping the
+      // clear AFTER every guard makes preservation structural rather than
+      // special-cased.
+      if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
+        this.gateReportRepo?.clear(activeIssue);
+      }
+
       await this.stateRepo.save(sm.toSnapshot());
 
       // Issue #283: DISCOVERY is where the RCA report is written, so the stage
@@ -758,7 +800,11 @@ export class TransitionStageUseCase {
     }
   }
 
-  private assertApprovedPlanUnchanged(sm: StateMachine, params: TransitionParams): void {
+  private assertApprovedPlanUnchanged(
+    sm: StateMachine,
+    params: TransitionParams,
+    evidenceRound: number | null = null
+  ): void {
     const expected = sm.approvedPlanDigest;
     if (!expected) return;
 
@@ -770,13 +816,63 @@ export class TransitionStageUseCase {
       return;
     }
 
+    // Issue #408 (D1): the refusal no longer consumes the filed report, so say
+    // so. Before the fix the checkpoint was byte-identical while the evidence
+    // file was gone — the operator was told "nothing was written" and then had
+    // no block to certify with.
+    const preserved =
+      evidenceRound === null
+        ? ''
+        : ` ${formatGateReportPreservedNote(sm.issue || params.issue || null, evidenceRound)}`;
+
     throw new ValidationError(
       'approvedPlanDigest',
       actual,
       MSG_PLAN_MODIFIED_DURING_GATE
         .replace('{path}', planPath ?? '(unknown plan path)')
         .replace('{expected}', expected)
-        .replace('{actual}', actual ?? '(unreadable)')
+        .replace('{actual}', actual ?? '(unreadable)') + preserved
+    );
+  }
+
+  /**
+   * Refuses a `PASSED` report that does not execute the plan's declared
+   * Quality Gate Targets (issue #408, D2).
+   *
+   * The plan prompt says the declared commands "ARE the gate's command list, in
+   * this order" — a PASSED block that ran one of four commands used to certify
+   * the gate and advance the pipeline. Coverage is assessed by the ONE shared
+   * application helper (same matcher as filing), and a plan with no declared
+   * targets keeps the pre-#408 behaviour.
+   */
+  private assertGateReportCoversDeclaredTargets(
+    report: GateResultReport,
+    sm: StateMachine,
+    params: TransitionParams
+  ): void {
+    if (!this.planGenerator) {
+      return;
+    }
+    const coverage = assessGateEvidenceCoverage({
+      planGenerator: this.planGenerator,
+      workspaceDir: params.workspaceDir || process.cwd(),
+      issue: sm.issue || params.issue || null,
+      planPath: sm.planPath ?? sm.approvedPlanPath ?? null,
+      planDir: sm.planDir ?? null,
+      report
+    });
+    if (!coverage.assessed || coverage.covered) {
+      return;
+    }
+    throw new ValidationError(
+      'executedCommands',
+      coverage.missing,
+      formatGateTargetCoverageRefusal(
+        coverage.missing,
+        coverage.declared.length,
+        sm.issue || params.issue || null,
+        'ingest'
+      )
     );
   }
 }

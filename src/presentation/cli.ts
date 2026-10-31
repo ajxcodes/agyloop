@@ -178,6 +178,8 @@ import {
   formatGateReportAdvanceCommand,
   // Issue #327: the late-filing refusal names a LEGAL walk back to the gate.
   formatGateReportChannelCommand,
+  // Issue #408 (D2): the coverage refusal is ONE renderer for filing + ingest.
+  formatGateTargetCoverageRefusal,
   formatTransitionRecoveryCommands,
   findLegalTransitionPath,
   // Issue #402: the APPROVAL baseline behaviour embeds the SAME prohibition the
@@ -256,7 +258,9 @@ import {
   CheckpointScope,
   // Issue #327: `next` consults the SAME implementation-evidence probe the
   // gate and the YOLO path use, so "nothing implemented yet" is a measurement.
-  DetectImplementationDiffUseCase
+  DetectImplementationDiffUseCase,
+  // Issue #408 (D2): the SAME coverage assessment the ingest side runs.
+  assessGateEvidenceCoverage
 } from '../application';
 import type { ImplementationProbe } from '../application';
 
@@ -3230,6 +3234,40 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         } catch (err: unknown) {
           console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
           return EXIT_CODE_FAILURE;
+        }
+
+        // Issue #408 (D2): a PASSED report certifies the gate only when its
+        // commands cover the plan's declared Quality Gate Targets. Assessed
+        // BEFORE the `--dry-run` branch so a preview reports the SAME findings a
+        // real filing would raise — and writes nothing in either case.
+        {
+          const coverage = assessGateEvidenceCoverage({
+            planGenerator,
+            workspaceDir: options.workspaceDir || process.cwd(),
+            issue: scope.issue ?? issueValue ?? null,
+            planPath:
+              scope.snapshot?.planPath ??
+              scope.snapshot?.approvedPlanPath ??
+              options.planPath ??
+              null,
+            planDir: scope.snapshot?.planDir ?? options.planDir ?? null,
+            report
+          });
+          if (coverage.assessed && !coverage.covered) {
+            const refusal = formatGateTargetCoverageRefusal(
+              coverage.missing,
+              coverage.declared.length,
+              scope.issue ?? issueValue ?? null,
+              'filing'
+            );
+            if (options.dryRun) {
+              console.error(`[dry-run] ${refusal}`);
+              console.error('[dry-run] Nothing was written.');
+            } else {
+              console.error(`✗ ${refusal}`);
+            }
+            return EXIT_CODE_FAILURE;
+          }
         }
 
         if (options.dryRun) {

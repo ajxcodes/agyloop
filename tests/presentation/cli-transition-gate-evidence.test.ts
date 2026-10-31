@@ -14,6 +14,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { FilePlanGenerator } = require('../../dist/infrastructure');
 const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -325,6 +326,77 @@ describe('stage-boundary operator output (issue #315)', () => {
       assert.ok((smokeLine as string).includes('✅'), smokeLine as string);
       assert.ok((smokeLine as string).includes('❌'), smokeLine as string);
       assert.ok((smokeLine as string).includes('❔'), smokeLine as string);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Issue #408 (D1): a REFUSED exit keeps the filed report.
+ *
+ * The consume-on-ingest clear used to run before the digest guard, so the
+ * checkpoint stayed at QUALITY_GATE while `tasks/<n>.gate.json` was deleted —
+ * "nothing was written" was true of the checkpoint and false of the evidence.
+ */
+describe('a refused gate exit preserves filed evidence (issue #408)', () => {
+  test('T-D1-E2E: a refused digest keeps the evidence, and the repaired retry consumes it once', async () => {
+    const sandbox = makeSandbox({ withPlan: true });
+    try {
+      const planPath = path.join(sandbox.dir, PLAN_DIR, 'implementation_plan.md');
+      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      checkpoint.approvedPlanPath = planPath;
+      checkpoint.approvedPlanDigest = 'deadbeef';
+      fs.writeFileSync(
+        sandbox.checkpointPath,
+        `${JSON.stringify(checkpoint, null, 2)}\n`,
+        'utf8'
+      );
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
+      const filed = await runIn(sandbox.dir, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+      assert.strictEqual(filed.code, EXIT_CODE_SUCCESS, filed.stderr);
+      assert.ok(fs.existsSync(sandbox.evidencePath));
+
+      const refused = await runIn(sandbox.dir, [
+        'transition',
+        'REVIEW',
+        '--issue',
+        String(ISSUE)
+      ]);
+
+      assert.strictEqual(refused.code, EXIT_CODE_FAILURE, refused.stdout);
+      assert.match(refused.stderr, /changed during the quality gate/i);
+      assert.match(refused.stderr, /NOT consumed/);
+      assert.ok(fs.existsSync(sandbox.evidencePath), 'the refusal must not delete the report');
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, STAGE_QUALITY_GATE);
+
+      // Repair the digest only: the SAME filed block certifies the exit.
+      const repaired = readCheckpoint(sandbox.checkpointPath);
+      repaired.approvedPlanDigest = new FilePlanGenerator().hashPlanDocument(planPath);
+      fs.writeFileSync(
+        sandbox.checkpointPath,
+        `${JSON.stringify(repaired, null, 2)}\n`,
+        'utf8'
+      );
+
+      const advanced = await runIn(sandbox.dir, [
+        'transition',
+        'REVIEW',
+        '--issue',
+        String(ISSUE)
+      ]);
+      assert.strictEqual(advanced.code, EXIT_CODE_SUCCESS, advanced.stderr);
+      assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, STAGE_REVIEW);
+      assert.ok(!fs.existsSync(sandbox.evidencePath), 'the committed exit consumes exactly once');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
