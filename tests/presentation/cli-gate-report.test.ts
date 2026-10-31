@@ -421,6 +421,7 @@ describe('the gate prompt example files through the real CLI (issue #338)', () =
       .replaceAll('<why it did not run>', 'no fixtures')
       .replaceAll('(N passed)', '(3 passed)')
       .replaceAll('"testsPassed": 0', '"testsPassed": 3')
+      .replaceAll('"passed": 0, "failed": 0', '"passed": 3, "failed": 0')
       .replaceAll('"durationMs": 0', '"durationMs": 69000');
   }
 
@@ -698,4 +699,162 @@ describe('gate-report declared-command coverage (issue #408)', () => {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
+});
+
+/**
+ * Issue #412: a PASSED block that names a test command while recording
+ * `testsPassed = 0` is not evidence — refused at filing, and on `--dry-run`.
+ */
+describe('gate-report zero-test evidence floor (issue #412)', () => {
+  function writeBlock(
+    sandbox: Sandbox,
+    block: {
+      verdict?: string;
+      testsStatus: string;
+      testsPassed: number;
+      testsFailed?: number;
+      executedCommands: readonly string[];
+      notRun?: ReadonlyArray<{ id: string; label: string; reason: string }>;
+    }
+  ): string {
+    const file = path.join(sandbox.dir, 'gate.json');
+    fs.writeFileSync(
+      file,
+      `${GATE_REPORT_JSON_MARKER}\n${JSON.stringify({
+        verdict: block.verdict ?? 'PASSED',
+        buildSystem: 'node',
+        buildStatus: block.verdict ?? 'PASSED',
+        testsStatus: block.testsStatus,
+        testsPassed: block.testsPassed,
+        testsFailed: block.testsFailed ?? 0,
+        durationMs: 1000,
+        executedCommands: block.executedCommands,
+        smokeProtocol: 'NOT_DECLARED',
+        notRun: block.notRun ?? []
+      })}\n`,
+      'utf8'
+    );
+    return file;
+  }
+
+  test('F-Z1: the zero-test block is refused, names the command and writes nothing', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeBlock(sandbox, {
+        testsStatus: 'PASSED (0 passed)',
+        testsPassed: 0,
+        testsFailed: 0,
+        executedCommands: ['npm test']
+      });
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(run.stderr.includes('npm test'), run.stderr);
+      assert.ok(run.stderr.includes('testsPassed'), run.stderr);
+      assert.ok(run.stderr.includes('Nothing was written'), run.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a zero-test block writes no evidence');
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('F-Z2: the same block on --dry-run reports the refusal and writes nothing', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeBlock(sandbox, {
+        testsStatus: 'PASSED (0 passed)',
+        testsPassed: 0,
+        testsFailed: 0,
+        executedCommands: ['npm test']
+      });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json',
+        '--dry-run'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.ok(output.includes('[dry-run]'), output);
+      assert.ok(output.includes('npm test'), output);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a dry run writes no evidence');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('F-Z3: a build-only PASSED block with zero tests is recorded', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeBlock(sandbox, {
+        testsStatus: 'PASSED (0 passed)',
+        testsPassed: 0,
+        testsFailed: 0,
+        executedCommands: ['npm run build']
+      });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('F-Z4: a positive aggregate with a zero per-command count is refused', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      const halfFilled = filledExampleBlockWithoutCommandCount();
+      fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), halfFilled, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.txt'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE, run.stderr);
+      assert.ok(run.stderr.includes('npm test'), run.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a half-filled block writes no evidence');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  /** The documented example with a positive aggregate but the raw `passed: 0`. */
+  function filledExampleBlockWithoutCommandCount(): string {
+    return formatGateReportExample('PASSED')
+      .replaceAll('<id>', 'node')
+      .replaceAll('<command>', 'npm test')
+      .replaceAll('<check-id>', 'check-1')
+      .replaceAll('<check label>', 'app boots')
+      .replaceAll('<gate-id>', 'e2e')
+      .replaceAll('<gate label>', 'e2e suite')
+      .replaceAll('<why it did not run>', 'no fixtures')
+      .replaceAll('(N passed)', '(3 passed)')
+      .replaceAll('"testsPassed": 0', '"testsPassed": 3')
+      .replaceAll('"durationMs": 0', '"durationMs": 69000');
+  }
 });

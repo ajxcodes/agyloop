@@ -121,7 +121,9 @@ function setupProbeRepo(tempDir: string): void {
       name: 'probe',
       scripts: {
         typecheck: 'echo TYPECHECK_OK',
-        test: 'echo TEST_OK'
+        // Issue #412: an exit-0 test command with no positive test total is a
+        // gate failure, so the stub must print a parseable count.
+        test: 'echo "TEST_METRICS: 1 passed, 0 failed, 0 skipped"'
       }
     }),
     'utf8'

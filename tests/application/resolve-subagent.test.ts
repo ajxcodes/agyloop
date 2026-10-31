@@ -797,8 +797,8 @@ describe('State-guard escape hatch parity (issue #405, D1)', () => {
   const WORKTREE = '/repo/.worktrees/405';
 
   const signalOf = (text: string): string => {
-    const match = /test-run signal \(`([^`]+)`\)/.exec(text);
-    assert.ok(match, `the dispatch must name the state-guard signal, got:\n${text}`);
+    const match = /tool-owned `([^`]+)`/.exec(text);
+    assert.ok(match, `the dispatch must name the state-guard escape hatch, got:\n${text}`);
     return match![1];
   };
 
@@ -810,20 +810,26 @@ describe('State-guard escape hatch parity (issue #405, D1)', () => {
     });
     const gate = useCase.buildGateTaskPrompt({ issueNumber: 405, cwd: WORKTREE });
 
-    assert.strictEqual(WORKTREE_GUARD_SIGNAL, ENV_NODE_TEST_CONTEXT);
+    assert.strictEqual(WORKTREE_GUARD_SIGNAL, ENV_ALLOW_WORKTREE_ISSUE_MISMATCH);
+    assert.notStrictEqual(WORKTREE_GUARD_SIGNAL, ENV_NODE_TEST_CONTEXT);
     assert.strictEqual(signalOf(implementer), WORKTREE_GUARD_SIGNAL);
     assert.strictEqual(signalOf(gate), WORKTREE_GUARD_SIGNAL);
     assert.ok(implementer.includes(NOTE_WORKTREE_GUARD_ESCAPE_HATCH), implementer);
     assert.ok(gate.includes(NOTE_WORKTREE_GUARD_ESCAPE_HATCH), gate);
+    assert.strictEqual(
+      implementer.includes(ENV_NODE_TEST_CONTEXT),
+      false,
+      'the implementer must not advertise the Node runner marker'
+    );
+    assert.strictEqual(
+      gate.includes(ENV_NODE_TEST_CONTEXT),
+      false,
+      'the gate must not advertise the Node runner marker'
+    );
     assert.ok(
       implementer.indexOf(NOTE_WORKTREE_GUARD_ESCAPE_HATCH) <
         implementer.indexOf('### Manual Smoke Test Protocol'),
       'the guard note must precede the frozen protocol'
-    );
-    assert.strictEqual(
-      implementer.includes(ENV_ALLOW_WORKTREE_ISSUE_MISMATCH),
-      false,
-      'the implementer must not name a second hatch'
     );
     assert.strictEqual(
       implementer.includes(`${ENV_NODE_ENV}=${ENV_NODE_VALUE_TEST}`),
@@ -837,6 +843,7 @@ describe('State-guard escape hatch parity (issue #405, D1)', () => {
     assert.ok(planner.includes(NOTE_SMOKE_FIXTURE_ISSUE_RULE), planner);
     assert.ok(planner.includes('fixture issue number other than the worktree'), planner);
     assert.ok(planner.includes(`${WORKTREE_GUARD_SIGNAL}=1`), planner);
+    assert.strictEqual(planner.includes(ENV_NODE_TEST_CONTEXT), false);
   });
 
   test('PS10: the static smoke validator accepts the documented override (no new rule)', () => {

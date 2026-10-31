@@ -55,6 +55,10 @@ import {
   MSG_PLAN_MODIFIED_DURING_GATE,
   formatGateEvidenceRequiredMessage,
   formatGateTargetCoverageRefusal,
+  // Issue #412: a PASSED block that ran a test command but recorded zero unique
+  // tests is not certifiable evidence.
+  zeroTestEvidenceCommands,
+  formatGateZeroTestRefusal,
   formatGateReportPreservedNote,
   formatGateReportSaveFaultNote,
   formatTransitionRecoveryCommands
@@ -380,6 +384,19 @@ export class TransitionStageUseCase {
       gateEvidence !== null
     ) {
       this.assertGateReportCoversDeclaredTargets(gateEvidence, sm, params);
+    }
+
+    // Issue #412: a PASSED block that ran a test command but recorded zero
+    // unique tests cannot certify the gate. Scope is the ONE certifying exit,
+    // exactly like the coverage guard: `-> IMPLEMENT/PLAN/TRIAGE` are "go fix
+    // it" exits, and `--dry-run` does not certify.
+    if (
+      prevStage === STAGE_QUALITY_GATE &&
+      targetStageStr === STAGE_REVIEW &&
+      !params.dryRun &&
+      gateEvidence !== null
+    ) {
+      this.assertGateReportRanTests(gateEvidence, activeIssue);
     }
 
     // Issue #283: DISCOVERY is where the RCA report is written, so the stage
@@ -902,6 +919,30 @@ export class TransitionStageUseCase {
         sm.issue || params.issue || null,
         'ingest'
       )
+    );
+  }
+
+  /**
+   * Refuses a `PASSED` report whose executed test command produced ZERO unique
+   * tests (issue #412).
+   *
+   * The defect was a false green: a shell with the documented signal exported
+   * made `node --test` skip every file, print no summary, and exit 0. The gate
+   * recorded `PASSED (0 passed)` and the transition certified it. The report is
+   * NOT consumed on this refusal — `clear()` runs only after a successful save.
+   */
+  private assertGateReportRanTests(
+    report: GateResultReport,
+    issue: number | string | null
+  ): void {
+    const commands = zeroTestEvidenceCommands(report);
+    if (commands.length === 0) {
+      return;
+    }
+    throw new ValidationError(
+      'testsPassed',
+      0,
+      formatGateZeroTestRefusal(commands, issue, 'ingest')
     );
   }
 }

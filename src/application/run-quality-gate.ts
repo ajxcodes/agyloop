@@ -66,6 +66,10 @@ import {
   MSG_COMMAND_FAILED_NO_OUTPUT,
   MSG_GATE_VACUOUS,
   MSG_GATE_UNMEASURABLE,
+  // Issue #412: the in-process gate fails an exit-0 test command with no
+  // positive test total; the predicate is shared with the filed-evidence floor.
+  MSG_GATE_NO_TEST_EVIDENCE,
+  isTestCommand as isTestCommandText,
   MSG_PLAN_MODIFIED_DURING_GATE,
   MSG_PLAN_MODIFIED_AFTER_APPROVAL,
   MSG_PLAN_APPROVED_MISSING,
@@ -399,7 +403,7 @@ export class RunQualityGateUseCase {
         if (this.isTestCommand(cmdDef)) {
           if (!passed) {
             testsStatus = STATUS_FAILED;
-          } else if (testMetrics && (testMetrics.passed || testMetrics.total)) {
+          } else if (testMetrics && testMetrics.total > 0) {
             testsMetricSummary = ` (${testMetrics.passed || testMetrics.total} passed)`;
           }
         }
@@ -417,6 +421,21 @@ export class RunQualityGateUseCase {
           diagnosticSnippet,
           cwd: executionCwd
         });
+
+        // Issue #412: an exit-0 test command that produced no positive test
+        // total is NOT a pass. With Node's NODE_TEST_CONTEXT exported,
+        // `node --test` skips every file, prints a warning, executes zero tests
+        // and still exits 0. The gate must not certify that shape.
+        if (this.isTestCommand(cmdDef) && passed && (!testMetrics || testMetrics.total === 0)) {
+          allPassed = false;
+          testsStatus = STATUS_FAILED;
+          reports[reports.length - 1] = {
+            ...reports[reports.length - 1],
+            passed: false,
+            failureSnippet: MSG_GATE_NO_TEST_EVIDENCE.replace('{command}', () => cmdDef.command)
+          };
+          break;
+        }
 
         // Fail fast on build/test failure
         if (!passed) {
@@ -1042,8 +1061,7 @@ export class RunQualityGateUseCase {
       id.includes(CMD_ID_TEST) ||
       id.includes(CMD_ID_PLAYWRIGHT) ||
       id.includes(CMD_ID_E2E) ||
-      this.commandHasToken(cmdDef.command, CMD_ID_TEST) ||
-      this.commandHasToken(cmdDef.command, `--${CMD_ID_TEST}`)
+      isTestCommandText(cmdDef.command)
     );
   }
 

@@ -218,10 +218,14 @@ class MockCommandExecutor {
       };
     }
 
+    const stdout = 'ℹ tests 10\nℹ pass 10\nℹ fail 0\nBuild completed successfully';
     return {
       command: cmd,
-      stdout: 'All 10 tests passing\nBuild completed successfully',
+      // Issue #412: an exit-0 test command with no positive test total is a
+      // gate failure, so the mock must print a parseable summary.
+      stdout,
       stderr: '',
+      combinedOutput: stdout,
       exitCode: 0,
       durationMs: 50,
       timedOut: false

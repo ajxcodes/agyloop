@@ -224,7 +224,12 @@ class MockCommandExecutor implements CommandExecutorPort {
       return this.result(command, `${this.baseAheadCommitsStdout}\n`);
     }
 
-    return this.result(command, 'All 10 tests passing\nBuild completed successfully');
+    // Issue #412: an exit-0 test command with no positive test total is a gate
+    // failure, so the mock must print a parseable summary.
+    return this.result(
+      command,
+      'ℹ tests 10\nℹ pass 10\nℹ fail 0\nBuild completed successfully'
+    );
   }
 
   private result(command: string, stdout: string): CommandExecutionResult {

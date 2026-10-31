@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { FileStateRepository } = require('../../dist/infrastructure/file-state-repository');
-const { StateStorageError, ValidationError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE } = require('../../dist/domain');
+const { StateStorageError, ValidationError, MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST, MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE, WORKTREE_GUARD_SIGNAL } = require('../../dist/domain');
 
 describe('FileStateRepository', () => {
   let originalCwd: () => string;
@@ -1197,6 +1197,13 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
         stateFilePath: sandboxStateFile(),
         allowWorktreeIssueMismatch: true
       });
+      assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
+    });
+  });
+
+  test('FSR-B6: the documented signal bypasses the cross-worktree guard', () => {
+    withGuardEnv({ [WORKTREE_GUARD_SIGNAL]: '1' }, () => {
+      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
       assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
     });
   });

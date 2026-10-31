@@ -232,6 +232,141 @@ describe('normaliseGateTests: testsPassed counts UNIQUE tests (issue #325, AC-16
   });
 });
 
+describe('zero-test evidence floor (issue #412)', () => {
+  const {
+    isTestCommand,
+    executedTestCommands,
+    zeroTestEvidenceCommands,
+    normaliseGateTests
+  } = require('../../dist/domain');
+
+  function report(json: Record<string, unknown>) {
+    return GateResultReport.fromJSON(
+      {
+        verdict: 'PASSED',
+        buildSystem: 'node',
+        buildStatus: 'PASSED',
+        testsStatus: 'PASSED (0 passed)',
+        testsPassed: 0,
+        testsFailed: 0,
+        durationMs: 1000,
+        executedCommands: [],
+        gateRound: 1,
+        ...json
+      },
+      1
+    );
+  }
+
+  test('D-Z1: isTestCommand classifies the test runners and not the build tools', () => {
+    for (const command of [
+      'npm test',
+      'npm run test:unit',
+      'node --test tests/x.test.ts',
+      'pytest -q',
+      'cargo test',
+      'go test ./...'
+    ]) {
+      assert.strictEqual(isTestCommand(command), true, command);
+    }
+    for (const command of [
+      'npm run build',
+      'npm run lint',
+      'tsc --noEmit',
+      'node bin/codeloop.js gate-report'
+    ]) {
+      assert.strictEqual(isTestCommand(command), false, command);
+    }
+  });
+
+  test('D-Z2: executedTestCommands excludes commands declared in notRun', () => {
+    assert.deepStrictEqual(
+      [...executedTestCommands(report({ executedCommands: ['npm run lint', 'npm test'] }))],
+      ['npm test']
+    );
+    assert.deepStrictEqual(
+      [
+        ...executedTestCommands(
+          report({
+            executedCommands: ['npm test'],
+            notRun: [{ id: 'test', label: 'npm test', reason: 'no tests in this project' }]
+          })
+        )
+      ],
+      []
+    );
+  });
+
+  test('D-Z3: zeroTestEvidenceCommands refuses only a PASSED zero-test report', () => {
+    assert.deepStrictEqual(
+      [
+        ...zeroTestEvidenceCommands(
+          report({ testsStatus: 'PASSED (0 passed)', testsPassed: 0, executedCommands: ['npm test'] })
+        )
+      ],
+      ['npm test']
+    );
+    assert.deepStrictEqual(
+      [
+        ...zeroTestEvidenceCommands(
+          report({ testsStatus: 'PASSED (1 passed)', testsPassed: 1, executedCommands: ['npm test'] })
+        )
+      ],
+      []
+    );
+    assert.deepStrictEqual(
+      [
+        ...zeroTestEvidenceCommands(
+          report({
+            verdict: 'FAILED',
+            testsStatus: 'FAILED (0 passed)',
+            testsPassed: 0,
+            executedCommands: ['npm test']
+          })
+        )
+      ],
+      []
+    );
+    assert.deepStrictEqual(
+      [
+        ...zeroTestEvidenceCommands(
+          report({
+            testsStatus: 'PASSED (0 passed)',
+            testsPassed: 0,
+            executedCommands: ['npm run build']
+          })
+        )
+      ],
+      []
+    );
+  });
+
+  test('D-Z4: a build-only commandResult cannot rewrite a real total to zero', () => {
+    const normalised = normaliseGateTests(
+      report({
+        testsStatus: 'PASSED (1 passed)',
+        testsPassed: 1,
+        executedCommands: ['npm run build', 'npm test'],
+        commandResults: [{ command: 'npm run build', passed: 0, failed: 0 }]
+      })
+    );
+    assert.strictEqual(normalised.testsPassed, 1);
+    assert.strictEqual(normalised.testsStatus, 'PASSED (1 passed)');
+    assert.strictEqual(normalised.rewritten, false);
+  });
+
+  test('D-Z5: a genuine test command reporting zero still yields zero', () => {
+    const zero = report({
+      testsStatus: 'PASSED (1 passed)',
+      testsPassed: 1,
+      executedCommands: ['npm test'],
+      commandResults: [{ command: 'npm test', passed: 0, failed: 0 }]
+    });
+    assert.strictEqual(normaliseGateTests(zero).testsPassed, 0);
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(zero)], ['npm test']);
+  });
+});
+
 describe('splitSmokeChecks: commands stay commands (issue #325, AC-17)', () => {
   const { splitSmokeChecks } = require('../../dist/domain');
 
