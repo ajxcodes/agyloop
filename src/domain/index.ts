@@ -51,6 +51,7 @@ export * from './value-objects/plan-digest';
 export * from './value-objects/gate-command-plan';
 export * from './value-objects/run-evidence';
 export * from './value-objects/gate-result-report';
+export * from './value-objects/gate-target-coverage';
 export * from './value-objects/workspace-mutation';
 export * from './entities/state-machine';
 

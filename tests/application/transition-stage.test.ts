@@ -39,7 +39,8 @@ const {
   MODE_PLAN,
   InvalidTransitionError,
   PreFlightHaltError,
-  WorktreeDescriptor
+  WorktreeDescriptor,
+  WorktreeCreationError
 } = require('../../dist/domain');
 
 import type {
@@ -328,7 +329,11 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
    * `resolveGateRound(sm.history)` and a hardcoded round would make this suite
    * silently evidence-free.
    */
-  function filedReport(machine: any, verdict = 'PASSED'): any {
+  function filedReport(
+    machine: any,
+    verdict = 'PASSED',
+    overrides: Record<string, unknown> = {}
+  ): any {
     const round = resolveGateRound(machine.history);
     return GateResultReport.fromJSON(
       {
@@ -342,11 +347,29 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
         executedCommands: ['npm test'],
         smokeProtocol: 'NOT_DECLARED',
         notRun: [],
-        gateRound: round
+        gateRound: round,
+        ...overrides
       },
       round
     );
   }
+
+  /** A plan declaring FOUR verification targets (issue #408, D2). */
+  function planWithFourTargets(): string {
+    return [
+      '# [Implementation] - probe',
+      '',
+      '### Quality Gate Targets',
+      '',
+      '- `npm run build`',
+      '- `npm run typecheck`',
+      '- `npm run lint`',
+      '- `npm test`',
+      ''
+    ].join('\n');
+  }
+
+  const FOUR_TARGETS = ['npm run build', 'npm run typecheck', 'npm run lint', 'npm test'];
 
   function gateRepoWith(machine: any): any {
     const reports = new Map<string, any>([['16', filedReport(machine)]]);
@@ -576,6 +599,269 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
       'a self-correction retry must not re-bless edited bytes'
     );
     assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #408 (D1): a refused exit consumes NOTHING.
+  // -------------------------------------------------------------------------
+
+  test('T-D1-1 (#408 D1, extends TS-D3): a digest refusal keeps the report, and the same block certifies after repair', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const gateRepo = gateRepoWith(machine);
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({ targetStage: 'REVIEW', issue: 16, workspaceDir: tempDir }),
+      (err: any) => {
+        assert.match(String(err.message), /changed during the quality gate/i);
+        assert.match(String(err.message), /NOT consumed/);
+        assert.match(String(err.message), /still filed/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, 'QUALITY_GATE');
+    assert.ok(gateRepo.load(16) !== null, 'the filed report must survive the refusal');
+    assert.strictEqual(gateRepo.clears, 0, 'a refusal must not consume evidence');
+
+    // Repair the digest: the SAME block (never re-filed) certifies the exit.
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const retryRepo = new MockStateRepo(machine.toSnapshot());
+    const retry = new TransitionStageUseCase(
+      retryRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+    const result = await retry.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(gateRepo.load(16), null);
+    assert.strictEqual(gateRepo.clears, 1, 'the committed path consumes exactly once');
+  });
+
+  test('T-D1-2 (#408 D1): a worktree refusal on QUALITY_GATE -> IMPLEMENT keeps the report', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const gateRepo = gateRepoWith(machine);
+    const recorder: WorktreeRecorder = { createWorktreeCalls: 0, branches: [] };
+    const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder, {
+      createWorktree: async () => {
+        recorder.createWorktreeCalls++;
+        throw new Error('provisioning failed');
+      }
+    } as Partial<WorktreeManagerPort>);
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      worktreeManager,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({ targetStage: STAGE_IMPLEMENT, issue: 16, workspaceDir: tempDir }),
+      (err: any) => {
+        assert.ok(err instanceof WorktreeCreationError, String(err));
+        return true;
+      }
+    );
+
+    assert.strictEqual(recorder.createWorktreeCalls, 1);
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.ok(gateRepo.load(16) !== null, 'the filed report must survive the refusal');
+    assert.strictEqual(gateRepo.clears, 0, 'a refusal must not consume evidence');
+  });
+
+  test('T-D1-3 (#408 D1): a smoke-contract refusal never consumes a filed report', async () => {
+    // The required "contract refusal" case, written at its REACHABLE hop:
+    // a QUALITY_GATE exit cannot reach the approval contracts, but this proves
+    // the clear cannot drift above them either.
+    fs.writeFileSync(
+      planPath,
+      [
+        '# [Implementation] - probe',
+        '',
+        '### Quality Gate Targets',
+        '',
+        '- `npm test`',
+        '',
+        '### Manual Smoke Test Protocol',
+        '',
+        '#### Check 1 - a /tmp sandbox',
+        '',
+        '```bash',
+        'SBX=$(mktemp -d /tmp/smoke-408-XXXXXX)',
+        'cd "$SBX"',
+        'node bin/codeloop.js transition REVIEW --issue 16',
+        'rm -rf "$SBX"',
+        '```',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const machine = machineAt(STAGE_APPROVAL);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const gateRepo = gateRepoWith(machine);
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({
+          targetStage: STAGE_IMPLEMENT,
+          issue: 16,
+          workspaceDir: tempDir,
+          noWorktree: true
+        }),
+      /Manual Smoke Test Protocol is not executable/
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.ok(gateRepo.load(16) !== null, 'the filed report must survive the refusal');
+    assert.strictEqual(gateRepo.clears, 0, 'a refusal must not consume evidence');
+  });
+
+  test('T-D1-4 (#408 D1): the report is cleared exactly once, immediately before the save', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const events: string[] = [];
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    stateRepo.save = async (snapshot: any) => {
+      events.push('save');
+      stateRepo.saveCallCount += 1;
+      stateRepo.savedSnapshot = snapshot;
+    };
+    const gateRepo = gateRepoWith(machine);
+    gateRepo.clear = (issue: any) => {
+      events.push('clear');
+      gateRepo.clears += 1;
+      gateRepo.reports.delete(String(issue));
+    };
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    const result = await useCase.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.deepStrictEqual(events, ['clear', 'save'], 'consume, then commit');
+    assert.strictEqual(gateRepo.clears, 1);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #408 (D2): a PASSED report must cover the plan's declared targets.
+  // -------------------------------------------------------------------------
+
+  test('T-D2-1 (#408 D2): a PASSED report missing declared commands is refused at ingest', async () => {
+    const plan = planWithFourTargets();
+    fs.writeFileSync(planPath, plan, 'utf8');
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${plan}`);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const gateRepo = gateRepoWith(machine);
+    gateRepo.reports.set(
+      '16',
+      filedReport(machine, 'PASSED', { executedCommands: ['npm run build'] })
+    );
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({ targetStage: 'REVIEW', issue: 16, workspaceDir: tempDir }),
+      (err: any) => {
+        assert.match(String(err.message), /Missing 3 of 4 declared commands/);
+        for (const command of ['npm run typecheck', 'npm run lint', 'npm test']) {
+          assert.ok(String(err.message).includes(command), String(err.message));
+        }
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(gateRepo.clears, 0);
+    assert.ok(gateRepo.load(16) !== null, 'the refused report stays readable');
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, STAGE_QUALITY_GATE);
+
+    // Refiling a full-coverage block certifies the exit, consuming it once.
+    gateRepo.reports.set('16', filedReport(machine, 'PASSED', { executedCommands: FOUR_TARGETS }));
+    const retry = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+    const result = await retry.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(gateRepo.clears, 1);
+  });
+
+  test('T-D2-2 (#408 D2): a plan with no declared targets keeps the pre-#408 behaviour', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const gateRepo = gateRepoWith(machine);
+    gateRepo.reports.set(
+      '16',
+      filedReport(machine, 'PASSED', { executedCommands: ['npm run build'] })
+    );
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    const result = await useCase.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(gateRepo.clears, 1);
   });
 });
 

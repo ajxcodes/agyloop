@@ -4125,6 +4125,67 @@ export function formatGateEvidenceRequiredMessage(
   return `Gate evidence refused: ${reason}. ${action}, then re-run \`${retry}\`. Nothing was written.`;
 }
 
+/**
+ * The refusal a `PASSED` report that does not cover the plan's declared
+ * Quality Gate Targets raises (issue #408, D2).
+ *
+ * ONE renderer for both enforcement points — filing (`gate-report`) and ingest
+ * (`transition REVIEW`) — so the two cannot drift. `{missing}` is replaced by a
+ * REPLACER FUNCTION: a command containing `$&` must not corrupt the message.
+ */
+export const MSG_GATE_EVIDENCE_COVERAGE_MISSING =
+  "Gate evidence refused: the PASSED report does not cover the plan's declared Quality Gate Targets. Missing {missingCount} of {declaredCount} declared commands: {missing}. The plan's declared commands ARE the gate's command list, in this order, and a PASSED report must execute every one. Run the missing commands, then {refile} with `{command}`. {tail}" as const;
+
+/** Which side of the evidence channel is refusing. */
+export type GateCoverageChannel = 'filing' | 'ingest';
+
+const GATE_COVERAGE_FILING_REFILE = 're-file the block' as const;
+const GATE_COVERAGE_INGEST_REFILE = 're-file a corrected block' as const;
+const GATE_COVERAGE_FILING_TAIL = 'Nothing was written.' as const;
+/**
+ * The ingest tail (issue #408, D1): a refusal no longer consumes the filed
+ * report, so the message must say the evidence survived. "Nothing was written"
+ * would be false for the operator's most important artifact.
+ */
+const GATE_COVERAGE_INGEST_TAIL =
+  'The filed report was NOT consumed: it is still readable and the checkpoint is unchanged at QUALITY_GATE.' as const;
+
+export function formatGateTargetCoverageRefusal(
+  missing: readonly string[],
+  declaredCount: number,
+  issue?: number | string | null,
+  channel: GateCoverageChannel = 'filing'
+): string {
+  const rendered = (Array.isArray(missing) ? missing : [])
+    .map((command) => `\`${command}\``)
+    .join(', ');
+  const ingest = channel === 'ingest';
+  return MSG_GATE_EVIDENCE_COVERAGE_MISSING
+    .replace('{missingCount}', String(Array.isArray(missing) ? missing.length : 0))
+    .replace('{declaredCount}', String(declaredCount))
+    .replace('{missing}', () => rendered)
+    .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
+    .replace('{command}', formatGateReportChannelCommand(issue))
+    .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);
+}
+
+/**
+ * The note a refused gate exit appends when the filed report SURVIVED it
+ * (issue #408, D1).
+ *
+ * #327/AC-3 promised a refusal that writes nothing, but the consume-on-ingest
+ * clear ran before the digest guard, so the checkpoint was byte-identical while
+ * the evidence file was deleted. The report is now consumed only on the
+ * committed path; the refusal says so, because the operator still needs it.
+ */
+export function formatGateReportPreservedNote(
+  issue: number | string | null | undefined,
+  gateRound: number
+): string {
+  const retry = formatTransitionCommand(STAGE_REVIEW, issue);
+  return `The filed gate report for round ${gateRound} was NOT consumed: it is still filed and readable, so restore the approved plan and re-run \`${retry}\` to certify with the same block.`;
+}
+
 /** What ENDS the DISCOVERY stage (issue #292). */
 export const NOTE_DISCOVERY_ADVANCE_CONDITION =
   'This stage ends when a populated RCA report exists for the issue.' as const;

@@ -591,6 +591,20 @@ function isFullSuiteCommand(command: string): boolean {
 }
 
 /**
+ * True when running `executedCommand` evidences `declaredTarget` (issue #408).
+ *
+ * Coverage uses the SAME semantics as unique-test accounting — normalised
+ * equality plus the containment / full-suite rule — so a report cannot be
+ * certified by a command that `normaliseGateTests` would not treat as running
+ * the declared one. `commandCovers` deliberately excludes exact equality, which
+ * is why the equality check comes first here.
+ */
+export function commandCoversTarget(executedCommand: string, declaredTarget: string): boolean {
+  if (normaliseCommand(executedCommand) === normaliseCommand(declaredTarget)) return true;
+  return commandCovers(executedCommand, declaredTarget);
+}
+
+/**
  * True when running `outer` also runs `inner` (issue #325, AC-16).
  *
  * Two shapes count: literal containment after normalisation (a command that

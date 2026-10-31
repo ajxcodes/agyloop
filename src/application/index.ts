@@ -4,6 +4,7 @@
 
 export * from './resolve-subagent';
 export * from './resolve-gate-verification';
+export * from './gate-evidence-coverage';
 export * from './gate-target-contract';
 export * from './plan-baseline-contract';
 export * from './smoke-protocol-contract';
