@@ -43,4 +43,6 @@ Produce a concise, structured Quality Gate report covering:
 3. **Test Metrics**: Total tests executed, passed, failed, skipped.
 4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.
 
+A runner that prints no count of its own (`go test ./...`, `ctest`, a bare Gradle run) must be given one: append `TEST_METRICS: <n> passed, <n> failed, <n> skipped` to its output. A `PASSED` block whose executed test command has `"testsPassed": null` or `0` is refused at filing and at `transition REVIEW`.
+
 The machine-readable `GATE_REPORT_JSON:` block appended to your task prompt is the evidence record. Follow the documented `smokeChecks` (`{id, label, passed}`) and `notRun` (`{id, reason}`) entry shapes exactly; the filing command rejects any other shape.

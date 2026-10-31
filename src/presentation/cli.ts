@@ -180,10 +180,11 @@ import {
   formatGateReportChannelCommand,
   // Issue #408 (D2): the coverage refusal is ONE renderer for filing + ingest.
   formatGateTargetCoverageRefusal,
-  // Issue #412: a PASSED block that ran a test command but recorded zero unique
-  // tests is not certifiable evidence.
-  zeroTestEvidenceCommands,
+  // Issues #412/#415: a PASSED block that ran a test command but recorded zero
+  // or unmeasured unique tests is not certifiable evidence.
+  gateTestEvidenceRefusal,
   formatGateZeroTestRefusal,
+  TOKEN_TEST_METRICS,
   formatTransitionRecoveryCommands,
   findLegalTransitionPath,
   // Issue #402: the APPROVAL baseline behaviour embeds the SAME prohibition the
@@ -614,6 +615,7 @@ Pipeline Management:
   triage [action]    Triage PR review comments and route pipeline (${formatTriageActionList('|')}); ${formatTriageActionSideEffects()}
   review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin | --critique-report <path|-> | ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>); with no verdict it runs the critique-based review
   gate-report       File a dispatched Quality Gate Subagent's GATE_REPORT_JSON evidence block (--report-file <path|-> | --report-stdin); 'transition REVIEW' ingests it
+      A PASSED block whose executed test command has no MEASURED positive total is refused. A runner that prints no count (e.g. \`go test ./...\`) must declare \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` in its output.
 
 Operational Flags:
       --yolo         Enable unattended fast-path (equivalent to 'yolo' command)
@@ -3274,23 +3276,24 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           }
         }
 
-        // Issue #412: a PASSED block that names a test command but records
-        // testsPassed = 0 is not evidence. Assessed BEFORE the `--dry-run`
-        // branch so a preview reports the SAME finding a real filing would
-        // raise — and writes nothing in either case.
+        // Issues #412/#415: a PASSED block that names a test command but records
+        // testsPassed = 0 (executed nothing) or null (never measured) is not
+        // evidence. Assessed BEFORE the `--dry-run` branch so a preview reports
+        // the SAME finding a real filing would raise — and writes nothing.
         {
-          const zeroTestCommands = zeroTestEvidenceCommands(report);
-          if (zeroTestCommands.length > 0) {
-            const refusal = formatGateZeroTestRefusal(
-              zeroTestCommands,
+          const refusal = gateTestEvidenceRefusal(report);
+          if (refusal) {
+            const rendered = formatGateZeroTestRefusal(
+              refusal.commands,
               scope.issue ?? issueValue ?? null,
-              'filing'
+              'filing',
+              refusal.gap
             );
             if (options.dryRun) {
-              console.error(`[dry-run] ${refusal}`);
+              console.error(`[dry-run] ${rendered}`);
               console.error('[dry-run] Nothing was written.');
             } else {
-              console.error(`✗ ${refusal}`);
+              console.error(`✗ ${rendered}`);
             }
             return EXIT_CODE_FAILURE;
           }

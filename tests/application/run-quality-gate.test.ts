@@ -40,7 +40,10 @@ const {
   FilePlanGenerator,
   SMOKE_PROTOCOL_VALUES,
   SMOKE_PROTOCOL_NOT_REPORTED,
-  SMOKE_STATUS_NOT_DECLARED
+  SMOKE_STATUS_NOT_DECLARED,
+  // Issue #415: the in-process evidence record must be re-ingestable.
+  zeroTestEvidenceCommands,
+  MSG_GATE_TEST_METRICS_CONFLICT
 } = require('../../dist');
 
 type StateRepository = import('../../src').StateRepository;
@@ -1900,6 +1903,235 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.strictEqual(result.smokeStatus, 'NOT DECLARED');
     assert.strictEqual(result.smokeReport, undefined);
     assert.strictEqual(result.currentStage, STAGE_REVIEW);
+  });
+
+  // Issue #415: a run that files evidence must be re-ingestable, so every case
+  // captures the record the use case would file.
+  function capturingRepo(): { repo: any; saved: any[] } {
+    const saved: any[] = [];
+    return {
+      saved,
+      repo: {
+        load: () => null,
+        save: (_issue: unknown, report: any) => {
+          saved.push(report);
+          return 'x';
+        },
+        clear: () => {}
+      }
+    };
+  }
+
+  function gateWith(
+    planGenerator: MockPlanGenerator,
+    commandExecutor: MockCommandExecutor,
+    gateReportRepo: unknown
+  ): any {
+    return new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector(),
+      undefined,
+      gateReportRepo as any
+    );
+  }
+
+  test('RQG-N1 (#415): a .NET single-line summary files the number its status prints', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['dotnet test app.sln']);
+    const summary =
+      'Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12, Duration: 1 s';
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ command: 'dotnet test app.sln', exitCode: 0, stdout: summary, combinedOutput: summary })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(result.testsStatus, 'PASSED (12 passed)');
+    assert.strictEqual(capture.saved.length, 1);
+    assert.strictEqual(capture.saved[0].testsPassed, 12);
+    assert.strictEqual(capture.saved[0].testsFailed, 0);
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(capture.saved[0])], []);
+  });
+
+  test('RQG-N2 (#415): a multi-line VSTest summary never throws and files the measured count', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['dotnet test app.sln']);
+    const summary =
+      'Test Run Successful.\nTotal tests: 12\n     Passed: 12\n     Failed: 0\n     Skipped: 0\n';
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ command: 'dotnet test app.sln', exitCode: 0, stdout: summary, combinedOutput: summary })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(capture.saved.length, 1);
+    assert.strictEqual(capture.saved[0].testsPassed, 12);
+    assert.strictEqual(capture.saved[0].testsFailed, 0);
+    assert.strictEqual(result.testsStatus, 'PASSED (12 passed)');
+  });
+
+  test('RQG-N3 (#415): a Gradle `N tests completed` summary files the measured count', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['./gradlew test']);
+    const summary = 'BUILD SUCCESSFUL in 1s\n12 tests completed';
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ command: './gradlew test', exitCode: 0, stdout: summary, combinedOutput: summary })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.testsStatus, 'PASSED (12 passed)');
+    assert.strictEqual(capture.saved[0].testsPassed, 12);
+  });
+
+  test('RQG-N4 (#415): an exit-0 run that parses as failed tests fails closed with a named conflict', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['dotnet test app.sln']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({
+        command: 'dotnet test app.sln',
+        exitCode: 0,
+        stdout: '2 failed',
+        combinedOutput: '2 failed'
+      })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    const failed = result.reports.find((report: GateCommandReport) => !report.passed);
+    assert.ok(failed, 'the contradictory run must name a failing report');
+    assert.ok(
+      (failed.failureSnippet ?? '').includes('exited 0 but its summary parsed as 2 failed test(s)'),
+      failed.failureSnippet
+    );
+    assert.strictEqual(capture.saved.length, 1);
+    assert.strictEqual(capture.saved[0].verdict, 'FAILED');
+    assert.strictEqual(capture.saved[0].testsFailed, 2);
+    assert.ok(MSG_GATE_TEST_METRICS_CONFLICT.includes('exited 0 but its summary parsed as'));
+  });
+
+  test('RQG-N5 (#415): a count-less `go test` passes only when the run declares its count', async () => {
+    const output = 'ok  \texample/pkg\t0.002s\n?   \texample/noop\t[no test files]\n';
+
+    const withoutToken = new MockPlanGenerator();
+    withoutToken.content = planWithTargets(['go test ./...']);
+    const failingExecutor = new MockCommandExecutor([
+      resultOf({ command: 'go test ./...', exitCode: 0, stdout: output, combinedOutput: output })
+    ]);
+    const failing = await new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      withoutToken,
+      failingExecutor,
+      new MockBuildDetector()
+    ).execute({ issue: 20 });
+
+    assert.strictEqual(failing.passed, false);
+    assert.strictEqual(failing.testsStatus, STATUS_FAILED);
+    const snippet = failing.reports.find((report: GateCommandReport) => !report.passed)?.failureSnippet ?? '';
+    assert.ok(snippet.includes('TEST_METRICS: <n> passed'), snippet);
+    assert.ok(snippet.includes('go test'), snippet);
+
+    const withToken = new MockPlanGenerator();
+    withToken.content = planWithTargets(['go test ./...']);
+    const tokenOutput = `TEST_METRICS: 12 passed, 0 failed, 0 skipped\n${output}`;
+    const passingExecutor = new MockCommandExecutor([
+      resultOf({ command: 'go test ./...', exitCode: 0, stdout: tokenOutput, combinedOutput: tokenOutput })
+    ]);
+    const capture = capturingRepo();
+    const passing = await gateWith(withToken, passingExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(passing.passed, true);
+    assert.strictEqual(passing.testsStatus, 'PASSED (12 passed)');
+    assert.strictEqual(capture.saved[0].testsPassed, 12);
+  });
+
+  test('RQG-N6 (#415): a build command’s incidental count is never the evidence total', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run build', 'npm test']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ command: 'npm run build', exitCode: 0, stdout: '999 passed', combinedOutput: '999 passed' }),
+      resultOf({
+        command: 'npm test',
+        exitCode: 0,
+        stdout: 'ℹ tests 12\nℹ pass 12\nℹ fail 0',
+        combinedOutput: 'ℹ tests 12\nℹ pass 12\nℹ fail 0'
+      })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(capture.saved[0].testsPassed, 12);
+    assert.strictEqual(result.testsStatus, 'PASSED (12 passed)');
+  });
+
+  test('RQG-N7 (#415): a passing Mocha spec summary files the count its status prints', async () => {
+    // Issue #415 review round 1: Mocha's `N passing` is a supported Node runner
+    // summary. The widened regexes once stopped parsing it, so this asserts the
+    // participle form still measures and still files a positive count.
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    const summary = '  12 passing (1s)';
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ command: 'npm test', exitCode: 0, stdout: summary, combinedOutput: summary })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(result.testsStatus, 'PASSED (12 passed)');
+    assert.strictEqual(capture.saved.length, 1);
+    assert.strictEqual(capture.saved[0].testsPassed, 12);
+    assert.strictEqual(capture.saved[0].testsFailed, 0);
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(capture.saved[0])], []);
+  });
+
+  test('RQG-N8 (#415): an EARLIER contradictory test command fails the gate closed', async () => {
+    // Issue #415 review round 1 (AC-5): the conflict guard used to inspect only
+    // the LAST test command, so a first exit-0 command that still parsed as
+    // failed was overwritten by the later command's numbers and certified.
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['dotnet test app.sln', 'npm test']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({
+        command: 'dotnet test app.sln',
+        exitCode: 0,
+        stdout: '2 failed',
+        combinedOutput: '2 failed'
+      }),
+      resultOf({
+        command: 'npm test',
+        exitCode: 0,
+        stdout: 'ℹ tests 12\nℹ pass 12\nℹ fail 0',
+        combinedOutput: 'ℹ tests 12\nℹ pass 12\nℹ fail 0'
+      })
+    ]);
+    const capture = capturingRepo();
+    const result = await gateWith(planGenerator, commandExecutor, capture.repo).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    const failed = result.reports.find((report: GateCommandReport) => !report.passed);
+    assert.ok(failed, 'the contradictory run must name a failing report');
+    assert.strictEqual(failed.command, 'dotnet test app.sln');
+    assert.ok(
+      (failed.failureSnippet ?? '').includes('exited 0 but its summary parsed as 2 failed test(s)'),
+      failed.failureSnippet
+    );
+    assert.strictEqual(capture.saved.length, 1);
+    assert.strictEqual(capture.saved[0].verdict, 'FAILED');
+    assert.strictEqual(capture.saved[0].testsFailed, 2);
   });
 });
 

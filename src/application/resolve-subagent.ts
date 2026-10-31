@@ -90,6 +90,7 @@ import {
   formatGateReportExample,
   NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS,
   NOTE_GATE_REPORT_EVIDENCE_SHAPES,
+  NOTE_GATE_REPORT_TEST_COUNT_TOKEN,
   formatDiscoveryReportContract,
   formatDiscoveryExecutionContract,
   formatDiscoveryFallbackContract,
@@ -1178,6 +1179,7 @@ export class ResolveSubagentUseCase {
     prompt += `${formatGateReportExample(exampleSmokeToken)}\n\n`;
     prompt += `${NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS}\n\n`;
     prompt += `${NOTE_GATE_REPORT_EVIDENCE_SHAPES}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_TEST_COUNT_TOKEN}\n\n`;
     prompt += `${NOTE_GATE_REPORT_RETURN}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;

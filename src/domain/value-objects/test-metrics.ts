@@ -27,6 +27,18 @@ export interface TestMetricsProps {
   readonly total?: number;
 }
 
+/**
+ * Reads a metric pattern that carries TWO alternatives (issue #415): the label
+ * form (`Passed: 12`, group 1) and the historical verb form (`12 passed`, group
+ * 2). Returns undefined when the pattern does not match.
+ */
+function readMetric(text: string, pattern: RegExp): number | undefined {
+  const match = text.match(pattern);
+  if (!match) return undefined;
+  const raw = match[1] ?? match[2];
+  return raw === undefined ? undefined : parseInt(raw, 10);
+}
+
 export class TestMetrics {
   public readonly passed: number;
   public readonly failed: number;
@@ -149,22 +161,10 @@ export class TestMetrics {
     if (tapSkipMatch) skipped = parseInt(tapSkipMatch[1], 10);
 
     // Check regex metric matches (Playwright, Jest, Pytest, Go)
-    if (passed === undefined) {
-      const passMatch = textToSearch.match(REGEX_METRIC_PASSED);
-      if (passMatch) passed = parseInt(passMatch[1], 10);
-    }
-    if (failed === undefined) {
-      const failMatch = textToSearch.match(REGEX_METRIC_FAILED);
-      if (failMatch) failed = parseInt(failMatch[1], 10);
-    }
-    if (skipped === undefined) {
-      const skipMatch = textToSearch.match(REGEX_METRIC_SKIPPED);
-      if (skipMatch) skipped = parseInt(skipMatch[1], 10);
-    }
-    if (total === undefined) {
-      const totalMatch = textToSearch.match(REGEX_METRIC_TOTAL);
-      if (totalMatch) total = parseInt(totalMatch[1], 10);
-    }
+    if (passed === undefined) passed = readMetric(textToSearch, REGEX_METRIC_PASSED);
+    if (failed === undefined) failed = readMetric(textToSearch, REGEX_METRIC_FAILED);
+    if (skipped === undefined) skipped = readMetric(textToSearch, REGEX_METRIC_SKIPPED);
+    if (total === undefined) total = readMetric(textToSearch, REGEX_METRIC_TOTAL);
 
     const hasAnyMetric =
       passed !== undefined ||
@@ -176,9 +176,18 @@ export class TestMetrics {
       return null;
     }
 
-    const resolvedPassed = passed ?? 0;
+    // Issue #415: a summary that prints only the TOTAL still measured the run.
+    // Deriving the pass count here (not at the writer) is what stops a .NET or
+    // Gradle summary from recording 0 passed beside a positive total.
     const resolvedFailed = failed ?? 0;
     const resolvedSkipped = skipped ?? 0;
+    let resolvedPassed = passed;
+    if (resolvedPassed === undefined) {
+      resolvedPassed =
+        total !== undefined && total >= resolvedFailed + resolvedSkipped
+          ? total - resolvedFailed - resolvedSkipped
+          : 0;
+    }
     const sum = resolvedPassed + resolvedFailed + resolvedSkipped;
     const resolvedTotal = total !== undefined ? Math.max(total, sum) : sum;
 

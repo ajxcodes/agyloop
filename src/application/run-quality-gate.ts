@@ -69,6 +69,9 @@ import {
   // Issue #412: the in-process gate fails an exit-0 test command with no
   // positive test total; the predicate is shared with the filed-evidence floor.
   MSG_GATE_NO_TEST_EVIDENCE,
+  // Issue #415: an exit-0 run whose summary still parses as failed tests is a
+  // parser contradiction, not a pass.
+  MSG_GATE_TEST_METRICS_CONFLICT,
   isTestCommand as isTestCommandText,
   MSG_PLAN_MODIFIED_DURING_GATE,
   MSG_PLAN_MODIFIED_AFTER_APPROVAL,
@@ -359,6 +362,12 @@ export class RunQualityGateUseCase {
 
     // 5. Execute commands in isolated shell with log buffering and filtering
     const reports: GateCommandReport[] = [];
+    // Issue #415: the metrics of the LAST executed TEST command. The status line
+    // and the filed evidence are both built from this ONE value, and only a test
+    // command may supply it (a build command's incidental `999 passed` is not
+    // evidence about the suite).
+    let measuredTestMetrics: TestMetrics | null = null;
+    let measuredTestCommand: string | null = null;
     let allPassed = true;
     let totalDurationMs = 0;
     let buildStatus: string = STATUS_PASSED;
@@ -401,10 +410,14 @@ export class RunQualityGateUseCase {
         }
 
         if (this.isTestCommand(cmdDef)) {
+          if (testMetrics) {
+            measuredTestMetrics = testMetrics;
+            measuredTestCommand = cmdDef.command;
+          }
           if (!passed) {
             testsStatus = STATUS_FAILED;
           } else if (testMetrics && testMetrics.total > 0) {
-            testsMetricSummary = ` (${testMetrics.passed || testMetrics.total} passed)`;
+            testsMetricSummary = ` (${this.measuredPassedCount(testMetrics)} passed)`;
           }
         }
 
@@ -421,6 +434,26 @@ export class RunQualityGateUseCase {
           diagnosticSnippet,
           cwd: executionCwd
         });
+
+        // Issues #415 (D2-b): an exit-0 test command whose summary still parses
+        // as having failed tests is a parser contradiction, not a pass. Evaluate
+        // it PER COMMAND (not once after the loop over the LAST test command):
+        // with two test commands, an earlier contradictory summary used to be
+        // certified while the record filed the later command's numbers. Fail
+        // closed with a named diagnostic instead of throwing out of
+        // `GateResultReport.fromJSON` after every command has run.
+        if (this.isTestCommand(cmdDef) && passed && testMetrics && testMetrics.failed > 0) {
+          allPassed = false;
+          testsStatus = STATUS_FAILED;
+          reports[reports.length - 1] = {
+            ...reports[reports.length - 1],
+            passed: false,
+            failureSnippet: MSG_GATE_TEST_METRICS_CONFLICT
+              .replace('{command}', () => cmdDef.command)
+              .replace('{failed}', () => String(testMetrics.failed))
+          };
+          break;
+        }
 
         // Issue #412: an exit-0 test command that produced no positive test
         // total is NOT a pass. With Node's NODE_TEST_CONTEXT exported,
@@ -440,6 +473,29 @@ export class RunQualityGateUseCase {
         // Fail fast on build/test failure
         if (!passed) {
           break;
+        }
+      }
+
+      // Issues #415 (D2-b): fallback for a contradictory parse that slipped past
+      // the per-command guard above (for example a metrics value recorded on the
+      // last test command after the loop). The per-command check is the primary
+      // path; this keeps a future refactor fail-closed.
+      if (allPassed && measuredTestMetrics && measuredTestMetrics.failed > 0) {
+        const conflictMetrics = measuredTestMetrics;
+        const conflictAt = reports.findIndex((r) => r.testMetrics === conflictMetrics);
+        const index = conflictAt >= 0 ? conflictAt : reports.length - 1;
+        const conflictCommand =
+          measuredTestCommand ?? (index >= 0 ? reports[index].command : 'the test command');
+        allPassed = false;
+        testsStatus = STATUS_FAILED;
+        if (index >= 0) {
+          reports[index] = {
+            ...reports[index],
+            passed: false,
+            failureSnippet: MSG_GATE_TEST_METRICS_CONFLICT
+              .replace('{command}', () => conflictCommand)
+              .replace('{failed}', () => String(conflictMetrics.failed))
+          };
         }
       }
 
@@ -490,10 +546,7 @@ export class RunQualityGateUseCase {
 
     const failedReport = reports.find((r) => !r.passed);
     const primaryDiagnostic = failedReport?.diagnosticSnippet ?? (failedReport?.failureSnippet ? DiagnosticSnippet.fromRaw(failedReport.failureSnippet) : null);
-    const primaryTestMetrics = reports.find((r) => r.testMetrics)?.testMetrics;
-    const testMetricsVO = primaryTestMetrics instanceof TestMetrics
-      ? primaryTestMetrics
-      : (primaryTestMetrics ? TestMetrics.create(primaryTestMetrics) : null);
+    const testMetricsVO: TestMetrics | null = measuredTestMetrics;
 
     const gateReport = GateSummaryReport.create({
       verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
@@ -564,7 +617,7 @@ export class RunQualityGateUseCase {
       buildSystem: primaryEcosystemName || ECOSYSTEM_UNKNOWN,
       buildStatus,
       testsStatus,
-      testsPassed: testMetricsVO ? testMetricsVO.passed : null,
+      testsPassed: testMetricsVO ? this.measuredPassedCount(testMetricsVO) : null,
       testsFailed: testMetricsVO ? testMetricsVO.failed : null,
       durationMs: totalDurationMs,
       executedCommands: reports.map((r) => r.command),
@@ -1027,6 +1080,23 @@ export class RunQualityGateUseCase {
   private extractTestMetrics(output: string): TestMetrics | null {
     if (!output) return null;
     return TestMetrics.parse(output);
+  }
+
+  /**
+   * The ONE measured pass count for a run (issue #415).
+   *
+   * `testsStatus` and the filed evidence used different expressions
+   * (`passed || total` vs. `passed`), so a .NET summary filed
+   * `testsPassed: 0` beside `PASSED (12 passed)`. Both now call this.
+   */
+  private measuredPassedCount(metrics: TestMetrics | null): number {
+    if (!metrics) return 0;
+    if (metrics.passed > 0) return metrics.passed;
+    // Defence in depth: the parser guarantees a positive `passed` for a
+    // positive `total` with no failures, but if a future regression restores
+    // the .NET shape, this still records the SAME number the status prints.
+    if (metrics.failed === 0 && metrics.total > 0) return metrics.total;
+    return metrics.passed;
   }
 
   private extractFailureSnippet(combinedOutput: string, stderr: string): string {

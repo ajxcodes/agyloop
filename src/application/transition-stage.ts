@@ -55,10 +55,11 @@ import {
   MSG_PLAN_MODIFIED_DURING_GATE,
   formatGateEvidenceRequiredMessage,
   formatGateTargetCoverageRefusal,
-  // Issue #412: a PASSED block that ran a test command but recorded zero unique
-  // tests is not certifiable evidence.
-  zeroTestEvidenceCommands,
+  // Issues #412/#415: a PASSED block that ran a test command but recorded zero
+  // or unmeasured unique tests is not certifiable evidence.
+  gateTestEvidenceRefusal,
   formatGateZeroTestRefusal,
+  GATE_TEST_EVIDENCE_GAP_UNMEASURED,
   formatGateReportPreservedNote,
   formatGateReportSaveFaultNote,
   formatTransitionRecoveryCommands
@@ -923,26 +924,24 @@ export class TransitionStageUseCase {
   }
 
   /**
-   * Refuses a `PASSED` report whose executed test command produced ZERO unique
-   * tests (issue #412).
+   * Refuses a `PASSED` report whose executed test command produced ZERO or
+   * UNMEASURED unique tests (issues #412, #415).
    *
-   * The defect was a false green: a shell with the documented signal exported
-   * made `node --test` skip every file, print no summary, and exit 0. The gate
-   * recorded `PASSED (0 passed)` and the transition certified it. The report is
-   * NOT consumed on this refusal — `clear()` runs only after a successful save.
+   * The report is NOT consumed on this refusal — `clear()` runs only after a
+   * successful save — and the refusal names the command and the remedy.
    */
   private assertGateReportRanTests(
     report: GateResultReport,
     issue: number | string | null
   ): void {
-    const commands = zeroTestEvidenceCommands(report);
-    if (commands.length === 0) {
+    const refusal = gateTestEvidenceRefusal(report);
+    if (!refusal) {
       return;
     }
     throw new ValidationError(
       'testsPassed',
-      0,
-      formatGateZeroTestRefusal(commands, issue, 'ingest')
+      refusal.gap === GATE_TEST_EVIDENCE_GAP_UNMEASURED ? null : 0,
+      formatGateZeroTestRefusal(refusal.commands, issue, 'ingest', refusal.gap)
     );
   }
 }
