@@ -7,8 +7,9 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const path = require('path');
 const os = require('os');
+const path = require('path');
+const { spawnSync } = require('node:child_process');
 
 const {
   ResolveSubagentUseCase,
@@ -505,7 +506,7 @@ index 1111111..2222222 100644
       );
     });
 
-    test('PS3: a named Tier 1 evidence path is written by the Tier 1 command (issue #397, D2-AC1)', () => {
+    test('PS3: a named Tier 1 evidence path is staged and published only on success (issue #397/#400)', () => {
       const useCase = new ResolveSubagentUseCase(configRepo);
       const reportPath = '/repo/.agyloop/critique/397.json';
       const prompt = useCase.buildReviewerTaskPrompt({
@@ -516,10 +517,30 @@ index 1111111..2222222 100644
 
       assert.ok(prompt.includes(reportPath), 'the prompt must name the exact evidence path');
       assert.ok(prompt.includes('mkdir -p'), 'the Tier 1 command must create the evidence directory');
+      // Issue #400: the command stages beside the report, publishes with `mv`
+      // only after critique succeeds, and echoes the report for Tier 1 reading.
       assert.ok(
-        prompt.includes(`tee '${reportPath}'`),
-        `the Tier 1 command must write the report, got:\n${prompt}`
+        prompt.includes('.critique-report.$$.tmp'),
+        `the Tier 1 command must stage to a transient sibling, got:\n${prompt}`
       );
+      assert.ok(
+        prompt.includes(`mv "$tmp" '${reportPath}'`),
+        `the report must be published by mv, got:\n${prompt}`
+      );
+      assert.ok(
+        prompt.includes(`cat '${reportPath}'`),
+        `the published report must still be readable by the reviewer, got:\n${prompt}`
+      );
+      assert.ok(
+        prompt.includes('exit $code'),
+        `the Tier 1 command must propagate critique's exit code, got:\n${prompt}`
+      );
+      assert.strictEqual(
+        prompt.includes('| tee'),
+        false,
+        `a pipeline reports tee's status, not critique's, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('exits non-zero'), 'the return note must key omission on the exit status');
       assert.ok(prompt.includes('CRITIQUE_REPORT:'), 'the prompt must require the return line');
       assert.ok(
         prompt.includes('The ONE write this review permits is the Tier 1 evidence file'),
@@ -543,6 +564,61 @@ index 1111111..2222222 100644
       assert.strictEqual(prompt.includes('tee '), false);
       assert.ok(prompt.includes('Never attempt to write or edit files'));
       assert.ok(prompt.includes(NOTE_REVIEW_VERDICT_RETURN));
+    });
+
+    test('PS5: the rendered Tier 1 command propagates a critique failure and publishes no report (issue #400)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
+      try {
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const reportPath = path.join(dir, 'critique', '397.json');
+        const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt({
+          issueNumber: 400,
+          critiquePath: critiqueStub,
+          critiqueReportPath: reportPath
+        });
+        const fence = /```bash\n([\s\S]*?)\n\s*```/.exec(prompt);
+        assert.ok(fence, `the reviewer prompt must carry a Tier 1 bash fence, got:\n${prompt}`);
+        const command = fence![1].trim();
+        assert.strictEqual(command.includes('| tee'), false, `still a tee pipeline:\n${command}`);
+
+        const runStub = (body: string) => {
+          fs.writeFileSync(critiqueStub, body, 'utf8');
+          return spawnSync('sh', ['-c', command], { encoding: 'utf8' });
+        };
+        const stagingDebris = (): string[] =>
+          fs.existsSync(path.dirname(reportPath))
+            ? fs.readdirSync(path.dirname(reportPath)).filter((name: string) => name.includes('.tmp'))
+            : [];
+
+        // Clean run: exit 0, a parseable report on disk, and JSON on stdout.
+        const clean = runStub(`process.stdout.write('{"summary":"ok","comments":[]}');`);
+        assert.strictEqual(clean.status, 0, clean.stderr);
+        assert.ok(fs.existsSync(reportPath), 'a successful Tier 1 must publish the report');
+        assert.strictEqual(JSON.parse(fs.readFileSync(reportPath, 'utf8')).summary, 'ok');
+        assert.ok(clean.stdout.includes('"summary":"ok"'), clean.stdout);
+        assert.deepStrictEqual(stagingDebris(), [], 'no staging file may survive success');
+
+        // Crash before any output: critique's exit code must survive, nothing published.
+        fs.rmSync(reportPath, { force: true });
+        const crash = runStub('process.exit(2);');
+        assert.strictEqual(crash.status, 2, crash.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'a crash must publish nothing');
+        assert.ok(crash.stderr.includes('critique failed (exit 2)'), crash.stderr);
+        assert.deepStrictEqual(stagingDebris(), [], 'no staging file may survive a crash');
+
+        // Partial output then crash: the truncated payload must never be published.
+        const partial = runStub(`process.stdout.write('{"findings":['); process.exit(2);`);
+        assert.strictEqual(partial.status, 2, partial.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'a partial payload must publish nothing');
+
+        // Silent success: an empty file is not evidence.
+        const silent = runStub('process.exit(0);');
+        assert.strictEqual(silent.status, 1, silent.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'an empty run must publish nothing');
+        assert.ok(silent.stderr.includes('wrote no evidence'), silent.stderr);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 
