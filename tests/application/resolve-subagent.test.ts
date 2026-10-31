@@ -35,7 +35,15 @@ const {
   DISCOVERY_REPORT_MIN_PROSE_SECTIONS,
   DiscoveryReport,
   formatDiscoveryReportContract,
-  GATE_COMMAND_WORKTREE_CONTRACT
+  GATE_COMMAND_WORKTREE_CONTRACT,
+  WORKTREE_GUARD_SIGNAL,
+  ENV_NODE_TEST_CONTEXT,
+  ENV_NODE_ENV,
+  ENV_NODE_VALUE_TEST,
+  ENV_ALLOW_WORKTREE_ISSUE_MISMATCH,
+  NOTE_WORKTREE_GUARD_ESCAPE_HATCH,
+  NOTE_SMOKE_FIXTURE_ISSUE_RULE,
+  SmokeProtocol
 } = require('../../dist/domain');
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
@@ -620,6 +628,86 @@ index 1111111..2222222 100644
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    const renderTierOneCommand = (reportPath: string, critiquePath: string): string => {
+      const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt({
+        issueNumber: 405,
+        critiquePath,
+        critiqueReportPath: reportPath
+      });
+      const fence = /```bash\n([\s\S]*?)\n\s*```/.exec(prompt);
+      assert.ok(fence, `the reviewer prompt must carry a Tier 1 bash fence, got:\n${prompt}`);
+      return fence![1].trim();
+    };
+
+    test('PS6: a pre-existing report is cleared before critique, so a crashed round leaves no evidence (issue #405, D2)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
+      try {
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const reportPath = path.join(dir, 'critique', '405.json');
+        fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+        fs.writeFileSync(reportPath, '{"round":1,"summary":"STALE_ROUND_1"}', 'utf8');
+
+        const command = renderTierOneCommand(reportPath, critiqueStub);
+        const clearIndex = command.indexOf(`rm -f '${reportPath}'`);
+        assert.ok(clearIndex !== -1, `the destination must be cleared, got:\n${command}`);
+        assert.ok(clearIndex < command.indexOf(critiqueStub), 'the clear must precede the critique invocation');
+
+        fs.writeFileSync(critiqueStub, 'process.exit(2);', 'utf8');
+        const crashed = spawnSync('sh', ['-c', command], { encoding: 'utf8' });
+        assert.strictEqual(crashed.status, 2, crashed.stderr);
+        assert.strictEqual(
+          fs.existsSync(reportPath),
+          false,
+          'a crashed round must not leave round 1 evidence at the named path'
+        );
+        assert.ok(crashed.stderr.includes('critique failed (exit 2)'), crashed.stderr);
+        const debris = fs
+          .readdirSync(path.dirname(reportPath))
+          .filter((name: string) => name.endsWith('.tmp'));
+        assert.deepStrictEqual(debris, [], 'no staging file may survive a crash');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('PS7: a failed publish removes the staging sibling (issue #405, D3)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
+      try {
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const reportPath = path.join(dir, 'critique', '405.json');
+        const command = renderTierOneCommand(reportPath, critiqueStub);
+        assert.ok(
+          command.includes(`if ! mv "$tmp" '${reportPath}'; then`),
+          `the publish must have an explicit failure branch, got:\n${command}`
+        );
+
+        // A PATH-shadowed mv is deterministic and works when the suite runs as
+        // root; permission tricks on the destination do not.
+        const binDir = path.join(dir, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(binDir, 'mv'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+        fs.writeFileSync(
+          critiqueStub,
+          `process.stdout.write('{"summary":"fresh","comments":[]}');`,
+          'utf8'
+        );
+
+        const failed = spawnSync('sh', ['-c', command], {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` }
+        });
+        assert.notStrictEqual(failed.status, 0, 'a failed publish must exit non-zero');
+        assert.ok(failed.stderr.includes('publish failed; no report written'), failed.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'a failed publish must publish nothing');
+        const debris = fs.existsSync(path.dirname(reportPath))
+          ? fs.readdirSync(path.dirname(reportPath)).filter((name: string) => name.endsWith('.tmp'))
+          : [];
+        assert.deepStrictEqual(debris, [], 'a failed publish must remove its staging sibling');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('Discovery Subagent Container Execution & Fallback (AC6 - AC8)', () => {
@@ -704,6 +792,68 @@ index 1111111..2222222 100644
   });
 });
 
+describe('State-guard escape hatch parity (issue #405, D1)', () => {
+  const configRepo = new MockConfigRepo();
+  const WORKTREE = '/repo/.worktrees/405';
+
+  const signalOf = (text: string): string => {
+    const match = /test-run signal \(`([^`]+)`\)/.exec(text);
+    assert.ok(match, `the dispatch must name the state-guard signal, got:\n${text}`);
+    return match![1];
+  };
+
+  test('PS8: IMPLEMENT and QUALITY_GATE name the SAME guard signal from one shared note', () => {
+    const useCase = new ResolveSubagentUseCase(configRepo);
+    const implementer = useCase.buildImplementationTaskPrompt({
+      issueNumber: 405,
+      workspaceDir: WORKTREE
+    });
+    const gate = useCase.buildGateTaskPrompt({ issueNumber: 405, cwd: WORKTREE });
+
+    assert.strictEqual(WORKTREE_GUARD_SIGNAL, ENV_NODE_TEST_CONTEXT);
+    assert.strictEqual(signalOf(implementer), WORKTREE_GUARD_SIGNAL);
+    assert.strictEqual(signalOf(gate), WORKTREE_GUARD_SIGNAL);
+    assert.ok(implementer.includes(NOTE_WORKTREE_GUARD_ESCAPE_HATCH), implementer);
+    assert.ok(gate.includes(NOTE_WORKTREE_GUARD_ESCAPE_HATCH), gate);
+    assert.ok(
+      implementer.indexOf(NOTE_WORKTREE_GUARD_ESCAPE_HATCH) <
+        implementer.indexOf('### Manual Smoke Test Protocol'),
+      'the guard note must precede the frozen protocol'
+    );
+    assert.strictEqual(
+      implementer.includes(ENV_ALLOW_WORKTREE_ISSUE_MISMATCH),
+      false,
+      'the implementer must not name a second hatch'
+    );
+    assert.strictEqual(
+      implementer.includes(`${ENV_NODE_ENV}=${ENV_NODE_VALUE_TEST}`),
+      false,
+      'the implementer must not name a second hatch'
+    );
+  });
+
+  test('PS9: the planner states the fixture-issue override in the check itself', () => {
+    const planner = new ResolveSubagentUseCase(configRepo).buildPlanningTaskPrompt({ issueNumber: 405 });
+    assert.ok(planner.includes(NOTE_SMOKE_FIXTURE_ISSUE_RULE), planner);
+    assert.ok(planner.includes('fixture issue number other than the worktree'), planner);
+    assert.ok(planner.includes(`${WORKTREE_GUARD_SIGNAL}=1`), planner);
+  });
+
+  test('PS10: the static smoke validator accepts the documented override (no new rule)', () => {
+    const plan = [
+      '### Manual Smoke Test Protocol',
+      '',
+      '```bash',
+      `${WORKTREE_GUARD_SIGNAL}=1 node -e 'console.log("fixture 9405")'`,
+      '```',
+      ''
+    ].join('\n');
+    const protocol = SmokeProtocol.fromPlan(plan);
+    assert.strictEqual(protocol.declared, true);
+    assert.strictEqual(protocol.executable, true, JSON.stringify(protocol.findings));
+    assert.deepStrictEqual(protocol.findings, []);
+  });
+});
 
 describe('Gate prompt evidence contract (issue #298)', () => {
   const { SmokeProtocol, HEADING_QUALITY_GATE_TARGETS, HEADING_MANUAL_SMOKE_TEST_PROTOCOL } =

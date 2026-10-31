@@ -771,6 +771,35 @@ export const ENV_NODE_TEST_CONTEXT = 'NODE_TEST_CONTEXT' as const;
 export const ENV_ALLOW_WORKTREE_ISSUE_MISMATCH = 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH' as const;
 export const ENV_FLAG_ENABLED = '1' as const;
 
+/**
+ * The ONE documented escape hatch from the cross-worktree state guard
+ * (issue #405, D1).
+ *
+ * `FileStateRepository.isTestCaseRun()` also accepts `NODE_ENV=test` and
+ * `AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1`, but no dispatch prompt may name a
+ * second hatch: the implementer and the gate execute the SAME frozen smoke
+ * protocol, so they must be told the SAME signal. On #400 the implementer used
+ * one variable and the gate another, and neither run was "exactly as written".
+ */
+export const WORKTREE_GUARD_SIGNAL = ENV_NODE_TEST_CONTEXT;
+
+/**
+ * The ONE sentence the IMPLEMENT and QUALITY_GATE dispatches render verbatim
+ * (issue #405, D1). Keeping it a single constant is what makes prompt parity
+ * mechanical instead of aspirational.
+ */
+export const NOTE_WORKTREE_GUARD_ESCAPE_HATCH =
+  `This worktree is the code under test, and a test-run signal (\`${WORKTREE_GUARD_SIGNAL}\`) makes the cross-worktree state guard accept fixtures seeded for another issue. Run a check that seeds a foreign fixture with \`${WORKTREE_GUARD_SIGNAL}=1\` exported or prefixed to the command; do not substitute another variable, because the gate uses this same signal.` as const;
+
+/**
+ * The planner-side counterpart (issue #405, AC-3): a foreign fixture issue is
+ * allowed, but only when the CHECK carries the documented signal. The gate runs
+ * `SmokeProtocol.toScript()`, which emits the check bodies only — a signal
+ * stated in preamble prose is never applied.
+ */
+export const NOTE_SMOKE_FIXTURE_ISSUE_RULE =
+  `A check that seeds a fixture issue number other than the worktree's issue is refused by the cross-worktree state guard unless the check itself carries the documented test-run signal (for example \`${WORKTREE_GUARD_SIGNAL}=1 node bin/codeloop.js …\`): the gate executes the frozen checks as a script, so a signal stated only in prose is never applied. State the signal inside the check, or use the worktree's own issue number.` as const;
+
 /** Operator-facing prompts / report labels (issue #298). */
 export const LABEL_EXECUTION_CWD = 'Execution Cwd' as const;
 export const LABEL_COMMAND_SOURCE = 'Command Source' as const;

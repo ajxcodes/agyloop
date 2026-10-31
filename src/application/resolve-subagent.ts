@@ -80,6 +80,8 @@ import {
   HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
   HEADING_BASELINE_EVIDENCE,
   NOTE_SMOKE_BLOCK_SANDBOX_RULE,
+  NOTE_SMOKE_FIXTURE_ISSUE_RULE,
+  NOTE_WORKTREE_GUARD_ESCAPE_HATCH,
   NOTE_IMPLEMENTER_SMOKE_OWNERSHIP,
   STATUS_PASSED,
   STATUS_FAILED,
@@ -356,15 +358,24 @@ function formatCritiqueTierOneCommand(binaryPath: string, reportPath?: string | 
   // is used rather than splitting the path in JS: the evidence path is absolute
   // and may be Windows- or POSIX-shaped, and the shell that runs it is the same
   // shell the reviewer already uses.
+  //
+  // Issue #405 (D2): clear the DESTINATION before critique runs. The report path
+  // is per-issue and stable across review rounds, so a crashed round would
+  // otherwise leave the previous round's evidence at the exact path a reviewer
+  // names. This is deliberately destructive: if a successful critique's publish
+  // then fails, the old report is already gone — stale evidence must not survive
+  // a failed round (issue #405, D3 covers the staging cleanup).
   const quotedReport = shellQuote(reportPath);
   const stagingPath = `"$(dirname ${quotedReport})/.critique-report.$$.tmp"`;
   return (
     `mkdir -p "$(dirname ${quotedReport})" && ( ` +
     `tmp=${stagingPath}; ` +
+    `rm -f ${quotedReport}; ` +
     `${command} > "$tmp"; code=$?; ` +
     `if [ "$code" -ne 0 ]; then rm -f "$tmp"; echo "critique failed (exit $code); no report written" >&2; exit $code; fi; ` +
     `if [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "critique exited 0 but wrote no evidence; no report written" >&2; exit 1; fi; ` +
-    `mv "$tmp" ${quotedReport} && cat ${quotedReport} )`
+    `if ! mv "$tmp" ${quotedReport}; then rm -f "$tmp"; echo "publish failed; no report written" >&2; exit 1; fi; ` +
+    `cat ${quotedReport} )`
   );
 }
 
@@ -898,7 +909,7 @@ export class ResolveSubagentUseCase {
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
-    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE}\n`;
+    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE} ${NOTE_SMOKE_FIXTURE_ISSUE_RULE}\n`;
     prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
@@ -919,6 +930,7 @@ export class ResolveSubagentUseCase {
 
     if (params.workspaceDir) {
       prompt += `### Execution Workspace / Worktree:\n**Working Directory**: \`${params.workspaceDir}\`\n\n`;
+      prompt += `Run every command from this directory. ${NOTE_WORKTREE_GUARD_ESCAPE_HATCH}\n\n`;
     }
 
     const effectiveIssue =
@@ -1047,7 +1059,7 @@ export class ResolveSubagentUseCase {
     if (params.cwd) {
       prompt += `### Execution Cwd\n`;
       prompt += `\`${params.cwd}\`\n\n`;
-      prompt += `Run every command from this directory. Do not cd to the repository root — that tests the root checkout, not this diff. This worktree is the code under test, and a test-run signal (\`NODE_TEST_CONTEXT\`) makes the cross-worktree state guard accept fixtures seeded for another issue.\n\n`;
+      prompt += `Run every command from this directory. Do not cd to the repository root — that tests the root checkout, not this diff. ${NOTE_WORKTREE_GUARD_ESCAPE_HATCH}\n\n`;
       prompt += `${GATE_COMMAND_WORKTREE_CONTRACT}\n\n`;
     }
 
