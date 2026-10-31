@@ -62,7 +62,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 │    • Auto-detects Gradle, npm, dotnet, Go, Cargo, etc. │
 │    • Returns compact structured summary:               │
 │      `GATE_STATUS: PASSED | FAILED`                    │
-│      `TEST_COUNT: X passed, 0 failed`                  │
+│      `TEST_METRICS: X passed, 0 failed, 0 skipped`     │
 └────────────────────────┬───────────────────────────────┘
                          │
                          ▼
@@ -80,6 +80,8 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 │    • Hard gate: Draft -> Interactive user confirmation │
 └────────────────────────────────────────────────────────┘
 ```
+
+A gate report may declare the test count its runner does not print: append `TEST_METRICS: <n> passed, <n> failed, <n> skipped` to the command output. A `PASSED` report whose executed test command has no measured total (`"testsPassed": null` or `0`) is refused at filing and again at `transition REVIEW`.
 
 ---
 

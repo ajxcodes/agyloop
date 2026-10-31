@@ -1049,10 +1049,22 @@ export const REGEX_TEST_METRICS_TOKEN = /^(?:TEST_METRICS|TEST_COUNT):\s*(.+)$/i
 export const REGEX_FAILURE_FILE_TOKEN = /^FAILURE_FILE:\s*(.+)$/im;
 export const REGEX_FAILING_ASSERTION_TOKEN = /^FAILING_ASSERTION:\s*(.+)$/im;
 
-export const REGEX_METRIC_PASSED = /(\d+)\s+pass(?:ed)?/i;
-export const REGEX_METRIC_FAILED = /(\d+)\s+fail(?:ed)?/i;
-export const REGEX_METRIC_SKIPPED = /(\d+)\s+skip(?:ped)?/i;
-export const REGEX_METRIC_TOTAL = /(?:tests?|total):\s*(\d+)/i;
+// Issue #415: every metric pattern carries TWO alternatives — the label form a
+// .NET/VSTest summary prints (`Passed:    12`) and the historical verb form
+// (`12 passed`, and Mocha's participle `12 passing`). `[ \t]` (never `\s`) keeps
+// `12\n     Failed: 0` from pairing the PASSED line's number with the FAILED
+// label, which fabricated `failed: 12` and `total: 24` on a real VSTest block.
+// The verb alternative keeps the participle suffix (issue #415 review round 1):
+// dropping `ing` made `TestMetrics.parse('  12 passing (1s)')` return null and
+// failed a genuinely passing Mocha suite, which is an allowlisted runner.
+export const REGEX_METRIC_PASSED =
+  /(?:\bpass(?:ed)?[ \t]*:[ \t]*(?:\n[ \t]*)?(\d+)|(\d+)[ \t]+pass(?:ed|ing)?\b)/i;
+export const REGEX_METRIC_FAILED =
+  /(?:\bfail(?:ed)?[ \t]*:[ \t]*(?:\n[ \t]*)?(\d+)|(\d+)[ \t]+fail(?:ed|ing)?\b)/i;
+export const REGEX_METRIC_SKIPPED =
+  /(?:\bskip(?:ped)?[ \t]*:[ \t]*(?:\n[ \t]*)?(\d+)|(\d+)[ \t]+skip(?:ped)?\b)/i;
+export const REGEX_METRIC_TOTAL =
+  /(?:\b(?:tests?|total)[ \t]*:[ \t]*(?:\n[ \t]*)?(\d+)|(\d+)[ \t]+tests?[ \t]+completed\b)/i;
 export const REGEX_TAP_TESTS = /tests\s+(\d+)/i;
 export const REGEX_TAP_PASS = /pass\s+(\d+)/i;
 export const REGEX_TAP_FAIL = /fail\s+(\d+)/i;
@@ -1982,6 +1994,7 @@ Produce a concise, structured Quality Gate report covering:
 2. **Execution Matrix**: Table of command label, exit code, duration, and status.
 3. **Test Metrics**: Total tests executed, passed, failed, skipped.
 4. **Diagnostic Details**: (Only if failed) concise failure snippet citing affected files and line numbers.
+5. **Count-less runners**: a runner that prints no count of its own (\`go test ./...\`, \`ctest\`, a bare Gradle run) must be given one — append \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` to its output. A \`PASSED\` block whose executed test command has \`"testsPassed": null\` or \`0\` is refused at filing and at \`transition REVIEW\`.
 
 The machine-readable \`GATE_REPORT_JSON:\` block appended to your task prompt is the evidence record. Follow the documented \`smokeChecks\` (\`{id, label, passed}\`) and \`notRun\` (\`{id, reason}\`) entry shapes exactly; the filing command rejects any other shape.` as const;
 
@@ -3474,6 +3487,18 @@ export const NOTE_GATE_REPORT_EVIDENCE_SHAPES =
   `Emit \`[]\` for either list when this run has no such entry — never invent a check or a skipped gate.`;
 
 /**
+ * The count declaration a count-less runner needs (issue #415).
+ *
+ * `go test ./...`, `ctest` and a bare `gradle test` print no counts, so the
+ * parser correctly returns null and the gate cannot measure the run. The token
+ * exists in the parser; this note is the first documentation of it in the
+ * dispatched prompt. `TOKEN_TEST_METRICS` is interpolated so the prompt, the
+ * parser and `--help` cannot drift.
+ */
+export const NOTE_GATE_REPORT_TEST_COUNT_TOKEN =
+  `A test command that prints no count of its own (\`go test ./...\`, \`ctest\`, a bare Gradle run) must declare one: append \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` to the command output, or run a count-bearing variant (\`go test -json\`). A PASSED block whose executed test command has no measured total — \`"testsPassed": null\` — is refused at filing and again at \`transition REVIEW\`; \`"testsPassed": 0\` is refused too.` as const;
+
+/**
  * The contexts in which `act` (the CI-workflow simulation) was declared but not
  * executed (issue #325.4, AC-19).
  */
@@ -4181,20 +4206,51 @@ export function formatGateTargetCoverageRefusal(
 export const MSG_GATE_PASSED_ZERO_TESTS =
   "Gate evidence refused: the PASSED report's normalised unique test total (testsPassed) is 0. A PASSED gate that ran tests must report a positive unique test total; a zero-test run is not evidence (a test runner that skipped every file — for example Node's recursive-run marker — still exits 0 and prints no summary). Test command(s): {commands}. Re-run the test commands without the conflicting signal, then {refile} with `{command}`. {tail}" as const;
 
-/** The in-process failure snippet for an exit-0 test command with no test total. */
+/** Why a `PASSED` report that ran tests cannot be certified (issue #415). */
+export const GATE_TEST_EVIDENCE_GAP_ZERO = 'zero' as const;
+export const GATE_TEST_EVIDENCE_GAP_UNMEASURED = 'unmeasured' as const;
+
+export type GateTestEvidenceGap =
+  | typeof GATE_TEST_EVIDENCE_GAP_ZERO
+  | typeof GATE_TEST_EVIDENCE_GAP_UNMEASURED;
+
+/**
+ * The refusal for a `PASSED` report whose test total was never MEASURED (issue
+ * #415). Distinct from the zero-test message because the remedy differs: a zero
+ * total means the runner executed nothing, a null total means no count was
+ * recorded at all. `{commands}` is replaced by a REPLACER FUNCTION.
+ */
+export const MSG_GATE_PASSED_UNMEASURED_TESTS =
+  `Gate evidence refused: the PASSED report's normalised unique test total (testsPassed) is null — the run did not MEASURE a test count. A PASSED gate that ran a test command must report a measured positive unique test total; 'not measured' cannot be distinguished from a run that executed nothing. Test command(s): {commands}. Record the measured count, or declare it in the gate output as \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` when the runner prints no count of its own (for example \`go test ./...\`), then {refile} with \`{command}\`. {tail}` as const;
+
+/** The in-process failure when an exit-0 run still parses as having failures. */
+export const MSG_GATE_TEST_METRICS_CONFLICT =
+  `Test evidence conflict: '{command}' exited 0 but its summary parsed as {failed} failed test(s). An exit-0 test command cannot have failed tests, so the summary was not read correctly and the gate will not certify it. Re-run with a count-bearing summary, or declare the count as \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` in the command output.` as const;
+
+/**
+ * The in-process failure snippet for an exit-0 test command with no measurable
+ * total (issues #412, #415). Both causes are named: a runner that skipped every
+ * file, and a runner that prints no count at all. The token is the remedy the
+ * second cause needs; it used to be discoverable only by reading the parser.
+ */
 export const MSG_GATE_NO_TEST_EVIDENCE =
-  "Test evidence missing: '{command}' exited 0 without printing a test summary or a positive test count. A skipped runner or a zero-test run is not a pass; re-run the command without the conflicting environment signal." as const;
+  `Test evidence missing: '{command}' exited 0 without a measurable test count. Either (a) the runner skipped every file — a conflicting nested-run signal (for example Node's recursive-run marker) makes \`node --test\` do exactly that and still exit 0 — or (b) the runner prints no counts at all (\`go test ./...\`, \`ctest\`). Re-run without the conflicting signal; if the runner simply has no count, declare one in its output as \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` so the gate can measure the run.` as const;
 
 export function formatGateZeroTestRefusal(
   commands: readonly string[],
   issue?: number | string | null,
-  channel: GateCoverageChannel = 'filing'
+  channel: GateCoverageChannel = 'filing',
+  gap: GateTestEvidenceGap = GATE_TEST_EVIDENCE_GAP_ZERO
 ): string {
   const rendered = (Array.isArray(commands) ? commands : [])
     .map((command) => `\`${command}\``)
     .join(', ');
   const ingest = channel === 'ingest';
-  return MSG_GATE_PASSED_ZERO_TESTS
+  const template =
+    gap === GATE_TEST_EVIDENCE_GAP_UNMEASURED
+      ? MSG_GATE_PASSED_UNMEASURED_TESTS
+      : MSG_GATE_PASSED_ZERO_TESTS;
+  return template
     .replace('{commands}', () => rendered)
     .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
     .replace('{command}', formatGateReportChannelCommand(issue))

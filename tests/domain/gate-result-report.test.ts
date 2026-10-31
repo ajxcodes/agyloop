@@ -237,6 +237,8 @@ describe('zero-test evidence floor (issue #412)', () => {
     isTestCommand,
     executedTestCommands,
     zeroTestEvidenceCommands,
+    gateTestEvidenceGap,
+    gateTestEvidenceRefusal,
     normaliseGateTests
   } = require('../../dist/domain');
 
@@ -364,6 +366,64 @@ describe('zero-test evidence floor (issue #412)', () => {
     });
     assert.strictEqual(normaliseGateTests(zero).testsPassed, 0);
     assert.deepStrictEqual([...zeroTestEvidenceCommands(zero)], ['npm test']);
+  });
+
+  test('D-Z6: an UNMEASURED count is refused exactly like a zero count (#415)', () => {
+    // a. null total + an executed test command → unmeasured refusal.
+    const nullCount = report({
+      testsStatus: 'PASSED',
+      testsPassed: null,
+      executedCommands: ['npm test']
+    });
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(nullCount)], ['npm test']);
+    assert.strictEqual(gateTestEvidenceGap(nullCount), 'unmeasured');
+    assert.deepStrictEqual(gateTestEvidenceRefusal(nullCount)?.commands, ['npm test']);
+    assert.strictEqual(gateTestEvidenceRefusal(nullCount)?.gap, 'unmeasured');
+
+    // b. the #412 case is unchanged: zero is still a refusal.
+    const zeroCount = report({
+      testsStatus: 'PASSED (0 passed)',
+      testsPassed: 0,
+      executedCommands: ['npm test']
+    });
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(zeroCount)], ['npm test']);
+    assert.strictEqual(gateTestEvidenceGap(zeroCount), 'zero');
+
+    // c. a build-only report has no test command by construction.
+    const buildOnly = report({
+      testsStatus: 'PASSED',
+      testsPassed: null,
+      executedCommands: ['npm run build']
+    });
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(buildOnly)], []);
+    assert.strictEqual(gateTestEvidenceGap(buildOnly), null);
+
+    // d. a test command declared in notRun is not evidence of a run.
+    const notRun = report({
+      testsStatus: 'PASSED',
+      testsPassed: null,
+      executedCommands: ['npm test'],
+      notRun: [{ id: 'test', label: 'npm test', reason: 'no tests in this project' }]
+    });
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(notRun)], []);
+
+    // e. a per-command breakdown MEASURED the run even when the aggregate is null.
+    const measuredByBreakdown = report({
+      testsStatus: 'PASSED',
+      testsPassed: null,
+      executedCommands: ['npm test'],
+      commandResults: [{ command: 'npm test', passed: 12, failed: 0 }]
+    });
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(measuredByBreakdown)], []);
+
+    // f. a FAILED verdict is a "go fix it" exit, not a false green.
+    const failed = report({
+      verdict: 'FAILED',
+      testsStatus: 'FAILED',
+      testsPassed: null,
+      executedCommands: ['npm test']
+    });
+    assert.deepStrictEqual([...zeroTestEvidenceCommands(failed)], []);
   });
 });
 

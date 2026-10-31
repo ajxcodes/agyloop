@@ -43,6 +43,8 @@ const {
   ENV_ALLOW_WORKTREE_ISSUE_MISMATCH,
   NOTE_WORKTREE_GUARD_ESCAPE_HATCH,
   NOTE_SMOKE_FIXTURE_ISSUE_RULE,
+  NOTE_GATE_REPORT_TEST_COUNT_TOKEN,
+  TOKEN_TEST_METRICS,
   SmokeProtocol
 } = require('../../dist/domain');
 
@@ -973,6 +975,19 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     // The block must be the LAST thing in the response, exactly like the
     // reviewer's verdict block.
     assert.ok(prompt.indexOf('GATE_REPORT_JSON:') > prompt.indexOf('### Required Verdict Output'));
+  });
+
+  test('RS-G5 (#415): the gate prompt documents the count token a count-less runner needs', () => {
+    const gate = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan'
+    });
+
+    assert.ok(gate.includes(NOTE_GATE_REPORT_TEST_COUNT_TOKEN), gate);
+    assert.ok(gate.includes(`${TOKEN_TEST_METRICS}: <n> passed`), gate);
+    assert.ok(gate.indexOf('GATE_REPORT_JSON:') > gate.indexOf('### Required Verdict Output'));
   });
 
   test('RS-G5: a healthy runtime with no socket selects the container recipe (#295)', () => {

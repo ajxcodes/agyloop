@@ -114,6 +114,87 @@ describe('Structured Quality Gate Summary Protocol & Value Objects', () => {
       assert.strictEqual(parsed.total, 6);
     });
 
+    test('issue #415: reads .NET, VSTest, Gradle and token-declared counts', () => {
+      // P-1…P-7: every non-Node shape a gate can meet, plus the Node parsers
+      // that must NOT be shadowed by the widened patterns. The tuple is
+      // [name, output, passed, failed, skipped, total].
+      const fixtures: Array<[string, string, number, number, number, number]> = [
+        [
+          'dotnet single-line',
+          'Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12, Duration: 1 s',
+          12,
+          0,
+          0,
+          12
+        ],
+        [
+          'vstest multi-line',
+          'Test Run Successful.\nTotal tests: 12\n     Passed: 12\n     Failed: 0\n     Skipped: 0\n',
+          12,
+          0,
+          0,
+          12
+        ],
+        [
+          'dotnet failure',
+          'Failed!  - Failed:     2, Passed:    10, Skipped:     0, Total:    12, Duration: 1 s',
+          10,
+          2,
+          0,
+          12
+        ],
+        ['gradle completed', 'BUILD SUCCESSFUL in 1s\n12 tests completed', 12, 0, 0, 12],
+        ['gradle failed', '12 tests completed, 2 failed', 10, 2, 0, 12],
+        [
+          'go with token',
+          'TEST_METRICS: 12 passed, 0 failed, 0 skipped\nok  \texample/pkg\t0.002s\n',
+          12,
+          0,
+          0,
+          12
+        ],
+        ['jest label total', 'Tests: 3 passed, 3 total', 3, 0, 0, 3],
+        ['pytest skipped', '3 passed, 1 skipped in 0.42s', 3, 0, 1, 4],
+        // Regression guard (issue #415 review round 1): Mocha's spec summary uses
+        // the participle, not the past tense. `\b` after a bare `pass`/`fail`
+        // stopped these parsing and failed a passing Mocha suite.
+        ['mocha spec', '  12 passing (1s)', 12, 0, 0, 12],
+        ['mocha spec with failure', '  5 passing\n  1 failing', 5, 1, 0, 6]
+      ];
+
+      for (const [name, text, passed, failed, skipped, total] of fixtures) {
+        const metrics = TestMetrics.parse(text);
+        assert.ok(metrics, `${name} must parse`);
+        assert.strictEqual(metrics.passed, passed, `${name} passed`);
+        assert.strictEqual(metrics.failed, failed, `${name} failed`);
+        assert.strictEqual(metrics.skipped, skipped, `${name} skipped`);
+        assert.strictEqual(metrics.total, total, `${name} total`);
+        assert.ok(
+          metrics.passed + metrics.failed + metrics.skipped <= metrics.total,
+          `${name} must not exceed its total`
+        );
+        assert.ok(
+          !(metrics.passed === 12 && metrics.failed === 12),
+          `${name} must not fabricate a failure count`
+        );
+      }
+
+      // P-5: go test prints no counts of its own; only the token makes it
+      // measurable.
+      assert.strictEqual(
+        TestMetrics.parse('ok  \texample/pkg\t0.002s\n?   \texample/noop\t[no test files]\n'),
+        null,
+        'go test prints no counts; only the token makes the run measurable'
+      );
+
+      // P-7: a number on one line cannot pair with a label on the next.
+      const crossLine = TestMetrics.parse('12\n     Failed: 0');
+      assert.ok(crossLine);
+      assert.strictEqual(crossLine.failed, 0, 'a number on one line cannot pair with a label on the next');
+      assert.notStrictEqual(crossLine.total, 12);
+      assert.ok(crossLine.passed + crossLine.failed + crossLine.skipped <= crossLine.total);
+    });
+
     test('returns null for non-test output', () => {
       assert.strictEqual(TestMetrics.parse(''), null);
       assert.strictEqual(TestMetrics.parse('Build complete without errors.'), null);

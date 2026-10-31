@@ -711,7 +711,7 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
     block: {
       verdict?: string;
       testsStatus: string;
-      testsPassed: number;
+      testsPassed: number | null;
       testsFailed?: number;
       executedCommands: readonly string[];
       notRun?: ReadonlyArray<{ id: string; label: string; reason: string }>;
@@ -857,4 +857,86 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
       .replaceAll('"testsPassed": 0', '"testsPassed": 3')
       .replaceAll('"durationMs": 0', '"durationMs": 69000');
   }
+
+  test('F-Z5: a null-count block is refused, names the command and the token, and writes nothing', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeBlock(sandbox, {
+        testsStatus: 'PASSED',
+        testsPassed: null,
+        executedCommands: ['npm test']
+      });
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(run.stderr.includes('npm test'), run.stderr);
+      assert.ok(run.stderr.includes('testsPassed'), run.stderr);
+      assert.ok(run.stderr.includes('TEST_METRICS'), run.stderr);
+      assert.ok(run.stderr.includes('Nothing was written'), run.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a null-count block writes no evidence');
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('F-Z6: the same null-count block on --dry-run reports the refusal and writes nothing', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeBlock(sandbox, {
+        testsStatus: 'PASSED',
+        testsPassed: null,
+        executedCommands: ['npm test']
+      });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json',
+        '--dry-run'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.ok(output.includes('[dry-run]'), output);
+      assert.ok(output.includes('npm test'), output);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a dry run writes no evidence');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('F-Z7: a build-only PASSED block with a null count is recorded', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      writeBlock(sandbox, {
+        testsStatus: 'PASSED',
+        testsPassed: null,
+        executedCommands: ['npm run build']
+      });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
 });

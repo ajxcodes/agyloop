@@ -20,6 +20,9 @@ import {
   STATUS_FAILED,
   SMOKE_PROTOCOL_VALUES,
   SMOKE_PROTOCOL_VOCABULARY,
+  GATE_TEST_EVIDENCE_GAP_ZERO,
+  GATE_TEST_EVIDENCE_GAP_UNMEASURED,
+  type GateTestEvidenceGap,
   type SmokeProtocolWireValue
 } from '../constants';
 import { formatStageDuration } from './run-evidence';
@@ -768,24 +771,53 @@ export function normaliseGateTests(report: GateResultReport): GateTestsNormalisa
   };
 }
 
+/** A `PASSED` report that ran tests but cannot be certified (issue #415). */
+export interface GateTestEvidenceRefusal {
+  readonly commands: readonly string[];
+  readonly gap: GateTestEvidenceGap;
+}
+
 /**
- * The test commands that make a `PASSED` report certifiable only if the
- * normalised total is positive (issue #412).
+ * Measures a report's test evidence ONCE (issues #412, #415).
  *
- * Returns the executed test commands when the report claims `PASSED`, at least
- * one test command ran (and is not in `notRun`), and the unique test total is
- * `0`. An empty array means "not refused by this rule": a `FAILED` report is a
- * "go fix it" exit, and a build-only plan has no test command by construction.
+ * A `PASSED` report is uncertifiable when it ran at least one test command (not
+ * listed in `notRun`) and its normalised unique total is `0` (a run that
+ * executed nothing) or `null` (a run that was never measured). Both are
+ * refusals; `gap` selects the refusal message. `FAILED` reports are "go fix it"
+ * exits and build-only reports have no test command by construction.
  *
  * `normaliseGateTests()` is the SAME arithmetic recorded in the summary, so the
  * guard and the recorded number cannot disagree.
  */
-export function zeroTestEvidenceCommands(report: GateResultReport): readonly string[] {
+export function gateTestEvidenceRefusal(
+  report: GateResultReport
+): GateTestEvidenceRefusal | null {
   if (report.verdict !== STATUS_PASSED) {
-    return Object.freeze([]);
+    return null;
   }
-  if (normaliseGateTests(report).testsPassed !== 0) {
-    return Object.freeze([]);
+  const uniqueTests = normaliseGateTests(report).testsPassed;
+  if (uniqueTests !== null && uniqueTests > 0) {
+    return null;
   }
-  return executedTestCommands(report);
+  const commands = executedTestCommands(report);
+  if (commands.length === 0) {
+    return null;
+  }
+  return {
+    commands,
+    gap:
+      uniqueTests === null
+        ? GATE_TEST_EVIDENCE_GAP_UNMEASURED
+        : GATE_TEST_EVIDENCE_GAP_ZERO
+  };
+}
+
+/** Compatibility wrapper (issue #412 vocabulary): the offending commands. */
+export function zeroTestEvidenceCommands(report: GateResultReport): readonly string[] {
+  return gateTestEvidenceRefusal(report)?.commands ?? Object.freeze([]);
+}
+
+/** The reason a report is refused: `zero` executed nothing, `unmeasured` has no count. */
+export function gateTestEvidenceGap(report: GateResultReport): GateTestEvidenceGap | null {
+  return gateTestEvidenceRefusal(report)?.gap ?? null;
 }
