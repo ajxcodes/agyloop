@@ -56,6 +56,7 @@ import {
   formatGateEvidenceRequiredMessage,
   formatGateTargetCoverageRefusal,
   formatGateReportPreservedNote,
+  formatGateReportSaveFaultNote,
   formatTransitionRecoveryCommands
 } from '../domain';
 import {
@@ -174,6 +175,12 @@ export class TransitionStageUseCase {
     let gateEvidence: GateResultReport | null = null;
     /** AC-16: the normalised `PASSED (<n> passed)` cell, when a report was ingested. */
     let gateTestsStatus: string | null = null;
+    /**
+     * Issue #410: the round this transition CERTIFIES, when it is the certifying
+     * exit. Only set for `QUALITY_GATE -> REVIEW` — a non-certifying exit must not
+     * get a save-fault note that advises `transition REVIEW`.
+     */
+    let certifiedGateRound: number | null = null;
     /** AC-17: commands only — smoke-check labels are partitioned out at ingest. */
     let gateCommands: readonly string[] = [];
     let gateSmokeChecks: readonly SummarySmokeCheck[] = [];
@@ -181,6 +188,9 @@ export class TransitionStageUseCase {
     let transitionMetadata: Record<string, unknown> = { ...(params.metadata || {}) };
     if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
       const gateRound = resolveGateRound(sm.history);
+      if (targetStageStr === STAGE_REVIEW) {
+        certifiedGateRound = gateRound;
+      }
       const filed = this.gateReportRepo ? this.gateReportRepo.load(activeIssue) : null;
       const usable = filed !== null && filed.gateRound === gateRound;
 
@@ -315,8 +325,9 @@ export class TransitionStageUseCase {
     // Issue #408 (D1): the consume-on-ingest clear is NOT here. It used to run
     // at this point — before the digest guard and before worktree provisioning —
     // so a REFUSED certification deleted the very report the operator still
-    // needed. It now runs on the committed path only, immediately before the
-    // checkpoint save (see the `!params.dryRun` block below).
+    // needed. It now runs on the committed path only, immediately AFTER a
+    // successful checkpoint save (issue #410; see the `!params.dryRun` block
+    // below).
 
     // Issue #298: the approved plan is frozen for the whole IMPLEMENT ->
     // QUALITY_GATE -> REVIEW loop. Entering IMPLEMENT from a fresh approval
@@ -452,16 +463,19 @@ export class TransitionStageUseCase {
     if (!params.dryRun) {
       // Issue #284: entering the gate invalidates any stale report BEFORE the
       // save, so a re-run that files nothing cannot inherit the previous PASSED.
+      // UNCHANGED by #410: this site discards STALE evidence (a round that can no
+      // longer match), never live evidence, so it may stay ahead of the save.
       if (targetStageStr === STAGE_QUALITY_GATE && prevStage !== STAGE_QUALITY_GATE) {
         this.gateReportRepo?.clear(activeIssue);
       }
 
-      // Issue #408 (D1): leaving the gate CONSUMES the round's report, but only
-      // here — after every guard and after worktree provisioning, immediately
-      // before the checkpoint save. The old site ran before the digest guard, so
-      // a refused certification deleted the very evidence the operator still
-      // needed. One filed report still certifies exactly one gate round
-      // (#284/#311).
+      // Issue #410 (D1-save): the commit comes FIRST. #408 moved the
+      // consume-on-ingest clear onto the committed path but left it before this
+      // save, so a save that threw deleted the very block the operator still needed
+      // — the checkpoint stayed at QUALITY_GATE and the evidence was gone. A report
+      // left behind by a SUCCESSFUL save is inert: filing is legal only at
+      // QUALITY_GATE, ingest only runs on a QUALITY_GATE exit, and re-entering the
+      // gate clears stale evidence before its own save.
       //
       // Reachability audit (do not "simplify" this order): on the transition
       // table, `ALLOWED_TRANSITIONS[QUALITY_GATE]` is
@@ -470,13 +484,28 @@ export class TransitionStageUseCase {
       // for the APPROVAL target and for IMPLEMENT from a fresh approval, so a
       // QUALITY_GATE exit cannot reach them. The two reachable post-ingest
       // refusals are the digest guard and worktree provisioning; keeping the
-      // clear AFTER every guard makes preservation structural rather than
-      // special-cased.
+      // clear AFTER every guard and after the save makes preservation structural
+      // rather than special-cased.
+      try {
+        await this.stateRepo.save(sm.toSnapshot());
+      } catch (err: unknown) {
+        if (certifiedGateRound !== null) {
+          console.warn(
+            `[codeloop] Note: ${formatGateReportSaveFaultNote(activeIssue, certifiedGateRound)}`
+          );
+        }
+        // Rethrown UNCHANGED: the error type, the message and the CLI's rendering
+        // are part of the contract other tests assert.
+        throw err;
+      }
+
+      // Issue #408 (D1) / #410: leaving the gate CONSUMES the round's report, now
+      // AFTER the checkpoint commit. One filed report still certifies exactly one
+      // gate round (#284/#311); a failed commit certifies nothing and consumes
+      // nothing.
       if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
         this.gateReportRepo?.clear(activeIssue);
       }
-
-      await this.stateRepo.save(sm.toSnapshot());
 
       // Issue #283: DISCOVERY is where the RCA report is written, so the stage
       // that opens it must ALSO create the canonical plan directory. Otherwise

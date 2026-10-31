@@ -4186,6 +4186,26 @@ export function formatGateReportPreservedNote(
   return `The filed gate report for round ${gateRound} was NOT consumed: it is still filed and readable, so restore the approved plan and re-run \`${retry}\` to certify with the same block.`;
 }
 
+/**
+ * The note a QUALITY_GATE exit appends when the checkpoint COMMIT failed, so the
+ * filed report was never consumed (issue #410).
+ *
+ * #408 moved the consume-on-ingest clear onto the committed path but left it
+ * BEFORE `stateRepo.save`. A save that throws therefore deleted the evidence
+ * while the checkpoint stayed at QUALITY_GATE — the same D1 symptom on the one
+ * remaining refusal path. The clear now runs only after a successful commit;
+ * this note says so, because the operator's next move is to repair the write
+ * and retry with the SAME block (a gate subagent that already returned cannot
+ * be asked to file again).
+ */
+export function formatGateReportSaveFaultNote(
+  issue: number | string | null | undefined,
+  gateRound: number
+): string {
+  const retry = formatTransitionCommand(STAGE_REVIEW, issue);
+  return `The filed gate report for round ${gateRound} was NOT consumed: the checkpoint save failed, so the report is still filed and readable. Repair the checkpoint write and re-run \`${retry}\` to certify with the same block.`;
+}
+
 /** What ENDS the DISCOVERY stage (issue #292). */
 export const NOTE_DISCOVERY_ADVANCE_CONDITION =
   'This stage ends when a populated RCA report exists for the issue.' as const;

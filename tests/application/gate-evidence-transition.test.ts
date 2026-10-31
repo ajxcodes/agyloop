@@ -15,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { TransitionStageUseCase } = require('../../dist/application');
-const { FileStateRepository, FilePlanGenerator } = require('../../dist/infrastructure');
+const { FileStateRepository, FilePlanGenerator, FileGateReportRepository } = require('../../dist/infrastructure');
 const {
   GateResultReport,
   STAGE_QUALITY_GATE,
@@ -638,5 +638,103 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
+  });
+
+  /** A real checkpoint repository whose COMMIT fails, exactly like an unwritable file. */
+  class ThrowingSaveStateRepo {
+    public saves = 0;
+    private readonly inner: any;
+
+    constructor(inner: any) {
+      this.inner = inner;
+    }
+
+    async load() {
+      return this.inner.load();
+    }
+
+    async save() {
+      this.saves += 1;
+      throw new Error('simulated checkpoint save fault');
+    }
+
+    async reset() {
+      return this.inner.reset();
+    }
+
+    getStateFilePath() {
+      return this.inner.getStateFilePath();
+    }
+  }
+
+  test('T-D1-7 (#410): a throwing save leaves the filed report on disk, and the retry consumes it once', async () => {
+    const now = Date.now();
+    const { ws } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+      { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const before = fs.readFileSync(checkpointPath, 'utf8');
+    const round = resolveGateRound(JSON.parse(before).history);
+
+    const inner = new FileStateRepository({ workspaceDir: ws, issue: ISSUE });
+    const gateRepo = new FileGateReportRepository({ workspaceDir: ws, issue: ISSUE });
+    const evidencePath = gateRepo.save(
+      ISSUE,
+      GateResultReport.fromJSON({ ...PASSED_REPORT.toJSON(), gateRound: round }, round)
+    );
+    const evidenceBytes = fs.readFileSync(evidencePath, 'utf8');
+
+    const faulty = new ThrowingSaveStateRepo(inner);
+    const useCase = new TransitionStageUseCase(
+      faulty,
+      undefined,
+      undefined,
+      new FilePlanGenerator(),
+      gateRepo
+    );
+    await assert.rejects(
+      async () =>
+        useCase.execute({
+          targetStage: STAGE_REVIEW,
+          issue: ISSUE,
+          workspaceDir: ws,
+          noWorktree: true
+        }),
+      /simulated checkpoint save fault/
+    );
+
+    assert.strictEqual(faulty.saves, 1);
+    assert.strictEqual(
+      fs.readFileSync(checkpointPath, 'utf8'),
+      before,
+      'the checkpoint is byte-identical'
+    );
+    assert.ok(fs.existsSync(evidencePath), 'the filed report must survive the failed save');
+    assert.strictEqual(
+      fs.readFileSync(evidencePath, 'utf8'),
+      evidenceBytes,
+      'the report is byte-identical'
+    );
+    assert.strictEqual(JSON.parse(before).currentStage, STAGE_QUALITY_GATE);
+
+    // The retry runs on the real repository and certifies with that same block.
+    const retry = new TransitionStageUseCase(
+      inner,
+      undefined,
+      undefined,
+      new FilePlanGenerator(),
+      gateRepo
+    );
+    const sm = await retry.execute({
+      targetStage: STAGE_REVIEW,
+      issue: ISSUE,
+      workspaceDir: ws,
+      noWorktree: true
+    });
+    assert.strictEqual(sm.currentStage, STAGE_REVIEW);
+    assert.strictEqual(sm.history[sm.history.length - 1].metadata.gateVerdict, 'PASSED');
+    assert.ok(!fs.existsSync(evidencePath), 'the committed retry consumes the block exactly once');
+    fs.rmSync(ws, { recursive: true, force: true });
   });
 });
