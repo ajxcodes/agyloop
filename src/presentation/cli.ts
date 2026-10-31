@@ -189,6 +189,8 @@ import {
   findLegalTransitionPath,
   // Issue #402: the APPROVAL baseline behaviour embeds the SAME prohibition the
   // DISCOVERY directive states, so the two surfaces can never drift.
+  // Issue #418: the same goes for the baseline command cwd contract.
+  BASELINE_COMMAND_CWD_CONTRACT,
   ROOT_BUILD_PROHIBITION_SENTENCE
 } from '../domain';
 import type {
@@ -608,6 +610,7 @@ Pipeline Management:
   abort              Emergency Stop: halts subagents, clears locks, quarantines worktrees, stops sandboxes
   transition <STAGE> Advance state machine to target stage
       APPROVAL measures every \`### Baseline Evidence\` claim exactly once and refuses a build-like command (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`) with a named reason. ${ROOT_BUILD_PROHIBITION_SENTENCE}
+        ${BASELINE_COMMAND_CWD_CONTRACT}
       Legacy {COMPLETED, pausedAtGate: COMMIT} checkpoints: 'transition' cleanses the stale pause when it reopens the run; 'implement' fails first at the plan gate and leaves it in place.
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)

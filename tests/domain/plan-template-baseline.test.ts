@@ -22,7 +22,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { BaselineEvidence, BASELINE_DECLARED_SHAPE_SENTENCE, isPlanContentSubstantive } = require('../../dist/domain');
+const { BaselineEvidence, BASELINE_DECLARED_SHAPE_SENTENCE, BASELINE_COMMAND_CWD_CONTRACT, isPlanContentSubstantive } = require('../../dist/domain');
 const { FALLBACK_TEMPLATES, TEMPLATE_FILES } = require('../../dist');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -135,10 +135,26 @@ describe('Plan template <-> BaselineEvidence pin (issue #392)', () => {
         source.text.includes(expected),
         `${source.name} must carry the baseline label contract verbatim`
       );
-      // The comment sits above the claim heading and is the only comment in the
-      // section, so it cannot be mistaken for a claim.
+      // The comment sits above the claim heading inside the section, so it
+      // cannot be mistaken for a claim.
       const section = source.text.slice(source.text.indexOf('### Baseline Evidence'));
       assert.ok(section.includes(expected), `${source.name}: comment belongs to the evidence section`);
+    }
+  });
+
+  test('TP1c (AC3, #418): both template copies carry the command cwd contract', () => {
+    const expected = `<!-- Baseline command cwd: ${BASELINE_COMMAND_CWD_CONTRACT} -->`;
+    for (const source of bothTemplates()) {
+      assert.ok(
+        source.text.includes(expected),
+        `${source.name} must carry the baseline command cwd contract verbatim`
+      );
+      const section = source.text.slice(source.text.indexOf('### Baseline Evidence'));
+      assert.ok(section.includes(expected), `${source.name}: comment belongs to the evidence section`);
+      assert.ok(
+        section.indexOf(expected) < section.indexOf('#### <claim-id>'),
+        `${source.name}: the comment sits above the claim heading`
+      );
     }
   });
 

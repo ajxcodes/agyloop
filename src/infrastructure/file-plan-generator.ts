@@ -139,6 +139,7 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 ### Baseline Evidence
 
 <!-- Baseline claim shape: \`Declared:\` must be the command's literal stdout (copy it verbatim); \`Output:\` must be the stdout that command printed. APPROVAL runs each command once and checks both against the fresh measurement — a \`Declared:\` carrying a value the command does not print is refused, and so is an \`Output:\` that does not match — while a prose \`Declared:\` is accepted only when \`Output:\` verifies. -->
+<!-- Baseline command cwd: Baseline commands are measured in more than one directory: APPROVAL runs each command in the workspace it is invoked from (the \`--workspace\` root, otherwise the current directory), and IMPLEMENT runs it again in the task worktree, which is a pristine checkout with no build output because \`dist/\` is git-ignored. A command must therefore print the same stdout in both directories, which rules out resolving the workspace's own build output (\`./dist\`, \`./build\`) at all. Every refusal names the cwd it measured in. -->
 
 #### <claim-id>
 

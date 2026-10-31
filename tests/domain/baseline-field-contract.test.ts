@@ -7,6 +7,11 @@
  * BC2 - `ROOT_BUILD_PROHIBITION_SENTENCE` appears VERBATIM in the DISCOVERY
  *       mutation boundary, the planner directive, the CLI help and the
  *       build-refusal message.
+ * BC5 - `BASELINE_COMMAND_CWD_CONTRACT` (issue #418) appears VERBATIM in the
+ *       planner directive, both template copies, the CLI help and the
+ *       workspace-build refusal.
+ * BC6 - the workspace-build refusal carries every placeholder it is rendered
+ *       with, and every measured/cwd refusal carries `{cwd}`.
  *
  * Re-typing either rule anywhere is drift; both must be interpolated.
  */
@@ -18,10 +23,13 @@ const path = require('node:path');
 
 const {
   BASELINE_DECLARED_SHAPE_SENTENCE,
+  BASELINE_COMMAND_CWD_CONTRACT,
   ROOT_BUILD_PROHIBITION_SENTENCE,
+  MSG_PLAN_BASELINE_COMMAND_FAILED,
   MSG_PLAN_BASELINE_MISMATCH,
   MSG_PLAN_BASELINE_OUTPUT_MISMATCH,
   MSG_PLAN_BASELINE_ROOT_BUILD,
+  MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT,
   formatDiscoveryMutationBoundary
 } = require('../../dist/domain');
 const { ResolveSubagentUseCase } = require('../../dist/application');
@@ -116,6 +124,52 @@ describe('baseline field contract (issue #402)', () => {
     for (const template of [MSG_PLAN_BASELINE_MISMATCH, MSG_PLAN_BASELINE_OUTPUT_MISMATCH]) {
       assert.strictEqual(template.includes('correct the declared value (or the command)'), false);
       assert.ok(template.includes('Copy the measured stdout'), template);
+    }
+  });
+
+  test('BC5: the command cwd contract is stated verbatim by every surface (#418)', () => {
+    const plannerPrompt = new ResolveSubagentUseCase({}).buildPlanningTaskPrompt({
+      userInstructions: 'probe'
+    });
+    const onDiskTemplate = fs.readFileSync(
+      path.join(PROJECT_ROOT, 'templates', 'implementation-plan.md'),
+      'utf8'
+    );
+    const fallbackTemplate = FALLBACK_TEMPLATES[TEMPLATE_FILES.IMPLEMENTATION];
+    const help = captureHelp();
+
+    for (const [name, text] of [
+      ['planner directive', plannerPrompt],
+      ['templates/implementation-plan.md', onDiskTemplate],
+      ['FALLBACK_TEMPLATES[implementation-plan.md]', fallbackTemplate],
+      ['codeloop --help', help],
+      ['MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT', MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT]
+    ] as Array<[string, string]>) {
+      assert.ok(
+        text.includes(BASELINE_COMMAND_CWD_CONTRACT),
+        `${name} must carry BASELINE_COMMAND_CWD_CONTRACT verbatim`
+      );
+    }
+  });
+
+  test('BC6: the cwd refusals carry every placeholder they are rendered with (#418)', () => {
+    for (const placeholder of ['{claim}', '{line}', '{match}', '{command}', '{cwd}']) {
+      assert.ok(
+        MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT.includes(placeholder),
+        `the workspace-build refusal must carry ${placeholder}`
+      );
+    }
+    assert.ok(MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT.includes('npx tsc --outDir'));
+    assert.ok(
+      MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT.includes(
+        '$HOME/.cache/agyloop/baseline-<issue>/dist'
+      ),
+      'the recipe must point outside the workspace'
+    );
+    assert.ok(MSG_PLAN_BASELINE_COMMAND_FAILED.includes('{cwd}'));
+    for (const template of [MSG_PLAN_BASELINE_MISMATCH, MSG_PLAN_BASELINE_OUTPUT_MISMATCH]) {
+      assert.ok(template.includes('{cwd}'), template);
+      assert.ok(template.includes('measured {measured} with cwd={cwd}'), template);
     }
   });
 });
