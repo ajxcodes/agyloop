@@ -743,7 +743,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     assert.strictEqual(gateRepo.clears, 0, 'a refusal must not consume evidence');
   });
 
-  test('T-D1-4 (#408 D1): the report is cleared exactly once, immediately before the save', async () => {
+  test('T-D1-4 (#408 D1, reordered by #410): the report is committed first and consumed exactly once after the save', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
     const events: string[] = [];
@@ -774,9 +774,122 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     });
 
     assert.strictEqual(result.currentStage, STAGE_REVIEW);
-    assert.deepStrictEqual(events, ['clear', 'save'], 'consume, then commit');
+    assert.deepStrictEqual(events, ['save', 'clear'], 'commit, then consume');
     assert.strictEqual(gateRepo.clears, 1);
     assert.strictEqual(stateRepo.saveCallCount, 1);
+    assert.strictEqual(gateRepo.load(16), null, 'the committed path consumes the block');
+  });
+
+  test('T-D1-5 (#410): a save that throws consumes nothing, and the retry certifies with the SAME block', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const events: string[] = [];
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    stateRepo.save = async () => {
+      events.push('save');
+      stateRepo.saveCallCount += 1;
+      throw new Error('simulated checkpoint save fault');
+    };
+    const gateRepo = gateRepoWith(machine);
+    gateRepo.clear = (issue: any) => {
+      events.push('clear');
+      gateRepo.clears += 1;
+      gateRepo.reports.delete(String(issue));
+    };
+    const filed = gateRepo.load(16);
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    try {
+      await assert.rejects(
+        async () =>
+          useCase.execute({ targetStage: 'REVIEW', issue: 16, workspaceDir: tempDir }),
+        /simulated checkpoint save fault/
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // AC1: nothing consumed, nothing committed.
+    assert.deepStrictEqual(events, ['save'], 'a failed commit must never consume');
+    assert.strictEqual(gateRepo.clears, 0);
+    assert.strictEqual(gateRepo.load(16), filed, 'the SAME block is still filed');
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, STAGE_QUALITY_GATE);
+    // The failure says the evidence survived, and names the retry.
+    assert.ok(warnings.some((w) => w.includes('NOT consumed')), warnings.join(' | '));
+    assert.ok(
+      warnings.some((w) => w.includes('codeloop transition REVIEW --issue 16')),
+      warnings.join(' | ')
+    );
+
+    // AC2: the retry certifies with that same block, consumed exactly once.
+    const retryRepo = new MockStateRepo(machine.toSnapshot());
+    const retry = new TransitionStageUseCase(
+      retryRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+    const result = await retry.execute({
+      targetStage: 'REVIEW',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+    const last = result.history[result.history.length - 1];
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(last.metadata.gateVerdict, 'PASSED');
+    assert.strictEqual(last.metadata.gateTests, 'PASSED (3 passed)');
+    assert.strictEqual(gateRepo.clears, 1, 'consumed exactly once, on the retry');
+    assert.strictEqual(gateRepo.load(16), null);
+  });
+
+  test('T-D1-6 (#410): entering QUALITY_GATE still discards stale evidence BEFORE its save', async () => {
+    const machine = machineAt(STAGE_IMPLEMENT);
+    const events: string[] = [];
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    stateRepo.save = async (snapshot: any) => {
+      events.push('save');
+      stateRepo.saveCallCount += 1;
+      stateRepo.savedSnapshot = snapshot;
+    };
+    const gateRepo = gateRepoWith(machine); // seeds a report whose round no longer matches
+    gateRepo.clear = (issue: any) => {
+      events.push('clear');
+      gateRepo.clears += 1;
+      gateRepo.reports.delete(String(issue));
+    };
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      undefined,
+      undefined,
+      planGenerator(),
+      gateRepo
+    );
+
+    const result = await useCase.execute({
+      targetStage: 'QUALITY_GATE',
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_QUALITY_GATE);
+    assert.deepStrictEqual(
+      events,
+      ['clear', 'save'],
+      'stale evidence is discarded before the entry commits'
+    );
+    assert.strictEqual(gateRepo.clears, 1);
   });
 
   // -------------------------------------------------------------------------
