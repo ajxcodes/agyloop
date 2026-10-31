@@ -177,7 +177,10 @@ import {
   // Issue #327: the late-filing refusal names a LEGAL walk back to the gate.
   formatGateReportChannelCommand,
   formatTransitionRecoveryCommands,
-  findLegalTransitionPath
+  findLegalTransitionPath,
+  // Issue #402: the APPROVAL baseline behaviour embeds the SAME prohibition the
+  // DISCOVERY directive states, so the two surfaces can never drift.
+  ROOT_BUILD_PROHIBITION_SENTENCE
 } from '../domain';
 import type {
   StateRepository,
@@ -593,6 +596,7 @@ Pipeline Management:
   halt --reason quota [--retry-after <s>]  Record provider quota halt (429) and checkpoint at CIRCUIT_BREAKER (exits 2)
   abort              Emergency Stop: halts subagents, clears locks, quarantines worktrees, stops sandboxes
   transition <STAGE> Advance state machine to target stage
+      APPROVAL measures every \`### Baseline Evidence\` claim exactly once and refuses a build-like command (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`) with a named reason. ${ROOT_BUILD_PROHIBITION_SENTENCE}
       Legacy {COMPLETED, pausedAtGate: COMMIT} checkpoints: 'transition' cleanses the stale pause when it reopens the run; 'implement' fails first at the plan gate and leaves it in place.
   worktree [cmd]     Manage isolated git worktrees (list | clean | prune | remove <id>)
   critique [cmd]     Manage Critique CLI installation (status | install | update)

@@ -22,7 +22,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { BaselineEvidence, isPlanContentSubstantive } = require('../../dist/domain');
+const { BaselineEvidence, BASELINE_DECLARED_SHAPE_SENTENCE, isPlanContentSubstantive } = require('../../dist/domain');
 const { FALLBACK_TEMPLATES, TEMPLATE_FILES } = require('../../dist');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -126,6 +126,20 @@ describe('Plan template <-> BaselineEvidence pin (issue #392)', () => {
       armed.findings.some((finding: any) => finding.rule === 'missing-baseline-evidence'),
       JSON.stringify(armed.findings)
     );
+  });
+
+  test('TP1b (AC1, #402): both template copies carry the label-contract comment', () => {
+    const expected = `<!-- Baseline claim shape: ${BASELINE_DECLARED_SHAPE_SENTENCE} -->`;
+    for (const source of bothTemplates()) {
+      assert.ok(
+        source.text.includes(expected),
+        `${source.name} must carry the baseline label contract verbatim`
+      );
+      // The comment sits above the claim heading and is the only comment in the
+      // section, so it cannot be mistaken for a claim.
+      const section = source.text.slice(source.text.indexOf('### Baseline Evidence'));
+      assert.ok(section.includes(expected), `${source.name}: comment belongs to the evidence section`);
+    }
   });
 
   test('TP5 (AC4): the rendered scaffold stays non-substantive', () => {

@@ -27,6 +27,24 @@
  * `baselineValuesMatch` is the ONE comparator the application guard and the
  * tests share.
  *
+ * `Declared:`/`Output:` contract (issue #402, D1). The relationship between the
+ * two authored value fields is defined HERE and stated verbatim by
+ * `BASELINE_DECLARED_SHAPE_SENTENCE`; the guard maps the pure verdict this
+ * module returns to a refusal message:
+ *
+ * | `Declared` vs measured | `Output` vs measured | `isProseDeclaration(Declared)` | Verdict |
+ * |---|---|---|---|
+ * | matches | matches | either | accept (`measured`) |
+ * | matches | does not match | either | refuse (`output-mismatch`) |
+ * | does not match | matches | true | accept (`prose-output-verified`) |
+ * | does not match | matches | false | refuse (`declared-mismatch`) |
+ * | does not match | does not match | either | refuse (`declared-mismatch`) |
+ *
+ * A prose `Declared` is never normative: the verified `Output` is. A
+ * value-shaped `Declared` (`{…}`, `[…]`, JSON, a number, or any text carrying a
+ * digit) is still compared with the measurement, so the #382/#388 guarantee
+ * survives.
+ *
  * No I/O, no external imports.
  */
 
@@ -199,6 +217,102 @@ export function baselineValuesMatch(declared: string, measured: string): boolean
     Number.isFinite(rightNumber) &&
     leftNumber === rightNumber
   );
+}
+
+/**
+ * The ONE output comparator shared by the guard and the tests (issue #402).
+ *
+ * True when the authored value matches the WHOLE stdout or one of its non-empty
+ * trimmed lines; every comparison goes through `baselineValuesMatch`.
+ */
+export function baselineOutputMatches(value: string, stdout: string): boolean {
+  if (baselineValuesMatch(value, stdout)) return true;
+  return String(stdout ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .some((line) => baselineValuesMatch(value, line));
+}
+
+/** The verdict reasons of the `Declared`/`Output` matrix (issue #402, D1). */
+export const BASELINE_VERDICT_MEASURED = 'measured';
+export const BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED = 'prose-output-verified';
+export const BASELINE_VERDICT_DECLARED_MISMATCH = 'declared-mismatch';
+export const BASELINE_VERDICT_OUTPUT_MISMATCH = 'output-mismatch';
+
+export type BaselineVerdictReason =
+  | typeof BASELINE_VERDICT_MEASURED
+  | typeof BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED
+  | typeof BASELINE_VERDICT_DECLARED_MISMATCH
+  | typeof BASELINE_VERDICT_OUTPUT_MISMATCH;
+
+export interface BaselineClaimVerdict {
+  readonly reason: BaselineVerdictReason;
+  readonly accepted: boolean;
+  readonly declaredMatchesMeasured: boolean;
+  readonly outputMatchesMeasured: boolean;
+  /** `result.stdout.trim()`. */
+  readonly measured: string;
+}
+
+/** A `{…}`/`[…]` span, one at a time (never greedy across two spans). */
+const VALUE_SPAN_TEST = /\{[^{}]*\}|\[[^[\]]*\]/;
+
+/**
+ * True only when `Declared` reads as a human sentence rather than a value.
+ *
+ * Deliberately narrow: no JSON, no number, no `{…}`/`[…]` span, and no digit at
+ * all, and at least two whitespace-separated tokens. Anything value-shaped is
+ * still machine-compared against the measurement.
+ */
+export function isProseDeclaration(declared: string): boolean {
+  const collapsed = collapseValue(declared);
+  if (collapsed.length === 0) return false;
+  if (collapsed.split(/\s+/).filter((token) => token.length > 0).length < 2) return false;
+  if (VALUE_SPAN_TEST.test(collapsed)) return false;
+  if (tryParseJson(collapsed).ok) return false;
+  if (Number.isFinite(Number(collapsed))) return false;
+  if (/\d/.test(collapsed)) return false;
+  return true;
+}
+
+/**
+ * The ONE pure verdict of the `Declared`/`Output` contract (issue #402, D1).
+ *
+ * The measured stdout is the only normative value; `Declared` is compared with
+ * it, `Output` is the attested measurement, and both must agree with the fresh
+ * execution unless `Declared` is prose and `Output` verifies.
+ */
+export function evaluateBaselineClaim(
+  claim: { readonly declared: string; readonly output: string },
+  measured: string
+): BaselineClaimVerdict {
+  const trimmedMeasured = String(measured ?? '').trim();
+  const declaredMatchesMeasured = baselineOutputMatches(claim.declared, measured);
+  const outputMatchesMeasured = baselineOutputMatches(claim.output, measured);
+
+  const verdict = (
+    reason: BaselineVerdictReason,
+    accepted: boolean
+  ): BaselineClaimVerdict => ({
+    reason,
+    accepted,
+    declaredMatchesMeasured,
+    outputMatchesMeasured,
+    measured: trimmedMeasured
+  });
+
+  if (declaredMatchesMeasured) {
+    return outputMatchesMeasured
+      ? verdict(BASELINE_VERDICT_MEASURED, true)
+      : verdict(BASELINE_VERDICT_OUTPUT_MISMATCH, false);
+  }
+
+  if (outputMatchesMeasured && isProseDeclaration(claim.declared)) {
+    return verdict(BASELINE_VERDICT_PROSE_OUTPUT_VERIFIED, true);
+  }
+
+  return verdict(BASELINE_VERDICT_DECLARED_MISMATCH, false);
 }
 
 interface ParsedRegion {

@@ -802,8 +802,31 @@ export const MSG_PLAN_BASELINE_INCOMPLETE =
   'Plan baseline claim "{claim}" at plan line {line} is incomplete: {detail}. Every claim needs the declared value, the command that measures it and the output that command printed.' as const;
 export const MSG_PLAN_BASELINE_COMMAND_FAILED =
   'Plan baseline claim "{claim}" at plan line {line} could not be measured: the command `{command}` {detail}. A baseline that cannot be reproduced cannot be approved; fix the command or remove the claim.' as const;
+/**
+ * The ONE statement of the `Declared:`/`Output:` relationship (issue #402, D1).
+ *
+ * It is embedded verbatim in the planner directive, the plan template, the
+ * refusal messages and the CLI help, so an author learns the label shape before
+ * writing a claim and a refused author is told exactly which edit to make.
+ */
+export const BASELINE_DECLARED_SHAPE_SENTENCE =
+  '`Declared:` must be the command\'s literal stdout (copy it verbatim); `Output:` must be the stdout that command printed. APPROVAL runs each command once and checks both against the fresh measurement — a `Declared:` carrying a value the command does not print is refused, and so is an `Output:` that does not match — while a prose `Declared:` is accepted only when `Output:` verifies.' as const;
+
+/**
+ * The ONE statement of the root-build mutation boundary (issue #402, Defect 2).
+ *
+ * The DISCOVERY directive, the APPROVAL baseline behaviour and the CLI help all
+ * interpolate this constant instead of re-typing the rule.
+ */
+export const ROOT_BUILD_PROHIBITION_SENTENCE =
+  'Never rebuild the repository root — the root build is what the installed `codeloop` executes, so a rebuild mid-run changes the pipeline\'s own tool.' as const;
+
 export const MSG_PLAN_BASELINE_MISMATCH =
-  'Plan baseline claim "{claim}" at plan line {line} declares {declared}, but the command measured {measured}: `{command}`. A declared baseline must be measured before it becomes normative; correct the declared value (or the command) and re-run approval.' as const;
+  `Plan baseline claim "{claim}" at plan line {line} declares {declared}, but the command measured {measured}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels, or change the command so it prints the declared value, then re-run approval.` as const;
+export const MSG_PLAN_BASELINE_OUTPUT_MISMATCH =
+  `Plan baseline claim "{claim}" at plan line {line} declares {declared} and attests Output {output}, but the command measured {measured}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels and re-run approval.` as const;
+export const MSG_PLAN_BASELINE_ROOT_BUILD =
+  `Plan baseline claim "{claim}" at plan line {line} runs a build-like command \`{command}\` (matched: {match}). ${ROOT_BUILD_PROHIBITION_SENTENCE} Baseline commands are refused before anything runs; measure the same value without rebuilding the root, for example compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\` and require() the compiled module from there.` as const;
 export const MSG_PLAN_BASELINE_BODY_MISMATCH =
   'Plan baseline claim "{claim}" at plan line {line} is restated in the plan body as {restated}, but its evidence declares {declared}: {excerpt}. The body and the evidence must state the same value; correct one of them and re-run approval.' as const;
 export const MSG_GATE_LINT_MISSING =
@@ -1401,6 +1424,20 @@ export const MSG_DISCOVERY_BASELINE_UNRECORDED =
   'Discovery boundary baseline unrecorded: a write outside the plan directory will not be measured for this dispatch.' as const;
 
 /**
+ * Renders the DISCOVERY mutation boundary (issue #402, D3).
+ *
+ * ONE renderer for both DISCOVERY branches: host reads are free, every write
+ * stays inside the plan directory, and the root build is never rebuilt —
+ * because the root build is the tool executing the pipeline.
+ */
+export function formatDiscoveryMutationBoundary(planDir: string): string {
+  return (
+    `You may read anything and run read-only host commands, but every WRITE must land inside \`${planDir}\`. ` +
+    `Never create, edit or delete a file outside it. ${ROOT_BUILD_PROHIBITION_SENTENCE}`
+  );
+}
+
+/**
  * Directives 2 and 3 for the container-available DISCOVERY branch (issue #389).
  *
  * The boundary is the invariant; containment is an OFFER with a runnable
@@ -1421,11 +1458,28 @@ export function formatDiscoveryExecutionContract(params: {
     `${runtime} run --rm -v "$PWD":/repo:ro -w /tmp ` +
     `${DISCOVERY_CONTAINER_IMAGE} bash -lc 'cp -a /repo /tmp/w && cd /tmp/w && npm ci && npm run build'`;
   return (
-    `2. **Mutation Boundary**: You may read anything and run read-only host commands, but every WRITE must land inside \`${planDir}\`. Never create, edit or delete a file outside it. Never rebuild the repository root — the root build is what the installed \`codeloop\` executes, so a rebuild mid-run changes the pipeline's own tool.\n` +
+    `2. **Mutation Boundary**: ${formatDiscoveryMutationBoundary(planDir)}\n` +
     `3. **Container-Preferred Empirical Verification**: Empirical reproduction often needs a build; run it in a container when the runtime is reachable. Use ${runtime}:\n` +
     `   - Inspect (read-only mount): \`${inspect}\`\n` +
     `   - Build (copy out of the read-only mount): \`${build}\`\n` +
     `   If the runtime is unreachable when you run it, fall back to host reads plus static RCA and record why in the report.`
+  );
+}
+
+/**
+ * Directives 2 and 3 for the container-unavailable DISCOVERY branch (#295/#389).
+ *
+ * The #295 fallback sentence stays VERBATIM (it is asserted in two suites), and
+ * the mutation boundary follows it so a host without a container runtime is
+ * still told that every write stays in the plan directory and the root build is
+ * never rebuilt (issue #402, Defect 3).
+ */
+export function formatDiscoveryFallbackContract(params: {
+  readonly planDir: string;
+}): string {
+  return (
+    `2. **Empirical Verification Fallback**: Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing. Log an informative warning regarding container unavailability.\n` +
+    `3. **Mutation Boundary**: ${formatDiscoveryMutationBoundary(params.planDir)}`
   );
 }
 

@@ -20,7 +20,11 @@ const path = require('node:path');
 const {
   assertPlanBaselineContract
 } = require('../../dist/application');
-const { ValidationError } = require('../../dist/domain');
+const {
+  BASELINE_DECLARED_SHAPE_SENTENCE,
+  ROOT_BUILD_PROHIBITION_SENTENCE,
+  ValidationError
+} = require('../../dist/domain');
 
 const MISMATCH_COMMAND = "node -e 'console.log(\"{ additions: 4, deletions: 0 }\")'";
 
@@ -46,6 +50,36 @@ function planWithClaim(declared: string, outputLine: string): string {
     `- **Output:** \`${outputLine}\``,
     ''
   ].join('\n');
+}
+
+interface ClaimFixture {
+  readonly id: string;
+  readonly declared: string;
+  readonly command: string;
+  readonly output: string;
+}
+
+function planWithClaims(claims: readonly ClaimFixture[]): string {
+  const lines = [
+    '# [Implementation] - baseline probe',
+    '',
+    '## 1. Context & Objectives',
+    '- **Feature Overview:** probe',
+    '',
+    '### Baseline Evidence',
+    ''
+  ];
+  for (const claim of claims) {
+    lines.push(
+      `#### ${claim.id}`,
+      '',
+      `- **Declared:** \`${claim.declared}\``,
+      `- **Command:** \`${claim.command}\``,
+      `- **Output:** \`${claim.output}\``,
+      ''
+    );
+  }
+  return lines.join('\n');
 }
 
 function executorReturning(result: any): any {
@@ -403,5 +437,267 @@ describe('assertPlanBaselineContract (issue #388)', () => {
         commandExecutor: executor
       })
     );
+  });
+
+  test('PBC6: a prose Declared with a verified Output is accepted once and warns to copy the stdout', async () => {
+    const measured = 'adhoc-phase-6 adhoc-phase-6 true';
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'base-d1-lossy-collision',
+          declared: 'the two CJK titles share one folder',
+          command: `node -e 'console.log("${measured}")'`,
+          output: measured
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: `${measured}\n` });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: any) => {
+      warnings.push(String(message));
+    };
+
+    try {
+      await assert.doesNotReject(() =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        })
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.strictEqual(executor.calls.length, 1, 'each claim is executed exactly once');
+    assert.ok(
+      warnings.some((warning) => warning.includes('literal stdout')),
+      warnings.join('\n')
+    );
+  });
+
+  test('PBC7: a fabricated Output is refused even when Declared is the measured stdout', async () => {
+    const measured = 'adhoc-phase-6 adhoc-phase-6 true';
+    const fabricated = 'adhoc-phase-6 adhoc-phase-6 false';
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'base-d1-lossy-collision',
+          declared: measured,
+          command: `node -e 'console.log("${measured}")'`,
+          output: fabricated
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: `${measured}\n` });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('base-d1-lossy-collision'), err.message);
+        assert.ok(err.message.includes(fabricated), err.message);
+        assert.ok(err.message.includes(measured), err.message);
+        assert.ok(err.message.includes(BASELINE_DECLARED_SHAPE_SENTENCE), err.message);
+        return true;
+      }
+    );
+    assert.strictEqual(executor.calls.length, 1);
+  });
+
+  test('PBC8: a build-like claim is refused before ANY claim executes', async () => {
+    const measured = '4';
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'read-only-claim',
+          declared: measured,
+          command: `node -e 'console.log("${measured}")'`,
+          output: measured
+        },
+        {
+          id: 'root-build-claim',
+          declared: 'built',
+          command: 'npm run build >/dev/null 2>&1 && node -e "console.log(1)"',
+          output: 'built'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: `${measured}\n` });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('root-build-claim'), err.message);
+        assert.ok(
+          err.message.includes('npm run build >/dev/null 2>&1 && node -e "console.log(1)"'),
+          err.message
+        );
+        assert.ok(err.message.includes('npm run build'), err.message);
+        assert.ok(err.message.includes(ROOT_BUILD_PROHIBITION_SENTENCE), err.message);
+        assert.ok(err.message.includes('npx tsc --outDir'), err.message);
+        return true;
+      }
+    );
+    assert.strictEqual(executor.calls.length, 0, 'a refused build-like plan executes nothing');
+  });
+
+  test('PBC9: a value-shaped wrong Declared is still refused (the #382 regression pin)', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'DA-METRICS-1',
+          declared: '{ additions: 3, deletions: 0 }',
+          command: `node -e 'console.log("{ additions: 4, deletions: 0 }")'`,
+          output: '{ additions: 4, deletions: 0 }'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: '{ additions: 4, deletions: 0 }\n' });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('{ additions: 3, deletions: 0 }'), err.message);
+        assert.ok(err.message.includes('{ additions: 4, deletions: 0 }'), err.message);
+        assert.ok(err.message.includes(BASELINE_DECLARED_SHAPE_SENTENCE), err.message);
+        assert.ok(err.message.includes('Copy the measured stdout'), err.message);
+        return true;
+      }
+    );
+    assert.strictEqual(executor.calls.length, 1);
+  });
+
+  test('PBC10: --dry-run warns about a build-like claim and executes nothing', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'root-build-claim',
+          declared: 'built',
+          command: 'npm run build >/dev/null 2>&1 && node -e "console.log(1)"',
+          output: 'built'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: 'built\n' });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: any) => {
+      warnings.push(String(message));
+    };
+
+    try {
+      await assert.doesNotReject(() =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor,
+          dryRun: true
+        })
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.strictEqual(executor.calls.length, 0, 'a preview must not run plan code');
+    assert.ok(
+      warnings.some((warning) => warning.includes('root-build-claim') && warning.includes('npm run build')),
+      warnings.join('\n')
+    );
+  });
+
+  test('PBC11: each matching claim executes exactly once with the unchanged cwd and timeout', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'claim-one',
+          declared: '4',
+          command: "node -e 'console.log(4)'",
+          output: '4'
+        },
+        {
+          id: 'claim-two',
+          declared: '5',
+          command: "node -e 'console.log(5)'",
+          output: '5'
+        }
+      ]),
+      'utf8'
+    );
+    const stdoutByCommand: Record<string, string> = {
+      "node -e 'console.log(4)'": '4\n',
+      "node -e 'console.log(5)'": '5\n'
+    };
+    const calls: any[] = [];
+    const executor = {
+      execute: async (command: string, options: any) => {
+        calls.push({ command, options });
+        const stdout = stdoutByCommand[command] ?? '';
+        return {
+          command,
+          exitCode: 0,
+          stdout,
+          stderr: '',
+          combinedOutput: stdout,
+          durationMs: 1,
+          timedOut: false
+        };
+      }
+    };
+
+    await assert.doesNotReject(() =>
+      assertPlanBaselineContract({
+        planGenerator: planGeneratorFor(planPath),
+        planPath,
+        workspaceDir: root,
+        commandExecutor: executor
+      })
+    );
+
+    assert.strictEqual(calls.length, 2, 'one execution per claim');
+    assert.deepStrictEqual(
+      calls.map((call: any) => call.command),
+      ["node -e 'console.log(4)'", "node -e 'console.log(5)'"]
+    );
+    for (const call of calls) {
+      assert.strictEqual(call.options.cwd, root);
+      assert.strictEqual(call.options.timeoutMs, 60_000);
+    }
   });
 });

@@ -52,6 +52,25 @@ function baselinePlan(declared: string): string {
   ].join('\n');
 }
 
+/** The #383 shape: every baseline starts by rebuilding the workspace root. */
+function buildLikePlan(): string {
+  return [
+    '# [Implementation] - build-like baseline probe',
+    '',
+    '## Implementation Steps',
+    '- [ ] **Step 1:** hold',
+    '',
+    '### Baseline Evidence',
+    '',
+    '#### root-build-claim',
+    '',
+    '- **Declared:** `built`',
+    '- **Command:** `npm run build >/dev/null 2>&1 && node -e "console.log(\\"built\\")"`',
+    '- **Output:** `built`',
+    ''
+  ].join('\n');
+}
+
 class MockStateRepository {
   public snapshot: any;
   public saveCallCount = 0;
@@ -378,6 +397,46 @@ describe('Approval baseline guard (issue #388)', () => {
       executor.calls[0].command.includes('additions: 3'),
       'the measured command is the real claim, not the sample'
     );
+  });
+
+  test('ABG5: transition APPROVAL refuses a build-like plan and leaves the root build untouched', async () => {
+    fs.writeFileSync(planPath, buildLikePlan(), 'utf8');
+    const sentinelPath = path.join(root, 'dist', 'sentinel');
+    fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+    fs.writeFileSync(sentinelPath, 'pristine\n', 'utf8');
+
+    const sm = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
+    sm.setPlanDir(planDir);
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+
+    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const executor = makeExecutor('built\n');
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath),
+      undefined,
+      executor
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('root-build-claim'), err.message);
+        assert.ok(err.message.includes('npm run build'), err.message);
+        assert.ok(err.message.includes('Never rebuild the repository root'), err.message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0, 'a refused approval must persist nothing');
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN);
+    assert.strictEqual(executor.calls.length, 0, 'a build-like claim must not execute');
+    assert.strictEqual(fs.readFileSync(sentinelPath, 'utf8'), 'pristine\n');
   });
 
   test('ABG3: --dry-run warns, does not execute the command, and does not save', async () => {

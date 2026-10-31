@@ -141,6 +141,53 @@ describe('Plan Content Predicate (issue #259)', () => {
     });
   });
 
+  describe('Q4: a whole-line HTML comment is a hint, not content (#402)', () => {
+    test('Q4: headings/separators plus whole-line comments stay non-substantive; prose after a comment is substantive', () => {
+      const commentsOnly = [
+        '# [Implementation] - hint only',
+        '',
+        '---',
+        '',
+        '## 4. Quality Gate & Test Verification',
+        '',
+        '### Baseline Evidence',
+        '',
+        '<!-- Baseline claim shape: `Declared:` must be the command\'s literal stdout. -->',
+        '',
+        '#### <claim-id>',
+        '',
+        '- **Declared:**',
+        '- **Command:**',
+        '- **Output:**',
+        ''
+      ].join('\n');
+      assert.strictEqual(
+        isPlanContentSubstantive(commentsOnly),
+        false,
+        'a whole-line HTML comment is a structural hint, never executable content'
+      );
+
+      const commentThenProse = [
+        '### Baseline Evidence',
+        '<!-- Baseline claim shape: copy the stdout. -->',
+        'The measured folder count is 2.',
+        ''
+      ].join('\n');
+      assert.strictEqual(
+        isPlanContentSubstantive(commentThenProse),
+        true,
+        'prose after a comment is still content'
+      );
+
+      // A comment with trailing text on the same line is not a whole-line
+      // comment, so it stays a body line (fail-safe).
+      assert.strictEqual(
+        isPlanContentSubstantive('<!-- hint --> trailing prose'),
+        true
+      );
+    });
+  });
+
   describe('Q3 (fail-safe): a plan written in ANY other shape IS substantive', () => {
     test('Q3 (fail-safe): a plan written in ANY other shape IS substantive', () => {
       // Headings + prose.

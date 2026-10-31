@@ -20,12 +20,14 @@ const {
   DISCOVERY_CONTAINER_IMAGE,
   DISCOVERY_REPRODUCTION_HEADING,
   DISCOVERY_REPRODUCTION_KEY,
+  ROOT_BUILD_PROHIBITION_SENTENCE,
   STAGE_FINDING_RULE_WRITE_OUTSIDE_SCOPE,
   TITLE_DISCOVERY_BOUNDARY_VIOLATION,
   WORKSPACE_MUTATION_WATCHED_ROOTS,
   formatDiscoveryBoundaryFindings,
   formatDiscoveryBoundaryGate,
-  formatDiscoveryExecutionContract
+  formatDiscoveryExecutionContract,
+  formatDiscoveryMutationBoundary
 } = require('../../dist/domain');
 
 const TEMPLATE_PATH = path.resolve(__dirname, '../../templates/discovery-plan.md');
@@ -44,9 +46,9 @@ const FALLBACK_DETECTOR = {
 const FALLBACK_SENTENCE =
   'Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing.';
 
-function promptWith(detector: unknown): string {
+function promptWith(detector: unknown, planDir = 'artifacts/plans/389-smoke'): string {
   const useCase = new ResolveSubagentUseCase({}, undefined, undefined, undefined, detector as never);
-  return useCase.buildDiscoveryTaskPrompt({ issueNumber: 389, planDir: 'artifacts/plans/389-smoke' });
+  return useCase.buildDiscoveryTaskPrompt({ issueNumber: 389, planDir });
 }
 
 describe('D1 — the container-available directive is a mutation boundary (AC1a)', () => {
@@ -124,15 +126,50 @@ describe('D3 — the deliverable names a heading that exists (AC1c)', () => {
   });
 });
 
-describe('D4 — the container-unavailable branch keeps #295 verbatim (AC1d / AC4a)', () => {
-  test('it keeps the fallback wording and emits no recipe', () => {
+describe('D4 — the container-unavailable branch states the SAME boundary (#402 / #295)', () => {
+  test('it keeps the fallback wording verbatim AND carries the mutation boundary', () => {
+    const planDir = 'artifacts/plans/389-smoke';
     const prompt = promptWith(FALLBACK_DETECTOR);
+    const boundary = formatDiscoveryMutationBoundary(planDir);
 
+    // #295's sentence survives verbatim.
     assert.ok(prompt.includes('**Empirical Verification Fallback**'));
     assert.ok(prompt.includes(FALLBACK_SENTENCE));
+
+    // Issue #402, Defect 3: the boundary is stated on the fallback branch too.
+    assert.ok(prompt.includes('**Mutation Boundary**'), prompt);
+    assert.ok(prompt.includes(boundary), prompt);
+    assert.ok(prompt.includes(`every WRITE must land inside \`${planDir}\``), prompt);
+    assert.ok(prompt.includes(ROOT_BUILD_PROHIBITION_SENTENCE), prompt);
+
+    // ...without naming the container recipe.
     assert.strictEqual(prompt.includes(DISCOVERY_CONTAINER_IMAGE), false);
+    assert.strictEqual(prompt.includes('-v "$PWD":/repo:ro'), false);
     assert.strictEqual(prompt.includes('can ONLY run containerized invocations'), false);
-    assert.strictEqual(prompt.includes('**Mutation Boundary**'), false);
+  });
+});
+
+describe('D6 — both DISCOVERY branches render one boundary (#402, AC6)', () => {
+  test('each branch states read/write scope and the root-build rule; only one carries the recipe', () => {
+    const planDir = 'artifacts/plans/402-smoke';
+    const containerPrompt = promptWith(CONTAINER_DETECTOR, planDir);
+    const hostPrompt = promptWith(FALLBACK_DETECTOR, planDir);
+    const boundary = formatDiscoveryMutationBoundary(planDir);
+
+    for (const [label, prompt] of [
+      ['container', containerPrompt],
+      ['host', hostPrompt]
+    ] as Array<[string, string]>) {
+      assert.ok(prompt.includes(boundary), `${label}: the shared boundary must be verbatim`);
+      assert.ok(prompt.includes('every WRITE must land inside'), label);
+      assert.ok(prompt.includes(ROOT_BUILD_PROHIBITION_SENTENCE), label);
+      assert.ok(prompt.includes('4. **Deliverable**'), `${label}: numbering must stay contiguous`);
+    }
+
+    assert.ok(containerPrompt.includes(DISCOVERY_CONTAINER_IMAGE), 'container branch keeps the recipe');
+    assert.ok(containerPrompt.includes('-v "$PWD":/repo:ro'), 'container branch keeps the mount');
+    assert.strictEqual(hostPrompt.includes(DISCOVERY_CONTAINER_IMAGE), false);
+    assert.strictEqual(hostPrompt.includes('-v "$PWD":/repo:ro'), false);
   });
 });
 
