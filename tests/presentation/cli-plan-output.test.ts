@@ -4,10 +4,12 @@
  *
  * T1.1  `--skip-discovery` never names the Discovery subagent (the attribution
  *       block is omitted), while advancing to PLAN.
- * T1.2  (control) a populated-report advance STILL prints the Discovery
- *       attribution — the #315 contract survives the guard.
+ * T1.2  an advance out of a populated DISCOVERY note names NO subagent (issue
+ *       #400, D1: the block advertises the NEXT dispatch, and the planner is
+ *       what `next` dispatches after the advance).
  * T1.3  (control) a blank report park still prints the Discovery attribution
  *       and `Parked at DISCOVERY`.
+ * T1.4  a dry-run populated advance prints no attribution and writes nothing.
  * T2.1  a dry-run park prints the dry-run disclaimer, never claims
  *       "State is checkpointed", and leaves the checkpoint byte-identical.
  * T2.2  (same run) no `Would scaffold` line at a park.
@@ -252,7 +254,7 @@ describe('item 1: `plan` attribution names the work that ran (AC-1.1)', () => {
     }
   });
 
-  test('T1.2: a populated-report advance still prints the Discovery attribution (control)', async () => {
+  test('T1.2: an advance out of a populated DISCOVERY note names no subagent (issue #400, D1)', async () => {
     const dir = makeSandbox();
     try {
       const planDir = seedPlanDir(dir, 33912, { populatedRca: true });
@@ -266,9 +268,59 @@ describe('item 1: `plan` attribution names the work that ran (AC-1.1)', () => {
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /Pipeline advanced to \[PLAN\]/, run.stdout);
-      assert.match(run.stdout, /Subagent\s*:\s*discovery/, run.stdout);
-      assert.match(run.stdout, /Model Tier\s*:/, run.stdout);
-      assert.ok(!/Subagent\s*:\s*planner/.test(run.stdout), run.stdout);
+      // Nothing was dispatched by this run, and the next dispatch is the
+      // planner: the Discovery attribution is a lie about the NEXT actor.
+      assert.ok(!/Subagent\s*:/.test(run.stdout), `no Subagent line, got:\n${run.stdout}`);
+      assert.ok(!/Model Tier\s*:/.test(run.stdout), `no Model Tier line, got:\n${run.stdout}`);
+      assert.ok(
+        !/Discovery Subagent/.test(run.stdout),
+        `discovery must not be named after leaving its stage, got:\n${run.stdout}`
+      );
+
+      // Blank the plan so PLAN is dispatchable, then ask who is next: it is the
+      // planner at PLAN, which is exactly what the block must not have promised
+      // at DISCOVERY time.
+      fs.writeFileSync(
+        path.join(planDir, 'implementation_plan.md'),
+        [
+          '# [Implementation] - plan output truthfulness',
+          '',
+          '## 3. Implementation Steps',
+          '- [ ] **Step 1:**',
+          ''
+        ].join('\n'),
+        'utf8'
+      );
+      const next = await runCliIn(dir, ['next', '--issue', '33912', '--json']);
+      assert.strictEqual(next.code, 0, next.stderr);
+      const directive = JSON.parse(next.stdout);
+      assert.strictEqual(directive.actionType, 'subagent', next.stdout);
+      assert.strictEqual(directive.currentStage, 'PLAN', next.stdout);
+      assert.strictEqual(directive.role, 'planner', next.stdout);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T1.4: a dry-run populated advance names nothing and writes nothing (issue #400)', async () => {
+    const dir = makeSandbox();
+    try {
+      const planDir = seedPlanDir(dir, 33914, { populatedRca: true });
+      seedCheckpoint(dir, 33914, {
+        currentStage: 'DISCOVERY',
+        planDir,
+        history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
+      });
+      const before = checkpointBytes(dir, 33914);
+
+      const run = await runCliIn(dir, ['plan', '--issue', '33914', '--dry-run']);
+
+      assert.strictEqual(run.code, 0, run.stderr);
+      assert.match(run.stdout, /\[DRY RUN\] Stage unchanged/, run.stdout);
+      assert.match(run.stdout, /Would reuse existing plan directory/, run.stdout);
+      assert.ok(!/Subagent\s*:/.test(run.stdout), `no Subagent line, got:\n${run.stdout}`);
+      assert.ok(!/Model Tier\s*:/.test(run.stdout), `no Model Tier line, got:\n${run.stdout}`);
+      assert.strictEqual(checkpointBytes(dir, 33914), before, 'checkpoint must be byte-identical');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

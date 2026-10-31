@@ -344,12 +344,28 @@ function formatCritiqueTierOneCommand(binaryPath: string, reportPath?: string | 
     ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
     : `${quoted} ${CRITIQUE_FLAG_JSON}`;
   if (!reportPath) return command;
-  // Issue #397: `tee`, not `>`: the reviewer must still read the findings to
-  // reconcile the two tiers. `dirname` is used rather than splitting the path
-  // in JS: the evidence path is absolute and may be Windows- or POSIX-shaped,
-  // and the shell that runs it is the same shell the reviewer already uses.
+  // Issue #400 (D2): stage into a sibling temp file and publish only on
+  // success, because a POSIX pipeline reports `tee`'s exit status: a crashing
+  // critique still exited 0 and left an empty or truncated evidence file that
+  // a reviewer could name on a `CRITIQUE_REPORT:` line.
+  //
+  // The subshell is load-bearing: `exit` then ends this command, never a
+  // reviewer's interactive shell. The staging file lives in the SAME directory
+  // as the report, so the final `mv` is atomic, and `cat` preserves the Tier 1
+  // read that #397 added (the reviewer still reconciles both tiers). `dirname`
+  // is used rather than splitting the path in JS: the evidence path is absolute
+  // and may be Windows- or POSIX-shaped, and the shell that runs it is the same
+  // shell the reviewer already uses.
   const quotedReport = shellQuote(reportPath);
-  return `mkdir -p "$(dirname ${quotedReport})" && ${command} | tee ${quotedReport}`;
+  const stagingPath = `"$(dirname ${quotedReport})/.critique-report.$$.tmp"`;
+  return (
+    `mkdir -p "$(dirname ${quotedReport})" && ( ` +
+    `tmp=${stagingPath}; ` +
+    `${command} > "$tmp"; code=$?; ` +
+    `if [ "$code" -ne 0 ]; then rm -f "$tmp"; echo "critique failed (exit $code); no report written" >&2; exit $code; fi; ` +
+    `if [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "critique exited 0 but wrote no evidence; no report written" >&2; exit 1; fi; ` +
+    `mv "$tmp" ${quotedReport} && cat ${quotedReport} )`
+  );
 }
 
 /**
@@ -1173,7 +1189,7 @@ export class ResolveSubagentUseCase {
 
     const critiqueReportPath = params.critiqueReportPath || null;
     const readOnlyRule = critiqueReportPath
-      ? 'Never attempt to write or edit files in the repository. The ONE write this review permits is the Tier 1 evidence file named in the Two-Tier section below: it lives outside the worktree and is written by shell redirection. Write nothing else.'
+      ? 'Never attempt to write or edit files in the repository. The ONE write this review permits is the Tier 1 evidence file named in the Two-Tier section below: it lives outside the worktree and is written by shell redirection, via the transient `.critique-report.<pid>.tmp` staging sibling the command creates beside it. Write nothing else.'
       : 'Never attempt to write or edit files.';
 
     prompt += `### Operating Constraints:\n`;

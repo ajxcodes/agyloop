@@ -940,12 +940,46 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       );
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
-      assert.ok(output.includes('could not be parsed'), output);
+      // Issue #400: a missing file is the signature of a crashed critique run,
+      // not a malformed payload — the message must name the read, not the parse.
+      assert.ok(output.includes('could not be read'), output);
+      assert.ok(output.includes('--critique-report'), output);
+      assert.ok(!output.includes('could not be parsed'), output);
       const after = readCheckpoint(nonexistentSandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage);
       assert.strictEqual(after.history.length, before.history.length);
     } finally {
       fs.rmSync(nonexistentSandbox.dir, { recursive: true, force: true });
+    }
+
+    // A file that exists but carries no evidence at all.
+    const emptySandbox = makeSandbox('REVIEW');
+    try {
+      const before = readCheckpoint(emptySandbox.dir, ISSUE);
+      const verdictFile = writeVerdict(emptySandbox.dir, APPROVED_BLOCK);
+      const empty = path.join(emptySandbox.dir, 'critique.json');
+      fs.writeFileSync(empty, '', 'utf8');
+
+      const run = await withSanitizedEnv(emptySandbox.dir, emptySandbox.shadowPath, async () =>
+        runCli([
+          'review',
+          '--issue',
+          String(ISSUE),
+          '--verdict-file',
+          verdictFile,
+          '--critique-report',
+          empty
+        ])
+      );
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
+      assert.ok(output.includes('is empty'), output);
+      assert.ok(!output.includes('could not be parsed'), output);
+      const after = readCheckpoint(emptySandbox.dir, ISSUE);
+      assert.strictEqual(after.currentStage, before.currentStage);
+      assert.strictEqual(after.history.length, before.history.length);
+    } finally {
+      fs.rmSync(emptySandbox.dir, { recursive: true, force: true });
     }
 
     // A file that is not JSON.

@@ -75,6 +75,8 @@ import {
   HINT_VERDICT_STDIN_INPUT,
   formatCritiqueReportInputMissing,
   formatCritiqueReportParseFailure,
+  formatCritiqueReportUnreadable,
+  formatCritiqueReportEmpty,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   FLAG_WORKTREE,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -3394,13 +3396,33 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // use case runs — so an unreadable or unparseable report cannot leave a
         // half-applied checkpoint behind. A supplied report suppresses the
         // critique subprocess but never the two-tier invariant itself.
+        //
+        // Issue #400 (D2b): three failure classes, three messages. A missing or
+        // unreadable file is the signature of a crashed critique run, and it
+        // must never be reported as a parse failure: that names the evidence
+        // file instead of the stage that failed.
         let priorCritiqueReport: AiReviewReport | null = null;
         if (options.critiqueReport !== null) {
+          let rawReport: string;
           try {
-            const rawReport =
+            rawReport =
               options.critiqueReport === CRITIQUE_REPORT_STDIN
                 ? fs.readFileSync(0, 'utf8')
                 : fs.readFileSync(options.critiqueReport, 'utf8');
+          } catch (err: unknown) {
+            console.error(
+              formatCritiqueReportUnreadable(
+                options.critiqueReport,
+                err instanceof Error ? err.message : String(err)
+              )
+            );
+            return EXIT_CODE_FAILURE;
+          }
+          if (rawReport.trim().length === 0) {
+            console.error(formatCritiqueReportEmpty(options.critiqueReport));
+            return EXIT_CODE_FAILURE;
+          }
+          try {
             priorCritiqueReport = AiReviewReport.parse(rawReport);
           } catch (err: unknown) {
             console.error(
@@ -3711,14 +3733,13 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         // Issue #315 (Defect B, AC-3/AC-4): the subagent block ADVERTISES the
-        // NEXT dispatch, so it may only be printed when PLAN is the next
-        // actionable stage — that is, when the checkpoint IS at PLAN once this
-        // command returns. A dry run writes nothing, so for it the stage on disk
-        // is the only truth. And it must never fire on an invocation whose work
-        // was Discovery: no planner ran there, and printing `planner`/`pro`
-        // after a run that only read the RCA report is the defect itself (it
-        // fired on the park path too). Those paths name the subagent that
-        // actually ran instead.
+        // NEXT dispatch, so it may only be printed when the stage it names is
+        // still the next actionable stage once this command returns. A dry run
+        // writes nothing, so for it the stage on disk is the only truth. And it
+        // must never fire on an invocation whose work was Discovery: no planner
+        // ran there, and printing `planner`/`pro` after a run that only read the
+        // RCA report is the defect itself (it fired on the park path too). Those
+        // paths name the subagent that actually ran instead.
         const previousStage = scope.snapshot?.currentStage ?? null;
         const stageAfterThisRun = options.dryRun ? previousStage : result.currentStage;
         const enteredAtDiscoveryWork =
@@ -3745,11 +3766,19 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           // block must never name the Discovery subagent for a run that
           // deliberately performed none. It cannot suppress a park attribution:
           // the skip flag forces `ADVANCE_TO_PLAN`, so a park never coexists
-          // with it (and a populated-report advance keeps its attribution).
+          // with it.
           options.skipDiscovery !== true &&
-          (previousStage === STAGE_DISCOVERY || result.planResult.discoveryParked === true)
+          // Issue #400 (D1): only `discoveryParked` means DISCOVERY is still the
+          // stage after this run — that is the one case where the next dispatch
+          // really is the Discovery subagent. `previousStage === STAGE_DISCOVERY`
+          // is true for a park AND for an advance, so it advertised a dispatch
+          // that had already happened. Printing nothing on the advance is the
+          // only statement true in both plan states (blank plan ⇒ `next`
+          // dispatches the planner; substantive plan ⇒ `next` advances to
+          // APPROVAL).
+          result.planResult.discoveryParked === true
         ) {
-          // The subagent this invocation actually concerned: the Discovery
+          // The subagent this invocation still has to dispatch: the Discovery
           // attribution, never the planner's. `inherit` here is the model the
           // discovery role resolved to, not a `pro` attribution for work that
           // did not run.

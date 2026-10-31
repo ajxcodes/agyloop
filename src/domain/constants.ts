@@ -3566,13 +3566,19 @@ export function formatReviewVerdictChannelNote(
  * report died inside its session and `codeloop review` spawned a SECOND run;
  * this note makes the evidence transferable, and names the fallback so an
  * absent report is never mistaken for a clean one.
+ *
+ * Issue #400 (D2b): the contract keys on the command's EXIT STATUS. The Tier 1
+ * command now stages its output and publishes nothing when critique fails, so a
+ * non-zero exit is the only signal needed — and the only one a pipeline's
+ * `tee` used to mask.
  */
 export function formatCritiqueEvidenceReturnNote(reportPath: string): string {
   return (
-    `Write the critique JSON to \`${reportPath}\` (that is the ONLY file you may write; ` +
-    `it lives outside the worktree) and name it on a line of its own: ` +
-    `\`${CRITIQUE_REPORT_RETURN_PREFIX} ${reportPath}\`. If the command fails or the file ` +
-    `is empty, say so and OMIT that line — the orchestrator will run Tier 1 itself.`
+    `The command writes the critique JSON to \`${reportPath}\` (the only file you may write; ` +
+    `it lives outside the worktree) and prints it back to you. On success, name it on a line of ` +
+    `its own: \`${CRITIQUE_REPORT_RETURN_PREFIX} ${reportPath}\`. The command exits non-zero and ` +
+    `publishes NO file when critique fails: a non-zero exit means you MUST say the Tier 1 run ` +
+    `failed and OMIT that line — the orchestrator will run Tier 1 itself.`
   );
 }
 
@@ -4280,6 +4286,36 @@ export const NOTE_CRITIQUE_REPORT_PARSE_FAILURE =
 
 export function formatCritiqueReportParseFailure(reason: string): string {
   return NOTE_CRITIQUE_REPORT_PARSE_FAILURE.replace('{reason}', reason);
+}
+
+/**
+ * A `--critique-report` path that has no readable payload at all (issue #400).
+ *
+ * Distinct from the parse failure on purpose: a missing file is the signature
+ * of a crashed critique run, so pointing the operator at the evidence file's
+ * FORMAT debugs the wrong stage.
+ */
+export const NOTE_CRITIQUE_REPORT_UNREADABLE =
+  '✗ Tier 1 critique report could not be read: {path} ({reason}). The critique run probably failed and wrote nothing — re-run without --critique-report so review executes Tier 1 itself. Nothing was recorded.' as const;
+
+/** Renders a `--critique-report` location for the operator (`-` is stdin). */
+function critiqueReportLabel(reportPath: string): string {
+  return reportPath === CRITIQUE_REPORT_STDIN ? VERDICT_INPUT_SOURCE_STDIN : reportPath;
+}
+
+export function formatCritiqueReportUnreadable(reportPath: string, reason: string): string {
+  return NOTE_CRITIQUE_REPORT_UNREADABLE.replace('{path}', critiqueReportLabel(reportPath)).replace(
+    '{reason}',
+    reason
+  );
+}
+
+/** A `--critique-report` payload that was read but carries no evidence (issue #400). */
+export const NOTE_CRITIQUE_REPORT_EMPTY =
+  '✗ Tier 1 critique report is empty: {path}. The critique run produced no evidence — re-run without --critique-report so review executes Tier 1 itself. Nothing was recorded.' as const;
+
+export function formatCritiqueReportEmpty(reportPath: string): string {
+  return NOTE_CRITIQUE_REPORT_EMPTY.replace('{path}', critiqueReportLabel(reportPath));
 }
 
 /**
