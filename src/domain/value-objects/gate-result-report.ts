@@ -591,6 +591,59 @@ function isFullSuiteCommand(command: string): boolean {
 }
 
 /**
+ * Targeted test runners that the full-suite list does not already cover
+ * (issue #412).
+ *
+ * The SAME classification feeds two consumers: the evidence floor that refuses
+ * a zero-test PASSED block and the in-process gate that refuses an exit-0 test
+ * command with no test total.
+ */
+const TEST_COMMAND_PATTERNS: readonly RegExp[] = [
+  /\bnode\s+--test\b/,
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?::[\w.:-]+)?\b/,
+  /\b(?:vitest|jest|pytest|phpunit|rspec|ctest)\b/,
+  /\bplaywright\s+test\b/,
+  /\bdeno\s+test\b/,
+  /\b(?:cargo|go|dotnet|mvn(?:w)?|gradlew?|gradle|make|mix)\b[^\n]*\btest\b/
+];
+
+/**
+ * True when `command` executes tests (issue #412).
+ *
+ * A `commandResults` entry for `npm run build` is not evidence about tests, and
+ * an `executedCommands` entry for `npm test` is. `normaliseGateTests()` and the
+ * zero-test floor both use this one predicate.
+ */
+export function isTestCommand(command: string): boolean {
+  if (typeof command !== 'string' || command.trim().length === 0) {
+    return false;
+  }
+  const normalised = normaliseCommand(command);
+  return (
+    FULL_SUITE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalised)) ||
+    TEST_COMMAND_PATTERNS.some((pattern) => pattern.test(normalised))
+  );
+}
+
+/**
+ * The test commands a report claims to have EXECUTED (issue #412).
+ *
+ * A command the report lists in `notRun` is excluded by id/label: a declared
+ * test target that did not run is not evidence of a test run, and the
+ * zero-test floor must not refuse an honest "not run" report.
+ */
+export function executedTestCommands(report: GateResultReport): readonly string[] {
+  const skipped = new Set(
+    report.notRun
+      .flatMap((entry) => [entry.id, entry.label])
+      .map((value) => normaliseCommand(value))
+  );
+  return report.executedCommands.filter(
+    (command) => isTestCommand(command) && !skipped.has(normaliseCommand(command))
+  );
+}
+
+/**
  * True when running `executedCommand` evidences `declaredTarget` (issue #408).
  *
  * Coverage uses the SAME semantics as unique-test accounting — normalised
@@ -674,16 +727,20 @@ export function normaliseGateTests(report: GateResultReport): GateTestsNormalisa
     (entry): entry is GateCommandResult & { readonly passed: number } =>
       typeof entry.passed === 'number'
   );
+  // Issue #412: only TEST commands may drive the unique test total. The #410
+  // record carried `{ command: 'npm run build', passed: 0 }` and normalisation
+  // rewrote a real 1-test report to `PASSED (0 passed)`.
+  const testCounted = counted.filter((entry) => isTestCommand(entry.command));
 
   let uniqueTests = report.testsPassed;
-  if (counted.length > 0) {
-    const covering = counted.filter((entry) =>
-      counted.some((other) => other !== entry && commandCovers(entry.command, other.command))
+  if (testCounted.length > 0) {
+    const covering = testCounted.filter((entry) =>
+      testCounted.some((other) => other !== entry && commandCovers(entry.command, other.command))
     );
     uniqueTests =
       covering.length > 0
         ? Math.max(...covering.map((entry) => entry.passed))
-        : counted.reduce((sum, entry) => sum + entry.passed, 0);
+        : testCounted.reduce((sum, entry) => sum + entry.passed, 0);
   }
 
   const declared = readDeclaredPassedCount(report.testsStatus);
@@ -709,4 +766,26 @@ export function normaliseGateTests(report: GateResultReport): GateTestsNormalisa
         uniqueTests !== report.testsPassed),
     suspectDoubleCount
   };
+}
+
+/**
+ * The test commands that make a `PASSED` report certifiable only if the
+ * normalised total is positive (issue #412).
+ *
+ * Returns the executed test commands when the report claims `PASSED`, at least
+ * one test command ran (and is not in `notRun`), and the unique test total is
+ * `0`. An empty array means "not refused by this rule": a `FAILED` report is a
+ * "go fix it" exit, and a build-only plan has no test command by construction.
+ *
+ * `normaliseGateTests()` is the SAME arithmetic recorded in the summary, so the
+ * guard and the recorded number cannot disagree.
+ */
+export function zeroTestEvidenceCommands(report: GateResultReport): readonly string[] {
+  if (report.verdict !== STATUS_PASSED) {
+    return Object.freeze([]);
+  }
+  if (normaliseGateTests(report).testsPassed !== 0) {
+    return Object.freeze([]);
+  }
+  return executedTestCommands(report);
 }

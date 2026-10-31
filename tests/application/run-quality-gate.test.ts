@@ -1598,6 +1598,72 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.strictEqual(result.buildStatus, STATUS_FAILED);
   });
 
+  test('RQG-Z1 (#412): an exit-0 test command with no positive test total fails the gate', async () => {
+    const warning =
+      '(node:1) Warning: node:test run() is being called recursively within a test file. skipping running files.\n';
+    for (const output of [
+      warning,
+      'ℹ tests 0\nℹ pass 0\nℹ fail 0'
+    ]) {
+      const planGenerator = new MockPlanGenerator();
+      planGenerator.content = planWithTargets(['npm test']);
+      const commandExecutor = new MockCommandExecutor([
+        resultOf({ exitCode: 0, stdout: output, combinedOutput: output, stderr: output })
+      ]);
+      const result = await new RunQualityGateUseCase(
+        new MockStateRepository(gateSnapshot()),
+        new MockConfigRepository(),
+        planGenerator,
+        commandExecutor,
+        new MockBuildDetector()
+      ).execute({ issue: 20 });
+
+      assert.strictEqual(result.passed, false, output);
+      assert.strictEqual(result.testsStatus, STATUS_FAILED, output);
+      assert.strictEqual(result.currentStage, STAGE_IMPLEMENT, output);
+      assert.strictEqual(result.reports[0].passed, false, output);
+      assert.ok((result.reports[0].failureSnippet ?? '').includes('npm test'), output);
+    }
+  });
+
+  test('RQG-Z2 (#412): a plan-sourced test command that prints a positive total still passes', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm test']);
+    const positive = 'ℹ tests 23\nℹ pass 23\nℹ fail 0';
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ exitCode: 0, stdout: positive, combinedOutput: positive })
+    ]);
+    const result = await new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    ).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_REVIEW);
+    assert.strictEqual(result.testsStatus, 'PASSED (23 passed)');
+  });
+
+  test('RQG-Z3 (#412): a build-only plan with no test output still passes', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithTargets(['npm run build']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf({ exitCode: 0, stdout: 'build ok', combinedOutput: 'build ok' })
+    ]);
+    const result = await new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    ).execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.testsStatus, STATUS_PASSED);
+  });
+
   test('RQG-S1: a static smoke finding fails before any command runs', async () => {
     const planGenerator = new MockPlanGenerator();
     planGenerator.content = planWithSmoke(['npm test'], [

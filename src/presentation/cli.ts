@@ -180,6 +180,10 @@ import {
   formatGateReportChannelCommand,
   // Issue #408 (D2): the coverage refusal is ONE renderer for filing + ingest.
   formatGateTargetCoverageRefusal,
+  // Issue #412: a PASSED block that ran a test command but recorded zero unique
+  // tests is not certifiable evidence.
+  zeroTestEvidenceCommands,
+  formatGateZeroTestRefusal,
   formatTransitionRecoveryCommands,
   findLegalTransitionPath,
   // Issue #402: the APPROVAL baseline behaviour embeds the SAME prohibition the
@@ -3257,6 +3261,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             const refusal = formatGateTargetCoverageRefusal(
               coverage.missing,
               coverage.declared.length,
+              scope.issue ?? issueValue ?? null,
+              'filing'
+            );
+            if (options.dryRun) {
+              console.error(`[dry-run] ${refusal}`);
+              console.error('[dry-run] Nothing was written.');
+            } else {
+              console.error(`✗ ${refusal}`);
+            }
+            return EXIT_CODE_FAILURE;
+          }
+        }
+
+        // Issue #412: a PASSED block that names a test command but records
+        // testsPassed = 0 is not evidence. Assessed BEFORE the `--dry-run`
+        // branch so a preview reports the SAME finding a real filing would
+        // raise — and writes nothing in either case.
+        {
+          const zeroTestCommands = zeroTestEvidenceCommands(report);
+          if (zeroTestCommands.length > 0) {
+            const refusal = formatGateZeroTestRefusal(
+              zeroTestCommands,
               scope.issue ?? issueValue ?? null,
               'filing'
             );

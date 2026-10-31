@@ -773,15 +773,16 @@ export const ENV_FLAG_ENABLED = '1' as const;
 
 /**
  * The ONE documented escape hatch from the cross-worktree state guard
- * (issue #405, D1).
+ * (issues #405, #412).
  *
- * `FileStateRepository.isTestCaseRun()` also accepts `NODE_ENV=test` and
- * `AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1`, but no dispatch prompt may name a
- * second hatch: the implementer and the gate execute the SAME frozen smoke
- * protocol, so they must be told the SAME signal. On #400 the implementer used
- * one variable and the gate another, and neither run was "exactly as written".
+ * Tool-owned on purpose: Node's test runner reads `NODE_TEST_CONTEXT` to detect
+ * a nested run, so advertising that variable made every documented test command
+ * skip its files and exit 0. `NODE_TEST_CONTEXT` remains a silent
+ * backward-compatible alias in `isTestCaseRun()`; no dispatch prompt may name
+ * it. `NODE_ENV=test` is the legacy test-mode marker and is not advertised
+ * either.
  */
-export const WORKTREE_GUARD_SIGNAL = ENV_NODE_TEST_CONTEXT;
+export const WORKTREE_GUARD_SIGNAL = ENV_ALLOW_WORKTREE_ISSUE_MISMATCH;
 
 /**
  * The ONE sentence the IMPLEMENT and QUALITY_GATE dispatches render verbatim
@@ -789,7 +790,7 @@ export const WORKTREE_GUARD_SIGNAL = ENV_NODE_TEST_CONTEXT;
  * mechanical instead of aspirational.
  */
 export const NOTE_WORKTREE_GUARD_ESCAPE_HATCH =
-  `This worktree is the code under test, and a test-run signal (\`${WORKTREE_GUARD_SIGNAL}\`) makes the cross-worktree state guard accept fixtures seeded for another issue. Run a check that seeds a foreign fixture with \`${WORKTREE_GUARD_SIGNAL}=1\` exported or prefixed to the command; do not substitute another variable, because the gate uses this same signal.` as const;
+  `This worktree is the code under test, and the cross-worktree state guard's documented escape hatch is the tool-owned \`${WORKTREE_GUARD_SIGNAL}\`. Run a check that seeds a foreign fixture with \`${WORKTREE_GUARD_SIGNAL}=1\` prefixed to the command; do not substitute another variable, because the gate uses this same escape hatch. Never use a variable that the test runner itself interprets: Node's runner skips every test file and exits 0 when its nested-run marker is set.` as const;
 
 /**
  * The planner-side counterpart (issue #405, AC-3): a foreign fixture issue is
@@ -798,7 +799,7 @@ export const NOTE_WORKTREE_GUARD_ESCAPE_HATCH =
  * stated in preamble prose is never applied.
  */
 export const NOTE_SMOKE_FIXTURE_ISSUE_RULE =
-  `A check that seeds a fixture issue number other than the worktree's issue is refused by the cross-worktree state guard unless the check itself carries the documented test-run signal (for example \`${WORKTREE_GUARD_SIGNAL}=1 node bin/codeloop.js …\`): the gate executes the frozen checks as a script, so a signal stated only in prose is never applied. State the signal inside the check, or use the worktree's own issue number.` as const;
+  `A check that seeds a fixture issue number other than the worktree's issue is refused by the cross-worktree state guard unless the check itself carries the documented state-guard escape hatch (for example \`${WORKTREE_GUARD_SIGNAL}=1 node bin/codeloop.js …\`): the gate executes the frozen checks as a script, so a signal stated only in prose is never applied. State the escape hatch inside the check, or use the worktree's own issue number.` as const;
 
 /** Operator-facing prompts / report labels (issue #298). */
 export const LABEL_EXECUTION_CWD = 'Execution Cwd' as const;
@@ -4164,6 +4165,37 @@ export function formatGateTargetCoverageRefusal(
     .replace('{missingCount}', String(Array.isArray(missing) ? missing.length : 0))
     .replace('{declaredCount}', String(declaredCount))
     .replace('{missing}', () => rendered)
+    .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
+    .replace('{command}', formatGateReportChannelCommand(issue))
+    .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);
+}
+
+/**
+ * The refusal a `PASSED` report that names a test command while recording
+ * `testsPassed = 0` raises (issue #412).
+ *
+ * ONE renderer for both enforcement points — filing (`gate-report`) and ingest
+ * (`transition REVIEW`) — so the two cannot drift. `{commands}` is replaced by
+ * a REPLACER FUNCTION: a command containing `$&` must not corrupt the message.
+ */
+export const MSG_GATE_PASSED_ZERO_TESTS =
+  "Gate evidence refused: the PASSED report's normalised unique test total (testsPassed) is 0. A PASSED gate that ran tests must report a positive unique test total; a zero-test run is not evidence (a test runner that skipped every file — for example Node's recursive-run marker — still exits 0 and prints no summary). Test command(s): {commands}. Re-run the test commands without the conflicting signal, then {refile} with `{command}`. {tail}" as const;
+
+/** The in-process failure snippet for an exit-0 test command with no test total. */
+export const MSG_GATE_NO_TEST_EVIDENCE =
+  "Test evidence missing: '{command}' exited 0 without printing a test summary or a positive test count. A skipped runner or a zero-test run is not a pass; re-run the command without the conflicting environment signal." as const;
+
+export function formatGateZeroTestRefusal(
+  commands: readonly string[],
+  issue?: number | string | null,
+  channel: GateCoverageChannel = 'filing'
+): string {
+  const rendered = (Array.isArray(commands) ? commands : [])
+    .map((command) => `\`${command}\``)
+    .join(', ');
+  const ingest = channel === 'ingest';
+  return MSG_GATE_PASSED_ZERO_TESTS
+    .replace('{commands}', () => rendered)
     .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
     .replace('{command}', formatGateReportChannelCommand(issue))
     .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);

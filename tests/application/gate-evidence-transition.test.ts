@@ -153,8 +153,8 @@ function gateRowDuration(summary: string): {
   return { reported: match[1], wallSeconds };
 }
 
-/** A plan carrying ONE declared verification target (for the #325 cases). */
-function planWithTargets(): string {
+/** A plan carrying the declared verification targets (for the #325/#412 cases). */
+function planWithTargets(commands: readonly string[] = ['npm test']): string {
   return [
     '# [Implementation] - Smoke',
     '',
@@ -165,7 +165,7 @@ function planWithTargets(): string {
     '### Quality Gate Targets',
     '',
     '```bash',
-    'npm test',
+    ...commands,
     '```',
     ''
   ].join('\n');
@@ -555,6 +555,187 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
       assert.strictEqual(repo.clears, 0, 'a coverage refusal must not consume the report');
       assert.ok(repo.load(ISSUE) !== null, 'the report stays readable for a corrected refile');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('T-Z1 (#412): a PASSED zero-test report is refused on the certifying exit and consumes nothing', async () => {
+    const now = Date.now();
+    const { ws, summaryPath } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets()
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          testsStatus: 'PASSED (0 passed)',
+          testsPassed: 0,
+          executedCommands: ['npm test']
+        },
+        1
+      )
+    );
+    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
+
+    try {
+      await assert.rejects(
+        async () => runTransition(ws, STAGE_REVIEW, repo),
+        (err: any) => {
+          assert.match(String(err.message), /npm test/);
+          assert.match(String(err.message), /testsPassed/);
+          return true;
+        }
+      );
+
+      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
+      assert.strictEqual(repo.clears, 0, 'a zero-test refusal must not consume the report');
+      assert.ok(repo.load(ISSUE) !== null, 'the report stays readable for a corrected refile');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('T-Z2 (#412): the same zero-test report is not refused on the non-certifying exit', async () => {
+    const now = Date.now();
+    const { ws } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets()
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          testsStatus: 'PASSED (0 passed)',
+          testsPassed: 0,
+          executedCommands: ['npm test']
+        },
+        1
+      )
+    );
+
+    try {
+      const sm = await runTransition(ws, STAGE_IMPLEMENT, repo);
+      const last = sm.history[sm.history.length - 1];
+      assert.strictEqual(last.stage, STAGE_IMPLEMENT);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('T-Z3 (#412): a build-only PASSED report with zero tests still certifies', async () => {
+    const now = Date.now();
+    const { ws } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets(['npm run build'])
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          testsStatus: 'PASSED (0 passed)',
+          testsPassed: 0,
+          testsFailed: 0,
+          executedCommands: ['npm run build']
+        },
+        1
+      )
+    );
+
+    try {
+      const sm = await runTransition(ws, STAGE_REVIEW, repo);
+      const last = sm.history[sm.history.length - 1];
+      assert.strictEqual(last.stage, STAGE_REVIEW);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('T-Z4 (#412): a PASSED report with a positive test count certifies', async () => {
+    const now = Date.now();
+    const { ws } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets(['npm test'])
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          testsStatus: 'PASSED (1 passed)',
+          testsPassed: 1,
+          executedCommands: ['npm test']
+        },
+        1
+      )
+    );
+
+    try {
+      const sm = await runTransition(ws, STAGE_REVIEW, repo);
+      const last = sm.history[sm.history.length - 1];
+      assert.strictEqual(last.stage, STAGE_REVIEW);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('T-Z5 (#412): the #410 build-only commandResult cannot zero a real test total', async () => {
+    const now = Date.now();
+    const { ws } = scaffoldWorkspace(
+      STAGE_QUALITY_GATE,
+      [
+        { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+        { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+      ],
+      planWithTargets(['npm run build', 'npm test'])
+    );
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      GateResultReport.fromJSON(
+        {
+          ...PASSED_REPORT.toJSON(),
+          testsStatus: 'PASSED (1 passed)',
+          testsPassed: 1,
+          executedCommands: ['npm run build', 'npm test'],
+          commandResults: [{ command: 'npm run build', passed: 0, failed: 0 }]
+        },
+        1
+      )
+    );
+
+    try {
+      const sm = await runTransition(ws, STAGE_REVIEW, repo);
+      const last = sm.history[sm.history.length - 1];
+      assert.strictEqual(last.stage, STAGE_REVIEW);
+      assert.strictEqual(last.metadata.gateTests, 'PASSED (1 passed)');
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }

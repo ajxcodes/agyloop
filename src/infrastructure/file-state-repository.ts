@@ -489,6 +489,13 @@ export class FileStateRepository implements StateRepository {
    * task's checkpoint while standing in a worktree. A test process that seeds
    * a fixture issue must not be refused for the cwd it happens to run in.
    *
+   * Issue #412: the ADVERTISED hatch is the tool-owned
+   * `AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1`. `NODE_TEST_CONTEXT` survives only
+   * as a silent backward-compatible alias: `node --test` sets it on every
+   * test-file child, and the suite's temp-state writes rely on that ambient
+   * value. It is never advertised, because Node's own runner reads it to detect
+   * a nested run and skips every test file when it is set.
+   *
    * Deliberately NOT reused by `validateSmokeTestIsolation`: that policy is
    * about reaching REAL state and is stricter.
    */
