@@ -29,6 +29,16 @@
  * SP26 - an unanchored relative path stays flagged; the cwd map is per check (#364)
  * SP27 - cwd tracking cannot launder a temp root (#364)
  * SP28 - the cwd judged is the one BEFORE the creating statement (#364 review)
+ * SP34 - the D1 fixture is refused by name at the marker's plan line (#413)
+ * SP35 - the corrected #410 fixture stays clean (#413 AC-2)
+ * SP36 - a build-only fixture is not normalised, so it stays clean (#413 AC-2)
+ * SP37 - a check asserting the RECORDED status is a legitimate normalisation test
+ * SP38 - the worktree rule is armed by the assertion, not the directory (#413)
+ * SP39 - the marker rule mirrors parseBlock, allowing earlier markers (#413)
+ *        and ignoring a marker, marker producer or refusal assertion named
+ *        only in a comment, or split across a shell line continuation
+ * SP40 - the three committed impossible fixtures each fire exactly once (#413)
+ * SP41 - the corpus canaries carry zero fixture-consistency findings (#413)
  */
 
 const { test, describe } = require('node:test');
@@ -36,7 +46,12 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { SmokeProtocol } = require('../../dist/domain');
+const {
+  SmokeProtocol,
+  SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
+  SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
+  SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED
+} = require('../../dist/domain');
 
 const SMOKE_HEADING = '## 6. Manual Smoke Test Protocol';
 
@@ -843,7 +858,18 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       (finding: any) => finding.rule === 'missing-parent-directory'
     ).length;
 
-  test('SP22: the committed corpus keeps its frozen shape (#364 AC-9/AC-11, #388)', () => {
+  const FIXTURE_RULES = new Set([
+    SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
+    SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
+    SMOKE_RULE_GATE_REPORT_MARKER_MISSING
+  ]);
+
+  const fixtureCount = (markdown: string): number =>
+    SmokeProtocol.fromPlan(markdown).findings.filter((finding: any) =>
+      FIXTURE_RULES.has(finding.rule)
+    ).length;
+
+  test('SP22: the committed corpus keeps its frozen shape (#364 AC-9/AC-11, #388, #413)', () => {
     const { entries } = readCorpus(CORPUS_DIR);
     assert.ok(entries.length >= 25, `corpus has only ${entries.length} entries`);
 
@@ -868,6 +894,11 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
         missingParentCount(markdown),
         entry.missingParentFindings,
         `${entry.file}: frozen missing-parent-directory count`
+      );
+      assert.strictEqual(
+        fixtureCount(markdown),
+        0,
+        `${entry.file}: fixture-consistency findings (#413)`
       );
     }
 
@@ -1246,5 +1277,324 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       [6, 7],
       JSON.stringify(findings)
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #413: fixture-consistency rules. A check whose OWN fixture makes its
+  // assertion impossible must be refused before the plan digest is pinned.
+  // -------------------------------------------------------------------------
+
+  const SMOKE_413_DIR = path.join(__dirname, '..', 'fixtures', 'smoke-413');
+
+  const smoke413 = (file: string): string =>
+    `${SMOKE_HEADING}\n\n${fs.readFileSync(path.join(SMOKE_413_DIR, file), 'utf8')}`;
+
+  const fixtureFindings = (markdown: string): any[] =>
+    SmokeProtocol.fromPlan(markdown).findings.filter((finding: any) =>
+      FIXTURE_RULES.has(finding.rule)
+    );
+
+  const objectLiteral = (report: Record<string, unknown>): string =>
+    `{ ${Object.entries(report)
+      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+      .join(', ')} }`;
+
+  const reportFixture = (
+    report: Record<string, unknown>,
+    assertionStatus: string
+  ): string =>
+    planOf([
+      '```bash',
+      `node -e 'require("fs").writeFileSync(process.argv[1], "GATE_REPORT_JSON: " + JSON.stringify(${objectLiteral(report)}))' gate.json`,
+      `node -e 'const d=require("./dist/domain");const r=d.GateResultReport.parseBlock(require("fs").readFileSync("gate.json","utf8"));if(d.normaliseGateTests(r).testsStatus!==${JSON.stringify(assertionStatus)})process.exit(1)'`,
+      '```'
+    ]);
+
+  const D1_REPORT = {
+    verdict: 'PASSED',
+    buildSystem: 'npm',
+    buildStatus: 'PASSED',
+    testsStatus: 'PASSED (1 passed)',
+    testsPassed: 1,
+    executedCommands: ['npm test'],
+    commandResults: [{ command: 'npm test', passed: 0, failed: 0 }]
+  };
+
+  test('SP34: the D1 fixture is refused by name at its marker line (#413 AC-1)', () => {
+    assert.strictEqual(
+      SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
+      'gate-report-fixture-contradiction'
+    );
+    assert.strictEqual(SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED, 'worktree-fixture-unmatched');
+    assert.strictEqual(SMOKE_RULE_GATE_REPORT_MARKER_MISSING, 'gate-report-marker-missing');
+
+    const markdown = smoke413('impossible-gate-tests.checks.md');
+    const protocol = SmokeProtocol.fromPlan(markdown);
+    const findings = fixtureFindings(markdown);
+
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION);
+    assert.strictEqual(findings[0].checkIndex, 1);
+    assert.ok(findings[0].label.includes('Check 1'), findings[0].label);
+    assert.strictEqual(protocol.executable, false);
+    const markerLine =
+      markdown.split('\n').findIndex((line) => line.includes('GATE_REPORT_JSON:')) + 1;
+    assert.strictEqual(findings[0].line, markerLine);
+    assert.ok(findings[0].excerpt.includes('PASSED (1 passed)'), findings[0].excerpt);
+    assert.ok(findings[0].excerpt.includes('PASSED (0 passed)'), findings[0].excerpt);
+  });
+
+  test('SP35: the corrected #410 fixture stays clean (#413 AC-2)', () => {
+    const markdown = smoke413('corrected.checks.md');
+    assert.deepStrictEqual(fixtureFindings(markdown), []);
+    assert.strictEqual(SmokeProtocol.fromPlan(markdown).executable, true);
+  });
+
+  test('SP36: a build-only fixture is not normalised, so it stays clean (#413 AC-2)', () => {
+    const buildOnly = reportFixture(
+      {
+        verdict: 'PASSED',
+        buildSystem: 'npm',
+        buildStatus: 'PASSED',
+        testsStatus: 'PASSED (1 passed)',
+        testsPassed: 1,
+        executedCommands: ['npm run build'],
+        commandResults: [{ command: 'npm run build', passed: 0, failed: 0 }]
+      },
+      'PASSED (1 passed)'
+    );
+    assert.deepStrictEqual(fixtureFindings(buildOnly), []);
+  });
+
+  test('SP37: a check asserting the RECORDED status is a legitimate test (#413 AC-2)', () => {
+    const deliberate = reportFixture(D1_REPORT, 'PASSED (0 passed)');
+    assert.deepStrictEqual(fixtureFindings(deliberate), []);
+  });
+
+  const worktreeCheck = (directory: string, assertMismatch: boolean): string =>
+    planOf([
+      '```bash',
+      `mkdir -p "$SBX/${directory}"`,
+      assertMismatch
+        ? `( cd "$SBX/${directory}" && node bin/codeloop.js transition REVIEW --issue 413 2>&1 | grep -q 'Cannot save state for issue 413 from inside worktree for issue 999' )`
+        : 'echo orphan-cleanup',
+      '```'
+    ]);
+
+  test('SP38a: an unmatched worktree fixture is refused once, at its line (#413 AC-3)', () => {
+    const findings = fixtureFindings(worktreeCheck('.worktrees/999-probe', true));
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED);
+    assert.strictEqual(findings[0].checkIndex, 1);
+    assert.ok(findings[0].excerpt.includes('.worktrees/999-probe'), findings[0].excerpt);
+  });
+
+  test('SP38b: the correct .worktrees/<n>/ fixture stays clean (#413 AC-3)', () => {
+    assert.deepStrictEqual(fixtureFindings(worktreeCheck('.worktrees/999/probe', true)), []);
+  });
+
+  test('SP38c: the 248.md S8 orphan fixture is not armed without the assertion (#413 AC-3)', () => {
+    assert.deepStrictEqual(fixtureFindings(worktreeCheck('.worktrees/4242-orphan', false)), []);
+
+    // Review round 2: prose that documents the guard beside a legitimate orphan
+    // fixture must not arm Rule B either — the assertion must be a real line.
+    const documented = planOf([
+      '```bash',
+      '# Cannot save state for issue 413 from inside worktree for issue 999',
+      '// Cannot save state for issue 413 from inside worktree for issue 999',
+      'mkdir -p "$SBX/.worktrees/4242-orphan"',
+      'echo orphan-cleanup',
+      '```'
+    ]);
+    assert.deepStrictEqual(fixtureFindings(documented), []);
+  });
+
+  const gateReportInvocation = (reportFile = 'gate.json'): string =>
+    `node bin/codeloop.js gate-report --issue 413 --report-file ${reportFile}`;
+
+  test('SP39a: a markerless --report-file fixture is refused at its line (#413 AC-4)', () => {
+    const markdown = planOf(['```bash', gateReportInvocation(), '```']);
+    const findings = fixtureFindings(markdown);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_GATE_REPORT_MARKER_MISSING);
+    const invocationLine =
+      markdown.split('\n').findIndex((line) => line.includes('gate-report')) + 1;
+    assert.strictEqual(findings[0].line, invocationLine);
+  });
+
+  test('SP39b: a marker-bearing heredoc fixture stays clean (#413 AC-4)', () => {
+    const markdown = planOf([
+      '```bash',
+      "cat > gate.json <<'JSON'",
+      'GATE_REPORT_JSON:',
+      '{ "verdict": "PASSED" }',
+      'JSON',
+      gateReportInvocation(),
+      '```'
+    ]);
+    assert.deepStrictEqual(fixtureFindings(markdown), []);
+  });
+
+  test('SP39c: formatGateReportExample is a marker producer (#413 AC-4)', () => {
+    const markdown = planOf([
+      '```bash',
+      'node -e \'require("fs").writeFileSync("gate.json", require("./dist/domain").formatGateReportExample("PASSED"))\'',
+      gateReportInvocation(),
+      '```'
+    ]);
+    assert.deepStrictEqual(fixtureFindings(markdown), []);
+  });
+
+  test('SP39d: a deliberate missing-marker refusal check stays clean (#413 AC-4)', () => {
+    const markdown = planOf([
+      '```bash',
+      `${gateReportInvocation()} 2>&1 | grep -q 'missing GATE_REPORT_JSON'`,
+      '```'
+    ]);
+    assert.deepStrictEqual(fixtureFindings(markdown), []);
+  });
+
+  test('SP39e: a marker seeded by an earlier check carries forward (#413 AC-4)', () => {
+    const markdown = planOf([
+      '#### Check 1 — seed the report',
+      '```bash',
+      "cat > gate.json <<'JSON'",
+      'GATE_REPORT_JSON:',
+      '{ "verdict": "PASSED" }',
+      'JSON',
+      '```',
+      '',
+      '#### Check 2 — file the report',
+      '```bash',
+      gateReportInvocation(),
+      '```'
+    ]);
+    assert.deepStrictEqual(fixtureFindings(markdown), []);
+  });
+
+  test('SP39f: a marker named only in a comment does not satisfy the rule (#413 AC-4)', () => {
+    const markdown = planOf([
+      '```bash',
+      '# The report must carry a GATE_REPORT_JSON: marker.',
+      '// GATE_REPORT_JSON: is required by parseBlock.',
+      gateReportInvocation(),
+      '```'
+    ]);
+    const findings = fixtureFindings(markdown);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_GATE_REPORT_MARKER_MISSING);
+    const invocationLine =
+      markdown.split('\n').findIndex((line) => line.includes('gate-report')) + 1;
+    assert.strictEqual(findings[0].line, invocationLine);
+  });
+
+  test('SP39g: a gate-report invocation split across a continuation is refused (#413 AC-4)', () => {
+    const markerless = planOf([
+      '```bash',
+      'node bin/codeloop.js gate-report \\',
+      '  --issue 413 --workspace "$SBX/ws" --report-file "$SBX/ws/gate.json"',
+      '```'
+    ]);
+    const findings = fixtureFindings(markerless);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_GATE_REPORT_MARKER_MISSING);
+    const invocationLine =
+      markerless.split('\n').findIndex((line) => line.includes('gate-report')) + 1;
+    assert.strictEqual(findings[0].line, invocationLine);
+
+    const marked = planOf([
+      '```bash',
+      "cat > gate.json <<'JSON'",
+      'GATE_REPORT_JSON:',
+      '{ "verdict": "PASSED" }',
+      'JSON',
+      'node bin/codeloop.js gate-report \\',
+      '  --issue 413 --report-file gate.json',
+      '```'
+    ]);
+    assert.deepStrictEqual(fixtureFindings(marked), []);
+  });
+
+  test('SP39h: a refusal named only in a comment does not exempt a markerless fixture (#413 AC-4)', () => {
+    const markdown = planOf([
+      '```bash',
+      '# parseBlock refuses a markerless report with missing GATE_REPORT_JSON: block',
+      '// missing GATE_REPORT_JSON is the refusal this check expects',
+      gateReportInvocation(),
+      '```'
+    ]);
+    const protocol = SmokeProtocol.fromPlan(markdown);
+    const findings = fixtureFindings(markdown);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_GATE_REPORT_MARKER_MISSING);
+    assert.strictEqual(protocol.executable, false);
+  });
+
+  test('SP39i: a marker producer named only in a comment does not satisfy the rule (#413 AC-4)', () => {
+    const markdown = planOf([
+      '```bash',
+      '# formatGateReportExample is the tool producer',
+      '// formatGateReportExample writes the marker',
+      gateReportInvocation(),
+      '```'
+    ]);
+    const findings = fixtureFindings(markdown);
+    assert.strictEqual(findings.length, 1, JSON.stringify(findings));
+    assert.strictEqual(findings[0].rule, SMOKE_RULE_GATE_REPORT_MARKER_MISSING);
+  });
+
+  test('SP40: the three committed impossible fixtures each fire exactly once (#413 AC-1)', () => {
+    const files = [
+      'impossible-gate-tests.checks.md',
+      'impossible-worktree.checks.md',
+      'impossible-marker.checks.md'
+    ];
+    const fired = new Set<string>();
+    for (const file of files) {
+      const protocol = SmokeProtocol.fromPlan(smoke413(file));
+      assert.strictEqual(protocol.executable, false, file);
+      assert.strictEqual(protocol.findings.length, 1, `${file}: ${JSON.stringify(protocol.findings)}`);
+      fired.add(protocol.findings[0].rule);
+    }
+    assert.deepStrictEqual([...fired].sort(), [...FIXTURE_RULES].sort());
+
+    // D3, D2, D1 in that order: a marker in an earlier check legitimately
+    // disarms Rule C, so the markerless check must come first.
+    const combined = [
+      SMOKE_HEADING,
+      '',
+      fs.readFileSync(path.join(SMOKE_413_DIR, 'impossible-marker.checks.md'), 'utf8'),
+      fs.readFileSync(path.join(SMOKE_413_DIR, 'impossible-worktree.checks.md'), 'utf8'),
+      fs.readFileSync(path.join(SMOKE_413_DIR, 'impossible-gate-tests.checks.md'), 'utf8')
+    ].join('\n');
+    const combinedFindings = fixtureFindings(combined);
+    assert.deepStrictEqual(
+      combinedFindings.map((finding) => finding.rule).sort(),
+      [...FIXTURE_RULES].sort(),
+      JSON.stringify(combinedFindings)
+    );
+  });
+
+  test('SP41: the corpus canaries carry zero fixture findings (#413 AC-6)', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(CORPUS_DIR, 'manifest.json'), 'utf8')
+    );
+    assert.ok(manifest.entries.length >= 25, `corpus has only ${manifest.entries.length} entries`);
+
+    const canaries = ['248.md', '284.md', '311.md', '327.md', '337.md', '338.md'];
+    const scanned = new Set<string>();
+    for (const entry of manifest.entries as CorpusEntry[]) {
+      const markdown = fs.readFileSync(path.join(CORPUS_DIR, entry.file), 'utf8');
+      assert.strictEqual(
+        fixtureCount(markdown),
+        0,
+        `${entry.file}: ${JSON.stringify(fixtureFindings(markdown))}`
+      );
+      scanned.add(entry.file);
+    }
+    assert.strictEqual(scanned.size, manifest.entries.length);
+    for (const canary of canaries) {
+      assert.ok(scanned.has(canary), `canary missing from the corpus: ${canary}`);
+    }
   });
 });

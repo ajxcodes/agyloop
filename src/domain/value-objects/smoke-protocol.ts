@@ -11,8 +11,16 @@
  * Static rules: quoted-json-comparison, bare-module-path, empty-check,
  * no-executable-check (issue #298), sandbox-path (issue #359 — a check that
  * invokes the CLI must create its directory sandbox where the state guard
- * recognises it) and missing-parent-directory (issue #388 — a check that WRITES
- * a path must create that path's parent first, or it dies before product code).
+ * recognises it), missing-parent-directory (issue #388 — a check that WRITES
+ * a path must create that path's parent first, or it dies before product code)
+ * and the fixture-consistency rules (issue #413 — gate-report-fixture-
+ * contradiction, worktree-fixture-unmatched, gate-report-marker-missing).
+ *
+ * The #413 rules are textual mirrors of runtime contracts: each one protects a
+ * check's OWN fixture from making its assertion impossible, so approval never
+ * pins a digest for a protocol that only fails once executed. They call the
+ * real `normaliseGateTests` and mirror `IssueNumber.inferFromPath` and
+ * `GateResultReport.parseBlock`.
  *
  * No I/O, no external imports.
  */
@@ -23,12 +31,27 @@ import {
   SMOKE_CHECK_MARKER_SUFFIX,
   SMOKE_RULE_BARE_MODULE_PATH,
   SMOKE_RULE_EMPTY_CHECK,
+  SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
+  SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
   SMOKE_RULE_MISSING_PARENT_DIRECTORY,
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
   SMOKE_RULE_QUOTED_JSON_COMPARISON,
   SMOKE_RULE_SANDBOX_PATH,
+  SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
   SMOKE_SANDBOX_RECOMMENDED_PATH
 } from '../constants';
+import { normaliseGateTests } from './gate-result-report';
+import {
+  assertsGateReportMarkerRefusal,
+  assertsWorktreeMismatch,
+  blankFixtureSpans,
+  findUnmatchableWorktreeLiterals,
+  gateReportReportFileLines,
+  hasGateReportMarker,
+  lineOffsetOf,
+  parseGateReportFixtures,
+  producesGateReportMarker
+} from './gate-report-fixture';
 import { isSmokeSectionHeading } from './smoke-heading';
 import {
   isAnchoredPath,
@@ -332,6 +355,10 @@ export class SmokeProtocol {
     // Issue #388: a write whose parent no earlier statement creates dies before
     // any product code runs. Accumulated across checks in protocol order.
     collectMissingParentFindings(checks, findings);
+
+    // Issue #413: a check whose own fixture makes its assertion impossible is
+    // refused before the plan digest is pinned, not when the gate runs it.
+    collectFixtureFindings(checks, findings);
 
     // `no-executable-check` is reserved for a section that DECLARES a protocol
     // (prose or a fence) but offers nothing runnable. A placeholder-only
@@ -1546,6 +1573,95 @@ function collectMissingParentFindings(
         }
       });
     });
+  }
+}
+
+/**
+ * Emits the three fixture-consistency findings (issue #413) in protocol order.
+ *
+ * Rule A (`gate-report-fixture-contradiction`) asks the REAL
+ * `normaliseGateTests` what the runtime will record, then fires only when the
+ * check asserts the declared (pre-rewrite) status outside the fixture.
+ *
+ * Rule B (`worktree-fixture-unmatched`) is armed by the assertion text, not by
+ * the directory name, because `.worktrees/<n>-suffix` is a legitimate
+ * orphan-cleanup fixture.
+ *
+ * Rule C (`gate-report-marker-missing`) carries `markerAvailable` across
+ * checks: the gate executes ONE script, so a marker seeded by an earlier check
+ * is legitimate.
+ */
+function collectFixtureFindings(
+  checks: readonly SmokeCheck[],
+  findings: SmokeFinding[]
+): void {
+  let markerAvailable = false;
+
+  for (const check of checks) {
+    const body = check.body;
+
+    // Rule A — the fixture declares a value normalisation rewrites.
+    const fixtures = parseGateReportFixtures(body);
+    const blanked = blankFixtureSpans(
+      body,
+      fixtures.map((fixture) => fixture.span)
+    );
+    for (const fixture of fixtures) {
+      const normalisation = normaliseGateTests(fixture.report);
+      if (!normalisation.rewritten) continue;
+      if (fixture.report.testsStatus === normalisation.testsStatus) continue;
+      const asserted = blanked
+        .split('\n')
+        .some(
+          (line) =>
+            !isCommentLine(line) && line.includes(fixture.report.testsStatus)
+        );
+      if (!asserted) continue;
+      findings.push({
+        rule: SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
+        checkIndex: check.index,
+        label: check.label,
+        line: check.planLine + 1 + lineOffsetOf(body, fixture.markerOffset),
+        excerpt: truncate(
+          `declared "${fixture.report.testsStatus}" but normaliseGateTests records "${normalisation.testsStatus}"`
+        )
+      });
+    }
+
+    // Rule B — an armed check whose cwd fixture `inferFromPath` cannot match.
+    if (assertsWorktreeMismatch(body)) {
+      const [first] = findUnmatchableWorktreeLiterals(body);
+      if (first) {
+        findings.push({
+          rule: SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
+          checkIndex: check.index,
+          label: check.label,
+          line: check.planLine + 1 + first.lineOffset,
+          excerpt: truncate(
+            `${first.literal} — IssueNumber.inferFromPath matches .worktrees/<n>/ only, so the mismatch guard never fires`
+          )
+        });
+      }
+    }
+
+    // Rule C — a `--report-file` fixture no marker can make parseBlock accept.
+    // Both the marker producer and the refusal exemption are comment-aware: a
+    // `#`/`//` line that names either must not decide the rule.
+    const markerInCheck = hasGateReportMarker(body) || producesGateReportMarker(body);
+    const assertsMarkerRefusal = assertsGateReportMarkerRefusal(body);
+    if (!markerInCheck && !markerAvailable && !assertsMarkerRefusal) {
+      for (const lineOffset of gateReportReportFileLines(body)) {
+        findings.push({
+          rule: SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
+          checkIndex: check.index,
+          label: check.label,
+          line: check.planLine + 1 + lineOffset,
+          excerpt:
+            '--report-file fixture has no GATE_REPORT_JSON: marker; GateResultReport.parseBlock refuses it as "missing GATE_REPORT_JSON: block"'
+        });
+      }
+    }
+    markerAvailable = markerAvailable || markerInCheck;
   }
 }
 

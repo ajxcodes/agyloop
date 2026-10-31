@@ -729,6 +729,47 @@ export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
  * while the validator still reported `executable: true`.
  */
 export const SMOKE_RULE_MISSING_PARENT_DIRECTORY = 'missing-parent-directory' as const;
+/**
+ * Fixture-consistency findings (issue #413). Each rule is a documented textual
+ * mirror of the runtime contract it protects; every filed reproduction was a
+ * check whose OWN fixture made the assertion impossible, certified executable
+ * until the implementer or gate executed it after the plan digest was pinned.
+ */
+
+/**
+ * The check's `GATE_REPORT_JSON` fixture declares a `testsStatus` that
+ * `normaliseGateTests` rewrites at ingest, yet the check asserts the declared
+ * (pre-rewrite) value outside the fixture. Mirrors `normaliseGateTests`.
+ */
+export const SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION =
+  'gate-report-fixture-contradiction' as const;
+/**
+ * The check seeds a `.worktrees/<n>-suffix` directory while asserting the
+ * worktree-mismatch message. `IssueNumber.inferFromPath` requires
+ * `.worktrees/<n>/`, so the guard never fires and the message never prints.
+ */
+export const SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED = 'worktree-fixture-unmatched' as const;
+/**
+ * The check invokes `gate-report --report-file` with no `GATE_REPORT_JSON:`
+ * marker anywhere earlier in the protocol. `GateResultReport.parseBlock`
+ * refuses it as `missing GATE_REPORT_JSON: block`, so the asserted literal is
+ * never printed. Mirrors `parseBlock`.
+ */
+export const SMOKE_RULE_GATE_REPORT_MARKER_MISSING = 'gate-report-marker-missing' as const;
+/**
+ * The tool's single `GATE_REPORT_JSON:` marker producer (issue #413). A check
+ * that builds its report through `formatGateReportExample` carries the marker
+ * `GateResultReport.parseBlock` requires, so Rule C must not refuse it. The
+ * producer only counts on a non-comment line: prose naming it is not a report.
+ */
+export const GATE_REPORT_MARKER_PRODUCER = 'formatGateReportExample' as const;
+/**
+ * The refusal `GateResultReport.parseBlock` prints when a report has no
+ * `GATE_REPORT_JSON:` marker (issue #413). A check that ASSERTS this text is a
+ * deliberate refusal test and is exempt from Rule C; a comment that merely
+ * names it is not, or an explanatory `#` line would disarm the rule.
+ */
+export const REGEX_GATE_REPORT_MARKER_REFUSAL = /missing\s+GATE_REPORT_JSON/;
 
 /** Static plan-baseline findings (issue #388). */
 export const BASELINE_RULE_MISSING_EVIDENCE = 'missing-baseline-evidence' as const;
