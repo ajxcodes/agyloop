@@ -199,23 +199,28 @@ export class StartImplementationUseCase {
     }
 
     // Issue #348 (AC1): refuse a plan whose Quality Gate Targets assert a
-    // committed-tree invariant BEFORE the worktree guardrail below, so a
-    // refused approval leaves no orphan `.worktrees/<id>` paired with a
+    // committed-tree invariant BEFORE this use case's worktree guardrail below,
+    // so a refused approval leaves no orphan `.worktrees/<id>` paired with a
     // checkpoint that was never written. A resumed IMPLEMENT is a
     // self-correction retry on an already-approved plan: rewriting it then
     // would invalidate the digest mid-loop, so the gate-time blockers own it.
     if (!resumed) {
       // Issue #421: the digest guard runs FIRST, so an edited plan is refused
       // with the precise identity diagnostic rather than a derived
-      // baseline/target one. It also runs before worktree provisioning, so a
-      // refusal leaves no orphan `.worktrees/<id>`.
+      // baseline/target one.
       if (enteredFromApproval) {
         this.assertApprovedPlanMatchesApproval(sm, params, workspace);
       }
       this.assertGateTargetContract(sm, params, workspace);
       // Issue #388: the protocol must be runnable BEFORE the implementer gets
       // it, and every declared baseline must be measured before it is normative.
-      // Both run before worktree provisioning, so a refusal leaves no orphan.
+      //
+      // Issue #420: "no orphan" is guaranteed only for THIS use case's own
+      // provisioning below. `codeloop implement` provisions in
+      // `RunLifecycleUseCase.executeImplementMode` BEFORE delegating here, so a
+      // refusal on that path is cleaned up by that caller (worktree directory +
+      // branch + checkpoint, only when it created them). The guards stay here
+      // because the baseline MUST be measured in the task worktree (#418).
       this.assertSmokeProtocolContract(sm, params, workspace);
       await this.assertPlanBaselineContract(sm, params, workspace);
     }

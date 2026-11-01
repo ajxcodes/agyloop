@@ -111,6 +111,11 @@ export interface CreateBranchOptions {
   readonly workspaceDir?: string;
 }
 
+export interface DeleteBranchOptions {
+  readonly branchName: string;
+  readonly workspaceDir?: string;
+}
+
 export interface GetCommitsOptions {
   readonly baseBranch: string;
   readonly headBranch: string;
@@ -232,6 +237,20 @@ export interface WorktreeManagerPort {
    * Creates a branch from a specified start point.
    */
   createBranch?(options: CreateBranchOptions): Promise<void>;
+
+  /**
+   * Deletes a local branch (issue #420).
+   *
+   * The CALLER owns provenance: it must prove the branch was created by the
+   * operation being undone, because a deletion is not recoverable from here.
+   * The adapter independently refuses a blank name and any branch currently
+   * checked out in a worktree (including the root), so the base branch and a
+   * descriptor-held branch can never be deleted through this call.
+   *
+   * Optional: adapters that cannot delete branches omit it, and the caller
+   * must then leave the branch alone instead of assuming it was removed.
+   */
+  deleteBranch?(options: DeleteBranchOptions): Promise<void>;
 
   /**
    * Returns commit messages between two branches (baseBranch..headBranch).
