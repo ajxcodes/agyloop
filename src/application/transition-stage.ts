@@ -52,7 +52,6 @@ import {
   PreFlightHaltError,
   HALT_TYPE_MISSING_PLAN_DIR,
   ValidationError,
-  MSG_PLAN_MODIFIED_DURING_GATE,
   formatGateEvidenceRequiredMessage,
   formatGateTargetCoverageRefusal,
   // Issues #412/#415: a PASSED block that ran a test command but recorded zero
@@ -77,6 +76,10 @@ import { InferBaseBranchUseCase } from './infer-base-branch';
 import { assessGateEvidenceCoverage } from './gate-evidence-coverage';
 import { assertGateTargetContract as enforceGateTargetContract } from './gate-target-contract';
 import { assertPlanBaselineContract as enforcePlanBaselineContract } from './plan-baseline-contract';
+import {
+  assertApprovedPlanUnchanged as enforceApprovedPlanUnchanged,
+  resolvePlanDigest
+} from './plan-digest-contract';
 import { assertSmokeProtocolContract as enforceSmokeProtocolContract } from './smoke-protocol-contract';
 
 export interface TransitionParams {
@@ -320,11 +323,19 @@ export class TransitionStageUseCase {
     // — the class an operator uses to tell "wrong stage" from "wrong plan".
     // Nothing is persisted and nothing is provisioned on either refusal.
     if (targetStageStr === STAGE_APPROVAL) {
-      this.assertGateTargetContract(sm, params);
+      this.assertGateTargetContract(sm, params, { freshApproval: true });
       // Issues #388: a protocol that dies at seed can never be approved, and a
       // declared baseline must be measured before it becomes normative.
-      this.assertSmokeProtocolContract(sm, params);
-      await this.assertPlanBaselineContract(sm, params);
+      this.assertSmokeProtocolContract(sm, params, { freshApproval: true });
+      await this.assertPlanBaselineContract(sm, params, { freshApproval: true });
+      // Issue #421: the approval gate is where a plan becomes normative. Freeze
+      // its identity in the SAME step that measured it, so a plan edited before
+      // `codeloop implement` is compared against the bytes the operator saw.
+      // A refused contract throws before this line, so a refused approval binds
+      // no bytes. `--dry-run` records nothing.
+      if (!params.dryRun) {
+        this.recordApprovedPlanDigest(sm, params, { freshApproval: true });
+      }
     }
 
     // Issue #408 (D1): the consume-on-ingest clear is NOT here. It used to run
@@ -340,6 +351,12 @@ export class TransitionStageUseCase {
     if (targetStageStr === STAGE_IMPLEMENT) {
       const fromFreshApproval =
         prevStage === STAGE_PLAN || prevStage === STAGE_APPROVAL || prevStage === STAGE_COMPLETED;
+      // Issue #421: a checkpoint parked at APPROVAL with a recorded digest is
+      // the operator's certification. The plan about to run must still BE those
+      // bytes; the guard runs before the contracts (so the digest diagnostic
+      // wins) and before the record below (so the edited bytes are never
+      // re-blessed).
+      const approvedAtGate = prevStage === STAGE_APPROVAL && Boolean(sm.approvedPlanDigest);
       // Issue #348 (AC1): a fresh approval may carry a plan approved by an
       // older build. Refuse before the digest is recorded — a retry/self-
       // correction (`QUALITY_GATE -> IMPLEMENT`) is deliberately exempt (R5).
@@ -348,12 +365,19 @@ export class TransitionStageUseCase {
       // throwing), so a preview can never report a transition the real run
       // refuses. Digest recording stays under `!params.dryRun`.
       if (fromFreshApproval) {
-        this.assertGateTargetContract(sm, params);
-        this.assertSmokeProtocolContract(sm, params);
-        await this.assertPlanBaselineContract(sm, params);
+        if (approvedAtGate) {
+          this.assertApprovedPlanMatchesApproval(sm, params);
+        }
+        this.assertGateTargetContract(sm, params, { freshApproval: true });
+        this.assertSmokeProtocolContract(sm, params, { freshApproval: true });
+        await this.assertPlanBaselineContract(sm, params, { freshApproval: true });
       }
-      if (!params.dryRun && (fromFreshApproval || !sm.approvedPlanDigest)) {
-        this.recordApprovedPlanDigest(sm, params);
+      if (
+        !params.dryRun &&
+        !approvedAtGate &&
+        (fromFreshApproval || !sm.approvedPlanDigest)
+      ) {
+        this.recordApprovedPlanDigest(sm, params, { freshApproval: fromFreshApproval });
       }
     }
 
@@ -762,13 +786,33 @@ export class TransitionStageUseCase {
     return /^act\b/i.test(entry.id) || /^act\b/i.test(entry.label);
   }
 
-  /** Resolves the current plan document, or null when nothing is resolvable. */
+  /**
+   * Resolves the current plan document, or null when nothing is resolvable.
+   *
+   * Issue #421: a `freshApproval` resolution prefers `sm.planPath` / `sm.planDir`
+   * and deliberately does NOT seed the resolver with `sm.approvedPlanPath`, so a
+   * plan moved inside its directory cannot deadlock re-approval through a stale
+   * recorded path. The default resolution keeps the pre-#421 behaviour.
+   */
   private resolveCurrentPlan(
     sm: StateMachine,
-    params: TransitionParams
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
   ): { planPath: string } | null {
     if (!this.planGenerator) return null;
     const workspace = params.workspaceDir || process.cwd();
+    if (resolvedOptions.freshApproval) {
+      const fresh = this.planGenerator.resolvePlanFile({
+        projectRoot: workspace,
+        issue: sm.issue || params.issue,
+        planPath: sm.planPath ?? undefined,
+        planDir: sm.planDir
+      });
+      if (fresh?.planPath) {
+        return { planPath: fresh.planPath };
+      }
+      return sm.planPath ? { planPath: sm.planPath } : null;
+    }
     const resolved = this.planGenerator.resolvePlanFile({
       projectRoot: workspace,
       issue: sm.issue || params.issue,
@@ -782,10 +826,7 @@ export class TransitionStageUseCase {
   }
 
   private hashPlan(planPath: string): string | null {
-    if (!this.planGenerator || typeof this.planGenerator.hashPlanDocument !== 'function') {
-      return null;
-    }
-    return this.planGenerator.hashPlanDocument(planPath);
+    return resolvePlanDigest(this.planGenerator, planPath);
   }
 
   /**
@@ -796,8 +837,12 @@ export class TransitionStageUseCase {
    * enforcement is the ONE shared `assertGateTargetContract`, so `codeloop
    * implement` and `transition APPROVAL` cannot drift.
    */
-  private assertGateTargetContract(sm: StateMachine, params: TransitionParams): void {
-    const resolved = this.resolveCurrentPlan(sm, params);
+  private assertGateTargetContract(
+    sm: StateMachine,
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
+  ): void {
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
     if (!resolved) return;
     enforceGateTargetContract({
       planGenerator: this.planGenerator,
@@ -812,8 +857,12 @@ export class TransitionStageUseCase {
    * baseline commands run, so a protocol that dies at seed never hands the
    * implementer a script that cannot start.
    */
-  private assertSmokeProtocolContract(sm: StateMachine, params: TransitionParams): void {
-    const resolved = this.resolveCurrentPlan(sm, params);
+  private assertSmokeProtocolContract(
+    sm: StateMachine,
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
+  ): void {
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
     if (!resolved) return;
     enforceSmokeProtocolContract({
       planGenerator: this.planGenerator,
@@ -825,9 +874,10 @@ export class TransitionStageUseCase {
   /** Measures each declared baseline against the plan's own command (issue #388, Defect 1). */
   private async assertPlanBaselineContract(
     sm: StateMachine,
-    params: TransitionParams
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
   ): Promise<void> {
-    const resolved = this.resolveCurrentPlan(sm, params);
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
     if (!resolved) return;
     await enforcePlanBaselineContract({
       planGenerator: this.planGenerator,
@@ -838,8 +888,12 @@ export class TransitionStageUseCase {
     });
   }
 
-  private recordApprovedPlanDigest(sm: StateMachine, params: TransitionParams): void {
-    const resolved = this.resolveCurrentPlan(sm, params);
+  private recordApprovedPlanDigest(
+    sm: StateMachine,
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
+  ): void {
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
     if (!resolved) return;
     const digest = this.hashPlan(resolved.planPath);
     if (digest) {
@@ -847,21 +901,30 @@ export class TransitionStageUseCase {
     }
   }
 
+  /**
+   * Issue #421: `APPROVAL -> IMPLEMENT` must run under the certification the
+   * operator gave. A plan edited after the gate is refused with both digests and
+   * the plan path, before any checkpoint or worktree is written.
+   */
+  private assertApprovedPlanMatchesApproval(sm: StateMachine, params: TransitionParams): void {
+    const resolved = this.resolveCurrentPlan(sm, params, { freshApproval: true });
+    enforceApprovedPlanUnchanged({
+      planGenerator: this.planGenerator,
+      planPath: resolved?.planPath ?? sm.approvedPlanPath,
+      expectedDigest: sm.approvedPlanDigest,
+      boundary: 'approval',
+      dryRun: params.dryRun
+    });
+  }
+
   private assertApprovedPlanUnchanged(
     sm: StateMachine,
     params: TransitionParams,
     evidenceRound: number | null = null
   ): void {
-    const expected = sm.approvedPlanDigest;
-    if (!expected) return;
+    if (!sm.approvedPlanDigest) return;
 
     const resolved = this.resolveCurrentPlan(sm, params);
-    const planPath = resolved?.planPath ?? sm.approvedPlanPath;
-    const actual = planPath ? this.hashPlan(planPath) : null;
-
-    if (actual !== null && actual === expected) {
-      return;
-    }
 
     // Issue #408 (D1): the refusal no longer consumes the filed report, so say
     // so. Before the fix the checkpoint was byte-identical while the evidence
@@ -872,14 +935,14 @@ export class TransitionStageUseCase {
         ? ''
         : ` ${formatGateReportPreservedNote(sm.issue || params.issue || null, evidenceRound)}`;
 
-    throw new ValidationError(
-      'approvedPlanDigest',
-      actual,
-      MSG_PLAN_MODIFIED_DURING_GATE
-        .replace('{path}', planPath ?? '(unknown plan path)')
-        .replace('{expected}', expected)
-        .replace('{actual}', actual ?? '(unreadable)') + preserved
-    );
+    enforceApprovedPlanUnchanged({
+      planGenerator: this.planGenerator,
+      planPath: resolved?.planPath ?? sm.approvedPlanPath,
+      expectedDigest: sm.approvedPlanDigest,
+      boundary: 'gate',
+      dryRun: params.dryRun,
+      suffix: preserved
+    });
   }
 
   /**

@@ -50,6 +50,10 @@ import { InferBaseBranchUseCase } from './infer-base-branch';
 import { SyncUseCase } from './sync';
 import { assertGateTargetContract } from './gate-target-contract';
 import { assertPlanBaselineContract } from './plan-baseline-contract';
+import {
+  assertApprovedPlanUnchanged,
+  resolvePlanDigest
+} from './plan-digest-contract';
 import { assertSmokeProtocolContract } from './smoke-protocol-contract';
 
 export interface StartImplementationParams {
@@ -164,6 +168,13 @@ export class StartImplementationUseCase {
     sm.resumeFromGate();
 
     // 2. Enforce lifecycle transition rules
+    //
+    // Issue #421: a checkpoint parked at APPROVAL WITH a recorded digest is the
+    // operator's certification. Capture it BEFORE the in-memory transition
+    // rewrites `currentStage`, so the guard below knows the plan about to run
+    // had already been approved.
+    const enteredFromApproval =
+      sm.currentStage === STAGE_APPROVAL && Boolean(sm.approvedPlanDigest);
     let resumed = false;
     if (sm.currentStage === STAGE_APPROVAL) {
       sm.transition(STAGE_IMPLEMENT, { note: NOTE_DEVELOPER_APPROVED });
@@ -194,6 +205,13 @@ export class StartImplementationUseCase {
     // self-correction retry on an already-approved plan: rewriting it then
     // would invalidate the digest mid-loop, so the gate-time blockers own it.
     if (!resumed) {
+      // Issue #421: the digest guard runs FIRST, so an edited plan is refused
+      // with the precise identity diagnostic rather than a derived
+      // baseline/target one. It also runs before worktree provisioning, so a
+      // refusal leaves no orphan `.worktrees/<id>`.
+      if (enteredFromApproval) {
+        this.assertApprovedPlanMatchesApproval(sm, params, workspace);
+      }
       this.assertGateTargetContract(sm, params, workspace);
       // Issue #388: the protocol must be runnable BEFORE the implementer gets
       // it, and every declared baseline must be measured before it is normative.
@@ -286,14 +304,21 @@ export class StartImplementationUseCase {
 
     const planContent = resolved ? this.planGenerator.readPlanDocument(resolved.planPath) : '';
 
-    // Issue #298: freeze the approved plan's identity. A fresh approval always
-    // records it; a resume only fills a missing one (a legacy checkpoint), so
-    // a self-correction retry can never re-bless edited bytes.
-    if (!params.dryRun && resolved?.planPath && (!resumed || !sm.approvedPlanDigest)) {
-      const digest =
-        typeof this.planGenerator.hashPlanDocument === 'function'
-          ? this.planGenerator.hashPlanDocument(resolved.planPath)
-          : null;
+    // Issue #298: freeze the approved plan's identity. A fresh approval from a
+    // checkpoint with no recorded digest (legacy / YOLO / PLAN / COMPLETED)
+    // records it; a resume only fills a missing one (a legacy checkpoint), so a
+    // self-correction retry can never re-bless edited bytes.
+    //
+    // Issue #421: when the APPROVAL checkpoint already carries a digest, that
+    // gate-time identity is authoritative — never overwrite it here. The guard
+    // above already refused a mismatch.
+    if (
+      !params.dryRun &&
+      resolved?.planPath &&
+      !enteredFromApproval &&
+      (!resumed || !sm.approvedPlanDigest)
+    ) {
+      const digest = resolvePlanDigest(this.planGenerator, resolved.planPath);
       if (digest) {
         sm.recordApprovedPlan(resolved.planPath, digest);
       }
@@ -461,6 +486,28 @@ export class StartImplementationUseCase {
       planDir: params.planDir || sm.planDir
     });
     return resolved ? { planPath: resolved.planPath } : null;
+  }
+
+  /**
+   * Refuses a plan edited between the approval gate and `codeloop implement`
+   * (issue #421). Runs before every other contract and before worktree
+   * provisioning, so a refused plan writes no checkpoint and provisions
+   * nothing. The checkpoint's recorded path is the fallback resolution: it is
+   * the identity the operator certified.
+   */
+  private assertApprovedPlanMatchesApproval(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    assertApprovedPlanUnchanged({
+      planGenerator: this.planGenerator,
+      planPath: resolved?.planPath ?? sm.approvedPlanPath ?? null,
+      expectedDigest: sm.approvedPlanDigest,
+      boundary: 'approval',
+      dryRun: params.dryRun
+    });
   }
 
   /**

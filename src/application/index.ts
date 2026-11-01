@@ -7,6 +7,7 @@ export * from './resolve-gate-verification';
 export * from './gate-evidence-coverage';
 export * from './gate-target-contract';
 export * from './plan-baseline-contract';
+export * from './plan-digest-contract';
 export * from './smoke-protocol-contract';
 export * from './resolve-task-checkpoint';
 export * from './start-planning';
