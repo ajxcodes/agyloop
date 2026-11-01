@@ -756,3 +756,25 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
   });
 });
+
+describe('extractAcceptanceCriteria (issue #432, TR-43)', () => {
+  test('extractAcceptanceCriteria ignores fixture criteria inside a fenced block', () => {
+    const planText = [
+      '# Plan',
+      '',
+      '## 1. Context & Objectives',
+      '- **Acceptance Criteria:**',
+      '- AC1: the real criterion',
+      '',
+      '### Manual Smoke Test Protocol',
+      '```bash',
+      '- **Acceptance Criteria:**',
+      '- AC9: a fixture criterion, not this plan\'s',
+      '```'
+    ].join('\n');
+
+    const criteria = extractAcceptanceCriteria(planText);
+    assert.ok(criteria.some((criterion: string) => criterion.includes('the real criterion')));
+    assert.ok(!criteria.some((criterion: string) => criterion.includes('fixture criterion')));
+  });
+});

@@ -21,6 +21,9 @@ import {
   FLAG_COMMIT_AFTER,
   FLAG_CONFIG,
   FLAG_CRITIQUE_REPORT,
+  FLAG_DEVIATION_FILE,
+  FLAG_DEVIATION_STDIN,
+  FLAG_ACK,
   FLAG_DRY_RUN,
   FLAG_FORCE,
   FLAG_FORCE_SHORT,
@@ -94,6 +97,9 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   FLAG_REFRESH,
   FLAG_REPORT_FILE,
   FLAG_REPORT_STDIN,
+  FLAG_DEVIATION_FILE,
+  FLAG_DEVIATION_STDIN,
+  FLAG_ACK,
   '--restart',
   '--retry-after',
   FLAG_REVIEW_OUTPUT,
@@ -123,7 +129,7 @@ export const KNOWN_SHORT_FLAGS: readonly string[] = Object.freeze([
   FLAG_MESSAGE_SHORT
 ]);
 
-/** The union, frozen: 44 long + 6 short = 50. */
+/** The union, frozen: 47 long + 6 short = 53. */
 export const KNOWN_CLI_FLAGS: readonly string[] = Object.freeze([
   ...KNOWN_LONG_FLAGS,
   ...KNOWN_SHORT_FLAGS
@@ -262,6 +268,9 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, CommandCapability>> =
   // `gate-report` validates AND persists an evidence block (or clears a stale
   // one), so it has a real simulation path (issue #284).
   'gate-report': { dryRun: 'supported', json: 'supported' },
+  // `deviation` files/acknowledges a plan deviation (issue #432), so it has a
+  // real simulation path and a machine-readable listing.
+  deviation: { dryRun: 'supported', json: 'supported' },
   plan: { dryRun: 'supported', json: 'refused' },
   implement: { dryRun: 'supported', json: 'refused' },
   // `commit --json` used to mean "never prompt" while printing human text. The

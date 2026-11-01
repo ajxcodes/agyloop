@@ -66,6 +66,15 @@ export interface SummarySmokeCheck {
   readonly passed: boolean | null;
 }
 
+/** One filed plan deviation, as the summary renders it (issue #432). */
+export interface SummaryPlanDeviation {
+  readonly id: string;
+  readonly planSection: string;
+  readonly planLiteral: string;
+  readonly implementedAssertion: string;
+  readonly acknowledged: boolean;
+}
+
 export interface SummaryUpdateData {
   readonly stage?: string;
   readonly status?: string;
@@ -132,6 +141,14 @@ export interface SummaryUpdateData {
   readonly commitMessage?: string;
   readonly commitTimestamp?: string;
   readonly planRevisionCount?: number;
+  /**
+   * The implementer's filed plan deviations (issue #432).
+   *
+   * Tri-state, like every other metric: `undefined` leaves the line untouched,
+   * `[]` removes it, a non-empty list renders one line naming each record and
+   * its acknowledgement state.
+   */
+  readonly planDeviations?: readonly SummaryPlanDeviation[];
   readonly prComments?: readonly string[] | string;
   readonly commitRejection?: {
     readonly targetStage?: string;

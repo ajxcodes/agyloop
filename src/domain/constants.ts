@@ -464,6 +464,10 @@ export const STATE_MUTATING_COMMANDS = Object.freeze([
   // subagent only EMITS the block, and the orchestrator (a root session) files
   // it — so a dispatched subagent can never certify its own round.
   'gate-report',
+  // `deviation` records an implementer's plan deviation (issue #432). Like
+  // `gate-report`, it is NOT carved out: the implementer emits the block and
+  // the orchestrator files it, so a subagent cannot certify its own finding.
+  'deviation',
   null
 ] as const);
 
@@ -4639,6 +4643,154 @@ export const INIT_GITIGNORE_RULES: readonly string[] = Object.freeze([
   '.worktrees/'
 ]);
 
+
+// ---- Plan deviations and delivered-evidence contracts (issue #432) --------
+
+/**
+ * The implementer's machine-readable deviation channel.
+ *
+ * An approved plan literal that cannot be satisfied as written is a DEVIATION,
+ * not a licence to change the assertion silently: the implementer emits one
+ * `PLAN_DEVIATION:` block per changed literal and the orchestrator files it with
+ * `codeloop deviation`. The checkpoint then carries the finding, so the gate and
+ * the reviewer can both see it (issue #432, absorbing #433).
+ */
+export const PLAN_DEVIATION_MARKER = 'PLAN_DEVIATION:' as const;
+
+/** The command that files/acknowledges/list deviations. */
+export const COMMAND_DEVIATION = 'deviation' as const;
+
+/** The deviation channel's input flags. */
+export const FLAG_DEVIATION_FILE = '--deviation-file' as const;
+export const FLAG_DEVIATION_STDIN = '--deviation-stdin' as const;
+export const FLAG_ACK = '--ack' as const;
+export const FLAG_REASON = '--reason' as const;
+
+/** The reviewer's per-AC evidence block (issue #432, AC5). */
+export const AC_EVIDENCE_MARKER = 'AC_EVIDENCE:' as const;
+
+/** The plan's Test Register heading (issue #432, AC3). */
+export const HEADING_TEST_REGISTER = 'Test Register' as const;
+
+/** The planner's deliberate non-delivery declaration (issue #432, AC6). */
+export const HEADING_OUT_OF_SCOPE = 'Out of Scope' as const;
+
+/**
+ * Stable rule ids for the deviation contract. Used by diagnostics and prompts;
+ * never parsed as evidence.
+ */
+export const PLAN_DEVIATION_RULE_SILENT_OVERRIDE = 'silent-plan-override' as const;
+export const PLAN_DEVIATION_RULE_FILING = 'plan-deviation-filing' as const;
+export const PLAN_DEVIATION_RULE_ACK = 'plan-deviation-ack' as const;
+
+/** The third two-tier escalation reason (issue #432, AC5). */
+export const REVIEW_ESCALATION_UNVERIFIABLE_EVIDENCE = 'unverifiable-evidence' as const;
+
+/**
+ * The deviation statuses the reviewer may report for one AC (issue #432).
+ */
+export const AC_EVIDENCE_STATUS_MET = 'met' as const;
+export const AC_EVIDENCE_STATUS_UNVERIFIABLE = 'unverifiable' as const;
+export const AC_EVIDENCE_STATUS_OUT_OF_SCOPE = 'out-of-scope' as const;
+
+export type AcEvidenceStatus =
+  | typeof AC_EVIDENCE_STATUS_MET
+  | typeof AC_EVIDENCE_STATUS_UNVERIFIABLE
+  | typeof AC_EVIDENCE_STATUS_OUT_OF_SCOPE;
+
+/** The record shape the refusal formatters need, without a cycle. */
+export interface PlanDeviationSummary {
+  readonly id: string;
+  readonly planSection: string;
+  readonly planLiteral: string;
+  readonly implementedAssertion: string;
+}
+
+/** One deviation, rendered as a single auditable line. */
+export function formatPlanDeviationLine(record: PlanDeviationSummary): string {
+  return `${record.id}: plan section "${record.planSection}" — planLiteral "${record.planLiteral}", implementedAssertion "${record.implementedAssertion}"`;
+}
+
+/** `transition REVIEW` refuses while any deviation is unacknowledged. */
+export const MSG_PLAN_DEVIATION_UNACKNOWLEDGED =
+  'Plan deviation{plural} {ids} {isAre} unacknowledged. {lines}' as const;
+
+/** The legal exits are explicit: acknowledge, or send the plan back. */
+export function formatPlanDeviationUnacknowledgedMessage(
+  records: readonly PlanDeviationSummary[],
+  issue?: number | string | null
+): string {
+  const issueToken =
+    issue === null || issue === undefined || String(issue).trim().length === 0
+      ? '<n>'
+      : String(issue);
+  const ids = records.map((record) => record.id).join(', ');
+  const lines = records.map((record) => `  - ${formatPlanDeviationLine(record)}`).join('\n');
+  const first = records[0]?.id ?? 'PD-1';
+  return (
+    `Plan deviation${records.length === 1 ? '' : 's'} ${ids} ${records.length === 1 ? 'is' : 'are'} unacknowledged, so this round cannot be certified.\n` +
+    `${lines}\n` +
+    `Either acknowledge it if the new literal is right: \`codeloop ${COMMAND_DEVIATION} --issue ${issueToken} ${FLAG_ACK} ${first} ${FLAG_REASON} "<why the new literal is right>"\`, ` +
+    `or route the plan back for revision: \`codeloop ${COMMAND_TRANSITION} ${STAGE_PLAN} --issue ${issueToken}\`.`
+  );
+}
+
+/** Filing is legal only at the two stages that can precede REVIEW. */
+export const MSG_PLAN_DEVIATION_STAGE_REFUSAL =
+  `Plan deviations can only be filed or acknowledged at ${STAGE_IMPLEMENT} or ${STAGE_QUALITY_GATE}; ` +
+  `the checkpoint is at {stage}. Nothing was written.`;
+
+/** The implementer's filing note, addressed to the orchestrator. */
+export function formatPlanDeviationChannelNote(issue?: number | string | null): string {
+  const issueToken =
+    issue === null || issue === undefined || String(issue).trim().length === 0
+      ? '<n>'
+      : String(issue);
+  return (
+    `Orchestrator: when the implementer emits a ${PLAN_DEVIATION_MARKER} block, file it with ` +
+    `\`codeloop ${COMMAND_DEVIATION} --issue ${issueToken} ${FLAG_DEVIATION_FILE} <path>\` (or pipe it into ` +
+    `\`codeloop ${COMMAND_DEVIATION} --issue ${issueToken} ${FLAG_DEVIATION_STDIN}\`) before advancing. ` +
+    `\`codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW} --issue ${issueToken}\` refuses while a deviation is unacknowledged.`
+  );
+}
+
+/** One Test Register row contradicts the test it pins. */
+export const MSG_PLAN_TEST_REGISTER_CONTRADICTION =
+  'Test Register row {row} contradicts the test it pins ({file}:{line}): it declares "{subject}" === "{rowValue}", but the pinned test asserts "{pinnedValue}". A row must restate the pinned literal, or declare a New test. Fix the plan, or route it back for revision.' as const;
+
+/** A row declares neither `Pins:` nor `New test:`. */
+export const MSG_PLAN_TEST_REGISTER_MISSING_MARKER =
+  'Test Register row {row} declares neither **Pins:** nor **New test:**. Every row must pin an existing test (`**Pins:** \\`path\\` :: \\`title\\``) or declare itself new (`**New test:** \\`path\\` :: \\`title\\``).' as const;
+
+/** A pinned reference cannot be resolved. */
+export const MSG_PLAN_TEST_REGISTER_UNRESOLVABLE =
+  'Test Register row {row} pins "{path}" :: "{title}", which cannot be resolved inside the workspace: {reason}.' as const;
+
+/** A `New test:` title already exists. */
+export const MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW =
+  'Test Register row {row} declares a New test "{title}" in {path}, but that file already contains a test with that exact title. A case that already exists is not new.' as const;
+
+/** An AC or checklist step targets a path the commit can never contain. */
+export const MSG_PLAN_EVIDENCE_EXCLUDED_PATH =
+  'The plan\'s {target} names {path} (plan line {line}), which cannot appear in the delivered change set: {reason}. Deliver the correction as a tracked document, or declare it out of scope in the plan (a `- **Out of Scope:** <reason>` bullet).' as const;
+
+/** The reviewer cited evidence outside the delivered change set. */
+export const MSG_AC_EVIDENCE_UNVERIFIABLE =
+  '{ac} is not in the delivered change set: {path}. Report the criterion as unverifiable, or cite a tracked file in the diff.' as const;
+
+/** The unmeasured-change-set note (never converted into a false failure). */
+export const MSG_AC_EVIDENCE_UNMEASURED =
+  'The delivered change set could not be measured against base "{base}", so tracked-file evidence was not verified this round.' as const;
+
+/** The reviewer prompt's AC evidence block example, built from the marker. */
+export function formatAcEvidenceExample(): string {
+  return [
+    `${AC_EVIDENCE_MARKER}`,
+    `- AC1: ${AC_EVIDENCE_STATUS_MET} — \`src/domain/plan-deviation.ts\`, \`tests/domain/plan-deviation.test.ts\``,
+    `- AC6: ${AC_EVIDENCE_STATUS_UNVERIFIABLE} — \`artifacts/plans/425-task-plan/implementation_plan.md\``
+  ].join('\n');
+}
+
 export const CLI_COMMANDS = Object.freeze({
   INIT: COMMAND_INIT,
   PLAN: COMMAND_PLAN,
@@ -4663,7 +4815,8 @@ export const CLI_COMMANDS = Object.freeze({
   ABORT: COMMAND_ABORT,
   HALT: COMMAND_HALT,
   REVIEW: COMMAND_REVIEW,
-  GATE_REPORT: COMMAND_GATE_REPORT
+  GATE_REPORT: COMMAND_GATE_REPORT,
+  DEVIATION: COMMAND_DEVIATION
 });
 
 export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];

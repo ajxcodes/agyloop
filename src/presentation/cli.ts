@@ -50,6 +50,7 @@ import {
   COMMAND_HALT,
   COMMAND_REVIEW,
   COMMAND_GATE_REPORT,
+  COMMAND_DEVIATION,
   COMMAND_SYNC,
   COMMAND_INIT,
   COMMAND_RESUME,
@@ -66,6 +67,10 @@ import {
   formatRefutedFindingsNote,
   FLAG_REPORT_FILE,
   FLAG_REPORT_STDIN,
+  FLAG_DEVIATION_FILE,
+  FLAG_DEVIATION_STDIN,
+  FLAG_ACK,
+  FLAG_REASON,
   FLAG_PLAN_PATH,
   FLAG_PLAN_DIR,
   VERDICT_INPUT_SOURCE_STDIN,
@@ -219,7 +224,8 @@ import {
   RunnerFactory,
   FileProjectScaffolder,
   FileGateReportRepository,
-  FileWorkspaceMutationProbe
+  FileWorkspaceMutationProbe,
+  FileSourceReader
 } from '../infrastructure';
 import { installOpenCodeIntegration } from './opencode-setup';
 import { ColorStream, STAGE_COLOR_CODES, paint } from './color-policy';
@@ -243,6 +249,7 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   RunQualityGateUseCase,
   RunReviewUseCase,
+  ManagePlanDeviationsUseCase,
   ManageCritiqueUseCase,
   DraftCommitUseCase,
   ExecuteCommitUseCase,
@@ -381,6 +388,19 @@ export interface CliOptions {
   reportStdin: boolean;
   /** True when `--report-file` was PRESENT, whether or not it carried a value. */
   reportFileRequested: boolean;
+  /**
+   * The path of the implementer's `PLAN_DEVIATION:` block (issue #432), or the
+   * literal `-` for stdin.
+   */
+  deviationFile: string | null;
+  /** Read the implementer's deviation block from stdin (issue #432). */
+  deviationStdin: boolean;
+  /** True when `--deviation-file` was PRESENT, whether or not it carried a value. */
+  deviationFileRequested: boolean;
+  /** The deviation id to acknowledge (issue #432). */
+  ack: string | null;
+  /** True when `--ack` was PRESENT, whether or not it carried a value. */
+  ackRequested: boolean;
   /**
    * An operator-supplied plan file (issue #267). When present it is the plan
    * the lifecycle executes, and no competing plan directory is scaffolded.
@@ -618,6 +638,7 @@ Pipeline Management:
   triage [action]    Triage PR review comments and route pipeline (${formatTriageActionList('|')}); ${formatTriageActionSideEffects()}
   review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin | --critique-report <path|-> | ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>); with no verdict it runs the critique-based review
   gate-report       File a dispatched Quality Gate Subagent's GATE_REPORT_JSON evidence block (--report-file <path|-> | --report-stdin); 'transition REVIEW' ingests it
+  deviation         File a dispatched implementer's PLAN_DEVIATION block (--deviation-file <path|-> | --deviation-stdin), acknowledge one (--ack <id> --reason <text>), or list them; 'transition REVIEW' refuses while one is unacknowledged
       A PASSED block whose executed test command has no MEASURED positive total is refused. A runner that prints no count (e.g. \`go test ./...\`) must declare \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` in its output.
 
 Operational Flags:
@@ -634,6 +655,9 @@ Operational Flags:
       ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>  Refute a critique finding you have verified is false (repeatable; codeloop review with a filed APPROVED verdict only). The reason is mandatory — a refutation without one is refused, and every refuted finding is named on stderr and recorded as reviewRefutations.
       --report-file <path|->  Read a Quality Gate Subagent's GATE_REPORT_JSON block from a file (codeloop gate-report)
       --report-stdin     Read a Quality Gate Subagent's GATE_REPORT_JSON block from stdin (codeloop gate-report)
+      --deviation-file <path|->  Read an implementer's PLAN_DEVIATION block from a file (codeloop deviation)
+      --deviation-stdin  Read an implementer's PLAN_DEVIATION block from stdin (codeloop deviation)
+      --ack <id>         Acknowledge a recorded plan deviation; requires --reason (codeloop deviation)
       --create-pr    Automatically create a PR after commit. A PR that targets a collector branch (phase/* or feature/*) does NOT auto-close the issue on merge — closing keywords fire only on the default branch — so \`commit\` prints that caveat whether the issue came from --issue or the checkpoint, and \`codeloop sync\` closes the issue after the merge.
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
@@ -651,7 +675,7 @@ Operational Flags:
       --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
       --all          Include/prune all worktrees (used with worktree list/prune/clean)
       --prune-stale  Clear the checkpoint descriptor of a worktree whose directory no longer exists (used with worktree remove <id>)
-      --json         Machine-readable JSON (supported by: init, next, branch-info, status, resume, halt, critique status, triage, review, gate-report)
+      --json         Machine-readable JSON (supported by: init, next, branch-info, status, resume, halt, critique status, triage, review, gate-report, deviation)
       --base-branch <branch> Override base branch for worktree or milestone release
       --refresh      Force refresh of discovered Gemini models or milestone release PR
       --dry-run      Simulate execution without modifying state (mutating commands only; read-only commands refuse it — see the command table above)
@@ -749,6 +773,11 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     reportFile: null,
     reportStdin: false,
     reportFileRequested: false,
+    deviationFile: null,
+    deviationStdin: false,
+    deviationFileRequested: false,
+    ack: null,
+    ackRequested: false,
     planPath: null,
     planDir: null,
     planPathRequested: false,
@@ -949,6 +978,35 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
       options.reportStdin = true;
     } else if (arg.startsWith(`${FLAG_REPORT_STDIN}=`)) {
       options.reportStdin = arg.split('=')[1] !== 'false';
+    } else if (arg === FLAG_DEVIATION_FILE) {
+      // Issue #432: the deviation channel. A literal `-` is a VALUE (stdin).
+      options.deviationFileRequested = true;
+      if (i + 1 < args.length && (args[i + 1] === '-' || !args[i + 1].startsWith('-'))) {
+        options.deviationFile = args[++i];
+      } else {
+        options.deviationFile = null;
+      }
+    } else if (arg.startsWith(`${FLAG_DEVIATION_FILE}=`)) {
+      options.deviationFileRequested = true;
+      options.deviationFile = arg.split('=')[1] || null;
+    } else if (arg === FLAG_DEVIATION_STDIN) {
+      options.deviationStdin = true;
+    } else if (arg.startsWith(`${FLAG_DEVIATION_STDIN}=`)) {
+      options.deviationStdin = arg.split('=')[1] !== 'false';
+    } else if (arg === FLAG_ACK) {
+      options.ackRequested = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        options.ack = args[++i];
+      } else {
+        options.ack = null;
+      }
+    } else if (arg.startsWith(`${FLAG_ACK}=`)) {
+      options.ackRequested = true;
+      options.ack = arg.split('=')[1] || null;
+    } else if (arg === FLAG_REASON) {
+      options.reason = i + 1 < args.length && !args[i + 1].startsWith('-') ? args[++i] : null;
+    } else if (arg.startsWith(`${FLAG_REASON}=`)) {
+      options.reason = arg.split('=')[1] || null;
     } else if (arg === '--create-pr') {
       options.createPr = true;
     } else if (arg === '--restart') {
@@ -1879,7 +1937,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       gateReportRepo: new FileGateReportRepository({
         workspaceDir: lifecycleWorkspaceDir,
         issue: issueValue ?? null
-      })
+      }),
+      sourceFileReader: new FileSourceReader()
     });
 
   const makeInferBaseBranchUseCase = (repo: StateRepository): InferBaseBranchUseCase =>
@@ -2738,7 +2797,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             workspaceDir: options.workspaceDir || process.cwd(),
             issue: issueValue ?? null
           }),
-          commandExecutor
+          commandExecutor,
+          new FileSourceReader()
         );
         await transitionUseCase.execute({
           targetStage: options.stageArg as StageName,
@@ -3371,6 +3431,125 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       }
     }
 
+    case COMMAND_DEVIATION: {
+      // The INBOUND CHANNEL for an implementer's plan deviation (issue #432).
+      // The implementer emits `PLAN_DEVIATION:` blocks; the orchestrator files
+      // them here, acknowledges them with a mandatory reason, or lists them.
+      try {
+        if (options.deviationFileRequested && options.deviationFile === null) {
+          console.error(
+            `✗ '${FLAG_DEVIATION_FILE}' was provided without a value. Nothing was recorded; supply a path, '-' for stdin, or remove the flag.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+        if (options.deviationFile !== null && options.deviationStdin) {
+          console.error(
+            `✗ '${FLAG_DEVIATION_FILE}' and '${FLAG_DEVIATION_STDIN}' both supply a deviation. Use one of them.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+        if (options.ackRequested && options.ack === null) {
+          console.error(
+            `✗ '${FLAG_ACK}' was provided without a deviation id. Nothing was acknowledged.`
+          );
+          return EXIT_CODE_FAILURE;
+        }
+
+        const scope = await resolveScope(stateRepo, issueValue);
+        const useCase = new ManagePlanDeviationsUseCase(scope.repo);
+
+        if (options.ack !== null) {
+          const result = await useCase.acknowledge({
+            id: options.ack,
+            reason: options.reason,
+            dryRun: options.dryRun
+          });
+          if (options.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  dryRun: options.dryRun === true,
+                  acknowledged: options.dryRun !== true,
+                  id: result.id,
+                  planDeviations: result.planDeviations
+                },
+                null,
+                2
+              )
+            );
+            return EXIT_CODE_SUCCESS;
+          }
+          console.log(
+            `${options.dryRun ? '[dry-run] Would acknowledge' : '✓ Acknowledged'} plan deviation ${result.id}.`
+          );
+          if (options.dryRun) console.log('[dry-run] Nothing was written.');
+          return EXIT_CODE_SUCCESS;
+        }
+
+        if (options.deviationFile !== null || options.deviationStdin) {
+          let rawText: string;
+          try {
+            rawText =
+              options.deviationFile !== null && options.deviationFile !== '-'
+                ? fs.readFileSync(path.resolve(options.deviationFile), 'utf8')
+                : fs.readFileSync(0, 'utf8');
+          } catch (err: unknown) {
+            console.error(
+              `✗ Could not read the plan deviation: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return EXIT_CODE_FAILURE;
+          }
+          if (rawText.trim().length === 0) {
+            console.error('✗ Plan deviation refused: the supplied block is empty.');
+            return EXIT_CODE_FAILURE;
+          }
+
+          const result = await useCase.file({ text: rawText, dryRun: options.dryRun });
+          if (options.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  dryRun: options.dryRun === true,
+                  recorded: options.dryRun !== true,
+                  id: result.id,
+                  planDeviations: result.planDeviations
+                },
+                null,
+                2
+              )
+            );
+            return EXIT_CODE_SUCCESS;
+          }
+          console.log(
+            `${options.dryRun ? '[dry-run] Would record' : '✓ Plan deviation recorded'}: ${result.id} (unacknowledged).`
+          );
+          if (options.dryRun) console.log('[dry-run] Nothing was written.');
+          return EXIT_CODE_SUCCESS;
+        }
+
+        const result = await useCase.list();
+        if (options.json) {
+          console.log(
+            JSON.stringify({ dryRun: true, planDeviations: result.planDeviations }, null, 2)
+          );
+          return EXIT_CODE_SUCCESS;
+        }
+        if (result.planDeviations.length === 0) {
+          console.log('No plan deviations are recorded.');
+          return EXIT_CODE_SUCCESS;
+        }
+        for (const record of result.planDeviations) {
+          console.log(
+            `${record.id} (${record.acknowledged ? 'acknowledged' : 'unacknowledged'}) — plan section "${record.planSection}" pins "${record.planLiteral}"; the implementation asserts "${record.implementedAssertion}"`
+          );
+        }
+        return EXIT_CODE_SUCCESS;
+      } catch (err: unknown) {
+        console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+        return EXIT_CODE_FAILURE;
+      }
+    }
+
     case COMMAND_REVIEW: {
       // The INBOUND CHANNEL for a dispatched Reviewer subagent's verdict
       // (issue #269). The reviewer produces a `REVIEW_STATUS: APPROVED |
@@ -3558,7 +3737,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
             // Issue #349 (additive, both arms): the machine-readable mirror of
             // this round's exemptions and audit trail. `[]` when none.
             nonActionableFindings: result.nonActionableFindings,
-            refutations: result.refutations
+            refutations: result.refutations,
+            // Issue #432: the current run's AC evidence (always present).
+            acEvidence: result.acEvidence
           };
           if (dryRun) {
             payload.previousStage = result.previousStage ?? result.currentStage;

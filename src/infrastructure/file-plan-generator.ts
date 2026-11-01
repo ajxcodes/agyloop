@@ -116,6 +116,8 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 ## 1. Context & Objectives
 - **Feature Overview:**
 - **Acceptance Criteria:**
+- **Out of Scope:**
+<!-- Name any correction deliberately NOT delivered, so the reviewer cannot count it as met. -->
 
 ## 2. Architectural Design & Impact
 - **Component Breakdown:**
@@ -126,6 +128,9 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 - [ ] **Step 1:** 
 - [ ] **Step 2:** 
 - [ ] **Step 3:** 
+
+### Test Register
+<!-- One row per pinned assertion: \`- **TR-1** — **Pins:** \`path\` :: \`test title\`\` (or \`**New test:**\`) plus a \`**Asserts:**\` literal. A \`Pins:\` row must restate the pinned literal exactly; APPROVAL refuses a contradicting row and names \`file:line\`. -->
 
 ## 4. Quality Gate & Test Verification
 
@@ -999,6 +1004,23 @@ export class FilePlanGenerator implements PlanGeneratorPort {
           );
         } else {
           content = content.trimEnd() + '\n\n' + commitSection + '\n';
+        }
+      }
+
+      // Issue #432: tri-state, like every other metric. `undefined` leaves the
+      // section untouched, `[]` removes it, and a non-empty list names every
+      // record with its acknowledgement state.
+      if (updateData.planDeviations !== undefined) {
+        if (updateData.planDeviations.length === 0) {
+          content = content.replace(/\n*## Plan Deviations[\s\S]*?(?=\n## |$)/, '\n');
+        } else {
+          const body = updateData.planDeviations
+            .map(
+              (record) =>
+                `- **Plan Deviations:** ${record.id} (${record.acknowledged ? 'acknowledged' : 'unacknowledged'}) — plan section "${record.planSection}" pins "${record.planLiteral}"; the implementation asserts "${record.implementedAssertion}"`
+            )
+            .join('\n');
+          content = this.replaceSection(content, 'Plan Deviations', body);
         }
       }
 

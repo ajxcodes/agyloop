@@ -119,7 +119,8 @@ import {
   CritiqueInstallerPort,
   ConfirmationPromptPort,
   WorktreeManagerPort,
-  GateReportRepositoryPort
+  GateReportRepositoryPort,
+  SourceFileReaderPort
 } from '../ports';
 import { StartPlanningUseCase, StartPlanningResult } from './start-planning';
 import { StartImplementationUseCase, StartImplementationResult } from './start-implementation';
@@ -290,6 +291,11 @@ export interface RunLifecycleDependencies {
   readonly draftCommitUseCase?: DraftCommitUseCase;
   readonly executeCommitUseCase?: ExecuteCommitUseCase;
   readonly worktreeManager?: WorktreeManagerPort;
+  /**
+   * The Test Register's pinned-test reader (issue #432). Optional so existing
+   * callers compile; the CLI wires it, so a real `implement` resolves a pin.
+   */
+  readonly sourceFileReader?: SourceFileReaderPort;
   readonly runPreFlightCheckUseCase?: RunPreFlightCheckUseCase;
   readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
   /**
@@ -391,7 +397,8 @@ export class RunLifecycleUseCase {
         resolveSubagentUseCase,
         this.worktreeManager,
         this.inferBaseBranchUseCase,
-        this.commandExecutor
+        this.commandExecutor,
+        deps.sourceFileReader
       );
 
     this.runQualityGateUseCase =

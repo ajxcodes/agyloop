@@ -83,6 +83,8 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 
 A gate report may declare the test count its runner does not print: append `TEST_METRICS: <n> passed, <n> failed, <n> skipped` to the command output. A `PASSED` report whose executed test command has no measured total (`"testsPassed": null` or `0`) is refused at filing and again at `transition REVIEW`.
 
+An approved plan literal that cannot be satisfied as written is a **deviation**, not a silent edit. The implementer emits a `PLAN_DEVIATION:` block; the orchestrator files it with `codeloop deviation --issue <n> --deviation-file <path>` (or `--deviation-stdin`). The record lands in the checkpoint, and `codeloop transition REVIEW` refuses while any deviation is unacknowledged — acknowledge it with `codeloop deviation --issue <n> --ack PD-1 --reason "<why the new literal is right>"`, or route the plan back with `codeloop transition PLAN`. At APPROVAL the pipeline also refuses a Test Register literal that contradicts the test it pins (naming `file:line`) and an acceptance criterion or checklist step that targets a commit-excluded path (`artifacts/`, `.agyloop/`, `node_modules/`); deliver such a correction as a tracked document or declare it `**Out of Scope:**`. In the verdict, `AC_EVIDENCE:` names the path that proves each criterion — evidence outside the delivered change set makes the criterion `unverifiable` and the round cannot be certified.
+
 ---
 
 ## ⚡ Configurable Model Routing

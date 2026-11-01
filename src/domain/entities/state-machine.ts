@@ -31,6 +31,12 @@ import {
   WorkspaceMutationBaseline,
   isWorkspaceMutationBaseline
 } from '../value-objects/workspace-mutation';
+import {
+  RecordedPlanDeviation,
+  hydrateRecordedPlanDeviations,
+  planDeviationIdentity,
+  PlanDeviationProps
+} from '../value-objects/plan-deviation';
 import { InvalidTransitionError, ValidationError } from '../errors';
 
 export interface StateHistoryEntry {
@@ -147,6 +153,12 @@ export interface StateMachineSnapshot {
    * `null`, which means "not measured" — never "clean".
    */
   readonly discoveryMutationBaseline?: WorkspaceMutationBaseline | null;
+  /**
+   * The implementer's filed plan deviations (issue #432). OPTIONAL and written
+   * ONLY when non-empty, so a run with no deviation serializes byte-identically
+   * to the pre-#432 checkpoint (AC7).
+   */
+  readonly planDeviations?: readonly RecordedPlanDeviation[];
 }
 
 export interface StateStatusSummary {
@@ -204,6 +216,7 @@ export class StateMachine {
   private _planEmptyParkCount: number;
   private _pullRequest: RecordedPullRequest | null;
   private _discoveryMutationBaseline: WorkspaceMutationBaseline | null;
+  private _planDeviations: RecordedPlanDeviation[];
 
   constructor(options: {
     stage?: Stage;
@@ -233,6 +246,7 @@ export class StateMachine {
     planEmptyParkCount?: number;
     pullRequest?: RecordedPullRequest | null;
     discoveryMutationBaseline?: WorkspaceMutationBaseline | null;
+    planDeviations?: readonly RecordedPlanDeviation[];
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -270,6 +284,7 @@ export class StateMachine {
       options.discoveryMutationBaseline && isWorkspaceMutationBaseline(options.discoveryMutationBaseline)
         ? options.discoveryMutationBaseline
         : null;
+    this._planDeviations = hydrateRecordedPlanDeviations(options.planDeviations);
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -469,6 +484,74 @@ export class StateMachine {
 
   public get planEmptyParkCount(): number {
     return this._planEmptyParkCount;
+  }
+
+  /** Every filed plan deviation, in filing order (issue #432). */
+  public get planDeviations(): readonly RecordedPlanDeviation[] {
+    return Object.freeze([...this._planDeviations]);
+  }
+
+  /**
+   * Records one implementer deviation (issue #432, AC1).
+   *
+   * Identity/dedupe is pure domain: filing the same
+   * section|literal|assertion triple twice is a no-op that returns the
+   * existing record, so a re-dispatched implementer cannot inflate the record.
+   * Ids are `PD-1`, `PD-2`, … — the domain needs no `node:crypto`.
+   */
+  public recordPlanDeviation(props: PlanDeviationProps): RecordedPlanDeviation {
+    const identity = planDeviationIdentity(props);
+    const existing = this._planDeviations.find(
+      (record) => planDeviationIdentity(record) === identity
+    );
+    if (existing) {
+      return existing;
+    }
+    const now = new Date().toISOString();
+    const record: RecordedPlanDeviation = Object.freeze({
+      id: `PD-${this._planDeviations.length + 1}`,
+      planSection: props.planSection,
+      planLiteral: props.planLiteral,
+      implementedAssertion: props.implementedAssertion,
+      reason: props.reason,
+      files: Object.freeze([...(props.files ?? [])]),
+      recordedAt: now,
+      acknowledged: false,
+      acknowledgedAt: null,
+      acknowledgementReason: null
+    });
+    this._planDeviations.push(record);
+    this._updatedAt = now;
+    return record;
+  }
+
+  /**
+   * Acknowledges one filed deviation (issue #432, AC2). Returns `false` for an
+   * unknown id; the caller lists the known ids. A reason is mandatory: an
+   * acknowledgement without one is refused, like a bare `--refute`.
+   */
+  public acknowledgePlanDeviation(id: string, reason: string | null | undefined): boolean {
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    if (trimmedReason.length === 0) {
+      throw new ValidationError(
+        'reason',
+        reason,
+        'acknowledging a plan deviation requires a reason explaining why the new literal is right'
+      );
+    }
+    const index = this._planDeviations.findIndex((record) => record.id === id);
+    if (index === -1) {
+      return false;
+    }
+    const now = new Date().toISOString();
+    this._planDeviations[index] = Object.freeze({
+      ...this._planDeviations[index],
+      acknowledged: true,
+      acknowledgedAt: now,
+      acknowledgementReason: trimmedReason
+    });
+    this._updatedAt = now;
+    return true;
   }
 
   /** The delivery PR recorded on reaching COMPLETED, or null when none is recorded. */
@@ -691,6 +774,19 @@ export class StateMachine {
     if (target.value === STAGE_PLAN) {
       this._planDispatchCount = 0;
       this._planEmptyParkCount = 0;
+      // Issue #432: re-planning IS the "the plan is wrong, revise it" route, so
+      // the deviations a revised plan supersedes are cleared here.
+      this._planDeviations = [];
+    }
+    if (
+      target.value === STAGE_IMPLEMENT &&
+      (previousStage === STAGE_PLAN ||
+        previousStage === STAGE_APPROVAL ||
+        previousStage === STAGE_COMPLETED)
+    ) {
+      // A fresh approval starts a new plan's implementation. A
+      // QUALITY_GATE -> IMPLEMENT retry is the SAME plan, so it preserves them.
+      this._planDeviations = [];
     }
     // A transition INTO IMPLEMENT starts a fresh implementation round, so the
     // re-dispatch record of the previous round must not leak into it (#327).
@@ -758,6 +854,7 @@ export class StateMachine {
     this._planEmptyParkCount = 0;
     this._pullRequest = null;
     this._discoveryMutationBaseline = null;
+    this._planDeviations = [];
     this._updatedAt = now;
     this._history = [
       {
@@ -825,7 +922,12 @@ export class StateMachine {
       implementationDispatchCount: this._implementationDispatchCount,
       planEmptyParkCount: this._planEmptyParkCount,
       pullRequest: this._pullRequest,
-      discoveryMutationBaseline: this._discoveryMutationBaseline
+      discoveryMutationBaseline: this._discoveryMutationBaseline,
+      // Issue #432 (AC7): written ONLY when non-empty. A conditional spread
+      // keeps a run with no deviation byte-identical to the pre-#432 snapshot.
+      ...(this._planDeviations.length > 0
+        ? { planDeviations: Object.freeze([...this._planDeviations]) }
+        : {})
     };
   }
 
@@ -915,7 +1017,8 @@ export class StateMachine {
         snapshot.discoveryMutationBaseline &&
         isWorkspaceMutationBaseline(snapshot.discoveryMutationBaseline)
           ? snapshot.discoveryMutationBaseline
-          : null
+          : null,
+      planDeviations: hydrateRecordedPlanDeviations(snapshot.planDeviations)
     });
   }
 

@@ -192,6 +192,8 @@ const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = 
       );
     }
   },
+  // Issue #432: the deviation channel's read-only listing surface.
+  deviation: { args: ['deviation', '--json'], seed: (dir) => seedRoot(dir) },
   plan: { args: ['plan', '--json'] },
   implement: { args: ['implement', '--json'] },
   commit: { args: ['commit', '--json'] },

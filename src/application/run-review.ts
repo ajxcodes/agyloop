@@ -58,6 +58,18 @@ import {
   formatCritiqueIgnoredAffirmations,
   DEFAULT_CRITIQUE_REVIEW_TIMEOUT_MS,
   DIFF_EXCLUDE_ARGS,
+  // Issue #432: the analysis of an approved plan literal and of the delivered
+  // change set the verdict's evidence must appear in.
+  parseAcEvidence,
+  classifyAcEvidence,
+  findExcludedEvidenceInText,
+  formatPlanDeviationUnacknowledgedMessage,
+  isUnacknowledged,
+  ValidationError,
+  AC_EVIDENCE_STATUS_MET,
+  AC_EVIDENCE_STATUS_OUT_OF_SCOPE,
+  MSG_AC_EVIDENCE_UNMEASURED,
+  type AcEvidenceReport,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   DiffAnalyzer
 } from '../domain';
@@ -73,6 +85,7 @@ import {
   CommandExecutorPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
+import { resolveDeliveredChangeSet } from './delivered-change-set';
 
 export interface RunReviewParams {
   readonly issue?: number | string | null;
@@ -188,6 +201,29 @@ export interface RunReviewResult {
    * request no change (issue #349). `[]` for a clean or bypassed report.
    */
   readonly nonActionableFindings: readonly NonActionableFindingSummary[];
+  /**
+   * The AC evidence classification for THIS round (issue #432, AC5).
+   *
+   * Always present so `--json` can report the current run; the CHECKPOINT
+   * provenance is conditional (`reviewAcEvidence` is written only when the
+   * reviewer reported the block AND something failed verification — AC7).
+   */
+  readonly acEvidence: RunReviewAcEvidence;
+}
+
+/** The review's per-AC evidence resolution against the delivered change set. */
+export interface RunReviewAcEvidence {
+  readonly reported: boolean;
+  readonly measured: boolean;
+  readonly baseRef: string | null;
+  /** AC labels verified as met. */
+  readonly verified: readonly string[];
+  /** `AC<n> — <path>` entries whose evidence is not in the delivered set. */
+  readonly unverifiable: readonly string[];
+  /** AC labels the reviewer explicitly declared out of scope. */
+  readonly outOfScope: readonly string[];
+  /** A note when the change set could not be measured (never an escalation). */
+  readonly note?: string;
 }
 
 function cleanBulletLine(rawLine: string): string {
@@ -205,7 +241,10 @@ function cleanBulletLine(rawLine: string): string {
  * - `unfulfilled-criteria` — the verdict block itself listed unfulfilled
  *   Acceptance Criteria.
  */
-export type ReviewEscalation = 'critique' | 'unfulfilled-criteria';
+export type ReviewEscalation =
+  | 'critique'
+  | 'unverifiable-evidence'
+  | 'unfulfilled-criteria';
 
 /**
  * The outcome of the TWO-TIER INVARIANT.
@@ -270,7 +309,8 @@ function dedupeFindings(findings: readonly AiReviewFinding[]): AiReviewFinding[]
 export function applyTwoTierInvariant(
   verdict: ReviewVerdict,
   aiReport: AiReviewReport | null,
-  refutations?: RefutationResolution
+  refutations?: RefutationResolution,
+  unverifiable: readonly string[] = []
 ): TwoTierInvariantOutcome {
   // ONE source for "what still blocks": the resolution when the caller supplied
   // one (computed from the SAME `blockingFindings()` call), otherwise the
@@ -324,6 +364,29 @@ export function applyTwoTierInvariant(
     };
   }
 
+  // Issue #432 (AC5): an AC the reviewer counted `met` on evidence that is not
+  // in the delivered change set cannot certify the round. The escalation names
+  // the AC and the path; the reviewer is never silently overruled.
+  if (unverifiable.length > 0 && verdict.isApproved()) {
+    const criteria = unverifiable.map(
+      (entry) => `[Unverifiable evidence] ${entry} is not in the delivered change set`
+    );
+    return {
+      escalatedBy: 'unverifiable-evidence',
+      verdict: new ReviewVerdict({
+        status: VERDICT_CHANGES_REQUESTED,
+        summary: `Review requested changes: ${unverifiable.length} acceptance criterion/criteria name evidence outside the delivered change set. ${verdict.summary}`,
+        unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...criteria],
+        remediationGuidance: [
+          ...verdict.remediationGuidance,
+          ...criteria.map((criterion) => `Cite tracked evidence for ${criterion}`)
+        ],
+        confidenceLevel: verdict.confidenceLevel,
+        findings: verdict.findings
+      })
+    };
+  }
+
   if (verdict.unfulfilledCriteria.length > 0 && verdict.isApproved()) {
     return {
       escalatedBy: 'unfulfilled-criteria',
@@ -352,9 +415,21 @@ export function extractAcceptanceCriteria(planContent: string | null | undefined
   const lines = planContent.split('\n');
   const criteria: string[] = [];
   let inAcSection = false;
+  // Issue #432: fenced blocks are not plan text. A plan legitimately embeds a
+  // fixture plan (and its `- **Acceptance Criteria:**` bullets) inside a smoke
+  // check; those must never reach the reviewer as this plan's criteria.
+  let fence = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
+
+    if (line.startsWith('```')) {
+      fence = !fence;
+      continue;
+    }
+    if (fence) {
+      continue;
+    }
 
     // Check for Acceptance Criteria section header
     if (
@@ -493,6 +568,27 @@ export class RunReviewUseCase {
       sm.setIssue(activeIssue);
     }
 
+    // Issue #432 (AC2): the direct `codeloop review` entry performs the
+    // `QUALITY_GATE -> REVIEW` transition internally and immediately, so
+    // guarding only `transition` would leave a bypass. The refusal sits right
+    // after the checkpoint load and before that transition; `--dry-run` warns
+    // instead of throwing, matching every other guard.
+    if (previousStage === STAGE_QUALITY_GATE) {
+      const unacknowledged = sm.planDeviations.filter(isUnacknowledged);
+      if (unacknowledged.length > 0) {
+        const reason = formatPlanDeviationUnacknowledgedMessage(unacknowledged, activeIssue);
+        if (params.dryRun) {
+          console.warn(`[codeloop] Warning: ${reason}`);
+        } else {
+          throw new ValidationError(
+            'planDeviations',
+            unacknowledged.map((record) => record.id),
+            reason
+          );
+        }
+      }
+    }
+
     // 2. Enforce lifecycle transition rules
     if (sm.currentStage === STAGE_QUALITY_GATE) {
       sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
@@ -581,6 +677,14 @@ export class RunReviewUseCase {
     // Issue #284 (AC6): the commit this verdict was made AGAINST. The worktree,
     // not the repo root — the reviewed diff is the worktree's.
     const reviewedBaseCommit = await this.readReviewedBaseCommit(reviewCwd);
+
+    // Issue #432 (AC5): measure the change set the reviewed worktree delivers.
+    // `measured: false` on any git failure — never a guess.
+    const deliveredChangeSet = await resolveDeliveredChangeSet({
+      commandExecutor: this.commandExecutor,
+      cwd: reviewCwd,
+      baseRef: targetBaseRef
+    });
 
     let updateNotification: string | null = null;
     let autoInstalled = false;
@@ -748,6 +852,20 @@ export class RunReviewUseCase {
     // captured BEFORE the invariant can rewrite it, and `critiqueVerified` says
     // whether real Tier 1 evidence informed the record. Together with
     // `reviewSource` they make the record auditable after the fact.
+    // Issue #432 (AC5): classify the reviewer's cited evidence against the
+    // delivered change set BEFORE the invariant can escalate the verdict.
+    const acReport = parseAcEvidence(params.reviewOutput);
+    const acEvidence = this.resolveAcEvidence(
+      acReport,
+      params.reviewOutput ?? '',
+      deliveredChangeSet,
+      reviewCwd,
+      targetBaseRef ?? null
+    );
+    if (acEvidence.note) {
+      console.warn(`[codeloop] Note: ${acEvidence.note}`);
+    }
+
     const reviewerVerdict = filingPath ? verdict.status : null;
     const critiqueVerified = Boolean(aiReport && !aiReport.bypassed);
 
@@ -790,10 +908,23 @@ export class RunReviewUseCase {
           }))
         : [];
 
-    const invariant = applyTwoTierInvariant(verdict, aiReport, refutationResolution);
+    const invariant = applyTwoTierInvariant(
+      verdict,
+      aiReport,
+      refutationResolution,
+      acEvidence.unverifiable
+    );
     verdict = invariant.verdict;
 
-    if (invariant.escalatedBy === 'critique' && reviewSource === REVIEW_SOURCE_REVIEWER_OUTPUT) {
+    // Issue #432: an escalation the TOOL performed on the reviewer's APPROVED
+    // verdict is recorded with both contributors, exactly like the critique
+    // escalation (the source must never claim the reviewer asked for changes
+    // the reviewer never asked for).
+    if (
+      (invariant.escalatedBy === 'critique' ||
+        invariant.escalatedBy === 'unverifiable-evidence') &&
+      reviewSource === REVIEW_SOURCE_REVIEWER_OUTPUT
+    ) {
       reviewSource = REVIEW_SOURCE_REVIEWER_OUTPUT_ESCALATED;
     }
 
@@ -813,6 +944,19 @@ export class RunReviewUseCase {
       ...(reviewerVerdict ? { reviewerVerdict } : {}),
       ...(refutationResolution.applied.length > 0
         ? { reviewRefutations: refutationResolution.applied }
+        : {}),
+      // Issue #432 (Invariant D-3): written ONLY when the reviewer reported the
+      // block AND a path failed verification. Nothing else changes shape.
+      ...(acEvidence.reported && acEvidence.unverifiable.length > 0
+        ? {
+            reviewAcEvidence: {
+              measured: acEvidence.measured,
+              baseRef: acEvidence.baseRef,
+              verified: acEvidence.verified,
+              unverifiable: acEvidence.unverifiable,
+              outOfScope: acEvidence.outOfScope
+            }
+          }
         : {})
     };
 
@@ -909,7 +1053,82 @@ export class RunReviewUseCase {
       updateNotification,
       autoInstalled,
       refutations: refutationResolution.applied,
-      nonActionableFindings
+      nonActionableFindings,
+      acEvidence
+    };
+  }
+
+  /**
+   * Resolves every reported AC against the delivered change set (issue #432).
+   *
+   * A lexically-unverifiable entry (excluded tree / outside the worktree)
+   * escalates even when the set could not be measured. An unmeasurable set on
+   * otherwise-verifiable evidence is REPORTED as a note, never converted into a
+   * false failure (AC5/AC7).
+   */
+  private resolveAcEvidence(
+    report: AcEvidenceReport,
+    verdictText: string,
+    changeSet: { readonly measured: boolean; readonly paths: readonly string[] },
+    reviewCwd: string,
+    baseRef: string | null
+  ): RunReviewAcEvidence {
+    if (!report.reported) {
+      return {
+        reported: false,
+        measured: changeSet.measured,
+        baseRef,
+        verified: Object.freeze([]),
+        unverifiable: Object.freeze([]),
+        outOfScope: Object.freeze([])
+      };
+    }
+
+    const verified: string[] = [];
+    const unverifiable: string[] = [];
+    const outOfScope: string[] = [];
+    const seen = new Set<string>();
+
+    const addUnverifiable = (ac: string, path: string): void => {
+      const entry = `${ac} — \`${path}\``;
+      if (seen.has(entry)) return;
+      seen.add(entry);
+      unverifiable.push(entry);
+    };
+
+    for (const entry of report.entries) {
+      const classified = classifyAcEvidence(entry, changeSet, reviewCwd);
+      if (classified.status === AC_EVIDENCE_STATUS_MET) {
+        verified.push(classified.ac);
+      } else if (classified.status === AC_EVIDENCE_STATUS_OUT_OF_SCOPE) {
+        outOfScope.push(classified.ac);
+      } else {
+        for (const path of classified.unverifiablePaths) {
+          addUnverifiable(classified.ac, path);
+        }
+      }
+    }
+
+    // The #433 backstop: a commit-excluded path cited ANYWHERE in the verdict
+    // (e.g. a Tier-2 sentence) is unverifiable evidence even when the AC block
+    // omitted it.
+    for (const found of findExcludedEvidenceInText(verdictText)) {
+      addUnverifiable(found.ac, found.path);
+    }
+
+    const note =
+      !changeSet.measured && unverifiable.length === 0
+        ? MSG_AC_EVIDENCE_UNMEASURED.replace('{base}', baseRef ?? 'HEAD')
+        : undefined;
+
+    return {
+      reported: true,
+      measured: changeSet.measured,
+      baseRef,
+      verified: Object.freeze(verified),
+      unverifiable: Object.freeze(unverifiable),
+      outOfScope: Object.freeze(outOfScope),
+      ...(note ? { note } : {})
     };
   }
 

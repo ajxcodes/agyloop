@@ -43,7 +43,8 @@ import {
   GitHubGateway,
   GitHubIssueData,
   WorktreeManagerPort,
-  CommandExecutorPort
+  CommandExecutorPort,
+  SourceFileReaderPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { InferBaseBranchUseCase } from './infer-base-branch';
@@ -55,6 +56,8 @@ import {
   resolvePlanDigest
 } from './plan-digest-contract';
 import { assertSmokeProtocolContract } from './smoke-protocol-contract';
+import { assertPlanTestRegisterContract } from './plan-test-register-contract';
+import { assertPlanEvidenceContract } from './plan-evidence-contract';
 
 export interface StartImplementationParams {
   readonly issue?: number | string | null;
@@ -93,6 +96,8 @@ export class StartImplementationUseCase {
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
   private readonly commandExecutor?: CommandExecutorPort;
+  /** The Test Register's pinned-test reader (issue #432); optional. */
+  private readonly sourceFileReader?: SourceFileReaderPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -102,7 +107,8 @@ export class StartImplementationUseCase {
     resolveSubagentUseCase?: ResolveSubagentUseCase,
     worktreeManager?: WorktreeManagerPort,
     inferBaseBranchUseCase?: InferBaseBranchUseCase,
-    commandExecutor?: CommandExecutorPort
+    commandExecutor?: CommandExecutorPort,
+    sourceFileReader?: SourceFileReaderPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -113,6 +119,7 @@ export class StartImplementationUseCase {
     this.worktreeManager = worktreeManager;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
     this.commandExecutor = commandExecutor;
+    this.sourceFileReader = sourceFileReader;
   }
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
@@ -223,6 +230,10 @@ export class StartImplementationUseCase {
       // because the baseline MUST be measured in the task worktree (#418).
       this.assertSmokeProtocolContract(sm, params, workspace);
       await this.assertPlanBaselineContract(sm, params, workspace);
+      // Issue #432: the two new APPROVAL contracts, enforced here too so the
+      // two approval entry points cannot drift.
+      this.assertPlanTestRegisterContract(sm, params, workspace);
+      this.assertPlanEvidenceContract(sm, params, workspace);
     }
 
     // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT.
@@ -549,6 +560,37 @@ export class StartImplementationUseCase {
       planPath: resolved.planPath,
       workspaceDir: workspace,
       commandExecutor: this.commandExecutor,
+      dryRun: params.dryRun
+    });
+  }
+
+  private assertPlanTestRegisterContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    assertPlanTestRegisterContract({
+      planGenerator: this.planGenerator,
+      sourceFileReader: this.sourceFileReader,
+      planPath: resolved.planPath,
+      workspaceDir: workspace,
+      dryRun: params.dryRun
+    });
+  }
+
+  private assertPlanEvidenceContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    assertPlanEvidenceContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      workspaceDir: workspace,
       dryRun: params.dryRun
     });
   }
