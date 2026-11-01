@@ -8,6 +8,12 @@
  * ABG4 - a correct plan that embeds a plan fixture in its smoke protocol (the
  *        #388 plan's `cat > … <<'PLAN'` shape) is approvable: the fenced sample
  *        is DATA, never evidence
+ * ABG6 - a workspace-build-output claim is refused IDENTICALLY by both surfaces
+ *        (`transition APPROVAL` and `codeloop implement`), even though APPROVAL
+ *        measures where `dist/` exists: zero commands execute, nothing is
+ *        saved, no worktree is provisioned (issue #418)
+ * ABG7 - each surface's refusal names the cwd IT measured in, and the two
+ *        directories differ
  *
  * The plan mirrors the #382 `DA-METRICS-1` shape: `{ additions: 3 }` declared,
  * `{ additions: 4 }` measured.
@@ -30,6 +36,7 @@ const {
   MODE_STANDARD,
   ValidationError
 } = require('../../dist/domain');
+const { ProcessCommandExecutor } = require('../../dist/infrastructure');
 
 const ISSUE = 388;
 const MISMATCH_COMMAND = "node -e 'console.log(\"{ additions: 4, deletions: 0 }\")'";
@@ -67,6 +74,47 @@ function buildLikePlan(): string {
     '- **Declared:** `built`',
     '- **Command:** `npm run build >/dev/null 2>&1 && node -e "console.log(\\"built\\")"`',
     '- **Output:** `built`',
+    ''
+  ].join('\n');
+}
+
+/**
+ * The #418 shape: the claim resolves the workspace's own build output, so it can
+ * only be measured where `dist/` exists — which the task worktree never has.
+ */
+function workspaceBuildOutputPlan(): string {
+  return [
+    '# [Implementation] - workspace build-output probe',
+    '',
+    '## Implementation Steps',
+    '- [ ] **Step 1:** hold',
+    '',
+    '### Baseline Evidence',
+    '',
+    '#### workspace-dist-claim',
+    '',
+    '- **Declared:** `{"ok":true}`',
+    `- **Command:** \`node -e 'console.log(JSON.stringify({ok:typeof require("./dist/domain").SmokeProtocol==="function"}))'\``,
+    '- **Output:** `{"ok":true}`',
+    ''
+  ].join('\n');
+}
+
+/** The failing-claim shape used to prove both surfaces name their own cwd. */
+function failingPlan(): string {
+  return [
+    '# [Implementation] - failing claim probe',
+    '',
+    '## Implementation Steps',
+    '- [ ] **Step 1:** hold',
+    '',
+    '### Baseline Evidence',
+    '',
+    '#### failing-claim',
+    '',
+    '- **Declared:** `measured`',
+    "- **Command:** `node -e 'process.exit(3)'`",
+    '- **Output:** `measured`',
     ''
   ].join('\n');
 }
@@ -216,6 +264,22 @@ function makeExecutor(stdout: string): any {
         durationMs: 1,
         timedOut: false
       };
+    }
+  };
+}
+
+/**
+ * Wraps a real executor and records the cwd each command was measured in, so a
+ * case can assert both "nothing ran" and "it ran HERE" against the real process
+ * path (issue #418).
+ */
+function makeRecordingExecutor(inner: any): any {
+  const calls: any[] = [];
+  return {
+    calls,
+    execute: async (command: string, options: any) => {
+      calls.push({ command, cwd: options?.cwd });
+      return inner.execute(command, options);
     }
   };
 }
@@ -477,5 +541,159 @@ describe('Approval baseline guard (issue #388)', () => {
       warnings.some((warning) => /planBaseline|baseline/i.test(warning)),
       warnings.join('\n')
     );
+  });
+
+  test('ABG6: both surfaces refuse a workspace-build-output claim identically', async () => {
+    fs.writeFileSync(planPath, workspaceBuildOutputPlan(), 'utf8');
+    const rootWorkspace = path.join(root, 'root-ws');
+    const taskWorkspace = path.join(root, 'task-ws');
+    fs.mkdirSync(path.join(rootWorkspace, 'dist'), { recursive: true });
+    fs.writeFileSync(
+      path.join(rootWorkspace, 'dist', 'domain.js'),
+      'module.exports = { SmokeProtocol: () => true };\n',
+      'utf8'
+    );
+    fs.mkdirSync(taskWorkspace, { recursive: true });
+
+    const expectRefusal = (label: string) => (err: any) => {
+      assert.ok(err instanceof ValidationError, `${label}: expected ValidationError, got ${err}`);
+      assert.strictEqual(err.field, 'planBaseline', label);
+      assert.ok(err.message.includes('workspace-dist-claim'), `${label}: ${err.message}`);
+      assert.ok(err.message.includes('./dist'), `${label}: ${err.message}`);
+      assert.ok(err.message.includes('baseline-<issue>/dist'), `${label}: ${err.message}`);
+      return true;
+    };
+
+    // Surface 1: transition APPROVAL, measuring in the operator workspace where
+    // `dist/` genuinely exists. Pre-fix this surface ADMITTED the claim.
+    const approvalMachine = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
+    approvalMachine.setPlanDir(planDir);
+    approvalMachine.transition(STAGE_DISCOVERY);
+    approvalMachine.transition(STAGE_PLAN);
+    const approvalRepo = new MockStateRepository(approvalMachine.toSnapshot());
+    const approvalExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
+    const transition = new TransitionStageUseCase(
+      approvalRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath),
+      undefined,
+      approvalExecutor
+    );
+
+    await assert.rejects(
+      () => transition.execute({ targetStage: STAGE_APPROVAL, workspaceDir: rootWorkspace }),
+      expectRefusal('transition APPROVAL')
+    );
+    assert.strictEqual(approvalExecutor.calls.length, 0, 'a statically refused claim executes nothing');
+    assert.strictEqual(approvalRepo.saveCallCount, 0, 'a refused approval persists nothing');
+
+    // Surface 2: codeloop implement, measuring in the pristine task worktree.
+    const implementMachine = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
+    implementMachine.setPlanDir(planDir);
+    implementMachine.transition(STAGE_DISCOVERY);
+    implementMachine.transition(STAGE_PLAN);
+    implementMachine.transition(STAGE_APPROVAL);
+    const implementRepo = new MockStateRepository(implementMachine.toSnapshot());
+    const worktreeManager = new RecordingWorktreeManager(root);
+    const implementExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
+    const implement = new StartImplementationUseCase(
+      implementRepo as any,
+      new MockConfigRepository() as any,
+      makePlanGenerator(planDir, planPath),
+      undefined,
+      undefined,
+      worktreeManager as any,
+      undefined,
+      implementExecutor as any
+    );
+
+    await assert.rejects(
+      () => implement.execute({ issue: ISSUE, workspaceDir: taskWorkspace }),
+      expectRefusal('codeloop implement')
+    );
+    assert.strictEqual(implementExecutor.calls.length, 0, 'a statically refused claim executes nothing');
+    assert.strictEqual(implementRepo.saveCallCount, 0, 'a refused implement persists nothing');
+    assert.strictEqual(
+      worktreeManager.createWorktreeCallCount,
+      0,
+      'a refused implement must not provision a worktree'
+    );
+  });
+
+  test('ABG7: each surface names the cwd IT measured in', async () => {
+    fs.writeFileSync(planPath, failingPlan(), 'utf8');
+    const rootWorkspace = path.join(root, 'root-ws');
+    const taskWorkspace = path.join(root, 'task-ws');
+    fs.mkdirSync(rootWorkspace, { recursive: true });
+    fs.mkdirSync(taskWorkspace, { recursive: true });
+
+    const approvalMachine = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
+    approvalMachine.setPlanDir(planDir);
+    approvalMachine.transition(STAGE_DISCOVERY);
+    approvalMachine.transition(STAGE_PLAN);
+    const approvalRepo = new MockStateRepository(approvalMachine.toSnapshot());
+    const approvalExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
+    const transition = new TransitionStageUseCase(
+      approvalRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath),
+      undefined,
+      approvalExecutor
+    );
+
+    await assert.rejects(
+      () => transition.execute({ targetStage: STAGE_APPROVAL, workspaceDir: rootWorkspace }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('failing-claim'), err.message);
+        assert.ok(err.message.includes(`cwd=${rootWorkspace}`), err.message);
+        assert.ok(err.message.includes('exited 3'), err.message);
+        assert.strictEqual(
+          err.message.includes(`cwd=${taskWorkspace}`),
+          false,
+          'the approval refusal must name the directory it measured in, not the worktree'
+        );
+        return true;
+      }
+    );
+    assert.strictEqual(approvalExecutor.calls.length, 1, 'the failing claim is measured once');
+
+    const implementMachine = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
+    implementMachine.setPlanDir(planDir);
+    implementMachine.transition(STAGE_DISCOVERY);
+    implementMachine.transition(STAGE_PLAN);
+    implementMachine.transition(STAGE_APPROVAL);
+    const implementRepo = new MockStateRepository(implementMachine.toSnapshot());
+    const worktreeManager = new RecordingWorktreeManager(root);
+    const implementExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
+    const implement = new StartImplementationUseCase(
+      implementRepo as any,
+      new MockConfigRepository() as any,
+      makePlanGenerator(planDir, planPath),
+      undefined,
+      undefined,
+      worktreeManager as any,
+      undefined,
+      implementExecutor as any
+    );
+
+    await assert.rejects(
+      () => implement.execute({ issue: ISSUE, workspaceDir: taskWorkspace }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('failing-claim'), err.message);
+        assert.ok(err.message.includes(`cwd=${taskWorkspace}`), err.message);
+        assert.ok(err.message.includes('exited 3'), err.message);
+        assert.strictEqual(
+          err.message.includes(`cwd=${rootWorkspace}`),
+          false,
+          'the implement refusal must name the directory it measured in, not the root'
+        );
+        return true;
+      }
+    );
+    assert.strictEqual(implementExecutor.calls.length, 1, 'the failing claim is measured once');
   });
 });

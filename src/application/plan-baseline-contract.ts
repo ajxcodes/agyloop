@@ -17,6 +17,10 @@
  *   - BUILD REFUSAL: every claim's `Command` is scanned for a build-like
  *     construct BEFORE anything executes. A baseline command must never rebuild
  *     the workspace root — the root build is the tool executing the gate.
+ *   - CWD CONTRACT (issue #418): a command that resolves the workspace's build
+ *     output is refused before anything executes, because the same guard
+ *     measures at the operator's workspace at APPROVAL and in the task worktree
+ *     at IMPLEMENT, and only build-output-free commands agree in both.
  *   - MEASURED: each claim's `Command` is executed (outside `--dry-run`) with a
  *     bounded timeout, once per claim, and `evaluateBaselineClaim` decides the
  *     `Declared`/`Output` verdict against the fresh stdout. `Declared` and
@@ -47,8 +51,10 @@ import {
   MSG_PLAN_BASELINE_MISMATCH,
   MSG_PLAN_BASELINE_OUTPUT_MISMATCH,
   MSG_PLAN_BASELINE_ROOT_BUILD,
+  MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT,
   ValidationError,
   detectRootBuildCommand,
+  detectWorkspaceBuildOutputCommand,
   evaluateBaselineClaim
 } from '../domain';
 import { CommandExecutorPort, PlanGeneratorPort } from '../ports';
@@ -159,6 +165,14 @@ export async function assertPlanBaselineContract(
         `[codeloop] Warning: --dry-run: claim "${claim.id}" runs a build-like command (${match.label}); a real approval refuses it.`
       );
     }
+    for (const claim of evidence.claims) {
+      if (claim.command.length === 0) continue;
+      const match = detectWorkspaceBuildOutputCommand(claim.command);
+      if (!match) continue;
+      console.warn(
+        `[codeloop] Warning: --dry-run: claim "${claim.id}" resolves workspace build output (${match.label}); a real approval refuses it.`
+      );
+    }
     return;
   }
 
@@ -192,6 +206,26 @@ export async function assertPlanBaselineContract(
     );
   }
 
+  // PRE-FLIGHT (issue #418): a command that resolves the workspace's build
+  // output is refused BY NAME before anything executes. The verdict is a pure
+  // function of the command text, so APPROVAL (operator workspace) and
+  // IMPLEMENT (task worktree) refuse the same plan in the same way even though
+  // they measure in different directories.
+  for (const claim of evidence.claims) {
+    if (claim.command.length === 0) continue;
+    const match = detectWorkspaceBuildOutputCommand(claim.command);
+    if (!match) continue;
+    throw new ValidationError(
+      'planBaseline',
+      planPath,
+      MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT.replace('{claim}', () => claim.id)
+        .replace('{line}', () => String(claim.line))
+        .replace('{match}', () => match.label)
+        .replace('{command}', () => claim.command)
+        .replace('{cwd}', () => params.workspaceDir)
+    );
+  }
+
   for (const claim of evidence.claims) {
     if (claim.command.length === 0) continue;
 
@@ -211,6 +245,7 @@ export async function assertPlanBaselineContract(
           .replace('{line}', () => String(claim.line))
           .replace('{command}', () => claim.command)
           .replace('{detail}', () => detail)
+          .replace('{cwd}', () => params.workspaceDir)
       );
     }
 
@@ -233,6 +268,7 @@ export async function assertPlanBaselineContract(
           .replace('{output}', () => claim.output)
           .replace('{measured}', () => verdict.measured)
           .replace('{command}', () => claim.command)
+          .replace('{cwd}', () => params.workspaceDir)
       );
     }
 
@@ -244,6 +280,7 @@ export async function assertPlanBaselineContract(
         .replace('{declared}', () => claim.declared)
         .replace('{measured}', () => verdict.measured)
         .replace('{command}', () => claim.command)
+        .replace('{cwd}', () => params.workspaceDir)
     );
   }
 }

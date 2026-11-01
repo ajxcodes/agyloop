@@ -95,6 +95,7 @@ import {
   formatDiscoveryExecutionContract,
   formatDiscoveryFallbackContract,
   BASELINE_DECLARED_SHAPE_SENTENCE,
+  BASELINE_COMMAND_CWD_CONTRACT,
   ROOT_BUILD_PROHIBITION_SENTENCE,
   DISCOVERY_REPRODUCTION_HEADING,
   DISCOVERY_REPRODUCTION_KEY,
@@ -911,7 +912,7 @@ export class ResolveSubagentUseCase {
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
     prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE} ${NOTE_SMOKE_FIXTURE_ISSUE_RULE}\n`;
-    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n\n`;
+    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} ${BASELINE_COMMAND_CWD_CONTRACT} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 

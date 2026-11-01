@@ -13,6 +13,7 @@ const {
   ResolveSubagentUseCase,
   FileConfigRepository,
   BASELINE_DECLARED_SHAPE_SENTENCE,
+  BASELINE_COMMAND_CWD_CONTRACT,
   ROOT_BUILD_PROHIBITION_SENTENCE
 } = require('../dist');
 
@@ -117,6 +118,10 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     // planner BEFORE a claim is authored.
     assert.ok(prompt.includes(BASELINE_DECLARED_SHAPE_SENTENCE), prompt);
     assert.ok(prompt.includes(ROOT_BUILD_PROHIBITION_SENTENCE), prompt);
+    assert.ok(prompt.includes('npx tsc --outDir'), prompt);
+    // PLN1 (issue #418): the command cwd contract reaches the planner too, so
+    // the planner learns WHERE the commands are measured before authoring one.
+    assert.ok(prompt.includes(BASELINE_COMMAND_CWD_CONTRACT), prompt);
     assert.ok(prompt.includes('npx tsc --outDir'), prompt);
   });
 

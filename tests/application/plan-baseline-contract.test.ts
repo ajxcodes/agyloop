@@ -25,6 +25,7 @@ const {
   ROOT_BUILD_PROHIBITION_SENTENCE,
   ValidationError
 } = require('../../dist/domain');
+const { ProcessCommandExecutor } = require('../../dist/infrastructure');
 
 const MISMATCH_COMMAND = "node -e 'console.log(\"{ additions: 4, deletions: 0 }\")'";
 
@@ -698,6 +699,245 @@ describe('assertPlanBaselineContract (issue #388)', () => {
     for (const call of calls) {
       assert.strictEqual(call.options.cwd, root);
       assert.strictEqual(call.options.timeoutMs, 60_000);
+    }
+  });
+
+  test('PBC12: a workspace-build-output claim is refused before ANY claim executes', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'clean-claim',
+          declared: '4',
+          command: "node -e 'console.log(4)'",
+          output: '4'
+        },
+        {
+          id: 'workspace-dist-claim',
+          declared: '{"ok":true}',
+          command: `node -e 'console.log(JSON.stringify({ok:typeof require("./dist/domain").SmokeProtocol==="function"}))'`,
+          output: '{"ok":true}'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: '4\n' });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('workspace-dist-claim'), err.message);
+        assert.ok(err.message.includes('plan line 14'), err.message);
+        assert.ok(err.message.includes('./dist'), err.message);
+        assert.ok(err.message.includes(`cwd=${root}`), err.message);
+        assert.ok(err.message.includes('baseline-<issue>/dist'), err.message);
+        return true;
+      }
+    );
+    assert.strictEqual(executor.calls.length, 0, 'a refused workspace-build claim executes nothing');
+  });
+
+  test('PBC12b: the root-build refusal still wins over the cwd-contract refusal', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'rebuild-and-read',
+          declared: '1',
+          command: `npm run build >/dev/null 2>&1 && node -e 'require("./dist/x")'`,
+          output: '1'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: '1\n' });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('rebuild-and-read'), err.message);
+        assert.ok(err.message.includes('runs a build-like command'), err.message);
+        assert.ok(err.message.includes(ROOT_BUILD_PROHIBITION_SENTENCE), err.message);
+        assert.ok(err.message.includes('Never rebuild the repository root'), err.message);
+        assert.strictEqual(
+          err.message.includes("resolves the workspace's build output"),
+          false,
+          'the root-build message owns a command that both rebuilds and reads'
+        );
+        return true;
+      }
+    );
+    assert.strictEqual(executor.calls.length, 0);
+  });
+
+  test('PBC13: a failed measurement names the cwd it used', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'failing-claim',
+          declared: 'measured',
+          command: "node -e 'process.exit(3)'",
+          output: 'measured'
+        }
+      ]),
+      'utf8'
+    );
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: new ProcessCommandExecutor()
+        }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes(`cwd=${root}`), err.message);
+        assert.ok(err.message.includes('exited 3'), err.message);
+        return true;
+      }
+    );
+  });
+
+  test('PBC14: both mismatch refusals name the cwd', async () => {
+    // Declared mismatch: the declared value is value-shaped and wrong.
+    fs.writeFileSync(planPath, planWithClaim('{ additions: 3, deletions: 0 }', '{ additions: 4, deletions: 0 }'), 'utf8');
+    const declaredExecutor = executorReturning({ stdout: '{ additions: 4, deletions: 0 }\n' });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: declaredExecutor
+        }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes(`cwd=${root}`), err.message);
+        return true;
+      }
+    );
+
+    // Output mismatch: Declared matches, the attested Output does not.
+    fs.writeFileSync(planPath, planWithClaim('{ additions: 4, deletions: 0 }', '{ additions: 5, deletions: 0 }'), 'utf8');
+    const outputExecutor = executorReturning({ stdout: '{ additions: 4, deletions: 0 }\n' });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: outputExecutor
+        }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes(`cwd=${root}`), err.message);
+        return true;
+      }
+    );
+  });
+
+  test('PBC15: --dry-run warns about a workspace-build-output claim and executes nothing', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'workspace-dist-claim',
+          declared: '{"ok":true}',
+          command: `node -e 'console.log(JSON.stringify({ok:typeof require("./dist/domain").SmokeProtocol==="function"}))'`,
+          output: '{"ok":true}'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: '{"ok":true}\n' });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: any) => {
+      warnings.push(String(message));
+    };
+
+    try {
+      await assert.doesNotReject(() =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor,
+          dryRun: true
+        })
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.strictEqual(executor.calls.length, 0, 'a preview must not run plan code');
+    assert.ok(
+      warnings.some(
+        (warning) =>
+          warning.includes('workspace-dist-claim') &&
+          warning.includes('./dist') &&
+          warning.includes('a real approval refuses it')
+      ),
+      warnings.join('\n')
+    );
+  });
+
+  test('PBC16: the documented scratch out-dir form is measured in the workspace cwd', async () => {
+    const scratchDir = path.join(os.homedir(), '.cache', 'agyloop', 'baseline-418', 'dist');
+    fs.mkdirSync(scratchDir, { recursive: true });
+    fs.writeFileSync(path.join(scratchDir, 'mod.js'), 'module.exports = { ok: true };\n', 'utf8');
+
+    try {
+      fs.writeFileSync(
+        planPath,
+        planWithClaims([
+          {
+            id: 'scratch-claim',
+            declared: '{"ok":true}',
+            command: `node -e 'console.log(JSON.stringify({ok:require(process.env.HOME+"/.cache/agyloop/baseline-418/dist/mod.js").ok}))'`,
+            output: '{"ok":true}'
+          }
+        ]),
+        'utf8'
+      );
+      const executor = executorReturning({ stdout: '{"ok":true}\n' });
+
+      await assert.doesNotReject(() =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        })
+      );
+
+      assert.strictEqual(executor.calls.length, 1, 'the allowed claim is measured exactly once');
+      assert.strictEqual(executor.calls[0].options.cwd, root);
+    } finally {
+      fs.rmSync(path.join(os.homedir(), '.cache', 'agyloop', 'baseline-418'), {
+        recursive: true,
+        force: true
+      });
     }
   });
 });

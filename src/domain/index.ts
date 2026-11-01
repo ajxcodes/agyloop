@@ -47,6 +47,7 @@ export * from './value-objects/smoke-sandbox';
 export * from './value-objects/smoke-protocol';
 export * from './value-objects/baseline-evidence';
 export * from './value-objects/root-build-command';
+export * from './value-objects/baseline-command-cwd';
 export * from './value-objects/plan-digest';
 export * from './value-objects/gate-command-plan';
 export * from './value-objects/run-evidence';

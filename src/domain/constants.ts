@@ -872,7 +872,7 @@ export const MSG_PLAN_BASELINE_EVIDENCE_MISSING =
 export const MSG_PLAN_BASELINE_INCOMPLETE =
   'Plan baseline claim "{claim}" at plan line {line} is incomplete: {detail}. Every claim needs the declared value, the command that measures it and the output that command printed.' as const;
 export const MSG_PLAN_BASELINE_COMMAND_FAILED =
-  'Plan baseline claim "{claim}" at plan line {line} could not be measured: the command `{command}` {detail}. A baseline that cannot be reproduced cannot be approved; fix the command or remove the claim.' as const;
+  'Plan baseline claim "{claim}" at plan line {line} could not be measured with cwd={cwd}: the command `{command}` {detail}. A baseline that cannot be reproduced cannot be approved; fix the command or remove the claim.' as const;
 /**
  * The ONE statement of the `Declared:`/`Output:` relationship (issue #402, D1).
  *
@@ -892,12 +892,29 @@ export const BASELINE_DECLARED_SHAPE_SENTENCE =
 export const ROOT_BUILD_PROHIBITION_SENTENCE =
   'Never rebuild the repository root — the root build is what the installed `codeloop` executes, so a rebuild mid-run changes the pipeline\'s own tool.' as const;
 
+/**
+ * The ONE statement of the baseline command cwd contract (issue #418).
+ *
+ * The same guard measures a claim at APPROVAL (the operator's workspace) and at
+ * IMPLEMENT (the task worktree, a pristine checkout with no build output). The
+ * planner directive, both plan template copies, the CLI help and the
+ * build-output refusal all interpolate this constant instead of re-typing the
+ * rule.
+ *
+ * It must carry no `{placeholder}` braces: the constant is interpolated into
+ * the plan template, which `renderTemplate` walks for `{Name}` tokens.
+ */
+export const BASELINE_COMMAND_CWD_CONTRACT =
+  'Baseline commands are measured in more than one directory: APPROVAL runs each command in the workspace it is invoked from (the `--workspace` root, otherwise the current directory), and IMPLEMENT runs it again in the task worktree, which is a pristine checkout with no build output because `dist/` is git-ignored. A command must therefore print the same stdout in both directories, which rules out resolving the workspace\'s own build output (`./dist`, `./build`) at all. Every refusal names the cwd it measured in.' as const;
+
 export const MSG_PLAN_BASELINE_MISMATCH =
-  `Plan baseline claim "{claim}" at plan line {line} declares {declared}, but the command measured {measured}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels, or change the command so it prints the declared value, then re-run approval.` as const;
+  `Plan baseline claim "{claim}" at plan line {line} declares {declared}, but the command measured {measured} with cwd={cwd}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels, or change the command so it prints the declared value, then re-run approval.` as const;
 export const MSG_PLAN_BASELINE_OUTPUT_MISMATCH =
-  `Plan baseline claim "{claim}" at plan line {line} declares {declared} and attests Output {output}, but the command measured {measured}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels and re-run approval.` as const;
+  `Plan baseline claim "{claim}" at plan line {line} declares {declared} and attests Output {output}, but the command measured {measured} with cwd={cwd}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels and re-run approval.` as const;
 export const MSG_PLAN_BASELINE_ROOT_BUILD =
   `Plan baseline claim "{claim}" at plan line {line} runs a build-like command \`{command}\` (matched: {match}). ${ROOT_BUILD_PROHIBITION_SENTENCE} Baseline commands are refused before anything runs; measure the same value without rebuilding the root, for example compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\` and require() the compiled module from there.` as const;
+export const MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT =
+  `Plan baseline claim "{claim}" at plan line {line} resolves the workspace's build output ({match}) in \`{command}\` (cwd={cwd}; nothing was executed). ${BASELINE_COMMAND_CWD_CONTRACT} Measure the same value without workspace build output — compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\` and require() the compiled module from there — then re-run approval.` as const;
 export const MSG_PLAN_BASELINE_BODY_MISMATCH =
   'Plan baseline claim "{claim}" at plan line {line} is restated in the plan body as {restated}, but its evidence declares {declared}: {excerpt}. The body and the evidence must state the same value; correct one of them and re-run approval.' as const;
 export const MSG_GATE_LINT_MISSING =
