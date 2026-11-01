@@ -17,7 +17,7 @@ function makeResult(cmd: string, partial: Partial<CommandExecutionResult> = {}):
   return {
     command: cmd,
     exitCode: 0,
-    stdout: '',
+    stdout: cmd === 'git rev-parse --is-inside-work-tree' ? 'true\n' : '',
     stderr: '',
     timedOut: false,
     durationMs: 5,
@@ -2032,6 +2032,44 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       );
       assert.deepStrictEqual(fs.readdirSync(path.join(rootRepo, '.worktrees')), []);
     });
+
+    test('WT-428: a bare repository is refused before any write', async () => {
+      const bare = path.join(tmpDir, 'bare.git');
+      execFileSync('git', ['init', '--bare', bare], { stdio: 'pipe' });
+      const manager = new GitWorktreeManager();
+      const error = await expectProvisioningFailure(manager, bare);
+      assert.match(error.message, /not inside a git work tree/);
+      assert.ok(error.message.includes(bare));
+      assert.strictEqual(fs.existsSync(path.join(bare, '.gitignore')), false);
+      assert.strictEqual(fs.existsSync(path.join(bare, '.worktrees')), false);
+    });
+
+    for (const layout of ['normal', 'linked', 'submodule', 'separate']) {
+      test(`WT-428: ${layout} work trees pass the real Git probe`, async () => {
+        const repo = path.join(tmpDir, 'repo');
+        const git = (args: string[], cwd = tmpDir) =>
+          execFileSync('git', args, { cwd, stdio: 'pipe' });
+        git(['init', '-b', 'main', repo]);
+        git(['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'seed'], repo);
+        let workspace = repo;
+        if (layout === 'linked') {
+          workspace = path.join(tmpDir, 'linked');
+          git(['worktree', 'add', '-b', 'linked', workspace], repo);
+        } else if (layout === 'submodule') {
+          const parent = path.join(tmpDir, 'parent');
+          git(['init', parent]);
+          git(['-c', 'protocol.file.allow=always', 'submodule', 'add', repo, 'child'], parent);
+          workspace = path.join(parent, 'child');
+        } else if (layout === 'separate') {
+          workspace = path.join(tmpDir, 'separate');
+          git(['clone', '--separate-git-dir', path.join(tmpDir, 'metadata'), repo, workspace]);
+        }
+        const descriptor = await new GitWorktreeManager().createWorktree({
+          taskId: '428', workspaceDir: workspace, baseBranch: 'main'
+        });
+        assert.ok(fs.existsSync(path.join(descriptor.worktreePath, '.git')));
+      });
+    }
 
     test('WT-425-3: a non-git workspace is refused before any write', async () => {
       const plain = path.resolve(tmpDir, 'plain-workspace');
