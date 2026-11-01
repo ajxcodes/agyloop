@@ -40,6 +40,7 @@ import {
   IsAncestorOptions,
   PushBranchOptions,
   CommandExecutorPort,
+  CommandExecutionResult,
   QuarantineWorktreeResult
 } from '../ports';
 import { ProcessCommandExecutor } from './process-command-executor';
@@ -344,6 +345,48 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
+   * Refuses a workspace that is not inside a git work tree (issue #425).
+   *
+   * `getRepoRoot` deliberately falls back to `path.resolve(cwd)` when git
+   * cannot answer, so without this probe a non-repository workspace would be
+   * treated as the repository root: `ensureGitIgnore` would write a
+   * `.gitignore` there and `createWorktree` would leave an empty `.worktrees/`
+   * behind before `git worktree add` failed. The probe runs BEFORE either
+   * write, and its failure keeps the existing `WorktreeCreationError` framing
+   * so every caller's handling is unchanged.
+   *
+   * Git's own answer is authoritative (linked worktrees, submodules,
+   * `--separate-git-dir` and bare layouts), so any exit code 0 is accepted —
+   * the stdout is not required to read `true`.
+   */
+  private async assertGitWorkTree(workspace: string, taskId: string): Promise<void> {
+    let probe: CommandExecutionResult;
+    try {
+      probe = await this.commandExecutor.execute('git rev-parse --is-inside-work-tree', {
+        cwd: workspace
+      });
+    } catch (err) {
+      throw new WorktreeCreationError(
+        'createWorktree',
+        `Refusing to create a worktree in '${workspace}': the repository could not be probed (${
+          err instanceof Error ? err.message : String(err)
+        }). Nothing was written.`,
+        { taskId },
+        err
+      );
+    }
+    if (probe.exitCode !== 0) {
+      const detail = (probe.stderr || probe.stdout || '').trim();
+      throw new WorktreeCreationError(
+        'createWorktree',
+        `Refusing to create a worktree for issue #${taskId}: '${workspace}' is not inside a git work tree` +
+          `${detail ? ` (${detail})` : ''}. Point --workspace at a git repository, or pass --no-worktree. Nothing was written.`,
+        { taskId }
+      );
+    }
+  }
+
+  /**
    * Provisions an isolated git worktree under .worktrees/<task-id> on branch task/<task-id>-<slug>.
    */
   public async createWorktree(options: CreateWorktreeOptions): Promise<WorktreeDescriptor> {
@@ -352,6 +395,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     if (!taskId) {
       throw new WorktreeCreationError('createWorktree', 'Task ID is required to create a worktree.');
     }
+
+    // #425: nothing may be written into a directory that is not a git work tree.
+    await this.assertGitWorkTree(workspace, taskId);
 
     const slug =
       options.slug !== undefined && options.slug !== null
@@ -395,11 +441,12 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
     }
 
-    // 4. Ensure parent directory exists (.worktrees)
+    // 4. Reserve the container's name but do NOT create it yet (#425): the
+    //    `.worktrees` parent is created immediately before `git worktree add`
+    //    below, so a failed provisioning never leaves an empty container behind.
+    //    `createdParentDir` records whether THIS invocation created it.
     const parentDir = path.dirname(worktreePath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
+    let createdParentDir = false;
 
     // 5. Check if an existing LOCAL branch matching task/<id> or fix/<id> already exists.
     // The check must answer "is there already LOCAL work in progress for this task?":
@@ -426,7 +473,13 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       // independent backstop.
     }
 
-    // 6. Execute git worktree add
+    // 6. Create the container only now, immediately before the add (#425), then
+    //    execute git worktree add.
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+      createdParentDir = true;
+    }
+
     let addRes;
     if (branchAlreadyExists) {
       // Branch exists. Reuse it without -b. If it is already held by another worktree,
@@ -445,33 +498,73 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     }
 
     if (addRes.exitCode !== 0) {
-      const output = addRes.stderr || addRes.stdout || '';
+      try {
+        const output = addRes.stderr || addRes.stdout || '';
 
-      // `git worktree add` refuses to check out a branch that another worktree already
-      // holds. Resolve which worktree holds it from `git worktree list --porcelain`
-      // (an authoritative query, independent of git's wording) and only fall back to
-      // parsing the error text, which git has changed over time.
-      const holder = await this.findWorktreeForBranch(workspace, targetBranch);
+        // `git worktree add` refuses to check out a branch that another worktree already
+        // holds. Resolve which worktree holds it from `git worktree list --porcelain`
+        // (an authoritative query, independent of git's wording) and only fall back to
+        // parsing the error text, which git has changed over time.
+        const holder = await this.findWorktreeForBranch(workspace, targetBranch);
 
-      if (holder && holder.prunable) {
-        // git still has a registration for this branch, but the worktree directory was
-        // deleted behind git's back (`rm -rf .worktrees/<id>` without
-        // `git worktree remove`). Attaching to it would hand back a descriptor
-        // pointing at a path that does not exist, so drop the dead registration and
-        // check the branch out afresh instead.
-        await this.pruneWorktrees({ workspaceDir: workspace });
-        const recheck = await this.findWorktreeForBranch(workspace, targetBranch);
+        if (holder && holder.prunable) {
+          // git still has a registration for this branch, but the worktree directory was
+          // deleted behind git's back (`rm -rf .worktrees/<id>` without
+          // `git worktree remove`). Attaching to it would hand back a descriptor
+          // pointing at a path that does not exist, so drop the dead registration and
+          // check the branch out afresh instead.
+          await this.pruneWorktrees({ workspaceDir: workspace });
+          const recheck = await this.findWorktreeForBranch(workspace, targetBranch);
 
-        if (recheck && recheck.prunable) {
+          if (recheck && recheck.prunable) {
+            throw new WorktreeCreationError(
+              'createWorktree',
+              `Branch '${targetBranch}' is still registered to a missing worktree at ${recheck.worktreePath} after 'git worktree prune'. Delete that stale registration manually (it lives in the repository's .git/worktrees administrative directory) and retry.`,
+              { taskId, branch: targetBranch, worktreePath, baseBranch }
+            );
+          }
+
+          if (recheck) {
+            return this.adoptExistingWorktree(workspace, recheck.worktreePath, {
+              taskId,
+              branch: targetBranch,
+              baseBranch,
+              slug,
+              linkNodeModules: options.linkNodeModules
+            });
+          }
+
+          // The branch is free again; check it out at the canonical path.
+          const retry = await this.commandExecutor.execute(
+            `git worktree add "${worktreePath}" "${targetBranch}"`,
+            { cwd: workspace }
+          );
+          if (retry.exitCode === 0) {
+            // The branch pre-existed locally, so this re-add reuses it: report the
+            // reuse (branch + tip, merged-branch policy notice) so a stale local
+            // branch is visible rather than silent (#264).
+            await this.reportBranchReuse(workspace, targetBranch, baseBranch);
+            return this.adoptExistingWorktree(workspace, worktreePath, {
+              taskId,
+              branch: targetBranch,
+              baseBranch,
+              slug,
+              linkNodeModules: options.linkNodeModules
+            });
+          }
+
           throw new WorktreeCreationError(
             'createWorktree',
-            `Branch '${targetBranch}' is still registered to a missing worktree at ${recheck.worktreePath} after 'git worktree prune'. Delete that stale registration manually (it lives in the repository's .git/worktrees administrative directory) and retry.`,
+            retry.stderr || retry.stdout || output,
             { taskId, branch: targetBranch, worktreePath, baseBranch }
           );
         }
 
-        if (recheck) {
-          return this.adoptExistingWorktree(workspace, recheck.worktreePath, {
+        const checkedOutPath =
+          holder?.worktreePath ?? this.extractAlreadyCheckedOutPath(output);
+
+        if (checkedOutPath) {
+          return this.adoptExistingWorktree(workspace, checkedOutPath, {
             taskId,
             branch: targetBranch,
             baseBranch,
@@ -480,51 +573,16 @@ export class GitWorktreeManager implements WorktreeManagerPort {
           });
         }
 
-        // The branch is free again; check it out at the canonical path.
-        const retry = await this.commandExecutor.execute(
-          `git worktree add "${worktreePath}" "${targetBranch}"`,
-          { cwd: workspace }
-        );
-        if (retry.exitCode === 0) {
-          // The branch pre-existed locally, so this re-add reuses it: report the
-          // reuse (branch + tip, merged-branch policy notice) so a stale local
-          // branch is visible rather than silent (#264).
-          await this.reportBranchReuse(workspace, targetBranch, baseBranch);
-          return this.adoptExistingWorktree(workspace, worktreePath, {
-            taskId,
-            branch: targetBranch,
-            baseBranch,
-            slug,
-            linkNodeModules: options.linkNodeModules
-          });
-        }
-
+        // Any other error
         throw new WorktreeCreationError(
           'createWorktree',
-          retry.stderr || retry.stdout || output,
+          output || `Failed to create git worktree at ${worktreePath}`,
           { taskId, branch: targetBranch, worktreePath, baseBranch }
         );
+      } finally {
+        // A failed provisioning must not leave the empty container it created (#425).
+        this.removeEmptyParentDir(parentDir, createdParentDir);
       }
-
-      const checkedOutPath =
-        holder?.worktreePath ?? this.extractAlreadyCheckedOutPath(output);
-
-      if (checkedOutPath) {
-        return this.adoptExistingWorktree(workspace, checkedOutPath, {
-          taskId,
-          branch: targetBranch,
-          baseBranch,
-          slug,
-          linkNodeModules: options.linkNodeModules
-        });
-      }
-
-      // Any other error
-      throw new WorktreeCreationError(
-        'createWorktree',
-        output || `Failed to create git worktree at ${worktreePath}`,
-        { taskId, branch: targetBranch, worktreePath, baseBranch }
-      );
     }
 
     // 7. Verify the worktree's start point on the fresh-create path: git checked
@@ -1596,6 +1654,26 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
     } catch {
       // Symlink failure is non-blocking (e.g. permission or platform limitation)
+    }
+  }
+
+  /**
+   * Removes the `.worktrees` container a failed provisioning created (#425).
+   *
+   * Only a directory THIS invocation created (`createdHere`) and that is still
+   * empty is removed: an existing container — possibly owned by a concurrent
+   * task — and one that now holds a worktree are never touched. Cleanup is
+   * cosmetic, so any error is swallowed rather than replacing the provisioning
+   * error it accompanies.
+   */
+  private removeEmptyParentDir(dir: string, createdHere: boolean): void {
+    if (!createdHere) return;
+    try {
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+        fs.rmdirSync(dir);
+      }
+    } catch {
+      // A cosmetic cleanup must never replace the provisioning error.
     }
   }
 

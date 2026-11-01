@@ -643,6 +643,7 @@ Operational Flags:
       --title <text>  Specify the plan title; the artifact folder and filename are derived from it and bounded (long titles are truncated and hashed)
       --type <type>  Specify plan type (discovery | implementation | auto); auto infers from the issue kind (bug -> DISCOVERY entry, otherwise -> PLAN), and an explicit value also selects the entry stage
       --config <path> Path to custom configuration file (.agyloop.json)
+      --workspace <dir> Rebind the whole run (checkpoint + the repository it provisions, measures and branches in) to <dir>; default: the current directory.
       --model <name> Override agent runner model (e.g. ornith:9b-128k)
       --worktree     Enable git worktree isolation for task execution (default: true)
       --no-worktree  Disable worktree isolation and execute directly in root workspace
@@ -1819,6 +1820,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     options.planDir = path.resolve(options.planDir);
   }
 
+  // Issue #425: ONE workspace for the whole invocation. `--workspace` must rebind
+  // BOTH halves of a run — the checkpoint that is read AND the repository the run
+  // provisions/measures in — so the lifecycle gets this value, never the process cwd.
+  const lifecycleWorkspaceDir = path.resolve(options.workspaceDir || process.cwd());
+
   const stateRepo = new FileStateRepository({ workspaceDir: options.workspaceDir, issue: issueValue });
   const githubGateway = new CliGitHubGateway();
   const configRepo = new FileConfigRepository();
@@ -1871,7 +1877,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
       confirmationPrompt,
       worktreeManager,
       gateReportRepo: new FileGateReportRepository({
-        workspaceDir: options.workspaceDir || process.cwd(),
+        workspaceDir: lifecycleWorkspaceDir,
         issue: issueValue ?? null
       })
     });
@@ -3751,6 +3757,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const scope = await resolveScope(stateRepo, issueValue);
         const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_PLAN,
+          workspaceDir: lifecycleWorkspaceDir,
           issue: issueValue,
           title: options.title,
           type: options.type,
@@ -3923,6 +3930,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const scope = await resolveScope(stateRepo, issueValue);
         const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_IMPLEMENT,
+          workspaceDir: lifecycleWorkspaceDir,
           issue: issueValue,
           configPath: options.configPath,
           dryRun: options.dryRun,
@@ -4219,6 +4227,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const scope = await resolveScope(stateRepo, issueValue);
         const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_YOLO,
+          workspaceDir: lifecycleWorkspaceDir,
           issue: issueValue,
           title: options.title,
           type: options.type,
@@ -4493,6 +4502,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const scope = await resolveScope(stateRepo, issueValue);
         const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_STANDARD,
+          workspaceDir: lifecycleWorkspaceDir,
           issue: issueValue,
           title: options.title,
           type: options.type,
