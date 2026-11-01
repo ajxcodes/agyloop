@@ -37,6 +37,7 @@ const {
   STAGE_REVIEW,
   MODE_STANDARD,
   MODE_PLAN,
+  MODE_YOLO,
   InvalidTransitionError,
   PreFlightHaltError,
   WorktreeDescriptor,
@@ -600,6 +601,204 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     );
     assert.strictEqual(stateRepo.saveCallCount, 1);
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #421: the identity is frozen at the APPROVAL gate, not at IMPLEMENT.
+  // -------------------------------------------------------------------------
+
+  test('TS-D6 (#421): transition APPROVAL freezes the approved plan identity', async () => {
+    const stateRepo = new MockStateRepo(machineAt(STAGE_PLAN).toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+    const expected = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+
+    const result = await useCase.execute({
+      targetStage: STAGE_APPROVAL,
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.approvedPlanDigest, expected);
+    assert.strictEqual(result.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.savedSnapshot?.approvedPlanDigest, expected);
+    assert.strictEqual(stateRepo.savedSnapshot?.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  test('TS-D13 (#421): re-approval overwrites the identity and IMPLEMENT keeps it', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (re-approved)\n', 'utf8');
+
+    await useCase.execute({ targetStage: STAGE_PLAN, issue: 16, workspaceDir: tempDir });
+    await useCase.execute({ targetStage: STAGE_APPROVAL, issue: 16, workspaceDir: tempDir });
+
+    const reApproved = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+    assert.strictEqual(
+      stateRepo.savedSnapshot?.approvedPlanDigest,
+      reApproved,
+      'the APPROVAL hop must record the NEW bytes'
+    );
+
+    const implemented = await useCase.execute({
+      targetStage: STAGE_IMPLEMENT,
+      issue: 16,
+      workspaceDir: tempDir,
+      noWorktree: true
+    });
+    assert.strictEqual(implemented.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(implemented.approvedPlanDigest, reApproved, 'the gate-time identity survives');
+    assert.strictEqual(implemented.approvedPlanPath, planPath);
+  });
+
+  test('TS-D14 (#421): a stale recorded path does not deadlock re-approval', async () => {
+    const deletedPath = path.join(planDir, 'deleted-plan.md');
+    const machine = machineAt(STAGE_PLAN);
+    machine.recordApprovedPlan(deletedPath, 'stale-digest');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+
+    // A resolver that behaves like the real adapter: an explicit planPath wins
+    // (and a missing one resolves to null); otherwise the planDir is scanned.
+    const freshGenerator = {
+      ...planGenerator(),
+      resolvePlanFile: (options: any) => {
+        if (options.planPath) {
+          if (!fs.existsSync(options.planPath)) return null;
+          return {
+            planDir: path.dirname(options.planPath),
+            planPath: options.planPath,
+            planFileName: path.basename(options.planPath)
+          };
+        }
+        return {
+          planDir,
+          planPath,
+          planFileName: 'implementation_plan.md'
+        };
+      }
+    };
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, freshGenerator);
+    const expected = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+
+    const result = await useCase.execute({
+      targetStage: STAGE_APPROVAL,
+      issue: 16,
+      workspaceDir: tempDir
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(
+      result.approvedPlanDigest,
+      expected,
+      'fresh approval must resolve through planDir, not the stale approvedPlanPath'
+    );
+    assert.strictEqual(result.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  test('TS-D7 (#421): transition IMPLEMENT refuses a plan edited after approval', async () => {
+    const recorder: WorktreeRecorder = { createWorktreeCalls: 0, branches: [] };
+    const stateRepo = new MockStateRepo(machineAt(STAGE_PLAN).toSnapshot());
+    const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
+    const useCase = new TransitionStageUseCase(
+      stateRepo,
+      worktreeManager,
+      undefined,
+      planGenerator()
+    );
+
+    await useCase.execute({ targetStage: STAGE_APPROVAL, issue: 16, workspaceDir: tempDir });
+    const approved = stateRepo.savedSnapshot?.approvedPlanDigest as string;
+    const savesAfterApproval = stateRepo.saveCallCount;
+
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (edited)\n', 'utf8');
+    const edited = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({ targetStage: STAGE_IMPLEMENT, issue: 16, workspaceDir: tempDir }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'approvedPlanDigest');
+        assert.ok(err.message.includes(planPath), err.message);
+        assert.ok(err.message.includes(approved), err.message);
+        assert.ok(err.message.includes(edited), err.message);
+        assert.match(err.message, /changed after approval/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, savesAfterApproval, 'a refusal must persist nothing');
+    assert.strictEqual(stateRepo.savedSnapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.savedSnapshot?.approvedPlanDigest, approved);
+    assert.strictEqual(recorder.createWorktreeCalls, 0, 'a refusal must provision nothing');
+  });
+
+  test('TS-D8 (#421): transition APPROVAL --dry-run is inert', async () => {
+    const stateRepo = new MockStateRepo(machineAt(STAGE_PLAN).toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    const result = await useCase.execute({
+      targetStage: STAGE_APPROVAL,
+      issue: 16,
+      workspaceDir: tempDir,
+      dryRun: true
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(result.approvedPlanDigest, null);
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+  });
+
+  test('TS-D9 (#421): a YOLO PLAN -> IMPLEMENT entry still records', async () => {
+    const yolo = StateMachine.createInitial({ issue: 16, mode: MODE_YOLO as any });
+    yolo.setPlanDir(planDir);
+    yolo.transition(STAGE_DISCOVERY);
+    yolo.transition(STAGE_PLAN);
+    const stateRepo = new MockStateRepo(yolo.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+    const expected = `digest:${fs.readFileSync(planPath, 'utf8')}`;
+
+    const result = await useCase.execute({
+      targetStage: STAGE_IMPLEMENT,
+      issue: 16,
+      workspaceDir: tempDir,
+      noWorktree: true
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.approvedPlanDigest, expected);
+    assert.strictEqual(result.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.savedSnapshot?.approvedPlanDigest, expected);
+  });
+
+  test('TS-D10 (#421): a QUALITY_GATE -> IMPLEMENT retry neither refuses nor re-records', async () => {
+    const machine = machineAt('QUALITY_GATE');
+    machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
+    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
+
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (edited during retry)\n', 'utf8');
+
+    const result = await useCase.execute({
+      targetStage: STAGE_IMPLEMENT,
+      issue: 16,
+      workspaceDir: tempDir,
+      noWorktree: true
+    });
+
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      result.approvedPlanDigest,
+      'digest:the-approved-bytes',
+      'the self-correction exemption must survive #421'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+    assert.strictEqual(stateRepo.savedSnapshot?.approvedPlanDigest, 'digest:the-approved-bytes');
+  });
+
 
   // -------------------------------------------------------------------------
   // Issue #408 (D1): a refused exit consumes NOTHING.

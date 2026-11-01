@@ -1218,6 +1218,132 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
     assert.strictEqual(result.stateMachine.approvedPlanDigest, null);
     assert.strictEqual(stateRepo.saveCallCount, 0);
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #421: the APPROVAL digest is an identity, not a formality.
+  // -------------------------------------------------------------------------
+
+  test('SI-D4: implement refuses a plan edited after approval', async () => {
+    const planGen = new MockPlanGenerator(planDir);
+    const approved = planGen.hashPlanDocument(planPath);
+    const stateRepo = new MockStateRepository(
+      snapshotAt(STAGE_APPROVAL, {
+        approvedPlanDigest: approved,
+        approvedPlanPath: planPath
+      })
+    );
+    const worktreeManager = new MockWorktreeManager(tempDir);
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new MockConfigRepository(),
+      planGen,
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (edited)\n', 'utf8');
+    const edited = planGen.hashPlanDocument(planPath);
+
+    await assert.rejects(
+      async () => useCase.execute({ issue: 16, workspaceDir: tempDir }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'approvedPlanDigest');
+        assert.ok(err.message.includes(planPath), err.message);
+        assert.ok(err.message.includes(approved), err.message);
+        assert.ok(err.message.includes(edited), err.message);
+        assert.match(err.message, /changed after approval/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0, 'a refusal must persist nothing');
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, approved);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanPath, planPath);
+    assert.strictEqual(worktreeManager.createWorktreeCallCount, 0, 'a refusal provisions nothing');
+    assert.ok(!fs.existsSync(path.join(tempDir, '.worktrees')));
+  });
+
+  test('SI-D5: a matching plan keeps the gate-time identity', async () => {
+    const planGen = new MockPlanGenerator(planDir);
+    const approved = planGen.hashPlanDocument(planPath);
+    const stateRepo = new MockStateRepository(
+      snapshotAt(STAGE_APPROVAL, {
+        approvedPlanDigest: approved,
+        approvedPlanPath: planPath
+      })
+    );
+    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+
+    // A different resolution (byte-identical copy) must not overwrite the
+    // recorded path: the APPROVAL checkpoint owns the identity.
+    const copyPath = path.join(tempDir, 'copy-of-approved-plan.md');
+    fs.copyFileSync(planPath, copyPath);
+
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir,
+      planPath: copyPath
+    });
+
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, approved);
+    assert.strictEqual(result.stateMachine.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, approved);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  test('SI-D6: a YOLO PLAN entry still records the digest', async () => {
+    const stateRepo = new MockStateRepository(
+      snapshotAt(STAGE_PLAN, { mode: MODE_YOLO })
+    );
+    const planGen = new MockPlanGenerator(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const expected = planGen.hashPlanDocument(planPath);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, expected);
+    assert.strictEqual(result.stateMachine.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, expected);
+  });
+
+  test('SI-D7: a dry-run mismatch warns and writes nothing', async () => {
+    const planGen = new MockPlanGenerator(planDir);
+    const actual = planGen.hashPlanDocument(planPath);
+    const stateRepo = new MockStateRepository(
+      snapshotAt(STAGE_APPROVAL, {
+        approvedPlanDigest: 'wrong-digest',
+        approvedPlanPath: planPath
+      })
+    );
+    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    try {
+      const result = await useCase.execute({
+        issue: 16,
+        workspaceDir: tempDir,
+        dryRun: true
+      });
+      assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const refusal = warnings.find((line) => line.includes('wrong-digest')) ?? '';
+    assert.ok(refusal.includes(planPath), warnings.join('\n'));
+    assert.ok(refusal.includes('wrong-digest'), warnings.join('\n'));
+    assert.ok(refusal.includes(actual as string), warnings.join('\n'));
+    assert.strictEqual(stateRepo.saveCallCount, 0, '--dry-run must write nothing');
+  });
 });
 
 describe('StartImplementationUseCase - frozen smoke directive (issue #388)', () => {
