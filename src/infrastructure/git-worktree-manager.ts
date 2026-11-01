@@ -56,8 +56,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * Resolves the primary repository root.
    * When inside a linked git worktree or nested subdirectory, git rev-parse --show-toplevel
    * returns the worktree path itself, not the primary repo root.
-   * git worktree list --porcelain outputs all worktrees, and the very first worktree listed
-   * is always the main repository root.
+   * git worktree list --porcelain normally lists the primary work tree first.
+   * With separate Git metadata (including submodules), that entry can instead
+   * name the metadata directory; fall back to the caller's actual top level.
    */
   private async getRepoRoot(workspaceDir?: string): Promise<string> {
     const cwd = workspaceDir || process.cwd();
@@ -67,7 +68,13 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         const firstLine = res.stdout.trim().split('\n')[0] || '';
         const match = firstLine.match(/^worktree (.+)$/);
         if (match && match[1]) {
-          return path.resolve(match[1].trim());
+          const candidate = path.resolve(match[1].trim());
+          const probe = await this.commandExecutor.execute('git rev-parse --is-inside-work-tree', {
+            cwd: candidate
+          });
+          if (probe.exitCode === 0 && probe.stdout.trim() !== 'false') {
+            return candidate;
+          }
         }
       }
     } catch {
@@ -355,9 +362,9 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * write, and its failure keeps the existing `WorktreeCreationError` framing
    * so every caller's handling is unchanged.
    *
-   * Git's own answer is authoritative (linked worktrees, submodules,
-   * `--separate-git-dir` and bare layouts), so any exit code 0 is accepted —
-   * the stdout is not required to read `true`.
+   * Git's stdout must say `true`: a bare repository exits 0 but answers
+   * `false`. Normal, linked, submodule and `--separate-git-dir` work trees
+   * all answer `true`, so no filesystem-layout assumptions are needed.
    */
   private async assertGitWorkTree(workspace: string, taskId: string): Promise<void> {
     let probe: CommandExecutionResult;
@@ -375,7 +382,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         err
       );
     }
-    if (probe.exitCode !== 0) {
+    if (probe.exitCode !== 0 || probe.stdout.trim() !== 'true') {
       const detail = (probe.stderr || probe.stdout || '').trim();
       throw new WorktreeCreationError(
         'createWorktree',
