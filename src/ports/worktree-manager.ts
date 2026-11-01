@@ -110,6 +110,17 @@ export interface ProvisioningStateProbeOptions {
 }
 
 /**
+ * Input to the pre-write workspace guard (issue #428).
+ *
+ * `workspaceDir` defaults to `process.cwd()`; `issue` only shapes the refusal
+ * message and may be omitted when the caller has no issue yet.
+ */
+export interface AssertWorkspaceProvisionableOptions {
+  readonly workspaceDir?: string;
+  readonly issue?: number | null;
+}
+
+/**
  * Failure-aware answer to "what existed BEFORE provisioning?" (issue #426).
  *
  * Both fields are `null` EXACTLY when the underlying read failed. `[]` is only
@@ -270,6 +281,21 @@ export interface WorktreeManagerPort {
    * `null` means the read failed; `[]` means a successful read found nothing.
    */
   probeProvisioningState?(options?: ProvisioningStateProbeOptions): Promise<ProvisioningStateProbe>;
+
+  /**
+   * Refuses a workspace that cannot host a worktree, before any state is
+   * written (issue #428).
+   *
+   * The guard judges the workspace the OPERATOR named (`workspaceDir`, else
+   * the cwd) and writes nothing: it only probes git and throws the same
+   * `WorktreeCreationError('createWorktree', …)` that `createWorktree` throws.
+   * `RunLifecycleUseCase` calls it before the first checkpoint save, so a
+   * refusal's "Nothing was written." is measured rather than asserted.
+   *
+   * Optional: an adapter that cannot probe git omits it, and the lifecycle
+   * then keeps its previous ordering (the refusal happens in `createWorktree`).
+   */
+  assertWorkspaceProvisionable?(options?: AssertWorkspaceProvisionableOptions): Promise<void>;
 
   /**
    * Creates a branch from a specified start point.

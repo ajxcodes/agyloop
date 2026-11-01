@@ -43,12 +43,28 @@ import {
   CommandExecutionResult,
   QuarantineWorktreeResult,
   ProvisioningStateProbeOptions,
-  ProvisioningStateProbe
+  ProvisioningStateProbe,
+  AssertWorkspaceProvisionableOptions
 } from '../ports';
 import { ProcessCommandExecutor } from './process-command-executor';
 
+/** Answer to the "can this directory host a work tree?" probe (issue #428). */
+type WorkTreeProbeAnswer =
+  | { readonly status: 'work-tree' }
+  | { readonly status: 'bare'; readonly detail: string }
+  | { readonly status: 'not-a-work-tree'; readonly detail: string }
+  | { readonly status: 'probe-failed'; readonly detail: string };
+
 export class GitWorktreeManager implements WorktreeManagerPort {
   private readonly commandExecutor: CommandExecutorPort;
+
+  /**
+   * One git call, two answers. `--is-inside-work-tree` prints `true`/`false`
+   * and exits 0 whenever it can answer; `--is-bare-repository` only selects
+   * the refusal message (issue #428).
+   */
+  private static readonly WORK_TREE_PROBE =
+    'git rev-parse --is-inside-work-tree --is-bare-repository';
 
   constructor(commandExecutor?: CommandExecutorPort) {
     this.commandExecutor = commandExecutor || new ProcessCommandExecutor();
@@ -346,8 +362,39 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     return DEFAULT_BASE_BRANCH;
   }
 
+  /** Runs the one-call `WORK_TREE_PROBE` and interprets its two answers (#428). */
+  private async probeWorkTree(workspace: string): Promise<WorkTreeProbeAnswer> {
+    let res: CommandExecutionResult;
+    try {
+      res = await this.commandExecutor.execute(GitWorktreeManager.WORK_TREE_PROBE, {
+        cwd: workspace
+      });
+    } catch (err) {
+      return { status: 'probe-failed', detail: err instanceof Error ? err.message : String(err) };
+    }
+    if (res.exitCode !== 0) {
+      return {
+        status: 'not-a-work-tree',
+        detail: (res.stderr || res.stdout || '').trim() || `git exited with ${res.exitCode}`
+      };
+    }
+    const [inside = '', bare = ''] = (res.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (inside === 'true') return { status: 'work-tree' };
+    if (bare === 'true') return { status: 'bare', detail: 'is a bare repository, not a work tree' };
+    // Exit 0 is NOT enough: a bare repo, a git directory and a `GIT_DIR`+`GIT_WORK_TREE`
+    // run whose cwd is outside the tree all exit 0 without being a work tree. Fail closed
+    // on anything but a literal `true`.
+    return {
+      status: 'not-a-work-tree',
+      detail: `git answered '${inside || '(no output)'}' to --is-inside-work-tree`
+    };
+  }
+
   /**
-   * Refuses a workspace that is not inside a git work tree (issue #425).
+   * Refuses a workspace that cannot host a work tree (issues #425, #428).
    *
    * `getRepoRoot` deliberately falls back to `path.resolve(cwd)` when git
    * cannot answer, so without this probe a non-repository workspace would be
@@ -358,48 +405,89 @@ export class GitWorktreeManager implements WorktreeManagerPort {
    * so every caller's handling is unchanged.
    *
    * Git's own answer is authoritative (linked worktrees, submodules,
-   * `--separate-git-dir` and bare layouts), so any exit code 0 is accepted —
-   * the stdout is not required to read `true`.
+   * `--separate-git-dir`), but the EXIT CODE is only a second signal:
+   * `git rev-parse --is-inside-work-tree` is a query that prints `true` or
+   * `false` and exits 0 whenever it can answer. A BARE repository prints
+   * `false` with exit 0 — it is the one layout that can never host a worktree —
+   * and a git directory or a `GIT_DIR`+`GIT_WORK_TREE` run from outside the
+   * tree answers `false` with exit 0 too. So STDOUT is authoritative: the
+   * workspace passes only when the exit code is 0 and the first stdout line is
+   * literally `true`; empty stdout fails closed. `--is-bare-repository` only
+   * selects the refusal message; it never widens the pass condition.
+   *
+   * The probe judges the workspace the OPERATOR named (`workspaceDir`, else
+   * the cwd), not a path `getRepoRoot` rewrote: for a submodule and a
+   * `--separate-git-dir` checkout `getRepoRoot` returns a git directory, which
+   * would be refused even though the operator's workspace is a real work tree.
+   *
+   * The refusal runs before `ensureGitIgnore`, before `.worktrees` and —
+   * through `assertWorkspaceProvisionable` — before the first checkpoint save,
+   * which is what makes `Nothing was written.` measured rather than asserted.
    */
   private async assertGitWorkTree(workspace: string, taskId: string): Promise<void> {
-    let probe: CommandExecutionResult;
-    try {
-      probe = await this.commandExecutor.execute('git rev-parse --is-inside-work-tree', {
-        cwd: workspace
-      });
-    } catch (err) {
+    const answer = await this.probeWorkTree(workspace);
+    if (answer.status === 'work-tree') return;
+
+    const forIssue = taskId ? ` for issue #${taskId}` : '';
+    const remedy = 'Point --workspace at a git repository, or pass --no-worktree. Nothing was written.';
+    if (answer.status === 'probe-failed') {
       throw new WorktreeCreationError(
         'createWorktree',
-        `Refusing to create a worktree in '${workspace}': the repository could not be probed (${
-          err instanceof Error ? err.message : String(err)
-        }). Nothing was written.`,
-        { taskId },
-        err
-      );
-    }
-    if (probe.exitCode !== 0) {
-      const detail = (probe.stderr || probe.stdout || '').trim();
-      throw new WorktreeCreationError(
-        'createWorktree',
-        `Refusing to create a worktree for issue #${taskId}: '${workspace}' is not inside a git work tree` +
-          `${detail ? ` (${detail})` : ''}. Point --workspace at a git repository, or pass --no-worktree. Nothing was written.`,
+        `Refusing to create a worktree in '${workspace}': the repository could not be probed (${answer.detail}). Nothing was written.`,
         { taskId }
       );
     }
+    if (answer.status === 'bare') {
+      throw new WorktreeCreationError(
+        'createWorktree',
+        `Refusing to create a worktree${forIssue}: '${workspace}' is a bare repository, not a work tree. ` +
+          `A bare repository cannot host a worktree. ${remedy}`,
+        { taskId }
+      );
+    }
+    throw new WorktreeCreationError(
+      'createWorktree',
+      `Refusing to create a worktree${forIssue}: '${workspace}' is not inside a git work tree` +
+        `${answer.detail ? ` (${answer.detail})` : ''}. ${remedy}`,
+      { taskId }
+    );
+  }
+
+  /**
+   * Refuses a workspace that cannot host a worktree, before any state is
+   * written (issue #428).
+   *
+   * Same probe and same error as `createWorktree`, but it never resolves or
+   * writes: the lifecycle calls it before the first checkpoint save so a
+   * refused `--workspace` receives no `.agyloop`, no `.gitignore` and no
+   * `.worktrees`.
+   */
+  public async assertWorkspaceProvisionable(
+    options: AssertWorkspaceProvisionableOptions = {}
+  ): Promise<void> {
+    const workspace = path.resolve(options.workspaceDir || process.cwd());
+    const taskId =
+      options.issue === null || options.issue === undefined ? '' : String(options.issue);
+    await this.assertGitWorkTree(workspace, taskId);
   }
 
   /**
    * Provisions an isolated git worktree under .worktrees/<task-id> on branch task/<task-id>-<slug>.
    */
   public async createWorktree(options: CreateWorktreeOptions): Promise<WorktreeDescriptor> {
-    const workspace = await this.getRepoRoot(options.workspaceDir);
     const taskId = String(options.taskId).trim();
     if (!taskId) {
       throw new WorktreeCreationError('createWorktree', 'Task ID is required to create a worktree.');
     }
 
-    // #425: nothing may be written into a directory that is not a git work tree.
-    await this.assertGitWorkTree(workspace, taskId);
+    const operatorWorkspace = path.resolve(options.workspaceDir || process.cwd());
+    // #425/#428: nothing may be written into a directory that is not a git work tree.
+    // #428: probe the workspace the OPERATOR named. Probing `getRepoRoot(...)` instead
+    // would judge a git directory for submodules / --separate-git-dir and refuse layouts
+    // that are legitimate work trees.
+    await this.assertGitWorkTree(operatorWorkspace, taskId);
+
+    const workspace = await this.getRepoRoot(operatorWorkspace);
 
     const slug =
       options.slug !== undefined && options.slug !== null

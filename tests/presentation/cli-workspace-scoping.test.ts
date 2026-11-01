@@ -18,6 +18,8 @@
  *   WS-5  a non-git *workspace* is refused before anything is written
  *   WS-6  every lifecycle call site threads the workspace
  *   WS-7  the flag is documented truthfully
+ *   WS-8  a bare workspace is refused before any write (#428)
+ *   WS-9  a plain non-git workspace is refused before state init (#428)
  */
 
 const { describe, test, afterEach } = require('node:test');
@@ -401,6 +403,59 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     assert.ok(!fs.existsSync(path.join(plain, '.gitignore')), 'a refused provisioning must not write .gitignore');
     assert.ok(!fs.existsSync(path.join(other, '.worktrees')), 'the invocation cwd must not be provisioned');
     assert.strictEqual(gitStatus(other), otherStatusBefore, 'the invocation cwd must be untouched');
+  });
+
+  test('WS-8: a bare workspace is refused, names the real reason, and receives no write (AC1, AC2)', async () => {
+    const base = sandbox();
+    const bare = path.join(base, 'bare');
+    const other = path.join(base, 'other');
+    fs.mkdirSync(bare, { recursive: true });
+    execFileSync('git', ['init', '-q', '--bare'], { cwd: bare });
+    makeRepo(other);
+
+    const stateFile = seedApprovedCheckpoint(bare, null);
+    const checkpointBefore = fs.readFileSync(stateFile);
+    const otherStatusBefore = gitStatus(other);
+    const binDir = ghStub(base);
+
+    const run = await runIn(other, ['implement', '--issue', TASK, '--workspace', bare], binDir);
+    assert.notStrictEqual(run.code, 0, `a bare workspace must be refused: ${run.stdout}\n${run.stderr}`);
+
+    const output = `${run.stdout}\n${run.stderr}`;
+    assert.ok(output.includes(bare), `the refusal must name the bare workspace:\n${output}`);
+    assert.match(output, /bare repository, not a work tree/);
+    assert.ok(output.includes('--no-worktree'), `the refusal must keep the --no-worktree remedy:\n${output}`);
+    assert.doesNotMatch(output, /invalid reference/, 'the late git error must not surface');
+
+    assert.ok(!fs.existsSync(path.join(bare, '.gitignore')), 'a refused bare workspace must not receive .gitignore');
+    assert.ok(!fs.existsSync(path.join(bare, '.worktrees')), 'a refused bare workspace must not receive .worktrees');
+    assert.deepStrictEqual(
+      fs.readFileSync(stateFile),
+      checkpointBefore,
+      'the refused run must keep the checkpoint byte-identical'
+    );
+    assert.strictEqual(gitStatus(other), otherStatusBefore, 'the invocation cwd must be untouched');
+  });
+
+  test('WS-9: a plain non-git workspace with no checkpoint is refused before state initialization (AC5)', async () => {
+    const base = sandbox();
+    const plain = path.join(base, 'plain');
+    const other = path.join(base, 'other');
+    makeRepo(other);
+    fs.mkdirSync(plain, { recursive: true });
+
+    const binDir = ghStub(base);
+    const run = await runIn(other, ['implement', '--issue', TASK, '--workspace', plain], binDir);
+    assert.notStrictEqual(run.code, 0, `a plain non-git workspace must be refused: ${run.stdout}\n${run.stderr}`);
+
+    const output = `${run.stdout}\n${run.stderr}`;
+    assert.match(output, /not inside a git work tree/);
+    assert.ok(output.includes(plain), `the refusal must name the plain workspace:\n${output}`);
+    assert.deepStrictEqual(
+      fs.readdirSync(plain),
+      [],
+      'a refused workspace must receive no .agyloop, .gitignore or .worktrees'
+    );
   });
 
   test('WS-6: every lifecycle call site threads the workspace', () => {
