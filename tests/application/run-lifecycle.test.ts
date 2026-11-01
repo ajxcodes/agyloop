@@ -320,26 +320,38 @@ class MockWorktreeManager {
  * Records provisioning/teardown calls IN ORDER, so "was provenance captured
  * before provisioning?" and "what was removed?" are observable assertions
  * (issue #420).
+ *
+ * #426: `probedWorktreePaths`/`probedBranches` model the truthful probe AND the
+ * adapter's `null → []` collapse — `listWorktrees`/`listBranches` derive from the
+ * same fields, so `null` there reads as `[]` exactly like the real adapter's
+ * failed read does.
  */
 class RecordingWorktreeManager {
   public calls: string[] = [];
   public removedOptions: any[] = [];
   public deletedBranches: any[] = [];
 
-  /** Pre-provisioning state the recorder reports; configurable per case. */
-  public existingWorktreePaths: string[] = [];
-  public existingBranches: readonly string[] | null = ['main'];
+  /** Pre-provisioning state the probe reports; `null` = the read failed. */
+  public probedWorktreePaths: readonly string[] | null = [];
+  public probedBranches: readonly string[] | null = ['main'];
 
-  public listWorktreesError: Error | null = null;
-  public listBranchesError: Error | null = null;
+  public probeCalls = 0;
+  public probeError: Error | null = null;
+
   public removeWorktreeError: Error | null = null;
 
   public createWorktreeCount = 0;
 
+  public async probeProvisioningState(): Promise<any> {
+    this.calls.push('probeProvisioningState');
+    this.probeCalls++;
+    if (this.probeError) throw this.probeError;
+    return { worktreePaths: this.probedWorktreePaths, localBranches: this.probedBranches };
+  }
+
   public async listWorktrees(): Promise<any[]> {
     this.calls.push('listWorktrees');
-    if (this.listWorktreesError) throw this.listWorktreesError;
-    return this.existingWorktreePaths.map((worktreePath) =>
+    return (this.probedWorktreePaths ?? []).map((worktreePath) =>
       WorktreeDescriptor.create({
         taskId: 32,
         worktreePath,
@@ -351,8 +363,7 @@ class RecordingWorktreeManager {
 
   public async listBranches(): Promise<readonly string[]> {
     this.calls.push('listBranches');
-    if (this.listBranchesError) throw this.listBranchesError;
-    return this.existingBranches ?? [];
+    return this.probedBranches ?? [];
   }
 
   public async createWorktree(): Promise<any> {
@@ -2618,9 +2629,10 @@ Score content from either shape and make the park name the empty sections and bl
 
       assert.deepStrictEqual(
         manager.calls,
-        ['listWorktrees', 'listBranches', 'createWorktree', 'removeWorktree', 'deleteBranch'],
+        ['probeProvisioningState', 'createWorktree', 'removeWorktree', 'deleteBranch'],
         'provenance must be captured BEFORE provisioning, then the created worktree/branch removed'
       );
+      assert.strictEqual(manager.probeCalls, 1, 'provenance must be probed exactly once');
 
       assert.strictEqual(manager.removedOptions.length, 1);
       assert.deepStrictEqual(manager.removedOptions[0], {
@@ -2648,7 +2660,7 @@ Score content from either shape and make the park name the empty sections and bl
       const { manager, lifecycle, seeded } = buildRefusingLifecycle(
         new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2'),
         (m) => {
-          m.existingBranches = ['main', BRANCH];
+          m.probedBranches = ['main', BRANCH];
         }
       );
 
@@ -2663,7 +2675,7 @@ Score content from either shape and make the park name the empty sections and bl
       const { manager, lifecycle } = buildRefusingLifecycle(
         new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2'),
         (m) => {
-          m.existingWorktreePaths = [DESCRIPTOR_PATH];
+          m.probedWorktreePaths = [DESCRIPTOR_PATH];
         }
       );
 
@@ -2722,6 +2734,7 @@ Score content from either shape and make the park name the empty sections and bl
 
       assert.strictEqual(manager.calls.includes('listWorktrees'), false);
       assert.strictEqual(manager.calls.includes('listBranches'), false);
+      assert.strictEqual(manager.probeCalls, 0, 'no provenance is captured when a descriptor already exists');
       assert.strictEqual(manager.calls.includes('removeWorktree'), false);
       assert.strictEqual(manager.calls.includes('deleteBranch'), false);
       assert.ok(stateRepo.savedSnapshot.worktree, 'the pre-existing descriptor must survive');
@@ -2782,18 +2795,24 @@ Score content from either shape and make the park name the empty sections and bl
     });
 
     test('IMPL-420-8: unknown branch provenance removes the worktree but leaves the branch', async () => {
-      const { manager, lifecycle, seeded } = buildRefusingLifecycle(
+      const { manager, lifecycle, seeded, progress } = buildRefusingLifecycle(
         new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2'),
         (m) => {
-          m.listBranchesError = new Error('git branch failed');
+          m.probedWorktreePaths = [];
+          m.probedBranches = null;
         }
       );
 
-      await assert.rejects(() => lifecycle.execute(runParams()));
+      await assert.rejects(() =>
+        lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) }))
+      );
 
       assert.strictEqual(manager.removedOptions.length, 1);
       assert.strictEqual(manager.calls.includes('deleteBranch'), false);
       assert.deepStrictEqual(pick(stateRepo.savedSnapshot), pick(seeded));
+      assert.strictEqual(progress.length, 1, `exactly one warning: ${JSON.stringify(progress)}`);
+      assert.ok(progress[0].includes(BRANCH), progress[0]);
+      assert.ok(progress[0].includes(`git branch -D ${BRANCH}`), progress[0]);
     });
 
     test('IMPL-420-9: the success path provisions once and removes nothing', async () => {
@@ -2843,6 +2862,7 @@ Score content from either shape and make the park name the empty sections and bl
       const result = await lifecycle.execute(runParams());
 
       assert.strictEqual(manager.createWorktreeCount, 1);
+      assert.strictEqual(manager.probeCalls, 1, 'the success path captures provenance once, before provisioning');
       assert.strictEqual(manager.calls.includes('removeWorktree'), false);
       assert.strictEqual(manager.calls.includes('deleteBranch'), false);
       assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
@@ -2858,10 +2878,266 @@ Score content from either shape and make the park name the empty sections and bl
         await assert.rejects(() => lifecycle.execute(runParams(extra)));
 
         assert.strictEqual(manager.createWorktreeCount, 0, `no provisioning for ${JSON.stringify(extra)}`);
+        assert.strictEqual(manager.probeCalls, 0, `no provenance for ${JSON.stringify(extra)}`);
         assert.strictEqual(manager.calls.includes('removeWorktree'), false);
         assert.strictEqual(manager.calls.includes('deleteBranch'), false);
         assert.strictEqual(stateRepo.saveCount, 0, `nothing may be written for ${JSON.stringify(extra)}`);
       }
+    });
+  });
+
+  /**
+   * Issue #426: a failed provenance probe must read as UNKNOWN, never as
+   * "nothing existed", and every path that keeps something the run may have
+   * created must say so.
+   */
+  describe('provenance probe failure and branch retention (#426)', () => {
+    const SEEDED_UPDATED_AT = '2026-11-01T00:00:00.000Z';
+    const DESCRIPTOR_PATH = '/mock/workspace/.worktrees/32';
+    const BRANCH = 'task/32';
+
+    function seedApprovalSnapshot(overrides: Record<string, any> = {}): any {
+      return {
+        version: '1.0.0',
+        currentStage: STAGE_APPROVAL,
+        mode: MODE_IMPLEMENT,
+        issue: 32,
+        milestoneTitle: null,
+        baseBranch: 'main',
+        worktree: null,
+        planDir: '/mock/workspace/artifacts/plans/32-test-feature',
+        planPath: null,
+        approvedPlanDigest: 'seeded-approved-digest',
+        approvedPlanPath: '/mock/workspace/artifacts/plans/32-test-feature/implementation_plan.md',
+        triagePayload: null,
+        triageDisposition: null,
+        createdAt: SEEDED_UPDATED_AT,
+        updatedAt: SEEDED_UPDATED_AT,
+        history: [{ stage: STAGE_APPROVAL, timestamp: SEEDED_UPDATED_AT }],
+        pausedAtGate: GATE_APPROVAL,
+        pausedAtTimestamp: null,
+        totalHumanWaitMs: 0,
+        ...overrides
+      };
+    }
+
+    function buildRefusingLifecycle(
+      error: Error,
+      configure?: (manager: RecordingWorktreeManager) => void
+    ): { manager: RecordingWorktreeManager; lifecycle: any; seeded: any; progress: string[] } {
+      const manager = new RecordingWorktreeManager();
+      configure?.(manager);
+      const seeded = seedApprovalSnapshot();
+      stateRepo = new MockStateRepository(seeded);
+      const progress: string[] = [];
+      const lifecycle = new RunLifecycleUseCase({
+        stateRepo,
+        configRepo,
+        planGenerator,
+        githubGateway,
+        commandExecutor,
+        buildDetector,
+        standardsRepo,
+        critique,
+        confirmationPrompt,
+        worktreeManager: manager,
+        inferBaseBranchUseCase: {
+          execute: async () => ({ baseBranch: 'main', taskBranchPrefix: 'task' })
+        } as any,
+        runPreFlightCheckUseCase: {
+          execute: async () => ({
+            action: 'PROCEED',
+            message: '',
+            canProceed: true,
+            isHalt: false,
+            isResume: false
+          })
+        } as any,
+        startImplementationUseCase: {
+          execute: async () => {
+            throw error;
+          }
+        } as any
+      });
+      return { manager, lifecycle, seeded, progress };
+    }
+
+    function runParams(extra: Record<string, any> = {}): any {
+      return {
+        mode: MODE_IMPLEMENT,
+        issue: 32,
+        workspaceDir: '/mock/workspace',
+        ...extra
+      };
+    }
+
+    function pick(snapshot: any): any {
+      return {
+        currentStage: snapshot.currentStage,
+        worktree: snapshot.worktree,
+        baseBranch: snapshot.baseBranch,
+        pausedAtGate: snapshot.pausedAtGate,
+        approvedPlanDigest: snapshot.approvedPlanDigest,
+        updatedAt: snapshot.updatedAt
+      };
+    }
+
+    test('IMPL-426-1: a failed worktree probe keeps the adopted worktree and branch', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, progress } = buildRefusingLifecycle(guardError, (m) => {
+        m.probedWorktreePaths = null;
+        m.probedBranches = ['main', BRANCH];
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.strictEqual(manager.calls.includes('removeWorktree'), false);
+      assert.strictEqual(manager.calls.includes('deleteBranch'), false);
+      assert.strictEqual(
+        stateRepo.savedSnapshot.worktree.worktreePath,
+        DESCRIPTOR_PATH,
+        'the descriptor must be kept so the surviving worktree stays discoverable'
+      );
+      assert.strictEqual(progress.length, 1, `exactly one warning: ${JSON.stringify(progress)}`);
+      assert.ok(progress[0].includes(DESCRIPTOR_PATH), progress[0]);
+      assert.ok(progress[0].includes('could not prove'), progress[0]);
+      assert.ok(progress[0].includes('codeloop worktree remove 32'), progress[0]);
+    });
+
+    test('IMPL-426-2: an adapter without probeProvisioningState removes nothing and warns', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, progress } = buildRefusingLifecycle(guardError, (m) => {
+        // The class method lives on the prototype; shadow it away on the instance.
+        (m as any).probeProvisioningState = undefined;
+        // The reader that cannot prove it answered would collapse this to [].
+        m.probedWorktreePaths = null;
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.strictEqual(manager.calls.includes('removeWorktree'), false);
+      assert.strictEqual(manager.calls.includes('deleteBranch'), false);
+      assert.strictEqual(
+        manager.calls.includes('listWorktrees'),
+        false,
+        'provenance is never read from a reader that cannot prove it answered'
+      );
+      assert.strictEqual(manager.calls.includes('listBranches'), false);
+      assert.strictEqual(manager.probeCalls, 0, 'an absent probe is never called');
+      assert.ok(stateRepo.savedSnapshot.worktree, 'the descriptor must be kept');
+      assert.strictEqual(progress.length, 1, `exactly one warning: ${JSON.stringify(progress)}`);
+      assert.ok(progress[0].includes(DESCRIPTOR_PATH), progress[0]);
+    });
+
+    test('IMPL-426-3: a throwing probe is unknown', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, progress } = buildRefusingLifecycle(guardError, (m) => {
+        m.probeError = new Error('probe exploded');
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.strictEqual(manager.calls.includes('removeWorktree'), false);
+      assert.strictEqual(manager.calls.includes('deleteBranch'), false);
+      assert.ok(stateRepo.savedSnapshot.worktree, 'the descriptor must be kept');
+      assert.strictEqual(progress.length, 1, `exactly one warning: ${JSON.stringify(progress)}`);
+    });
+
+    test('IMPL-426-4: a manager without deleteBranch reports the retained branch', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, progress } = buildRefusingLifecycle(guardError, (m) => {
+        m.probedWorktreePaths = [];
+        m.probedBranches = ['main'];
+        (m as any).deleteBranch = undefined;
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.strictEqual(manager.removedOptions.length, 1);
+      assert.strictEqual(manager.calls.includes('deleteBranch'), false);
+      assert.strictEqual(progress.length, 1, `exactly one warning: ${JSON.stringify(progress)}`);
+      assert.match(progress[0], /cannot delete branch 'task\/32'/);
+      assert.match(progress[0], /git branch -D task\/32/);
+      assert.strictEqual(stateRepo.savedSnapshot.worktree, null, 'the checkpoint must be restored');
+    });
+
+    test('IMPL-426-5: a failed branch probe keeps the branch and reports it', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, progress } = buildRefusingLifecycle(guardError, (m) => {
+        m.probedWorktreePaths = [];
+        m.probedBranches = null;
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.strictEqual(manager.removedOptions.length, 1);
+      assert.strictEqual(manager.calls.includes('deleteBranch'), false);
+      assert.strictEqual(progress.length, 1, `exactly one warning: ${JSON.stringify(progress)}`);
+      assert.ok(progress[0].includes(BRANCH), progress[0]);
+      assert.ok(progress[0].includes(`git branch -D ${BRANCH}`), progress[0]);
+      assert.strictEqual(stateRepo.savedSnapshot.worktree, null, 'the checkpoint must be restored');
+    });
+
+    test('IMPL-426-6: truthful provenance still discards what it created', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, seeded, progress } = buildRefusingLifecycle(guardError, (m) => {
+        m.probedWorktreePaths = [];
+        m.probedBranches = ['main'];
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.deepStrictEqual(manager.calls, [
+        'probeProvisioningState',
+        'createWorktree',
+        'removeWorktree',
+        'deleteBranch'
+      ]);
+      assert.strictEqual(progress.length, 0, `a clean teardown must not warn: ${JSON.stringify(progress)}`);
+      assert.deepStrictEqual(pick(stateRepo.savedSnapshot), pick(seeded));
+    });
+
+    test('IMPL-426-7: an adopted worktree survives silently', async () => {
+      const guardError = new ValidationError('planBaseline', 'BL-1', 'claim BL-1 exited 2');
+      const { manager, lifecycle, progress } = buildRefusingLifecycle(guardError, (m) => {
+        m.probedWorktreePaths = [DESCRIPTOR_PATH];
+        m.probedBranches = ['main', BRANCH];
+      });
+
+      await assert.rejects(
+        () =>
+          lifecycle.execute(runParams({ onProgress: (message: string) => progress.push(message) })),
+        (err: any) => err === guardError
+      );
+
+      assert.strictEqual(manager.calls.includes('removeWorktree'), false);
+      assert.strictEqual(manager.calls.includes('deleteBranch'), false);
+      assert.strictEqual(progress.length, 0, `leaving an adopted worktree must not warn: ${JSON.stringify(progress)}`);
+      assert.ok(stateRepo.savedSnapshot.worktree, 'the descriptor must be kept');
     });
   });
 });
