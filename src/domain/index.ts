@@ -54,6 +54,11 @@ export * from './value-objects/run-evidence';
 export * from './value-objects/gate-result-report';
 export * from './value-objects/gate-report-fixture';
 export * from './value-objects/gate-target-coverage';
+export * from './value-objects/json-block';
+export * from './value-objects/plan-deviation';
+export * from './value-objects/test-register';
+export * from './value-objects/plan-evidence-paths';
+export * from './value-objects/ac-evidence';
 export * from './value-objects/workspace-mutation';
 export * from './entities/state-machine';
 

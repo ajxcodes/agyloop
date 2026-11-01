@@ -61,7 +61,10 @@ import {
   GATE_TEST_EVIDENCE_GAP_UNMEASURED,
   formatGateReportPreservedNote,
   formatGateReportSaveFaultNote,
-  formatTransitionRecoveryCommands
+  formatTransitionRecoveryCommands,
+  // Issue #432: the deviation channel and the two new APPROVAL contracts.
+  formatPlanDeviationUnacknowledgedMessage,
+  isUnacknowledged
 } from '../domain';
 import {
   StateRepository,
@@ -69,6 +72,7 @@ import {
   PlanGeneratorPort,
   GateReportRepositoryPort,
   CommandExecutorPort,
+  SourceFileReaderPort,
   SummaryNotRunEntry,
   SummarySmokeCheck
 } from '../ports';
@@ -81,6 +85,8 @@ import {
   resolvePlanDigest
 } from './plan-digest-contract';
 import { assertSmokeProtocolContract as enforceSmokeProtocolContract } from './smoke-protocol-contract';
+import { assertPlanTestRegisterContract as enforcePlanTestRegisterContract } from './plan-test-register-contract';
+import { assertPlanEvidenceContract as enforcePlanEvidenceContract } from './plan-evidence-contract';
 
 export interface TransitionParams {
   readonly targetStage: string | StageName;
@@ -112,6 +118,12 @@ export class TransitionStageUseCase {
    * measurement.
    */
   private readonly commandExecutor?: CommandExecutorPort;
+  /**
+   * The Test Register's pinned-test reader (issue #432). Optional so every
+   * existing 1–6 argument construction keeps compiling; the CLI wires it, so a
+   * real approval resolves a pinned reference.
+   */
+  private readonly sourceFileReader?: SourceFileReaderPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -119,7 +131,8 @@ export class TransitionStageUseCase {
     inferBaseBranchUseCase?: InferBaseBranchUseCase,
     planGenerator?: PlanGeneratorPort,
     gateReportRepo?: GateReportRepositoryPort,
-    commandExecutor?: CommandExecutorPort
+    commandExecutor?: CommandExecutorPort,
+    sourceFileReader?: SourceFileReaderPort
   ) {
     this.stateRepo = stateRepo;
     this.worktreeManager = worktreeManager;
@@ -127,6 +140,7 @@ export class TransitionStageUseCase {
     this.planGenerator = planGenerator;
     this.gateReportRepo = gateReportRepo;
     this.commandExecutor = commandExecutor;
+    this.sourceFileReader = sourceFileReader;
   }
 
   public async execute(params: TransitionParams): Promise<StateMachine> {
@@ -328,6 +342,11 @@ export class TransitionStageUseCase {
       // declared baseline must be measured before it becomes normative.
       this.assertSmokeProtocolContract(sm, params, { freshApproval: true });
       await this.assertPlanBaselineContract(sm, params, { freshApproval: true });
+      // Issue #432: a Test Register literal the pinned test contradicts and an
+      // AC/checklist target on a path the commit can never contain are both
+      // refused HERE, before the digest records the plan as normative.
+      this.assertPlanTestRegisterContract(sm, params, { freshApproval: true });
+      this.assertPlanEvidenceContract(sm, params, { freshApproval: true });
       // Issue #421: the approval gate is where a plan becomes normative. Freeze
       // its identity in the SAME step that measured it, so a plan edited before
       // `codeloop implement` is compared against the bytes the operator saw.
@@ -371,6 +390,8 @@ export class TransitionStageUseCase {
         this.assertGateTargetContract(sm, params, { freshApproval: true });
         this.assertSmokeProtocolContract(sm, params, { freshApproval: true });
         await this.assertPlanBaselineContract(sm, params, { freshApproval: true });
+        this.assertPlanTestRegisterContract(sm, params, { freshApproval: true });
+        this.assertPlanEvidenceContract(sm, params, { freshApproval: true });
       }
       if (
         !params.dryRun &&
@@ -422,6 +443,16 @@ export class TransitionStageUseCase {
       gateEvidence !== null
     ) {
       this.assertGateReportRanTests(gateEvidence, activeIssue);
+    }
+
+    // Issue #432 (D-2): an unacknowledged plan deviation must be an explicit
+    // decision before the round is certified. The throw lands after
+    // `sm.transition()` (the in-memory hop) and BEFORE the save, exactly like
+    // the digest guard: nothing is persisted and the gate report is NOT
+    // consumed, so the operator can acknowledge and re-run without walking back
+    // to the gate.
+    if (prevStage === STAGE_QUALITY_GATE && targetStageStr === STAGE_REVIEW) {
+      this.assertPlanDeviationsAcknowledged(sm, params, activeIssue);
     }
 
     // Issue #283: DISCOVERY is where the RCA report is written, so the stage
@@ -724,6 +755,13 @@ export class TransitionStageUseCase {
               notes: (params.metadata?.note as string) || undefined
             });
           }
+
+          // Issue #432 (AC1/AC7): the deviation record reaches the summary with
+          // its acknowledgement state. Tri-state: absent records leave the
+          // section untouched; an empty list removes it.
+          this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
+            planDeviations: sm.planDeviations
+          });
         }
       }
     }
@@ -886,6 +924,62 @@ export class TransitionStageUseCase {
       commandExecutor: this.commandExecutor,
       dryRun: params.dryRun
     });
+  }
+
+  /** The two APPROVAL contracts' shared plan resolution (issue #432). */
+  private assertPlanTestRegisterContract(
+    sm: StateMachine,
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
+  ): void {
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
+    if (!resolved) return;
+    enforcePlanTestRegisterContract({
+      planGenerator: this.planGenerator,
+      sourceFileReader: this.sourceFileReader,
+      planPath: resolved.planPath,
+      workspaceDir: params.workspaceDir || process.cwd(),
+      dryRun: params.dryRun
+    });
+  }
+
+  private assertPlanEvidenceContract(
+    sm: StateMachine,
+    params: TransitionParams,
+    resolvedOptions: { freshApproval?: boolean } = {}
+  ): void {
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
+    if (!resolved) return;
+    enforcePlanEvidenceContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      workspaceDir: params.workspaceDir || process.cwd(),
+      dryRun: params.dryRun
+    });
+  }
+
+  /**
+   * Issue #432 (AC2): `QUALITY_GATE -> REVIEW` refuses while a deviation is
+   * unacknowledged. `--dry-run` warns instead of throwing, matching every
+   * other guard.
+   */
+  private assertPlanDeviationsAcknowledged(
+    sm: StateMachine,
+    params: TransitionParams,
+    issue: number | string | null
+  ): void {
+    const unacknowledged = sm.planDeviations.filter(isUnacknowledged);
+    if (unacknowledged.length === 0) return;
+    const reason = formatPlanDeviationUnacknowledgedMessage(unacknowledged, issue);
+    if (params.dryRun) {
+      console.warn(`[codeloop] Warning: ${reason}`);
+      return;
+    }
+    throw new ValidationError(
+      'planDeviations',
+      unacknowledged.map((record) => record.id),
+      reason
+    );
   }
 
   private recordApprovedPlanDigest(

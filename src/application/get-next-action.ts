@@ -110,7 +110,12 @@ import {
   formatDiscoveryBoundaryFindings,
   formatDiscoveryBoundaryGate,
   TITLE_DISCOVERY_BOUNDARY_VIOLATION,
-  MSG_DISCOVERY_BASELINE_UNRECORDED
+  MSG_DISCOVERY_BASELINE_UNRECORDED,
+  // Issue #432: the implementer's plan-deviation channel.
+  formatPlanDeviationChannelNote,
+  formatPlanDeviationUnacknowledgedMessage,
+  extractOutOfScopeDeclarations,
+  isUnacknowledged
 } from '../domain';
 import {
   StateRepository,
@@ -1039,6 +1044,28 @@ export class GetNextActionUseCase {
           );
         }
 
+        // Issue #432 (AC2): an unacknowledged plan deviation is evaluated BEFORE
+        // the evidence-filed advance, so the advice never tells the operator to
+        // run a command that will refuse.
+        const unacknowledgedDeviations = sm.planDeviations.filter(isUnacknowledged);
+        if (unacknowledgedDeviations.length > 0) {
+          const deviationReason = formatPlanDeviationUnacknowledgedMessage(
+            unacknowledgedDeviations,
+            activeIssue
+          );
+          return {
+            currentStage: STAGE_QUALITY_GATE,
+            nextStage: STAGE_REVIEW,
+            actionType: 'human_gate',
+            title: 'Plan Deviation Unacknowledged',
+            description: deviationReason,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: deviationReason
+          };
+        }
+
         // Issue #337: READ the evidence before writing a prompt that tells the
         // operator to file it. `gate-report` stamps the block with
         // `resolveGateRound(history)` and `transition REVIEW` accepts it only
@@ -1175,7 +1202,11 @@ export class GetNextActionUseCase {
           workspaceDir: worktreePath || cwd,
           config,
           untrackedFiles,
-          critiqueReportPath
+          critiqueReportPath,
+          // Issue #432: the verdict is made with the recorded deviations and the
+          // plan's out-of-scope declarations in view.
+          planDeviations: sm.planDeviations,
+          outOfScope: this.resolveOutOfScopeDeclarations(sm, cwd, activeIssue)
         });
 
         const invocationPayload: SubagentInvocationPayload = {
@@ -1546,6 +1577,34 @@ export class GetNextActionUseCase {
     return NOTE_REVIEW_DISPATCH_ORDINAL
       .replace('{n}', String(current))
       .replace('{max}', String(MAX_REVIEW_DISPATCH_LOOPS));
+  }
+
+  /**
+   * The plan's `- **Out of Scope:**` declarations (issue #432, AC6), or `[]`.
+   *
+   * A read failure is an empty list: the reviewer prompt must never inherit a
+   * declaration from an unrelated plan.
+   */
+  private resolveOutOfScopeDeclarations(
+    sm: StateMachine,
+    cwd: string,
+    activeIssue: number | null
+  ): readonly string[] {
+    if (!this.planGenerator) return Object.freeze([]);
+    try {
+      const resolved = this.planGenerator.resolvePlanFile({
+        projectRoot: cwd,
+        issue: activeIssue,
+        planPath: sm.planPath ?? sm.approvedPlanPath ?? undefined,
+        planDir: sm.planDir
+      });
+      if (!resolved) return Object.freeze([]);
+      return extractOutOfScopeDeclarations(
+        this.planGenerator.readPlanDocument(resolved.planPath)
+      );
+    } catch {
+      return Object.freeze([]);
+    }
   }
 
   /**
@@ -2007,7 +2066,7 @@ export class GetNextActionUseCase {
         taskBranch,
         worktreePath,
         invocationPayload,
-        humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}.`,
+        humanSummary: `Invoke ${ROLE_TITLE_IMPLEMENTER} with Model '${subagent.model}' targeting worktree ${worktreePath || '.worktrees/' + activeIssue}. ${formatPlanDeviationChannelNote(activeIssue)}`,
         ...(remediation ? { reviewRemediationRound: remediation.round } : {}),
         planBlank: false
       };

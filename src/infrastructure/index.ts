@@ -23,6 +23,7 @@ export * from './runner-factory';
 export * from './file-project-scaffolder';
 export * from './file-gate-report-repository';
 export * from './file-workspace-mutation-probe';
+export * from './file-source-reader';
 
 
 
