@@ -507,6 +507,28 @@ export class RunLifecycleUseCase {
       requestedMode === MODE_STANDARD &&
       !isNewIssue;
 
+    // #428: a workspace that can never hold a worktree is refused BEFORE the state
+    // initialization below, so the refusal's "Nothing was written." is measured.
+    const provisioningIssue =
+      params.issue !== undefined && params.issue !== null && String(params.issue).trim() !== ''
+        ? Number(params.issue)
+        : snapshot?.issue ?? effectiveIssue;
+
+    if (
+      this.willProvisionWorktreeInThisRun(
+        params,
+        requestedMode,
+        snapshot?.currentStage ?? STAGE_INITIALIZED,
+        provisioningIssue,
+        isFinishedStandardRun
+      )
+    ) {
+      await this.worktreeManager!.assertWorkspaceProvisionable!({
+        workspaceDir: workspace,
+        issue: provisioningIssue
+      });
+    }
+
     // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
     const activeIssueToCheck = effectiveIssue;
     let preflightResult = undefined;
@@ -931,6 +953,38 @@ export class RunLifecycleUseCase {
       return stage === STAGE_PLAN || stage === STAGE_APPROVAL;
     }
     return stage === STAGE_APPROVAL;
+  }
+
+  /**
+   * True when THIS invocation will provision (or adopt) a worktree, mirroring the
+   * dispatch below one-for-one (issue #428):
+   *
+   *   - IMPLEMENT always calls `resolveWorktree` (`executeImplementMode`);
+   *   - YOLO provisions at PLAN/APPROVAL, and a run starting at INITIALIZED/DISCOVERY
+   *     plans first and then reaches one of them — a COMPLETED checkpoint never does;
+   *   - STANDARD provisions only at APPROVAL (`shouldProvisionWorktree`), so a
+   *     first-run `codeloop` that only plans into a plain directory is NOT refused;
+   *   - PLAN and COMMIT never provision.
+   *
+   * `--dry-run`, `--no-worktree`, a finished STANDARD read, a run with no issue and an
+   * adapter without the optional probe all return false and keep today's ordering.
+   */
+  private willProvisionWorktreeInThisRun(
+    params: RunLifecycleParams,
+    requestedMode: ExecutionMode,
+    stage: StageName,
+    issue: number | null,
+    isFinishedStandardRun: boolean
+  ): boolean {
+    if (params.dryRun === true || params.worktree === false) return false;
+    if (!this.worktreeManager?.assertWorkspaceProvisionable) return false;
+    if (issue === null || issue === undefined) return false;
+    if (isFinishedStandardRun) return false;
+
+    if (requestedMode === MODE_IMPLEMENT) return true;
+    if (requestedMode === MODE_YOLO) return stage !== STAGE_COMPLETED;
+    if (requestedMode === MODE_STANDARD) return stage === STAGE_APPROVAL;
+    return false;
   }
 
   /**

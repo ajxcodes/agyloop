@@ -1050,8 +1050,10 @@ describe('FileStateRepository', () => {
     test('degrades to the cwd fallback, without throwing, in a bare repository', (t: any) => {
       // Documented behaviour change: `git worktree list --porcelain` used to "succeed"
       // in a bare repo; `--show-toplevel` fails there ("must be run in a work tree"),
-      // so a bare repo now resolves to the cwd. Harmless -- a bare repo has no
-      // .agyloop working tree -- but pinned here so it cannot regress silently.
+      // so a bare repo now resolves to the cwd. What is harmless here is the PATH
+      // RESOLUTION only: provisioning a bare workspace is refused by #428 before any
+      // checkpoint is written, so no `.agyloop` working tree is ever created there.
+      // Pinned so the resolution cannot regress silently.
       const childProcess = require('child_process');
       // Only a missing/broken git binary may skip. A failing `git init --bare` is a real
       // environment problem and must fail loudly, so this edge case cannot silently

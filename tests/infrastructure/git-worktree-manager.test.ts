@@ -11,7 +11,7 @@ const { execFileSync } = require('child_process');
 const { GitWorktreeManager } = require('../../dist/infrastructure');
 const { WorktreeCreationError, INIT_GITIGNORE_RULES } = require('../../dist/domain');
 
-import type { CommandExecutorPort, CommandExecutionResult } from '../../src/ports';
+import type { CommandExecutorPort, CommandExecutionOptions, CommandExecutionResult } from '../../src/ports';
 
 function makeResult(cmd: string, partial: Partial<CommandExecutionResult> = {}): CommandExecutionResult {
   return {
@@ -23,6 +23,35 @@ function makeResult(cmd: string, partial: Partial<CommandExecutionResult> = {}):
     durationMs: 5,
     combinedOutput: '',
     ...partial
+  };
+}
+
+/** The one-call workspace probe added by #428 (must match the adapter). */
+const WORK_TREE_PROBE = 'git rev-parse --is-inside-work-tree --is-bare-repository';
+
+/**
+ * Teaches a fake executor the REAL answer to the #428 workspace probe.
+ *
+ * The probe is a QUERY: `--is-inside-work-tree` prints `true`/`false` and
+ * exits 0 whenever it can answer, so a catch-all `exitCode: 0, stdout: ''`
+ * would silently pass a bare repository. Every fake must answer explicitly;
+ * a fake that forgets fails closed, and the probe is intercepted BEFORE the
+ * wrapped executor, so no test loses a command it asserts.
+ */
+function withWorkTreeProbe(
+  executor: CommandExecutorPort,
+  answer = 'true\nfalse\n'
+): CommandExecutorPort {
+  return {
+    execute: async (
+      cmd: string,
+      options?: CommandExecutionOptions
+    ): Promise<CommandExecutionResult> => {
+      if (cmd === WORK_TREE_PROBE) {
+        return makeResult(cmd, { stdout: answer, combinedOutput: answer });
+      }
+      return executor.execute(cmd, options);
+    }
   };
 }
 
@@ -270,7 +299,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const branch = await manager.resolveBaseBranch(tmpDir);
     assert.strictEqual(branch, 'feature/mirai');
     assert.strictEqual(executedCommands[0], 'git rev-parse --abbrev-ref HEAD');
@@ -301,7 +330,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '87',
       title: 'Git Worktree Isolation',
@@ -372,7 +401,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '87',
       workspaceDir: tmpDir
@@ -414,7 +443,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '82',
       workspaceDir: tmpDir
@@ -469,7 +498,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '82',
       workspaceDir: tmpDir
@@ -510,7 +539,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '87',
       workspaceDir: tmpDir
@@ -578,7 +607,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '87',
       workspaceDir: rootRepo
@@ -650,7 +679,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '264',
       workspaceDir: tmpDir,
@@ -724,7 +753,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const { warnings, result: descriptor } = await captureConsoleWarn<CreatedWorktree>(() =>
       manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' })
     );
@@ -790,7 +819,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     let caught: unknown = null;
     try {
       await manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' });
@@ -836,7 +865,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const { warnings, result: descriptor } = await captureConsoleWarn<CreatedWorktree>(() =>
       manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' })
     );
@@ -878,7 +907,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const { warnings, result: descriptor } = await captureConsoleWarn<CreatedWorktree>(() =>
       manager.createWorktree({ taskId: '264', workspaceDir: tmpDir, branchPrefix: 'fix/' })
     );
@@ -915,7 +944,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '87',
       workspaceDir: tmpDir
@@ -970,7 +999,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     // Must resolve, not throw WorktreeCreationError.
     const descriptor = await manager.createWorktree({ taskId: '218', workspaceDir: rootRepo });
 
@@ -1023,7 +1052,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({ taskId: '218', workspaceDir: rootRepo });
 
     assert.strictEqual(descriptor.branch, 'task/218');
@@ -1063,7 +1092,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({ taskId: '87', workspaceDir: rootRepo });
 
     assert.strictEqual(descriptor.branch, 'task/87');
@@ -1114,7 +1143,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({ taskId: '77', workspaceDir: rootRepo });
 
     assert.strictEqual(descriptor.worktreePath, path.resolve(actualHolder));
@@ -1152,7 +1181,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     let caught: unknown = null;
     try {
       await manager.createWorktree({ taskId: '88', workspaceDir: rootRepo });
@@ -1228,7 +1257,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({ taskId: '91', workspaceDir: rootRepo });
 
     assert.strictEqual(prunesRun, 1, 'expected exactly one `git worktree prune`');
@@ -1280,7 +1309,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     let caught: unknown = null;
     try {
       await manager.createWorktree({ taskId: '92', workspaceDir: rootRepo });
@@ -1304,7 +1333,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     await assert.rejects(
       async () => {
         await manager.createWorktree({ taskId: '87', workspaceDir: tmpDir });
@@ -1340,7 +1369,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     fs.mkdirSync(wtPath, { recursive: true });
 
     await manager.removeWorktree({
@@ -1380,7 +1409,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const list = await manager.listWorktrees({ workspaceDir: tmpDir });
 
     assert.strictEqual(list.length, 2);
@@ -1403,7 +1432,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const orphanedDir = path.join(tmpDir, '.worktrees', 'orphaned-task');
     fs.mkdirSync(orphanedDir, { recursive: true });
 
@@ -1440,7 +1469,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
 
     // Call from within nested worktree dir
     const resolvedPath = await manager.resolveTaskWorktreePath(nestedWorktreeDir, '87');
@@ -1484,7 +1513,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     await assert.rejects(
       async () => {
         await manager.createWorktree({
@@ -1524,7 +1553,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     await assert.rejects(
       async () => {
         await manager.createWorktree({
@@ -1570,7 +1599,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const descriptor = await manager.createWorktree({
       taskId: '87',
       workspaceDir: rootRepo
@@ -1621,7 +1650,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
 
     // Default: excludes external worktrees
     const defaultList = await manager.listWorktrees({ workspaceDir: tmpDir });
@@ -1719,7 +1748,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     const cleaned = await manager.cleanOrphanedWorktrees({
       workspaceDir: tmpDir,
       subagents: true
@@ -1749,7 +1778,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       const sentinelPath = path.join(tmpDir, 'sentinel.txt');
       fs.writeFileSync(sentinelPath, 'keep me alive', 'utf8');
 
-      const manager = new GitWorktreeManager(mockExecutor);
+      const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
       await assert.rejects(
         async () => {
           await manager.removeWorktree({
@@ -1802,7 +1831,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       fs.writeFileSync(path.join(rootDir, 'root-sentinel.txt'), 'alive', 'utf8');
       fs.writeFileSync(path.join(tmpDir, 'host-sentinel.txt'), 'alive', 'utf8');
 
-      const manager = new GitWorktreeManager(mockExecutor);
+      const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
       await assert.rejects(
         async () => {
           await manager.removeWorktree({
@@ -1860,7 +1889,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         }
       };
 
-      const manager = new GitWorktreeManager(mockExecutor);
+      const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
       await assert.rejects(
         async () => {
           await manager.removeWorktree({
@@ -1904,7 +1933,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         }
       };
 
-      const manager = new GitWorktreeManager(mockExecutor);
+      const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
       await assert.rejects(
         async () => {
           await manager.createWorktree({ taskId: '247', workspaceDir: tmpDir });
@@ -1937,7 +1966,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
         }
       };
 
-      const manager = new GitWorktreeManager(mockExecutor);
+      const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
       const descriptor = await manager.createWorktree({ taskId: '247', workspaceDir: tmpDir });
 
       assert.strictEqual(descriptor.worktreePath, path.resolve(holderPath));
@@ -2007,7 +2036,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       const rootRepo = path.resolve(tmpDir, 'root-repo');
       fs.mkdirSync(rootRepo, { recursive: true });
 
-      const manager = new GitWorktreeManager(failingAddExecutor(rootRepo));
+      const manager = new GitWorktreeManager(withWorkTreeProbe(failingAddExecutor(rootRepo)));
       const error = await expectProvisioningFailure(manager, rootRepo);
 
       assert.match(error.message, /could not create work tree dir/, 'the git output must still be surfaced');
@@ -2022,7 +2051,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       const rootRepo = path.resolve(tmpDir, 'root-repo');
       fs.mkdirSync(path.join(rootRepo, '.worktrees'), { recursive: true });
 
-      const manager = new GitWorktreeManager(failingAddExecutor(rootRepo));
+      const manager = new GitWorktreeManager(withWorkTreeProbe(failingAddExecutor(rootRepo)));
       await expectProvisioningFailure(manager, rootRepo);
 
       assert.strictEqual(
@@ -2045,6 +2074,258 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       assert.strictEqual(fs.existsSync(path.join(plain, '.worktrees')), false, 'nothing may be provisioned');
       assert.strictEqual(fs.existsSync(path.join(plain, '.gitignore')), false, 'nothing may be written');
     });
+  });
+});
+
+/**
+ * Issue #428 — the workspace guard must read the probe's STDOUT, not just its
+ * exit code.
+ *
+ * `git rev-parse --is-inside-work-tree` is a QUERY: it prints `true`/`false`
+ * and exits 0 whenever it can answer. A bare repository prints `false` with
+ * exit 0, passed the #425 guard built on "any exit code 0", received a
+ * `.gitignore`, and then died on `fatal: invalid reference: main`.
+ */
+describe('#428 workspace guard', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt428-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  /** A real git repository (branch `main`) with one commit. */
+  function initRepo(dir: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+    fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+  }
+
+  function initBare(dir: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    execFileSync('git', ['init', '-q', '--bare'], { cwd: dir, stdio: 'ignore' });
+  }
+
+  async function expectRefusal(
+    manager: InstanceType<typeof GitWorktreeManager>,
+    workspaceDir: string
+  ): Promise<any> {
+    let caught: unknown = null;
+    try {
+      await manager.createWorktree({ taskId: '428', workspaceDir });
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught instanceof WorktreeCreationError, 'expected a WorktreeCreationError');
+    assert.strictEqual((caught as any).operation, 'createWorktree');
+    return caught;
+  }
+
+  test('WT-428-1: a bare repository is refused and receives no write (AC1, AC2, AC3)', async () => {
+    const bare = path.join(tmpDir, 'bare');
+    initBare(bare);
+    const before = fs.readdirSync(bare).sort();
+
+    const manager = new GitWorktreeManager();
+    const error = await expectRefusal(manager, bare);
+
+    assert.ok(error.message.includes(bare), `the refusal must name the workspace:\n${error.message}`);
+    assert.match(error.message, /bare repository, not a work tree/);
+    assert.ok(error.message.includes('--no-worktree'), 'the --no-worktree remedy must be kept');
+    assert.doesNotMatch(error.message, /invalid reference/, 'the late git error must not surface');
+
+    assert.strictEqual(fs.existsSync(path.join(bare, '.gitignore')), false, 'nothing may be written');
+    assert.strictEqual(fs.existsSync(path.join(bare, '.worktrees')), false, 'nothing may be provisioned');
+    assert.deepStrictEqual(fs.readdirSync(bare).sort(), before, 'the bare repository must be untouched');
+  });
+
+  test('WT-428-2: a bare answer from a fake refuses before any provisioning command (AC1, AC3)', async () => {
+    const commands: string[] = [];
+    const inner: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        commands.push(cmd);
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(withWorkTreeProbe(inner, 'false\ntrue\n'));
+    const error = await expectRefusal(manager, tmpDir);
+
+    assert.ok(error.message.includes(tmpDir), `the refusal must name the workspace:\n${error.message}`);
+    assert.match(error.message, /bare repository, not a work tree/);
+    assert.strictEqual(commands.some((c) => c === 'git worktree list --porcelain'), false);
+    assert.strictEqual(commands.some((c) => c.includes('git worktree add')), false);
+  });
+
+  test('WT-428-3: exit 0 with empty stdout is refused (AC3)', async () => {
+    // Deliberately NOT wrapped: the exit-only rule would have accepted this.
+    const inner: CommandExecutorPort = { execute: async (cmd: string): Promise<CommandExecutionResult> => makeResult(cmd) };
+    const manager = new GitWorktreeManager(inner);
+
+    const error = await expectRefusal(manager, tmpDir);
+
+    assert.match(error.message, /not inside a git work tree/);
+    assert.ok(error.message.includes(tmpDir), `the refusal must name the workspace:\n${error.message}`);
+  });
+
+  test('WT-428-4: a false/false exit-0 answer is refused and not called "bare" (AC3)', async () => {
+    const withZeroExit = (cmd: string): CommandExecutionResult => makeResult(cmd);
+    const manager = new GitWorktreeManager(withWorkTreeProbe({ execute: async (cmd) => withZeroExit(cmd) }, 'false\nfalse\n'));
+
+    const error = await expectRefusal(manager, tmpDir);
+
+    assert.match(error.message, /not inside a git work tree/);
+    assert.ok(error.message.includes(tmpDir), `the refusal must name the workspace:\n${error.message}`);
+    assert.doesNotMatch(error.message, /bare repository/);
+  });
+
+  test('WT-428-5: a true/false exit-0 answer still provisions (AC3, AC4)', async () => {
+    const commands: string[] = [];
+    const inner: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        commands.push(cmd);
+        if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+          return makeResult(cmd, { stdout: 'main\n', combinedOutput: 'main' });
+        }
+        if (isWorktreeScopedRevParse(cmd)) {
+          return makeResult(cmd, { stdout: `${VERIFIED_SHA}\n`, combinedOutput: VERIFIED_SHA });
+        }
+        if (cmd.includes('git branch')) {
+          return makeResult(cmd, { stdout: '', combinedOutput: '' });
+        }
+        if (cmd.includes('git worktree list --porcelain')) {
+          return makeResult(cmd, { stdout: '', combinedOutput: '' });
+        }
+        if (cmd.includes('git worktree add')) {
+          return makeResult(cmd, { stdout: 'Preparing worktree\n', combinedOutput: 'Preparing worktree' });
+        }
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(withWorkTreeProbe(inner));
+    const descriptor = await manager.createWorktree({ taskId: '428', workspaceDir: tmpDir });
+
+    assert.strictEqual(descriptor.branch, 'task/428');
+    assert.ok(worktreeAddCommands(commands).length > 0, 'a git worktree add must have run');
+  });
+
+  test('WT-428-6: a real normal repository still provisions (AC4)', async () => {
+    const root = path.join(tmpDir, 'root');
+    initRepo(root);
+
+    const manager = new GitWorktreeManager();
+    const descriptor = await manager.createWorktree({ taskId: '428', workspaceDir: root });
+
+    assert.strictEqual(descriptor.worktreePath, path.join(root, '.worktrees', '428'));
+    assert.strictEqual(descriptor.branch, 'task/428');
+    assert.ok(fs.readFileSync(path.join(root, '.gitignore'), 'utf8').includes('.worktrees'));
+  });
+
+  test('WT-428-7: a real linked worktree passes and anchors at the main root (AC4)', async () => {
+    const main = path.join(tmpDir, 'main');
+    initRepo(main);
+    const linked = path.join(main, 'linked');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'side', linked], {
+      cwd: main,
+      stdio: 'ignore'
+    });
+
+    const manager = new GitWorktreeManager();
+    const descriptor = await manager.createWorktree({ taskId: '429', workspaceDir: linked });
+
+    assert.strictEqual(descriptor.worktreePath, path.join(main, '.worktrees', '429'));
+  });
+
+  test('WT-428-8: a real submodule working directory passes the guard (AC4)', async () => {
+    const superRoot = path.join(tmpDir, 'super');
+    const subSource = path.join(tmpDir, 'sub-source');
+    initRepo(superRoot);
+    initRepo(subSource);
+    execFileSync(
+      'git',
+      ['-c', 'protocol.file.allow=always', 'submodule', 'add', subSource, 'sub'],
+      { cwd: superRoot, stdio: 'ignore' }
+    );
+    execFileSync('git', ['commit', '-qm', 'chore: add submodule'], { cwd: superRoot, stdio: 'ignore' });
+
+    const manager = new GitWorktreeManager();
+    // This pins the GUARD. The provisioning TARGET for a submodule is the
+    // pre-existing `getRepoRoot` behaviour tracked as the follow-up in the
+    // #428 plan (§ Out of scope), so only "no write happened here" is asserted.
+    await manager.assertWorkspaceProvisionable({ workspaceDir: path.join(superRoot, 'sub'), issue: 430 });
+
+    const subGitDir = path.join(superRoot, '.git', 'modules', 'sub');
+    assert.strictEqual(fs.existsSync(path.join(subGitDir, '.gitignore')), false);
+    assert.strictEqual(fs.existsSync(path.join(subGitDir, '.worktrees')), false);
+  });
+
+  test('WT-428-9: a real --separate-git-dir work tree passes the guard (AC4)', async () => {
+    const base = path.join(tmpDir, 'sep-base');
+    const sep = path.join(tmpDir, 'sep-git');
+    fs.mkdirSync(base, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main', `--separate-git-dir=${sep}`, base], {
+      cwd: tmpDir,
+      stdio: 'ignore'
+    });
+    execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: base, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: base, stdio: 'ignore' });
+    fs.writeFileSync(path.join(base, 'README.md'), 'probe\n', 'utf8');
+    execFileSync('git', ['add', '-A'], { cwd: base, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: base, stdio: 'ignore' });
+
+    const manager = new GitWorktreeManager();
+    // Same scope as WT-428-8: the guard passes; the write target is the
+    // pre-existing getRepoRoot behaviour.
+    await manager.assertWorkspaceProvisionable({ workspaceDir: base });
+
+    assert.strictEqual(fs.existsSync(path.join(sep, '.gitignore')), false);
+    assert.strictEqual(fs.existsSync(path.join(sep, '.worktrees')), false);
+  });
+
+  test('WT-428-10: the public guard refuses a bare repository and writes nothing (AC1, AC5)', async () => {
+    const bare = path.join(tmpDir, 'bare-public');
+    initBare(bare);
+    const before = fs.readdirSync(bare).sort();
+
+    const manager = new GitWorktreeManager();
+    let caught: unknown = null;
+    try {
+      await manager.assertWorkspaceProvisionable({ workspaceDir: bare, issue: 428 });
+    } catch (err) {
+      caught = err;
+    }
+
+    assert.ok(caught instanceof WorktreeCreationError, 'expected a WorktreeCreationError');
+    assert.strictEqual((caught as any).operation, 'createWorktree');
+    const message = (caught as Error).message;
+    assert.ok(message.includes(bare), `the refusal must name the workspace:\n${message}`);
+    assert.match(message, /bare repository, not a work tree/);
+    assert.deepStrictEqual(fs.readdirSync(bare).sort(), before);
+  });
+
+  test('WT-428-11: git answers a bare repository with `false` and exit 0 (AC3)', () => {
+    const bare = path.join(tmpDir, 'bare-answer');
+    initBare(bare);
+
+    const stdout = execFileSync(
+      'git',
+      ['-C', bare, 'rev-parse', '--is-inside-work-tree', '--is-bare-repository'],
+      { encoding: 'utf8' }
+    );
+
+    // Documents why exit-code-only cannot work: the exit status of this QUERY
+    // is 0 whether the answer is `true` or `false`.
+    assert.strictEqual(stdout, 'false\ntrue\n');
   });
 });
 
@@ -2128,7 +2409,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
 
     const commands: string[] = [];
     try {
-      const manager = new GitWorktreeManager(executor({ commands }));
+      const manager = new GitWorktreeManager(withWorkTreeProbe(executor({ commands })));
 
       await assert.rejects(
         async () => {
@@ -2157,7 +2438,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
     fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
 
     try {
-      const manager = new GitWorktreeManager(executor({}));
+      const manager = new GitWorktreeManager(withWorkTreeProbe(executor({})));
       const { paths } = await recordRmSync(async () => {
         await assert.rejects(async () => {
           await manager.removeWorktree({ worktreePath: victim, workspaceDir: tmpDir });
@@ -2176,7 +2457,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   });
 
   test("T-I3 resolveTaskWorktreePath rejects absolute, '..', multi-segment and unsafe ids (AC-2)", async () => {
-    const manager = new GitWorktreeManager(executor({}));
+    const manager = new GitWorktreeManager(withWorkTreeProbe(executor({})));
 
     for (const bad of ['/tmp/x', '..', 'a/b', 'a\\b', '.', '-x', 'x;rm', '   ']) {
       await assert.rejects(
@@ -2230,7 +2511,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
 
     const commands: string[] = [];
     try {
-      const manager = new GitWorktreeManager(executor({ commands }));
+      const manager = new GitWorktreeManager(withWorkTreeProbe(executor({ commands })));
       await assert.rejects(
         async () => {
           await manager.removeWorktree({ worktreePath: linkPath, workspaceDir: tmpDir });
@@ -2252,7 +2533,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   test('T-I5 refuses a missing target with a clear error instead of reporting success (AC-4)', async () => {
     const commands: string[] = [];
     const manager = new GitWorktreeManager(
-      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+      withWorkTreeProbe(executor({ commands, porcelain: porcelainFor(tmpDir, []) }))
     );
 
     await assert.rejects(
@@ -2282,7 +2563,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
 
     const commands: string[] = [];
     const manager = new GitWorktreeManager(
-      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+      withWorkTreeProbe(executor({ commands, porcelain: porcelainFor(tmpDir, []) }))
     );
 
     const { paths } = await recordRmSync(async () => {
@@ -2313,7 +2594,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
 
     const commands: string[] = [];
     const manager = new GitWorktreeManager(
-      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+      withWorkTreeProbe(executor({ commands, porcelain: porcelainFor(tmpDir, []) }))
     );
 
     await assert.rejects(
@@ -2336,20 +2617,22 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
 
     const commands: string[] = [];
     const manager = new GitWorktreeManager(
-      executor({
-        commands,
-        porcelain: porcelainFor(tmpDir, [wtPath]),
-        onRemove: (cmd) => {
-          // Simulate git detaching the worktree (empty dir -> rmdir, so the
-          // rmSync recorder below can only observe a real fallback call).
-          try {
-            fs.rmdirSync(wtPath);
-          } catch {
-            // Ignore
+      withWorkTreeProbe(
+        executor({
+          commands,
+          porcelain: porcelainFor(tmpDir, [wtPath]),
+          onRemove: (cmd) => {
+            // Simulate git detaching the worktree (empty dir -> rmdir, so the
+            // rmSync recorder below can only observe a real fallback call).
+            try {
+              fs.rmdirSync(wtPath);
+            } catch {
+              // Ignore
+            }
+            return makeResult(cmd);
           }
-          return makeResult(cmd);
-        }
-      })
+        })
+      )
     );
 
     const { paths } = await recordRmSync(async () => {
@@ -2369,17 +2652,19 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
     fs.mkdirSync(externalPath, { recursive: true });
 
     const manager = new GitWorktreeManager(
-      executor({
-        porcelain: porcelainFor(mainRepoRoot, [externalPath]),
-        onRemove: (cmd) => {
-          try {
-            fs.rmdirSync(externalPath);
-          } catch {
-            // Ignore
+      withWorkTreeProbe(
+        executor({
+          porcelain: porcelainFor(mainRepoRoot, [externalPath]),
+          onRemove: (cmd) => {
+            try {
+              fs.rmdirSync(externalPath);
+            } catch {
+              // Ignore
+            }
+            return makeResult(cmd);
           }
-          return makeResult(cmd);
-        }
-      })
+        })
+      )
     );
 
     const { paths } = await recordRmSync(async () => {
@@ -2404,7 +2689,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
 
     const commands: string[] = [];
     const manager = new GitWorktreeManager(
-      executor({ commands, porcelain: porcelainFor(mainRepoRoot, [externalPath]) })
+      withWorkTreeProbe(executor({ commands, porcelain: porcelainFor(mainRepoRoot, [externalPath]) }))
     );
 
     await assert.rejects(
@@ -2428,7 +2713,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   test('T-I12 tolerateMissing resolves and prunes when the directory is already gone (AC-12)', async () => {
     const commands: string[] = [];
     const manager = new GitWorktreeManager(
-      executor({ commands, porcelain: porcelainFor(tmpDir, []) })
+      withWorkTreeProbe(executor({ commands, porcelain: porcelainFor(tmpDir, []) }))
     );
 
     await assert.doesNotReject(async () => {
@@ -2448,15 +2733,17 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
     fs.writeFileSync(path.join(wtPath, 'sentinel'), 'keep', 'utf8');
 
     const manager = new GitWorktreeManager(
-      executor({
-        porcelain: porcelainFor(tmpDir, [wtPath]),
-        onRemove: (cmd) =>
-          makeResult(cmd, {
-            exitCode: 1,
-            stderr: 'fatal: worktree is dirty',
-            combinedOutput: 'fatal: worktree is dirty'
-          })
-      })
+      withWorkTreeProbe(
+        executor({
+          porcelain: porcelainFor(tmpDir, [wtPath]),
+          onRemove: (cmd) =>
+            makeResult(cmd, {
+              exitCode: 1,
+              stderr: 'fatal: worktree is dirty',
+              combinedOutput: 'fatal: worktree is dirty'
+            })
+        })
+      )
     );
 
     const originalRmSync = fs.rmSync;
@@ -2485,7 +2772,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
     const prunablePorcelain = `${porcelainFor(tmpDir, [wtPath]).trimEnd()}\nprunable gitdir file points to non-existent location\n`;
 
     const commands: string[] = [];
-    const refusing = new GitWorktreeManager(executor({ commands, porcelain: prunablePorcelain }));
+    const refusing = new GitWorktreeManager(withWorkTreeProbe(executor({ commands, porcelain: prunablePorcelain })));
 
     await assert.rejects(
       async () => {
@@ -2504,7 +2791,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
     // With `tolerateMissing` the internal teardown still resolves and prunes.
     const tolerantCommands: string[] = [];
     const tolerant = new GitWorktreeManager(
-      executor({ commands: tolerantCommands, porcelain: prunablePorcelain })
+      withWorkTreeProbe(executor({ commands: tolerantCommands, porcelain: prunablePorcelain }))
     );
     await assert.doesNotReject(async () => {
       await tolerant.removeWorktree({
@@ -2588,7 +2875,7 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(executor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(executor));
     const result = await manager.quarantineWorktree({
       worktreePath: tmpDir,
       taskId: '212'
@@ -2613,7 +2900,7 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(executor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(executor));
     const result = await manager.quarantineWorktree({
       worktreePath: tmpDir,
       taskId: '212'
@@ -2643,7 +2930,7 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(executor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(executor));
     const result = await manager.quarantineWorktree({
       worktreePath: tmpDir,
       taskId: '212',
@@ -2689,7 +2976,7 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
       }
     };
 
-    const manager = new GitWorktreeManager(executor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(executor));
     await manager.quarantineWorktree({
       worktreePath: tmpDir,
       taskId: "$(touch /tmp/pwned)'; rm -rf /"
@@ -2724,7 +3011,7 @@ describe('listWorktrees parses the prunable marker (issue #339 item 5, T5.1 / AC
         return makeResult(cmd);
       }
     };
-    const manager = new GitWorktreeManager(mockExecutor);
+    const manager = new GitWorktreeManager(withWorkTreeProbe(mockExecutor));
     return manager.listWorktrees({ workspaceDir: tmpDir }).then((list: any) => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       return list;

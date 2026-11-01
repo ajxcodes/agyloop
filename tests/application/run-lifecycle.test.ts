@@ -37,6 +37,7 @@ const {
   // implementation-evidence line. Imported, never re-typed.
   NOTE_GATES_VACUOUS_STANDARD,
   NOTE_GATES_VACUOUS_YOLO,
+  NOTE_ALREADY_COMPLETED,
   DEFAULT_CB_MAX_GATE_RETRIES,
   GATE_CIRCUIT_BREAKER,
   STATUS_FAILED,
@@ -3276,3 +3277,229 @@ describe('workspace scoping (#425)', () => {
     );
   });
 });
+
+/**
+ * Issue #428 — the workspace refusal happens BEFORE the first checkpoint save.
+ *
+ * `RunLifecycleUseCase.execute` used to save a fresh INITIALIZED checkpoint into
+ * `<workspace>/.agyloop/tasks/<n>.json` before `executeImplementMode` reached
+ * `createWorktree`, so a refused plain/bare `--workspace` still received a
+ * checkpoint while the message claimed "Nothing was written." The early guard
+ * is conditional so every non-provisioning path keeps today's ordering.
+ */
+describe('#428 provisioning guard ordering', () => {
+  const WORKSPACE = '/mock/workspace';
+  const STAGE_ORDER = [
+    STAGE_DISCOVERY,
+    STAGE_PLAN,
+    STAGE_APPROVAL,
+    STAGE_IMPLEMENT,
+    STAGE_QUALITY_GATE,
+    STAGE_REVIEW,
+    STAGE_COMMIT,
+    STAGE_COMPLETED
+  ];
+
+  class GuardingWorktreeManager extends MockWorktreeManager {
+    /** Every `assertWorkspaceProvisionable` call, in order. */
+    public assertCalls: Array<{ workspaceDir?: string; issue?: number | null }> = [];
+    /** Set to make the guard refuse; `null` lets the run continue. */
+    public refusal: Error | null = null;
+
+    public async assertWorkspaceProvisionable(options: any = {}): Promise<void> {
+      this.assertCalls.push({ workspaceDir: options.workspaceDir, issue: options.issue });
+      if (this.refusal) throw this.refusal;
+    }
+  }
+
+  function makeLifecycle(
+    worktreeManager: any,
+    stateRepo: MockStateRepository
+  ): any {
+    return new RunLifecycleUseCase({
+      stateRepo,
+      configRepo: new MockConfigRepository(),
+      planGenerator: new MockPlanGenerator(),
+      githubGateway: new MockGitHubGateway(),
+      commandExecutor: new MockCommandExecutor(),
+      buildDetector: new MockBuildDetector(),
+      standardsRepo: new MockStandardsRepository(),
+      critique: new MockCritique(),
+      confirmationPrompt: new MockConfirmationPrompt(),
+      worktreeManager
+    });
+  }
+
+  function snapshotAt(target: string, issue = 32): any {
+    const sm = StateMachine.createInitial({ mode: MODE_STANDARD, issue });
+    for (const stage of STAGE_ORDER) {
+      sm.transition(stage);
+      if (stage === target) break;
+    }
+    return sm.toSnapshot();
+  }
+
+  function bareRefusal(): Error {
+    return new WorktreeCreationError(
+      'createWorktree',
+      "Refusing to create a worktree for issue #32: '/mock/workspace' is a bare repository, not a work tree. " +
+        'A bare repository cannot host a worktree. Point --workspace at a git repository, or pass --no-worktree. Nothing was written.'
+    );
+  }
+
+  /** Swallow the downstream outcome when the case only asserts guard ordering. */
+  async function settle(fn: () => Promise<unknown>): Promise<unknown> {
+    try {
+      return await fn();
+    } catch {
+      return null;
+    }
+  }
+
+  test('IMPL-428-1: implement with no checkpoint refuses before any write (AC5)', async () => {
+    const stateRepo = new MockStateRepository();
+    const manager = new GuardingWorktreeManager();
+    const refusal = bareRefusal();
+    manager.refusal = refusal;
+
+    await assert.rejects(
+      () => makeLifecycle(manager, stateRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE }),
+      (err: any) => err === refusal
+    );
+
+    assert.strictEqual(stateRepo.saveCount, 0, 'no checkpoint may be saved before the refusal');
+    assert.strictEqual(manager.createWorktreeCallCount, 0, 'no worktree may be provisioned');
+    assert.deepStrictEqual(manager.assertCalls, [{ workspaceDir: WORKSPACE, issue: 32 }]);
+  });
+
+  test('IMPL-428-2: implement with an APPROVAL checkpoint leaves it untouched (AC5)', async () => {
+    const seeded = snapshotAt(STAGE_APPROVAL);
+    const stateRepo = new MockStateRepository(seeded);
+    const manager = new GuardingWorktreeManager();
+    const refusal = bareRefusal();
+    manager.refusal = refusal;
+
+    await assert.rejects(
+      () => makeLifecycle(manager, stateRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE }),
+      (err: any) => err === refusal
+    );
+
+    assert.strictEqual(stateRepo.saveCount, 0);
+    assert.strictEqual(manager.createWorktreeCallCount, 0);
+    assert.deepStrictEqual(stateRepo.savedSnapshot, seeded, 'the loaded checkpoint must not be rewritten');
+    assert.deepStrictEqual(manager.assertCalls, [{ workspaceDir: WORKSPACE, issue: 32 }]);
+  });
+
+  test('IMPL-428-3: implement without --issue hands the checkpoint issue to the guard (AC5)', async () => {
+    const seeded = snapshotAt(STAGE_APPROVAL);
+    const stateRepo = new MockStateRepository(seeded);
+    const manager = new GuardingWorktreeManager();
+
+    await makeLifecycle(manager, stateRepo).execute({ mode: MODE_IMPLEMENT, workspaceDir: WORKSPACE });
+
+    assert.strictEqual(manager.assertCalls.length, 1);
+    assert.strictEqual(manager.assertCalls[0].issue, 32, "the checkpoint's issue must reach the guard");
+  });
+
+  test('IMPL-428-4: excluded paths never pay the guard (AC5)', async () => {
+    // (a) --dry-run
+    const dryRepo = new MockStateRepository();
+    const dryManager = new GuardingWorktreeManager();
+    await settle(() =>
+      makeLifecycle(dryManager, dryRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE, dryRun: true })
+    );
+    assert.strictEqual(dryManager.assertCalls.length, 0, '--dry-run must not probe');
+
+    // (b) --no-worktree
+    const noWtRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const noWtManager = new GuardingWorktreeManager();
+    await settle(() =>
+      makeLifecycle(noWtManager, noWtRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE, worktree: false })
+    );
+    assert.strictEqual(noWtManager.assertCalls.length, 0, '--no-worktree must not probe');
+
+    // (c) plan mode (planning into a plain directory stays supported)
+    const planRepo = new MockStateRepository();
+    const planManager = new GuardingWorktreeManager();
+    await settle(() =>
+      makeLifecycle(planManager, planRepo).execute({ mode: MODE_PLAN, issue: 32, workspaceDir: WORKSPACE })
+    );
+    assert.strictEqual(planManager.assertCalls.length, 0, 'plan mode must not probe');
+
+    // (d) standard at INITIALIZED only plans, then stops at PLAN — no worktree is
+    // provisioned by this leg, so the guard must not run. (Standard provisions
+    // only at APPROVAL; that path is exercised by IMPL-428-5.)
+    const stdRepo = new MockStateRepository(StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 }).toSnapshot());
+    const stdManager = new GuardingWorktreeManager();
+    const stdResult = await makeLifecycle(stdManager, stdRepo).execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: WORKSPACE });
+    assert.strictEqual(stdManager.assertCalls.length, 0, 'standard planning must not probe');
+    assert.strictEqual(stdResult.success, true);
+    assert.strictEqual(stdResult.currentStage, STAGE_PLAN, 'the standard leg must still plan');
+
+    // (e) a finished standard read is a read-only no-op
+    const doneRepo = new MockStateRepository(snapshotAt(STAGE_COMPLETED));
+    const doneManager = new GuardingWorktreeManager();
+    const doneResult = await makeLifecycle(doneManager, doneRepo).execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: WORKSPACE });
+    assert.strictEqual(doneManager.assertCalls.length, 0, 'a finished read must not probe');
+    assert.strictEqual(doneResult.message, NOTE_ALREADY_COMPLETED);
+    assert.strictEqual(doneRepo.saveCount, 0, 'a finished read must not write');
+
+    // (f) no issue anywhere
+    const noIssueRepo = new MockStateRepository();
+    const noIssueManager = new GuardingWorktreeManager();
+    await settle(() => makeLifecycle(noIssueManager, noIssueRepo).execute({ mode: MODE_IMPLEMENT, workspaceDir: WORKSPACE }));
+    assert.strictEqual(noIssueManager.assertCalls.length, 0, 'a run with no issue must not probe');
+
+    // (g) an adapter without the optional method keeps the previous ordering
+    const plainRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const plainManager = new MockWorktreeManager();
+    await makeLifecycle(plainManager, plainRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE });
+    assert.strictEqual(plainManager.createWorktreeCallCount, 1, 'provisioning must proceed exactly as before');
+  });
+
+  test('IMPL-428-5: standard at APPROVAL is refused before any write (AC5)', async () => {
+    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const manager = new GuardingWorktreeManager();
+    const refusal = bareRefusal();
+    manager.refusal = refusal;
+
+    await assert.rejects(
+      () => makeLifecycle(manager, stateRepo).execute({ issue: 32, workspaceDir: WORKSPACE }),
+      (err: any) => err === refusal
+    );
+
+    assert.strictEqual(manager.assertCalls.length, 1);
+    assert.strictEqual(stateRepo.saveCount, 0);
+  });
+
+  test('IMPL-428-6: yolo probes unless the checkpoint is COMPLETED (AC5)', async () => {
+    const approvalRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const approvalManager = new GuardingWorktreeManager();
+    const refusal = bareRefusal();
+    approvalManager.refusal = refusal;
+
+    await assert.rejects(
+      () => makeLifecycle(approvalManager, approvalRepo).execute({ mode: MODE_YOLO, issue: 32, workspaceDir: WORKSPACE }),
+      (err: any) => err === refusal
+    );
+    assert.strictEqual(approvalManager.assertCalls.length, 1, 'yolo at APPROVAL must probe');
+
+    const doneRepo = new MockStateRepository(snapshotAt(STAGE_COMPLETED));
+    const doneManager = new GuardingWorktreeManager();
+    await settle(() =>
+      makeLifecycle(doneManager, doneRepo).execute({ mode: MODE_YOLO, issue: 32, workspaceDir: WORKSPACE })
+    );
+    assert.strictEqual(doneManager.assertCalls.length, 0, 'yolo at COMPLETED must not probe');
+  });
+
+  test('IMPL-428-7: a passing guard does not replace provisioning (AC5)', async () => {
+    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const manager = new GuardingWorktreeManager();
+
+    await makeLifecycle(manager, stateRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE });
+
+    assert.strictEqual(manager.assertCalls.length, 1);
+    assert.strictEqual(manager.createWorktreeCallCount, 1, 'the run must still provision after passing the guard');
+  });
+});
+
