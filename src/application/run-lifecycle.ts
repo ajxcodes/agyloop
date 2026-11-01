@@ -312,9 +312,13 @@ export interface RunLifecycleDependencies {
  * `createWorktree` can CREATE or ADOPT a worktree, and the descriptor does not
  * say which, so the pre-provisioning worktree list plus the pre-provisioning
  * local branch list are the only reliable provenance evidence.
+ *
+ * #426: `null` means the probe did not answer — never "nothing existed". `[]` is
+ * a valid, TRUSTED answer ("a successful read found nothing") and only comes
+ * from `probeProvisioningState`, never from the `[]`-on-failure readers.
  */
 interface WorktreeProvisioningProvenance {
-  /** `null` = the list could not be read; provenance is UNKNOWN, never assume new. */
+  /** `null` = the probe did not answer; provenance is UNKNOWN, never assume new. */
   readonly existingWorktreePaths: readonly string[] | null;
   /** `null` = unknown; the worktree may still be removed, the branch must not. */
   readonly existingBranches: readonly string[] | null;
@@ -979,40 +983,34 @@ export class RunLifecycleUseCase {
    * Captures "did this invocation create it?" evidence BEFORE provisioning
    * (issue #420).
    *
-   * Defensive by design: a manager without `listWorktrees`/`listBranches`, or a
-   * probe that throws, yields `null` — "unknown" — and the cleanup then declines
-   * to touch what it cannot prove it created.
+   * #426: provenance comes ONLY from `probeProvisioningState`, which distinguishes
+   * a failed read (`null`) from a successful empty read (`[]`). A manager without
+   * that method — every adapter whose `listWorktrees`/`listBranches` answer `[]`
+   * on a failed `git` read — cannot prove anything, so it yields `null` and the
+   * cleanup then declines to touch what it cannot prove it created.
    */
   private async captureWorktreeProvisioningProvenance(
     workspace: string
   ): Promise<WorktreeProvisioningProvenance> {
+    const unknown: WorktreeProvisioningProvenance = {
+      existingWorktreePaths: null,
+      existingBranches: null
+    };
     const manager = this.worktreeManager;
-    let existingWorktreePaths: readonly string[] | null = null;
-    let existingBranches: readonly string[] | null = null;
-
-    if (manager) {
-      try {
-        if (typeof manager.listWorktrees === 'function') {
-          const worktrees = await manager.listWorktrees({
-            workspaceDir: workspace,
-            includeExternal: true
-          });
-          existingWorktreePaths = worktrees.map((worktree) => worktree.worktreePath);
-        }
-      } catch {
-        existingWorktreePaths = null;
-      }
-
-      try {
-        if (typeof manager.listBranches === 'function') {
-          existingBranches = await manager.listBranches({ workspaceDir: workspace, remote: false });
-        }
-      } catch {
-        existingBranches = null;
-      }
+    // #426: a reader that cannot tell a failed read from an empty registry is not
+    // provenance. Unknown is the only safe answer, and it removes nothing.
+    if (!manager || typeof manager.probeProvisioningState !== 'function') {
+      return unknown;
     }
-
-    return { existingWorktreePaths, existingBranches };
+    try {
+      const probe = await manager.probeProvisioningState({ workspaceDir: workspace });
+      return {
+        existingWorktreePaths: probe.worktreePaths,
+        existingBranches: probe.localBranches
+      };
+    } catch {
+      return unknown;
+    }
   }
 
   /**
@@ -1023,6 +1021,10 @@ export class RunLifecycleUseCase {
    * or non-canonical worktree, and a failed removal all return
    * `removed === false`, so the caller keeps the descriptor and the surviving
    * worktree stays discoverable through `codeloop status` / `codeloop next`.
+   *
+   * #426: provenance is PROVEN, not inferred: a reader that answers `[]` on a
+   * failed `git` read is not consulted, and every path that keeps something it
+   * may have created emits one warning.
    */
   private async discardProvisionedWorktree(
     worktree: WorktreeDescriptor,
@@ -1035,9 +1037,12 @@ export class RunLifecycleUseCase {
       return { removed: false, warnings };
     }
 
-    // Unknown provenance is never "new" (AC5).
+    // Unknown provenance is never "new" (AC5 of #420, AC1/AC3 of #426).
     const existingWorktreePaths = provenance.existingWorktreePaths;
     if (existingWorktreePaths === null) {
+      warnings.push(
+        `The worktree at ${worktree.worktreePath} was left in place: this run could not prove whether it created it (the pre-provisioning probe did not answer). Run \`codeloop worktree list\` and remove it with \`codeloop worktree remove ${worktree.taskId}\` if it is not needed.`
+      );
       return { removed: false, warnings };
     }
 
@@ -1078,19 +1083,32 @@ export class RunLifecycleUseCase {
       return { removed: false, warnings };
     }
 
+    const branch = worktree.branch;
     const existingBranches = provenance.existingBranches;
-    if (
-      existingBranches !== null &&
-      !existingBranches.includes(worktree.branch) &&
-      typeof manager.deleteBranch === 'function'
-    ) {
-      try {
-        await manager.deleteBranch({ branchName: worktree.branch, workspaceDir: workspace });
-      } catch (err: unknown) {
-        const reason = err instanceof Error ? err.message : String(err);
+    const deleteBranch = manager.deleteBranch;
+
+    if (existingBranches === null) {
+      // #426 AC5: the branch probe did not answer, so the branch is not provably
+      // new. The worktree went; the branch stays and is named.
+      warnings.push(
+        `The worktree was removed, but branch '${branch}' was left in place: the pre-provisioning branch probe did not answer, so this run cannot prove it created it; run \`git branch -D ${branch}\` if it should be deleted.`
+      );
+    } else if (!existingBranches.includes(branch)) {
+      if (typeof deleteBranch !== 'function') {
+        // #426 AC4: the port cannot delete branches; say so instead of keeping
+        // the branch in silence.
         warnings.push(
-          `The worktree was removed, but branch '${worktree.branch}' could not be deleted (${reason}); run \`git branch -D ${worktree.branch}\`.`
+          `The worktree was removed, but this manager cannot delete branch '${branch}'; run \`git branch -D ${branch}\`.`
         );
+      } else {
+        try {
+          await deleteBranch.call(manager, { branchName: branch, workspaceDir: workspace });
+        } catch (err: unknown) {
+          const reason = err instanceof Error ? err.message : String(err);
+          warnings.push(
+            `The worktree was removed, but branch '${branch}' could not be deleted (${reason}); run \`git branch -D ${branch}\`.`
+          );
+        }
       }
     }
 

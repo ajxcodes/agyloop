@@ -105,6 +105,27 @@ export interface ListBranchesOptions {
   readonly remote?: boolean;
 }
 
+export interface ProvisioningStateProbeOptions {
+  readonly workspaceDir?: string;
+}
+
+/**
+ * Failure-aware answer to "what existed BEFORE provisioning?" (issue #426).
+ *
+ * Both fields are `null` EXACTLY when the underlying read failed. `[]` is only
+ * ever a successful read that found nothing — never a failure marker — because
+ * the refusal teardown turns "nothing existed" into "this invocation created
+ * it" and deletes. `listWorktrees()`/`listBranches()` cannot make that promise
+ * (they answer `[]` on a non-zero git exit), which is why provenance does not
+ * use them.
+ */
+export interface ProvisioningStateProbe {
+  /** Registered worktree paths, external ones included. `null` = the read failed. */
+  readonly worktreePaths: readonly string[] | null;
+  /** Local branch names (no remotes). `null` = the read failed. */
+  readonly localBranches: readonly string[] | null;
+}
+
 export interface CreateBranchOptions {
   readonly branchName: string;
   readonly startPoint: string;
@@ -192,6 +213,10 @@ export interface WorktreeManagerPort {
 
   /**
    * Lists active git worktrees registered with the repository.
+   *
+   * A non-zero `git` exit is reported as `[]`, so a failed read is
+   * indistinguishable from an empty registry here. Provenance MUST NOT be read
+   * from this method — use `probeProvisioningState` (issue #426).
    */
   listWorktrees(options?: ListWorktreesOptions): Promise<readonly WorktreeDescriptor[]>;
 
@@ -230,8 +255,21 @@ export interface WorktreeManagerPort {
 
   /**
    * Lists local and optionally remote branches in the repository.
+   *
+   * A non-zero `git` exit is reported as `[]`, so a failed read is
+   * indistinguishable from an empty list here. Provenance MUST NOT be read from
+   * this method — use `probeProvisioningState` (issue #426).
    */
   listBranches?(options?: ListBranchesOptions): Promise<readonly string[]>;
+
+  /**
+   * Pre-provisioning provenance probe (issue #426).
+   *
+   * Optional: an adapter that cannot answer truthfully omits it, and the
+   * refusal teardown then removes nothing and says so instead of guessing.
+   * `null` means the read failed; `[]` means a successful read found nothing.
+   */
+  probeProvisioningState?(options?: ProvisioningStateProbeOptions): Promise<ProvisioningStateProbe>;
 
   /**
    * Creates a branch from a specified start point.

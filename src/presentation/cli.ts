@@ -3931,6 +3931,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         const result = await makeLifecycleUseCase(scope.repo).execute({
           mode: MODE_IMPLEMENT,
           workspaceDir: lifecycleWorkspaceDir,
+          // #426: the refusal teardown's only channel is `onProgress`; without
+          // this the "cannot delete a branch" warning reached nobody.
+          onProgress: (message) => console.error(message),
           issue: issueValue,
           configPath: options.configPath,
           dryRun: options.dryRun,

@@ -41,7 +41,9 @@ import {
   PushBranchOptions,
   CommandExecutorPort,
   CommandExecutionResult,
-  QuarantineWorktreeResult
+  QuarantineWorktreeResult,
+  ProvisioningStateProbeOptions,
+  ProvisioningStateProbe
 } from '../ports';
 import { ProcessCommandExecutor } from './process-command-executor';
 
@@ -1126,16 +1128,29 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
-   * Lists active worktrees registered in the git repository.
+   * Reads the worktree registry.
+   *
+   * #426: `null` means the read failed (non-zero exit OR a thrown executor);
+   * `[]` means a successful read found nothing. The distinction is what makes
+   * `probeProvisioningState` truthful — `listWorktrees` collapses both to `[]`
+   * for its published contract.
    */
-  public async listWorktrees(options?: ListWorktreesOptions): Promise<readonly WorktreeDescriptor[]> {
-    const workspace = await this.getRepoRoot(options?.workspaceDir);
-    const res = await this.commandExecutor.execute('git worktree list --porcelain', {
-      cwd: workspace
-    });
+  private async readWorktreeRegistry(
+    workspace: string,
+    includeExternal: boolean
+  ): Promise<readonly WorktreeDescriptor[] | null> {
+    let res: CommandExecutionResult;
+    try {
+      res = await this.commandExecutor.execute('git worktree list --porcelain', {
+        cwd: workspace
+      });
+    } catch {
+      // #426: an unreadable registry is UNKNOWN, never empty.
+      return null;
+    }
 
     if (res.exitCode !== 0) {
-      return [];
+      return null;
     }
 
     const output = (res.stdout || '').trim();
@@ -1174,7 +1189,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
 
       // Filter out external worktrees unless includeExternal is true
-      if (!options?.includeExternal) {
+      if (!includeExternal) {
         if (
           normalizedWtPath !== path.join(normalizedRoot, DEFAULT_WORKTREES_DIR) &&
           !normalizedWtPath.startsWith(expectedPrefix)
@@ -1203,6 +1218,14 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     }
 
     return descriptors;
+  }
+
+  /**
+   * Lists active worktrees registered in the git repository.
+   */
+  public async listWorktrees(options?: ListWorktreesOptions): Promise<readonly WorktreeDescriptor[]> {
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
+    return (await this.readWorktreeRegistry(workspace, Boolean(options?.includeExternal))) ?? [];
   }
 
   /**
@@ -1468,17 +1491,29 @@ export class GitWorktreeManager implements WorktreeManagerPort {
   }
 
   /**
-   * Lists local and remote branches in the repository.
+   * Reads the local (or local+remote) branch list.
+   *
+   * #426: `null` means the read failed (non-zero exit OR a thrown executor);
+   * `[]` means a successful read found nothing. A live repository always has at
+   * least one local branch, so an empty list from a *failed* read must never be
+   * mistaken for "no branches existed".
    */
-  public async listBranches(options?: ListBranchesOptions): Promise<readonly string[]> {
-    const workspace = options?.workspaceDir || process.cwd();
-    const flag = options?.remote !== false ? '-a' : '';
-    const res = await this.commandExecutor.execute(`git branch ${flag} --format="%(refname:short)"`, {
-      cwd: workspace
-    });
+  private async readLocalBranches(
+    workspace: string,
+    remote: boolean
+  ): Promise<readonly string[] | null> {
+    const flag = remote ? '-a' : '';
+    let res: CommandExecutionResult;
+    try {
+      res = await this.commandExecutor.execute(`git branch ${flag} --format="%(refname:short)"`, {
+        cwd: workspace
+      });
+    } catch {
+      return null;
+    }
 
     if (res.exitCode !== 0) {
-      return [];
+      return null;
     }
 
     const lines = (res.stdout || '')
@@ -1488,6 +1523,33 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
     // Deduplicate branches
     return Array.from(new Set(lines));
+  }
+
+  /**
+   * Lists local and remote branches in the repository.
+   */
+  public async listBranches(options?: ListBranchesOptions): Promise<readonly string[]> {
+    const workspace = options?.workspaceDir || process.cwd();
+    return (await this.readLocalBranches(workspace, options?.remote !== false)) ?? [];
+  }
+
+  /**
+   * Pre-provisioning provenance probe (issue #426).
+   *
+   * Resolves the workspace ONCE, then answers both questions independently:
+   * `null` exactly when that read failed, `[]` only for a successful read that
+   * found nothing. Never throws — a failed reader is already `null`.
+   */
+  public async probeProvisioningState(
+    options?: ProvisioningStateProbeOptions
+  ): Promise<ProvisioningStateProbe> {
+    const workspace = await this.getRepoRoot(options?.workspaceDir);
+    const worktrees = await this.readWorktreeRegistry(workspace, true);
+    const branches = await this.readLocalBranches(workspace, false);
+    return {
+      worktreePaths: worktrees === null ? null : worktrees.map((worktree) => worktree.worktreePath),
+      localBranches: branches
+    };
   }
 
   /**
