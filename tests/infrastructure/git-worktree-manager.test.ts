@@ -1945,6 +1945,107 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       assert.strictEqual(descriptor.isIsolated, true);
     });
   });
+
+  /**
+   * Issue #425: provisioning must not leave litter behind.
+   *
+   * WT-425-1/2 pin #420's teardown invariant for the `.worktrees` CONTAINER: a
+   * failed `git worktree add` removes the container only when THIS invocation
+   * created it, and only while it is still empty. WT-425-3 pins the refusal for
+   * a workspace that is not inside a git work tree: nothing is written — no
+   * `.gitignore`, no `.worktrees`.
+   */
+  describe('createWorktree provisioning container (#425)', () => {
+    const ADD_FAILURE = 'fatal: could not create work tree dir';
+
+    function porcelainFor(rootRepo: string): string {
+      return [
+        `worktree ${rootRepo}`,
+        'HEAD 1111111111111111111111111111111111111111',
+        'branch refs/heads/main',
+        ''
+      ].join('\n');
+    }
+
+    function failingAddExecutor(rootRepo: string): CommandExecutorPort {
+      const porcelain = porcelainFor(rootRepo);
+      return {
+        execute: async (cmd: string): Promise<CommandExecutionResult> => {
+          if (cmd === 'git worktree list --porcelain') {
+            return makeResult(cmd, { stdout: porcelain, combinedOutput: porcelain });
+          }
+          if (cmd.includes('rev-parse --abbrev-ref HEAD')) {
+            return makeResult(cmd, { stdout: 'main\n' });
+          }
+          if (cmd.includes('git branch')) {
+            return makeResult(cmd, { stdout: 'main\n' });
+          }
+          if (cmd.includes('git worktree add')) {
+            return makeResult(cmd, { exitCode: 128, stderr: ADD_FAILURE, combinedOutput: ADD_FAILURE });
+          }
+          return makeResult(cmd);
+        }
+      };
+    }
+
+    async function expectProvisioningFailure(
+      manager: InstanceType<typeof GitWorktreeManager>,
+      rootRepo: string
+    ): Promise<any> {
+      let caught: unknown = null;
+      try {
+        await manager.createWorktree({ taskId: '425', workspaceDir: rootRepo });
+      } catch (err) {
+        caught = err;
+      }
+      assert.ok(caught instanceof WorktreeCreationError, 'expected a WorktreeCreationError');
+      assert.strictEqual((caught as any).operation, 'createWorktree');
+      return caught;
+    }
+
+    test('WT-425-1: a failed add removes the container this invocation created', async () => {
+      const rootRepo = path.resolve(tmpDir, 'root-repo');
+      fs.mkdirSync(rootRepo, { recursive: true });
+
+      const manager = new GitWorktreeManager(failingAddExecutor(rootRepo));
+      const error = await expectProvisioningFailure(manager, rootRepo);
+
+      assert.match(error.message, /could not create work tree dir/, 'the git output must still be surfaced');
+      assert.strictEqual(
+        fs.existsSync(path.join(rootRepo, '.worktrees')),
+        false,
+        'a failed provisioning must not leave the empty container it created'
+      );
+    });
+
+    test('WT-425-2: a container that already existed survives a failed add', async () => {
+      const rootRepo = path.resolve(tmpDir, 'root-repo');
+      fs.mkdirSync(path.join(rootRepo, '.worktrees'), { recursive: true });
+
+      const manager = new GitWorktreeManager(failingAddExecutor(rootRepo));
+      await expectProvisioningFailure(manager, rootRepo);
+
+      assert.strictEqual(
+        fs.existsSync(path.join(rootRepo, '.worktrees')),
+        true,
+        'a container this invocation did not create must never be removed'
+      );
+      assert.deepStrictEqual(fs.readdirSync(path.join(rootRepo, '.worktrees')), []);
+    });
+
+    test('WT-425-3: a non-git workspace is refused before any write', async () => {
+      const plain = path.resolve(tmpDir, 'plain-workspace');
+      fs.mkdirSync(plain, { recursive: true });
+
+      const manager = new GitWorktreeManager();
+      const error = await expectProvisioningFailure(manager, plain);
+
+      assert.match(error.message, /not inside a git work tree/);
+      assert.ok(error.message.includes(plain), `the refusal must name the workspace, got: ${error.message}`);
+      assert.strictEqual(fs.existsSync(path.join(plain, '.worktrees')), false, 'nothing may be provisioned');
+      assert.strictEqual(fs.existsSync(path.join(plain, '.gitignore')), false, 'nothing may be written');
+    });
+  });
 });
 
 /**

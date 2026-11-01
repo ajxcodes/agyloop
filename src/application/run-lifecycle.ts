@@ -152,6 +152,14 @@ export interface RunLifecycleParams {
   readonly message?: string | null;
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
+  /**
+   * The repository the WHOLE run is bound to (issue #425): the checkpoint
+   * directory *and* the provisioning / measurement / gate cwd. Every path the
+   * lifecycle derives — config load, pre-flight, plan scaffolding, the worktree,
+   * the baseline measurement, the diff and the gate — comes from this one value.
+   * Omitted means the process's current directory, which is today's behaviour
+   * for a caller that has no `--workspace`.
+   */
   readonly workspaceDir?: string;
   readonly workingDiff?: string | null;
   readonly commands?: readonly string[] | readonly GateCommandDefinition[];

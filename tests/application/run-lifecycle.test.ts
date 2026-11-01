@@ -2865,3 +2865,138 @@ Score content from either shape and make the park name the empty sections and bl
     });
   });
 });
+
+/**
+ * Issue #425: `RunLifecycleUseCase.execute()` must bind the WHOLE run to
+ * `params.workspaceDir` — the checkpoint directory AND the repository the run
+ * provisions/measures in — never to `process.cwd()`. Before the fix the CLI
+ * omitted the field at every lifecycle call site, so the checkpoint was read
+ * from `--workspace` while provisioning happened in the invocation cwd.
+ */
+describe('workspace scoping (#425)', () => {
+  const SCOPED_WORKSPACE = '/mock/scoped-workspace';
+  const SEEDED_AT = '2026-11-01T00:00:00.000Z';
+
+  class RecordingConfigRepository extends MockConfigRepository {
+    public loadConfigCalls: any[] = [];
+
+    public loadConfig(params?: any): any {
+      this.loadConfigCalls.push(params);
+      return super.loadConfig();
+    }
+  }
+
+  /** Records the provisioning root the lifecycle hands to the adapter. */
+  class RecordingProvisioner {
+    public createWorktreeCalls: any[] = [];
+    public createWorktreeCount = 0;
+
+    public async listWorktrees(): Promise<any[]> {
+      return [];
+    }
+
+    public async listBranches(): Promise<readonly string[]> {
+      return ['main'];
+    }
+
+    public async createWorktree(options: any): Promise<any> {
+      this.createWorktreeCalls.push(options);
+      this.createWorktreeCount++;
+      return WorktreeDescriptor.create({
+        taskId: String(options.taskId),
+        worktreePath: `${options.workspaceDir}/.worktrees/${options.taskId}`,
+        branch: `task/${options.taskId}`,
+        baseBranch: options.baseBranch || 'main'
+      });
+    }
+
+    public async removeWorktree(): Promise<void> {}
+    public async deleteBranch(): Promise<void> {}
+  }
+
+  test('RL-425-1: execute() provisions in params.workspaceDir, never in the cwd', async () => {
+    const seeded = {
+      version: '1.0.0',
+      currentStage: STAGE_PLAN,
+      mode: MODE_IMPLEMENT,
+      issue: 32,
+      milestoneTitle: null,
+      baseBranch: 'main',
+      worktree: null,
+      planDir: `${SCOPED_WORKSPACE}/artifacts/plans/32-test-feature`,
+      planPath: null,
+      approvedPlanDigest: null,
+      approvedPlanPath: null,
+      triagePayload: null,
+      triageDisposition: null,
+      createdAt: SEEDED_AT,
+      updatedAt: SEEDED_AT,
+      history: [{ stage: STAGE_PLAN, timestamp: SEEDED_AT }],
+      pausedAtGate: null,
+      pausedAtTimestamp: null,
+      totalHumanWaitMs: 0
+    };
+
+    const stateRepo = new MockStateRepository(seeded);
+    const configRepo = new RecordingConfigRepository();
+    const provisioner = new RecordingProvisioner();
+
+    const lifecycle = new RunLifecycleUseCase({
+      stateRepo,
+      configRepo,
+      planGenerator: new MockPlanGenerator(),
+      githubGateway: new MockGitHubGateway(),
+      commandExecutor: new MockCommandExecutor(),
+      buildDetector: new MockBuildDetector(),
+      standardsRepo: new MockStandardsRepository(),
+      critique: new MockCritique(),
+      confirmationPrompt: new MockConfirmationPrompt(),
+      worktreeManager: provisioner as any,
+      inferBaseBranchUseCase: {
+        execute: async () => ({ baseBranch: 'main', taskBranchPrefix: 'task' })
+      } as any,
+      runPreFlightCheckUseCase: {
+        execute: async () => ({
+          action: 'PROCEED',
+          message: '',
+          canProceed: true,
+          isHalt: false,
+          isResume: false
+        })
+      } as any,
+      startImplementationUseCase: {
+        execute: async () => {
+          const sm = StateMachine.fromSnapshot(seeded);
+          sm.transition(STAGE_APPROVAL);
+          sm.transition(STAGE_IMPLEMENT);
+          return { stateMachine: sm, resumed: false };
+        }
+      } as any
+    });
+
+    const result = await lifecycle.execute({
+      mode: MODE_IMPLEMENT,
+      issue: 32,
+      workspaceDir: SCOPED_WORKSPACE
+    });
+
+    assert.strictEqual(provisioner.createWorktreeCount, 1, 'implement must provision exactly once');
+    assert.strictEqual(
+      provisioner.createWorktreeCalls[0].workspaceDir,
+      SCOPED_WORKSPACE,
+      'createWorktree must receive params.workspaceDir'
+    );
+    assert.notStrictEqual(
+      provisioner.createWorktreeCalls[0].workspaceDir,
+      process.cwd(),
+      'the provisioning root must never be the process cwd'
+    );
+    assert.strictEqual(configRepo.loadConfigCalls[0]?.cwd, SCOPED_WORKSPACE, 'config must load from the workspace');
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      result.worktree?.worktreePath,
+      `${SCOPED_WORKSPACE}/.worktrees/32`,
+      'the recorded worktree must live under the workspace'
+    );
+  });
+});
