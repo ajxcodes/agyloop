@@ -5,6 +5,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const { GitWorktreeManager } = require('../../dist/infrastructure');
+const { WorktreeError } = require('../../dist/domain');
 
 import type { CommandExecutorPort, CommandExecutionResult } from '../../src/ports';
 
@@ -243,6 +244,112 @@ describe('GitWorktreeManager Branch & Release Extensions', () => {
       workspaceDir: '/repo'
     });
     assert.deepStrictEqual(commits, []);
+  });
+});
+
+describe('GitWorktreeManager.deleteBranch (issue #420, AC8)', () => {
+  const ROOT_PORCELAIN = ['worktree /repo', 'HEAD abc1234', 'branch refs/heads/main', ''].join('\n');
+
+  test('DB-1: deletes a free local branch with git branch -D', async () => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: ROOT_PORCELAIN });
+        }
+        return makeResult(cmd, { exitCode: 0 });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    await manager.deleteBranch({ branchName: 'task/42', workspaceDir: '/repo' });
+
+    assert.ok(
+      executedCommands.includes("git branch -D -- 'task/42'"),
+      `expected the shell-quoted branch deletion, got: ${executedCommands.join(' | ')}`
+    );
+  });
+
+  test('DB-2: refuses a branch checked out in any worktree, before deleting anything', async () => {
+    const executedCommands: string[] = [];
+    const holderPorcelain = [
+      'worktree /repo',
+      'HEAD abc1234',
+      'branch refs/heads/main',
+      '',
+      'worktree /repo/.worktrees/42',
+      'HEAD def5678',
+      'branch refs/heads/task/42',
+      ''
+    ].join('\n');
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: holderPorcelain });
+        }
+        return makeResult(cmd, { exitCode: 0 });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    await assert.rejects(
+      async () => manager.deleteBranch({ branchName: 'task/42', workspaceDir: '/repo' }),
+      (err: any) => {
+        assert.ok(err instanceof WorktreeError);
+        assert.strictEqual(err.operation, 'deleteBranch');
+        assert.match(err.message, /\/repo\/\.worktrees\/42/);
+        return true;
+      }
+    );
+    assert.strictEqual(
+      executedCommands.some((cmd) => cmd.includes('git branch -D')),
+      false,
+      'a checked-out branch must never reach git branch -D'
+    );
+  });
+
+  test('DB-3: refuses a blank branch name before any executor call', async () => {
+    const executedCommands: string[] = [];
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        executedCommands.push(cmd);
+        return makeResult(cmd);
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    await assert.rejects(
+      async () => manager.deleteBranch({ branchName: '   ', workspaceDir: '/repo' }),
+      (err: any) => err instanceof WorktreeError && err.operation === 'deleteBranch'
+    );
+    assert.deepStrictEqual(executedCommands, []);
+  });
+
+  test('DB-4: surfaces a git refusal as a WorktreeError carrying stderr', async () => {
+    const mockExecutor: CommandExecutorPort = {
+      execute: async (cmd: string): Promise<CommandExecutionResult> => {
+        if (cmd === 'git worktree list --porcelain') {
+          return makeResult(cmd, { stdout: ROOT_PORCELAIN });
+        }
+        return makeResult(cmd, {
+          exitCode: 1,
+          stderr: "error: branch 'task/42' not found."
+        });
+      }
+    };
+
+    const manager = new GitWorktreeManager(mockExecutor);
+    await assert.rejects(
+      async () => manager.deleteBranch({ branchName: 'task/42', workspaceDir: '/repo' }),
+      (err: any) => {
+        assert.ok(err instanceof WorktreeError);
+        assert.strictEqual(err.operation, 'deleteBranch');
+        assert.match(err.message, /error: branch 'task\/42' not found\./);
+        return true;
+      }
+    );
   });
 });
 

@@ -6,6 +6,7 @@
  * CLI-3: a real `transition IMPLEMENT` refuses identically and writes nothing
  * CLI-4: the documented PLAN -> APPROVAL -> IMPLEMENT recovery works
  * CLI-5: a non-gated `implement` from PLAN still records the digest
+ * CLI-6: a real refusal without `--no-worktree` leaves no worktree or branch (#420)
  *
  * Each case drives the real CLI against a git sandbox, not a mock: the defect
  * was that the certification was attached one stage too late, so only the real
@@ -214,6 +215,10 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     assert.strictEqual(after.currentStage, 'APPROVAL');
     assert.strictEqual(after.approvedPlanDigest, approved);
     assert.strictEqual(after.approvedPlanPath, before.approvedPlanPath);
+    // Issue #420: this assertion is VACUOUS — `--no-worktree` disables
+    // provisioning outright, so it would stay green even when implement
+    // provisions an orphan before the guard refuses. CLI-6 covers the real
+    // path (no `--no-worktree`) and is the pin for that defect.
     assert.ok(
       !fs.existsSync(path.join(sandbox.dir, '.worktrees', String(ISSUE))),
       'a refusal must not provision a worktree'
@@ -299,5 +304,46 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
     assert.strictEqual(checkpoint.approvedPlanDigest, expected);
     assert.strictEqual(checkpoint.approvedPlanPath, sandbox.planPath);
+  });
+
+  test('CLI-6: a real refusal without --no-worktree leaves no worktree, no branch and the APPROVAL checkpoint (#420)', async () => {
+    const sandbox = sandboxAtPlan();
+    const approve = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    assert.strictEqual(approve.code, 0, `${approve.stdout}\n${approve.stderr}`);
+
+    const approved = readCheckpoint(sandbox);
+    assert.ok(approved.approvedPlanDigest, 'the gate must have recorded a digest');
+
+    fs.appendFileSync(sandbox.planPath, EDITED_MARKER, 'utf8');
+
+    // No `--no-worktree`: implement provisions first, then the guard refuses.
+    const run = await runIn(sandbox, ['implement', '--issue', String(ISSUE)]);
+    assert.notStrictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
+    const output = `${run.stdout}\n${run.stderr}`;
+    assert.ok(output.includes("Validation failed for field 'approvedPlanDigest'"), output);
+
+    assert.ok(
+      !fs.existsSync(path.join(sandbox.dir, '.worktrees', String(ISSUE))),
+      'a refused implement must discard the worktree it created'
+    );
+    const branches = execFileSync('git', ['branch', '--list', `task/${ISSUE}`], {
+      cwd: sandbox.dir,
+      encoding: 'utf8'
+    });
+    assert.strictEqual(branches.trim(), '', 'a refused implement must delete the branch it created');
+    const worktreeList = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+      cwd: sandbox.dir,
+      encoding: 'utf8'
+    });
+    assert.strictEqual(
+      worktreeList.split('\n').filter((line: string) => line.startsWith('worktree ')).length,
+      1,
+      `only the root worktree may remain:\n${worktreeList}`
+    );
+
+    const after = readCheckpoint(sandbox);
+    assert.strictEqual(after.currentStage, 'APPROVAL');
+    assert.strictEqual(after.worktree, null);
+    assert.strictEqual(after.approvedPlanDigest, approved.approvedPlanDigest);
   });
 });

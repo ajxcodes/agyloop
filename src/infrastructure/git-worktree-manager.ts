@@ -35,6 +35,7 @@ import {
   CleanOrphanedOptions,
   ListBranchesOptions,
   CreateBranchOptions,
+  DeleteBranchOptions,
   GetCommitsOptions,
   IsAncestorOptions,
   PushBranchOptions,
@@ -1446,6 +1447,41 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       throw new WorktreeCreationError(
         'createBranch',
         res.stderr || res.stdout || `Failed to create branch '${options.branchName}' from '${startPoint}'`
+      );
+    }
+  }
+
+  /**
+   * Deletes a local branch (issue #420).
+   *
+   * Provenance is the caller's responsibility: this method only refuses what it
+   * can prove must survive — a blank name and a branch currently checked out in
+   * ANY worktree (root included). The worktree probe runs first so a held branch
+   * fails with a precise diagnosis instead of git's "used by worktree" text.
+   */
+  public async deleteBranch(options: DeleteBranchOptions): Promise<void> {
+    const branchName = String(options.branchName ?? '').trim();
+    if (!branchName) {
+      throw new WorktreeError('deleteBranch', 'Branch name is required.');
+    }
+
+    const workspace = await this.getRepoRoot(options.workspaceDir);
+    const holder = await this.findWorktreeForBranch(workspace, branchName);
+    if (holder) {
+      throw new WorktreeError(
+        'deleteBranch',
+        `Branch '${branchName}' is checked out in the worktree at ${holder.worktreePath}; refusing to delete it.`
+      );
+    }
+
+    const res = await this.commandExecutor.execute(`git branch -D -- ${shellQuote(branchName)}`, {
+      cwd: workspace
+    });
+
+    if (res.exitCode !== 0) {
+      throw new WorktreeError(
+        'deleteBranch',
+        (res.stderr || res.stdout || `Failed to delete branch '${branchName}'`).trim()
       );
     }
   }

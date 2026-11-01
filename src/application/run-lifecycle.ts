@@ -44,6 +44,7 @@
 
 import {
   StateMachine,
+  StateMachineSnapshot,
   IssueNumber,
   StageName,
   ExecutionMode,
@@ -101,7 +102,10 @@ import {
   VERDICT_SKIPPED,
   StateStorageError,
   WorktreeCreationError,
-  WorktreeError
+  WorktreeError,
+  ValidationError,
+  InvalidTransitionError,
+  isSamePath
 } from '../domain';
 import {
   StateRepository,
@@ -291,6 +295,26 @@ export interface RunLifecycleDependencies {
    * dispatched gate files.
    */
   readonly gateReportRepo?: GateReportRepositoryPort;
+}
+
+/**
+ * "Did this invocation create it?" evidence captured BEFORE provisioning
+ * (issue #420).
+ *
+ * `createWorktree` can CREATE or ADOPT a worktree, and the descriptor does not
+ * say which, so the pre-provisioning worktree list plus the pre-provisioning
+ * local branch list are the only reliable provenance evidence.
+ */
+interface WorktreeProvisioningProvenance {
+  /** `null` = the list could not be read; provenance is UNKNOWN, never assume new. */
+  readonly existingWorktreePaths: readonly string[] | null;
+  /** `null` = unknown; the worktree may still be removed, the branch must not. */
+  readonly existingBranches: readonly string[] | null;
+}
+
+interface ProvisionedWorktreeCleanup {
+  readonly removed: boolean;
+  readonly warnings: readonly string[];
 }
 
 export class RunLifecycleUseCase {
@@ -632,7 +656,9 @@ export class RunLifecycleUseCase {
           return withAdvisory(await this.executePlanMode(sm, params, workspace));
 
         case MODE_IMPLEMENT:
-          return withAdvisory(await this.executeImplementMode(sm, params, workspace, preflightResult));
+          return withAdvisory(
+            await this.executeImplementMode(sm, params, workspace, preflightResult, snapshot)
+          );
 
         case MODE_COMMIT:
           return withAdvisory(await this.executeCommitMode(sm, params, workspace));
@@ -942,33 +968,205 @@ export class RunLifecycleUseCase {
   }
 
   /**
+   * Captures "did this invocation create it?" evidence BEFORE provisioning
+   * (issue #420).
+   *
+   * Defensive by design: a manager without `listWorktrees`/`listBranches`, or a
+   * probe that throws, yields `null` — "unknown" — and the cleanup then declines
+   * to touch what it cannot prove it created.
+   */
+  private async captureWorktreeProvisioningProvenance(
+    workspace: string
+  ): Promise<WorktreeProvisioningProvenance> {
+    const manager = this.worktreeManager;
+    let existingWorktreePaths: readonly string[] | null = null;
+    let existingBranches: readonly string[] | null = null;
+
+    if (manager) {
+      try {
+        if (typeof manager.listWorktrees === 'function') {
+          const worktrees = await manager.listWorktrees({
+            workspaceDir: workspace,
+            includeExternal: true
+          });
+          existingWorktreePaths = worktrees.map((worktree) => worktree.worktreePath);
+        }
+      } catch {
+        existingWorktreePaths = null;
+      }
+
+      try {
+        if (typeof manager.listBranches === 'function') {
+          existingBranches = await manager.listBranches({ workspaceDir: workspace, remote: false });
+        }
+      } catch {
+        existingBranches = null;
+      }
+    }
+
+    return { existingWorktreePaths, existingBranches };
+  }
+
+  /**
+   * Removes a worktree THIS invocation created and deletes its branch only when
+   * the branch is provably new (issue #420).
+   *
+   * The fail-safe direction is always "leave it": unknown provenance, an adopted
+   * or non-canonical worktree, and a failed removal all return
+   * `removed === false`, so the caller keeps the descriptor and the surviving
+   * worktree stays discoverable through `codeloop status` / `codeloop next`.
+   */
+  private async discardProvisionedWorktree(
+    worktree: WorktreeDescriptor,
+    provenance: WorktreeProvisioningProvenance,
+    workspace: string
+  ): Promise<ProvisionedWorktreeCleanup> {
+    const warnings: string[] = [];
+    const manager = this.worktreeManager;
+    if (!manager) {
+      return { removed: false, warnings };
+    }
+
+    // Unknown provenance is never "new" (AC5).
+    const existingWorktreePaths = provenance.existingWorktreePaths;
+    if (existingWorktreePaths === null) {
+      return { removed: false, warnings };
+    }
+
+    // A worktree already registered before provisioning was adopted, not
+    // created here — never remove it (#282, #287).
+    if (existingWorktreePaths.some((existing) => isSamePath(existing, worktree.worktreePath))) {
+      return { removed: false, warnings };
+    }
+
+    // Only the canonical container is ours to remove; an external or custom
+    // path is treated as adopted.
+    let canonicalPath: string;
+    try {
+      canonicalPath = await manager.resolveTaskWorktreePath(workspace, worktree.taskId);
+    } catch {
+      return { removed: false, warnings };
+    }
+    if (!isSamePath(canonicalPath, worktree.worktreePath)) {
+      return { removed: false, warnings };
+    }
+
+    try {
+      await manager.removeWorktree({
+        worktreePath: worktree.worktreePath,
+        workspaceDir: workspace,
+        force: true,
+        prune: true,
+        // Internal teardown (#282): a target deleted out of band must not turn
+        // a refusal into a cleanup failure. `allowExternal` is deliberately NOT
+        // set: this cleanup only ever targets the canonical path proven above.
+        tolerateMissing: true
+      });
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        `The worktree created for issue #${worktree.taskId} at ${worktree.worktreePath} could not be removed (${reason}); run \`codeloop worktree prune\`.`
+      );
+      return { removed: false, warnings };
+    }
+
+    const existingBranches = provenance.existingBranches;
+    if (
+      existingBranches !== null &&
+      !existingBranches.includes(worktree.branch) &&
+      typeof manager.deleteBranch === 'function'
+    ) {
+      try {
+        await manager.deleteBranch({ branchName: worktree.branch, workspaceDir: workspace });
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        warnings.push(
+          `The worktree was removed, but branch '${worktree.branch}' could not be deleted (${reason}); run \`git branch -D ${worktree.branch}\`.`
+        );
+      }
+    }
+
+    return { removed: true, warnings };
+  }
+
+  /**
    * Implement mode: resumes execution directly from approved plan specification.
+   *
+   * Issue #420: this leg provisions the worktree BEFORE the plan guards run
+   * inside `StartImplementationUseCase`, so a guard refusal must undo only what
+   * THIS invocation created — the worktree directory, the branch and the
+   * descriptor `resolveWorktree` wrote. An adopted worktree, unknown provenance
+   * or a failed teardown leaves everything in place (descriptor included) so the
+   * orphan stays visible; the guard's own error is always rethrown unchanged.
+   *
+   * The restore target is the checkpoint the run LOADED (`checkpointAtLoad`),
+   * not a fresh `sm.toSnapshot()`: `execute` normalizes `mode`/`issue` before
+   * dispatch, and AC3 requires a refusal to leave the values the run loaded —
+   * including `updatedAt` — so the approval identity stays byte-stable.
    */
   private async executeImplementMode(
     sm: StateMachine,
     params: RunLifecycleParams,
     workspace: string,
-    preflightResult?: PreFlightCheckResult
+    preflightResult?: PreFlightCheckResult,
+    checkpointAtLoad?: StateMachineSnapshot | null
   ): Promise<RunLifecycleResult> {
+    const hadDescriptor = Boolean(sm.worktree);
+    const checkpointBeforeProvisioning = checkpointAtLoad ?? sm.toSnapshot();
+    const provenance =
+      hadDescriptor || params.dryRun === true || params.worktree === false || !this.worktreeManager
+        ? null
+        : await this.captureWorktreeProvisioningProvenance(workspace);
+
     const worktree = await this.resolveWorktree(sm, params, workspace);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
 
-    const implResult = await this.startImplementationUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      userInstructions: params.userInstructions,
-      configPath: params.configPath,
-      dryRun: params.dryRun,
-      // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
-      // across the boundary so StartImplementationUseCase's `skipWorktree`
-      // guardrail really short-circuits instead of re-provisioning through the
-      // adopt path. `resolveWorktree` (above) remains the outer layer.
-      noWorktree: params.worktree === false,
-      workspaceDir: activeWorkspace,
-      hasMergeConflicts: preflightResult?.hasMergeConflicts,
-      mergeBaseBranch: preflightResult?.candidateBaseBranch
-    });
+    let implResult: StartImplementationResult;
+    try {
+      implResult = await this.startImplementationUseCase.execute({
+        issue: sm.issue,
+        planPath: params.planPath,
+        planDir: params.planDir,
+        userInstructions: params.userInstructions,
+        configPath: params.configPath,
+        dryRun: params.dryRun,
+        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+        // across the boundary so StartImplementationUseCase's `skipWorktree`
+        // guardrail really short-circuits instead of re-provisioning through the
+        // adopt path. `resolveWorktree` (above) remains the outer layer.
+        noWorktree: params.worktree === false,
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch
+      });
+    } catch (err: unknown) {
+      // Only a REFUSAL ("this plan/stage cannot start") is torn down. Provisioning
+      // failures keep their own transaction teardown in `resolveWorktree`, and a
+      // quota halt is intercepted one level up.
+      if (
+        (err instanceof ValidationError || err instanceof InvalidTransitionError) &&
+        !hadDescriptor &&
+        worktree &&
+        provenance
+      ) {
+        const cleanup = await this.discardProvisionedWorktree(worktree, provenance, workspace);
+        for (const warning of cleanup.warnings) {
+          params.onProgress?.(warning);
+        }
+        if (cleanup.removed) {
+          try {
+            await this.stateRepo.save(checkpointBeforeProvisioning);
+          } catch {
+            params.onProgress?.(
+              `The worktree was removed, but the checkpoint could not be restored: ${this.stateRepo.getStateFilePath()}. It may still describe the removed worktree.`
+            );
+          }
+        }
+      }
+
+      // The guard's own refusal, never a cleanup error (#420 AC4).
+      throw err;
+    }
 
     return {
       success: true,
@@ -1145,8 +1343,10 @@ export class RunLifecycleUseCase {
 
     if (sm.currentStage === STAGE_PLAN || sm.currentStage === STAGE_APPROVAL) {
       // Issue #301: a worktree provisioned by THIS leg is torn down when the
-      // leg fails, so a bad plan cannot leave an orphan branch behind. The
-      // operator's failure stays the plan error — never the cleanup.
+      // leg fails, so a bad plan cannot leave an orphan worktree DIRECTORY
+      // behind. The branch it created is NOT deleted (issue #420: only the
+      // implement-mode leg has provenance-aware branch cleanup). The operator's
+      // failure stays the plan error — never the cleanup.
       try {
         implResult = await this.startImplementationUseCase.execute({
           issue: sm.issue,
@@ -1573,7 +1773,9 @@ export class RunLifecycleUseCase {
     if (sm.currentStage === STAGE_APPROVAL) {
       // Issue #301: a worktree provisioned by THIS leg is torn down when the
       // leg fails (a missing/invalid approved plan), so the failed run leaves
-      // no orphan branch behind. The plan error is what the operator sees.
+      // no orphan DIRECTORY behind. The branch it created is NOT deleted
+      // (issue #420: only the implement-mode leg has provenance-aware branch
+      // cleanup). The plan error is what the operator sees.
       try {
         implResult = await this.startImplementationUseCase.execute({
           issue: sm.issue,
