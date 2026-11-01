@@ -26,6 +26,7 @@ import {
   type SmokeProtocolWireValue
 } from '../constants';
 import { formatStageDuration } from './run-evidence';
+import { sliceBalancedObject } from './json-block';
 
 /**
  * The report's smoke-protocol verdict on the wire: `null` means "not reported",
@@ -142,48 +143,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * Extracts the first balanced `{ … }` object starting at or after `from`.
- *
- * String literals are skipped so a brace inside a command string cannot
- * terminate the object early. Returns `null` when no balanced object exists.
- */
-function sliceBalancedObject(raw: string, from: number): string | null {
-  const start = raw.indexOf('{', from);
-  if (start === -1) {
-    return null;
-  }
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < raw.length; index += 1) {
-    const char = raw[index];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === '{') {
-      depth += 1;
-    } else if (char === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return raw.slice(start, index + 1);
-      }
-    }
-  }
-  return null;
-}
-
 export class GateResultReport {
   private readonly props: GateResultReportProps;
 
@@ -211,7 +170,7 @@ export class GateResultReport {
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(json);
+      parsed = JSON.parse(json.text);
     } catch (err: unknown) {
       throw new ValidationError(
         'gateReport',

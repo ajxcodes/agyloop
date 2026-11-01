@@ -10,6 +10,8 @@
 ## 1. Context & Objectives
 - **Feature Overview:**
 - **Acceptance Criteria:**
+- **Out of Scope:**
+<!-- Name any correction deliberately NOT delivered, so the reviewer cannot count it as met. -->
 
 ## 2. Architectural Design & Impact
 - **Component Breakdown:**
@@ -20,6 +22,9 @@
 - [ ] **Step 1:** 
 - [ ] **Step 2:** 
 - [ ] **Step 3:** 
+
+### Test Register
+<!-- One row per pinned assertion: `- **TR-1** — **Pins:** `path` :: `test title`` (or `**New test:**`) plus a `**Asserts:**` literal. A `Pins:` row must restate the pinned literal exactly; APPROVAL refuses a contradicting row and names `file:line`. -->
 
 ## 4. Quality Gate & Test Verification
 

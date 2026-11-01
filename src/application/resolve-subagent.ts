@@ -103,7 +103,15 @@ import {
   CRITIQUE_FLAG_JSON,
   CRITIQUE_JS_EXTENSION,
   NODE_RUNTIME_BINARY,
-  NOTE_CRITIQUE_TIER_ONE_UNRESOLVED
+  NOTE_CRITIQUE_TIER_ONE_UNRESOLVED,
+  // Issue #432: the deviation channel, the Test Register grammar, the
+  // excluded-path rule and the reviewer's AC evidence block.
+  PLAN_DEVIATION_MARKER,
+  AC_EVIDENCE_MARKER,
+  HEADING_TEST_REGISTER,
+  formatPlanDeviationChannelNote,
+  formatAcEvidenceExample,
+  type RecordedPlanDeviation
 } from '../domain';
 import type { PlanIntegrityVerdict } from './resolve-gate-verification';
 
@@ -323,6 +331,13 @@ export interface ReviewerTaskPromptParams {
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
+  /**
+   * Deviations filed by the implementer (issue #432). Rendered so the verdict
+   * is made with them in view; absent/empty keeps the pre-#432 prompt.
+   */
+  readonly planDeviations?: readonly RecordedPlanDeviation[] | null;
+  /** The plan's `- **Out of Scope:**` declarations (issue #432, AC6). */
+  readonly outOfScope?: readonly string[] | null;
 }
 
 export interface TriageTaskPromptParams {
@@ -912,7 +927,10 @@ export class ResolveSubagentUseCase {
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
     prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE} ${NOTE_SMOKE_FIXTURE_ISSUE_RULE}\n`;
-    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} ${BASELINE_COMMAND_CWD_CONTRACT} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n\n`;
+    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} ${BASELINE_COMMAND_CWD_CONTRACT} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n`;
+    prompt += `- **\`### ${HEADING_TEST_REGISTER}\`** (issue #432): one \`- **<row-id>**\` bullet per pinned assertion, with EITHER \`**Pins:** \`path\` :: \`test title\`\` (an existing test) OR \`**New test:** \`path\` :: \`test title\`\` (a genuinely new case), plus at least one \`**Asserts:** \`assertion\`\`. A row that pins an existing test MUST restate its literal exactly: the approval guard refuses a row whose expected value contradicts the pinned subject, naming \`file:line\`. Run the existing suite before you declare a literal — a plan literal that contradicts a pinned test cannot be approved.\n`;
+    prompt += `- **Delivered-evidence rule** (issue #432, AC4/AC6): an Acceptance Criterion or checklist step must not target a commit-excluded path (\`artifacts/\`, \`.agyloop/\`, \`node_modules/\`) or a path outside the workspace. The approval gate refuses such a plan and names the path. If a correction is deliberately NOT delivered, say so with a \`- **Out of Scope:** <reason>\` bullet under Context & Objectives instead of instructing an edit to a gitignored file.\n`;
+    prompt += `- **Acceptance Criteria bullets** (issue #432): write each criterion as a PLAIN \`- AC<n>: …\` bullet. A bold-labelled bullet (\`- **AC1:** …\`) stops the reviewer's extractor, so the criterion would never reach the verdict.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -1032,7 +1050,12 @@ export class ResolveSubagentUseCase {
     prompt += `1. All tasks in the plan checklist are implemented.\n`;
     prompt += `2. All tests pass with 100% pass rate.\n`;
     prompt += `3. No linting or TypeScript compilation errors remain.\n`;
-    prompt += `4. The plan's literal assertions are satisfied exactly as written — every row of its IK/decision table and every frozen smoke check. A unit test that disagrees with a frozen assertion is a defect in the test, not a licence to change the assertion; do not restate a literal with different punctuation.\n\n`;
+    prompt += `4. The plan's literal assertions are satisfied exactly as written — every row of its IK/decision table and every frozen smoke check. A unit test that disagrees with a frozen assertion is a defect in the test, not a licence to change the assertion; do not restate a literal with different punctuation.\n`;
+    // Issue #432 (AC1): the ONE finding the implementer used to drop was "the
+    // plan is wrong here". It is now a machine-readable block, filed by the
+    // orchestrator, so the gate and the reviewer can see it.
+    prompt += `5. **Plan deviations go through the channel, never a silent edit.** If an approved literal cannot be satisfied as written, STOP and emit one \`${PLAN_DEVIATION_MARKER}\` block per changed literal, naming the plan section, the plan literal, the assertion you actually wrote and the reason. Never change a literal silently and never edit the plan — a test that disagrees with a frozen assertion is a defect in the test until the deviation is acknowledged.\n`;
+    prompt += `   ${formatPlanDeviationChannelNote(effectiveIssue)}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -1343,6 +1366,33 @@ export class ResolveSubagentUseCase {
     if (params.userInstructions) {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
+
+    const deviations = params.planDeviations ?? [];
+    if (deviations.length > 0) {
+      prompt += `### Recorded Plan Deviations:\n`;
+      prompt += `The implementer changed an approved plan literal. The deviation is recorded, not silently edited: judge whether the new literal is right, and say so in \`UNFULFILLED_AC\` only if it is not.\n`;
+      for (const deviation of deviations) {
+        prompt += `- ${deviation.id}${deviation.acknowledged ? ' (acknowledged)' : ' (unacknowledged)'}: plan section "${deviation.planSection}" pins "${deviation.planLiteral}"; the implementation asserts "${deviation.implementedAssertion}" — ${deviation.reason}\n`;
+      }
+      prompt += `\n`;
+    }
+
+    const outOfScope = params.outOfScope ?? [];
+    if (outOfScope.length > 0) {
+      prompt += `### Out of Scope Declarations:\n`;
+      prompt += `The plan deliberately does not deliver these. An AC satisfied only by such a document is \`out-of-scope\`, never \`met\`.\n`;
+      for (const declaration of outOfScope) {
+        prompt += `- ${declaration}\n`;
+      }
+      prompt += `\n`;
+    }
+
+    prompt += `### Delivered Evidence Contract (${AC_EVIDENCE_MARKER}):\n`;
+    prompt += `Evidence must be a path in the DELIVERED change set: a tracked/untracked file in this worktree that appears in \`git diff <base>\` or \`git ls-files --others --exclude-standard\`. An absolute path in the root workspace is NOT evidence, and neither is anything under a gitignored tree (\`artifacts/\`, \`.agyloop/\`). If a criterion's only evidence lives outside the diff, report it \`unverifiable\` and name the path — the tool refuses a verdict that counts it met.\n`;
+    prompt += `Append this block to the verdict:\n`;
+    prompt += '```markdown\n';
+    prompt += `${formatAcEvidenceExample()}\n`;
+    prompt += '```\n\n';
 
     prompt += `### Required Verdict Output:\n`;
     prompt += `You must output a structured review verdict block adhering to this exact format:\n\n`;
