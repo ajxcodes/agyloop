@@ -619,7 +619,7 @@ Operational Modes:
   implement          Resume implementation directly from approved plan specification
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
-  sync               Fast-forward collector branch and process merged PRs to auto-close issues
+  sync               Fast-forward collector branch and process EVERY merged PR to auto-close issues
 
 Pipeline Management:
   next               Inspect state and generate the next invoke_subagent directive (writes only the declared context fields: inferred baseBranch, dispatch counters, updatedAt; at TRIAGE a MERGED/CLOSED pull request ENDS the gate — the checkpoint is recorded as COMPLETED and the report is idle; --dry-run previews without writing; --restart also resets the checkpoint)
