@@ -98,6 +98,32 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 }
 
+/**
+ * Issue #455: review from `QUALITY_GATE` certifies through the shared
+ * chokepoint, which fails CLOSED without a filed same-round report.
+ */
+function usableGate(): any {
+  return {
+    load: () => ({
+      verdict: 'PASSED',
+      buildSystem: 'node',
+      buildStatus: 'PASSED',
+      testsStatus: 'PASSED (2 passed)',
+      testsPassed: 2,
+      testsFailed: 0,
+      durationMs: 1000,
+      executedCommands: ['npm test'],
+      commandResults: [],
+      smokeChecks: [],
+      smokeProtocol: 'NOT_DECLARED',
+      notRun: [],
+      gateRound: 1
+    }),
+    save: () => '/fake/gate.json',
+    clear: () => undefined
+  };
+}
+
 describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
   it('prompts user and installs critique when absent if confirmation is confirmed', async () => {
     let promptAsked = false;
@@ -157,7 +183,8 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
     const result = await useCase.execute({ dryRun: false });
@@ -218,7 +245,8 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
     const result = await useCase.execute({ dryRun: false });
@@ -282,7 +310,9 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       mockCritique,
       undefined,
       undefined,
-      mockInstaller
+      mockInstaller,
+      undefined,
+      usableGate()
     );
 
     const result = await useCase.execute({ dryRun: false });
@@ -345,7 +375,8 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
     const result = await useCase.execute({ dryRun: false, interactive: false });
@@ -401,7 +432,8 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
     await useCase.execute({ dryRun: false });
@@ -469,7 +501,8 @@ describe('RunReviewUseCase --dry-run never installs or checks for updates (#248)
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
     const result = await useCase.execute({ dryRun: true });

@@ -24,7 +24,8 @@ const {
   InvalidTransitionError,
   AiReviewReport,
   AiReviewFinding,
-  ReviewConfidence
+  ReviewConfidence,
+  GateResultReport
 } = require('../../dist/domain');
 const {
   RunReviewUseCase,
@@ -141,6 +142,71 @@ class MockStandardsRepository implements StandardsRepository {
   }
 }
 
+/**
+ * Issue #455: the `QUALITY_GATE -> REVIEW` exit now certifies through the
+ * shared chokepoint, so a fixture that reaches review from the gate must inject
+ * a usable same-round report (fail-closed: a test double may not certify by
+ * omission).
+ */
+class MockGateReportRepository {
+  public report: any;
+
+  constructor(report: any) {
+    this.report = report;
+  }
+
+  public load(): any {
+    return this.report;
+  }
+
+  public save(): string {
+    return '/fake/gate.json';
+  }
+
+  public clear(): void {
+    this.report = null;
+  }
+}
+
+const GATE_REPORT = {
+  verdict: 'PASSED',
+  buildSystem: 'node',
+  buildStatus: 'PASSED',
+  testsStatus: 'PASSED (2 passed)',
+  testsPassed: 2,
+  testsFailed: 0,
+  durationMs: 1000,
+  executedCommands: ['npm test'],
+  smokeChecks: [],
+  smokeProtocol: 'NOT_DECLARED',
+  notRun: [],
+  gateRound: 1
+};
+
+/** Issue #455: the per-test gate evidence fixture, injected via the wrapper. */
+let activeGateRepo: MockGateReportRepository | null = null;
+
+function newReviewUseCase(
+  stateRepo: any,
+  configRepo: any,
+  planGenerator: any,
+  standardsRepo?: any,
+  critiquePort?: any
+): any {
+  return new RunReviewUseCase(
+    stateRepo,
+    configRepo,
+    planGenerator,
+    standardsRepo,
+    critiquePort,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    activeGateRepo as any
+  );
+}
+
 class MockCritique implements CritiquePort {
   public reportToReturn: AiReviewReportType | null = null;
 
@@ -237,11 +303,14 @@ describe('RunReviewUseCase (Application Layer)', () => {
     standardsRepo = new MockStandardsRepository();
     standardsRepo.standardsText = '# Standards\nRule: Pure domain only.';
     critique = new MockCritique();
+    activeGateRepo = new MockGateReportRepository(
+      GateResultReport.fromJSON(GATE_REPORT as any)
+    );
   });
 
   test('rejects execution when no pipeline state exists', async () => {
     stateRepo.savedSnapshot = null;
-    const useCase = new RunReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
+    const useCase = newReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
 
     await assert.rejects(
       () => useCase.execute(),
@@ -256,7 +325,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
     });
     stateRepo.savedSnapshot = sm.toSnapshot();
 
-    const useCase = new RunReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
+    const useCase = newReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
     await assert.rejects(
       () => useCase.execute(),
       (err: any) => err instanceof InvalidTransitionError && err.fromStage === 'PLAN'
@@ -264,7 +333,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
   });
 
   test('transitions QUALITY_GATE -> REVIEW -> COMMIT when review is APPROVED', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -314,7 +383,7 @@ AC_EVIDENCE:
     });
     stateRepo.savedSnapshot = sm.toSnapshot();
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -340,7 +409,7 @@ AC_EVIDENCE:
   });
 
   test('transitions QUALITY_GATE -> REVIEW -> IMPLEMENT when review requests changes', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -388,7 +457,7 @@ REMEDIATION_GUIDANCE:
       findings: []
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -404,7 +473,7 @@ REMEDIATION_GUIDANCE:
   });
 
   test('assembles prompt with standards, criteria, and directives', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -426,7 +495,7 @@ REMEDIATION_GUIDANCE:
   });
 
   test('respects dryRun flag by avoiding state and summary writes', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -457,7 +526,7 @@ REMEDIATION_GUIDANCE:
       ]
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -494,7 +563,7 @@ REMEDIATION_GUIDANCE:
       ]
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -531,7 +600,7 @@ AC_EVIDENCE:
     // Path A (issue #236 / AC1, AC2, AC4a): RunReviewUseCase without CritiquePort
     // and without reviewOutput. The verdict must be a SKIPPED advisory — never a
     // fabricated CHANGES_REQUESTED — and the pipeline must advance to COMMIT.
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -573,7 +642,7 @@ AC_EVIDENCE:
     // condition to AiReviewReport.bypassed(...) — must map to SKIPPED (AC1, AC2).
     critique.reportToReturn = AiReviewReport.bypassed('Critique CLI binary not found.');
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -611,7 +680,7 @@ AC_EVIDENCE:
       })
     );
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -652,7 +721,7 @@ AC_EVIDENCE:
       })
     );
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -679,7 +748,7 @@ AC_EVIDENCE:
       findings: []
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -715,7 +784,7 @@ AC_EVIDENCE:
       ]
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -741,7 +810,7 @@ AC_EVIDENCE:
 
   test('reviewer APPROVED output wins when critique is absent (Tier 2 precedence)', async () => {
     // T13: reviewOutput present + no CritiquePort => APPROVED, stage COMMIT.
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,

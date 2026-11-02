@@ -153,7 +153,26 @@ describe('REVIEW deviation gate (issue #432)', () => {
 
   test('DVG4 the direct review entry at QUALITY_GATE refuses too', async () => {
     const repo = new MemoryStateRepository(atGate().toSnapshot());
-    const useCase = new RunReviewUseCase(repo as any, {} as any, {} as any);
+    // Issue #455: the review entry now certifies through the shared chokepoint,
+    // whose guard order runs the evidence check first. Seed a usable round-1
+    // report so this case still exercises the deviation guard.
+    const gateRepo = new MemoryGateReportRepository(GateResultReport.fromJSON(REPORT));
+    const planGenerator = {
+      resolvePlanFile: () => null,
+      readPlanDocument: () => ''
+    };
+    const useCase = new RunReviewUseCase(
+      repo as any,
+      {} as any,
+      planGenerator as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      gateRepo as any
+    );
     await assert.rejects(
       () => useCase.execute({ issue: 432, reviewOutput: 'REVIEW_STATUS: APPROVED\n' }),
       /PD-1/

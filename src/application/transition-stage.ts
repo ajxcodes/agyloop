@@ -51,20 +51,8 @@ import {
   WorktreeCreationError,
   PreFlightHaltError,
   HALT_TYPE_MISSING_PLAN_DIR,
-  ValidationError,
-  formatGateEvidenceRequiredMessage,
-  formatGateTargetCoverageRefusal,
-  // Issues #412/#415: a PASSED block that ran a test command but recorded zero
-  // or unmeasured unique tests is not certifiable evidence.
-  gateTestEvidenceRefusal,
-  formatGateZeroTestRefusal,
-  GATE_TEST_EVIDENCE_GAP_UNMEASURED,
-  formatGateReportPreservedNote,
   formatGateReportSaveFaultNote,
-  formatTransitionRecoveryCommands,
-  // Issue #432: the deviation channel and the two new APPROVAL contracts.
-  formatPlanDeviationUnacknowledgedMessage,
-  isUnacknowledged
+  formatTransitionRecoveryCommands
 } from '../domain';
 import {
   StateRepository,
@@ -77,7 +65,7 @@ import {
   SummarySmokeCheck
 } from '../ports';
 import { InferBaseBranchUseCase } from './infer-base-branch';
-import { assessGateEvidenceCoverage } from './gate-evidence-coverage';
+import { certifyReviewExit } from './certify-review-exit';
 import { assertGateTargetContract as enforceGateTargetContract } from './gate-target-contract';
 import { assertPlanBaselineContract as enforcePlanBaselineContract } from './plan-baseline-contract';
 import {
@@ -211,116 +199,129 @@ export class TransitionStageUseCase {
     if (prevStage === STAGE_QUALITY_GATE && targetStageStr !== STAGE_QUALITY_GATE) {
       const gateRound = resolveGateRound(sm.history);
       if (targetStageStr === STAGE_REVIEW) {
+        // Issue #455 (AC3): the WHOLE certifying contract lives in ONE shared
+        // chokepoint, so `codeloop review` — which performs the same hop
+        // internally — cannot bypass a guard that was added here. The call runs
+        // BEFORE `sm.transition`, the worktree provisioning, the save and the
+        // summary writer: a refusal leaves nothing written.
         certifiedGateRound = gateRound;
-      }
-      const filed = this.gateReportRepo ? this.gateReportRepo.load(activeIssue) : null;
-      const usable = filed !== null && filed.gateRound === gateRound;
-
-      // Issue #327 (Defect 3): the exit to REVIEW CERTIFIES a gate round, so it
-      // consumes that round's evidence or it does not exit. The old branch
-      // printed a warning and advanced anyway — and the command it advised
-      // (`gate-report`) then refused, because filing is legal only at
-      // QUALITY_GATE. The refusal below runs BEFORE `sm.transition`, the
-      // worktree provisioning, the save and the summary writer: nothing is
-      // written and the on-disk checkpoint is byte-identical.
-      //
-      // It fails CLOSED when the repository is not injected: a test double may
-      // not certify by omission. Non-certifying exits (-> IMPLEMENT / -> TRIAGE)
-      // keep the honest `NOT RECORDED` record: refusing them would block a
-      // legitimate "the gates failed, go fix it" transition.
-      if (targetStageStr === STAGE_REVIEW && !usable) {
-        throw new ValidationError(
-          'gateEvidence',
-          filed ? filed.gateRound : null,
-          formatGateEvidenceRequiredMessage(
-            activeIssue,
-            gateRound,
-            filed ? filed.gateRound : null
-          )
-        );
-      }
-
-      if (usable) {
-        gateEvidence = filed;
-
-        // Issue #325 (AC-16, absorbed): `testsPassed` is UNIQUE tests. The #311
-        // gate ran an 86-test targeted subset and then `npm test` (1867, which
-        // already included those 86) and filed the sum: 1953. Normalise once,
-        // here, and warn when the report's own arithmetic was rewritten.
-        const normalisedTests = normaliseGateTests(filed);
-        if (normalisedTests.rewritten) {
-          console.warn(
-            `[codeloop] Warning: the gate's test total was normalised from "${filed.testsStatus}" to "${normalisedTests.testsStatus}" — \`testsPassed\` counts UNIQUE tests, and a targeted subset is already inside the full suite.`
-          );
-        } else if (normalisedTests.suspectDoubleCount) {
-          // No per-command counts: the total cannot be checked, only challenged.
-          console.warn(
-            '[codeloop] Warning: `executedCommands` names a command that contains another. `testsPassed` counts UNIQUE tests, so a targeted subset must not be added to the full suite that already ran it.'
-          );
-        }
-        gateTestsStatus = normalisedTests.testsStatus;
-
-        // Issue #325 (AC-17, absorbed): `executedCommands` holds COMMANDS only.
-        // A legacy block that mixed smoke-check labels into it is partitioned
-        // here so the command count matches the plan's target count.
-        const partitioned = splitSmokeChecks(filed.executedCommands);
-        gateCommands = partitioned.commands;
-        gateSmokeChecks =
-          filed.smokeChecks.length > 0 ? filed.smokeChecks : partitioned.smokeChecks;
-        gateNotRun = this.resolveNotRunReasons(filed.notRun, sm, params);
-
-        transitionMetadata = {
-          ...transitionMetadata,
-          gateVerdict: filed.verdict,
-          gateTests: gateTestsStatus,
-          // Issue #315 (AC-15): the gate's self-timer travels under its own
-          // name. `stageDurationMs` means "this stage measured itself", and the
-          // gate is a DIFFERENT stage from the one being entered.
-          ...(filed.durationMs !== null ? { gateReportedDurationMs: filed.durationMs } : {}),
-          gateExecutedCommands: gateCommands,
-          ...(gateSmokeChecks.length > 0 ? { gateSmokeChecks } : {}),
-          ...(gateNotRun.length > 0 ? { gateNotRun } : {})
-        };
-      } else {
-        transitionMetadata = {
-          ...transitionMetadata,
-          gateVerdict: GATE_VERDICT_NOT_RECORDED
-        };
-        // Issue #327 (AC-7): advice must be executable from the state that
-        // prints it. After this non-certifying exit the checkpoint sits at the
-        // TARGET, and `gate-report` refuses anywhere but QUALITY_GATE — so the
-        // hint names the legal walk BACK to the gate instead.
-        //
-        // Issue #315 (AC-10, Defect N1): `-> PLAN` is the "fix the plan and
-        // re-approve it" recovery. Warning it to walk back into the gate it
-        // just abandoned contradicts the action the operator took, so that exit
-        // names the re-plan sequence and nothing else. `-> IMPLEMENT` /
-        // `-> TRIAGE` keep the walk-back (they genuinely are "go fix it" exits
-        // that will need evidence next round).
-        if (targetStageStr === STAGE_PLAN) {
-          const rePlan = formatTransitionRecoveryCommands(
-            STAGE_PLAN,
-            STAGE_IMPLEMENT,
-            activeIssue,
-            sm.mode
-          );
-          console.warn(
-            '[codeloop] Note: this exit records no gate evidence — the plan is being re-worked.' +
-              (rePlan === null || rePlan === '' ? '' : ` Continue with: ${rePlan}.`)
-          );
+        const certified = certifyReviewExit({
+          stateMachine: sm,
+          gateReportRepo: this.gateReportRepo,
+          planGenerator: this.planGenerator,
+          planPath: this.resolveCurrentPlan(sm, params)?.planPath ?? sm.approvedPlanPath ?? null,
+          planDir: sm.planDir ?? null,
+          issue: activeIssue,
+          workspaceDir: params.workspaceDir || process.cwd(),
+          dryRun: params.dryRun
+        });
+        if (certified) {
+          gateEvidence = certified.report;
+          gateTestsStatus = certified.testsStatus;
+          gateCommands = certified.commands;
+          gateSmokeChecks = certified.smokeChecks;
+          gateNotRun = this.resolveNotRunReasons(certified.report.notRun, sm, params);
+          transitionMetadata = {
+            ...transitionMetadata,
+            ...certified.metadata,
+            ...(gateNotRun.length > 0 ? { gateNotRun } : {})
+          };
         } else {
-          const walkBack = formatTransitionRecoveryCommands(
-            targetStageStr,
-            STAGE_QUALITY_GATE,
-            activeIssue,
-            sm.mode
-          );
-          console.warn(
-            '[codeloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded".' +
-              (walkBack === null
-                ? ''
-                : ` To file it, return to the gate: ${walkBack}, then run \`codeloop gate-report --issue <n> --report-file <path>\`.`)
-          );
+          // dry-run refusal: the honest shape, already warned by the chokepoint.
+          transitionMetadata = {
+            ...transitionMetadata,
+            gateVerdict: GATE_VERDICT_NOT_RECORDED
+          };
+        }
+      } else {
+        // Non-certifying exits (-> IMPLEMENT / -> PLAN / -> TRIAGE) keep the
+        // honest `NOT RECORDED` record: refusing them would block a legitimate
+        // "the gates failed, go fix it" transition.
+        const filed = this.gateReportRepo ? this.gateReportRepo.load(activeIssue) : null;
+        const usable = filed !== null && filed.gateRound === gateRound;
+
+        if (usable) {
+          gateEvidence = filed;
+
+          // Issue #325 (AC-16, absorbed): `testsPassed` is UNIQUE tests. The #311
+          // gate ran an 86-test targeted subset and then `npm test` (1867, which
+          // already included those 86) and filed the sum: 1953. Normalise once,
+          // here, and warn when the report's own arithmetic was rewritten.
+          const normalisedTests = normaliseGateTests(filed);
+          if (normalisedTests.rewritten) {
+            console.warn(
+              `[codeloop] Warning: the gate's test total was normalised from "${filed.testsStatus}" to "${normalisedTests.testsStatus}" — \`testsPassed\` counts UNIQUE tests, and a targeted subset is already inside the full suite.`
+            );
+          } else if (normalisedTests.suspectDoubleCount) {
+            // No per-command counts: the total cannot be checked, only challenged.
+            console.warn(
+              '[codeloop] Warning: `executedCommands` names a command that contains another. `testsPassed` counts UNIQUE tests, so a targeted subset must not be added to the full suite that already ran it.'
+            );
+          }
+          gateTestsStatus = normalisedTests.testsStatus;
+
+          // Issue #325 (AC-17, absorbed): `executedCommands` holds COMMANDS only.
+          // A legacy block that mixed smoke-check labels into it is partitioned
+          // here so the command count matches the plan's target count.
+          const partitioned = splitSmokeChecks(filed.executedCommands);
+          gateCommands = partitioned.commands;
+          gateSmokeChecks =
+            filed.smokeChecks.length > 0 ? filed.smokeChecks : partitioned.smokeChecks;
+          gateNotRun = this.resolveNotRunReasons(filed.notRun, sm, params);
+
+          transitionMetadata = {
+            ...transitionMetadata,
+            gateVerdict: filed.verdict,
+            gateTests: gateTestsStatus,
+            // Issue #315 (AC-15): the gate's self-timer travels under its own
+            // name. `stageDurationMs` means "this stage measured itself", and the
+            // gate is a DIFFERENT stage from the one being entered.
+            ...(filed.durationMs !== null ? { gateReportedDurationMs: filed.durationMs } : {}),
+            gateExecutedCommands: gateCommands,
+            ...(gateSmokeChecks.length > 0 ? { gateSmokeChecks } : {}),
+            ...(gateNotRun.length > 0 ? { gateNotRun } : {})
+          };
+        } else {
+          transitionMetadata = {
+            ...transitionMetadata,
+            gateVerdict: GATE_VERDICT_NOT_RECORDED
+          };
+          // Issue #327 (AC-7): advice must be executable from the state that
+          // prints it. After this non-certifying exit the checkpoint sits at the
+          // TARGET, and `gate-report` refuses anywhere but QUALITY_GATE — so the
+          // hint names the legal walk BACK to the gate instead.
+          //
+          // Issue #315 (AC-10, Defect N1): `-> PLAN` is the "fix the plan and
+          // re-approve it" recovery. Warning it to walk back into the gate it
+          // just abandoned contradicts the action the operator took, so that exit
+          // names the re-plan sequence and nothing else. `-> IMPLEMENT` /
+          // `-> TRIAGE` keep the walk-back (they genuinely are "go fix it" exits
+          // that will need evidence next round).
+          if (targetStageStr === STAGE_PLAN) {
+            const rePlan = formatTransitionRecoveryCommands(
+              STAGE_PLAN,
+              STAGE_IMPLEMENT,
+              activeIssue,
+              sm.mode
+            );
+            console.warn(
+              '[codeloop] Note: this exit records no gate evidence — the plan is being re-worked.' +
+                (rePlan === null || rePlan === '' ? '' : ` Continue with: ${rePlan}.`)
+            );
+          } else {
+            const walkBack = formatTransitionRecoveryCommands(
+              targetStageStr,
+              STAGE_QUALITY_GATE,
+              activeIssue,
+              sm.mode
+            );
+            console.warn(
+              '[codeloop] Warning: no gate evidence was filed for this round; the summary will say "not recorded".' +
+                (walkBack === null
+                  ? ''
+                  : ` To file it, return to the gate: ${walkBack}, then run \`codeloop gate-report --issue <n> --report-file <path>\`.`)
+            );
+          }
         }
       }
     }
@@ -402,58 +403,11 @@ export class TransitionStageUseCase {
       }
     }
 
-    // Certification requires the artifact that was approved. A plan edited
-    // after approval cannot be certified by the stage that follows the gate.
-    if (
-      prevStage === STAGE_QUALITY_GATE &&
-      targetStageStr === STAGE_REVIEW &&
-      !params.dryRun
-    ) {
-      this.assertApprovedPlanUnchanged(
-        sm,
-        params,
-        gateEvidence !== null ? gateEvidence.gateRound : null
-      );
-    }
-
-    // Issue #408 (D2): a PASSED report must have executed the plan's declared
-    // Verification Targets. The DIGEST guard runs FIRST, so an edited plan is
-    // refused with the precise digest diagnostic rather than a derived
-    // "commands missing" one. Restricted to REVIEW: that is the one certifying
-    // exit; `QUALITY_GATE -> IMPLEMENT/PLAN/TRIAGE` are "go fix it" exits and
-    // must not be blocked by a coverage check. `--dry-run` skips it for parity
-    // with the digest guard; the filing-side dry run is the diagnostic surface.
-    if (
-      prevStage === STAGE_QUALITY_GATE &&
-      targetStageStr === STAGE_REVIEW &&
-      !params.dryRun &&
-      gateEvidence !== null
-    ) {
-      this.assertGateReportCoversDeclaredTargets(gateEvidence, sm, params);
-    }
-
-    // Issue #412: a PASSED block that ran a test command but recorded zero
-    // unique tests cannot certify the gate. Scope is the ONE certifying exit,
-    // exactly like the coverage guard: `-> IMPLEMENT/PLAN/TRIAGE` are "go fix
-    // it" exits, and `--dry-run` does not certify.
-    if (
-      prevStage === STAGE_QUALITY_GATE &&
-      targetStageStr === STAGE_REVIEW &&
-      !params.dryRun &&
-      gateEvidence !== null
-    ) {
-      this.assertGateReportRanTests(gateEvidence, activeIssue);
-    }
-
-    // Issue #432 (D-2): an unacknowledged plan deviation must be an explicit
-    // decision before the round is certified. The throw lands after
-    // `sm.transition()` (the in-memory hop) and BEFORE the save, exactly like
-    // the digest guard: nothing is persisted and the gate report is NOT
-    // consumed, so the operator can acknowledge and re-run without walking back
-    // to the gate.
-    if (prevStage === STAGE_QUALITY_GATE && targetStageStr === STAGE_REVIEW) {
-      this.assertPlanDeviationsAcknowledged(sm, params, activeIssue);
-    }
+    // Issue #455 (AC3): the certifying guards (evidence, digest, coverage,
+    // tests, deviations) now run in ONE shared chokepoint — `certifyReviewExit`
+    // — called before `sm.transition` above. There is deliberately no second
+    // copy here: a guard added to the review entry point cannot be forgotten on
+    // this one, or vice versa.
 
     // Issue #283: DISCOVERY is where the RCA report is written, so the stage
     // that opens it must ALSO create the canonical plan directory.
@@ -959,43 +913,6 @@ export class TransitionStageUseCase {
   }
 
   /**
-   * Issue #432 (AC2): `QUALITY_GATE -> REVIEW` refuses while a deviation is
-   * unacknowledged. `--dry-run` warns instead of throwing, matching every
-   * other guard.
-   */
-  private assertPlanDeviationsAcknowledged(
-    sm: StateMachine,
-    params: TransitionParams,
-    issue: number | string | null
-  ): void {
-    const unacknowledged = sm.planDeviations.filter(isUnacknowledged);
-    if (unacknowledged.length === 0) return;
-    const reason = formatPlanDeviationUnacknowledgedMessage(unacknowledged, issue);
-    if (params.dryRun) {
-      console.warn(`[codeloop] Warning: ${reason}`);
-      return;
-    }
-    throw new ValidationError(
-      'planDeviations',
-      unacknowledged.map((record) => record.id),
-      reason
-    );
-  }
-
-  private recordApprovedPlanDigest(
-    sm: StateMachine,
-    params: TransitionParams,
-    resolvedOptions: { freshApproval?: boolean } = {}
-  ): void {
-    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
-    if (!resolved) return;
-    const digest = this.hashPlan(resolved.planPath);
-    if (digest) {
-      sm.recordApprovedPlan(resolved.planPath, digest);
-    }
-  }
-
-  /**
    * Issue #421: `APPROVAL -> IMPLEMENT` must run under the certification the
    * operator gave. A plan edited after the gate is refused with both digests and
    * the plan path, before any checkpoint or worktree is written.
@@ -1011,94 +928,16 @@ export class TransitionStageUseCase {
     });
   }
 
-  private assertApprovedPlanUnchanged(
+  private recordApprovedPlanDigest(
     sm: StateMachine,
     params: TransitionParams,
-    evidenceRound: number | null = null
+    resolvedOptions: { freshApproval?: boolean } = {}
   ): void {
-    if (!sm.approvedPlanDigest) return;
-
-    const resolved = this.resolveCurrentPlan(sm, params);
-
-    // Issue #408 (D1): the refusal no longer consumes the filed report, so say
-    // so. Before the fix the checkpoint was byte-identical while the evidence
-    // file was gone — the operator was told "nothing was written" and then had
-    // no block to certify with.
-    const preserved =
-      evidenceRound === null
-        ? ''
-        : ` ${formatGateReportPreservedNote(sm.issue || params.issue || null, evidenceRound)}`;
-
-    enforceApprovedPlanUnchanged({
-      planGenerator: this.planGenerator,
-      planPath: resolved?.planPath ?? sm.approvedPlanPath,
-      expectedDigest: sm.approvedPlanDigest,
-      boundary: 'gate',
-      dryRun: params.dryRun,
-      suffix: preserved
-    });
-  }
-
-  /**
-   * Refuses a `PASSED` report that does not execute the plan's declared
-   * Quality Gate Targets (issue #408, D2).
-   *
-   * The plan prompt says the declared commands "ARE the gate's command list, in
-   * this order" — a PASSED block that ran one of four commands used to certify
-   * the gate and advance the pipeline. Coverage is assessed by the ONE shared
-   * application helper (same matcher as filing), and a plan with no declared
-   * targets keeps the pre-#408 behaviour.
-   */
-  private assertGateReportCoversDeclaredTargets(
-    report: GateResultReport,
-    sm: StateMachine,
-    params: TransitionParams
-  ): void {
-    if (!this.planGenerator) {
-      return;
+    const resolved = this.resolveCurrentPlan(sm, params, resolvedOptions);
+    if (!resolved) return;
+    const digest = this.hashPlan(resolved.planPath);
+    if (digest) {
+      sm.recordApprovedPlan(resolved.planPath, digest);
     }
-    const coverage = assessGateEvidenceCoverage({
-      planGenerator: this.planGenerator,
-      workspaceDir: params.workspaceDir || process.cwd(),
-      issue: sm.issue || params.issue || null,
-      planPath: sm.planPath ?? sm.approvedPlanPath ?? null,
-      planDir: sm.planDir ?? null,
-      report
-    });
-    if (!coverage.assessed || coverage.covered) {
-      return;
-    }
-    throw new ValidationError(
-      'executedCommands',
-      coverage.missing,
-      formatGateTargetCoverageRefusal(
-        coverage.missing,
-        coverage.declared.length,
-        sm.issue || params.issue || null,
-        'ingest'
-      )
-    );
-  }
-
-  /**
-   * Refuses a `PASSED` report whose executed test command produced ZERO or
-   * UNMEASURED unique tests (issues #412, #415).
-   *
-   * The report is NOT consumed on this refusal — `clear()` runs only after a
-   * successful save — and the refusal names the command and the remedy.
-   */
-  private assertGateReportRanTests(
-    report: GateResultReport,
-    issue: number | string | null
-  ): void {
-    const refusal = gateTestEvidenceRefusal(report);
-    if (!refusal) {
-      return;
-    }
-    throw new ValidationError(
-      'testsPassed',
-      refusal.gap === GATE_TEST_EVIDENCE_GAP_UNMEASURED ? null : 0,
-      formatGateZeroTestRefusal(refusal.commands, issue, 'ingest', refusal.gap)
-    );
   }
 }
