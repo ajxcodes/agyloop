@@ -111,6 +111,7 @@ import {
   LABEL_OVERALL_VERDICT,
   InvalidTransitionError,
   GateResultReport,
+  formatSmokeCheckId,
   resolveGateRound,
   formatGateReportedDuration,
   measureStageWindowMs,
@@ -610,6 +611,18 @@ export class RunQualityGateUseCase {
     // in-process (yolo) run and a filed run leave identical records. The round
     // comes from the ONE shared formula (issue #311).
     const gateRound = resolveGateRound(sm.history);
+    // Issue #444: `runSmokeProtocol` executes the whole `toScript()` under
+    // `set -e`, so a PASSED status means every declared check ran. Publish one
+    // canonical `smokeChecks` entry per check — the same ids the prompt names —
+    // instead of an empty list that a smoke-coverage guard would refuse.
+    const smokeChecks =
+      smokeStatus === SMOKE_STATUS_PASSED
+        ? verification.smoke.checks.map((check) => ({
+            id: formatSmokeCheckId(check.index),
+            label: check.label,
+            passed: true
+          }))
+        : [];
     const evidence = GateResultReport.fromJSON({
       verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
       // A gate run without a detector still has to name SOMETHING: the report
@@ -621,6 +634,7 @@ export class RunQualityGateUseCase {
       testsFailed: testMetricsVO ? testMetricsVO.failed : null,
       durationMs: totalDurationMs,
       executedCommands: reports.map((r) => r.command),
+      smokeChecks,
       smokeProtocol: smokeStatus === SMOKE_STATUS_PASSED
         ? 'PASSED'
         : smokeStatus === SMOKE_STATUS_FAILED
@@ -655,12 +669,13 @@ export class RunQualityGateUseCase {
           buildStatus,
           testsStatus,
           // One source: the same values the evidence record carries (issue #338).
-          // `smokeChecks`/`notRun` are empty because this runner exposes no
-          // per-check verdicts; an empty list CLEARS an earlier round's lines.
+          // Issue #444: a PASSED protocol now publishes one canonical entry per
+          // declared check, so the summary names the behavioural evidence it
+          // certifies (and clears an earlier round's lines when there is none).
           buildSystem: evidence.buildSystem,
           detectedEcosystems: detectedEcosystemNames,
           executedCommands: reports.map((r) => r.command),
-          smokeChecks: [],
+          smokeChecks,
           smokeProtocol: evidence.smokeProtocol ?? SMOKE_PROTOCOL_NOT_REPORTED,
           notRun: []
         });

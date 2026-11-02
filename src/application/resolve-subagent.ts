@@ -66,6 +66,7 @@ import {
   TOOL_CAPABILITY_EDIT,
   TOOL_CAPABILITY_SHELL,
   SmokeProtocol,
+  formatSmokeCheckId,
   GateCommandComposition,
   GateCommandSource,
   GATE_COMMAND_PRECEDENCE,
@@ -1209,11 +1210,11 @@ export class ResolveSubagentUseCase {
           const checkTitle = check.label.toLowerCase().startsWith(`check ${check.index}`)
             ? check.label
             : `Check ${check.index} — ${check.label}`;
-          prompt += `#### ${checkTitle} (plan line ${check.planLine})\n`;
+          prompt += `#### ${checkTitle} (id: ${formatSmokeCheckId(check.index)}, plan line ${check.planLine})\n`;
           prompt += `\`\`\`bash\n${check.body}\n\`\`\`\n\n`;
         });
       }
-      prompt += `Execute each check exactly as written, in order. Do NOT edit the plan. A failing check, a skipped check, a zero-check protocol, or any edit to the plan is a \`FAILED\` verdict naming the check and plan line.\n`;
+      prompt += `Execute each check exactly as written, in order. Do NOT edit the plan. A failing check, a skipped check, a zero-check protocol, or any edit to the plan is a \`FAILED\` verdict naming the check and plan line. Report each check in \`smokeChecks\` with the canonical id shown above (\`check-<n>\`); a missing, renamed, duplicated or skipped check is a \`FAILED\` verdict.\n`;
       if (smoke.findings.length > 0) {
         prompt += `The verdict MUST be \`FAILED\`: this protocol is not executable as written.\n`;
         smoke.findings.forEach((finding) => {

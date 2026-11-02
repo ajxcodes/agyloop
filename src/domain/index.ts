@@ -55,6 +55,7 @@ export * from './value-objects/run-evidence';
 export * from './value-objects/gate-result-report';
 export * from './value-objects/gate-report-fixture';
 export * from './value-objects/gate-target-coverage';
+export * from './value-objects/smoke-check-coverage';
 export * from './value-objects/json-block';
 export * from './value-objects/plan-deviation';
 export * from './value-objects/test-register';

@@ -1067,3 +1067,128 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
     fs.rmSync(ws, { recursive: true, force: true });
   });
 });
+
+/**
+ * Issue #444: the ingest side must adjudicate the plan's declared smoke
+ * protocol exactly as the filing side does. A PASSED block that declares
+ * NOT_DECLARED, covers a subset or skips a declared check consumes nothing.
+ */
+describe('gate smoke protocol coverage on gate exit (issue #444)', () => {
+  const FOUR_CHECK_PLAN = (() => {
+    const blocks: string[] = [
+      '# [Implementation] - Smoke',
+      '',
+      '- [ ] Step 1: probe',
+      '',
+      '### Manual Smoke Test Protocol',
+      ''
+    ];
+    for (const n of [1, 2, 3, 4]) {
+      blocks.push(`#### Check ${n} — check ${n}`, '', '```bash', `echo ok-${n}`, '```', '');
+    }
+    return blocks.join('\n');
+  })();
+
+  const checks = () =>
+    [1, 2, 3, 4].map((n) => ({ id: `check-${n}`, label: `check ${n}`, passed: true }));
+
+  function smokeReport(overrides: Record<string, unknown> = {}) {
+    return GateResultReport.fromJSON(
+      {
+        verdict: 'PASSED',
+        buildSystem: 'node',
+        buildStatus: 'PASSED',
+        testsStatus: 'PASSED (4 passed)',
+        testsPassed: 4,
+        testsFailed: 0,
+        durationMs: 1000,
+        executedCommands: ['npm test'],
+        smokeProtocol: 'PASSED',
+        smokeChecks: checks(),
+        notRun: [],
+        gateRound: 1,
+        ...overrides
+      },
+      1
+    );
+  }
+
+  const history = () => {
+    const now = Date.now();
+    return [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+      { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+    ];
+  };
+
+  test('SC-TR-1: a NOT_DECLARED zero-check PASSED report is refused on ingest and consumes nothing', async () => {
+    const { ws } = scaffoldWorkspace(STAGE_QUALITY_GATE, history(), FOUR_CHECK_PLAN);
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      smokeReport({ smokeProtocol: 'NOT_DECLARED', smokeChecks: [] })
+    );
+    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+
+    try {
+      await assert.rejects(
+        async () => runTransition(ws, STAGE_REVIEW, repo),
+        (err: any) => {
+          assert.strictEqual(err.field, 'smokeProtocol');
+          assert.match(String(err.message), /Manual Smoke Test Protocol/);
+          for (const n of [1, 2, 3, 4]) {
+            assert.match(String(err.message), new RegExp(`check-${n}`));
+          }
+          return true;
+        }
+      );
+
+      assert.strictEqual(repo.clears, 0);
+      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(JSON.parse(checkpointBefore).currentStage, STAGE_QUALITY_GATE);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-TR-2: a fully covering report certifies and records smokeProtocol', async () => {
+    const { ws } = scaffoldWorkspace(STAGE_QUALITY_GATE, history(), FOUR_CHECK_PLAN);
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(String(ISSUE), smokeReport());
+
+    try {
+      const sm = await runTransition(ws, STAGE_REVIEW, repo);
+      const last = sm.history[sm.history.length - 1];
+      assert.strictEqual(last.stage, STAGE_REVIEW);
+      assert.strictEqual(last.metadata.smokeProtocol, 'PASSED');
+      assert.strictEqual(last.metadata.gateSmokeChecks.length, 4);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-TR-3: a notRun entry for a declared check is refused on ingest', async () => {
+    const { ws } = scaffoldWorkspace(STAGE_QUALITY_GATE, history(), FOUR_CHECK_PLAN);
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(
+      String(ISSUE),
+      smokeReport({
+        notRun: [{ id: 'check-3', label: 'check 3', reason: 'skipped in this run' }]
+      })
+    );
+
+    try {
+      await assert.rejects(
+        async () => runTransition(ws, STAGE_REVIEW, repo),
+        (err: any) => {
+          assert.match(String(err.message), /check-3/);
+          return true;
+        }
+      );
+      assert.strictEqual(repo.clears, 0);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
