@@ -4,6 +4,9 @@
  * Coordinates AI Review phase execution:
  * 1. Validates lifecycle stage rules (current stage must be QUALITY_GATE or REVIEW).
  * 2. Advances StateMachine transition: QUALITY_GATE -> REVIEW.
+ *    Issue #455: that hop is certified through the ONE shared
+ *    `certifyReviewExit` chokepoint, the same guard set `transition REVIEW`
+ *    uses, and consumes the filed report after a successful commit.
  * 3. Resolves Reviewer Subagent configuration and model routing.
  * 4. Discovers and ingests repository standards (via StandardsRepository).
  * 5. Resolves approved plan document and extracts Acceptance Criteria.
@@ -64,8 +67,6 @@ import {
   classifyAcEvidence,
   formatAcEvidenceRequiredMessage,
   formatAcEvidenceMalformedMessage,
-  formatPlanDeviationUnacknowledgedMessage,
-  isUnacknowledged,
   ValidationError,
   AC_EVIDENCE_STATUS_MET,
   AC_EVIDENCE_STATUS_OUT_OF_SCOPE,
@@ -90,10 +91,12 @@ import {
   CritiqueResolution,
   CritiqueInstallerPort,
   ConfirmationPromptPort,
-  CommandExecutorPort
+  CommandExecutorPort,
+  GateReportRepositoryPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { resolveDeliveredChangeSet } from './delivered-change-set';
+import { certifyReviewExit, type CertifiedGateEvidence } from './certify-review-exit';
 
 export interface RunReviewParams {
   readonly issue?: number | string | null;
@@ -543,6 +546,13 @@ export class RunReviewUseCase {
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
   private readonly critiqueInstaller?: CritiqueInstallerPort;
   private readonly confirmationPrompt?: ConfirmationPromptPort;
+  /**
+   * The gate evidence channel (issue #455). Optional so all 1–9 argument
+   * constructions keep compiling, but a `QUALITY_GATE -> REVIEW` exit fails
+   * CLOSED without it: the shared chokepoint treats an absent repository as
+   * "nothing filed", exactly as `transition REVIEW` does.
+   */
+  private readonly gateReportRepo?: GateReportRepositoryPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -553,7 +563,8 @@ export class RunReviewUseCase {
     commandExecutor?: CommandExecutorPort,
     resolveSubagentUseCase?: ResolveSubagentUseCase,
     critiqueInstaller?: CritiqueInstallerPort,
-    confirmationPrompt?: ConfirmationPromptPort
+    confirmationPrompt?: ConfirmationPromptPort,
+    gateReportRepo?: GateReportRepositoryPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -565,6 +576,7 @@ export class RunReviewUseCase {
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo, undefined, undefined, critique);
     this.critiqueInstaller = critiqueInstaller;
     this.confirmationPrompt = confirmationPrompt;
+    this.gateReportRepo = gateReportRepo;
   }
 
   public async execute(params: RunReviewParams = {}): Promise<RunReviewResult> {
@@ -627,30 +639,46 @@ export class RunReviewUseCase {
       sm.setIssue(activeIssue);
     }
 
-    // Issue #432 (AC2): the direct `codeloop review` entry performs the
-    // `QUALITY_GATE -> REVIEW` transition internally and immediately, so
-    // guarding only `transition` would leave a bypass. The refusal sits right
-    // after the checkpoint load and before that transition; `--dry-run` warns
-    // instead of throwing, matching every other guard.
+    // 5. Resolve approved plan specification & extract Acceptance Criteria.
+    //
+    // Issue #455: hoisted ABOVE the transition so the certifying guards and the
+    // reviewer prompt read the SAME bytes — one resolution, never two. For
+    // `FilePlanGenerator.resolvePlanFile` only DISCOVERY branches on `stage`, so
+    // resolving from QUALITY_GATE yields the identical document.
+    const resolvedPlan = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: activeIssue,
+      planPath: params.planPath,
+      planDir: params.planDir || sm.planDir,
+      stage: sm.currentStage
+    });
+
+    // Issue #455 (AC1/AC2/AC3): the direct `codeloop review` entry performs the
+    // `QUALITY_GATE -> REVIEW` transition internally, so guarding only
+    // `transition` left a bypass for EVERY certifying guard. It now certifies
+    // through the same shared chokepoint `transition REVIEW` uses, before the
+    // transition and before anything is written; `--dry-run` warns instead of
+    // throwing.
+    let certifiedGate: CertifiedGateEvidence | null = null;
     if (previousStage === STAGE_QUALITY_GATE) {
-      const unacknowledged = sm.planDeviations.filter(isUnacknowledged);
-      if (unacknowledged.length > 0) {
-        const reason = formatPlanDeviationUnacknowledgedMessage(unacknowledged, activeIssue);
-        if (params.dryRun) {
-          console.warn(`[codeloop] Warning: ${reason}`);
-        } else {
-          throw new ValidationError(
-            'planDeviations',
-            unacknowledged.map((record) => record.id),
-            reason
-          );
-        }
-      }
+      certifiedGate = certifyReviewExit({
+        stateMachine: sm,
+        gateReportRepo: this.gateReportRepo,
+        planGenerator: this.planGenerator,
+        planPath: resolvedPlan?.planPath ?? sm.approvedPlanPath ?? null,
+        planDir: sm.planDir ?? null,
+        issue: activeIssue,
+        workspaceDir: workspace,
+        dryRun: params.dryRun
+      });
     }
 
     // 2. Enforce lifecycle transition rules
     if (sm.currentStage === STAGE_QUALITY_GATE) {
-      sm.transition(STAGE_REVIEW, { note: NOTE_EXECUTING_REVIEW });
+      sm.transition(STAGE_REVIEW, {
+        note: NOTE_EXECUTING_REVIEW,
+        ...(certifiedGate?.metadata ?? {})
+      });
     } else if (sm.currentStage === STAGE_REVIEW) {
       // Re-running review in REVIEW stage
     } else if (sm.currentStage === STAGE_COMPLETED) {
@@ -708,15 +736,6 @@ export class RunReviewUseCase {
           cwd: workspace
         })
       : null;
-
-    // 5. Resolve approved plan specification & extract Acceptance Criteria
-    const resolvedPlan = this.planGenerator.resolvePlanFile({
-      projectRoot: workspace,
-      issue: activeIssue,
-      planPath: params.planPath,
-      planDir: params.planDir || sm.planDir,
-      stage: sm.currentStage
-    });
 
     // eslint-disable-next-line no-useless-assignment
     let planContent = '';
@@ -1127,6 +1146,14 @@ export class RunReviewUseCase {
     // 9. Update AgyLoop Summary.md & State Checkpoint
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
+
+      // Issue #455 (invariant 3): the certification CONSUMES the round's report
+      // only AFTER a successful commit — a failed save must not destroy the
+      // evidence the operator still needs (#410). A refusal threw before this
+      // block and a `--dry-run` never reaches it.
+      if (certifiedGate) {
+        this.gateReportRepo?.clear(activeIssue);
+      }
 
       if (resolvedPlan && resolvedPlan.summaryPath) {
         const reviewRecord = {

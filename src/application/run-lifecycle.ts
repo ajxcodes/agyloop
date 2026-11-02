@@ -424,7 +424,11 @@ export class RunLifecycleUseCase {
         this.commandExecutor,
         resolveSubagentUseCase,
         deps.critiqueInstaller,
-        this.confirmationPrompt
+        this.confirmationPrompt,
+        // Issue #455: the review leg certifies `QUALITY_GATE -> REVIEW` through
+        // the same shared chokepoint `transition REVIEW` uses, so it needs the
+        // gate evidence channel the in-process gate already files into.
+        deps.gateReportRepo
       );
 
     this.draftCommitUseCase =

@@ -3604,7 +3604,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           commandExecutor,
           resolveSubagentUseCase,
           critiqueInstaller,
-          confirmationPrompt
+          confirmationPrompt,
+          // Issue #455: `review` performs the certifying `QUALITY_GATE -> REVIEW`
+          // hop internally; it must certify through the same gate evidence
+          // channel the `gate-report` command writes to.
+          new FileGateReportRepository({
+            workspaceDir: options.workspaceDir || process.cwd(),
+            issue: scope.issue ?? issueValue ?? null
+          })
         );
 
         // Resolve the reviewer's verdict text (the inbound channel).

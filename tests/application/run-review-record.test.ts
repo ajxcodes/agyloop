@@ -111,6 +111,32 @@ function makeSnapshot(currentStage: any, history: any[]) {
   return { ...snapshot, issue: ISSUE, history };
 }
 
+/**
+ * Issue #455: a review from `QUALITY_GATE` certifies through the shared
+ * chokepoint, which fails CLOSED without a filed same-round report.
+ */
+function usableGate(): any {
+  return {
+    load: () => ({
+      verdict: 'PASSED',
+      buildSystem: 'node',
+      buildStatus: 'PASSED',
+      testsStatus: 'PASSED (12 passed)',
+      testsPassed: 12,
+      testsFailed: 0,
+      durationMs: 1000,
+      executedCommands: ['npm test'],
+      commandResults: [],
+      smokeChecks: [],
+      smokeProtocol: 'NOT_DECLARED',
+      notRun: [],
+      gateRound: 1
+    }),
+    save: () => '/fake/gate.json',
+    clear: () => undefined
+  };
+}
+
 function makeSummary(): { dir: string; summaryPath: string; planPath: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-record-'));
   fs.writeFileSync(
@@ -156,7 +182,11 @@ describe('review record (issue #284, AC3/AC6)', () => {
         planGenerator,
         undefined,
         undefined,
-        new MockCommandExecutor(headSha)
+        new MockCommandExecutor(headSha),
+        undefined,
+        undefined,
+        undefined,
+        usableGate()
       );
       const first = await round1.execute({ issue: ISSUE, reviewOutput: APPROVED_BLOCK, workspaceDir: sandbox });
       assert.strictEqual(first.reviewRound, 1);
@@ -178,7 +208,11 @@ describe('review record (issue #284, AC3/AC6)', () => {
         planGenerator,
         undefined,
         undefined,
-        new MockCommandExecutor(headSha)
+        new MockCommandExecutor(headSha),
+        undefined,
+        undefined,
+        undefined,
+        usableGate()
       );
       const second = await round2.execute({ issue: ISSUE, reviewOutput: CHANGES_BLOCK, workspaceDir: sandbox });
 
@@ -235,7 +269,11 @@ describe('review record (issue #284, AC3/AC6)', () => {
         planGenerator,
         undefined,
         undefined,
-        executor
+        executor,
+        undefined,
+        undefined,
+        undefined,
+        usableGate()
       );
 
       const result = await useCase.execute({ issue: ISSUE, reviewOutput: APPROVED_BLOCK, workspaceDir: dir });
@@ -272,7 +310,11 @@ describe('review record (issue #284, AC3/AC6)', () => {
         planGenerator,
         undefined,
         undefined,
-        new MockCommandExecutor('abc1234')
+        new MockCommandExecutor('abc1234'),
+        undefined,
+        undefined,
+        undefined,
+        usableGate()
       );
 
       const result = await useCase.execute({ issue: ISSUE, reviewOutput: APPROVED_BLOCK, workspaceDir: dir });
