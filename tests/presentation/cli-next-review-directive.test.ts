@@ -207,6 +207,26 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
     }
   });
 
+  test('RV6b: the dispatched Tier 1 command names the worktree cwd and the checkpoint base (issue #445)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-445-'));
+    const sandbox = path.join(root, 'worktree');
+    try {
+      fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(sandbox, 'bin', 'critique.js'), '#!/usr/bin/env node\n');
+      seedCheckpoint(sandbox);
+
+      const run = await runNextJsonIn(sandbox);
+
+      assert.strictEqual(run.code, 0, run.stderr || run.stdout);
+      const payload = JSON.parse(run.stdout);
+      const prompt = payload.invocationPayload?.Subagents?.[0]?.Prompt ?? '';
+      assert.ok(prompt.includes("cd '" + sandbox + "'"), 'the dispatched command must run in the reviewed worktree');
+      assert.ok(prompt.includes("--commit 'main'"), 'the dispatched command must pin the checkpoint base');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('RV7: the live dispatch names a real untracked file and stages nothing (issue #356)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-356-'));
     const sandbox = path.join(root, 'worktree');

@@ -74,7 +74,13 @@ import {
   type AcEvidenceParseIssue,
   type AcEvidenceReport,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  DiffAnalyzer
+  DiffAnalyzer,
+  // Issue #445 (AC2): a supplied Tier 1 report is evidence only when its
+  // provenance sidecar names THIS review's base and HEAD.
+  DEFAULT_BASE_BRANCH,
+  isCritiqueProvenanceBound,
+  formatCritiqueProvenanceUnbound,
+  type CritiqueProvenance
 } from '../domain';
 import {
   StateRepository,
@@ -107,6 +113,12 @@ export interface RunReviewParams {
    * executed — the same evidence, no second subprocess.
    */
   readonly priorCritiqueReport?: AiReviewReport | null;
+  /**
+   * The provenance sidecar published beside a supplied Tier 1 report
+   * (issue #445). It names the base ref and HEAD the report was produced from;
+   * `null` when absent, unreadable or a stdin report.
+   */
+  readonly critiqueProvenance?: CritiqueProvenance | null;
   readonly critiqueReport?: string | null;
   readonly staged?: boolean;
   readonly baseRef?: string;
@@ -159,7 +171,10 @@ export interface RunReviewResult {
    * True when a real (non-bypassed) Tier 1 critique report informed this
    * verdict (issue #297, AC10). Persisted beside `reviewVerdict`/`reviewSource`
    * so a recorded verdict can be audited after the fact: a reviewer verdict
-   * recorded with `critiqueVerified: false` was never cross-checked.
+   * recorded with `critiqueVerified: false` was never cross-checked. Issue #445
+   * (AC2): a report SUPPLIED from elsewhere also has to be bound — its
+   * `.provenance.json` sidecar must name this review's base and HEAD — so a
+   * report describing another change set never certifies this one.
    */
   readonly critiqueVerified: boolean;
   readonly currentStage: string;
@@ -719,8 +734,15 @@ export class RunReviewUseCase {
 
     const reviewCwd = sm.worktree?.worktreePath || workspace;
     const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
+    // Issue #445: the base ref this review CERTIFIES. `targetBaseRef` stays as
+    // it is because `resolveDeliveredChangeSet` has its own `HEAD` fallback
+    // (#432), which is a different contract.
+    const reviewedBaseRef = targetBaseRef ?? DEFAULT_BASE_BRANCH;
     // Issue #284 (AC6): the commit this verdict was made AGAINST. The worktree,
-    // not the repo root — the reviewed diff is the worktree's.
+    // not the repo root — the reviewed diff is the worktree's. The name is a
+    // historical misnomer (it stores the reviewed HEAD, not the base, which
+    // lives in `reviewedBaseRef`); renaming it would touch every snapshot
+    // consumer for no acceptance value (issue #445, out of scope).
     const reviewedBaseCommit = await this.readReviewedBaseCommit(reviewCwd);
 
     // Issue #432 (AC5): measure the change set the reviewed worktree delivers.
@@ -839,12 +861,15 @@ export class RunReviewUseCase {
     // Tier 2: Assemble focused review task prompt for Reviewer subagent
     const taskPrompt = this.resolveSubagentUseCase.buildReviewerTaskPrompt({
       issueNumber: activeIssue,
-      baseBranch: targetBaseRef,
+      baseBranch: reviewedBaseRef,
       acceptanceCriteria,
       standardsContent,
       workingDiff,
       critiqueReport: critiqueReportText,
       critiquePath: critiqueResolution?.isAvailable ? critiqueResolution.path : undefined,
+      // Issue #445 (AC1): the Tier 1 command runs in the worktree whose diff
+      // this verdict certifies, against the base resolved above.
+      reviewCwd,
       userInstructions: params.userInstructions,
       workspaceDir: workspace,
       config
@@ -931,7 +956,25 @@ export class RunReviewUseCase {
     }
 
     const reviewerVerdict = filingPath ? verdict.status : null;
-    const critiqueVerified = Boolean(aiReport && !aiReport.bypassed);
+    // Issue #445 (AC2): a supplied report is evidence only when the provenance
+    // sidecar the Tier 1 command published names THIS review's base and HEAD.
+    // A report produced by this run is bound by construction (it ran in
+    // reviewCwd with --commit reviewedBaseRef).
+    const critiqueProvenance = params.critiqueProvenance ?? null;
+    const suppliedReportBound = params.priorCritiqueReport
+      ? isCritiqueProvenanceBound(critiqueProvenance, reviewedBaseRef, reviewedBaseCommit)
+      : true;
+    const critiqueVerified = Boolean(aiReport && !aiReport.bypassed && suppliedReportBound);
+    if (params.priorCritiqueReport && aiReport && !aiReport.bypassed && !suppliedReportBound) {
+      console.warn(
+        `[codeloop] Note: ${formatCritiqueProvenanceUnbound({
+          reportBase: critiqueProvenance?.baseRef ?? null,
+          reportHead: critiqueProvenance?.headCommit ?? null,
+          reviewedBase: reviewedBaseRef,
+          reviewedHead: reviewedBaseCommit
+        })}`
+      );
+    }
 
     // Issue #349: resolve the operator's refutations BEFORE the invariant and
     // before ANY write. Every refusal below is fail-closed: it leaves the
@@ -1019,6 +1062,17 @@ export class RunReviewUseCase {
               verified: acEvidence.verified,
               unverifiable: acEvidence.unverifiable,
               outOfScope: acEvidence.outOfScope
+            }
+          }
+        : {}),
+      // Issue #445: ADDITIVE and written only when a report was supplied this
+      // round, so an old snapshot (which never carries it) stays valid.
+      ...(params.priorCritiqueReport
+        ? {
+            reviewCritiqueProvenance: {
+              baseRef: critiqueProvenance?.baseRef ?? null,
+              headCommit: critiqueProvenance?.headCommit ?? null,
+              bound: suppliedReportBound
             }
           }
         : {})

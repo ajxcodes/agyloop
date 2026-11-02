@@ -148,6 +148,7 @@ async function withSanitizedEnv(
   };
   const originalLog = console.log;
   const originalError = console.error;
+  const originalWarn = console.warn;
   let stdout = '';
   let stderr = '';
 
@@ -163,12 +164,19 @@ async function withSanitizedEnv(
     console.error = (...a: any[]) => {
       stderr += a.map(String).join(' ') + '\n';
     };
+    // Issue #445: `codeloop review` warns about an unbound Tier 1 report with
+    // `console.warn`, which the terminal renders on fd 2 exactly like
+    // `console.error` — so the harness captures them into the same stream.
+    console.warn = (...a: any[]) => {
+      stderr += a.map(String).join(' ') + '\n';
+    };
     const value = await fn();
     return { value, stdout, stderr };
   } finally {
     process.chdir(prevCwd);
     console.log = originalLog;
     console.error = originalError;
+    console.warn = originalWarn;
     for (const [key, value] of Object.entries(envBackup)) {
       if (value === undefined) {
         delete process.env[key];
@@ -788,6 +796,17 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     return file;
   }
 
+  // Issue #445: the provenance sidecar the Tier 1 command publishes beside a
+  // report. `codeloop review` certifies only when it names this review's base
+  // and HEAD, so the positive-path fixtures seed it.
+  function writeProvenance(critiquePath: string, baseRef = 'main'): void {
+    const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: path.dirname(critiquePath),
+      encoding: 'utf8'
+    }).trim();
+    fs.writeFileSync(`${critiquePath}.provenance.json`, JSON.stringify({ baseRef, headCommit }), 'utf8');
+  }
+
   const CLEAN_CRITIQUE = {
     summary: 'Clean automated review',
     confidenceLevel: 'High',
@@ -815,6 +834,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     try {
       const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(sandbox.dir, ERROR_CRITIQUE);
+      writeProvenance(critiqueFile);
 
       const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         runCli([
@@ -849,6 +869,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     try {
       const verdictFile = writeVerdict(humanSandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(humanSandbox.dir, CLEAN_CRITIQUE);
+      writeProvenance(critiqueFile);
 
       const run = await withSanitizedEnv(humanSandbox.dir, humanSandbox.shadowPath, async () =>
         runCli([
@@ -873,6 +894,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     try {
       const verdictFile = writeVerdict(jsonSandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(jsonSandbox.dir, CLEAN_CRITIQUE);
+      writeProvenance(critiqueFile);
 
       const run = await withSanitizedEnv(jsonSandbox.dir, jsonSandbox.shadowPath, async () =>
         runCli([
@@ -893,6 +915,32 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(payload.reviewerVerdict, 'APPROVED');
     } finally {
       fs.rmSync(jsonSandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('CV5: a report whose sidecar names another base is recorded unverified, never dropped (issue #445)', async () => {
+    const sandbox = makeSandbox('REVIEW');
+    try {
+      const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
+      const critiqueFile = writeCritique(sandbox.dir, CLEAN_CRITIQUE);
+      writeProvenance(critiqueFile, 'phase/6-codeloop');
+
+      const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
+        runCli(['review', '--issue', String(ISSUE), '--verdict-file', verdictFile, '--critique-report', critiqueFile, '--json'])
+      );
+
+      assert.strictEqual(run.value, EXIT_CODE_SUCCESS, run.stderr);
+      const payload = JSON.parse(run.stdout);
+      assert.strictEqual(payload.critiqueVerified, false);
+      assert.strictEqual(payload.reviewVerdict, 'APPROVED');
+      assert.ok(run.stderr.includes('phase/6-codeloop'), run.stderr);
+      assert.ok(run.stderr.includes('.provenance.json'), run.stderr);
+      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const last = checkpoint.history[checkpoint.history.length - 1];
+      assert.strictEqual(last.metadata.critiqueVerified, false);
+      assert.strictEqual(checkpoint.currentStage, 'COMMIT');
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 

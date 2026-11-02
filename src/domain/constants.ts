@@ -477,6 +477,12 @@ export const DEFAULT_STATE_FILE = 'state.json' as const;
 export const DEFAULT_TASKS_STATE_DIR = 'tasks' as const;
 /** The directory holding dispatched-review Tier 1 evidence (issue #397). */
 export const CRITIQUE_REPORT_DIRECTORY = 'critique' as const;
+/**
+ * The provenance sidecar the Tier 1 command publishes beside a report
+ * (issue #445). It names the base ref and HEAD the report was produced from, so
+ * `codeloop review` can tie a supplied report to the change set it certifies.
+ */
+export const CRITIQUE_PROVENANCE_SUFFIX = '.provenance.json' as const;
 export const DEFAULT_PLANS_DIR = 'artifacts/plans' as const;
 export const DEFAULT_SUMMARY_FILENAME = 'CodeLoop Summary.md' as const;
 export const DEFAULT_TEMPLATES_DIRNAME = 'templates' as const;
@@ -2139,6 +2145,12 @@ export const CRITIQUE_JS_EXTENSION = '.js' as const;
 export const NODE_RUNTIME_BINARY = 'node' as const;
 export const CRITIQUE_FLAG_STAGED = '--staged' as const;
 export const CRITIQUE_FLAG_BASE = '--base' as const;
+/**
+ * `git diff <ref>` — two-dot, so the uncommitted change under review is
+ * included (issue #445). `--base` is `git diff <ref>...HEAD`, which is empty at
+ * REVIEW time because HEAD IS the reviewed base until the commit gate.
+ */
+export const CRITIQUE_FLAG_COMMIT = '--commit' as const;
 export const CRITIQUE_BUILD_COMMAND = 'npm run build' as const;
 export const PATH_USER_DATA_CRITIQUE_DIR = '.local/share/critique' as const;
 export const PATH_USER_DATA_CRITIQUE_MAC = 'Library/Application Support/critique' as const;
@@ -2263,7 +2275,7 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 ## 2. Review Methodology
 
 1. **Diff & Critique Inspection**:
-   - Resolve the critique binary with \`codeloop critique status --json\`, then run the reported \`resolution.path\` with \`--json\` (prefix \`node\` for a \`.js\` binary) and \`git diff\` via \`run_command\`. Never assume \`~/.local/bin/critique\` or a bare \`critique\` on \`PATH\`.
+   - Resolve the critique binary with \`codeloop critique status --json\`, then run the reported \`resolution.path\` with \`--json --commit <reviewed base>\` from the reviewed worktree (prefix \`node\` for a \`.js\` binary) and \`git diff\` via \`run_command\`. \`--commit\` is \`git diff <base>\`, which includes the uncommitted change, whereas \`--base\` is \`git diff <base>...HEAD\` and sees nothing before the commit gate. Never assume \`~/.local/bin/critique\` or a bare \`critique\` on \`PATH\`.
    - Cross-reference findings with \`.github/critique.md\` standards and the approved implementation plan's Acceptance Criteria.
    - Trace callers and examine affected files using \`view_file\` and \`grep_search\`.
 
@@ -2304,7 +2316,7 @@ codeloop review --issue <n> --verdict-file <path>
 
 (The orchestrator may instead pass the block inline with \`--review-output "<block>"\`, or pipe it into \`codeloop review --verdict-stdin\`.)
 
-The reviewer may write exactly one file — the Tier 1 evidence at the absolute path the directive gives — and must name it with \`CRITIQUE_REPORT:\`; the orchestrator passes it back with \`--critique-report <path>\` so Tier 1 is not run twice.
+The reviewer may write exactly one file — the Tier 1 evidence at the absolute path the directive gives, plus its \`.provenance.json\` sidecar — and must name the report with \`CRITIQUE_REPORT:\`; the orchestrator passes it back with \`--critique-report <path>\` so Tier 1 is not run twice. The sidecar names the base ref and HEAD the report was produced from: \`codeloop review\` records \`critiqueVerified: true\` only when it matches this review's base and HEAD.
 
 Emit the block verbatim as the **last** thing in your response. \`ReviewVerdict.parse\` refuses a block it cannot read, and a \`CHANGES_REQUESTED\` must never be downgraded to a skip.` as const;
 
@@ -3681,6 +3693,43 @@ export function formatReviewVerdictChannelNote(
   return `${base} Tier 1 evidence: the reviewer writes it to the path above and names it on a \`${CRITIQUE_REPORT_RETURN_PREFIX}\` line. Pass that exact path with \`${FLAG_CRITIQUE_REPORT}\`; never auto-discover a file. If the reviewer named none, file without the flag — \`review\` will run critique itself.`;
 }
 
+/** The placeholder a missing provenance value renders as (issue #445). */
+export const CRITIQUE_PROVENANCE_UNMEASURED = '(unmeasured)' as const;
+
+/**
+ * The note `codeloop review` prints when a supplied Tier 1 report cannot be tied
+ * to the reviewed base and HEAD (issue #445, AC2).
+ *
+ * `null` stands for "not measured" (no sidecar, unreadable sidecar, or a HEAD
+ * this run could not read) and renders as `(unmeasured)` — a missing sidecar is
+ * named as missing rather than left blank.
+ */
+export const MSG_CRITIQUE_PROVENANCE_UNBOUND =
+  "Tier 1 critique was NOT verified: the report describes base '{reportBase}' at HEAD {reportHead}, but this review certifies base '{reviewedBase}' at HEAD {reviewedHead}. Recorded critiqueVerified=false — re-run the reviewer's Tier 1 command (it runs in the reviewed worktree with `--commit <base>`) and file the report beside its `.provenance.json` sidecar." as const;
+
+/** The four values `formatCritiqueProvenanceUnbound` renders (issue #445). */
+export interface CritiqueProvenanceUnboundValues {
+  readonly reportBase: string | null;
+  readonly reportHead: string | null;
+  readonly reviewedBase: string | null;
+  readonly reviewedHead: string | null;
+}
+
+/** Renders the unbound-report note; a `null` value reads as `(unmeasured)`. */
+export function formatCritiqueProvenanceUnbound(
+  values: CritiqueProvenanceUnboundValues
+): string {
+  const render = (value: string | null | undefined): string =>
+    value === null || value === undefined || String(value).trim().length === 0
+      ? CRITIQUE_PROVENANCE_UNMEASURED
+      : String(value);
+  return MSG_CRITIQUE_PROVENANCE_UNBOUND
+    .replace('{reportBase}', () => render(values.reportBase))
+    .replace('{reportHead}', () => render(values.reportHead))
+    .replace('{reviewedBase}', () => render(values.reviewedBase))
+    .replace('{reviewedHead}', () => render(values.reviewedHead));
+}
+
 /**
  * The reviewer-side instruction that carries the Tier 1 artifact (issue #397).
  *
@@ -3693,11 +3742,16 @@ export function formatReviewVerdictChannelNote(
  * command now stages its output and publishes nothing when critique fails, so a
  * non-zero exit is the only signal needed — and the only one a pipeline's
  * `tee` used to mask.
+ *
+ * Issue #445: the command publishes the report AND its provenance sidecar, so
+ * this note names both as the one permitted write.
  */
 export function formatCritiqueEvidenceReturnNote(reportPath: string): string {
   return (
-    `The command writes the critique JSON to \`${reportPath}\` (the only file you may write; ` +
-    `it lives outside the worktree) and prints it back to you. On success, name it on a line of ` +
+    `The command writes the critique JSON to \`${reportPath}\` and its ` +
+    `\`${reportPath}${CRITIQUE_PROVENANCE_SUFFIX}\` sidecar (the only files you may write; ` +
+    `they live outside the worktree) and prints the report back to you. On success, name the ` +
+    `report on a line of ` +
     `its own: \`${CRITIQUE_REPORT_RETURN_PREFIX} ${reportPath}\`. The command exits non-zero and ` +
     `publishes NO file when critique fails: a non-zero exit means you MUST say the Tier 1 run ` +
     `failed and OMIT that line — the orchestrator will run Tier 1 itself.`

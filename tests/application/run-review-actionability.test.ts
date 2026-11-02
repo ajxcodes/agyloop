@@ -149,7 +149,9 @@ describe('RunReviewUseCase - content-aware blocking (issue #349)', () => {
     assert.strictEqual(result.passed, true);
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
     assert.strictEqual(result.reviewSource, 'reviewer-output');
-    assert.strictEqual(result.critiqueVerified, true);
+    // issue #445: a bare supplied report carries no provenance sidecar, so it
+    // informs the invariant but never certifies the round.
+    assert.strictEqual(result.critiqueVerified, false);
     assert.strictEqual(result.reviewerVerdict, VERDICT_APPROVED);
     assert.strictEqual(result.nonActionableFindings.length, 1);
     assert.deepStrictEqual(

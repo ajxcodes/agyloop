@@ -101,7 +101,9 @@ import {
   DISCOVERY_REPRODUCTION_KEY,
   shellQuote,
   CRITIQUE_FLAG_JSON,
+  CRITIQUE_FLAG_COMMIT,
   CRITIQUE_JS_EXTENSION,
+  CRITIQUE_PROVENANCE_SUFFIX,
   NODE_RUNTIME_BINARY,
   NOTE_CRITIQUE_TIER_ONE_UNRESOLVED,
   // Issue #432: the deviation channel, the Test Register grammar, the
@@ -329,6 +331,12 @@ export interface ReviewerTaskPromptParams {
    * else render the discovery instruction".
    */
   readonly critiquePath?: string | null;
+  /**
+   * The worktree the review certifies (issue #445). The Tier 1 command runs
+   * here with `--commit <base>`; absent falls back to `workspaceDir`, then
+   * `process.cwd()`.
+   */
+  readonly reviewCwd?: string;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
   readonly config?: AgyLoopConfig;
@@ -357,13 +365,43 @@ export interface TriageTaskPromptParams {
  *
  * No `PATH` export: the path is absolute, and `~/.local/bin` is not where the
  * installer writes.
+ *
+ * Issue #445 (AC1): the command now runs FROM the reviewed worktree and carries
+ * the reviewed base as `--commit <base>`. Without either, critique fell back to
+ * `git diff HEAD` / `git diff origin/main...HEAD` in whatever cwd the reviewer
+ * happened to have, so the #439 round reviewed a 416-file collector instead of
+ * the 7-file change. `--commit` is `git diff <base>` (two-dot), the same
+ * measurement `resolveDeliveredChangeSet` uses; `--base` would be
+ * `git diff <base>...HEAD`, which is EMPTY at REVIEW time because HEAD is the
+ * base until the commit gate.
+ *
+ * The provenance sidecar (`<report>.provenance.json`) is published BEFORE the
+ * report, so a report on disk always carries the base/HEAD it was produced
+ * from; a stale sidecar is cleared with the stale report.
  */
-function formatCritiqueTierOneCommand(binaryPath: string, reportPath?: string | null): string {
+function formatCritiqueTierOneCommand(
+  binaryPath: string,
+  reportPath: string | null | undefined,
+  reviewCwd: string,
+  baseRef: string
+): string {
   const quoted = shellQuote(binaryPath);
-  const command = binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
-    ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
-    : `${quoted} ${CRITIQUE_FLAG_JSON}`;
-  if (!reportPath) return command;
+  const command =
+    (binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
+      ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
+      : `${quoted} ${CRITIQUE_FLAG_JSON}`) + ` ${CRITIQUE_FLAG_COMMIT} ${shellQuote(baseRef)}`;
+  const quotedCwd = shellQuote(reviewCwd);
+  const quotedBase = shellQuote(baseRef);
+  // Issue #445: an unresolvable base is a LOUD failure. Falling back to
+  // critique's own default is exactly the wrong-diff defect this closes.
+  const resolveBase =
+    `git rev-parse --verify --quiet ${quotedBase}^{commit} >/dev/null || ` +
+    `{ echo "reviewed base ${quotedBase} does not resolve here; no report written" >&2; exit 1; }; `;
+  const enterCwd =
+    `cd ${quotedCwd} || ` +
+    `{ echo "review cwd ${quotedCwd} is unavailable; no report written" >&2; exit 1; }; `;
+  if (!reportPath) return `${enterCwd}${resolveBase}${command}`;
+
   // Issue #400 (D2): stage into a sibling temp file and publish only on
   // success, because a POSIX pipeline reports `tee`'s exit status: a crashing
   // critique still exited 0 and left an empty or truncated evidence file that
@@ -382,17 +420,31 @@ function formatCritiqueTierOneCommand(binaryPath: string, reportPath?: string | 
   // otherwise leave the previous round's evidence at the exact path a reviewer
   // names. This is deliberately destructive: if a successful critique's publish
   // then fails, the old report is already gone — stale evidence must not survive
-  // a failed round (issue #405, D3 covers the staging cleanup).
+  // a failed round (issue #405, D3 covers the staging cleanup). The same
+  // rationale clears the stale SIDECAR (issue #445): a previous round's
+  // provenance must never be read beside a new report.
   const quotedReport = shellQuote(reportPath);
+  const provenanceReport = shellQuote(`${reportPath}${CRITIQUE_PROVENANCE_SUFFIX}`);
+  // JSON-escape the ref for the printf format string, then shell-quote it. The
+  // escapes are built with `split`/`join` rather than a double-quote regex: the
+  // G1 shell-injection guard bans that idiom repository-wide.
+  const jsonBase = shellQuote(baseRef.split('\\').join('\\\\').split('"').join('\\"'));
   const stagingPath = `"$(dirname ${quotedReport})/.critique-report.$$.tmp"`;
+  const provenanceStaging = `"$(dirname ${quotedReport})/.critique-provenance.$$.tmp"`;
   return (
     `mkdir -p "$(dirname ${quotedReport})" && ( ` +
-    `tmp=${stagingPath}; ` +
-    `rm -f ${quotedReport}; ` +
+    `tmp=${stagingPath}; prov=${provenanceStaging}; ` +
+    `rm -f ${quotedReport} ${provenanceReport}; ` +
+    enterCwd +
+    resolveBase +
     `${command} > "$tmp"; code=$?; ` +
     `if [ "$code" -ne 0 ]; then rm -f "$tmp"; echo "critique failed (exit $code); no report written" >&2; exit $code; fi; ` +
     `if [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "critique exited 0 but wrote no evidence; no report written" >&2; exit 1; fi; ` +
-    `if ! mv "$tmp" ${quotedReport}; then rm -f "$tmp"; echo "publish failed; no report written" >&2; exit 1; fi; ` +
+    `head_sha=$(git rev-parse HEAD) || { rm -f "$tmp"; echo "cannot read HEAD in ${quotedCwd}; no report written" >&2; exit 1; }; ` +
+    `printf '{"baseRef":"%s","headCommit":"%s"}\\n' ${jsonBase} "$head_sha" > "$prov" || ` +
+    `{ rm -f "$tmp" "$prov"; echo "cannot stage provenance; no report written" >&2; exit 1; }; ` +
+    `if ! mv "$prov" ${provenanceReport}; then rm -f "$tmp" "$prov" ${provenanceReport}; echo "publish failed; no report written" >&2; exit 1; fi; ` +
+    `if ! mv "$tmp" ${quotedReport}; then rm -f "$tmp" ${provenanceReport}; echo "publish failed; no report written" >&2; exit 1; fi; ` +
     `cat ${quotedReport} )`
   );
 }
@@ -1227,8 +1279,14 @@ export class ResolveSubagentUseCase {
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
 
     const critiqueReportPath = params.critiqueReportPath || null;
+    // Issue #445: the Tier 1 command runs in the REVIEWED worktree against the
+    // reviewed base. Both are resolved ONCE here so the command and the prose
+    // below cannot name different values.
+    const reviewCwd = params.reviewCwd || params.workspaceDir || process.cwd();
+    const baseBranch = params.baseBranch || '<baseBranch>';
+    const diffExcludeArgs = DIFF_EXCLUDE_ARGS;
     const readOnlyRule = critiqueReportPath
-      ? 'Never attempt to write or edit files in the repository. The ONE write this review permits is the Tier 1 evidence file named in the Two-Tier section below: it lives outside the worktree and is written by shell redirection, via the transient `.critique-report.<pid>.tmp` staging sibling the command creates beside it. Write nothing else.'
+      ? 'Never attempt to write or edit files in the repository. The ONE write this review permits is the Tier 1 evidence file named in the Two-Tier section below plus its `.provenance.json` sidecar: they live outside the worktree and are written by shell redirection, via the transient `.critique-report.<pid>.tmp` / `.critique-provenance.<pid>.tmp` staging siblings the command creates beside them. Write nothing else.'
       : 'Never attempt to write or edit files.';
 
     prompt += `### Operating Constraints:\n`;
@@ -1240,7 +1298,7 @@ export class ResolveSubagentUseCase {
     prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
     if (resolvedCritiquePath) {
       prompt += `   \`\`\`bash\n`;
-      prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath, critiqueReportPath)}\n`;
+      prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath, critiqueReportPath, reviewCwd, baseBranch)}\n`;
       prompt += `   \`\`\`\n`;
       prompt += `   - The command above quotes the path resolved for this workspace. Do not substitute a PATH lookup or a guessed location.\n`;
     } else {
@@ -1250,7 +1308,7 @@ export class ResolveSubagentUseCase {
       prompt += `   - ${formatCritiqueEvidenceReturnNote(critiqueReportPath)}\n`;
       prompt += `   - The path above is authoritative; do not invent another location and do not delete it.\n`;
     }
-    prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector).\n`;
+    prompt += `   - Run it from the reviewed worktree \`${reviewCwd}\` against the reviewed base \`${baseBranch}\`: the command carries \`--commit ${baseBranch}\` (═ \`git diff ${baseBranch}\`, so the uncommitted change is included). Do not substitute \`--base\`: that runs \`git diff ${baseBranch}...HEAD\`, which is empty at REVIEW time because HEAD IS the base until the commit gate.\n`;
     prompt += `   - Invariant: Any \`critical\` or \`error\` findings mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n`;
     prompt += `2. **Tier 2 (Manual Diff & Standards Inspection)**: Independently inspect working diff against Acceptance Criteria and repository standards (\`.github/critique.md\`, zero magic numbers/strings, clean architecture).\n`;
     prompt += `3. **Consolidated Verdict**: Cross-reference both tiers into the structured verdict block (\`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\`).\n\n`;
@@ -1315,8 +1373,6 @@ export class ResolveSubagentUseCase {
       prompt += `**Note**: Any \`critical\` or \`error\` findings from critique mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n\n`;
     }
 
-    const baseBranch = params.baseBranch || '<baseBranch>';
-    const diffExcludeArgs = DIFF_EXCLUDE_ARGS;
     const diffInspectionCmd = `git diff ${baseBranch} -- . ${diffExcludeArgs}`;
 
     let filteredDiff: string | null = null;

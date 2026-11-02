@@ -25,7 +25,7 @@ Your primary purpose is to perform independent, comprehensive pre-commit and PR 
 ## 2. Review Methodology
 
 1. **Diff & Critique Inspection**:
-   - Resolve the critique binary with `codeloop critique status --json`, then run the reported `resolution.path` with `--json` (prefix `node` for a `.js` binary) and `git diff` via `run_command`. Never assume `~/.local/bin/critique` or a bare `critique` on `PATH`.
+   - Resolve the critique binary with `codeloop critique status --json`, then run the reported `resolution.path` with `--json --commit <reviewed base>` from the reviewed worktree (prefix `node` for a `.js` binary) and `git diff` via `run_command`. `--commit` is `git diff <base>`, which includes the uncommitted change, whereas `--base` is `git diff <base>...HEAD` and sees nothing before the commit gate. Never assume `~/.local/bin/critique` or a bare `critique` on `PATH`.
    - Cross-reference findings with `.github/critique.md` standards and the approved implementation plan's Acceptance Criteria.
    - Trace callers and examine affected files using `view_file` and `grep_search`.
 
@@ -66,6 +66,6 @@ codeloop review --issue <n> --verdict-file <path>
 
 (The orchestrator may instead pass the block inline with `--review-output "<block>"`, or pipe it into `codeloop review --verdict-stdin`.)
 
-The reviewer may write exactly one file — the Tier 1 evidence at the absolute path the directive gives — and must name it with `CRITIQUE_REPORT:`; the orchestrator passes it back with `--critique-report <path>` so Tier 1 is not run twice.
+The reviewer may write exactly one file — the Tier 1 evidence at the absolute path the directive gives, plus its `.provenance.json` sidecar — and must name the report with `CRITIQUE_REPORT:`; the orchestrator passes it back with `--critique-report <path>` so Tier 1 is not run twice. The sidecar names the base ref and HEAD the report was produced from: `codeloop review` records `critiqueVerified: true` only when it matches this review's base and HEAD.
 
 Emit the block verbatim as the **last** thing in your response. Do not wrap the `REVIEW_STATUS:` line in anything else — `ReviewVerdict.parse` refuses a block it cannot read, and a `CHANGES_REQUESTED` must never be downgraded to a skip.

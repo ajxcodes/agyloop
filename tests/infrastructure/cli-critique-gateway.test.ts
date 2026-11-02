@@ -316,10 +316,51 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
       assert.strictEqual(mockExecutor.calls.length, 1);
       const call = mockExecutor.calls[0];
       assert.ok(call.command.includes('--json'));
-      assert.ok(call.command.includes('git diff --cached origin/main -- .'));
-      assert.ok(call.command.includes('|'));
+      // Issue #445: critique reads its own diff — it never reads stdin, so the
+      // old `git diff … | critique` pipe reviewed whatever critique chose.
+      // `--staged` selects the index; the base-driven path is pinned by TR-15.
+      assert.ok(call.command.includes('--staged'));
+      assert.strictEqual(call.command.includes('|'), false, 'critique never reads stdin, so a pipe reviewed nothing');
       assert.strictEqual(report.isPassing(), true);
       assert.strictEqual(report.summary, 'Review completed by critique.');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('runs critique with --commit instead of a dead diff pipe (issue #445)', async () => {
+    const tempDir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), 'test-exec-commit-'));
+    try {
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const critiqueJs = path.join(binDir, 'critique.js');
+      fs.writeFileSync(critiqueJs, '// critique');
+
+      const mockReviewOutput = JSON.stringify({
+        summary: 'Review completed by critique.',
+        confidenceLevel: 'High',
+        confidenceExplanation: 'Diff verified.',
+        comments: []
+      });
+
+      const mockExecutor = new MockCommandExecutor((cmd: string) => {
+        return {
+          command: cmd,
+          exitCode: 0,
+          stdout: mockReviewOutput,
+          stderr: '',
+          combinedOutput: mockReviewOutput,
+          durationMs: 15,
+          timedOut: false
+        };
+      });
+
+      const gateway = new CliCritiqueGateway(mockExecutor);
+      await gateway.review({ cwd: tempDir, baseRef: 'origin/main' });
+
+      const call = mockExecutor.calls[0];
+      assert.strictEqual(call.command.includes('|'), false, 'critique never reads stdin, so a pipe reviewed nothing');
+      assert.ok(call.command.includes("--commit 'origin/main'"));
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

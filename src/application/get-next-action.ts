@@ -1200,6 +1200,9 @@ export class GetNextActionUseCase {
           issueNumber: activeIssue,
           baseBranch,
           workspaceDir: worktreePath || cwd,
+          // Issue #445: the Tier 1 command must run in the REVIEWED worktree;
+          // the root workspace reviews whatever branch happens to be checked out.
+          reviewCwd: worktreePath || cwd,
           config,
           untrackedFiles,
           critiqueReportPath,
