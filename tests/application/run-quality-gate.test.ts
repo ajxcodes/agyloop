@@ -1839,6 +1839,44 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.match(result.smokeReport?.failureSnippet ?? '', /timed out/i);
   });
 
+  test('RQG-S11: the frozen smoke script executes with the gate smoke signal (#440)', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = planWithSmoke(['npm test'], ['echo "S1 PASS"']);
+    const commandExecutor = new MockCommandExecutor([
+      resultOf(),
+      resultOf({
+        exitCode: 0,
+        stdout: '__AGYLOOP_SMOKE_CHECK_1__\nS1 PASS\n',
+        combinedOutput: '__AGYLOOP_SMOKE_CHECK_1__\nS1 PASS\n'
+      })
+    ]);
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector()
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    type ExecutedCall = {
+      command: string;
+      options: CommandExecutionOptions & { env: Record<string, string | undefined> };
+    };
+    const smokeCall = commandExecutor.executed.find((call) =>
+      call.command.includes('__AGYLOOP_SMOKE_CHECK_')
+    ) as ExecutedCall | undefined;
+    const nonSmokeCall = commandExecutor.executed.find(
+      (call) => !call.command.includes('__AGYLOOP_SMOKE_CHECK_')
+    ) as ExecutedCall | undefined;
+    if (!smokeCall) throw new Error('the frozen smoke script must execute');
+    if (!nonSmokeCall) throw new Error('a non-smoke gate command must execute');
+    assert.strictEqual(smokeCall.options.env.AGYLOOP_SMOKE, '1');
+    assert.strictEqual(nonSmokeCall.options.env, undefined);
+  });
+
   test('RQG-D1: a digest mismatch before execution fails with no commands and a plan-integrity report', async () => {
     const planGenerator = new MockPlanGenerator();
     planGenerator.content = planWithTargets(['npm test']);

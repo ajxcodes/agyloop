@@ -46,6 +46,8 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MAX_FILTERED_OUTPUT_CHARS,
   MS_PER_SECOND,
+  ENV_AGYLOOP_SMOKE,
+  ENV_FLAG_ENABLED,
   ECOSYSTEM_UNKNOWN,
   CMD_ID_BUILD,
   CMD_ID_TYPECHECK,
@@ -1027,7 +1029,8 @@ export class RunQualityGateUseCase {
 
     const execResult = await this.commandExecutor.execute(script, {
       cwd: executionCwd,
-      timeoutMs
+      timeoutMs,
+      env: { [ENV_AGYLOOP_SMOKE]: ENV_FLAG_ENABLED }
     });
     const output = execResult.combinedOutput ?? '';
     const failure = smoke.attributeFailure(output);

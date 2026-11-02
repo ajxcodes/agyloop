@@ -85,7 +85,7 @@ const FIXTURES: readonly Fixture[] = [
     clean: true
   },
   {
-    name: 'AG-2: a relative mktemp under the sandbox root is permitted (#364 6b)',
+    name: 'AG-2: a relative mktemp under the sandbox root is permitted by sandbox-path (#364 6b); its CLI invocation is unanchored (#440)',
     body: [
       '```bash',
       'cd "$HOME/.cache/agyloop"',
@@ -132,7 +132,7 @@ before(() => {
   fs.mkdirSync(path.join(realHome, '.cache', 'agyloop'), { recursive: true });
   fakeHome = fs.mkdtempSync(path.join(realHome, '.cache', 'agyloop', 'smoke-383-agreement-'));
   originalCwd = process.cwd;
-  for (const key of ['NODE_ENV', 'NODE_TEST_CONTEXT', 'HOME']) {
+  for (const key of ['NODE_ENV', 'NODE_TEST_CONTEXT', 'HOME', 'AGYLOOP_SMOKE']) {
     savedEnv.set(key, process.env[key]);
     delete process.env[key];
   }
@@ -155,7 +155,9 @@ function withRuntime(env: { readonly home: string; readonly cwd: string }, fn: (
   const previousHome = process.env.HOME;
   const previousNodeEnv = process.env.NODE_ENV;
   const previousTestContext = process.env.NODE_TEST_CONTEXT;
+  const previousSmoke = process.env.AGYLOOP_SMOKE;
   delete process.env.NODE_TEST_CONTEXT;
+  delete process.env.AGYLOOP_SMOKE;
   process.env.NODE_ENV = 'production';
   process.env.HOME = env.home;
   process.cwd = () => env.cwd;
@@ -168,6 +170,8 @@ function withRuntime(env: { readonly home: string; readonly cwd: string }, fn: (
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousTestContext === undefined) delete process.env.NODE_TEST_CONTEXT;
     else process.env.NODE_TEST_CONTEXT = previousTestContext;
+    if (previousSmoke === undefined) delete process.env.AGYLOOP_SMOKE;
+    else process.env.AGYLOOP_SMOKE = previousSmoke;
     process.cwd = originalCwd;
   }
 }

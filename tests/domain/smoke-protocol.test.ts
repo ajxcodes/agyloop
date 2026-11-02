@@ -39,6 +39,12 @@
  *        only in a comment, or split across a shell line continuation
  * SP40 - the three committed impossible fixtures each fire exactly once (#413)
  * SP41 - the corpus canaries carry zero fixture-consistency findings (#413)
+ * SP42 - a block that names a sandbox but never enters it is refused (#440)
+ * SP43 - every documented anchoring shape keeps the block executable (#440)
+ * SP44 - enter-then-leave, intermediate-variable declaration, outside
+ *        --workspace and --help classify correctly (#440)
+ * SP45 - cross-check cwd and variables keep historical plans clean (#440)
+ * SP46 - the committed corpus freezes the sandbox-cwd column (#440)
  */
 
 const { test, describe } = require('node:test');
@@ -50,6 +56,7 @@ const {
   SmokeProtocol,
   SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
   SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
+  SMOKE_RULE_SANDBOX_CWD,
   SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED
 } = require('../../dist/domain');
 
@@ -309,6 +316,13 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   function sandboxFindings(markdown: string): any[] {
     return SmokeProtocol.fromPlan(markdown).findings.filter(
       (finding: any) => finding.rule === 'sandbox-path'
+    );
+  }
+
+  /** Issue #440: the `sandbox-cwd` findings only, so sibling rules stay independent. */
+  function cwdFindings(markdown: string): any[] {
+    return SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === SMOKE_RULE_SANDBOX_CWD
     );
   }
 
@@ -830,6 +844,8 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     readonly checks: number;
     readonly sandboxFindings: number;
     readonly missingParentFindings: number;
+    /** Issue #440. Optional so historical entries stay literally unchanged. */
+    readonly sandboxCwdFindings?: number;
   }
 
   /** Reads + validates the committed corpus; throws loudly when it is absent. */
@@ -961,7 +977,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     );
   });
 
-  test('SP24: a relative mktemp under the sandbox root is clean (#364 6b)', () => {
+  test('SP24: a relative mktemp under the sandbox root is clean for sandbox-path (#364 6b; unanchored for #440)', () => {
     const relative = planOf([
       '```bash',
       'cd "$HOME/.cache/agyloop"',
@@ -1596,5 +1612,162 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     for (const canary of canaries) {
       assert.ok(scanned.has(canary), `canary missing from the corpus: ${canary}`);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #440: naming a sandbox is not entering it. A declared sandbox that
+  // the invocation never enters mutates the LIVE checkpoint (the #370 shape).
+  // -------------------------------------------------------------------------
+
+  test('SP42: the #370 block that names a sandbox but never enters it is refused (#440)', () => {
+    const unsafe = planOf([
+      '```bash',
+      'WT="${WT:-$PWD}"; cd "$WT"',
+      'SBX="$HOME/.cache/agyloop/smoke-348/approval"',
+      'PLAN="$SBX/artifacts/plans/x/implementation_plan.md"',
+      'env -u AGY_SUBAGENT node "$WT/bin/codeloop.js" transition APPROVAL',
+      '```'
+    ]);
+    const unsafeFindings = cwdFindings(unsafe);
+    assert.strictEqual(unsafeFindings.length, 1, JSON.stringify(unsafeFindings));
+    assert.strictEqual(unsafeFindings[0].rule, SMOKE_RULE_SANDBOX_CWD);
+    assert.strictEqual(unsafeFindings[0].checkIndex, 1);
+    assert.ok(unsafeFindings[0].excerpt.includes('cd into the sandbox first'), unsafeFindings[0].excerpt);
+    assert.ok(unsafeFindings[0].excerpt.includes('smoke-348'), unsafeFindings[0].excerpt);
+    assert.strictEqual(SmokeProtocol.fromPlan(unsafe).executable, false);
+
+    const safe = planOf([
+      '```bash',
+      'WT="${WT:-$PWD}"; cd "$WT"',
+      'SBX="$HOME/.cache/agyloop/smoke-348/approval"',
+      'PLAN="$SBX/artifacts/plans/x/implementation_plan.md"',
+      'cd "$SBX"',
+      'env -u AGY_SUBAGENT node "$WT/bin/codeloop.js" transition APPROVAL',
+      '```'
+    ]);
+    assert.deepStrictEqual(cwdFindings(safe), []);
+    assert.strictEqual(SmokeProtocol.fromPlan(safe).executable, true);
+  });
+
+  test('SP43: every documented anchoring shape keeps the block executable (#440)', () => {
+    const shapes: ReadonlyArray<readonly string[]> = [
+      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', 'cd "$SBX"', 'node bin/codeloop.js transition DISCOVERY --issue 440'],
+      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', 'cd "$SBX" && node bin/codeloop.js transition DISCOVERY --issue 440'],
+      ['SANDBOX="$HOME/.cache/agyloop"', 'WS="$SANDBOX/smoke-440-XXXXXX"', 'cd "$WS"', 'node bin/codeloop.js transition DISCOVERY --issue 440'],
+      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', '( cd "$SBX" && node bin/codeloop.js transition DISCOVERY --issue 440 )'],
+      ['WS="$HOME/.cache/agyloop/smoke-440/x"', 'OUT="$(cd "$WS" && node bin/codeloop.js transition DISCOVERY --issue 440)"'],
+      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', 'node bin/codeloop.js gate-report --issue 440 --workspace "$SBX/ws"']
+    ];
+
+    for (const body of shapes) {
+      const protocol = SmokeProtocol.fromPlan(planOf(['```bash', ...body, '```']));
+      assert.deepStrictEqual(cwdFindings(planOf(['```bash', ...body, '```'])), [], JSON.stringify(body));
+      assert.strictEqual(protocol.executable, true, JSON.stringify(protocol.findings));
+    }
+  });
+
+  test('SP44: enter-then-leave, intermediate-variable declaration, outside --workspace and --help classify correctly (#440)', () => {
+    const markdown = planOf([
+      '```bash',
+      'WT="${WT:-$PWD}"',
+      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'cd "$SBX"',
+      'cd "$WT"',
+      'node bin/codeloop.js transition DISCOVERY --issue 440',
+      '```'
+    ]);
+    assert.strictEqual(cwdFindings(markdown).length, 1);
+
+    const indirectMarkdown = planOf([
+      '```bash',
+      'SANDBOX="$HOME/.cache/agyloop"',
+      'WS="$SANDBOX/smoke-440-XXXXXX"',
+      'node bin/codeloop.js transition DISCOVERY --issue 440',
+      '```'
+    ]);
+    assert.strictEqual(cwdFindings(indirectMarkdown).length, 1);
+
+    const outsideWorkspace = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'node bin/codeloop.js transition DISCOVERY --issue 440 --workspace /tmp/elsewhere',
+      '```'
+    ]);
+    assert.strictEqual(cwdFindings(outsideWorkspace).length, 1);
+
+    const helpMarkdown = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'node bin/codeloop.js --help',
+      '```'
+    ]);
+    assert.strictEqual(cwdFindings(helpMarkdown).length, 0);
+  });
+
+  test('SP45: cross-check cwd and variables keep historical plans clean (#440)', () => {
+    const protocol = [
+      '# Plan',
+      '',
+      SMOKE_HEADING,
+      '',
+      '#### Check 1 — declare and enter',
+      '',
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'cd "$SBX"',
+      'node bin/codeloop.js transition DISCOVERY --issue 440',
+      '```',
+      '',
+      '#### Check 2 — reuse the carried cwd',
+      '',
+      '```bash',
+      'mkdir -p "$SBX/logs"',
+      'node bin/codeloop.js status --issue 440',
+      '```',
+      ''
+    ].join('\n');
+    assert.deepStrictEqual(cwdFindings(protocol), []);
+
+    const secondPlan = [
+      '# Plan',
+      '',
+      SMOKE_HEADING,
+      '',
+      '#### Check 1 — declare and enter',
+      '',
+      '```bash',
+      'WT="$PWD"',
+      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'cd "$SBX"',
+      'node bin/codeloop.js transition DISCOVERY --issue 440',
+      '```',
+      '',
+      '#### Check 2 — leave the carried cwd',
+      '',
+      '```bash',
+      'WS="$SBX/child"',
+      'cd "$WT"',
+      'node bin/codeloop.js status --issue 440',
+      '```',
+      ''
+    ].join('\n');
+    assert.strictEqual(cwdFindings(secondPlan).length, 1);
+  });
+
+  test('SP46: the committed corpus freezes the sandbox-cwd column (#440)', () => {
+    const { entries } = readCorpus(CORPUS_DIR);
+    let canary = false;
+    for (const entry of entries) {
+      const markdown = fs.readFileSync(path.join(CORPUS_DIR, entry.file), 'utf8');
+      const measured = cwdFindings(markdown).length;
+      assert.strictEqual(measured, entry.sandboxCwdFindings, entry.file);
+      if (entry.issue === '440') {
+        canary = true;
+        assert.strictEqual(measured, 1, 'the #370 canary must fire exactly once');
+      } else {
+        assert.strictEqual(measured, 0, `${entry.file}: historical verdict changed`);
+      }
+    }
+    assert.ok(canary, 'the #370 canary is missing from the corpus manifest');
   });
 });

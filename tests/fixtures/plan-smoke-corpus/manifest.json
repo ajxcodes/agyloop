@@ -8,7 +8,8 @@
       "headingLine": 7,
       "checks": 6,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "248",
@@ -16,7 +17,8 @@
       "headingLine": 7,
       "checks": 2,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "283",
@@ -24,7 +26,8 @@
       "headingLine": 7,
       "checks": 1,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "284",
@@ -32,7 +35,8 @@
       "headingLine": 7,
       "checks": 12,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "297",
@@ -40,7 +44,8 @@
       "headingLine": 7,
       "checks": 7,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "298",
@@ -48,7 +53,8 @@
       "headingLine": 7,
       "checks": 4,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "301",
@@ -56,7 +62,8 @@
       "headingLine": 7,
       "checks": 9,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "306",
@@ -64,7 +71,8 @@
       "headingLine": 7,
       "checks": 5,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "311",
@@ -72,7 +80,8 @@
       "headingLine": 7,
       "checks": 4,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "313",
@@ -80,7 +89,8 @@
       "headingLine": 7,
       "checks": 5,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "314",
@@ -88,7 +98,8 @@
       "headingLine": 7,
       "checks": 5,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "315",
@@ -96,7 +107,8 @@
       "headingLine": 7,
       "checks": 15,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "320",
@@ -104,7 +116,8 @@
       "headingLine": 7,
       "checks": 4,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "327",
@@ -112,7 +125,8 @@
       "headingLine": 7,
       "checks": 5,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "328",
@@ -120,7 +134,8 @@
       "headingLine": 7,
       "checks": 3,
       "sandboxFindings": 3,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "336",
@@ -128,7 +143,8 @@
       "headingLine": 7,
       "checks": 9,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "337",
@@ -136,7 +152,8 @@
       "headingLine": 7,
       "checks": 6,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "338",
@@ -144,7 +161,8 @@
       "headingLine": 7,
       "checks": 4,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "339",
@@ -152,7 +170,8 @@
       "headingLine": 7,
       "checks": 13,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "349",
@@ -160,7 +179,8 @@
       "headingLine": 7,
       "checks": 7,
       "sandboxFindings": 4,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "351",
@@ -168,7 +188,8 @@
       "headingLine": 7,
       "checks": 4,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "352",
@@ -176,7 +197,8 @@
       "headingLine": 7,
       "checks": 3,
       "sandboxFindings": 2,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "356",
@@ -184,7 +206,8 @@
       "headingLine": 7,
       "checks": 5,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "359",
@@ -192,7 +215,8 @@
       "headingLine": 7,
       "checks": 3,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "362",
@@ -200,7 +224,8 @@
       "headingLine": 7,
       "checks": 4,
       "sandboxFindings": 0,
-      "missingParentFindings": 0
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0
     },
     {
       "issue": "382",
@@ -208,7 +233,17 @@
       "headingLine": 3,
       "checks": 9,
       "sandboxFindings": 0,
-      "missingParentFindings": 2
+      "missingParentFindings": 2,
+      "sandboxCwdFindings": 0
+    },
+    {
+      "issue": "440",
+      "file": "440.md",
+      "headingLine": 7,
+      "checks": 1,
+      "sandboxFindings": 0,
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 1
     }
   ]
 }

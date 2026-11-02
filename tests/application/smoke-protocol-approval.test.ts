@@ -12,6 +12,8 @@
  * SPA5 - the corrected #413 protocol is approved unchanged (#413 AC-5)
  * SPA6 - a missing-marker refusal named only in a comment is still refused:
  *        prose cannot disarm Rule C at the shared approval surface (#413 AC-4)
+ * SPA7 - a sandbox-naming block that never enters the sandbox is refused at
+ *        APPROVAL before any state is saved (#440)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -282,6 +284,39 @@ describe('Smoke protocol approval guard (issue #388)', () => {
         assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
         assert.strictEqual(err.field, 'smokeProtocol');
         assert.ok(err.message.includes('gate-report-marker-missing'), err.message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN);
+  });
+
+  test('SPA7: a sandbox-naming block that never enters the sandbox is refused at APPROVAL (#440)', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithSmoke([
+        'WT="${WT:-$PWD}"; cd "$WT"',
+        'SBX="$HOME/.cache/agyloop/smoke-348/approval"',
+        'PLAN="$SBX/artifacts/plans/x/implementation_plan.md"',
+        'env -u AGY_SUBAGENT node "$WT/bin/codeloop.js" transition APPROVAL'
+      ]),
+      'utf8'
+    );
+    const stateRepo = stateAtPlan();
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'smokeProtocol');
+        assert.match(err.message, /sandbox-cwd/);
         return true;
       }
     );

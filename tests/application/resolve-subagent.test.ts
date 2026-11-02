@@ -1047,6 +1047,20 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     assert.match(prompt, /a missing, renamed, duplicated or skipped check is a `FAILED` verdict/);
   });
 
+  test('RS-G8: the planner prompt requires a cd or --workspace anchor (#440)', () => {
+    const prompt = useCase().buildPlanningTaskPrompt({
+      issueNumber: 440,
+      planDir: 'artifacts/plans/440/',
+      planPath: 'artifacts/plans/440/implementation_plan.md'
+    });
+    assert.ok(prompt.includes('cd into that sandbox'), 'the cd requirement must be stated');
+    assert.ok(prompt.includes('--workspace'), 'the --workspace alternative must be named');
+    assert.ok(
+      prompt.includes('before the first CLI invocation'),
+      'the ordering requirement must be stated'
+    );
+  });
+
   test('RS-G2: a required lint with no lint command is an invariant violation', () => {
     const prompt = useCase().buildGateTaskPrompt({
       issueNumber: 41,

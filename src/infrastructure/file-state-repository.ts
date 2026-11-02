@@ -28,6 +28,7 @@ import {
   ENV_NODE_VALUE_TEST,
   ENV_NODE_TEST_CONTEXT,
   ENV_ALLOW_WORKTREE_ISSUE_MISMATCH,
+  ENV_AGYLOOP_SMOKE,
   ENV_FLAG_ENABLED
 } from '../domain';
 import { StateRepository } from '../ports';
@@ -205,8 +206,10 @@ export class FileStateRepository implements StateRepository {
    * Rule order matters:
    *  1. ESCAPE   — a sandbox cwd may not reach a target outside the sandbox.
    *  2. SANDBOX  — every target inside the tool's own sandbox is permitted.
-   *  3. RESERVED — `/tmp` and `artifacts/smoke` are refused outside test mode.
-   *  4. TEST ROOT — under test mode a target must be provably isolated from the
+   *  3. GATE SMOKE — with `AGYLOOP_SMOKE=1` (issue #440), every target must be
+   *                 inside a recognised sandbox outside test mode.
+   *  4. RESERVED — `/tmp` and `artifacts/smoke` are refused outside test mode.
+   *  5. TEST ROOT — under test mode a target must be provably isolated from the
    *                 real workspace (unchanged).
    */
   private validateSmokeTestIsolation(
@@ -239,8 +242,23 @@ export class FileStateRepository implements StateRepository {
       return;
     }
 
-    // 3. RESERVED: `/tmp` and `artifacts/smoke` obey the SAME rule — refused
-    //    outside a test run, permitted inside one, where rule 4 protects the
+    // 3. GATE SMOKE: the quality gate executes the frozen smoke script with
+    //    `AGYLOOP_SMOKE=1` (issue #440). While that signal is set, a target
+    //    outside a recognised sandbox is the LIVE checkpoint — the #348
+    //    incident shape — so refuse it before the write. A test run is exempt
+    //    because a smoke check may legitimately run the repository's own suite,
+    //    and the test-root rule already protects real state.
+    const gateSmoke = process.env[ENV_AGYLOOP_SMOKE] === ENV_FLAG_ENABLED;
+    if (gateSmoke && !testMode && targets.some((target) => !inSandbox(target))) {
+      throw new StateStorageError(
+        this.stateFilePath,
+        operation,
+        MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST
+      );
+    }
+
+    // 4. RESERVED: `/tmp` and `artifacts/smoke` obey the SAME rule — refused
+    //    outside a test run, permitted inside one, where rule 5 protects the
     //    real state (issue #279, N3).
     const tmpRoot = normalise(os.tmpdir());
     const inTmp = (target: string): boolean =>
@@ -259,7 +277,7 @@ export class FileStateRepository implements StateRepository {
       );
     }
 
-    // 4. TEST ROOT: unchanged. A test-mode run may only touch state that is
+    // 5. TEST ROOT: unchanged. A test-mode run may only touch state that is
     //    provably isolated from this package's real workspace roots.
     if (testMode) {
       const unproven = targets.find(
