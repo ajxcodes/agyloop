@@ -279,6 +279,9 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
     const result = await useCase.execute({ reviewOutput });
@@ -326,6 +329,9 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
     const result = await useCase.execute({ reviewOutput });
@@ -503,6 +509,9 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/security.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
     const result = await useCase.execute({
@@ -747,6 +756,9 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
     const result = await useCase.execute({ reviewOutput });

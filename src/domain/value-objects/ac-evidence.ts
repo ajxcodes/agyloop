@@ -17,7 +17,7 @@ import {
   AC_EVIDENCE_STATUS_UNVERIFIABLE,
   type AcEvidenceStatus
 } from '../constants';
-import { isInCommitExcludedTree, isOutsideWorkspace } from './plan-evidence-paths';
+import { isInCommitExcludedTree, isOutsideWorkspace, stripLineSuffix } from './plan-evidence-paths';
 
 export interface AcEvidenceEntry {
   /** The criterion label as written, e.g. `AC1`. */
@@ -29,10 +29,24 @@ export interface AcEvidenceEntry {
   readonly note: string;
 }
 
+/** One line of a REPORTED block that could not be parsed (issue #435, D4). */
+export interface AcEvidenceParseIssue {
+  /** 1-based line number in the verdict text. */
+  readonly line: number;
+  /** The offending line, trimmed. */
+  readonly text: string;
+  readonly reason: string;
+}
+
 export interface AcEvidenceReport {
   /** False for a legacy verdict with no `AC_EVIDENCE:` block. */
   readonly reported: boolean;
   readonly entries: readonly AcEvidenceEntry[];
+  /**
+   * Every block line that did not parse (issue #435, D4). OMITTED when there is
+   * nothing to report, so a clean parse keeps the pre-#435 shape exactly.
+   */
+  readonly issues?: readonly AcEvidenceParseIssue[];
 }
 
 export interface DeliveredChangeSetLike {
@@ -48,6 +62,16 @@ export interface AcEvidenceClassification {
 }
 
 const NO_EVIDENCE_PATH = '(no path named)';
+
+/** The one item grammar the block accepts (issue #435, D4). */
+const ITEM_PATTERN =
+  /^[-*+]\s+([A-Za-z0-9][A-Za-z0-9._-]*)\s*:\s*([A-Za-z][A-Za-z-]*)(.*)$/;
+
+const ITEM_GRAMMAR_REASON =
+  'the item does not match the block grammar "- <AC id>: met|unverifiable|out-of-scope — `<path>`"';
+
+const MARKER_STANDALONE_REASON =
+  'the marker line must stand alone; put each evidence item on its own "- <AC id>: <status> — `<path>`" line';
 
 function parseStatus(token: string): AcEvidenceStatus | null {
   if (token === AC_EVIDENCE_STATUS_MET) return AC_EVIDENCE_STATUS_MET;
@@ -69,8 +93,10 @@ function backticked(value: string): string[] {
 /**
  * Parses the reviewer's `AC_EVIDENCE:` block.
  *
- * Absent block = `reported: false`, so legacy verdicts keep working. A line
- * that does not name a recognised status is skipped rather than guessed.
+ * Absent block = `reported: false`, so legacy verdicts keep working. A REPORTED
+ * block that yields nothing parseable is no longer silent: every offending line
+ * is recorded as an issue (issue #435, D4), so "present but unreadable" can
+ * never collapse into "nothing to verify".
  */
 export function parseAcEvidence(verdictText: string | null | undefined): AcEvidenceReport {
   if (!verdictText || typeof verdictText !== 'string') {
@@ -78,9 +104,20 @@ export function parseAcEvidence(verdictText: string | null | undefined): AcEvide
   }
 
   const lines = verdictText.split('\n');
-  const markerIndex = lines.findIndex((line) => line.trim() === AC_EVIDENCE_MARKER);
+  const markerIndex = lines.findIndex((line) => line.trim().startsWith(AC_EVIDENCE_MARKER));
   if (markerIndex === -1) {
     return Object.freeze({ reported: false, entries: Object.freeze([]) });
+  }
+
+  const issues: AcEvidenceParseIssue[] = [];
+  const markerLine = lines[markerIndex].trim();
+  if (markerLine !== AC_EVIDENCE_MARKER) {
+    // `AC_EVIDENCE: - AC1: …` used to be invisible: the marker never matched.
+    issues.push({
+      line: markerIndex + 1,
+      text: markerLine,
+      reason: MARKER_STANDALONE_REASON
+    });
   }
 
   const entries: AcEvidenceEntry[] = [];
@@ -88,13 +125,22 @@ export function parseAcEvidence(verdictText: string | null | undefined): AcEvide
     const line = lines[index].trim();
     if (line.length === 0) continue;
     // The block ends at the next top-level marker (`REVIEW_STATUS:`, `#…`, …).
-    if (!line.startsWith('-') && !line.startsWith('*')) break;
+    if (!line.startsWith('-') && !line.startsWith('*') && !line.startsWith('+')) break;
 
-    const item = line.replace(/^[-*+]\s+/, '');
-    const match = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*:\s*([A-Za-z-]+)(.*)$/.exec(item);
-    if (!match) continue;
+    const match = ITEM_PATTERN.exec(line);
+    if (!match) {
+      issues.push({ line: index + 1, text: line, reason: ITEM_GRAMMAR_REASON });
+      continue;
+    }
     const status = parseStatus(match[2].toLowerCase());
-    if (!status) continue;
+    if (!status) {
+      issues.push({
+        line: index + 1,
+        text: line,
+        reason: `"${match[2]}" is not a recognised status (expected met, unverifiable or out-of-scope)`
+      });
+      continue;
+    }
 
     // The grammar is `AC1: met — \`path\``, so the evidence paths live AFTER
     // the em dash. Take every backticked span on the line, then keep whatever
@@ -115,7 +161,11 @@ export function parseAcEvidence(verdictText: string | null | undefined): AcEvide
     );
   }
 
-  return Object.freeze({ reported: true, entries: Object.freeze(entries) });
+  return Object.freeze({
+    reported: true,
+    entries: Object.freeze(entries),
+    ...(issues.length > 0 ? { issues: Object.freeze(issues) } : {})
+  });
 }
 
 function samePath(a: string, b: string): boolean {
@@ -155,16 +205,20 @@ export function classifyAcEvidence(
 
   const unverifiable: string[] = [];
   for (const path of entry.paths) {
-    if (isInCommitExcludedTree(path)) {
+    // Issue #435 (D3): a `path:line` / `path:start-end` citation is the form
+    // every other surface teaches, so the suffix is stripped for comparison
+    // only — a refusal still quotes the citation as the reviewer wrote it.
+    const normalised = stripLineSuffix(path);
+    if (isInCommitExcludedTree(normalised)) {
       unverifiable.push(path);
       continue;
     }
-    if (isOutsideWorkspace(path, reviewCwd)) {
+    if (isOutsideWorkspace(normalised, reviewCwd)) {
       unverifiable.push(path);
       continue;
     }
     if (changeSet.measured) {
-      const present = changeSet.paths.some((candidate) => samePath(candidate, path));
+      const present = changeSet.paths.some((candidate) => samePath(candidate, normalised));
       if (!present) {
         unverifiable.push(path);
       }
@@ -217,7 +271,9 @@ export function findExcludedEvidenceInText(
     }
 
     for (const path of backticked(line)) {
-      if (!isInCommitExcludedTree(path)) continue;
+      // Issue #435 (D3): the sweep must see through a `:162` citation suffix,
+      // but the finding still names the path as written.
+      if (!isInCommitExcludedTree(stripLineSuffix(path))) continue;
       const key = `${currentAc}|${path}`;
       if (seen.has(key)) continue;
       seen.add(key);

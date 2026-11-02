@@ -36,7 +36,11 @@ The Reviewer subagent runs read-only and only emits the verdict block. The orche
    - <criterion> (or "None")
    REMEDIATION_GUIDANCE:
    - <action> (or "None")
+   AC_EVIDENCE:
+   - AC1: met — `src/domain/plan-deviation.ts`
+   - AC6: unverifiable — `artifacts/plans/425-task-plan/implementation_plan.md`
    ```
+   The `AC_EVIDENCE:` block is mandatory for an `APPROVED` verdict: a `path:line` / `path:start-end` citation is accepted (the suffix is ignored when the path is matched), and `codeloop review` refuses an `APPROVED` verdict that omits the block or whose block parses to no entries.
 2. As the orchestrator, write that block to a file and run `codeloop review --issue <n> --verdict-file <path>` (or pipe it into `codeloop review --issue <n> --verdict-stdin`).
 3. `codeloop next --json` then reports the **actual** verdict at the COMMIT gate — `Review passed.` for `APPROVED`, and the pipeline reverts to `IMPLEMENT` (exit code `1`) for `CHANGES_REQUESTED`.
 

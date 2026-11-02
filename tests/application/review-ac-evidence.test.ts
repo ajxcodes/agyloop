@@ -197,22 +197,6 @@ describe('Review AC evidence (issue #432)', () => {
     assert.deepStrictEqual([...result.acEvidence.verified], ['AC1']);
   });
 
-  test('RAE4 a verdict with no AC_EVIDENCE block records exactly as before', async () => {
-    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
-    const result = await useCase.execute({
-      issue: 432,
-      workspaceDir: root,
-      baseRef: 'HEAD',
-      reviewOutput: 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n'
-    });
-    assert.strictEqual(result.verdict.status, 'APPROVED');
-    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
-    assert.strictEqual(
-      Object.prototype.hasOwnProperty.call(last.metadata, 'reviewAcEvidence'),
-      false
-    );
-  });
-
   test('RAE5 an unmeasured change set does not fabricate unverifiability', async () => {
     const { useCase } = makeUseCase();
     const result = await useCase.execute({
@@ -229,5 +213,95 @@ describe('Review AC evidence (issue #432)', () => {
     assert.strictEqual(result.verdict.status, 'APPROVED');
     assert.strictEqual(result.acEvidence.measured, false);
     assert.ok((result.acEvidence.note ?? '').includes('main'));
+  });
+
+  test('RAE6 a blockless APPROVED verdict is refused when the plan declares criteria (issue #435)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    await assert.rejects(
+      () =>
+        useCase.execute({
+          issue: 432,
+          workspaceDir: root,
+          baseRef: 'HEAD',
+          reviewOutput: 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n'
+        }),
+      (error: any) => {
+        assert.match(error.message, /AC_EVIDENCE/);
+        return true;
+      }
+    );
+    assert.strictEqual(repo.saves, 0);
+  });
+
+  test('RAE7 a plan with no acceptance criteria still records a block-less APPROVED verdict (issue #435)', async () => {
+    writePlan([]);
+    const { useCase } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n'
+    });
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.strictEqual(result.acEvidence.reported, false);
+  });
+
+  test('RAE8 an APPROVED verdict with a malformed block is refused and names the line (issue #435)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    await assert.rejects(
+      () =>
+        useCase.execute({
+          issue: 432,
+          workspaceDir: root,
+          baseRef: 'HEAD',
+          reviewOutput: [
+            'REVIEW_STATUS: APPROVED',
+            'REVIEW_SUMMARY: ok',
+            'AC_EVIDENCE:',
+            '- AC1 looks good'
+          ].join('\n')
+        }),
+      (error: any) => {
+        assert.match(error.message, /AC_EVIDENCE/);
+        assert.match(error.message, /AC1 looks good/);
+        return true;
+      }
+    );
+    assert.strictEqual(repo.saves, 0);
+  });
+
+  test('RAE9 a delivered path cited with a line suffix verifies instead of escalating (issue #435)', async () => {
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const { useCase } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: ok',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts:42`'
+      ].join('\n')
+    });
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.deepStrictEqual([...result.acEvidence.verified], ['AC1']);
+  });
+
+  test('RAE10 a CHANGES_REQUESTED verdict with a malformed block is recorded, not refused (issue #435)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: CHANGES_REQUESTED',
+        'REVIEW_SUMMARY: needs work',
+        'AC_EVIDENCE:',
+        '- AC1 looks good'
+      ].join('\n')
+    });
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    assert.strictEqual(repo.saves, 1);
   });
 });

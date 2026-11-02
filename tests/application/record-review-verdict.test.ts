@@ -184,6 +184,8 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
 `;
 
 const CHANGES_REQUESTED_BLOCK = `REVIEW_STATUS: CHANGES_REQUESTED
@@ -204,6 +206,8 @@ UNFULFILLED_AC:
 - None in the reviewed in-repo scope (deferred to post-commit).
 REMEDIATION_GUIDANCE:
 - None required.
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
 `;
 
 describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () => {

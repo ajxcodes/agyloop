@@ -47,7 +47,12 @@ UNFULFILLED_AC:
 - <Unfulfilled criterion 1> (or "None" if all criteria are fulfilled)
 REMEDIATION_GUIDANCE:
 - <Actionable remediation item 1> (or "None" if approved)
+AC_EVIDENCE:
+- AC1: met — `src/domain/plan-deviation.ts`, `tests/domain/plan-deviation.test.ts`
+- AC6: unverifiable — `artifacts/plans/425-task-plan/implementation_plan.md`
 ```
+
+The `AC_EVIDENCE:` block is mandatory for an `APPROVED` verdict. A `path:line` or `path:start-end` citation is accepted — the suffix is ignored when the path is matched — and `codeloop review` refuses an `APPROVED` verdict that omits the block, or whose block carries no parseable entry.
 
 If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set `REVIEW_STATUS: APPROVED`. Otherwise, set `REVIEW_STATUS: CHANGES_REQUESTED`.
 

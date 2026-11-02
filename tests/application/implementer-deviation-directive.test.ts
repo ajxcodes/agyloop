@@ -41,4 +41,14 @@ describe('implementer/reviewer deviation contract (issue #432)', () => {
     assert.ok(prompt.includes('PD-1'), 'the prompt must list the recorded deviation');
     assert.ok(prompt.includes('the #425 historical row is not edited'));
   });
+
+  test('IDD3 the required verdict format fence carries the AC_EVIDENCE block (issue #435)', () => {
+    const prompt = useCase().buildReviewerTaskPrompt({ issueNumber: 435 });
+    const section = prompt.slice(prompt.indexOf('### Required Verdict Output:'));
+    const fenced = /```markdown\n([\s\S]*?)```/.exec(section);
+    if (!fenced) throw new Error('the required verdict section has no fenced format');
+    assert.ok(fenced[1].includes('REVIEW_STATUS:'));
+    assert.ok(fenced[1].includes('AC_EVIDENCE:'));
+    assert.ok(fenced[1].indexOf('AC_EVIDENCE:') > fenced[1].indexOf('REMEDIATION_GUIDANCE:'));
+  });
 });

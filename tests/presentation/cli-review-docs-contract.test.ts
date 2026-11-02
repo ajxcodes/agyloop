@@ -185,4 +185,12 @@ describe('--critique-report documentation contract', () => {
       );
     }
   });
+
+  test('DOC8 both static reviewer prompts carry the AC_EVIDENCE block in the required format (issue #435)', () => {
+    const filePrompt = fs.readFileSync(path.join(PROJECT_ROOT, 'prompts', 'reviewer.md'), 'utf8');
+    const defaultPrompt = DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+
+    assert.ok(filePrompt.includes('AC_EVIDENCE:'));
+    assert.ok(defaultPrompt.includes('AC_EVIDENCE:'));
+  });
 });
