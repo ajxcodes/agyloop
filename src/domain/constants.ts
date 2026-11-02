@@ -3408,6 +3408,24 @@ export const COMMAND_NEXT = 'next' as const;
 export const COMMAND_BRANCH_INFO = 'branch-info' as const;
 export const COMMAND_TRIAGE = 'triage' as const;
 export const COMMAND_SYNC = 'sync' as const;
+
+/**
+ * `sync`'s merged-PR page size (issue #447).
+ *
+ * `gh pr list` has no `--paginate` and caps an unflagged request at 30 results,
+ * which is why `sync` used to process only the 30 most recent merges. The scan
+ * asks for a page at a time and doubles until a page comes back SHORT.
+ */
+export const SYNC_MERGED_PR_PAGE_SIZE = 100 as const;
+
+/**
+ * The most merged PRs one `sync` scan will read (issue #447).
+ *
+ * A FULL page at this limit proves the window is incomplete, so the run
+ * refuses every write and exits non-zero instead of reporting success.
+ */
+export const SYNC_MERGED_PR_SCAN_CEILING = 1000 as const;
+
 export const COMMAND_ABORT = 'abort' as const;
 export const COMMAND_INIT = 'init' as const;
 export const COMMAND_OPENCODE = 'opencode' as const;

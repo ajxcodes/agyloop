@@ -2,7 +2,7 @@
  * Tests for SyncUseCase (Application Layer)
  */
 
-const { describe, it } = require('node:test');
+const { describe, test } = require('node:test');
 const assert = require('node:assert');
 
 const { SyncUseCase } = require('../../dist/application');
@@ -76,7 +76,7 @@ class MockWorktreeManager {
 }
 
 describe('SyncUseCase', () => {
-  it('resolves base branch, fetches, fast-forwards, and processes merged PRs', async () => {
+  test('resolves base branch, fetches, fast-forwards, and processes merged PRs', async () => {
     const executor = new MockCommandExecutor();
     const github = new MockGitHubGateway();
     const state = new MockStateRepo();
@@ -85,7 +85,7 @@ describe('SyncUseCase', () => {
     worktree.baseBranch = 'phase/123';
     
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
-    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
       stdout: JSON.stringify([
         { number: 42, title: 'Fix bug', body: 'Closes #10' }
       ])
@@ -123,7 +123,7 @@ describe('SyncUseCase', () => {
     assert.ok(result.logs.some((l: string) => l.includes('Closed issue #10')));
   });
 
-  it('fast-forwards branch without checking out if not currently on it', async () => {
+  test('fast-forwards branch without checking out if not currently on it', async () => {
     const executor = new MockCommandExecutor();
     const github = new MockGitHubGateway();
     const state = new MockStateRepo();
@@ -132,7 +132,7 @@ describe('SyncUseCase', () => {
     worktree.baseBranch = 'phase/123';
     
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'task/456' };
-    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
       stdout: '[]'
     };
 
@@ -143,7 +143,7 @@ describe('SyncUseCase', () => {
     assert.ok(executor.executedCommands.includes("git fetch origin 'phase/123:phase/123'"));
   });
 
-  it('does NOT close an issue on a test-only PR (issue #240/Defect 3)', async () => {
+  test('does NOT close an issue on a test-only PR (issue #240/Defect 3)', async () => {
     const executor = new MockCommandExecutor();
     const github = new MockGitHubGateway();
     const state = new MockStateRepo();
@@ -151,7 +151,7 @@ describe('SyncUseCase', () => {
 
     worktree.baseBranch = 'phase/123';
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
-    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
       stdout: JSON.stringify([{ number: 9, title: 'no-op', body: 'Closes #250' }])
     };
     executor.responses["gh pr view 9 --json files --jq '.files[].path'"] = {
@@ -176,7 +176,7 @@ describe('SyncUseCase', () => {
     );
   });
 
-  it('does NOT close an issue when the PR diff cannot be verified (fail closed)', async () => {
+  test('does NOT close an issue when the PR diff cannot be verified (fail closed)', async () => {
     const executor = new MockCommandExecutor();
     const github = new MockGitHubGateway();
     const state = new MockStateRepo();
@@ -184,7 +184,7 @@ describe('SyncUseCase', () => {
 
     worktree.baseBranch = 'phase/123';
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
-    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
       stdout: JSON.stringify([{ number: 11, title: 'gh down', body: 'Closes #251' }])
     };
     executor.responses["gh pr view 11 --json files --jq '.files[].path'"] = {
@@ -208,7 +208,7 @@ describe('SyncUseCase', () => {
     );
   });
 
-  it('returns warnings in result metadata if an operation fails', async () => {    const executor = new MockCommandExecutor();
+  test('returns warnings in result metadata if an operation fails', async () => {    const executor = new MockCommandExecutor();
     const github = new MockGitHubGateway();
     const state = new MockStateRepo();
     const worktree = new MockWorktreeManager();
@@ -219,6 +219,9 @@ describe('SyncUseCase', () => {
     executor.execute = async (cmd) => {
       if (cmd === 'git fetch origin') {
         throw new Error('Network error');
+      }
+      if (cmd.startsWith('gh pr list')) {
+        return { stdout: '[]', exitCode: 0 };
       }
       return { stdout: '', exitCode: 0 };
     };
@@ -245,7 +248,7 @@ describe('SyncUseCase', () => {
 
     worktree.baseBranch = 'phase/123';
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
-    executor.responses["gh pr list --base 'phase/123' --state merged --json number,title,body"] = {
+    executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
       stdout: JSON.stringify(prs)
     };
     for (const pr of prs) {
@@ -263,7 +266,7 @@ describe('SyncUseCase', () => {
    * and commented on, because the lenient read returned `state: 'UNKNOWN'` and
    * the guard was `state !== 'CLOSED'`.
    */
-  it('fails closed when the strict issue read throws', async () => {
+  test('fails closed when the strict issue read throws', async () => {
     const { github, useCase } = harness([{ number: 901, body: 'Closes #306' }]);
     github.strictErrors[306] = 'GitHub context error during \'fetchIssueStrict #306\': HTTP 502: Bad Gateway';
 
@@ -286,7 +289,7 @@ describe('SyncUseCase', () => {
     );
   });
 
-  it('never consults the lenient fetchIssue for a write decision', async () => {
+  test('never consults the lenient fetchIssue for a write decision', async () => {
     const { github, useCase } = harness([{ number: 42, body: 'Closes #10' }]);
     github.issues.push({ id: 10, state: 'OPEN' });
 
@@ -297,7 +300,7 @@ describe('SyncUseCase', () => {
     assert.strictEqual(result.success, true);
   });
 
-  it('an unexpected issue state never authorizes a write', async () => {
+  test('an unexpected issue state never authorizes a write', async () => {
     const { github, useCase } = harness([{ number: 42, body: 'Closes #306' }]);
     github.issues.push({ id: 306, state: 'UNKNOWN' });
 
@@ -312,7 +315,7 @@ describe('SyncUseCase', () => {
     );
   });
 
-  it('reports already-closed, unreadable and closed-by-this-run distinctly', async () => {
+  test('reports already-closed, unreadable and closed-by-this-run distinctly', async () => {
     const { github, useCase } = harness([
       { number: 41, body: 'Closes #10' },
       { number: 42, body: 'Closes #11' },
@@ -338,7 +341,7 @@ describe('SyncUseCase', () => {
     assert.strictEqual(result.success, false, 'one unreadable candidate makes the run incomplete');
   });
 
-  it('refuses to write when the gateway has no fail-closed read', async () => {
+  test('refuses to write when the gateway has no fail-closed read', async () => {
     const { github, useCase } = harness([{ number: 42, body: 'Closes #306' }]);
     github.issues.push({ id: 306, state: 'OPEN' });
     (github as any).fetchIssueStrict = undefined;
@@ -355,7 +358,7 @@ describe('SyncUseCase', () => {
     );
   });
 
-  it('a failed close/comment marks the run incomplete', async () => {
+  test('a failed close/comment marks the run incomplete', async () => {
     const { github, useCase } = harness([{ number: 42, body: 'Closes #306' }]);
     github.issues.push({ id: 306, state: 'OPEN' });
     github.closeIssueError = 'gh issue close failed';
@@ -371,7 +374,7 @@ describe('SyncUseCase', () => {
     );
   });
 
-  it('closes and comments exactly once for a readable open issue', async () => {
+  test('closes and comments exactly once for a readable open issue', async () => {
     const { github, useCase } = harness([{ number: 42, body: 'Closes #10' }]);
     github.issues.push({ id: 10, state: 'OPEN' });
 

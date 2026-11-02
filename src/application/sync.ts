@@ -1,5 +1,5 @@
 import { CommandExecutorPort, GitHubGateway, GitHubIssueData, StateRepository, WorktreeManagerPort } from '../ports';
-import { shellQuote } from '../domain';
+import { shellQuote, SYNC_MERGED_PR_PAGE_SIZE, SYNC_MERGED_PR_SCAN_CEILING } from '../domain';
 
 /**
  * Path prefixes that are NOT implementation evidence (issue #240/Defect 3).
@@ -32,6 +32,11 @@ function shortReason(err: unknown): string {
   return collapsed.length > 160 ? `${collapsed.slice(0, 157)}...` : collapsed;
 }
 
+/** `1 merged PR` / `3 merged PRs` — the count AC3 requires (issue #447). */
+function formatMergedPrCount(count: number): string {
+  return `${count} merged PR${count === 1 ? '' : 's'}`;
+}
+
 /**
  * The candidates a scan could not reach a definite, evidence-backed
  * disposition for. Both lists make the run INCOMPLETE (#328, INV-3).
@@ -41,6 +46,27 @@ interface IssueScanOutcome {
   readonly unreadable: { id: number; reason: string }[];
   /** Issues that were provably OPEN but whose close/comment did not complete. */
   readonly failedWrites: { id: number; reason: string }[];
+  /**
+   * Set when the scan itself did not complete — truncated at the ceiling, or
+   * the `gh pr list` read failed (#447). A scan failure refuses EVERY write:
+   * a partial window can never prove which issues remain open.
+   */
+  scanFailure: string | null;
+  /** Merged PRs the scan covered; null when it failed before reading one. */
+  scanned: number | null;
+}
+
+/**
+ * The merged PRs one scan read, and whether that set is PROVABLY every
+ * merged PR in the collector (issue #447).
+ */
+interface MergedPrScan {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly prs: readonly any[];
+  /** The `--limit` the last page carried. */
+  readonly limit: number;
+  /** True when a ceiling-sized page came back full: more PRs may exist. */
+  readonly truncated: boolean;
 }
 
 export interface SyncParams {
@@ -60,6 +86,8 @@ export interface SyncResult {
   readonly dryRun?: boolean;
   readonly warnings?: string[];
   readonly logs?: string[];
+  /** Merged PRs the scan covered (#447); omitted when the scan never ran. */
+  readonly scannedMergedPrs?: number;
 }
 
 export class SyncUseCase {
@@ -85,6 +113,11 @@ export class SyncUseCase {
    */
   private describeIncomplete(outcome: IssueScanOutcome): string[] {
     const sentences: string[] = [];
+    // Issue #447: a scan that cannot see every merged PR explains itself FIRST —
+    // it is the reason nothing else in the run happened.
+    if (outcome.scanFailure !== null) {
+      sentences.push(outcome.scanFailure);
+    }
     for (const item of outcome.unreadable) {
       sentences.push(
         `issue #${item.id} is unreadable (${item.reason}). Nothing was closed or commented on for it.`
@@ -124,7 +157,7 @@ export class SyncUseCase {
         const outcome: IssueScanOutcome =
           collectorBranch !== 'main'
             ? await this.processMergedIssues({ cwd, collectorBranch, dryRun: true, logs, warnings })
-            : { unreadable: [], failedWrites: [] };
+            : { unreadable: [], failedWrites: [], scanFailure: null, scanned: null };
         const sentences = this.describeIncomplete(outcome);
 
         if (sentences.length > 0) {
@@ -133,16 +166,18 @@ export class SyncUseCase {
             dryRun: true,
             message: `[dry-run] Forecast incomplete: ${sentences.join(' ')}`,
             warnings: warnings.length > 0 ? warnings : undefined,
-            logs: logs.length > 0 ? logs : undefined
+            logs: logs.length > 0 ? logs : undefined,
+            ...(outcome.scanned !== null ? { scannedMergedPrs: outcome.scanned } : {})
           };
         }
 
         return {
           success: true,
           dryRun: true,
-          message: `[dry-run] Would fetch origin and process merged PRs for '${collectorBranch}'. Nothing was fetched, pulled, or closed.`,
+          message: `[dry-run] Would fetch origin and process ${formatMergedPrCount(outcome.scanned ?? 0)} for '${collectorBranch}'. Nothing was fetched, pulled, or closed.`,
           warnings: warnings.length > 0 ? warnings : undefined,
-          logs: logs.length > 0 ? logs : undefined
+          logs: logs.length > 0 ? logs : undefined,
+          ...(outcome.scanned !== null ? { scannedMergedPrs: outcome.scanned } : {})
         };
       }
 
@@ -172,7 +207,7 @@ export class SyncUseCase {
       const outcome: IssueScanOutcome =
         collectorBranch !== 'main'
           ? await this.processMergedIssues({ cwd, collectorBranch, dryRun: false, logs, warnings })
-          : { unreadable: [], failedWrites: [] };
+          : { unreadable: [], failedWrites: [], scanFailure: null, scanned: null };
 
       const sentences = this.describeIncomplete(outcome);
       const incomplete = sentences.length > 0;
@@ -182,9 +217,10 @@ export class SyncUseCase {
         dryRun: false,
         message: incomplete
           ? `Sync incomplete: ${sentences.join(' ')}`
-          : `Successfully synced ${collectorBranch} and processed merged PRs.`,
+          : `Successfully synced ${collectorBranch} and processed ${formatMergedPrCount(outcome.scanned ?? 0)}.`,
         warnings: warnings.length > 0 ? warnings : undefined,
-        logs: logs.length > 0 ? logs : undefined
+        logs: logs.length > 0 ? logs : undefined,
+        ...(outcome.scanned !== null ? { scannedMergedPrs: outcome.scanned } : {})
       };
     } catch (err) {
       return {
@@ -192,6 +228,48 @@ export class SyncUseCase {
         dryRun,
         message: `Sync failed: ${err instanceof Error ? err.message : String(err)}`
       };
+    }
+  }
+
+  /**
+   * Reads EVERY merged PR into the collector (issue #447).
+   *
+   * `gh pr list` has no `--paginate`; it returns at most `--limit` items and
+   * defaults to 30. The scan therefore asks for a page at a time, doubling the
+   * limit until a page comes back SHORT (proof the window is complete) or the
+   * ceiling is reached with a full page (proof is impossible — the caller fails
+   * closed instead of closing a partial window).
+   */
+  private async listMergedPrs(cwd: string, collectorBranch: string): Promise<MergedPrScan> {
+    let limit: number = SYNC_MERGED_PR_PAGE_SIZE;
+    for (;;) {
+      const command =
+        `gh pr list --base ${shellQuote(collectorBranch)} --state merged ` +
+        `--limit ${limit} --json number,title,body`;
+      const res = await this.commandExecutor.execute(command, { cwd });
+      // In-process doubles may omit `exitCode`; only an explicit non-zero fails.
+      const exitCode = typeof res.exitCode === 'number' ? res.exitCode : 0;
+      if (exitCode !== 0) {
+        throw new Error(
+          `gh pr list exited ${exitCode}: ${shortReason(res.stderr || res.stdout || 'no output')}`
+        );
+      }
+      let prs: unknown;
+      try {
+        prs = JSON.parse(res.stdout);
+      } catch {
+        throw new Error('gh pr list did not return JSON');
+      }
+      if (!Array.isArray(prs)) {
+        throw new Error('gh pr list did not return a JSON array');
+      }
+      if (prs.length < limit) {
+        return { prs, limit, truncated: false };
+      }
+      if (limit >= SYNC_MERGED_PR_SCAN_CEILING) {
+        return { prs, limit, truncated: true };
+      }
+      limit = Math.min(limit * 2, SYNC_MERGED_PR_SCAN_CEILING);
     }
   }
 
@@ -217,7 +295,19 @@ export class SyncUseCase {
     warnings: string[];
   }): Promise<IssueScanOutcome> {
     const { cwd, collectorBranch, dryRun, logs, warnings } = params;
-    const outcome: IssueScanOutcome = { unreadable: [], failedWrites: [] };
+    const outcome: IssueScanOutcome = { unreadable: [], failedWrites: [], scanFailure: null, scanned: null };
+
+    const recordScanFailure = (reason: string): void => {
+      outcome.scanFailure =
+        `the merged-PR scan for '${collectorBranch}' ${reason}, so this run refuses to act on a ` +
+        `partial window: no issue was closed or commented on.`;
+      warnings.push(`Sync scan incomplete: ${outcome.scanFailure}`);
+      logs.push(
+        dryRun
+          ? `[dry-run] Would refuse to process merged PRs: ${reason}`
+          : `Refused to process merged PRs: ${reason}`
+      );
+    };
 
     const markUnreadable = (issueId: number, reason: string): void => {
       outcome.unreadable.push({ id: issueId, reason });
@@ -231,11 +321,28 @@ export class SyncUseCase {
       );
     };
 
+    let scan: MergedPrScan;
     try {
-      const prsRes = await this.commandExecutor.execute(`gh pr list --base ${shellQuote(collectorBranch)} --state merged --json number,title,body`, { cwd });
-      const prs = JSON.parse(prsRes.stdout);
+      scan = await this.listMergedPrs(cwd, collectorBranch);
+    } catch (e) {
+      recordScanFailure(`failed (${shortReason(e)})`);
+      return outcome;
+    }
 
-      for (const pr of prs) {
+    outcome.scanned = scan.prs.length;
+
+    // Issue #447: a full page at the ceiling is NOT evidence of a complete window.
+    if (scan.truncated) {
+      recordScanFailure(
+        `reached its ${scan.limit}-PR ceiling without proving it saw every merged PR`
+      );
+      return outcome;
+    }
+
+    logs.push(`Scanned ${formatMergedPrCount(scan.prs.length)} on ${collectorBranch}`);
+
+    try {
+      for (const pr of scan.prs) {
         const body = pr.body || '';
         // Look for Closes #N
         const match = body.match(/Closes #(\d+)/i);
@@ -361,7 +468,7 @@ export class SyncUseCase {
         }
       }
     } catch (e) {
-      warnings.push(`Failed to close merged issues: ${e instanceof Error ? e.message : String(e)}`);
+      recordScanFailure(`aborted mid-scan (${shortReason(e)})`);
     }
 
     return outcome;
