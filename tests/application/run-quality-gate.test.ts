@@ -1885,6 +1885,72 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.match(integrityReport.failureSnippet ?? '', /after-digest/);
   });
 
+  test('RQG-S5 (#444): an in-process PASSED run records one canonical smoke check per declared check', async () => {
+    const planGenerator = new MockPlanGenerator();
+    planGenerator.content = [
+      '# Plan',
+      '',
+      '## 5. Quality Gate Targets',
+      '',
+      '```bash',
+      'npm test',
+      '```',
+      '',
+      '## 6. Manual Smoke Test Protocol',
+      '',
+      '#### check 1',
+      '',
+      '```bash',
+      'echo "C1 PASS"',
+      '```',
+      '',
+      '#### check 2',
+      '',
+      '```bash',
+      'echo "C2 PASS"',
+      '```',
+      ''
+    ].join('\n');
+    const commandExecutor = new MockCommandExecutor([
+      resultOf(),
+      resultOf({
+        stdout: '__AGYLOOP_SMOKE_CHECK_1__\nC1 PASS\n__AGYLOOP_SMOKE_CHECK_2__\nC2 PASS\n',
+        combinedOutput:
+          '__AGYLOOP_SMOKE_CHECK_1__\nC1 PASS\n__AGYLOOP_SMOKE_CHECK_2__\nC2 PASS\n'
+      })
+    ]);
+    const saved: any[] = [];
+    const useCase = new RunQualityGateUseCase(
+      new MockStateRepository(gateSnapshot()),
+      new MockConfigRepository(),
+      planGenerator,
+      commandExecutor,
+      new MockBuildDetector(),
+      undefined,
+      {
+        load: () => null,
+        save: (_issue: unknown, report: any) => {
+          saved.push(report);
+          return 'x';
+        },
+        clear: () => {}
+      }
+    );
+
+    const result = await useCase.execute({ issue: 20 });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.smokeStatus, 'PASSED');
+    assert.strictEqual(saved.length, 1);
+    const expected = [
+      { id: 'check-1', label: 'check 1', passed: true },
+      { id: 'check-2', label: 'check 2', passed: true }
+    ];
+    assert.deepStrictEqual(saved[0].smokeChecks, expected);
+    assert.strictEqual(planGenerator.updates.length, 1);
+    assert.deepStrictEqual(planGenerator.updates[0].updateData.smokeChecks, saved[0].smokeChecks);
+  });
+
   test('RQG-N1: a plan with no smoke section reports NOT DECLARED and keeps the pass path', async () => {
     const planGenerator = new MockPlanGenerator();
     planGenerator.content = planWithTargets(['npm test']);

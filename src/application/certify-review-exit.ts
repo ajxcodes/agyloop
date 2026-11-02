@@ -24,6 +24,7 @@ import {
   ValidationError,
   formatGateEvidenceRequiredMessage,
   formatGateReportPreservedNote,
+  formatGateSmokeCoverageRefusal,
   formatGateTargetCoverageRefusal,
   formatGateZeroTestRefusal,
   formatPlanDeviationUnacknowledgedMessage,
@@ -136,6 +137,36 @@ export function certifyReviewExit(
       }
     }
 
+    // #444: a PASSED report must also evidence the plan's declared Manual Smoke
+    // Test Protocol. The same assessment the filing side ran, so the two cannot
+    // disagree about whether this block certifies the round.
+    const smoke = coverage.smoke;
+    if (smoke.assessed && !smoke.covered) {
+      const message = formatGateSmokeCoverageRefusal({
+        reason: smoke.reason,
+        protocol: filed.smokeProtocol,
+        declaredCount: smoke.declared.length,
+        missing: smoke.missing,
+        skipped: smoke.skipped,
+        failed: smoke.failed,
+        unknown: smoke.unknown,
+        duplicate: smoke.duplicate,
+        issue,
+        channel: 'ingest'
+      });
+      if (params.dryRun) {
+        console.warn(`[codeloop] Warning: ${message}`);
+      } else if (
+        smoke.reason === 'protocol-not-declared' ||
+        smoke.reason === 'protocol-missing' ||
+        smoke.reason === 'protocol-failed'
+      ) {
+        throw new ValidationError('smokeProtocol', filed.smokeProtocol, message);
+      } else {
+        throw new ValidationError('smokeChecks', smoke.missing, message);
+      }
+    }
+
     // #415: a PASSED report that ran a test command must record a measured
     // positive unique total.
     const testRefusal = gateTestEvidenceRefusal(filed);
@@ -209,7 +240,10 @@ export function certifyReviewExit(
     // Issue #315 (AC-15): the gate's self-timer travels under its own name.
     ...(filed.durationMs !== null ? { gateReportedDurationMs: filed.durationMs } : {}),
     gateExecutedCommands: commands,
-    ...(smokeChecks.length > 0 ? { gateSmokeChecks: smokeChecks } : {})
+    ...(smokeChecks.length > 0 ? { gateSmokeChecks: smokeChecks } : {}),
+    // Issue #444 (AC3): the certified protocol reaches the REVIEW history entry,
+    // so the summary can say which protocol the PASSED block evidenced.
+    ...(filed.smokeProtocol !== null ? { smokeProtocol: filed.smokeProtocol } : {})
   };
 
   return {

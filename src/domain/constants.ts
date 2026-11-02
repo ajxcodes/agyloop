@@ -3559,7 +3559,9 @@ export const NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS =
  */
 export const NOTE_GATE_REPORT_EVIDENCE_SHAPES =
   `\`smokeChecks\` entries are OBJECTS — { "id": "<check-id>", "label": "<check label>", "passed": true }: ` +
-  `\`id\` is a non-empty string (required); \`label\` is optional and defaults to \`id\`; \`passed\` is a BOOLEAN or \`null\` — ` +
+  `\`id\` is a non-empty string (required) and for a smoke check it MUST be the canonical \`check-<n>\` id the gate prompt publishes, in plan order — ` +
+  `a missing, renamed, duplicated or skipped check is a \`FAILED\` verdict, and an id this plan does not declare refuses the block; ` +
+  `\`label\` is optional and defaults to \`id\`; \`passed\` is a BOOLEAN or \`null\` — ` +
   `never a status string, so "PASSED" is rejected. \`passed: null\` means "ran, no verdict reported" and is never collapsed into \`true\`. ` +
   `\`notRun\` entries are OBJECTS — { "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }: ` +
   `\`id\` and \`reason\` are non-empty strings, \`label\` is optional and defaults to \`id\`; an array of bare strings is rejected. ` +
@@ -4313,6 +4315,97 @@ export function formatGateTargetCoverageRefusal(
     .replace('{missing}', () => rendered)
     .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
     .replace('{command}', formatGateReportChannelCommand(issue))
+    .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);
+}
+
+/** Why a PASSED report's smoke evidence is refused (issue #444). */
+export type GateSmokeCoverageReason =
+  | 'not-assessed'
+  | 'ok'
+  | 'protocol-not-declared'
+  | 'protocol-missing'
+  | 'protocol-failed'
+  | 'duplicate'
+  | 'unknown'
+  | 'missing'
+  | 'skipped'
+  | 'failed';
+
+/** The input to the one smoke-coverage refusal renderer (issue #444). */
+export interface GateSmokeCoverageRefusalParams {
+  readonly reason: GateSmokeCoverageReason;
+  readonly protocol: string | null;
+  readonly declaredCount: number;
+  readonly missing: readonly string[];
+  readonly skipped: readonly string[];
+  readonly failed: readonly string[];
+  readonly unknown: readonly string[];
+  readonly duplicate: readonly string[];
+  readonly issue?: number | string | null;
+  readonly channel?: GateCoverageChannel;
+}
+
+/**
+ * The refusal a `PASSED` report that does not evidence the plan's declared
+ * `### Manual Smoke Test Protocol` raises (issue #444).
+ *
+ * ONE renderer for both enforcement points — filing (`gate-report`) and ingest
+ * (`transition REVIEW`) — so the two cannot drift. Every interpolated list goes
+ * through a REPLACER FUNCTION: an id containing `$&` must not corrupt the
+ * message.
+ */
+export const MSG_GATE_SMOKE_COVERAGE_MISSING =
+  "Gate evidence refused: the PASSED report does not evidence the plan's declared Manual Smoke Test Protocol. {reason} Missing {missingCount} of {declaredCount} declared checks: {missing}.{clauses} The plan's declared checks ARE the gate's behavioural evidence: a PASSED report must report every check with its canonical id and `passed: true`, and a missing, renamed, duplicated or skipped check is a FAILED verdict. Run the missing checks, then {refile} with `{command}`. {tail}" as const;
+
+function smokeReasonClause(params: GateSmokeCoverageRefusalParams): string {
+  switch (params.reason) {
+    case 'protocol-not-declared':
+      return `The report declares smokeProtocol: ${SMOKE_PROTOCOL_NOT_DECLARED} while the plan declares ${params.declaredCount} check(s).`;
+    case 'protocol-missing':
+      return 'The report omits smokeProtocol; a PASSED report over a declared protocol must report PASSED.';
+    case 'protocol-failed':
+      return 'The report declares smokeProtocol: FAILED; a PASSED report cannot certify a failed smoke protocol.';
+    case 'duplicate':
+      return 'The report repeats a declared check id.';
+    case 'unknown':
+      return 'The report reports a check id the plan does not declare.';
+    case 'missing':
+      return 'The report does not report every declared check.';
+    case 'skipped':
+      return 'The report lists a declared check in notRun.';
+    case 'failed':
+      return 'The report does not mark every declared check passed.';
+    default:
+      return 'The report does not evidence the plan’s declared protocol.';
+  }
+}
+
+function smokeClause(label: string, ids: readonly string[]): string {
+  if (!Array.isArray(ids) || ids.length === 0) return '';
+  const rendered = ids.map((id) => `\`${id}\``).join(', ');
+  return ` ${label}: ${rendered}.`;
+}
+
+export function formatGateSmokeCoverageRefusal(
+  params: GateSmokeCoverageRefusalParams
+): string {
+  const missing = Array.isArray(params.missing) ? params.missing : [];
+  const renderedMissing = missing.map((id) => `\`${id}\``).join(', ');
+  const clauses = [
+    smokeClause('Unknown id(s)', params.unknown),
+    smokeClause('Duplicate id(s)', params.duplicate),
+    smokeClause('Skipped', params.skipped),
+    smokeClause('Not passed', params.failed)
+  ].join('');
+  const ingest = params.channel === 'ingest';
+  return MSG_GATE_SMOKE_COVERAGE_MISSING
+    .replace('{reason}', () => smokeReasonClause(params))
+    .replace('{missingCount}', String(missing.length))
+    .replace('{declaredCount}', String(params.declaredCount))
+    .replace('{missing}', () => renderedMissing)
+    .replace('{clauses}', () => clauses)
+    .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
+    .replace('{command}', formatGateReportChannelCommand(params.issue))
     .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);
 }
 

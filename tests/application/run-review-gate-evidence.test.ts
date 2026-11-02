@@ -62,6 +62,19 @@ const PLAN_TWO_TARGETS = [
   ''
 ].join('\n');
 
+const PLAN_FOUR_SMOKE_CHECKS = (() => {
+  const blocks: string[] = [
+    '# [Implementation] - probe',
+    '',
+    '### Manual Smoke Test Protocol',
+    ''
+  ];
+  for (const n of [1, 2, 3, 4]) {
+    blocks.push(`#### Check ${n} — check ${n}`, '', '```bash', `echo ok-${n}`, '```', '');
+  }
+  return blocks.join('\n');
+})();
+
 const USABLE_REPORT = {
   verdict: 'PASSED',
   buildSystem: 'node',
@@ -405,5 +418,38 @@ describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
 
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
     assert.strictEqual(repo.saves, 1);
+  });
+
+  test('RG9 a PASSED report that skips the plan\'s smoke protocol is refused by the review entry (issue #444)', async () => {
+    const events: any[] = [];
+    const repo = new MemoryStateRepository(atGate().toSnapshot(), events);
+    const gateRepo = new MemoryGateReportRepository(
+      GateResultReport.fromJSON({
+        ...USABLE_REPORT,
+        smokeProtocol: 'NOT_DECLARED',
+        smokeChecks: []
+      }),
+      events
+    );
+
+    await assert.rejects(
+      () =>
+        reviewUseCase(
+          repo,
+          planGeneratorFor('/mock/plans/implementation_plan.md', PLAN_FOUR_SMOKE_CHECKS),
+          gateRepo
+        ).execute({ issue: ISSUE, reviewOutput: APPROVED_BLOCK }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'smokeProtocol');
+        assert.match(String(err.message), /Manual Smoke Test Protocol/);
+        assert.match(String(err.message), /check-1/);
+        assert.match(String(err.message), /check-4/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(repo.saves, 0);
+    assert.strictEqual(gateRepo.clears, 0, 'a refusal must not consume the report');
+    assert.ok(!repo.snapshot.history.some((entry: any) => entry.stage === STAGE_REVIEW));
   });
 });

@@ -1014,6 +1014,39 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     assert.match(prompt, /Smoke Protocol: PASSED \| FAILED \| NOT_DECLARED/);
   });
 
+  test('RS-G7 (#444): the gate prompt publishes each check\u2019s canonical id', () => {
+    const TWO_CHECK_PLAN = [
+      '# Plan',
+      '',
+      '### Manual Smoke Test Protocol',
+      '',
+      '#### Check 1 — the app starts',
+      '',
+      '```bash',
+      'echo "S1 PASS"',
+      '```',
+      '',
+      '#### Check 2 — the app serves',
+      '',
+      '```bash',
+      'echo "S2 PASS"',
+      '```',
+      ''
+    ].join('\n');
+
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 444,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/444',
+      commandSource: 'plan',
+      smokeProtocol: SmokeProtocol.fromPlan(TWO_CHECK_PLAN)
+    });
+
+    assert.ok(prompt.includes('id: check-1'), prompt);
+    assert.ok(prompt.includes('id: check-2'), prompt);
+    assert.match(prompt, /a missing, renamed, duplicated or skipped check is a `FAILED` verdict/);
+  });
+
   test('RS-G2: a required lint with no lint command is an invariant violation', () => {
     const prompt = useCase().buildGateTaskPrompt({
       issueNumber: 41,

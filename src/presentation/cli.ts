@@ -185,6 +185,8 @@ import {
   formatGateReportChannelCommand,
   // Issue #408 (D2): the coverage refusal is ONE renderer for filing + ingest.
   formatGateTargetCoverageRefusal,
+  // Issue #444: the smoke-coverage refusal is ONE renderer for filing + ingest.
+  formatGateSmokeCoverageRefusal,
   // Issues #412/#415: a PASSED block that ran a test command but recorded zero
   // or unmeasured unique tests is not certifiable evidence.
   gateTestEvidenceRefusal,
@@ -3316,29 +3318,57 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         }
 
         // Issue #408 (D2): a PASSED report certifies the gate only when its
-        // commands cover the plan's declared Quality Gate Targets. Assessed
-        // BEFORE the `--dry-run` branch so a preview reports the SAME findings a
-        // real filing would raise — and writes nothing in either case.
+        // commands cover the plan's declared Quality Gate Targets. Issue #444:
+        // the SAME assessment also adjudicates the plan's declared smoke
+        // protocol. Both are read from ONE plan document and assessed BEFORE the
+        // `--dry-run` branch so a preview reports the SAME findings a real
+        // filing would raise — and writes nothing in either case.
+        const coverage = assessGateEvidenceCoverage({
+          planGenerator,
+          workspaceDir: options.workspaceDir || process.cwd(),
+          issue: scope.issue ?? issueValue ?? null,
+          planPath:
+            scope.snapshot?.planPath ??
+            scope.snapshot?.approvedPlanPath ??
+            options.planPath ??
+            null,
+          planDir: scope.snapshot?.planDir ?? options.planDir ?? null,
+          report
+        });
+        if (coverage.assessed && !coverage.covered) {
+          const refusal = formatGateTargetCoverageRefusal(
+            coverage.missing,
+            coverage.declared.length,
+            scope.issue ?? issueValue ?? null,
+            'filing'
+          );
+          if (options.dryRun) {
+            console.error(`[dry-run] ${refusal}`);
+            console.error('[dry-run] Nothing was written.');
+          } else {
+            console.error(`✗ ${refusal}`);
+          }
+          return EXIT_CODE_FAILURE;
+        }
+
+        // Issue #444: a PASSED report that declares NOT_DECLARED, omits the
+        // protocol, or reports a subset / renamed / duplicated / skipped check
+        // does not evidence the plan's frozen Manual Smoke Test Protocol.
         {
-          const coverage = assessGateEvidenceCoverage({
-            planGenerator,
-            workspaceDir: options.workspaceDir || process.cwd(),
-            issue: scope.issue ?? issueValue ?? null,
-            planPath:
-              scope.snapshot?.planPath ??
-              scope.snapshot?.approvedPlanPath ??
-              options.planPath ??
-              null,
-            planDir: scope.snapshot?.planDir ?? options.planDir ?? null,
-            report
-          });
-          if (coverage.assessed && !coverage.covered) {
-            const refusal = formatGateTargetCoverageRefusal(
-              coverage.missing,
-              coverage.declared.length,
-              scope.issue ?? issueValue ?? null,
-              'filing'
-            );
+          const smoke = coverage.smoke;
+          if (smoke.assessed && !smoke.covered) {
+            const refusal = formatGateSmokeCoverageRefusal({
+              reason: smoke.reason,
+              protocol: report.smokeProtocol,
+              declaredCount: smoke.declared.length,
+              missing: smoke.missing,
+              skipped: smoke.skipped,
+              failed: smoke.failed,
+              unknown: smoke.unknown,
+              duplicate: smoke.duplicate,
+              issue: scope.issue ?? issueValue ?? null,
+              channel: 'filing'
+            });
             if (options.dryRun) {
               console.error(`[dry-run] ${refusal}`);
               console.error('[dry-run] Nothing was written.');

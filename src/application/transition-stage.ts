@@ -279,6 +279,9 @@ export class TransitionStageUseCase {
             ...(filed.durationMs !== null ? { gateReportedDurationMs: filed.durationMs } : {}),
             gateExecutedCommands: gateCommands,
             ...(gateSmokeChecks.length > 0 ? { gateSmokeChecks } : {}),
+            // Issue #444: a non-certifying exit with usable evidence is equally
+            // honest about the protocol the report declared.
+            ...(filed.smokeProtocol !== null ? { smokeProtocol: filed.smokeProtocol } : {}),
             ...(gateNotRun.length > 0 ? { gateNotRun } : {})
           };
         } else {

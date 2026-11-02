@@ -940,3 +940,221 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
     }
   });
 });
+
+/**
+ * Issue #444: filing a PASSED block that does not evidence the plan's declared
+ * `### Manual Smoke Test Protocol` is refused, naming the missing / unknown /
+ * skipped checks. A plan with no protocol stays certifiable, and a FAILED
+ * report is exempt.
+ */
+describe('gate-report declared smoke protocol coverage (issue #444)', () => {
+  const PLAN_DIR = `artifacts/plans/${ISSUE}-smoke`;
+
+  function seedPlanWithSmoke(sandbox: Sandbox): void {
+    const planDir = path.join(sandbox.dir, PLAN_DIR);
+    fs.mkdirSync(planDir, { recursive: true });
+    const blocks: string[] = ['# [Implementation] - probe', '', '### Manual Smoke Test Protocol', ''];
+    for (const n of [1, 2, 3, 4]) {
+      blocks.push(`#### Check ${n} — check ${n}`, '', '```bash', `echo ok-${n}`, '```', '');
+    }
+    fs.writeFileSync(path.join(planDir, 'implementation_plan.md'), blocks.join('\n'), 'utf8');
+    const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+    checkpoint.planDir = PLAN_DIR;
+    fs.writeFileSync(sandbox.checkpointPath, JSON.stringify(checkpoint, null, 2), 'utf8');
+  }
+
+  function writeSmokeReport(
+    sandbox: Sandbox,
+    options: {
+      verdict?: string;
+      smokeProtocol?: string | null;
+      smokeChecks?: ReadonlyArray<{ id: string; label: string; passed: boolean | null }>;
+      notRun?: ReadonlyArray<{ id: string; label: string; reason: string }>;
+    } = {}
+  ): void {
+    const verdict = options.verdict ?? 'PASSED';
+    const passed = verdict === 'PASSED';
+    const payload: Record<string, unknown> = {
+      verdict,
+      buildSystem: 'node',
+      buildStatus: passed ? 'PASSED' : 'FAILED',
+      testsStatus: passed ? 'PASSED (4 passed)' : 'FAILED (1 failed)',
+      testsPassed: passed ? 4 : 0,
+      testsFailed: passed ? 0 : 1,
+      durationMs: 1000,
+      executedCommands: ['npm test'],
+      commandResults: [],
+      smokeChecks: options.smokeChecks ?? [],
+      notRun: options.notRun ?? []
+    };
+    if (options.smokeProtocol !== null) {
+      payload.smokeProtocol = options.smokeProtocol ?? 'NOT_DECLARED';
+    }
+    fs.writeFileSync(
+      path.join(sandbox.dir, 'gate.json'),
+      `${GATE_REPORT_JSON_MARKER}\n${JSON.stringify(payload)}\n`,
+      'utf8'
+    );
+  }
+
+  function fourChecks() {
+    return [1, 2, 3, 4].map((n) => ({ id: `check-${n}`, label: `check ${n}`, passed: true }));
+  }
+
+  test('SC-CLI-1: a PASSED NOT_DECLARED zero-check report is refused, naming all four ids', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithSmoke(sandbox);
+      writeSmokeReport(sandbox, { smokeProtocol: 'NOT_DECLARED', smokeChecks: [] });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(
+        run.stderr.includes("Manual Smoke Test Protocol"),
+        `the refusal must name the protocol:\n${run.stderr}`
+      );
+      for (const n of [1, 2, 3, 4]) {
+        assert.ok(run.stderr.includes(`check-${n}`), `stderr must name check-${n}:\n${run.stderr}`);
+      }
+      assert.ok(!fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-CLI-2: a subset report is refused, naming check-2, check-3 and check-4', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithSmoke(sandbox);
+      writeSmokeReport(sandbox, {
+        smokeProtocol: 'PASSED',
+        smokeChecks: [{ id: 'check-1', label: 'check 1', passed: true }]
+      });
+      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      for (const n of [2, 3, 4]) {
+        assert.ok(run.stderr.includes(`check-${n}`), `stderr must name check-${n}:\n${run.stderr}`);
+      }
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-CLI-3: a fully covering report files the evidence', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithSmoke(sandbox);
+      writeSmokeReport(sandbox, { smokeProtocol: 'PASSED', smokeChecks: fourChecks() });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-CLI-4: --dry-run reports the same smoke refusal and writes nothing', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithSmoke(sandbox);
+      writeSmokeReport(sandbox, { smokeProtocol: 'PASSED', smokeChecks: [fourChecks()[0]] });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json',
+        '--dry-run'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(run.stderr.includes('[dry-run]'), run.stderr);
+      assert.ok(run.stderr.includes('check-2'), run.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-CLI-5: a FAILED report with zero checks still files', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithSmoke(sandbox);
+      writeSmokeReport(sandbox, {
+        verdict: 'FAILED',
+        smokeProtocol: 'NOT_DECLARED',
+        smokeChecks: []
+      });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
+      assert.ok(fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('SC-CLI-6: a re-labelled check id is refused as unknown', async () => {
+    const sandbox = makeSandbox('QUALITY_GATE');
+    try {
+      seedPlanWithSmoke(sandbox);
+      writeSmokeReport(sandbox, {
+        smokeProtocol: 'PASSED',
+        smokeChecks: [
+          { id: 'check-1', label: 'check 1', passed: true },
+          { id: 'smoke-444-check-2', label: 'check 2', passed: true },
+          { id: 'check-3', label: 'check 3', passed: true },
+          { id: 'check-4', label: 'check 4', passed: true }
+        ]
+      });
+
+      const run = await runIn(sandbox, [
+        'gate-report',
+        '--issue',
+        String(ISSUE),
+        '--report-file',
+        'gate.json'
+      ]);
+
+      assert.strictEqual(run.code, EXIT_CODE_FAILURE);
+      assert.ok(run.stderr.includes('smoke-444-check-2'), run.stderr);
+      assert.ok(run.stderr.includes('check-2'), run.stderr);
+      assert.ok(!fs.existsSync(evidencePath(sandbox)));
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+    }
+  });
+});

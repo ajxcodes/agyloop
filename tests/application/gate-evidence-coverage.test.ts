@@ -27,6 +27,36 @@ const FOUR_TARGET_PLAN = [
   ''
 ].join('\n');
 const NO_TARGET_PLAN = ['# [Implementation] - probe', '', '- [ ] Step 1: probe', ''].join('\n');
+const FOUR_CHECK_PLAN = [
+  '# [Implementation] - probe',
+  '',
+  '### Manual Smoke Test Protocol',
+  '',
+  '#### Check 1 — one',
+  '',
+  '```bash',
+  'echo one',
+  '```',
+  '',
+  '#### Check 2 — two',
+  '',
+  '```bash',
+  'echo two',
+  '```',
+  '',
+  '#### Check 3 — three',
+  '',
+  '```bash',
+  'echo three',
+  '```',
+  '',
+  '#### Check 4 — four',
+  '',
+  '```bash',
+  'echo four',
+  '```',
+  ''
+].join('\n');
 
 /** A `PlanGeneratorPort` double holding one document. */
 function fakeGenerator(options: {
@@ -65,6 +95,24 @@ function report(verdict: string, executed: string[], results: Array<{ command: s
     executedCommands: executed,
     commandResults: results,
     smokeProtocol: 'NOT_DECLARED',
+    notRun: []
+  });
+}
+
+/** A PASSED report over a plan-declared smoke protocol (issue #444). */
+function smokeReport(ids: readonly string[], smokeProtocol = 'PASSED') {
+  return GateResultReport.fromJSON({
+    verdict: 'PASSED',
+    buildSystem: 'node',
+    buildStatus: 'PASSED',
+    testsStatus: 'PASSED (1 passed)',
+    testsPassed: 1,
+    testsFailed: 0,
+    durationMs: 1000,
+    executedCommands: ['npm test'],
+    commandResults: [],
+    smokeProtocol,
+    smokeChecks: ids.map((id) => ({ id, label: id, passed: true })),
     notRun: []
   });
 }
@@ -160,5 +208,37 @@ describe('assessGateEvidenceCoverage (issue #408)', () => {
     assert.ok(message.includes('unchanged at QUALITY_GATE'), message);
     assert.ok(!message.includes('Nothing was written'), message);
     assert.ok(!message.includes('report is gone'), message);
+  });
+
+  test('SC-APP-1: a four-check plan with no Quality Gate Targets is still smoke-assessed (issue #444)', () => {
+    const coverage = assessGateEvidenceCoverage({
+      planGenerator: fakeGenerator({ doc: FOUR_CHECK_PLAN }),
+      workspaceDir: '/fake',
+      issue: 444,
+      report: smokeReport([])
+    });
+
+    // The target early return must not hide the smoke adjudication.
+    assert.strictEqual(coverage.assessed, false);
+    assert.strictEqual(coverage.smoke.assessed, true);
+    assert.deepStrictEqual(coverage.smoke.missing, [
+      'check-1',
+      'check-2',
+      'check-3',
+      'check-4'
+    ]);
+  });
+
+  test('SC-APP-2: a fully covering report is smoke-covered at the seam (issue #444)', () => {
+    const coverage = assessGateEvidenceCoverage({
+      planGenerator: fakeGenerator({ doc: FOUR_CHECK_PLAN }),
+      workspaceDir: '/fake',
+      issue: 444,
+      report: smokeReport(['check-1', 'check-2', 'check-3', 'check-4'])
+    });
+
+    assert.strictEqual(coverage.smoke.assessed, true);
+    assert.strictEqual(coverage.smoke.covered, true);
+    assert.strictEqual(coverage.smoke.reason, 'ok');
   });
 });
