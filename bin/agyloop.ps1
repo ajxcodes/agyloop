@@ -13,3 +13,4 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 & node "$ScriptDir\agyloop.js" @args
+exit $LASTEXITCODE

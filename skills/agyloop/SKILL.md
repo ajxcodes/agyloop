@@ -274,6 +274,12 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 | `codeloop transition <TARGET_STAGE>` | Moves the state machine to the TARGET stage (the stage you want to enter, not the current one). Follow the sequence DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED. Calling `transition X` while already in stage `X` throws `InvalidTransitionError`. | `<TARGET_STAGE>` (e.g. `PLAN`, `IMPLEMENT`, `QUALITY_GATE`, `REVIEW`, `COMMIT`) |
 | `codeloop abort` / `bin/codeloop abort` | Emergency Stop: terminates active subagents, clears git index locks, quarantines uncommitted changes, and shuts down test sandboxes. | `-f` / `--force`, `--quarantine`, `--no-quarantine`, `--reason "<text>"`, `--dry-run` |
 
+### Stale-Build Refusal
+
+`dist/` is git-ignored, so `git pull` refreshes `src/` but not the compiled CLI. In a **source checkout** (a `.git` directory or worktree `.git` file is present), when any `src/**/*.ts` file is newer than `dist/presentation/cli.js`, the launcher treats the build as stale: `codeloop sync`, `codeloop release`, and `codeloop commit` refuse with exit 1, naming `npm run build`, **before `dist/` is loaded** — so no `git` or `gh` command runs. `sync --dry-run` is refused too, because a stale forecast is the same defect.
+
+Read-only commands (`codeloop next`, `codeloop status`, `codeloop triage list`) and `--help`/`--version` keep the warning and run normally. An **npm-installed** copy has no `.git` and cannot rebuild, so it is never refused; its `src/` is always newer by extraction order and it keeps the notice only. Run `npm run build` after pulling or merging, then re-run the command.
+
 ### Gate Pause Recovery
 
 `next` **reports** a pause; the command that **answers** the gate clears it. They are not interchangeable — with two exceptions: a `TRIAGE` pause whose pull request is `MERGED`/`CLOSED` is cleared by `next` itself, because the gate is already over, and the forward commands `implement` (`APPROVAL`) and `commit` (`COMMIT`) consume the pause of the gate they answer.

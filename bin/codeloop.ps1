@@ -11,3 +11,4 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 & node "$ScriptDir\codeloop.js" @args
+exit $LASTEXITCODE
