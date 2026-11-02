@@ -7,50 +7,28 @@
  */
 console.warn("Warning: The 'agyloop' command is deprecated. Please use 'codeloop' instead.");
 
-const fs = require('fs');
 const path = require('path');
+const { NOTICE_STALE_DIST, checkStaleDist, evaluateStaleDist } = require('./stale-dist');
 
-function checkStaleDist(baseDir) {
-  try {
-    const srcDir = path.join(baseDir, 'src');
-    if (!fs.existsSync(srcDir)) {
-      return;
-    }
+const baseDir = path.join(__dirname, '..');
 
-    const distCliPath = path.join(baseDir, 'dist', 'presentation', 'cli.js');
-    if (!fs.existsSync(distCliPath)) {
-      return;
-    }
+// Issue #466: a stale build on the release path is a REFUSAL, decided BEFORE
+// `dist/` is required — the compiled CLI is exactly what must not run.
+const staleDist = evaluateStaleDist(process.argv.slice(2), baseDir, {
+  isMain: require.main === module
+});
 
-    const distStat = fs.statSync(distCliPath);
-    let newestSrcMtime = 0;
-
-    function scanDir(dir) {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          scanDir(fullPath);
-        } else if (entry.isFile() && fullPath.endsWith('.ts')) {
-          const stat = fs.statSync(fullPath);
-          if (stat.mtimeMs > newestSrcMtime) {
-            newestSrcMtime = stat.mtimeMs;
-          }
-        }
-      }
-    }
-
-    scanDir(srcDir);
-
-    if (newestSrcMtime > distStat.mtimeMs) {
-      console.warn('Notice: src/ contains modifications newer than dist/. Run \'npm run build\' to apply updates.');
-    }
-  } catch (_err) {
-    // Gracefully ignore stat/read errors
-  }
+if (staleDist.refuse) {
+  // 1 === EXIT_CODE_FAILURE (domain). That constant lives in dist/, and
+  // importing it here would load the stale build this guard exists to stop.
+  console.error(staleDist.message);
+  process.exit(1);
 }
 
-checkStaleDist(path.join(__dirname, '..'));
+// Read-only commands and --help/--version keep the notice (AC3).
+if (staleDist.stale) {
+  console.warn(NOTICE_STALE_DIST);
+}
 
 const { main, parseArguments, runCli } = require('../dist/presentation/cli');
 
