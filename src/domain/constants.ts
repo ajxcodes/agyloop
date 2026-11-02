@@ -2285,7 +2285,12 @@ UNFULFILLED_AC:
 - <Unfulfilled criterion 1> (or "None" if all criteria are fulfilled)
 REMEDIATION_GUIDANCE:
 - <Actionable remediation item 1> (or "None" if approved)
+AC_EVIDENCE:
+- AC1: met — \`src/domain/plan-deviation.ts\`, \`tests/domain/plan-deviation.test.ts\`
+- AC6: unverifiable — \`artifacts/plans/425-task-plan/implementation_plan.md\`
 \`\`\`
+
+The \`AC_EVIDENCE:\` block is mandatory for an \`APPROVED\` verdict. A \`path:line\` or \`path:start-end\` citation is accepted — the suffix is ignored when the path is matched — and \`codeloop review\` refuses an \`APPROVED\` verdict that omits the block, or whose block carries no parseable entry.
 
 If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set \`REVIEW_STATUS: APPROVED\`. Otherwise, set \`REVIEW_STATUS: CHANGES_REQUESTED\`.
 
@@ -4781,6 +4786,47 @@ export const MSG_AC_EVIDENCE_UNVERIFIABLE =
 /** The unmeasured-change-set note (never converted into a false failure). */
 export const MSG_AC_EVIDENCE_UNMEASURED =
   'The delivered change set could not be measured against base "{base}", so tracked-file evidence was not verified this round.' as const;
+
+/**
+ * A filed APPROVED verdict carried no `AC_EVIDENCE:` block (issue #435, D1).
+ *
+ * Certification is not a formality: without the block nothing was resolved, so
+ * the round cannot be approved on the reviewer's word alone.
+ */
+export const MSG_AC_EVIDENCE_REQUIRED =
+  'This APPROVED verdict carries no AC_EVIDENCE: block, so the {count} acceptance criteria the plan declares were not checked against the delivered change set. Append the block as the LAST thing in the verdict — one "- <AC id>: met|unverifiable|out-of-scope — `<path>`" line per criterion — and file the verdict again.' as const;
+
+/** A reported block that parsed to zero entries (issue #435, D4). */
+export const MSG_AC_EVIDENCE_MALFORMED =
+  'This APPROVED verdict carries an AC_EVIDENCE: block that yields no parseable entry, so it certifies nothing. Every item must read "- <AC id>: met|unverifiable|out-of-scope — `<path>`". {lines}' as const;
+
+/** The line-level shape the malformed-block formatter renders (issue #435). */
+export interface AcEvidenceIssueSummary {
+  readonly line: number;
+  readonly text: string;
+  readonly reason: string;
+}
+
+/** The refusal for an APPROVED verdict with no reported block. */
+export function formatAcEvidenceRequiredMessage(count: number): string {
+  return MSG_AC_EVIDENCE_REQUIRED.replace('{count}', String(count));
+}
+
+/**
+ * The refusal for a reported block that parsed to nothing.
+ *
+ * Every offending line is named with its number and text, so the reviewer can
+ * fix the block without guessing which line was rejected.
+ */
+export function formatAcEvidenceMalformedMessage(
+  issues: readonly AcEvidenceIssueSummary[]
+): string {
+  const lines =
+    issues.length === 0
+      ? 'The block carries no entries.'
+      : issues.map((issue) => `line ${issue.line} (\`${issue.text}\`) — ${issue.reason}`).join('\n  ');
+  return MSG_AC_EVIDENCE_MALFORMED.replace('{lines}', () => lines);
+}
 
 /** The reviewer prompt's AC evidence block example, built from the marker. */
 export function formatAcEvidenceExample(): string {

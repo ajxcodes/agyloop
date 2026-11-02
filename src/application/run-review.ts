@@ -63,12 +63,15 @@ import {
   parseAcEvidence,
   classifyAcEvidence,
   findExcludedEvidenceInText,
+  formatAcEvidenceRequiredMessage,
+  formatAcEvidenceMalformedMessage,
   formatPlanDeviationUnacknowledgedMessage,
   isUnacknowledged,
   ValidationError,
   AC_EVIDENCE_STATUS_MET,
   AC_EVIDENCE_STATUS_OUT_OF_SCOPE,
   MSG_AC_EVIDENCE_UNMEASURED,
+  type AcEvidenceParseIssue,
   type AcEvidenceReport,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   DiffAnalyzer
@@ -222,6 +225,11 @@ export interface RunReviewAcEvidence {
   readonly unverifiable: readonly string[];
   /** AC labels the reviewer explicitly declared out of scope. */
   readonly outOfScope: readonly string[];
+  /**
+   * Every block line the parser rejected (issue #435, D4). Always present —
+   * `[]` when the block was absent or parsed cleanly.
+   */
+  readonly issues: readonly AcEvidenceParseIssue[];
   /** A note when the change set could not be measured (never an escalation). */
   readonly note?: string;
 }
@@ -472,6 +480,43 @@ export function extractAcceptanceCriteria(planContent: string | null | undefined
   }
 
   return Object.freeze(criteria);
+}
+
+/**
+ * Why a FILED `APPROVED` verdict cannot be certified, or `null` (issue #435).
+ *
+ * The delivered-evidence guard (#432) was opt-in: a verdict with no
+ * `AC_EVIDENCE:` block resolved zero evidence and still approved. A filed
+ * `APPROVED` verdict is now refused — before any checkpoint write — when the
+ * plan declares at least one extractable criterion and the block is absent, or
+ * when a reported block parsed no entry at all (a block that says nothing
+ * cannot certify anything).
+ *
+ * A refusal, not an escalation to `CHANGES_REQUESTED`: there is nothing for the
+ * implementer to fix, and an escalation would attribute the reviewer's omission
+ * to the code. The exemptions are deliberate — the critique-only path derives
+ * its verdict from the report (it can never carry a block), a reviewer's own
+ * `CHANGES_REQUESTED` certifies nothing, and a plan with no extractable
+ * criterion has nothing to certify against.
+ */
+function filedVerdictEvidenceRefusal(
+  filingPath: boolean,
+  verdict: ReviewVerdict,
+  report: AcEvidenceReport,
+  criteria: readonly string[]
+): string | null {
+  if (!filingPath) return null;
+  if (!verdict.isApproved()) return null;
+
+  if (!report.reported) {
+    return criteria.length > 0 ? formatAcEvidenceRequiredMessage(criteria.length) : null;
+  }
+
+  if (report.entries.length === 0) {
+    return formatAcEvidenceMalformedMessage(report.issues ?? []);
+  }
+
+  return null;
 }
 
 export class RunReviewUseCase {
@@ -855,6 +900,25 @@ export class RunReviewUseCase {
     // Issue #432 (AC5): classify the reviewer's cited evidence against the
     // delivered change set BEFORE the invariant can escalate the verdict.
     const acReport = parseAcEvidence(params.reviewOutput);
+
+    // Issue #435 (D1): a filed APPROVED verdict must actually resolve the AC
+    // evidence it certifies. The refusal is thrown BEFORE any checkpoint write
+    // (and before the summary log) so a refused round leaves the state
+    // byte-identical; `--dry-run` warns with the same text instead.
+    const evidenceRefusal = filedVerdictEvidenceRefusal(
+      filingPath,
+      verdict,
+      acReport,
+      acceptanceCriteria
+    );
+    if (evidenceRefusal) {
+      if (params.dryRun) {
+        console.warn(`[codeloop] Warning: ${evidenceRefusal}`);
+      } else {
+        throw new ValidationError('acEvidence', acReport.issues ?? [], evidenceRefusal);
+      }
+    }
+
     const acEvidence = this.resolveAcEvidence(
       acReport,
       params.reviewOutput ?? '',
@@ -1080,7 +1144,8 @@ export class RunReviewUseCase {
         baseRef,
         verified: Object.freeze([]),
         unverifiable: Object.freeze([]),
-        outOfScope: Object.freeze([])
+        outOfScope: Object.freeze([]),
+        issues: Object.freeze([])
       };
     }
 
@@ -1128,6 +1193,7 @@ export class RunReviewUseCase {
       verified: Object.freeze(verified),
       unverifiable: Object.freeze(unverifiable),
       outOfScope: Object.freeze(outOfScope),
+      issues: report.issues ?? Object.freeze([]),
       ...(note ? { note } : {})
     };
   }

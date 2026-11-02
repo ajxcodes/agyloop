@@ -1389,10 +1389,7 @@ export class ResolveSubagentUseCase {
 
     prompt += `### Delivered Evidence Contract (${AC_EVIDENCE_MARKER}):\n`;
     prompt += `Evidence must be a path in the DELIVERED change set: a tracked/untracked file in this worktree that appears in \`git diff <base>\` or \`git ls-files --others --exclude-standard\`. An absolute path in the root workspace is NOT evidence, and neither is anything under a gitignored tree (\`artifacts/\`, \`.agyloop/\`). If a criterion's only evidence lives outside the diff, report it \`unverifiable\` and name the path — the tool refuses a verdict that counts it met.\n`;
-    prompt += `Append this block to the verdict:\n`;
-    prompt += '```markdown\n';
-    prompt += `${formatAcEvidenceExample()}\n`;
-    prompt += '```\n\n';
+    prompt += `A \`path:line\` or \`path:start-end\` citation is accepted: the suffix is ignored when the path is matched against the delivered change set. The ${AC_EVIDENCE_MARKER} block is MANDATORY for an \`APPROVED\` verdict — a filed \`APPROVED\` verdict that omits it, or whose block carries no parseable entry, is refused by the review command.\n\n`;
 
     prompt += `### Required Verdict Output:\n`;
     prompt += `You must output a structured review verdict block adhering to this exact format:\n\n`;
@@ -1403,14 +1400,16 @@ export class ResolveSubagentUseCase {
     prompt += `- <Unfulfilled criterion 1> (or "None" if all criteria are met)\n`;
     prompt += `REMEDIATION_GUIDANCE:\n`;
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
+    prompt += `${formatAcEvidenceExample()}\n`;
     prompt += `\`\`\`\n\n`;
+    prompt += `Every acceptance criterion the plan declares must appear exactly once in the ${AC_EVIDENCE_MARKER} block, and "None" is not an entry.\n\n`;
 
     // Issue #297: ONE contract, stated once. The reviewer is a pure block
     // producer; the read-only whitelist above and the anti-inception guardrail
     // below are now unopposed. The filing instruction belongs to the
     // operator-facing directive (`next`), whose reader is the orchestrator.
     prompt += `${NOTE_REVIEW_VERDICT_RETURN}\n`;
-    prompt += `Emit the block verbatim as the LAST thing in your response. Do not wrap the \`REVIEW_STATUS:\` line\n`;
+    prompt += `Emit the block with your own values, in this exact shape, as the LAST thing in your response. Do not wrap the \`REVIEW_STATUS:\` line\n`;
     prompt += `in anything else.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;

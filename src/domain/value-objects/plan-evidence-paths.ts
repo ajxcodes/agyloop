@@ -41,7 +41,14 @@ function isFence(line: string): boolean {
 /** A path-shaped token with an optional `:line` / `:line-range` suffix. */
 const PATH_TOKEN = /(?:[A-Za-z0-9_.~$-]+\/)+[A-Za-z0-9_.~$*-]+(:\d+(?:-\d+)?)?/g;
 
-function stripLineSuffix(token: string): string {
+/**
+ * Drops a `:line` / `:line-range` citation suffix (issue #435, D3).
+ *
+ * Exported so the reviewer-evidence pipeline can compare `src/x.ts:42` against
+ * the delivered `src/x.ts` without changing what it reports: the citation is
+ * always quoted as the reviewer wrote it.
+ */
+export function stripLineSuffix(token: string): string {
   return token.replace(/:\d+(?:-\d+)?$/, '');
 }
 
