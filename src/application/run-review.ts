@@ -62,7 +62,6 @@ import {
   // change set the verdict's evidence must appear in.
   parseAcEvidence,
   classifyAcEvidence,
-  findExcludedEvidenceInText,
   formatAcEvidenceRequiredMessage,
   formatAcEvidenceMalformedMessage,
   formatPlanDeviationUnacknowledgedMessage,
@@ -946,7 +945,6 @@ export class RunReviewUseCase {
 
     const acEvidence = this.resolveAcEvidence(
       acReport,
-      params.reviewOutput ?? '',
       deliveredChangeSet,
       reviewCwd,
       targetBaseRef ?? null
@@ -1179,14 +1177,16 @@ export class RunReviewUseCase {
   /**
    * Resolves every reported AC against the delivered change set (issue #432).
    *
-   * A lexically-unverifiable entry (excluded tree / outside the worktree)
-   * escalates even when the set could not be measured. An unmeasurable set on
-   * otherwise-verifiable evidence is REPORTED as a note, never converted into a
-   * false failure (AC5/AC7).
+   * Only paths the reviewer offered INSIDE an `AC_EVIDENCE:` entry are evidence
+   * (issue #449): verdict prose — including the `CRITIQUE_REPORT:` line the
+   * reviewer prompt mandates — is never swept, so naming the run's own critique
+   * report can no longer escalate an `APPROVED` verdict. A lexically-unverifiable
+   * entry (excluded tree / outside the worktree) escalates even when the set
+   * could not be measured. An unmeasurable set on otherwise-verifiable evidence
+   * is REPORTED as a note, never converted into a false failure (AC5/AC7).
    */
   private resolveAcEvidence(
     report: AcEvidenceReport,
-    verdictText: string,
     changeSet: { readonly measured: boolean; readonly paths: readonly string[] },
     reviewCwd: string,
     baseRef: string | null
@@ -1226,13 +1226,6 @@ export class RunReviewUseCase {
           addUnverifiable(classified.ac, path);
         }
       }
-    }
-
-    // The #433 backstop: a commit-excluded path cited ANYWHERE in the verdict
-    // (e.g. a Tier-2 sentence) is unverifiable evidence even when the AC block
-    // omitted it.
-    for (const found of findExcludedEvidenceInText(verdictText)) {
-      addUnverifiable(found.ac, found.path);
     }
 
     const note =

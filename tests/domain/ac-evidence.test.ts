@@ -6,8 +6,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const {
   parseAcEvidence,
-  classifyAcEvidence,
-  findExcludedEvidenceInText
+  classifyAcEvidence
 } = require('../../dist/domain');
 
 const VERDICT = [
@@ -49,14 +48,6 @@ describe('AC evidence (issue #432)', () => {
 
     const outOfScope = classifyAcEvidence(report.entries[2], changeSet, '/repo');
     assert.strictEqual(outOfScope.status, 'out-of-scope');
-  });
-
-  test('AE3 the backstop sweep names an excluded path anywhere in the verdict', () => {
-    const found = findExcludedEvidenceInText(
-      'Tier 2: the #425 plan risk row now reads the corrected premise (`artifacts/plans/425-task-plan/implementation_plan.md`).'
-    );
-    assert.strictEqual(found.length, 1);
-    assert.strictEqual(found[0].path, 'artifacts/plans/425-task-plan/implementation_plan.md');
   });
 
   test('AE4 an absent block is unreported (legacy verdict)', () => {
@@ -112,11 +103,20 @@ describe('AC evidence (issue #432)', () => {
     assert.ok(report.issues[0].text.includes('AC1 looks good'));
   });
 
-  test('AE8 the exclusion backstop strips a line suffix (issue #435)', () => {
-    const found = findExcludedEvidenceInText(
-      'Tier 2: the #425 plan risk row now reads the corrected premise (`artifacts/plans/425-task-plan/implementation_plan.md:162`).'
+  test('AE9 the block parser ignores prose and bullets outside AC_EVIDENCE (issue #449)', () => {
+    const report = parseAcEvidence(
+      [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: the report is at `.agyloop/critique/445.json`',
+        'AC_EVIDENCE:',
+        '- AC1: met — `src/x.ts`',
+        'CRITIQUE_REPORT: `.agyloop/critique/445.json`',
+        '- AC2: met — `.agyloop/critique/445.json`'
+      ].join('\n')
     );
-    assert.strictEqual(found.length, 1);
-    assert.strictEqual(found[0].path, 'artifacts/plans/425-task-plan/implementation_plan.md:162');
+    assert.deepStrictEqual(
+      report.entries.map((entry: any) => entry.ac),
+      ['AC1']
+    );
   });
 });
