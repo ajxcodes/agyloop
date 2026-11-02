@@ -240,11 +240,23 @@ export function lintPlanEvidencePaths(
   return Object.freeze(findings);
 }
 
+/** A `- **Out of Scope:**` bullet marker; capture 1 is the declaration body. */
+const OUT_OF_SCOPE_MARKER = /^\s*[-*+]\s+\*\*Out\s+of\s+Scope:?\*\*\s*(.*)$/i;
+const BULLET_START = /^\s*[-*+]\s+/;
+const HEADING_START = /^\s*#{1,6}\s+/;
+const HORIZONTAL_RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
+
 /**
  * The planner's deliberate non-delivery declarations (`- **Out of Scope:** …`).
  *
  * A correction deliberately not delivered must say so; the reviewer renders
  * these so an AC cannot be claimed "met" by an out-of-scope document.
+ *
+ * A declaration is folded, not truncated (issue #439, D1): each following line
+ * that is not a blank line, a new bullet, a heading, a horizontal rule or a
+ * fence is a hard-wrapped continuation and joins the declaration with a single
+ * space. A blank line is a markdown paragraph break, so it terminates too.
+ * Fenced text never contributes a declaration, and the fence toggle flushes.
  */
 export function extractOutOfScopeDeclarations(
   planContent: string | null | undefined
@@ -252,16 +264,43 @@ export function extractOutOfScopeDeclarations(
   if (!planContent || typeof planContent !== 'string') return Object.freeze([]);
   const declarations: string[] = [];
   let fence = false;
+  let pending: string[] | null = null;
+
+  const flush = (): void => {
+    if (!pending) return;
+    const joined = pending.join(' ').replace(/\s+/g, ' ').trim();
+    if (joined.length > 0) declarations.push(joined);
+    pending = null;
+  };
+
   for (const line of planContent.split('\n')) {
     if (isFence(line)) {
+      flush();
       fence = !fence;
       continue;
     }
     if (fence) continue;
-    const match = /^\s*[-*+]\s+\*\*Out\s+of\s+Scope:?\*\*\s*(.*)$/i.exec(line);
-    if (match && match[1].trim().length > 0) {
-      declarations.push(match[1].trim());
+
+    const match = OUT_OF_SCOPE_MARKER.exec(line);
+    if (match) {
+      flush();
+      pending = [match[1].trim()];
+      continue;
     }
+    if (!pending) continue;
+
+    const trimmed = line.trim();
+    if (
+      trimmed.length === 0 ||
+      BULLET_START.test(line) ||
+      HEADING_START.test(line) ||
+      HORIZONTAL_RULE.test(line)
+    ) {
+      flush();
+      continue;
+    }
+    pending.push(trimmed);
   }
+  flush();
   return Object.freeze(declarations);
 }

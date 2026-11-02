@@ -4674,6 +4674,17 @@ export const FLAG_REASON = '--reason' as const;
 /** The reviewer's per-AC evidence block (issue #432, AC5). */
 export const AC_EVIDENCE_MARKER = 'AC_EVIDENCE:' as const;
 
+/**
+ * The reviewer prompt's ONLY AC_EVIDENCE coverage claim (issue #439, D2).
+ *
+ * `filedVerdictEvidenceRefusal` enforces a present, parseable block and
+ * classifies each reported entry — never per-criterion coverage. The
+ * pre-#439 sentence demanded an entry for every declared criterion, which
+ * nothing checks.
+ */
+export const REVIEWER_AC_EVIDENCE_SENTENCE =
+  'Report every criterion you verified; a criterion you cannot evidence is `unverifiable`, never `met`, and "None" is not an entry.' as const;
+
 /** The plan's Test Register heading (issue #432, AC3). */
 export const HEADING_TEST_REGISTER = 'Test Register' as const;
 
@@ -4794,7 +4805,7 @@ export const MSG_AC_EVIDENCE_UNMEASURED =
  * the round cannot be approved on the reviewer's word alone.
  */
 export const MSG_AC_EVIDENCE_REQUIRED =
-  'This APPROVED verdict carries no AC_EVIDENCE: block, so the {count} acceptance criteria the plan declares were not checked against the delivered change set. Append the block as the LAST thing in the verdict — one "- <AC id>: met|unverifiable|out-of-scope — `<path>`" line per criterion — and file the verdict again.' as const;
+  'This APPROVED verdict carries no AC_EVIDENCE: block, so the {count} acceptance criteria the plan declares were not checked against the delivered change set. Append the block as the LAST thing in the verdict — one "- <AC id>: met|unverifiable|out-of-scope — `<path>`" line per criterion you checked — and file the verdict again.' as const;
 
 /** A reported block that parsed to zero entries (issue #435, D4). */
 export const MSG_AC_EVIDENCE_MALFORMED =
