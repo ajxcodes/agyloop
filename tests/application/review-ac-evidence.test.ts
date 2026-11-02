@@ -304,4 +304,27 @@ describe('Review AC evidence (issue #432)', () => {
     assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
     assert.strictEqual(repo.saves, 1);
   });
+
+  test('RAE11 a verdict evidencing 1 of 2 declared criteria still approves, so the prompt must not demand coverage (issue #439)', async () => {
+    writePlan(['- AC1: verified', '- AC2: also declared']);
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const { useCase } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: only AC1 was checked',
+        'UNFULFILLED_AC:',
+        '- None',
+        'REMEDIATION_GUIDANCE:',
+        '- None',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`'
+      ].join('\n')
+    });
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.deepStrictEqual([...result.acEvidence.verified], ['AC1']);
+  });
 });

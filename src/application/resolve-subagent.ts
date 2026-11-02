@@ -108,6 +108,7 @@ import {
   // excluded-path rule and the reviewer's AC evidence block.
   PLAN_DEVIATION_MARKER,
   AC_EVIDENCE_MARKER,
+  REVIEWER_AC_EVIDENCE_SENTENCE,
   HEADING_TEST_REGISTER,
   formatPlanDeviationChannelNote,
   formatAcEvidenceExample,
@@ -1382,7 +1383,8 @@ export class ResolveSubagentUseCase {
       prompt += `### Out of Scope Declarations:\n`;
       prompt += `The plan deliberately does not deliver these. An AC satisfied only by such a document is \`out-of-scope\`, never \`met\`.\n`;
       for (const declaration of outOfScope) {
-        prompt += `- ${declaration}\n`;
+        const singleLine = String(declaration).replace(/\s+/g, ' ').trim();
+        if (singleLine.length > 0) prompt += `- ${singleLine}\n`;
       }
       prompt += `\n`;
     }
@@ -1402,7 +1404,7 @@ export class ResolveSubagentUseCase {
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
     prompt += `${formatAcEvidenceExample()}\n`;
     prompt += `\`\`\`\n\n`;
-    prompt += `Every acceptance criterion the plan declares must appear exactly once in the ${AC_EVIDENCE_MARKER} block, and "None" is not an entry.\n\n`;
+    prompt += `${REVIEWER_AC_EVIDENCE_SENTENCE}\n\n`;
 
     // Issue #297: ONE contract, stated once. The reviewer is a pure block
     // producer; the read-only whitelist above and the anti-inception guardrail

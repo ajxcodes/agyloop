@@ -193,4 +193,11 @@ describe('--critique-report documentation contract', () => {
     assert.ok(filePrompt.includes('AC_EVIDENCE:'));
     assert.ok(defaultPrompt.includes('AC_EVIDENCE:'));
   });
+
+  test('DOC12: neither static reviewer prompt claims per-criterion AC coverage (issue #439)', () => {
+    const filePrompt = fs.readFileSync(path.join(PROJECT_ROOT, 'prompts', 'reviewer.md'), 'utf8');
+    const defaultPrompt = DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+    assert.ok(!filePrompt.includes('Every acceptance criterion the plan declares'));
+    assert.ok(!defaultPrompt.includes('Every acceptance criterion the plan declares'));
+  });
 });

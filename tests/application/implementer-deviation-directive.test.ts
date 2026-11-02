@@ -5,6 +5,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const { ResolveSubagentUseCase } = require('../../dist/application');
+const { REVIEWER_AC_EVIDENCE_SENTENCE } = require('../../dist/domain');
 
 const RECORD = {
   id: 'PD-1',
@@ -50,5 +51,21 @@ describe('implementer/reviewer deviation contract (issue #432)', () => {
     assert.ok(fenced[1].includes('REVIEW_STATUS:'));
     assert.ok(fenced[1].includes('AC_EVIDENCE:'));
     assert.ok(fenced[1].indexOf('AC_EVIDENCE:') > fenced[1].indexOf('REMEDIATION_GUIDANCE:'));
+  });
+
+  test('IDD4 a multi-line out-of-scope declaration renders as one bullet (issue #439)', () => {
+    const prompt = useCase().buildReviewerTaskPrompt({
+      issueNumber: 439,
+      outOfScope: ['Requiring a row per criterion. Label matching is free-form prose,\n  so coverage checking would create false refusals.']
+    });
+    const section = prompt.slice(prompt.indexOf('### Out of Scope Declarations:'), prompt.indexOf('### Delivered Evidence Contract'));
+    assert.ok(section.includes('- Requiring a row per criterion. Label matching is free-form prose, so coverage checking would create false refusals.'));
+    assert.ok(!section.includes('free-form prose,\n'));
+  });
+
+  test('IDD5 the reviewer prompt states only the AC_EVIDENCE coverage the review command enforces (issue #439)', () => {
+    const prompt = useCase().buildReviewerTaskPrompt({ issueNumber: 439 });
+    assert.ok(prompt.includes(REVIEWER_AC_EVIDENCE_SENTENCE));
+    assert.ok(!prompt.includes('Every acceptance criterion the plan declares'));
   });
 });

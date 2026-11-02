@@ -75,4 +75,42 @@ describe('Plan evidence paths (issue #432)', () => {
     assert.strictEqual(isOutsideWorkspace(`${ROOT}/src/x.ts`, ROOT), false);
     assert.strictEqual(isOutsideWorkspace('../sibling/file.ts', ROOT), true);
   });
+
+  test('PEP5 a wrapped out-of-scope bullet joins its continuation lines (issue #439)', () => {
+    const text = [
+      '- **Out of Scope:** Requiring a row per criterion. Label matching is free-form prose, so',
+      '  coverage checking would create false refusals; this issue asks only that the block parse.'
+    ].join('\n');
+    const declarations = extractOutOfScopeDeclarations(text);
+    assert.strictEqual(declarations.length, 1);
+    assert.strictEqual(declarations[0], 'Requiring a row per criterion. Label matching is free-form prose, so coverage checking would create false refusals; this issue asks only that the block parse.');
+  });
+
+  test('PEP6 a following out-of-scope bullet stays a separate declaration (issue #439)', () => {
+    const text = [
+      '- **Out of Scope:** the first declaration',
+      '- **Out of Scope:** the second declaration'
+    ].join('\n');
+    assert.deepStrictEqual([...extractOutOfScopeDeclarations(text)], ['the first declaration', 'the second declaration']);
+  });
+
+  test('PEP7 blank lines, headings, fences and rules end a declaration (issue #439)', () => {
+    const text = [
+      '- **Out of Scope:** joined across',
+      '  a wrapped line',
+      '',
+      '- **Out of Scope:** stopped by a heading',
+      '### Manual Smoke Test Protocol',
+      'prose that must not join',
+      '- **Out of Scope:**',
+      '  an empty marker still joins its continuation',
+      '---',
+      'prose after the rule must not join',
+      '```bash',
+      '- **Out of Scope:** fenced text is not plan text',
+      '```',
+      '- **Out of Scope:** after the fence'
+    ].join('\n');
+    assert.deepStrictEqual([...extractOutOfScopeDeclarations(text)], ['joined across a wrapped line', 'stopped by a heading', 'an empty marker still joins its continuation', 'after the fence']);
+  });
 });
