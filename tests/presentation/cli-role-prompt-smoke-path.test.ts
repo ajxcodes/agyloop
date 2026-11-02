@@ -55,6 +55,7 @@ function makeGitDir(dir: string): void {
 function productionEnv(fakeHome: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome, NODE_ENV: 'production' };
   delete env.NODE_TEST_CONTEXT;
+  delete env.AGYLOOP_SMOKE;
   return env;
 }
 

@@ -91,7 +91,7 @@ describe('FileStateRepository', () => {
       env: Record<string, string | undefined>,
       fn: () => void
     ): void => {
-      const keys = ['NODE_ENV', 'NODE_TEST_CONTEXT', 'HOME'];
+      const keys = ['NODE_ENV', 'NODE_TEST_CONTEXT', 'HOME', 'AGYLOOP_SMOKE'];
       const previous = new Map<string, string | undefined>();
       for (const key of keys) {
         previous.set(key, process.env[key]);
@@ -235,6 +235,71 @@ describe('FileStateRepository', () => {
       } finally {
         fs.rmSync(fakeHome, { recursive: true, force: true });
       }
+    });
+
+    test('SR8: the gate smoke signal refuses a checkpoint outside every sandbox (#440)', () => {
+      const fakeHome = fs.mkdtempSync(path.join(os.homedir(), '.agyloop-smoke440-'));
+      const outside = path.join(fakeHome, 'project', '.agyloop', 'state.json');
+      try {
+        withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production', AGYLOOP_SMOKE: '1' }, () => {
+          process.cwd = () => path.join(fakeHome, 'project');
+          const repo = new FileStateRepository({ stateFilePath: outside });
+          const save = (): void => {
+            repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
+          };
+          assert.throws(save, isSmokeError);
+        });
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
+    });
+
+    test('SR9: the gate smoke signal permits a checkpoint inside the sandbox (#440)', () => {
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-440');
+      fs.mkdirSync(sandbox, { recursive: true });
+
+      try {
+        withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production', AGYLOOP_SMOKE: '1' }, () => {
+          process.cwd = () => sandbox;
+          const repo = new FileStateRepository({
+            stateFilePath: path.join(sandbox, '.agyloop', 'state.json')
+          });
+          const save = (): void => {
+            repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
+          };
+          assert.doesNotThrow(save);
+        });
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
+    });
+
+    test('SR10: the gate smoke signal is inert when AGYLOOP_SMOKE is absent (#440)', () => {
+      const fakeHome = fs.mkdtempSync(path.join(os.homedir(), '.agyloop-smoke440-'));
+      const outside = path.join(fakeHome, 'project', '.agyloop', 'state.json');
+      try {
+        withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
+          process.cwd = () => path.join(fakeHome, 'project');
+          const repo = new FileStateRepository({ stateFilePath: outside });
+          const save = (): void => {
+            repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
+          };
+          assert.doesNotThrow(save);
+        });
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
+    });
+
+    test('SR11: the gate smoke signal is inert in a test run (#440)', () => {
+      withSmokeEnv({ NODE_ENV: 'test', AGYLOOP_SMOKE: '1' }, () => {
+        const repo = new FileStateRepository({ stateFilePath: stateFile });
+        const save = (): void => {
+          repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
+        };
+        assert.doesNotThrow(save);
+      });
     });
 
     test('allows save when cwd is normal path', () => {
@@ -1121,7 +1186,7 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
     env: Record<string, string | undefined>,
     fn: () => void
   ): void {
-    const keys = ['NODE_ENV', 'NODE_TEST_CONTEXT', 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH'];
+    const keys = ['NODE_ENV', 'NODE_TEST_CONTEXT', 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH', 'AGYLOOP_SMOKE'];
     const previous = new Map<string, string | undefined>();
     for (const key of keys) {
       previous.set(key, process.env[key]);

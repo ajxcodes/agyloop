@@ -11,7 +11,9 @@
  * Static rules: quoted-json-comparison, bare-module-path, empty-check,
  * no-executable-check (issue #298), sandbox-path (issue #359 — a check that
  * invokes the CLI must create its directory sandbox where the state guard
- * recognises it), missing-parent-directory (issue #388 — a check that WRITES
+ * recognises it), sandbox-cwd (issue #440 — a check that DECLARES such a
+ * sandbox must actually run the CLI inside it, or point `--workspace` at it),
+ * missing-parent-directory (issue #388 — a check that WRITES
  * a path must create that path's parent first, or it dies before product code)
  * and the fixture-consistency rules (issue #413 — gate-report-fixture-
  * contradiction, worktree-fixture-unmatched, gate-report-marker-missing).
@@ -36,6 +38,7 @@ import {
   SMOKE_RULE_MISSING_PARENT_DIRECTORY,
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
   SMOKE_RULE_QUOTED_JSON_COMPARISON,
+  SMOKE_RULE_SANDBOX_CWD,
   SMOKE_RULE_SANDBOX_PATH,
   SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
   SMOKE_SANDBOX_RECOMMENDED_PATH
@@ -359,6 +362,11 @@ export class SmokeProtocol {
     // Issue #413: a check whose own fixture makes its assertion impossible is
     // refused before the plan digest is pinned, not when the gate runs it.
     collectFixtureFindings(checks, findings);
+
+    // Issue #440: a check that names a recognised sandbox but never enters it
+    // runs the CLI against the LIVE checkpoint. Accumulated across checks in
+    // protocol order because `toScript()` executes ONE shell.
+    collectSandboxCwdFindings(checks, findings);
 
     // `no-executable-check` is reserved for a section that DECLARES a protocol
     // (prose or a fence) but offers nothing runnable. A placeholder-only
@@ -754,26 +762,39 @@ function chainStart(line: string, tokenStart: number): number {
 }
 
 /**
- * True when a non-comment line invokes the codeloop CLI as a command (I3.1).
+ * The offset of the chain start of the FIRST real codeloop invocation on a
+ * line, or `null` when the line does not invoke the CLI.
  *
  * Every candidate match is classified by POSITION (issue #362, F2.2): an
  * `env`-prefixed chain seeded as quoted text is prose even though the pattern
  * anchored at its inner `node` token, while a real invocation — including
  * `OUT="$(codeloop next --json)"` — still counts.
  */
-function invokesCodeloopCli(line: string): boolean {
-  if (isCommentLine(line)) return false;
+function codeloopInvocationOffset(line: string): number | null {
+  if (isCommentLine(line)) return null;
 
   CLI_INVOCATION_SCAN.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = CLI_INVOCATION_SCAN.exec(line)) !== null) {
     // The pattern consumes one boundary character (unless it matched at `^`).
     const tokenStart = match.index + (match.index === 0 ? 0 : 1);
-    if (!isProseAt(line, chainStart(line, tokenStart))) return true;
+    if (!isProseAt(line, chainStart(line, tokenStart))) {
+      return chainStart(line, tokenStart);
+    }
     if (match[0].length === 0) CLI_INVOCATION_SCAN.lastIndex++;
   }
 
-  return false;
+  return null;
+}
+
+/**
+ * True when a non-comment line invokes the codeloop CLI as a command (I3.1).
+ *
+ * Delegates to `codeloopInvocationOffset` so the two rules share one
+ * prose/position classifier; the semantics are unchanged.
+ */
+function invokesCodeloopCli(line: string): boolean {
+  return codeloopInvocationOffset(line) !== null;
 }
 
 /** `mktemp -d …` creations: named `-p`/`--tmpdir` root, template, or bare (§2.3.3). */
@@ -1096,6 +1117,338 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
     });
   });
   return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #440: the `sandbox-cwd` rule.
+//
+// `sandbox-path` (issue #359) asks only WHERE a check creates its sandbox. The
+// #370 reproduction declared `$HOME/.cache/agyloop/smoke-348/approval`, cd'd to
+// the worktree and then ran `transition APPROVAL`, so a legal transition would
+// have mutated the LIVE checkpoint while the plan validated clean. Naming a
+// sandbox is not entering it.
+//
+// The rule arms only when a check DECLARES a recognised sandbox, then requires
+// every non-inert CLI invocation in that check to be anchored: a `cd` in force
+// at the invocation (direct, same-line, subshell, command substitution, or
+// mktemp/variable indirection), or a `--workspace` target inside a sandbox.
+// An UNKNOWN cwd is fail-open — historical plans read variables set outside the
+// fence, and the runtime `AGYLOOP_SMOKE` guard is the backstop.
+// ---------------------------------------------------------------------------
+
+/** Sentinel cwd for the worktree root the gate executes the script from. */
+const SANDBOX_CWD_WORKTREE = '$PWD';
+const WORKTREE_ROOT_LABEL = 'the worktree root ($PWD)';
+/** An invocation carrying one of these flags cannot mutate state. */
+const NON_MUTATING_FLAG = /(?:^|\s)(?:--help|-h|--version|-V)(?=\s|$)/;
+/** `--workspace <path>` / `--workspace=<path>` (and the `-dir` spelling). */
+const WORKSPACE_FLAG = /--workspace(?:-dir)?(?:=|\s+)(\S+)/g;
+/** A statement whose trimmed form is `cd <target>`, optionally inside `(`. */
+const CD_PREFIX = /^(\(+\s*)?cd(?:\s+(.*?))?\s*\)*$/;
+/** An inline `cd <target>` before a CLI token in the same statement. */
+const INLINE_CD = /(?:^|[\s;&|(])cd\s+("[^"]*"|'[^']*'|\S+)/g;
+
+/** One non-inert CLI invocation and the cwd it was judged against. */
+interface SandboxInvocation {
+  /** 0-based offset of the line within the check body. */
+  readonly offset: number;
+  /** True when a `cd`/`--workspace` anchored the invocation inside a sandbox. */
+  readonly anchored: boolean;
+  /** The effective cwd at the invocation; `null` when unknown. */
+  readonly cwd: string | null;
+}
+
+/** The cumulative cwd/variable tracker for ONE shell script. */
+interface SandboxCwdState {
+  /** `SANDBOX_CWD_WORKTREE`, a resolved path, or `null` when unknown. */
+  cwd: string | null;
+  /** Variables the rule resolved itself; separate from `assignmentsByLine`. */
+  readonly variables: Map<string, string>;
+  /** True once a declared path resolves inside a recognised sandbox. */
+  declared: boolean;
+  /** The first such declaration, for the finding excerpt. */
+  declaredSandbox: string | null;
+}
+
+/** True when a variable still carries a name the rule cannot resolve. */
+function hasUnknownVariable(text: string): boolean {
+  return /\$[A-Za-z_{]/.test(
+    text.replace(/\$\{HOME\}|\$HOME/g, '').replace(/\$\{PWD\}|\$PWD/g, '')
+  );
+}
+
+/**
+ * Resolves a path/variable text to an absolute path, the worktree sentinel, or
+ * `null` when it is UNKNOWN. Variables come from the rule's own map; `$HOME`
+ * and `$PWD` are the only anchors interpreted here.
+ */
+function sandboxCwdTarget(
+  raw: string,
+  cwd: string | null,
+  variables: ReadonlyMap<string, string>
+): string | null {
+  const text = normalisePathText(raw).trim().replace(/[)\s]+$/, '');
+  if (text.length === 0) return null;
+  if (text === '-' || text === '$OLDPWD' || text === '${OLDPWD}' || text === '~-') return null;
+
+  const resolved = resolveVariables(text, variables).trim();
+  if (resolved.length === 0) return null;
+  if (resolved === '$PWD' || resolved === '${PWD}') return SANDBOX_CWD_WORKTREE;
+  if (hasUnknownVariable(resolved)) return null;
+
+  const normalised =
+    resolved.startsWith('$PWD/') || resolved.startsWith('${PWD}/')
+      ? normaliseLexicalPath(resolved.replace(/^\$\{PWD\}/, '$PWD'))
+      : resolved;
+  if (normalised.startsWith('$PWD/')) return normaliseLexicalPath(normalised);
+  if (isAnchoredPath(normalised)) return normaliseLexicalPath(normalised);
+  if (cwd === null) return null;
+  return resolvePathAgainstCwd(cwd, normalised);
+}
+
+/** Arms the rule when `value` (a resolved variable) sits inside a sandbox. */
+function noteSandboxDeclaration(value: string | null, state: SandboxCwdState): void {
+  if (value === null || value === SANDBOX_CWD_WORKTREE) return;
+  if (!isWithinSmokeSandbox(value)) return;
+  state.declared = true;
+  if (state.declaredSandbox === null) state.declaredSandbox = value;
+}
+
+/**
+ * Records one path-shaped assignment in the rule's OWN variable map.
+ *
+ * Separate from `assignmentsByLine` so `sandbox-path` verdicts cannot shift.
+ * Records only values that RESOLVE to an anchored path (so `$SANDBOX`-rooted
+ * templates are recorded), a `mktemp -d` template, or the `$PWD` sentinel —
+ * never a non-path value such as `ISSUE=440`.
+ */
+function recordSandboxCwdAssignment(
+  statement: string,
+  cwd: string | null,
+  state: SandboxCwdState
+): void {
+  const match = ASSIGNMENT_PATTERN.exec(statement);
+  if (!match) return;
+  const name = match[1];
+  const raw = normalisePathText(match[2].trim());
+
+  const mktemp = mktempCandidates(statement, 0, 0);
+  if (mktemp.length > 0) {
+    const value = mktemp[0].implicitTemp
+      ? '$TMPDIR'
+      : sandboxCwdTarget(mktemp[0].createdPath, cwd, state.variables);
+    if (value !== null) state.variables.set(name, value);
+    return;
+  }
+
+  if (
+    raw === '$PWD' ||
+    raw === '${PWD}' ||
+    raw === '$(pwd)' ||
+    /^\$\{[A-Za-z_][A-Za-z0-9_]*:-(\$PWD|\$\{PWD\})\}$/.test(raw)
+  ) {
+    state.variables.set(name, SANDBOX_CWD_WORKTREE);
+    noteSandboxDeclaration(SANDBOX_CWD_WORKTREE, state);
+    return;
+  }
+
+  const resolved = resolveVariables(raw, state.variables).trim();
+  if (resolved.length === 0 || hasUnknownVariable(resolved)) return;
+  if (!isAnchoredPath(resolved) && !resolved.startsWith('$PWD')) return;
+
+  const target = sandboxCwdTarget(raw, cwd, state.variables);
+  if (target === null) return;
+  state.variables.set(name, target);
+  noteSandboxDeclaration(target, state);
+}
+
+/**
+ * Applies a statement-level `cd` to the tracker.
+ *
+ * @returns True when the `cd` was a SUBSHELL `cd` — it applies to the remaining
+ *          statements on the line and is restored afterwards.
+ */
+function advanceSandboxCwd(statement: string, state: SandboxCwdState): boolean {
+  const trimmed = statement.trim();
+  const match = CD_PREFIX.exec(trimmed);
+  if (!match) return false;
+
+  const subshell = match[1] !== undefined;
+  if (trimmed.includes('$(') || trimmed.includes('`') || trimmed.includes('|')) {
+    state.cwd = null;
+    return subshell;
+  }
+
+  state.cwd = sandboxCwdTarget(match[2] ?? '', state.cwd, state.variables);
+  return subshell;
+}
+
+/**
+ * The effective cwd for an invocation: the last inline `cd` between the start
+ * of its statement (or the last `;`/`&&`/`(`) and the CLI token wins, which is
+ * what makes `OUT="$(cd "$WS" && cli)"` anchored. Falls back to the statement
+ * cwd when the statement carries no inline `cd`.
+ */
+function inlineSandboxCwd(
+  statement: string,
+  tokenOffset: number,
+  state: SandboxCwdState
+): string | null {
+  const prefix = statement.slice(0, tokenOffset);
+  INLINE_CD.lastIndex = 0;
+  let found = false;
+  let cwd = state.cwd;
+  let match: RegExpExecArray | null;
+  while ((match = INLINE_CD.exec(prefix)) !== null) {
+    const start = match.index + (match[0].startsWith('cd') ? 0 : 1);
+    if (isProseAt(statement, start)) continue;
+    found = true;
+    cwd = sandboxCwdTarget(match[1], state.cwd, state.variables);
+  }
+
+  return found ? cwd : state.cwd;
+}
+
+/** The last `--workspace` target of an invocation statement, when present. */
+function sandboxWorkspaceTarget(
+  statement: string,
+  state: SandboxCwdState
+): { readonly present: boolean; readonly target: string | null } {
+  WORKSPACE_FLAG.lastIndex = 0;
+  let present = false;
+  let target: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = WORKSPACE_FLAG.exec(statement)) !== null) {
+    if (isProseAt(statement, match.index)) continue;
+    present = true;
+    target = sandboxCwdTarget(match[1], state.cwd, state.variables);
+  }
+
+  return { present, target };
+}
+
+/** `--help`/`--version` invocations cannot mutate state. */
+function isNonMutatingInvocation(statement: string): boolean {
+  return NON_MUTATING_FLAG.test(statement);
+}
+
+/** A pure assignment without a command substitution is a definition. */
+function isInertAssignment(statement: string): boolean {
+  const match = ASSIGNMENT_PATTERN.exec(statement);
+  if (!match) return false;
+  return !match[2].includes('$(');
+}
+
+/** The FIRST invocation that would run outside every sandbox, if any. */
+function firstUnanchoredInvocation(
+  invocations: readonly SandboxInvocation[]
+): SandboxInvocation | null {
+  return invocations.find((invocation) => !invocation.anchored) ?? null;
+}
+
+/** The display form of the cwd an invocation was judged against. */
+function sandboxCwdLabel(cwd: string | null): string {
+  if (cwd === SANDBOX_CWD_WORKTREE) return WORKTREE_ROOT_LABEL;
+  if (cwd === null) return 'an unknown directory';
+  return cwd;
+}
+
+/**
+ * Emits at most one `sandbox-cwd` finding per check (issue #440).
+ *
+ * The walk is cumulative across checks because `toScript()` executes ONE shell:
+ * a `cd` or a variable set in check 1 is still in force in check 2. Comment,
+ * heredoc and multi-line-quote body lines are skipped, exactly like the other
+ * static rules.
+ */
+function collectSandboxCwdFindings(
+  checks: readonly SmokeCheck[],
+  findings: SmokeFinding[]
+): void {
+  const state: SandboxCwdState = {
+    cwd: SANDBOX_CWD_WORKTREE,
+    variables: new Map<string, string>(),
+    declared: false,
+    declaredSandbox: null
+  };
+
+  for (const check of checks) {
+    const bodyLines = check.body.split('\n');
+    const heredocData = heredocDataLines(bodyLines);
+    const quotedContinuation = quotedContinuationLines(bodyLines);
+    const invocations: SandboxInvocation[] = [];
+    // Arming is per CHECK: a declaration in an earlier check does not arm a
+    // later block that deliberately runs from the worktree (corpus 315). The
+    // cwd and variables still carry, because `toScript()` is ONE shell.
+    state.declared = false;
+    state.declaredSandbox = null;
+
+    bodyLines.forEach((line, offset) => {
+      if (isCommentLine(line) || heredocData.has(offset) || quotedContinuation.has(offset)) {
+        return;
+      }
+
+      const parentCwd = state.cwd;
+      let restoreCwd: string | null | undefined;
+
+      splitStatements(line).forEach((statement) => {
+        recordSandboxCwdAssignment(statement, state.cwd, state);
+
+        for (const candidate of mktempCandidates(statement, offset, 0)) {
+          if (candidate.implicitTemp) continue;
+          noteSandboxDeclaration(
+            sandboxCwdTarget(candidate.createdPath, state.cwd, state.variables),
+            state
+          );
+        }
+        for (const candidate of [
+          mkdirCandidate(statement, offset, 0),
+          gitCloneCandidate(statement, offset, 0)
+        ]) {
+          if (candidate === null) continue;
+          noteSandboxDeclaration(
+            sandboxCwdTarget(candidate.createdPath, state.cwd, state.variables),
+            state
+          );
+        }
+
+        const subshell = advanceSandboxCwd(statement, state);
+        if (subshell && restoreCwd === undefined) restoreCwd = parentCwd;
+
+        if (isInertAssignment(statement)) return;
+        const tokenOffset = codeloopInvocationOffset(statement);
+        if (tokenOffset === null) return;
+        if (isNonMutatingInvocation(statement)) return;
+
+        const cwd = inlineSandboxCwd(statement, tokenOffset, state);
+        const workspace = sandboxWorkspaceTarget(statement, state);
+        // A known `--workspace` target decides on its own; an absent/unknown
+        // one falls back to the effective cwd, and an unknown cwd is fail-open.
+        const anchored =
+          workspace.present && workspace.target !== null
+            ? isWithinSmokeSandbox(workspace.target)
+            : cwd === null
+              ? true
+              : isWithinSmokeSandbox(cwd);
+
+        invocations.push({ offset, anchored, cwd });
+      });
+
+      if (restoreCwd !== undefined) state.cwd = restoreCwd;
+    });
+
+    if (!state.declared) continue;
+    const offending = firstUnanchoredInvocation(invocations);
+    if (offending === null) continue;
+
+    findings.push({
+      rule: SMOKE_RULE_SANDBOX_CWD,
+      checkIndex: check.index,
+      label: check.label,
+      line: check.planLine + 1 + offending.offset,
+      excerpt: `${truncate(bodyLines[offending.offset] ?? '')} — declares ${state.declaredSandbox ?? SMOKE_SANDBOX_RECOMMENDED_PATH} but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; cd into the sandbox first`
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

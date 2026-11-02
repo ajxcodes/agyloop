@@ -733,6 +733,13 @@ export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
 /** Static smoke-protocol findings (issue #359). */
 export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
 /**
+ * A check that DECLARES a recognised smoke sandbox but invokes the `codeloop`
+ * CLI from outside it (issue #440). `sandbox-path` only asks where the sandbox
+ * is created; naming one is not entering it, and the #370 reproduction cd'd
+ * back to the worktree before the transition, mutating the live checkpoint.
+ */
+export const SMOKE_RULE_SANDBOX_CWD = 'sandbox-cwd' as const;
+/**
  * A check writes a path whose parent directory no earlier statement creates
  * (issue #388). The #382 Smoke 6/7 blocks seeded `.agyloop/tasks/382.json`
  * without `mkdir -p .agyloop/tasks`, so they died before any product code ran
@@ -820,6 +827,12 @@ export const ENV_NODE_ENV = 'NODE_ENV' as const;
 export const ENV_NODE_VALUE_TEST = 'test' as const;
 export const ENV_NODE_TEST_CONTEXT = 'NODE_TEST_CONTEXT' as const;
 export const ENV_ALLOW_WORKTREE_ISSUE_MISMATCH = 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH' as const;
+/**
+ * The gate's smoke signal (issue #440): set ONLY on the frozen smoke script's
+ * execution options, so a checkpoint mutation outside a recognised sandbox is
+ * refused at runtime even for a block the static rule could not classify.
+ */
+export const ENV_AGYLOOP_SMOKE = 'AGYLOOP_SMOKE' as const;
 export const ENV_FLAG_ENABLED = '1' as const;
 
 /**
@@ -1039,7 +1052,7 @@ export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
  * this note governs the fenced checks the gate will run later.
  */
 export const NOTE_SMOKE_BLOCK_SANDBOX_RULE =
-  `Every state-mutating check (one that invokes the \`codeloop\` CLI) must create its sandbox under \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`; a \`mktemp -d\` under \`/tmp\` or any sandbox outside that root is refused by the state guard and rejected at dispatch.` as const;
+  `Every state-mutating check (one that invokes the \`codeloop\` CLI) must create its sandbox under \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`, and must cd into that sandbox before the first CLI invocation — or pass \`--workspace\` resolving inside it. A \`mktemp -d\` under \`/tmp\`, any sandbox outside that root, or a block that names a sandbox without entering it is refused by the state guard and rejected at dispatch.` as const;
 
 /**
  * The one prohibition shared by the implementer directive and the planner
