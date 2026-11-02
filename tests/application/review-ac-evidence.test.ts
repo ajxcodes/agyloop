@@ -327,4 +327,99 @@ describe('Review AC evidence (issue #432)', () => {
     assert.strictEqual(result.verdict.status, 'APPROVED');
     assert.deepStrictEqual([...result.acEvidence.verified], ['AC1']);
   });
+
+  test('RAE12 the #445 round-1 verdict naming its own critique report records APPROVED (issue #449)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const reportPath = path.join(root, '.agyloop', 'critique', '445.json');
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        `REVIEW_SUMMARY: Both tiers clean; AC1–AC5 are met against the delivered diff. Orchestrator note: the Tier 1 command wrote the report, so \`${reportPath}\` has no sidecar and filing it will record \`critiqueVerified: false\`.`,
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`',
+        '- AC2: met — `delivered.ts`',
+        '- AC3: met — `delivered.ts`',
+        '- AC4: met — `delivered.ts`',
+        '- AC5: met — `delivered.ts`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.deepStrictEqual([...result.acEvidence.unverifiable], []);
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.strictEqual(last.metadata.reviewerVerdict, 'APPROVED');
+    assert.ok(!('reviewAcEvidence' in last.metadata));
+  });
+
+  test("RAE13 a CRITIQUE_REPORT line naming the run's own report never escalates, wherever it sits (issue #449)", async () => {
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const reportPath = path.join(root, '.agyloop', 'critique', '445.json');
+    const block = ['AC_EVIDENCE:', '- AC1: met — `delivered.ts`'];
+    const shapes = [
+      ['before the block', ['REVIEW_STATUS: APPROVED', 'REVIEW_SUMMARY: Both tiers clean.', `CRITIQUE_REPORT: \`${reportPath}\``, ...block]],
+      ['after the block', ['REVIEW_STATUS: APPROVED', 'REVIEW_SUMMARY: Both tiers clean.', ...block, `CRITIQUE_REPORT: \`${reportPath}\``]],
+      ['relative', ['REVIEW_STATUS: APPROVED', 'REVIEW_SUMMARY: Both tiers clean.', 'CRITIQUE_REPORT: `.agyloop/critique/445.json`', ...block]],
+      ['bare', ['REVIEW_STATUS: APPROVED', 'REVIEW_SUMMARY: Both tiers clean.', `CRITIQUE_REPORT: ${reportPath}`, ...block]]
+    ];
+    for (const [name, lines] of shapes) {
+      const { useCase } = makeUseCase({ commandExecutor: executor() });
+      const result = await useCase.execute({
+        issue: 432,
+        workspaceDir: root,
+        baseRef: 'HEAD',
+        reviewOutput: (lines as string[]).join('\n')
+      });
+      assert.strictEqual(result.verdict.status, 'APPROVED', name as string);
+      assert.deepStrictEqual([...result.acEvidence.unverifiable], [], name as string);
+    }
+  });
+
+  test('RAE14 a commit-excluded path in prose outside AC_EVIDENCE never escalates (issue #449)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: Both tiers clean.',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`',
+        'The plan row reads (`artifacts/plans/449/implementation_plan.md`) and is unchanged.'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.deepStrictEqual([...result.acEvidence.unverifiable], []);
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.ok(!('reviewAcEvidence' in last.metadata));
+  });
+
+  test("RAE15 an AC met on the tool's own .agyloop report path still escalates (issue #449)", async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: Both tiers clean.',
+        'AC_EVIDENCE:',
+        '- AC2: met — `.agyloop/critique/445.json`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, [
+      'AC2 — `.agyloop/critique/445.json`'
+    ]);
+  });
 });

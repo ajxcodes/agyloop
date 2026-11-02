@@ -7,6 +7,10 @@
  * ships. An AC whose only evidence lives in a gitignored tree or outside the
  * worktree is UNVERIFIABLE, never `met`.
  *
+ * Only paths offered INSIDE an `AC_EVIDENCE:` entry are evidence (issue #449).
+ * Verdict prose is never swept: a report path the reviewer is required to name
+ * is not a claim that an acceptance criterion is met.
+ *
  * Pure domain: no I/O. The measured change set is supplied by the caller.
  */
 
@@ -243,43 +247,4 @@ export function classifyAcEvidence(
   }
 
   return { ac: entry.ac, status: AC_EVIDENCE_STATUS_MET, unverifiablePaths: [] };
-}
-
-/**
- * The #433 backstop: every backticked path ANYWHERE in the verdict text that
- * is commit-excluded is unverifiable evidence, attributed to the AC it appears
- * under (or `verdict`).
- *
- * This is what catches a Tier-2 sentence that cites a gitignored file outside
- * the AC_EVIDENCE block.
- */
-export function findExcludedEvidenceInText(
-  verdictText: string | null | undefined
-): ReadonlyArray<{ readonly ac: string; readonly path: string }> {
-  if (!verdictText || typeof verdictText !== 'string') return Object.freeze([]);
-
-  const found: Array<{ ac: string; path: string }> = [];
-  const seen = new Set<string>();
-  let currentAc = 'verdict';
-
-  for (const line of verdictText.split('\n')) {
-    const acMatch = /^\s*[-*+]\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*:/.exec(line);
-    if (acMatch) {
-      currentAc = acMatch[1];
-    } else if (/^\s*(?:REVIEW_STATUS|REVIEW_SUMMARY|UNFULFILLED_AC|REMEDIATION_GUIDANCE):/.test(line)) {
-      currentAc = 'verdict';
-    }
-
-    for (const path of backticked(line)) {
-      // Issue #435 (D3): the sweep must see through a `:162` citation suffix,
-      // but the finding still names the path as written.
-      if (!isInCommitExcludedTree(stripLineSuffix(path))) continue;
-      const key = `${currentAc}|${path}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      found.push({ ac: currentAc, path });
-    }
-  }
-
-  return Object.freeze(found);
 }
