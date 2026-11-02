@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, execFileSync } = require('node:child_process');
 
 const {
   ResolveSubagentUseCase,
@@ -579,10 +579,13 @@ index 1111111..2222222 100644
     test('PS5: the rendered Tier 1 command propagates a critique failure and publishes no report (issue #400)', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
       try {
+        initGitRepo(dir);
         const critiqueStub = path.join(dir, 'critique-stub.js');
         const reportPath = path.join(dir, 'critique', '397.json');
         const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt({
           issueNumber: 400,
+          baseBranch: 'HEAD',
+          reviewCwd: dir,
           critiquePath: critiqueStub,
           critiqueReportPath: reportPath
         });
@@ -634,6 +637,11 @@ index 1111111..2222222 100644
     const renderTierOneCommand = (reportPath: string, critiquePath: string): string => {
       const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt({
         issueNumber: 405,
+        // Issue #445: the fence now prechecks that the reviewed base resolves IN
+        // the review cwd, so an executed fixture pins a real git worktree and a
+        // ref that always resolves there.
+        baseBranch: 'HEAD',
+        reviewCwd: path.dirname(critiquePath),
         critiquePath,
         critiqueReportPath: reportPath
       });
@@ -642,9 +650,25 @@ index 1111111..2222222 100644
       return fence![1].trim();
     };
 
+    /** Issue #445: a disposable git worktree the Tier 1 precheck can resolve in. */
+    const initGitRepo = (dir: string): void => {
+      execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-qm', 'init', '--allow-empty'], { cwd: dir, stdio: 'ignore' });
+    };
+
+    const renderTierOne = (params: any) => {
+      const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt(params);
+      const fence = /```bash\n([\s\S]*?)\n\s*```/.exec(prompt);
+      assert.ok(fence, `the reviewer prompt must carry a Tier 1 bash fence, got:\n${prompt}`);
+      return { prompt, fence: fence![1].trim() };
+    };
+
     test('PS6: a pre-existing report is cleared before critique, so a crashed round leaves no evidence (issue #405, D2)', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
       try {
+        initGitRepo(dir);
         const critiqueStub = path.join(dir, 'critique-stub.js');
         const reportPath = path.join(dir, 'critique', '405.json');
         fs.mkdirSync(path.dirname(reportPath), { recursive: true });
@@ -676,6 +700,7 @@ index 1111111..2222222 100644
     test('PS7: a failed publish removes the staging sibling (issue #405, D3)', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
       try {
+        initGitRepo(dir);
         const critiqueStub = path.join(dir, 'critique-stub.js');
         const reportPath = path.join(dir, 'critique', '405.json');
         const command = renderTierOneCommand(reportPath, critiqueStub);
@@ -709,6 +734,77 @@ index 1111111..2222222 100644
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
+    });
+
+    test('PS8: the Tier 1 command names the review cwd and the reviewed base with --commit (issue #445)', () => {
+      const { fence } = renderTierOne({
+        issueNumber: 445,
+        baseBranch: 'phase/6-codeloop',
+        reviewCwd: '/repo/.worktrees/445',
+        critiquePath: '/opt/custom/bin/critique.js',
+        critiqueReportPath: '/repo/.agyloop/critique/445.json'
+      });
+      assert.ok(fence.includes("cd '/repo/.worktrees/445'"), `the command must run in the reviewed worktree, got:\n${fence}`);
+      assert.ok(fence.includes("--commit 'phase/6-codeloop'"), `the command must pin the reviewed base, got:\n${fence}`);
+      assert.strictEqual(/--base\b/.test(fence), false, `--base runs git diff <ref>...HEAD and sees nothing at REVIEW time, got:\n${fence}`);
+    });
+
+    test('PS9: the rendered Tier 1 command runs in the review cwd and publishes provenance (issue #445)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-445-'));
+      try {
+        execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+        fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir, stdio: 'ignore' });
+        const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const callLog = path.join(dir, 'call.json');
+        fs.writeFileSync(
+          critiqueStub,
+          [
+            "const fs = require('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(callLog)}, JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));`,
+            `process.stdout.write('{"summary":"stub","comments":[]}');`
+          ].join('\n'),
+          'utf8'
+        );
+
+        const reportPath = path.join(dir, 'state', 'critique', '445.json');
+        const { fence } = renderTierOne({
+          issueNumber: 445,
+          baseBranch: 'main',
+          reviewCwd: dir,
+          critiquePath: critiqueStub,
+          critiqueReportPath: reportPath
+        });
+
+        const run = spawnSync('sh', ['-c', fence], { encoding: 'utf8' });
+        assert.strictEqual(run.status, 0, run.stderr);
+        const call = JSON.parse(fs.readFileSync(callLog, 'utf8'));
+        assert.strictEqual(call.cwd, dir, 'critique must run in the reviewed worktree');
+        assert.deepStrictEqual(call.argv, ['--json', '--commit', 'main']);
+        assert.ok(fs.existsSync(reportPath), 'a successful Tier 1 must publish the report');
+        const provenance = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
+        assert.strictEqual(provenance.baseRef, 'main');
+        assert.strictEqual(provenance.headCommit, head);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('PS10: the Tier 1 prose names the same base the command carries (issue #445)', () => {
+      const { prompt } = renderTierOne({
+        issueNumber: 445,
+        baseBranch: 'phase/6-codeloop',
+        reviewCwd: '/repo/.worktrees/445',
+        critiquePath: '/opt/custom/bin/critique.js',
+        critiqueReportPath: '/repo/.agyloop/critique/445.json'
+      });
+      assert.ok(prompt.includes('against the reviewed base `phase/6-codeloop`'), `the prose must name the same base, got:\n${prompt.slice(0, 4000)}`);
+      assert.ok(!prompt.includes('against target base branch'));
     });
   });
 

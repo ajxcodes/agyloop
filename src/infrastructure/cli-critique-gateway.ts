@@ -32,10 +32,11 @@ import {
   PATH_USER_DATA_CRITIQUE_MAC,
   CRITIQUE_FLAG_JSON,
   CRITIQUE_FLAG_STAGED,
-  DIFF_EXCLUDE_ARGS,
+  CRITIQUE_FLAG_COMMIT,
   CRITIQUE_BUILD_COMMAND,
   MSG_CRITIQUE_NOT_FOUND
 } from '../domain/constants';
+import { shellQuote } from '../domain';
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
 import { cleanVersion } from '../domain/value-objects/critique-version';
 import {
@@ -324,14 +325,15 @@ export class CliCritiqueGateway implements CritiquePort {
       command = `"${execPath}" ${CRITIQUE_FLAG_JSON}`;
     }
 
-    if (options.baseRef) {
-      // Pipe working tree diff manually so that unstaged changes are correctly evaluated against baseRef
-      const diffCmd = options.staged
-        ? `git diff --cached ${options.baseRef} -- . ${DIFF_EXCLUDE_ARGS}`
-        : `git diff ${options.baseRef} -- . ${DIFF_EXCLUDE_ARGS}`;
-      command = `${diffCmd} | ${command}`;
-    } else if (options.staged) {
+    // Issue #445: critique reads its own diff from the repository — it never
+    // reads stdin, so a piped diff reviewed whatever critique chose instead.
+    // `--commit <ref>` is `git diff <ref>` (uncommitted included); `--staged`
+    // is the index. One flag, chosen here, so the report is bound to what we
+    // certify.
+    if (options.staged) {
       command += ` ${CRITIQUE_FLAG_STAGED}`;
+    } else if (options.baseRef) {
+      command += ` ${CRITIQUE_FLAG_COMMIT} ${shellQuote(options.baseRef)}`;
     }
 
     try {

@@ -83,6 +83,19 @@ function initGitWorkspace(dir: string): void {
   execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
 }
 
+/**
+ * Issue #445: the provenance sidecar published beside a Tier 1 report.
+ * `codeloop review` certifies a supplied report only when the sidecar names this
+ * review's base and HEAD, so the positive-path fixtures seed it.
+ */
+function initCritiqueProvenance(dir: string, reportName: string, baseRef = 'main'): void {
+  const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  fs.writeFileSync(
+    path.join(dir, `${reportName}.provenance.json`),
+    JSON.stringify({ baseRef, headCommit })
+  );
+}
+
 async function runCliInSandbox(
   args: readonly string[],
   seed?: (dir: string) => void
@@ -168,6 +181,7 @@ const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = 
           comments: []
         })
       );
+      initCritiqueProvenance(dir, 'critique.json');
     }
   },
   // Issue #284: the gate evidence channel. The fixture files one valid block
@@ -295,6 +309,7 @@ describe('--json surface contract (#275)', () => {
             comments: []
           })
         );
+        initCritiqueProvenance(dir, 'critique.json');
       }
     );
     assert.strictEqual(result.code, 0, result.stderr);

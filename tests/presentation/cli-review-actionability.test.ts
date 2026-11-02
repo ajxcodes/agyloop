@@ -217,6 +217,16 @@ function writeCritique(sandbox: string, comments: any): string {
   return file;
 }
 
+// Issue #445: the report is certified only when the sidecar beside it names this
+// review's base and HEAD, so the positive-path fixture seeds it.
+function writeProvenance(critiquePath: string, baseRef = 'main'): void {
+  const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: path.dirname(critiquePath),
+    encoding: 'utf8'
+  }).trim();
+  fs.writeFileSync(`${critiquePath}.provenance.json`, JSON.stringify({ baseRef, headCommit }), 'utf8');
+}
+
 const AFFIRMATION_COMMENT = {
   path: 'src/app.ts',
   line: 10,
@@ -235,6 +245,8 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
   test('C1: a critical affirmation records APPROVED and is named on stderr (AC2)', async () => {
     const sandbox = makeSandbox();
     try {
+      const critiqueFile = writeCritique(sandbox, [AFFIRMATION_COMMENT]);
+      writeProvenance(critiqueFile);
       const run = await withSanitizedEnv(sandbox, async () =>
         runCli([
           'review',
@@ -243,7 +255,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
           '--verdict-file',
           writeVerdict(sandbox),
           '--critique-report',
-          writeCritique(sandbox, [AFFIRMATION_COMMENT])
+          critiqueFile
         ])
       );
 

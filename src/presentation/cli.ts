@@ -196,7 +196,11 @@ import {
   // DISCOVERY directive states, so the two surfaces can never drift.
   // Issue #418: the same goes for the baseline command cwd contract.
   BASELINE_COMMAND_CWD_CONTRACT,
-  ROOT_BUILD_PROHIBITION_SENTENCE
+  ROOT_BUILD_PROHIBITION_SENTENCE,
+  // Issue #445 (AC2): the provenance sidecar read beside `--critique-report`.
+  parseCritiqueProvenance,
+  CRITIQUE_PROVENANCE_SUFFIX,
+  type CritiqueProvenance
 } from '../domain';
 import type {
   StateRepository,
@@ -651,7 +655,7 @@ Operational Flags:
       --verdict-file <path> Read an AI Reviewer Subagent's verdict block from a file (codeloop review)
       --review-output <text> Pass an AI Reviewer Subagent's verdict block inline (codeloop review)
       --verdict-stdin   Read an AI Reviewer Subagent's verdict block from stdin (codeloop review)
-      --critique-report <path|->  Cross-check the verdict against a critique CLI JSON report (codeloop review)
+      --critique-report <path|->  Cross-check the verdict against a critique CLI JSON report (codeloop review); \`codeloop review\` records it as verified only when a matching \`<path>.provenance.json\` sidecar names this review's base and HEAD
       ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>  Refute a critique finding you have verified is false (repeatable; codeloop review with a filed APPROVED verdict only). The reason is mandatory — a refutation without one is refused, and every refuted finding is named on stderr and recorded as reviewRefutations.
       --report-file <path|->  Read a Quality Gate Subagent's GATE_REPORT_JSON block from a file (codeloop gate-report)
       --report-stdin     Read a Quality Gate Subagent's GATE_REPORT_JSON block from stdin (codeloop gate-report)
@@ -3687,10 +3691,27 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           }
         }
 
+        // Issue #445 (AC2): the provenance sidecar the Tier 1 command publishes
+        // beside the report. Absent/unreadable/stdin => unbound, never "verified".
+        let critiqueProvenance: CritiqueProvenance | null = null;
+        if (options.critiqueReport !== null && options.critiqueReport !== CRITIQUE_REPORT_STDIN) {
+          try {
+            critiqueProvenance = parseCritiqueProvenance(
+              fs.readFileSync(
+                `${path.resolve(options.critiqueReport)}${CRITIQUE_PROVENANCE_SUFFIX}`,
+                'utf8'
+              )
+            );
+          } catch {
+            critiqueProvenance = null;
+          }
+        }
+
         const result = await reviewUseCase.execute({
           issue: issueValue,
           reviewOutput,
           priorCritiqueReport,
+          critiqueProvenance,
           refutations,
           baseRef: options.baseBranch || undefined,
           configPath: options.configPath,

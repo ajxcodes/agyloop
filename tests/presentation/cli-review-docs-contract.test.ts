@@ -200,4 +200,17 @@ describe('--critique-report documentation contract', () => {
     assert.ok(!filePrompt.includes('Every acceptance criterion the plan declares'));
     assert.ok(!defaultPrompt.includes('Every acceptance criterion the plan declares'));
   });
+
+  test('DOC13: every shipped review surface states the --commit + provenance contract (issue #445)', () => {
+    const surfaces: Array<[string, string]> = [
+      ['prompts/reviewer.md', fs.readFileSync(path.join(PROJECT_ROOT, 'prompts', 'reviewer.md'), 'utf8')],
+      ['DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT', DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT],
+      ['skills/agyloop/SKILL.md', readSkill(SKILL)],
+      ['integrations/opencode/codeloop-skill.md', readSkill(OPENCODE_SKILL)]
+    ];
+    for (const [name, text] of surfaces) {
+      assert.ok(text.includes('--commit'), name + ' does not name --commit');
+      assert.ok(text.includes('.provenance.json'), name + ' does not name the provenance sidecar');
+    }
+  });
 });

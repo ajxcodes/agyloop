@@ -617,7 +617,9 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     assert.strictEqual(critique.reviewCalls, 0, 'supplied evidence must not re-run the subprocess');
     assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
     assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
-    assert.strictEqual(result.critiqueVerified, true);
+    // issue #445: a bare supplied report carries no provenance sidecar, so it
+    // informs the invariant but never certifies the round.
+    assert.strictEqual(result.critiqueVerified, false);
   });
 
   test('RV16: the dispatched flow spends exactly ONE critique invocation per recorded verdict (issue #397)', async () => {
@@ -633,7 +635,9 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     });
 
     assert.strictEqual(critique.reviewCalls, 1, 'the supplied report must not spawn a second critique run');
-    assert.strictEqual(result.critiqueVerified, true);
+    // issue #445: a bare supplied report carries no provenance sidecar, so it
+    // informs the invariant but never certifies the round.
+    assert.strictEqual(result.critiqueVerified, false);
     assert.strictEqual(result.reviewSource, 'reviewer-output');
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
 
