@@ -9,7 +9,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { InitProjectUseCase } = require('../../dist/application');
-const { FileProjectScaffolder, DEFAULT_CONFIG } = require('../../dist/infrastructure');
+const { FileBuildDetector, FileProjectScaffolder, DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
 describe('InitProjectUseCase', () => {
   let dir: string;
@@ -54,7 +54,6 @@ describe('InitProjectUseCase', () => {
             { id: 'typecheck', label: 'Typecheck', command: 'npm run typecheck' },
             { id: 'test', label: 'Test', command: 'npm test' }
           ],
-          hasOverrides: false
         })
       },
       scaffolder: new FileProjectScaffolder(),
@@ -136,7 +135,7 @@ describe('InitProjectUseCase', () => {
     await makeUseCase().execute({ workspaceDir: dir, yes: true });
     const uc = new InitProjectUseCase({
       commandExecutor: { execute: async (cmd: string) => ({ command: cmd, exitCode: 1, stdout: '', stderr: '', combinedOutput: '', durationMs: 0, timedOut: false }) },
-      buildDetector: { detect: async () => ({ workspaceDir: dir, ecosystems: [], primaryEcosystem: 'node', commands: [], hasOverrides: false }) },
+      buildDetector: { detect: async () => ({ workspaceDir: dir, ecosystems: [], primaryEcosystem: 'node', commands: [] }) },
       scaffolder: new FileProjectScaffolder(),
       confirmationPrompt: { confirm: async () => { throw new Error('prompt must not be called'); } }
     });
@@ -228,5 +227,94 @@ describe('InitProjectUseCase', () => {
       executedCommands.filter((c) => c.startsWith('git symbolic-ref ')).length,
       1
     );
+  });
+});
+
+describe('InitProjectUseCase - polyglot monorepos (#334)', () => {
+  let dir: string;
+
+  const write = (rel: string, content = ''): void => {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  };
+
+  // Real detector + real scaffolder: the profile must be the one `codeloop init`
+  // actually writes, not a hand-built double.
+  const useCase = () =>
+    new InitProjectUseCase({
+      commandExecutor: {
+        execute: async (cmd: string) => ({
+          command: cmd,
+          exitCode: 1,
+          stdout: '',
+          stderr: '',
+          combinedOutput: '',
+          durationMs: 0,
+          timedOut: false
+        })
+      },
+      buildDetector: new FileBuildDetector(),
+      scaffolder: new FileProjectScaffolder(),
+      confirmationPrompt: { confirm: async () => false }
+    });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-init-334-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('INIT-334-1 scaffolds composite ecosystem, monorepo and subproject metadata', async () => {
+    write(
+      'package.json',
+      JSON.stringify({
+        name: 'root',
+        private: true,
+        workspaces: ['apps/*'],
+        scripts: { build: 'pnpm --filter web build' }
+      })
+    );
+    write('pnpm-workspace.yaml', 'packages:\n  - "apps/*"\n');
+    write('pnpm-lock.yaml');
+    write(
+      'apps/web/package.json',
+      JSON.stringify({
+        name: 'web',
+        scripts: { typecheck: 'tsc --noEmit', test: 'jest', 'test:e2e': 'playwright test' }
+      })
+    );
+    write('apps/web/playwright.config.ts', 'export default {};');
+    write('apps/api/Portfolio.sln', '<Solution></Solution>');
+
+    const res = await useCase().execute({ workspaceDir: dir, dryRun: true });
+    const v = (res.config as any).verification;
+
+    assert.strictEqual(v.ecosystem, 'node+dotnet');
+    assert.strictEqual(v.markers.e2eTool, 'playwright');
+    assert.ok(v.gates.map((g: any) => g.command).includes('dotnet test apps/api/Portfolio.sln'));
+  });
+
+  test('INIT-334-2 a rootless monorepo scaffolds subproject gates and no root npm fallback', async () => {
+    write('docker-compose.yml', 'services: {}');
+    write('run.sh', '#!/bin/sh\necho run\n');
+    write(
+      'projects/angular/package.json',
+      JSON.stringify({ name: 'angular', scripts: { build: 'ng build', test: 'ng test' } })
+    );
+    write(
+      'projects/react/package.json',
+      JSON.stringify({ name: 'react', scripts: { typecheck: 'tsc', test: 'vitest run' } })
+    );
+    write('projects/dotnet/App.sln', '<Solution></Solution>');
+    write('projects/dotnet/App.csproj', '<Project></Project>');
+
+    const res = await useCase().execute({ workspaceDir: dir, dryRun: true });
+    const v = (res.config as any).verification;
+
+    assert.strictEqual(v.monorepo, true);
+    assert.strictEqual(v.gates.some((g: any) => g.command === 'npm test'), false);
   });
 });

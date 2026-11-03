@@ -83,8 +83,23 @@ export interface SmokeSuiteConfig {
   readonly steps: readonly VerificationCommandConfig[];
 }
 
+export interface VerificationSubprojectConfig {
+  readonly path: string;
+  readonly ecosystems: readonly string[];
+}
+
+export interface VerificationMarkersConfig {
+  readonly dockerCompose: boolean;
+  readonly migrationTool: string | null;
+  readonly e2eTool: string | null;
+}
+
 export interface VerificationConfig {
+  /** May be a composite label such as 'node+dotnet' (#334). */
   readonly ecosystem?: string;
+  readonly monorepo?: boolean;
+  readonly markers?: VerificationMarkersConfig;
+  readonly subprojects?: readonly VerificationSubprojectConfig[];
   readonly fastCheck?: readonly VerificationCommandConfig[];
   readonly smoke?: SmokeSuiteConfig;
   readonly gates?: readonly VerificationCommandConfig[];

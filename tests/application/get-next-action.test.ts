@@ -77,7 +77,6 @@ class MockBuildDetector implements BuildDetectorPort {
       ecosystems: [],
       primaryEcosystem: new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'], packageManager: 'npm' }),
       commands: this.commands,
-      hasOverrides: false
     };
   }
 

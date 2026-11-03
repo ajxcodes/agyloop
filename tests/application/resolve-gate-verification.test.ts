@@ -130,7 +130,6 @@ function makeBuildDetector(options: {
       ecosystems: [],
       primaryEcosystem: { toString: () => 'node (npm)' },
       commands: detector.ambient,
-      hasOverrides: false
     }),
     resolveCommands: async () => detector.ambient,
     resolveCommandPlan: async (
@@ -221,7 +220,6 @@ function makeLegacyDetector(options: {
       ecosystems: [],
       primaryEcosystem: { toString: () => 'node (npm)' },
       commands: detectedCommands,
-      hasOverrides: false
     }),
     resolveCommands: async () => commands
   };

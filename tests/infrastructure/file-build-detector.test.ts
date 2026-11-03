@@ -1153,3 +1153,124 @@ describe('Workflow lint composition (#369, was #368)', () => {
     assert.ok(prompt.includes('actionlint'), prompt);
   });
 });
+
+describe('FileBuildDetector - polyglot subproject discovery (#334)', () => {
+  let dir: string;
+
+  const write = (rel: string, content = ''): void => {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  };
+
+  const commands = (detected: any): string[] =>
+    detected.commands.map((command: any) => command.command);
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-build-334-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('FBD-334-1 detects an apps/* portfolio and scopes every subproject command', async () => {
+    write(
+      'package.json',
+      JSON.stringify({
+        name: 'root',
+        private: true,
+        workspaces: ['apps/*'],
+        scripts: { build: 'pnpm --filter web build' }
+      })
+    );
+    write('pnpm-workspace.yaml', 'packages:\n  - "apps/*"\n');
+    write('pnpm-lock.yaml');
+    write(
+      'apps/web/package.json',
+      JSON.stringify({
+        name: 'web',
+        scripts: { typecheck: 'tsc --noEmit', test: 'jest', 'test:e2e': 'playwright test' }
+      })
+    );
+    write('apps/web/playwright.config.ts', 'export default {};');
+    write('apps/web/jest.config.js', 'module.exports = {};');
+    write('apps/api/Portfolio.sln', '<Solution></Solution>');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), [
+      'pnpm run build',
+      'dotnet test apps/api/Portfolio.sln',
+      'cd apps/web && pnpm run typecheck',
+      'cd apps/web && pnpm test',
+      'cd apps/web && pnpm run test:e2e'
+    ]);
+    assert.strictEqual((detected.subprojects ?? []).length, 2);
+  });
+
+  test('FBD-334-2 detects a rootless projects/* monorepo without the npm fallback', async () => {
+    write('docker-compose.yml', 'services: {}');
+    write('run.sh', '#!/bin/sh\necho run\n');
+    write(
+      'projects/angular/package.json',
+      JSON.stringify({ name: 'angular', scripts: { build: 'ng build', test: 'ng test' } })
+    );
+    write(
+      'projects/react/package.json',
+      JSON.stringify({ name: 'react', scripts: { typecheck: 'tsc', test: 'vitest run' } })
+    );
+    write('projects/dotnet/App.sln', '<Solution></Solution>');
+    write('projects/dotnet/App.csproj', '<Project></Project>');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), [
+      'cd projects/angular && npm run build',
+      'cd projects/angular && npm test',
+      'dotnet test projects/dotnet/App.sln',
+      'cd projects/react && npm run typecheck',
+      'cd projects/react && npm test'
+    ]);
+  });
+
+  test('FBD-334-3 drops a root command already wrapped by a package.json script', async () => {
+    write('package.json', JSON.stringify({ name: 'hybrid', scripts: { test: './gradlew test' } }));
+    write('build.gradle.kts', '// gradle');
+    write('settings.gradle.kts', 'rootProject.name = "hybrid"');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), ['npm test', 'gradle check']);
+  });
+
+  test('FBD-334-4 discovers src-tauri/Cargo.toml and scopes cargo with --manifest-path', async () => {
+    write(
+      'package.json',
+      JSON.stringify({ name: 'tauri', scripts: { build: 'tsc -b', test: 'node --test' } })
+    );
+    write('src-tauri/Cargo.toml', '[package]\nname = "tauri"\n');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), [
+      'npm run build',
+      'npm test',
+      'cargo check --manifest-path src-tauri/Cargo.toml',
+      'cargo test --manifest-path src-tauri/Cargo.toml'
+    ]);
+  });
+
+  test('FBD-334-5 a single-stack repository is unchanged by subproject discovery', async () => {
+    write(
+      'package.json',
+      JSON.stringify({ name: 'single', scripts: { typecheck: 'tsc --noEmit', test: 'node --test' } })
+    );
+    write('package-lock.json', '{}');
+    write('src/index.js', 'console.log(1);');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), ['npm run typecheck', 'npm test']);
+  });
+});

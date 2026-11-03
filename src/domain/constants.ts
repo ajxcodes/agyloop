@@ -1863,6 +1863,77 @@ export const CMD_PLAYWRIGHT_PNPM = 'pnpm exec playwright test' as const;
 export const CMD_PLAYWRIGHT_BUN = 'bunx playwright test' as const;
 export const CMD_PLAYWRIGHT_YARN = 'yarn playwright test' as const;
 
+// Polyglot / multi-workspace discovery vocabulary (issue #334)
+/** Joins multiple ecosystem types into one composite label: 'node+dotnet'. */
+export const ECOSYSTEM_LABEL_SEPARATOR = '+' as const;
+
+export const MARKER_PNPM_WORKSPACE = 'pnpm-workspace.yaml' as const;
+export const MARKER_TURBO_JSON = 'turbo.json' as const;
+export const MARKER_NX_JSON = 'nx.json' as const;
+export const MARKER_LERNA_JSON = 'lerna.json' as const;
+export const MARKER_GO_WORK = 'go.work' as const;
+
+/** `cd <relDir> && <command>` scoping (#334). */
+export const CMD_SCOPE_WITH_DIR = 'cd' as const;
+export const CMD_SCOPE_SEPARATOR = '&&' as const;
+
+export const CMD_FLAG_MANIFEST_PATH = '--manifest-path' as const;
+export const CMD_FLAG_PROJECT_DIR = '-p' as const;
+export const CMD_FLAG_MAVEN_FILE = '-f' as const;
+
+/** Separates a subproject command id from its repo-relative directory (#334). */
+export const CMD_ID_SCOPE_SEPARATOR = ':' as const;
+
+/** Monorepo container directories whose children are subproject candidates. */
+export const SUBPROJECT_CONTAINER_DIRS = Object.freeze([
+  'apps',
+  'projects',
+  'packages',
+  'services',
+  'libs'
+] as const);
+
+/** Well-known single-project directories (one level, or two when marker-less). */
+export const SUBPROJECT_NAMED_DIRS = Object.freeze([
+  'backend',
+  'frontend',
+  'server',
+  'client',
+  'web',
+  'api',
+  'src-tauri'
+] as const);
+
+/** Directories that are never subprojects and are never descended into. */
+export const SUBPROJECT_IGNORED_DIRS = Object.freeze([
+  '.git',
+  'node_modules',
+  '.worktrees',
+  'dist',
+  'build',
+  'target',
+  '.next',
+  'coverage',
+  'artifacts',
+  '.agyloop',
+  '.codeloop',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'obj',
+  'bin',
+  'out',
+  '.turbo',
+  '.nx',
+  'vendor',
+  'tmp'
+] as const);
+
+/** Bounded traversal depth (repo-relative segments below the workspace root). */
+export const SUBPROJECT_MAX_DEPTH = 2 as const;
+/** Hard cap on discovered subprojects, applied after the deterministic sort. */
+export const SUBPROJECT_MAX_COUNT = 64 as const;
+
 // Validation & Plan Constants
 export const VALIDATION_FIELD_PLAN_PATH = 'planPath' as const;
 /** The plan title a derived folder/filename is refused for (issue #364). */

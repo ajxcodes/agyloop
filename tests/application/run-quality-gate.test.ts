@@ -234,7 +234,6 @@ class MockBuildDetector implements BuildDetectorPort {
       commands: [
         { id: 'custom-detect', label: 'Auto-detected Runner', command: 'pnpm run test:detected' }
       ],
-      hasOverrides: false
     };
     this.commandsToResolve = commandsToResolve || this.detectedProject.commands;
   }

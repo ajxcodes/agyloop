@@ -7,14 +7,35 @@
 
 import { VerificationConfig } from './config-repository';
 
+export interface SubprojectMarkers {
+  /** Repo-relative POSIX directory, e.g. 'apps/web'. */
+  readonly path: string;
+  /** Ecosystem types detected in that directory, priority-ordered. */
+  readonly ecosystems: readonly string[];
+  /** Local lockfile package manager, or null when only the root declares one. */
+  readonly packageManager: string | null;
+  /** That directory's own `package.json` scripts. */
+  readonly scripts: Readonly<Record<string, string>>;
+  readonly e2eTool: string | null;
+  readonly migrationTool: string | null;
+}
+
 export interface ProjectMarkers {
   readonly monorepo: boolean;
   readonly dockerCompose: boolean;
   readonly migrationTool: string | null;
+  /** Repo-relative directory the migration marker was found in (null at the root). */
+  readonly migrationPath: string | null;
   readonly e2eTool: string | null;
+  /** Repo-relative directory the E2E marker was found in (null at the root). */
+  readonly e2ePath: string | null;
+  /** Root lockfile package manager, else pnpm for a pnpm workspace, else null. */
+  readonly packageManager: string | null;
   readonly hasBackendMarkers: boolean;
   readonly hasFrontendMarkers: boolean;
   readonly packageScripts: Readonly<Record<string, string>>;
+  /** Discovered subprojects (#334); optional so existing doubles still type-check. */
+  readonly subprojects?: readonly SubprojectMarkers[];
 }
 
 export interface LegacyLayout {

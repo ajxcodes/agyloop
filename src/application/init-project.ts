@@ -36,7 +36,8 @@ import {
   CB_ACTION_PAUSE_FOR_HUMAN,
   DEFAULT_OPENCODE_MODEL,
   DEFAULT_BASE_BRANCH,
-  DEFAULT_BASE_BRANCH_CANDIDATES
+  DEFAULT_BASE_BRANCH_CANDIDATES,
+  ECOSYSTEM_LABEL_SEPARATOR
 } from '../domain';
 
 export interface InitProjectDeps {
@@ -68,6 +69,28 @@ export interface InitProjectResult {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Builds the `verification.ecosystem` label (#334).
+ *
+ * One ecosystem type keeps today's exact `<type> (<package manager>)` label; two
+ * or more join into a composite (`node+dotnet`). Tolerates the string-typed
+ * detector doubles the suites use.
+ */
+function resolveEcosystemLabel(detected: {
+  ecosystems: readonly unknown[];
+  primaryEcosystem: unknown;
+}): string {
+  const types: string[] = [];
+  for (const ecosystem of detected.ecosystems ?? []) {
+    const type =
+      typeof ecosystem === 'string'
+        ? ecosystem
+        : String((ecosystem as { type?: unknown } | null)?.type ?? '');
+    if (type && !types.includes(type)) types.push(type);
+  }
+  return types.length > 1 ? types.join(ECOSYSTEM_LABEL_SEPARATOR) : String(detected.primaryEcosystem);
 }
 
 /** Deep merge where `preferred` values win over `base`. */
@@ -124,7 +147,7 @@ export class InitProjectUseCase {
     const markers = await scaffolder.detectMarkers(workspaceDir);
     const verification = scaffolder.buildVerificationProfile(
       markers,
-      String(detected.primaryEcosystem),
+      resolveEcosystemLabel(detected),
       detected.commands
     );
 
