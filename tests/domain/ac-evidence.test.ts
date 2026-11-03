@@ -6,8 +6,13 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const {
   parseAcEvidence,
-  classifyAcEvidence
+  classifyAcEvidence,
+  acLabelOfUnverifiableEntry,
+  findOutOfScopeDeclarationForAc
 } = require('../../dist/domain');
+
+const DECLARATION =
+  "Opening the real `phase/6-codeloop` PR during this run. AC4's label provisioning is an operator step (Step 11).";
 
 const VERDICT = [
   'REVIEW_STATUS: APPROVED',
@@ -181,5 +186,28 @@ describe('AC evidence (issue #432)', () => {
       process.cwd()
     );
     assert.strictEqual(met.status, 'met');
+  });
+
+  test('AE14 the plan-declared operator-step match is label-exact and advisory (#506 AC2)', () => {
+    assert.strictEqual(acLabelOfUnverifiableEntry('AC4 — `ajxcodes/agyloop`'), 'AC4');
+    assert.strictEqual(acLabelOfUnverifiableEntry('src/domain/missing.ts'), null);
+    assert.strictEqual(findOutOfScopeDeclarationForAc('AC4', [DECLARATION]), DECLARATION);
+    assert.strictEqual(findOutOfScopeDeclarationForAc('AC4', ['AC40 is a different criterion']), null);
+  });
+
+  test('AE15 an out-of-scope entry certifies nothing and escalates nothing, with or without a path (#506 AC3)', () => {
+    const changeSet = { measured: true, paths: [] as string[] };
+    const withoutPath = parseAcEvidence(
+      'AC_EVIDENCE:\n- AC4: out-of-scope — the plan declares Step 11 an operator step'
+    ).entries[0];
+    const withPath = parseAcEvidence(
+      'AC_EVIDENCE:\n- AC4: out-of-scope — `docs/legacy.md`'
+    ).entries[0];
+
+    for (const entry of [withoutPath, withPath]) {
+      const classified = classifyAcEvidence(entry, changeSet, process.cwd());
+      assert.deepStrictEqual([...classified.unverifiablePaths], []);
+      assert.strictEqual(classified.status, 'out-of-scope');
+    }
   });
 });

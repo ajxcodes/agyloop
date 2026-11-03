@@ -67,6 +67,12 @@ import {
   classifyAcEvidence,
   formatAcEvidenceRequiredMessage,
   formatAcEvidenceMalformedMessage,
+  extractOutOfScopeDeclarations,
+  acLabelOfUnverifiableEntry,
+  findOutOfScopeDeclarationForAc,
+  formatAcEvidenceOperatorStepDiagnostic,
+  formatAcEvidenceOperatorStepRemedy,
+  formatAcEvidenceOperatorStepSummary,
   ValidationError,
   AC_EVIDENCE_STATUS_MET,
   AC_EVIDENCE_STATUS_OUT_OF_SCOPE,
@@ -335,7 +341,8 @@ export function applyTwoTierInvariant(
   verdict: ReviewVerdict,
   aiReport: AiReviewReport | null,
   refutations?: RefutationResolution,
-  unverifiable: readonly string[] = []
+  unverifiable: readonly string[] = [],
+  outOfScopeDeclarations: readonly string[] = []
 ): TwoTierInvariantOutcome {
   // ONE source for "what still blocks": the resolution when the caller supplied
   // one (computed from the SAME `blockingFindings()` call), otherwise the
@@ -392,20 +399,37 @@ export function applyTwoTierInvariant(
   // Issue #432 (AC5): an AC the reviewer counted `met` on evidence that is not
   // in the delivered change set cannot certify the round. The escalation names
   // the AC and the path; the reviewer is never silently overruled.
+  //
+  // Issue #506: when the plan's own `- **Out of Scope:**` declaration names that
+  // AC, the refusal also quotes the declaration and names `out-of-scope`. The
+  // verdict STILL escalates — matching free-form plan prose must never grant
+  // acceptance — so only the diagnostic is sharpened, never `escalatedBy`.
   if (unverifiable.length > 0 && verdict.isApproved()) {
-    const criteria = unverifiable.map(
-      (entry) => `[Unverifiable evidence] ${entry} is not in the delivered change set`
-    );
+    const criteria: string[] = [];
+    const remediation: string[] = [];
+    let declaredOutOfScope = 0;
+    for (const entry of unverifiable) {
+      const criterion = `[Unverifiable evidence] ${entry} is not in the delivered change set`;
+      const ac = acLabelOfUnverifiableEntry(entry);
+      const declaration = findOutOfScopeDeclarationForAc(ac, outOfScopeDeclarations);
+      if (ac === null || declaration === null) {
+        criteria.push(criterion);
+        remediation.push(`Cite tracked evidence for ${criterion}`);
+        continue;
+      }
+      declaredOutOfScope += 1;
+      criteria.push(`${criterion}. ${formatAcEvidenceOperatorStepDiagnostic(declaration)}`);
+      remediation.push(formatAcEvidenceOperatorStepRemedy(ac));
+    }
+    const declaredClause =
+      declaredOutOfScope > 0 ? ` ${formatAcEvidenceOperatorStepSummary(declaredOutOfScope)}` : '';
     return {
       escalatedBy: 'unverifiable-evidence',
       verdict: new ReviewVerdict({
         status: VERDICT_CHANGES_REQUESTED,
-        summary: `Review requested changes: ${unverifiable.length} acceptance criterion/criteria name evidence outside the delivered change set. ${verdict.summary}`,
+        summary: `Review requested changes: ${unverifiable.length} acceptance criterion/criteria name evidence outside the delivered change set.${declaredClause} ${verdict.summary}`,
         unfulfilledCriteria: [...verdict.unfulfilledCriteria, ...criteria],
-        remediationGuidance: [
-          ...verdict.remediationGuidance,
-          ...criteria.map((criterion) => `Cite tracked evidence for ${criterion}`)
-        ],
+        remediationGuidance: [...verdict.remediationGuidance, ...remediation],
         confidenceLevel: verdict.confidenceLevel,
         findings: verdict.findings
       })
@@ -740,11 +764,13 @@ export class RunReviewUseCase {
     // eslint-disable-next-line no-useless-assignment
     let planContent = '';
     let acceptanceCriteria: readonly string[] = Object.freeze([]);
+    let outOfScopeDeclarations: readonly string[] = Object.freeze([]);
 
     if (resolvedPlan && resolvedPlan.planPath) {
       try {
         planContent = this.planGenerator.readPlanDocument(resolvedPlan.planPath);
         acceptanceCriteria = extractAcceptanceCriteria(planContent);
+        outOfScopeDeclarations = extractOutOfScopeDeclarations(planContent);
       } catch {
         // Plan read failure non-fatal, proceed with empty criteria
       }
@@ -890,6 +916,7 @@ export class RunReviewUseCase {
       reviewCwd,
       userInstructions: params.userInstructions,
       workspaceDir: workspace,
+      outOfScope: outOfScopeDeclarations,
       config
     });
 
@@ -1036,7 +1063,8 @@ export class RunReviewUseCase {
       verdict,
       aiReport,
       refutationResolution,
-      acEvidence.unverifiable
+      acEvidence.unverifiable,
+      outOfScopeDeclarations
     );
     verdict = invariant.verdict;
 

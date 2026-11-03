@@ -1,11 +1,14 @@
 /**
  * agyloop - implementer/reviewer deviation contract (issue #432, TR-41/42)
+ *
+ * IDD6 - the reviewer prompt's AC_EVIDENCE contract teaches `out-of-scope` for a
+ *        plan-declared operator step (issue #506).
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const { ResolveSubagentUseCase } = require('../../dist/application');
-const { REVIEWER_AC_EVIDENCE_SENTENCE } = require('../../dist/domain');
+const { REVIEWER_AC_EVIDENCE_SENTENCE, REVIEWER_AC_EVIDENCE_STATUS_CONTRACT } = require('../../dist/domain');
 
 const RECORD = {
   id: 'PD-1',
@@ -67,5 +70,16 @@ describe('implementer/reviewer deviation contract (issue #432)', () => {
     const prompt = useCase().buildReviewerTaskPrompt({ issueNumber: 439 });
     assert.ok(prompt.includes(REVIEWER_AC_EVIDENCE_SENTENCE));
     assert.ok(!prompt.includes('Every acceptance criterion the plan declares'));
+  });
+
+  test('IDD6 the AC_EVIDENCE contract names out-of-scope for a plan-declared operator step (#506 AC1)', () => {
+    const prompt = useCase().buildReviewerTaskPrompt({ issueNumber: 506 });
+    const contract = prompt.slice(
+      prompt.indexOf('### Delivered Evidence Contract'),
+      prompt.indexOf('### Required Verdict Output')
+    );
+    assert.ok(contract.includes(REVIEWER_AC_EVIDENCE_STATUS_CONTRACT));
+    assert.ok(contract.includes('`out-of-scope`'));
+    assert.ok(!contract.includes("If a criterion's only evidence lives outside the diff, report it `unverifiable` and name the path"));
   });
 });

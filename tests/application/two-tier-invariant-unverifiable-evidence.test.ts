@@ -20,6 +20,17 @@ const {
 
 const CHANGE_SET = { measured: true, paths: ['src/app.ts', 'tests/app.test.ts'] };
 
+const DECLARATION =
+  "Opening the real `phase/6-codeloop` PR during this run. AC4's label provisioning is an operator step (Step 11).";
+
+function textOf(outcome: any): string {
+  return [
+    outcome.verdict.summary,
+    ...outcome.verdict.unfulfilledCriteria,
+    ...outcome.verdict.remediationGuidance
+  ].join('\n');
+}
+
 function approved() {
   return new ReviewVerdict({
     status: VERDICT_APPROVED,
@@ -69,5 +80,41 @@ describe('applyTwoTierInvariant - delivered AC evidence (issue #464)', () => {
     const outcome = applyTwoTierInvariant(approved(), null, undefined, unverifiable);
     assert.strictEqual(outcome.escalatedBy, 'unverifiable-evidence');
     assert.strictEqual(outcome.verdict.status, VERDICT_CHANGES_REQUESTED);
+  });
+
+  test('TUE4 a plan-declared operator-step AC is refused with a diagnostic naming out-of-scope and the declaration (#506 AC2)', () => {
+    const outcome = applyTwoTierInvariant(
+      approved(),
+      null,
+      undefined,
+      ['AC4 — `ajxcodes/agyloop`'],
+      [DECLARATION]
+    );
+    assert.strictEqual(outcome.escalatedBy, 'unverifiable-evidence');
+    const text = textOf(outcome);
+    assert.ok(text.includes('out-of-scope'), text);
+    assert.ok(text.includes(DECLARATION), text);
+  });
+
+  test('TUE5 an undeclared or bare-path gap keeps the pre-#506 diagnostic (#506 AC2)', () => {
+    const undeclared = applyTwoTierInvariant(
+      approved(),
+      null,
+      undefined,
+      ['AC4 — `ajxcodes/agyloop`'],
+      []
+    );
+    assert.strictEqual(undeclared.escalatedBy, 'unverifiable-evidence');
+    assert.ok(!textOf(undeclared).includes('out-of-scope'), textOf(undeclared));
+
+    const barePath = applyTwoTierInvariant(
+      approved(),
+      null,
+      undefined,
+      ['src/domain/missing.ts'],
+      [DECLARATION]
+    );
+    assert.strictEqual(barePath.escalatedBy, 'unverifiable-evidence');
+    assert.ok(!textOf(barePath).includes('out-of-scope'), textOf(barePath));
   });
 });

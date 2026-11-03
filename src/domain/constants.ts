@@ -2360,6 +2360,23 @@ export const DIFF_EXCLUDE_ARGS = "':!package-lock.json' ':!pnpm-lock.yaml' ':!ya
 
 export const MAX_INLINE_DIFF_LINES = 1000 as const;
 
+/**
+ * The reviewer's three-status `AC_EVIDENCE` vocabulary (issue #506).
+ *
+ * ONE definition for all three surfaces a reviewer reads: the static prompt
+ * below interpolates it, `buildReviewerTaskPrompt` renders it, and
+ * `prompts/reviewer.md` carries it verbatim (DOC14 pins the three together).
+ *
+ * `out-of-scope` is the status a plan-declared operator step needs: no
+ * delivered path can exist, and `unverifiable` always escalates (#432 AC5).
+ */
+export const REVIEWER_AC_EVIDENCE_STATUS_CONTRACT = [
+  'The status you report is what the tool certifies, so choose it by where the evidence lives:',
+  '- `met` — the criterion is satisfied by files in this diff; cite their paths.',
+  '- `unverifiable` — a path that must ship in this diff is missing from it, or the only evidence is gitignored or outside this worktree. Name the path: the review command refuses an `APPROVED` verdict that carries one, so never use it for a criterion that has no delivered evidence BY DESIGN.',
+  '- `out-of-scope` — the plan declares the criterion an operator step, a post-merge action, or deliberately undelivered: no delivered path can exist and none is expected. Report it `out-of-scope` with no path and name the plan declaration in the note; it is recorded and never escalates an `APPROVED` verdict. Never use it to excuse a change that should have shipped.'
+].join('\n');
+
 export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
 
 You are the **AgyLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.
@@ -2411,10 +2428,13 @@ REMEDIATION_GUIDANCE:
 - <Actionable remediation item 1> (or "None" if approved)
 AC_EVIDENCE:
 - AC1: met — \`src/domain/plan-deviation.ts\`, \`tests/domain/plan-deviation.test.ts\`
-- AC6: unverifiable — \`artifacts/plans/425-task-plan/implementation_plan.md\`
+- AC2: unverifiable — \`src/domain/missing-module.ts\`
+- AC4: out-of-scope — the plan declares Step 11 an operator step, so no delivered path exists
 \`\`\`
 
 The \`AC_EVIDENCE:\` block is mandatory for an \`APPROVED\` verdict. A \`path:line\` or \`path:start-end\` citation is accepted — the suffix is ignored when the path is matched — and \`codeloop review\` refuses an \`APPROVED\` verdict that omits the block, or whose block carries no parseable entry.
+
+${REVIEWER_AC_EVIDENCE_STATUS_CONTRACT}
 
 If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set \`REVIEW_STATUS: APPROVED\`. Otherwise, set \`REVIEW_STATUS: CHANGES_REQUESTED\`.
 
@@ -4960,7 +4980,7 @@ export const AC_EVIDENCE_MARKER = 'AC_EVIDENCE:' as const;
  * nothing checks.
  */
 export const REVIEWER_AC_EVIDENCE_SENTENCE =
-  'Report every criterion you verified; a criterion you cannot evidence is `unverifiable`, never `met`, and "None" is not an entry.' as const;
+  'Report every criterion you verified; a criterion the plan declares an operator step or deliberately undelivered is `out-of-scope` with no path, a criterion you cannot evidence is `unverifiable`, never `met`, and "None" is not an entry.' as const;
 
 /** The plan's Test Register heading (issue #432, AC3). */
 export const HEADING_TEST_REGISTER = 'Test Register' as const;
@@ -5079,6 +5099,30 @@ export const MSG_PLAN_EVIDENCE_EXCLUDED_PATH =
 export const MSG_AC_EVIDENCE_UNVERIFIABLE =
   '{ac} is not in the delivered change set: {path}. Report the criterion as unverifiable, or cite a tracked file in the diff.' as const;
 
+/** A reported `unverifiable` AC the plan itself declares out of scope (issue #506). */
+export const MSG_AC_EVIDENCE_OPERATOR_STEP =
+  'The plan declares this criterion out of scope: "{declaration}". Report it `out-of-scope` with no evidence path — `unverifiable` names evidence that must ship in this diff, so it escalates an APPROVED verdict.' as const;
+
+export function formatAcEvidenceOperatorStepDiagnostic(declaration: string): string {
+  return MSG_AC_EVIDENCE_OPERATOR_STEP.replace('{declaration}', () => declaration);
+}
+
+/** The remediation line for that criterion. */
+export const MSG_AC_EVIDENCE_OPERATOR_STEP_REMEDY =
+  'Report {ac} as `out-of-scope` with no path (the plan declares it out of scope), or cite tracked evidence for it in this diff.' as const;
+
+export function formatAcEvidenceOperatorStepRemedy(ac: string): string {
+  return MSG_AC_EVIDENCE_OPERATOR_STEP_REMEDY.replace('{ac}', () => ac);
+}
+
+/** The summary clause that names `out-of-scope` for the declared entries. */
+export const MSG_AC_EVIDENCE_OPERATOR_STEP_SUMMARY =
+  'The plan declares {count} of them out of scope: report such a criterion `out-of-scope`, never `unverifiable`.' as const;
+
+export function formatAcEvidenceOperatorStepSummary(count: number): string {
+  return MSG_AC_EVIDENCE_OPERATOR_STEP_SUMMARY.replace('{count}', String(count));
+}
+
 /** The unmeasured-change-set note (never converted into a false failure). */
 export const MSG_AC_EVIDENCE_UNMEASURED =
   'The delivered change set could not be measured against base "{base}", so tracked-file evidence was not verified this round.' as const;
@@ -5129,7 +5173,8 @@ export function formatAcEvidenceExample(): string {
   return [
     `${AC_EVIDENCE_MARKER}`,
     `- AC1: ${AC_EVIDENCE_STATUS_MET} — \`src/domain/plan-deviation.ts\`, \`tests/domain/plan-deviation.test.ts\``,
-    `- AC6: ${AC_EVIDENCE_STATUS_UNVERIFIABLE} — \`artifacts/plans/425-task-plan/implementation_plan.md\``
+    `- AC2: ${AC_EVIDENCE_STATUS_UNVERIFIABLE} — \`src/domain/missing-module.ts\``,
+    `- AC4: ${AC_EVIDENCE_STATUS_OUT_OF_SCOPE} — the plan declares Step 11 an operator step, so no delivered path exists`
   ].join('\n');
 }
 

@@ -22,6 +22,11 @@
  * DOC11 - the refutation paragraph in BOTH skills states the APPROVED scope and
  *         the stderr surface (it can never claim to rescue CHANGES_REQUESTED,
  *         and it can never be silent)
+ *
+ * Issue #506 adds the shared three-status AC_EVIDENCE vocabulary:
+ *
+ * DOC14 - every shipped reviewer surface teaches met, unverifiable and
+ *         out-of-scope, and the worked example parses
  */
 
 const { describe, test } = require('node:test');
@@ -30,7 +35,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { printHelp } = require('../../dist/presentation/cli');
-const { DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT } = require('../../dist/domain');
+const {
+  DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT,
+  REVIEWER_AC_EVIDENCE_STATUS_CONTRACT,
+  formatAcEvidenceExample,
+  parseAcEvidence
+} = require('../../dist/domain');
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
@@ -212,5 +222,18 @@ describe('--critique-report documentation contract', () => {
       assert.ok(text.includes('--commit'), name + ' does not name --commit');
       assert.ok(text.includes('.provenance.json'), name + ' does not name the provenance sidecar');
     }
+  });
+
+  test('DOC14 every shipped reviewer surface teaches met, unverifiable and out-of-scope, and the example parses (#506 AC1)', () => {
+    const filePrompt = fs.readFileSync(path.join(PROJECT_ROOT, 'prompts', 'reviewer.md'), 'utf8');
+    const defaultPrompt = DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+
+    assert.ok(filePrompt.includes(REVIEWER_AC_EVIDENCE_STATUS_CONTRACT), 'prompts/reviewer.md is missing the shared status contract');
+    assert.ok(defaultPrompt.includes(REVIEWER_AC_EVIDENCE_STATUS_CONTRACT), 'the default reviewer prompt is missing the shared status contract');
+
+    const report = parseAcEvidence(formatAcEvidenceExample());
+    assert.deepStrictEqual(report.entries.map((entry: any) => entry.status), ['met', 'unverifiable', 'out-of-scope']);
+    const outOfScope = report.entries.find((entry: any) => entry.status === 'out-of-scope');
+    assert.deepStrictEqual([...outOfScope.paths], []);
   });
 });
