@@ -90,4 +90,33 @@ describe('detectRootBuildCommand (issue #402)', () => {
     assert.strictEqual(detectRootBuildCommand(''), null);
     assert.strictEqual(detectRootBuildCommand('   \n  '), null);
   });
+
+  test('RBC9 a quoted build command literal is not a build', () => {
+    assert.strictEqual(detectRootBuildCommand('grep -rn "npm run build" README.md'), null);
+    assert.strictEqual(detectRootBuildCommand('node -e \'console.log("npm test")\''), null);
+    assert.strictEqual(
+      detectRootBuildCommand('grep -c "Run \'npm run build\' to apply updates" tests/x.ts'),
+      null
+    );
+  });
+
+  test('RBC10 a real build at command position is still refused', () => {
+    assert.strictEqual(detectRootBuildCommand('cd x && npm run build').label, 'npm run build');
+    assert.strictEqual(detectRootBuildCommand('npx tsc --outDir ./dist').label, 'tsc');
+    assert.strictEqual(
+      detectRootBuildCommand('npm run build >/dev/null 2>&1 && node -e "1"').label,
+      'npm run build'
+    );
+  });
+
+  test('RBC11 a build behind a command wrapper is still refused by name', () => {
+    assert.strictEqual(detectRootBuildCommand('npx vite build').label, 'vite build');
+    assert.strictEqual(detectRootBuildCommand('npx --yes tsc').label, 'tsc');
+    assert.strictEqual(detectRootBuildCommand('npm exec tsc').label, 'tsc');
+    assert.strictEqual(detectRootBuildCommand('pnpm dlx tsc').label, 'tsc');
+    assert.strictEqual(detectRootBuildCommand('env tsc').label, 'tsc');
+    assert.strictEqual(detectRootBuildCommand('npx webpack').label, 'webpack');
+    assert.strictEqual(detectRootBuildCommand('npx next build').label, 'next build');
+    assert.strictEqual(detectRootBuildCommand('npx rollup -c').label, 'rollup -c');
+  });
 });

@@ -902,6 +902,65 @@ describe('assertPlanBaselineContract (issue #388)', () => {
     );
   });
 
+  test('PBC15 a claim that greps a quoted build command literal is measured, not refused', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'notice-pins-one',
+          declared: '1',
+          command: `grep -c "Run 'npm run build' to apply updates" src/domain/constants.ts`,
+          output: '1'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: '1\n' });
+
+    await assert.doesNotReject(() =>
+      assertPlanBaselineContract({
+        planGenerator: planGeneratorFor(planPath),
+        planPath,
+        workspaceDir: root,
+        commandExecutor: executor
+      })
+    );
+    assert.strictEqual(executor.calls.length, 1);
+  });
+
+  test('PBC17 a wrapped build claim is refused before any executor call', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithClaims([
+        {
+          id: 'wrapped-build',
+          declared: 'built',
+          command: 'npx --yes tsc',
+          output: 'built'
+        }
+      ]),
+      'utf8'
+    );
+    const executor = executorReturning({ stdout: 'built\n' });
+
+    await assert.rejects(
+      () =>
+        assertPlanBaselineContract({
+          planGenerator: planGeneratorFor(planPath),
+          planPath,
+          workspaceDir: root,
+          commandExecutor: executor
+        }),
+      (err: any) => {
+        assert.strictEqual(err.field, 'planBaseline');
+        assert.ok(err.message.includes('wrapped-build'), err.message);
+        assert.ok(err.message.includes('tsc'), err.message);
+        return true;
+      }
+    );
+    assert.strictEqual(executor.calls.length, 0, 'a wrapped build executes nothing');
+  });
+
   test('PBC16: the documented scratch out-dir form is measured in the workspace cwd', async () => {
     const scratchDir = path.join(os.homedir(), '.cache', 'agyloop', 'baseline-418', 'dist');
     fs.mkdirSync(scratchDir, { recursive: true });
