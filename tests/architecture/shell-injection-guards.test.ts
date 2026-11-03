@@ -69,7 +69,14 @@ describe('Shell injection fitness guards (#262)', () => {
 
   test('G2: the free-text gateway methods use the argv path, never a shell string', () => {
     const source = fs.readFileSync(GATEWAY_FILE, 'utf8');
-    const freeTextMethods = ['commentOnIssue', 'applyLabels', 'createPullRequest', 'findPullRequest'];
+    const freeTextMethods = [
+      'commentOnIssue',
+      'applyLabels',
+      'createPullRequest',
+      'findPullRequest',
+      'labelExists',
+      'createLabel'
+    ];
 
     for (const name of freeTextMethods) {
       const body = methodBody(source, name);

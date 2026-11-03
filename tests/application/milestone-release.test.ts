@@ -143,6 +143,7 @@ describe('MilestoneReleaseUseCase', () => {
         throw new Error('Should not call createPullRequest in dry-run mode');
       },
       applyLabels: async () => {},
+      labelExists: async () => true,
       commentOnIssue: async () => {},
       closeIssue: async () => {}
     };
@@ -204,6 +205,7 @@ describe('MilestoneReleaseUseCase', () => {
         };
       },
       applyLabels: async () => {},
+      labelExists: async () => true,
       commentOnIssue: async () => {},
       closeIssue: async () => {}
     };
@@ -400,6 +402,7 @@ describe('MilestoneReleaseUseCase', () => {
         labels: options.labels || []
       }),
       applyLabels: async () => {},
+      labelExists: async () => true,
       commentOnIssue: async () => {},
       closeIssue: async () => {}
     };
@@ -416,5 +419,362 @@ describe('MilestoneReleaseUseCase', () => {
     });
 
     assert.strictEqual(result.openInFlightPrsCount, 1);
+  });
+
+  test('provisions a missing release label before opening the PR (#502 AC1)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+    const createLabelCalls: string[] = [];
+    let prCreatedWith: any = null;
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => commits
+    });
+
+    const mockGithub: GitHubGateway = {
+      getCurrentRepo: () => 'org/repo',
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Issue',
+        body: '',
+        labels: [],
+        comments: []
+      }),
+      findPullRequest: async () => null,
+      labelExists: async () => false,
+      createLabel: (name: string) => {
+        createLabelCalls.push(name);
+      },
+      createPullRequest: async (options: CreatePullRequestOptions): Promise<GitHubPullRequestData> => {
+        prCreatedWith = options;
+        return {
+          number: 107,
+          title: options.title,
+          url: 'https://github.com/org/repo/pull/107',
+          state: 'OPEN',
+          headRefName: options.headBranch,
+          baseRefName: options.baseBranch,
+          merged: false,
+          labels: options.labels || []
+        };
+      },
+      applyLabels: async () => {},
+      commentOnIssue: async () => {},
+      closeIssue: async () => {}
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      mockGithub,
+      makeMockConfig(),
+      makeMockExecutor()
+    );
+
+    const result = await useCase.execute({ phaseBranch: 'phase/1-bridge' });
+
+    assert.strictEqual(createLabelCalls.length, 1);
+    assert.strictEqual(createLabelCalls[0], RELEASE_LABEL_MINOR);
+    assert.deepStrictEqual(prCreatedWith.labels, [RELEASE_LABEL_MINOR]);
+    assert.strictEqual(result.labelPrecondition?.provisioned, true);
+  });
+
+  test('refuses with a named error when the release label is missing and cannot be created (#502 AC1)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+    let createPullRequestCalls = 0;
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => commits
+    });
+
+    const mockGithub: GitHubGateway = {
+      getCurrentRepo: () => 'org/repo',
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Issue',
+        body: '',
+        labels: [],
+        comments: []
+      }),
+      findPullRequest: async () => null,
+      labelExists: async () => false,
+      createPullRequest: async (options: CreatePullRequestOptions): Promise<GitHubPullRequestData> => {
+        createPullRequestCalls += 1;
+        return {
+          number: 108,
+          title: options.title,
+          url: 'https://github.com/org/repo/pull/108',
+          state: 'OPEN',
+          headRefName: options.headBranch,
+          baseRefName: options.baseBranch,
+          merged: false,
+          labels: options.labels || []
+        };
+      },
+      applyLabels: async () => {},
+      commentOnIssue: async () => {},
+      closeIssue: async () => {}
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      mockGithub,
+      makeMockConfig(),
+      makeMockExecutor()
+    );
+
+    await assert.rejects(
+      async () => {
+        await useCase.execute({ phaseBranch: 'phase/1-bridge' });
+      },
+      (err: any) => {
+        assert(err instanceof MilestoneReleaseError);
+        assert.match(err.message, /gh label create release:minor/);
+        return true;
+      }
+    );
+    assert.strictEqual(createPullRequestCalls, 0);
+  });
+
+  test('a gateway without label lookup refuses instead of predicting the PR (#502 AC1, AC2)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => commits
+    });
+
+    const mockGithub: GitHubGateway = {
+      getCurrentRepo: () => 'org/repo',
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Issue',
+        body: '',
+        labels: [],
+        comments: []
+      }),
+      findPullRequest: async () => null,
+      createPullRequest: async (options: CreatePullRequestOptions): Promise<GitHubPullRequestData> => ({
+        number: 109,
+        title: options.title,
+        url: 'https://github.com/org/repo/pull/109',
+        state: 'OPEN',
+        headRefName: options.headBranch,
+        baseRefName: options.baseBranch,
+        merged: false,
+        labels: options.labels || []
+      }),
+      applyLabels: async () => {},
+      commentOnIssue: async () => {},
+      closeIssue: async () => {}
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      mockGithub,
+      makeMockConfig(),
+      makeMockExecutor()
+    );
+
+    await assert.rejects(
+      async () => {
+        await useCase.execute({ phaseBranch: 'phase/1-bridge', dryRun: true });
+      },
+      (err: any) => {
+        assert(err instanceof MilestoneReleaseError);
+        assert.match(err.message, /no label lookup/);
+        return true;
+      }
+    );
+  });
+
+  test('dry-run reports a missing release label as provision-on-run and never creates it (#502 AC2)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+    let createLabelCalls = 0;
+    let createPullRequestCalls = 0;
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => commits
+    });
+
+    const mockGithub: GitHubGateway = {
+      getCurrentRepo: () => 'org/repo',
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Issue',
+        body: '',
+        labels: [],
+        comments: []
+      }),
+      findPullRequest: async () => null,
+      labelExists: async () => false,
+      createLabel: () => {
+        createLabelCalls += 1;
+      },
+      createPullRequest: async (options: CreatePullRequestOptions): Promise<GitHubPullRequestData> => {
+        createPullRequestCalls += 1;
+        return {
+          number: 110,
+          title: options.title,
+          url: 'https://github.com/org/repo/pull/110',
+          state: 'OPEN',
+          headRefName: options.headBranch,
+          baseRefName: options.baseBranch,
+          merged: false,
+          labels: options.labels || []
+        };
+      },
+      applyLabels: async () => {},
+      commentOnIssue: async () => {},
+      closeIssue: async () => {}
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      mockGithub,
+      makeMockConfig(),
+      makeMockExecutor()
+    );
+
+    const result = await useCase.execute({ phaseBranch: 'phase/1-bridge', dryRun: true });
+
+    assert.strictEqual(result.labelPrecondition?.existed, false);
+    assert.strictEqual(result.labelPrecondition?.provisioned, false);
+    assert.match(result.message, /gh label create release:minor/);
+    assert.strictEqual(createLabelCalls, 0);
+    assert.strictEqual(createPullRequestCalls, 0);
+  });
+
+  test('an existing release label is verified and the PR argv is unchanged (#502 AC3)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+    let createLabelCalls = 0;
+    let prCreatedWith: any = null;
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => commits
+    });
+
+    const mockGithub: GitHubGateway = {
+      getCurrentRepo: () => 'org/repo',
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Issue',
+        body: '',
+        labels: [],
+        comments: []
+      }),
+      findPullRequest: async () => null,
+      labelExists: async () => true,
+      createLabel: () => {
+        createLabelCalls += 1;
+      },
+      createPullRequest: async (options: CreatePullRequestOptions): Promise<GitHubPullRequestData> => {
+        prCreatedWith = options;
+        return {
+          number: 111,
+          title: options.title,
+          url: 'https://github.com/org/repo/pull/111',
+          state: 'OPEN',
+          headRefName: options.headBranch,
+          baseRefName: options.baseBranch,
+          merged: false,
+          labels: options.labels || []
+        };
+      },
+      applyLabels: async () => {},
+      commentOnIssue: async () => {},
+      closeIssue: async () => {}
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      mockGithub,
+      makeMockConfig(),
+      makeMockExecutor()
+    );
+
+    const result = await useCase.execute({ phaseBranch: 'phase/1-bridge' });
+
+    assert.strictEqual(createLabelCalls, 0);
+    assert.deepStrictEqual(prCreatedWith.labels, [RELEASE_LABEL_MINOR]);
+    assert.strictEqual(result.labelPrecondition?.existed, true);
+    assert.strictEqual(result.labelPrecondition?.provisioned, false);
+  });
+
+  test('--refresh provisions the label before applying it to the existing PR (#502 AC1)', async () => {
+    const commits = ['feat(bridge): implement websocket handler'];
+    let createLabelCalls = 0;
+    let appliedLabels: string[] | null = null;
+
+    const existingPr: GitHubPullRequestData = {
+      number: 112,
+      title: 'release: Milestone Release phase/1-bridge',
+      state: 'OPEN',
+      url: 'https://github.com/org/repo/pull/112',
+      headRefName: 'phase/1-bridge',
+      baseRefName: 'main',
+      merged: false,
+      labels: []
+    };
+
+    const mockWorktree = makeMockWorktree({
+      listBranches: async () => ['main', 'phase/1-bridge'],
+      getCommitsBetween: async () => commits
+    });
+
+    const mockGithub: GitHubGateway = {
+      getCurrentRepo: () => 'org/repo',
+      fetchIssue: async (num: number): Promise<GitHubIssueData> => ({
+        repo: 'org/repo',
+        number: num,
+        title: 'Issue',
+        body: '',
+        labels: [],
+        comments: []
+      }),
+      findPullRequest: async (opts: FindPullRequestOptions): Promise<GitHubPullRequestData | null> => {
+        if (opts.headBranch === 'phase/1-bridge' && opts.baseBranch === 'main') return existingPr;
+        return null;
+      },
+      labelExists: async () => false,
+      createLabel: () => {
+        createLabelCalls += 1;
+      },
+      createPullRequest: async (options: CreatePullRequestOptions): Promise<GitHubPullRequestData> => ({
+        number: 113,
+        title: options.title,
+        url: 'https://github.com/org/repo/pull/113',
+        state: 'OPEN',
+        headRefName: options.headBranch,
+        baseRefName: options.baseBranch,
+        merged: false,
+        labels: options.labels || []
+      }),
+      applyLabels: async (_target: number, labels: readonly string[]) => {
+        appliedLabels = [...labels];
+      },
+      commentOnIssue: async () => {},
+      closeIssue: async () => {}
+    };
+
+    const useCase = new MilestoneReleaseUseCase(
+      mockWorktree,
+      mockGithub,
+      makeMockConfig(),
+      makeMockExecutor()
+    );
+
+    const result = await useCase.execute({ phaseBranch: 'phase/1-bridge', refresh: true });
+
+    assert.strictEqual(createLabelCalls, 1);
+    assert.deepStrictEqual(appliedLabels, [RELEASE_LABEL_MINOR]);
+    assert.strictEqual(result.pullRequest?.number, 112);
   });
 });

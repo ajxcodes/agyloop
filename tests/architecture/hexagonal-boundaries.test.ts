@@ -271,6 +271,8 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
           'findPullRequest',
           'createPullRequest',
           'applyLabels',
+          'labelExists',
+          'createLabel',
           'commentOnIssue',
           'closeIssue'
         ]

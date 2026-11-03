@@ -6,7 +6,8 @@
  * 2. Checks for unmerged in-flight PRs targeting the collector branch
  * 3. Extracts commits and computes SemVer bump (MAJOR > MINOR > PATCH)
  * 4. Compiles sanitized, categorized Markdown changelog
- * 5. Opens or updates Milestone PR targeting main with release label (release:minor, etc.)
+ * 5. Provisions/verifies the release label, then opens or updates Milestone PR
+ *    targeting main with that label (release:minor, etc.)
  *
  * Strict Hexagonal Architecture: Depends exclusively on Domain and Ports. Zero direct I/O.
  */
@@ -16,7 +17,9 @@ import {
   SemVerEvaluationResult,
   MilestoneReleaseError,
   PublicSanitizer,
-  NOTE_RELEASE_NOTES_DEPENDENCY
+  NOTE_RELEASE_NOTES_DEPENDENCY,
+  releaseLabelCreateCommand,
+  releaseLabelDefinition
 } from '../domain';
 import {
   WorktreeManagerPort,
@@ -35,6 +38,22 @@ export interface MilestoneReleaseParams {
   readonly configPath?: string | null;
 }
 
+/**
+ * The release-label precondition this run enforced (issue #502, AC1/AC2).
+ *
+ * `existed === false && provisioned === false` is the DRY-RUN verdict: the
+ * label is absent and the real run would create it. The renderer reads this
+ * object instead of re-deriving a promise from `evaluation.releaseLabel`.
+ */
+export interface ReleaseLabelPrecondition {
+  readonly label: string;
+  readonly repo: string | null;
+  readonly existed: boolean;
+  readonly provisioned: boolean;
+  /** The exact `gh label create …` command that provisions this label. */
+  readonly remedyCommand: string;
+}
+
 export interface MilestoneReleaseResult {
   readonly success: boolean;
   readonly phaseBranch: string;
@@ -50,6 +69,7 @@ export interface MilestoneReleaseResult {
   readonly message: string;
   readonly dryRun: boolean;
   readonly openInFlightPrsCount: number;
+  readonly labelPrecondition?: ReleaseLabelPrecondition;
 }
 
 export class MilestoneReleaseUseCase {
@@ -147,6 +167,17 @@ export class MilestoneReleaseUseCase {
       milestoneTitle
     });
 
+    // 5b. Resolve the release-label precondition (issue #502, AC1/AC2).
+    //
+    // ONE call site for the dry run and the real run: the preview can never
+    // validate a different precondition than the run it previews. Dry-run is
+    // read-only (existence check only).
+    const labelPrecondition = await this.ensureReleaseLabel(
+      evaluation.releaseLabel,
+      cwd,
+      params.dryRun === true
+    );
+
     // 6. Dry-run early exit
     if (params.dryRun) {
       return {
@@ -155,9 +186,10 @@ export class MilestoneReleaseUseCase {
         baseBranch,
         baseRefUsed,
         evaluation,
-        message: `[DRY RUN] Would create Milestone PR from '${phaseBranch}' to '${baseBranch}' with label '${evaluation.releaseLabel}'.`,
+        message: `[DRY RUN] Would create Milestone PR from '${phaseBranch}' to '${baseBranch}' with label '${evaluation.releaseLabel}'.${this.describeLabelPrecondition(labelPrecondition)}`,
         dryRun: true,
-        openInFlightPrsCount
+        openInFlightPrsCount,
+        labelPrecondition
       };
     }
 
@@ -231,7 +263,8 @@ export class MilestoneReleaseUseCase {
       pullRequest,
       message: `Milestone Release PR prepared: ${phaseBranch} ➔ ${baseBranch} (${evaluation.releaseLabel}).`,
       dryRun: false,
-      openInFlightPrsCount
+      openInFlightPrsCount,
+      labelPrecondition
     };
   }
 
@@ -274,6 +307,99 @@ export class MilestoneReleaseUseCase {
       return res.exitCode === 0;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * The label precondition as one sentence, or '' when no PR path is reachable.
+   */
+  private describeLabelPrecondition(precondition?: ReleaseLabelPrecondition): string {
+    if (!precondition) return '';
+    const where = precondition.repo ? ` in ${precondition.repo}` : '';
+    if (precondition.existed) {
+      return ` Release label '${precondition.label}' verified${where}.`;
+    }
+    return ` Release label '${precondition.label}' does not exist yet${where}; the real run will create it with: ${precondition.remedyCommand}`;
+  }
+
+  /**
+   * Resolves the release label BEFORE any PR is created or refreshed
+   * (issue #502, AC1/AC2).
+   *
+   * - present            -> verified, nothing is written
+   * - absent + dry-run   -> reported as "would be provisioned", nothing written
+   * - absent + real run  -> `createLabel` (idempotent), or a NAMED refusal that
+   *                         quotes the exact `gh label create` command
+   *
+   * A gateway that can create PRs but cannot look a label up is a refusal, not
+   * a silent pass: this run cannot prove the PR would open.
+   */
+  private async ensureReleaseLabel(
+    label: string,
+    cwd: string,
+    dryRun: boolean
+  ): Promise<ReleaseLabelPrecondition | undefined> {
+    const gateway = this.githubGateway;
+    if (!gateway || !gateway.createPullRequest) return undefined;
+
+    const repo = await this.resolveRepo(cwd);
+    const remedyCommand = releaseLabelCreateCommand(label, repo);
+    const where = repo ? ` in ${repo}` : '';
+
+    if (!gateway.labelExists) {
+      throw new MilestoneReleaseError(
+        `Cannot verify release label '${label}'${where}: the GitHub gateway provides no label lookup, so this run cannot prove the milestone PR would open. Create it with: ${remedyCommand}`
+      );
+    }
+
+    let existed: boolean;
+    try {
+      existed = await gateway.labelExists(label, { cwd });
+    } catch (err: unknown) {
+      throw new MilestoneReleaseError(
+        `Cannot verify release label '${label}'${where}. Ensure 'gh' is authenticated (gh auth status), or create it with: ${remedyCommand}`,
+        { label },
+        err
+      );
+    }
+
+    if (existed) {
+      return { label, repo, existed: true, provisioned: false, remedyCommand };
+    }
+    if (dryRun) {
+      return { label, repo, existed: false, provisioned: false, remedyCommand };
+    }
+    if (!gateway.createLabel) {
+      throw new MilestoneReleaseError(
+        `Release label '${label}' does not exist${where} and this gateway cannot create it, so the milestone PR would be refused. Create it with: ${remedyCommand}`
+      );
+    }
+
+    try {
+      const definition = releaseLabelDefinition(label);
+      await gateway.createLabel(label, {
+        cwd,
+        color: definition?.color,
+        description: definition?.description
+      });
+    } catch (err: unknown) {
+      throw new MilestoneReleaseError(
+        `Failed to create release label '${label}'${where}. Create it with: ${remedyCommand}`,
+        { label },
+        err
+      );
+    }
+
+    return { label, repo, existed: false, provisioned: true, remedyCommand };
+  }
+
+  /** The repo slug for the remedy text; never throws. */
+  private async resolveRepo(cwd: string): Promise<string | null> {
+    try {
+      if (!this.githubGateway || !this.githubGateway.getCurrentRepo) return null;
+      return (await this.githubGateway.getCurrentRepo(cwd)) ?? null;
+    } catch {
+      return null;
     }
   }
 }

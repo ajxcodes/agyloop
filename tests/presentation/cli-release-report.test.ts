@@ -24,7 +24,20 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 interface Sandbox {
   readonly dir: string;
   readonly phaseBranch: string;
+  readonly binDir: string;
 }
+
+/**
+ * A fake `gh` first on PATH: the dry run now verifies the release label
+ * (issue #502), so the report suite must not depend on the host's `gh` auth.
+ */
+const FAKE_GH = `#!/bin/sh
+case "$1 $2" in
+  "label list") printf '%s' '[{"name":"release:minor"}]' ;;
+  "pr list") printf '[]' ;;
+esac
+exit 0
+`;
 
 function makeSandbox(): Sandbox {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-release-report-'));
@@ -47,7 +60,10 @@ function makeSandbox(): Sandbox {
   git(['commit', '-qm', 'fix(release): handle the thing']);
 
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  return { dir, phaseBranch };
+  const binDir = path.join(dir, '.bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, 'gh'), FAKE_GH, { mode: 0o755 });
+  return { dir, phaseBranch, binDir };
 }
 
 function runRelease(sandbox: Sandbox, args: string[]) {
@@ -57,7 +73,8 @@ function runRelease(sandbox: Sandbox, args: string[]) {
     env: {
       ...process.env,
       HOME: path.join(sandbox.dir, '.home'),
-      AGY_SUBAGENT: ''
+      AGY_SUBAGENT: '',
+      PATH: `${sandbox.binDir}:${process.env.PATH || ''}`
     }
   });
 }
