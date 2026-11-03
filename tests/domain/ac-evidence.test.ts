@@ -119,4 +119,67 @@ describe('AC evidence (issue #432)', () => {
       ['AC1']
     );
   });
+
+  test('AE10 a backticked literal beside delivered paths is note text, not evidence (issue #464)', () => {
+    const report = parseAcEvidence(
+      [
+        'AC_EVIDENCE:',
+        '- AC1: met — `src/app.ts`, `tests/app.test.ts` (SCD1 records `protocol-not-declared`)'
+      ].join('\n')
+    );
+    const entry = report.entries[0];
+    assert.deepStrictEqual([...entry.paths], ['src/app.ts', 'tests/app.test.ts']);
+    assert.strictEqual(entry.note, '(SCD1 records `protocol-not-declared`)');
+
+    const met = classifyAcEvidence(
+      entry,
+      { measured: true, paths: ['src/app.ts', 'tests/app.test.ts'] },
+      process.cwd()
+    );
+    assert.strictEqual(met.status, 'met');
+    assert.deepStrictEqual([...met.unverifiablePaths], []);
+  });
+
+  test('AE11 a backticked path-shaped citation absent from the set still escalates, naming it (issue #464)', () => {
+    const report = parseAcEvidence(
+      'AC_EVIDENCE:\n- AC1: met — `src/domain/missing.ts:42`'
+    );
+    const classified = classifyAcEvidence(
+      report.entries[0],
+      { measured: true, paths: ['src/app.ts'] },
+      process.cwd()
+    );
+    assert.strictEqual(classified.status, 'unverifiable');
+    assert.deepStrictEqual([...classified.unverifiablePaths], ['src/domain/missing.ts:42']);
+  });
+
+  test('AE12 a backticked commit-excluded path still escalates (issue #464)', () => {
+    const report = parseAcEvidence(
+      [
+        'AC_EVIDENCE:',
+        '- AC1: met — `artifacts/plans/464-task-plan/implementation_plan.md`',
+        '- AC2: met — `.agyloop/critique/464.json`',
+        '- AC3: met — `node_modules/left-pad/index.js`'
+      ].join('\n')
+    );
+    const changeSet = { measured: true, paths: [] as string[] };
+    for (const entry of report.entries) {
+      const classified = classifyAcEvidence(entry, changeSet, process.cwd());
+      assert.strictEqual(classified.status, 'unverifiable');
+      assert.deepStrictEqual([...classified.unverifiablePaths], [...entry.paths]);
+    }
+  });
+
+  test('AE13 shell fragments, flags and identifiers in backticks are never evidence (issue #464)', () => {
+    const report = parseAcEvidence(
+      'AC_EVIDENCE:\n- AC1: met — `src/app.ts`; literals: `--workspace`, `--help`, `--version`, `mktemp -d "$SANDBOX/smoke-464"`, `executable: true`, `AC4`'
+    );
+    assert.deepStrictEqual([...report.entries[0].paths], ['src/app.ts']);
+    const met = classifyAcEvidence(
+      report.entries[0],
+      { measured: true, paths: ['src/app.ts'] },
+      process.cwd()
+    );
+    assert.strictEqual(met.status, 'met');
+  });
 });
