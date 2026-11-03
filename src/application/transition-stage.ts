@@ -76,7 +76,10 @@ import {
   resolvePlanDigest
 } from './plan-digest-contract';
 import { assertSmokeProtocolContract as enforceSmokeProtocolContract } from './smoke-protocol-contract';
-import { assertPlanTestRegisterContract as enforcePlanTestRegisterContract } from './plan-test-register-contract';
+import {
+  assertPlanTestRegisterContract as enforcePlanTestRegisterContract,
+  resolveTestRegisterBaseRef
+} from './plan-test-register-contract';
 import { assertPlanEvidenceContract as enforcePlanEvidenceContract } from './plan-evidence-contract';
 
 export interface TransitionParams {
@@ -924,6 +927,13 @@ export class TransitionStageUseCase {
       sourceFileReader: this.sourceFileReader,
       planPath: resolved.planPath,
       workspaceDir: params.workspaceDir || process.cwd(),
+      // Issue #489: identical candidate order to `codeloop implement`, so the
+      // two entry points cannot drift into different verdicts.
+      baseRef: resolveTestRegisterBaseRef([
+        params.baseBranch,
+        sm.baseBranch,
+        sm.worktree ? sm.worktree.baseBranch : null
+      ]),
       dryRun: params.dryRun
     });
   }

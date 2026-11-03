@@ -7,12 +7,18 @@
  * `codeloop transition APPROVAL`) must emit the IDENTICAL refusal, so the
  * enforcement lives here and each caller keeps its own plan resolution.
  *
+ * A `Pins:` row resolves against the DELIVERED worktree; a `New test:` row is
+ * judged against the BASE revision, so a plan re-approved after
+ * `IMPLEMENT -> PLAN` is not refused for the tests its own implementation
+ * added (issue #489). Only an UNRESOLVABLE base falls back to the worktree.
+ *
  * A plan with no `Test Register` section is untouched (legacy plans, AC7).
  */
 
 import {
   MSG_PLAN_TEST_REGISTER_CONTRADICTION,
   MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW,
+  MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE,
   MSG_PLAN_TEST_REGISTER_EMPTY,
   MSG_PLAN_TEST_REGISTER_MISSING_MARKER,
   MSG_PLAN_TEST_REGISTER_UNRESOLVABLE,
@@ -22,7 +28,7 @@ import {
   readTestRegister,
   type TestRegisterRow
 } from '../domain';
-import { PlanGeneratorPort, SourceFileReaderPort } from '../ports';
+import { PlanGeneratorPort, RevisionReadResult, SourceFileReaderPort } from '../ports';
 
 export interface PlanTestRegisterContractParams {
   readonly planGenerator?: PlanGeneratorPort;
@@ -34,7 +40,37 @@ export interface PlanTestRegisterContractParams {
   readonly sourceFileReader?: SourceFileReaderPort;
   readonly planPath: string | null;
   readonly workspaceDir: string;
+  /**
+   * The base reference a `New test:` row is judged against (issue #489). Both
+   * approval entry points resolve it through `resolveTestRegisterBaseRef`, so a
+   * re-approval over the implementation's dirty worktree compares the title
+   * with the base instead of with the implementation's own new tests.
+   */
+  readonly baseRef?: string | null;
   readonly dryRun?: boolean;
+}
+
+/** The reference used when neither the CLI nor the checkpoint supplies one. */
+const DEFAULT_TEST_REGISTER_BASE_REF = 'main';
+
+/**
+ * The base revision a `New test:` row is judged against (issue #489).
+ *
+ * Order: an explicit `--base-branch`, the base branch recorded on the
+ * checkpoint, the worktree descriptor's base branch, then `main` — the same
+ * fallback chain `probeImplementationDiff` uses for the review diff
+ * (run-lifecycle.ts `params.baseRef ?? params.baseBranch ?? sm.baseBranch ??
+ * 'main'`). ONE owner for the trimming and the default, so the two approval
+ * entry points cannot disagree.
+ */
+export function resolveTestRegisterBaseRef(
+  candidates: ReadonlyArray<string | null | undefined>
+): string {
+  for (const candidate of candidates) {
+    const trimmed = String(candidate ?? '').trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return DEFAULT_TEST_REGISTER_BASE_REF;
 }
 
 function format(template: string, values: Record<string, string>): string {
@@ -43,6 +79,30 @@ function format(template: string, values: Record<string, string>): string {
 
 function missingMarker(row: TestRegisterRow): string {
   return format(MSG_PLAN_TEST_REGISTER_MISSING_MARKER, { row: row.id });
+}
+
+/**
+ * Reads `path` at `revision`.
+ *
+ * `absent` is a VERDICT (the revision resolved and the path is not in it), so
+ * only `unavailable` reaches the caller's working-tree fallback. A reader
+ * without the capability is `unavailable` too: the guard degrades to the
+ * pre-#489 rule, it never widens.
+ */
+function readAtRevision(
+  reader: SourceFileReaderPort,
+  path: string,
+  workspaceDir: string,
+  revision: string
+): RevisionReadResult {
+  if (typeof reader.readAtRevision !== 'function') {
+    return { status: 'unavailable', reason: 'the source reader cannot resolve a revision' };
+  }
+  try {
+    return reader.readAtRevision(path, workspaceDir, revision);
+  } catch (err: unknown) {
+    return { status: 'unavailable', reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
@@ -120,6 +180,42 @@ export function assertPlanTestRegisterContract(params: PlanTestRegisterContractP
     }
 
     if (row.newTest && sourceFileReader) {
+      // Issue #489: the base revision decides whether the title already
+      // exists. Asking the delivered tree made a plan re-approved after
+      // IMPLEMENT -> PLAN refuse the very tests its implementation added.
+      const baseRef = resolveTestRegisterBaseRef([params.baseRef]);
+      const atBase = readAtRevision(
+        sourceFileReader,
+        row.newTest.path,
+        params.workspaceDir,
+        baseRef
+      );
+
+      if (atBase.status === 'found') {
+        const duplicate = extractTestBlock(atBase.content, row.newTest.title);
+        if (duplicate !== null) {
+          refusals.push(
+            format(MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE, {
+              row: row.id,
+              path: row.newTest.path,
+              title: row.newTest.title,
+              base: baseRef,
+              line: String(duplicate.line)
+            })
+          );
+        }
+        // The base answered: the worktree is the implementation's own work.
+        continue;
+      }
+
+      if (atBase.status === 'absent') {
+        // The revision resolved and does not contain the path: genuinely new.
+        continue;
+      }
+
+      // `unavailable`: no honest answer from the base (not a repository, an
+      // unknown ref, an unreadable object). Fail closed on the pre-#489 rule —
+      // the delivered tree decides.
       const source = sourceFileReader.read(row.newTest.path, params.workspaceDir);
       const duplicate = source === null ? null : extractTestBlock(source, row.newTest.title);
       if (duplicate !== null) {
