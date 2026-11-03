@@ -404,6 +404,12 @@ export function applyTwoTierInvariant(
   // AC, the refusal also quotes the declaration and names `out-of-scope`. The
   // verdict STILL escalates — matching free-form plan prose must never grant
   // acceptance — so only the diagnostic is sharpened, never `escalatedBy`.
+  //
+  // Issue #512: the diagnostic fires only for a POSITIVE declaration — the AC
+  // label must share a clause with a non-delivery predicate. A declaration that
+  // merely mentions the label (including one that says the AC is in scope)
+  // returns `null`, so the `declaration === null` branch below keeps the
+  // pre-#506 criterion and remediation byte-identical.
   if (unverifiable.length > 0 && verdict.isApproved()) {
     const criteria: string[] = [];
     const remediation: string[] = [];

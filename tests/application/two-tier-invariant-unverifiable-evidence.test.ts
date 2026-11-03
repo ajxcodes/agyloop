@@ -23,6 +23,11 @@ const CHANGE_SET = { measured: true, paths: ['src/app.ts', 'tests/app.test.ts'] 
 const DECLARATION =
   "Opening the real `phase/6-codeloop` PR during this run. AC4's label provisioning is an operator step (Step 11).";
 
+const GAP = 'AC1 — `src/domain/missing.ts`';
+const OPERATOR_GAP = 'AC4 — `ajxcodes/agyloop`';
+const IN_SCOPE_MENTION =
+  'Provisioning `release:*` labels from `codeloop init`. AC1 only requires the release path to provision-or-refuse; a startup validation in unrelated commands would make `status`/`next` depend on GitHub.';
+
 function textOf(outcome: any): string {
   return [
     outcome.verdict.summary,
@@ -116,5 +121,49 @@ describe('applyTwoTierInvariant - delivered AC evidence (issue #464)', () => {
     );
     assert.strictEqual(barePath.escalatedBy, 'unverifiable-evidence');
     assert.ok(!textOf(barePath).includes('out-of-scope'), textOf(barePath));
+  });
+
+  test('TUE6 a mention-only declaration keeps the pre-#506 refusal and never names out-of-scope (#512 AC2)', () => {
+    const outcome = applyTwoTierInvariant(approved(), null, undefined, [GAP], [IN_SCOPE_MENTION]);
+    assert.strictEqual(outcome.escalatedBy, 'unverifiable-evidence');
+    assert.strictEqual(outcome.verdict.status, VERDICT_CHANGES_REQUESTED);
+
+    const text = textOf(outcome);
+    assert.ok(!text.includes('out-of-scope'), text);
+    assert.ok(!text.includes('Report AC1 as'), text);
+    assert.ok(!text.includes(IN_SCOPE_MENTION), text);
+    assert.ok(
+      text.includes(`[Unverifiable evidence] ${GAP} is not in the delivered change set`),
+      text
+    );
+  });
+
+  test('TUE7 a mixed gap escalates both entries and sharpens only the positively declared one (#512 AC5)', () => {
+    const outcome = applyTwoTierInvariant(
+      approved(),
+      null,
+      undefined,
+      [GAP, OPERATOR_GAP],
+      [IN_SCOPE_MENTION, DECLARATION]
+    );
+    assert.strictEqual(outcome.escalatedBy, 'unverifiable-evidence');
+    assert.strictEqual(outcome.verdict.status, VERDICT_CHANGES_REQUESTED);
+
+    const criteria = outcome.verdict.unfulfilledCriteria;
+    const ac1 = criteria.find((entry: string) => entry.startsWith('[Unverifiable evidence] AC1 —'));
+    const ac4 = criteria.find((entry: string) => entry.startsWith('[Unverifiable evidence] AC4 —'));
+    assert.ok(ac1 !== undefined, criteria.join('\n'));
+    assert.ok(ac4 !== undefined, criteria.join('\n'));
+    assert.ok(!ac1.includes('out-of-scope'), ac1);
+    assert.ok(ac4.includes('out-of-scope'), ac4);
+    assert.ok(ac4.includes(DECLARATION), ac4);
+
+    const remediation = outcome.verdict.remediationGuidance.join('\n');
+    assert.ok(!remediation.includes('Report AC1 as'), remediation);
+    assert.ok(remediation.includes('Report AC4 as `out-of-scope`'), remediation);
+    assert.ok(
+      outcome.verdict.summary.includes('The plan declares 1 of them out of scope'),
+      outcome.verdict.summary
+    );
   });
 });

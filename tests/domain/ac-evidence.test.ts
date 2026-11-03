@@ -210,4 +210,25 @@ describe('AC evidence (issue #432)', () => {
       assert.strictEqual(classified.status, 'out-of-scope');
     }
   });
+
+  test('AE16 a declaration that merely mentions the AC is not a positive out-of-scope match (#512 AC1)', () => {
+    const IN_SCOPE_MENTION =
+      'Provisioning `release:*` labels from `codeloop init`. AC1 only requires the release path to provision-or-refuse; a startup validation in unrelated commands would make `status`/`next` depend on GitHub.';
+    const IN_SCOPE_SEQUEL =
+      'AC1 only requires that the detector sets the shape of verification.gates; it is not deferred.';
+    const OPERATOR_STEP = 'AC4 is an operator step performed after the change merges.';
+
+    assert.strictEqual(findOutOfScopeDeclarationForAc('AC1', [IN_SCOPE_MENTION]), null);
+    assert.strictEqual(findOutOfScopeDeclarationForAc('AC1', [IN_SCOPE_SEQUEL]), null);
+    assert.strictEqual(findOutOfScopeDeclarationForAc('AC4', [OPERATOR_STEP]), OPERATOR_STEP);
+    assert.strictEqual(findOutOfScopeDeclarationForAc('AC4', [DECLARATION]), DECLARATION);
+    assert.strictEqual(
+      findOutOfScopeDeclarationForAc('AC4', ['AC4 is not out of scope; the handler must ship.']),
+      null
+    );
+    assert.strictEqual(
+      findOutOfScopeDeclarationForAc('AC1', [IN_SCOPE_MENTION, 'AC1 is an operator step.']),
+      'AC1 is an operator step.'
+    );
+  });
 });
