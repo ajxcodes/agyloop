@@ -10,6 +10,8 @@ const { parseArguments } = require('../dist/presentation');
 const {
   evaluateStaleDist,
   commandFromArgv,
+  wantsHelpOrVersion,
+  VALUE_FLAGS,
 } = require('../bin/stale-dist.js');
 
 interface FixtureOptions {
@@ -253,6 +255,85 @@ describe('Stale build refusal', () => {
         `Classifier disagrees with parseArguments for: ${JSON.stringify(argv)}`
       );
     }
+  });
+
+  test('refuses sync -- --help on a stale source checkout (AC1, issue #471)', () => {
+    const fixture = makeFixture();
+    try {
+      assert.strictEqual(wantsHelpOrVersion(['sync', '--', '--help']), false);
+      const res = spawnLauncher(fixture, 'codeloop.js', ['sync', '--', '--help']);
+      assertRefused(fixture, res, 'sync');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses commit behind a stdin - value flag (AC2, issue #471)', () => {
+    const fixture = makeFixture();
+    try {
+      for (const flag of ['--critique-report', '--report-file', '--deviation-file']) {
+        const res = spawnLauncher(fixture, 'codeloop.js', [flag, '-', 'commit']);
+        assertRefused(fixture, res, 'commit');
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps a bare - positional for a value flag that rejects stdin (AC2, issue #471)', () => {
+    const fixture = makeFixture();
+    try {
+      assert.strictEqual(commandFromArgv(['--ack', '-', 'commit']), '-');
+      assert.strictEqual(commandFromArgv(['--reason', '-', 'commit']), '-');
+      const res = spawnLauncher(fixture, 'codeloop.js', ['--ack', '-', 'commit']);
+      assert.strictEqual(res.status, 0, 'A non-stdin - value must not refuse');
+      assert.ok(
+        res.stderr.includes('Notice: src/ contains modifications newer than dist/'),
+        res.stderr
+      );
+      assert.ok(res.stdout.includes('STUB-SUCCESS'), res.stdout);
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('stops help/version detection at -- like parseArguments (AC3, issue #471)', () => {
+    const argvs = [
+      ['sync', '--', '--help'],
+      ['release', '--', '--version'],
+      ['sync', '--', '-h'],
+      ['--', '--help'],
+      ['release', '--help'],
+    ];
+    for (const argv of argvs) {
+      const parsed = parseArguments(argv);
+      assert.strictEqual(
+        commandFromArgv(argv),
+        parsed.command,
+        `Classifier disagrees with parseArguments for: ${JSON.stringify(argv)}`
+      );
+      assert.strictEqual(
+        wantsHelpOrVersion(argv),
+        Boolean(parsed.options.help || parsed.options.version),
+        `Help detection disagrees with parseArguments for: ${JSON.stringify(argv)}`
+      );
+    }
+    assert.strictEqual(wantsHelpOrVersion(['sync', '--', '--help']), false);
+  });
+
+  test('classifies a - value for every VALUE_FLAGS entry like parseArguments (AC3, issue #471)', () => {
+    for (const flag of VALUE_FLAGS as Set<string>) {
+      const argv = [flag, '-', 'commit'];
+      assert.strictEqual(
+        commandFromArgv(argv),
+        parseArguments(argv).command,
+        `Classifier disagrees for a '-' value of ${flag}: ${JSON.stringify(argv)}`
+      );
+    }
+    assert.strictEqual(commandFromArgv(['--critique-report', '-', 'commit']), 'commit');
+    assert.strictEqual(commandFromArgv(['--report-file', '-', 'commit']), 'commit');
+    assert.strictEqual(commandFromArgv(['--deviation-file', '-', 'commit']), 'commit');
+    assert.strictEqual(commandFromArgv(['--ack', '-', 'commit']), '-');
   });
 
   test('refuses sync through bin/agyloop.js (parity)', () => {
