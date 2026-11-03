@@ -455,17 +455,21 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
     assert.strictEqual(planGenerator.updates.length, 1);
     const update = planGenerator.updates[0].updateData;
     assert.strictEqual(update.reviewNote, undefined);
-    // Issue #338 (S4): the in-process cell names its clock, exactly like the
-    // dispatched path. A bare `0s` cannot say whether it is a wall clock or the
-    // gate's self-timer — the defect #325.3 removed from the dispatched row.
-    assert.match(
-      update.duration as string,
-      /^(?:\d+m )?\d+s \(gate-reported(?:; (?:\d+m )?\d+s wall)?\)$/
-    );
+    // Issue #338 (S4) / #376 (AC16): the Duration cell is ONE clock (the wall
+    // clock); the gate's self-timer (which may equal it on this path) renders as
+    // a named self-report note instead of being packed into the cell.
+    assert.match(update.duration as string, /^(?:\d+m )?\d+s$|^-$/);
     assert.strictEqual(
-      (update.duration as string).split(' (gate-reported')[0],
+      update.duration,
       formatStageDuration(result.totalDurationMs),
-      'the reported prefix is the measured total'
+      'the cell is the measured total for this path'
+    );
+    assert.strictEqual(update.round, 1, 'the first in-process gate round is round 1');
+    assert.ok(update.gateSelfReport, 'the gate self-timer must be reported as a named note');
+    assert.strictEqual(update.gateSelfReport!.round, 1);
+    assert.match(
+      update.gateSelfReport!.text,
+      /^(?:\d+m )?\d+s \(gate-reported(?:; (?:\d+m )?\d+s wall)?\)$/
     );
     // Issue #338 (S1/S3): the in-process round renders the SAME evidence set the
     // filed record carries — no per-check verdicts exist on this path, so the
@@ -2276,13 +2280,22 @@ describe('in-process gate row names its clock (issue #338)', () => {
 
       const summary = fs.readFileSync(summaryPath, 'utf8');
       const gateRow =
-        summary.split('\n').find((line: string) => line.startsWith('| 4. Quality Gate |')) ?? '';
+        summary.split('\n').find((line: string) => line.startsWith('| 5. Quality Gate |')) ?? '';
       assert.ok(gateRow.length > 0, `the gate row must exist, got:\n${summary}`);
       const cell = (gateRow.split('|')[5] ?? '').trim();
       assert.match(
         cell,
-        /^(?:\d+m )?\d+s \(gate-reported(?:; (?:\d+m )?\d+s wall)?\)$/,
-        `the in-process row must name its clock, got: "${cell}"`
+        /^(?:\d+m )?\d+s$/,
+        `the in-process row must carry ONE wall clock, got: "${cell}"`
+      );
+      assert.ok(
+        summary.includes('- **Quality Gate self-report (round 1):**'),
+        `the gate's own timer must render as a named note, got:\n${summary}`
+      );
+      assert.match(
+        summary,
+        /^- \*\*Quality Gate self-report \(round 1\):\*\* (?:\d+m )?\d+s \(gate-reported(?:; (?:\d+m )?\d+s wall)?\)$/m,
+        `the note must name the clock it shows, got:\n${summary}`
       );
       assert.ok(
         summary.includes('- **Smoke Protocol:**'),

@@ -51,10 +51,11 @@ describe('summary writer evidence (issue #284)', () => {
       for (const label of [
         '1. Discovery',
         '2. Plan Review',
-        '3. Implementation',
-        '4. Quality Gate',
-        '5. AI Review',
-        '6. Commit Gate'
+        '3. Plan Approval',
+        '4. Implementation',
+        '5. Quality Gate',
+        '6. AI Review',
+        '7. Commit Gate'
       ]) {
         const line = summary.split('\n').find((candidate: string) => candidate.startsWith(`| ${label} |`));
         assert.ok(line, `row '${label}' must exist, got:\n${summary}`);
@@ -77,7 +78,7 @@ describe('summary writer evidence (issue #284)', () => {
     }
   });
 
-  test('a second review round REPLACES the first — exactly one note, naming the base', () => {
+  test('a second review round keeps both notes and marks the latest current', () => {
     const { dir, summaryPath } = tempSummary();
     try {
       const generator = new FilePlanGenerator();
@@ -94,10 +95,13 @@ describe('summary writer evidence (issue #284)', () => {
 
       const summary = fs.readFileSync(summaryPath, 'utf8');
       const bullets = summary.match(/^- \*\*Round /gm) ?? [];
-      assert.strictEqual(bullets.length, 1, `exactly one review note expected, got:\n${summary}`);
-      assert.ok(summary.includes('Round 2'), `the surviving note must be round 2, got:\n${summary}`);
-      assert.ok(!summary.includes('Round 1'), `round 1 must be superseded, got:\n${summary}`);
-      assert.ok(!summary.includes('nil dereference'), `round 1's text must be gone, got:\n${summary}`);
+      assert.strictEqual(bullets.length, 2, `one note per round expected, got:\n${summary}`);
+      assert.ok(summary.includes('Round 1'), `round 1 must be kept, got:\n${summary}`);
+      assert.ok(summary.includes('CHANGES_REQUESTED'), `round 1's verdict must survive, got:\n${summary}`);
+      assert.ok(
+        summary.includes('Round 2 · APPROVED (current)'),
+        `the latest round must be marked current, got:\n${summary}`
+      );
       assert.ok(
         summary.includes('base `bbbbbbb`'),
         `the note must name the reviewed base commit, got:\n${summary}`
@@ -352,6 +356,230 @@ describe('summary writer metrics are this round’s (issue #338)', () => {
       assert.ok(
         summary.indexOf('- **Not Run:**') < reviewIndex,
         `metrics must never be appended into the review section, got:\n${summary}`
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Issue #376 (absorbing #396): the summary renders EVERY remediation round.
+ *
+ * `updateSummaryLog` rewrote the first matching stage row and `break`ed, so a
+ * run that went IMPLEMENT → QUALITY_GATE → REVIEW twice kept only round 2's
+ * numbers — the earlier round's duration and verdict vanished from the run's
+ * own deliverable. Rounds are now labelled rows and the Review Notes accumulate.
+ */
+describe('summary renders remediation rounds (issue #376, absorbing #396)', () => {
+  const note = (round: number, verdict: string, timestamp: string) => ({
+    round,
+    verdict,
+    baseCommit: '23544c9',
+    timestamp,
+    summary: `round ${round} ${verdict.toLowerCase()}`
+  });
+
+  function seedTwoRounds(generator: any, summaryPath: string): void {
+    generator.updateSummaryLog(summaryPath, {
+      stage: 'Implementation',
+      status: 'COMPLETED',
+      duration: '26m 29s',
+      round: 1
+    });
+    generator.updateSummaryLog(summaryPath, {
+      stage: 'Quality Gate',
+      status: 'COMPLETED',
+      duration: '2m 55s',
+      round: 1,
+      gateSelfReport: { round: 1, text: '1m 32s (gate-reported; 2m 55s wall)' }
+    });
+    generator.updateSummaryLog(summaryPath, {
+      stage: 'AI Review',
+      status: 'CHANGES_REQUESTED',
+      duration: '4m 45s',
+      round: 1,
+      reviewRecord: note(1, 'CHANGES_REQUESTED', '2026-11-03T01:28:40Z')
+    });
+    generator.updateSummaryLog(summaryPath, {
+      stage: 'Implementation',
+      status: 'COMPLETED',
+      duration: '4m 11s',
+      round: 2
+    });
+    generator.updateSummaryLog(summaryPath, {
+      stage: 'Quality Gate',
+      status: 'COMPLETED',
+      duration: '2m 55s',
+      round: 2,
+      gateSelfReport: { round: 2, text: '1m 32s (gate-reported; 2m 55s wall)' }
+    });
+    generator.updateSummaryLog(summaryPath, {
+      stage: 'AI Review',
+      status: 'APPROVED',
+      duration: '4m 56s',
+      round: 2,
+      reviewRecord: note(2, 'APPROVED', '2026-11-03T01:45:13Z')
+    });
+  }
+
+  test('a two-round summary renders every round, keeps round 1, and marks the latest review current (#376, #396)', () => {
+    const { dir, summaryPath } = tempSummary();
+    try {
+      const generator = new FilePlanGenerator();
+      seedTwoRounds(generator, summaryPath);
+
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      const implementationRows = summary
+        .split('\n')
+        .filter((line: string) => line.startsWith('| 4. Implementation'));
+
+      assert.strictEqual(
+        implementationRows.length,
+        2,
+        `both implement rounds must render, got:\n${summary}`
+      );
+      const roundOne = implementationRows.find((line: string) => line.includes('(round 1)'));
+      const roundTwo = implementationRows.find((line: string) => line.includes('(round 2)'));
+      assert.ok(roundOne, `round 1 must be named, got:\n${summary}`);
+      assert.ok(roundTwo, `round 2 must be named, got:\n${summary}`);
+      assert.ok(roundOne!.includes('26m 29s'), `round 1 duration must survive: ${roundOne}`);
+      assert.ok(roundTwo!.includes('4m 11s'), `round 2 duration must render: ${roundTwo}`);
+      assert.match(
+        roundTwo as string,
+        /^\| 4\. Implementation \(round 2\) \|/,
+        `the round-2 row must be labelled, got: ${roundTwo}`
+      );
+
+      // The review history survives too.
+      assert.ok(summary.includes('CHANGES_REQUESTED'), `round 1's verdict must survive:\n${summary}`);
+      const bullets = summary.match(/^- \*\*Round /gm) ?? [];
+      assert.strictEqual(bullets.length, 2, `one bullet per review round expected, got:\n${summary}`);
+      assert.ok(
+        summary.includes('Round 2 · APPROVED (current)'),
+        `the latest round must be marked current, got:\n${summary}`
+      );
+
+      // The gate row carries ONE clock; both clocks live in the named notes.
+      assert.ok(summary.includes('Quality Gate self-report (round 1)'), summary);
+      assert.ok(summary.includes('Quality Gate self-report (round 2)'), summary);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a single-round summary gains no round labels and keeps one row per stage (#376)', () => {
+    const { dir, summaryPath } = tempSummary();
+    try {
+      const generator = new FilePlanGenerator();
+      generator.updateSummaryLog(summaryPath, {
+        stage: 'Implementation',
+        status: 'COMPLETED',
+        duration: '4m 11s',
+        round: 1
+      });
+      generator.updateSummaryLog(summaryPath, {
+        stage: 'AI Review',
+        status: 'APPROVED',
+        duration: '4m 56s',
+        round: 1,
+        reviewRecord: {
+          round: 1,
+          verdict: 'APPROVED',
+          baseCommit: 'aaaaaaa1111',
+          timestamp: '2026-10-26T12:00:00.000Z',
+          summary: 'Looks good.'
+        }
+      });
+
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      assert.ok(!summary.includes('(round'), `no round label may appear, got:\n${summary}`);
+      for (const label of [
+        '1. Discovery',
+        '2. Plan Review',
+        '3. Plan Approval',
+        '4. Implementation',
+        '5. Quality Gate',
+        '6. AI Review',
+        '7. Commit Gate'
+      ]) {
+        const rows = summary
+          .split('\n')
+          .filter((line: string) => line.startsWith(`| ${label} |`));
+        assert.strictEqual(rows.length, 1, `exactly one '${label}' row expected, got:\n${summary}`);
+      }
+      // The single-round bullet is byte-identical to the pre-#376 shape.
+      assert.ok(
+        summary.includes(
+          '- **Round 1 · APPROVED · base `aaaaaaa` · 2026-10-26T12:00:00.000Z** — Looks good.'
+        ),
+        `the single-round bullet must be unchanged, got:\n${summary}`
+      );
+      assert.ok(!summary.includes('(current)'), `no current marker on a single round, got:\n${summary}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the Duration column sums to Session Started → Commit for a two-round run (#376)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-rounds-'));
+    const summaryPath = path.join(dir, 'CodeLoop Summary.md');
+    const sessionStarted = '2026-11-03T01:00:00.000Z';
+    const commitTimestamp = '2026-11-03T02:10:00.000Z';
+
+    const template = fs.readFileSync(TEMPLATE, 'utf8').replace('{Timestamp}', sessionStarted);
+    fs.writeFileSync(summaryPath, template, 'utf8');
+    try {
+      const generator = new FilePlanGenerator();
+      const write = (data: any) => {
+        assert.strictEqual(generator.updateSummaryLog(summaryPath, data), true);
+      };
+
+      write({ stage: 'Discovery', status: 'COMPLETED', duration: '2m 22s', round: 1 });
+      write({ stage: 'Plan Review', status: 'APPROVED', duration: '6m 1s', round: 1 });
+      write({ stage: 'Plan Approval', status: 'COMPLETED', duration: '1m 0s', round: 1 });
+      write({ stage: 'Implementation', status: 'COMPLETED', duration: '26m 29s', round: 1 });
+      write({ stage: 'Quality Gate', status: 'COMPLETED', duration: '3m 16s', round: 1 });
+      write({
+        stage: 'AI Review',
+        status: 'CHANGES_REQUESTED',
+        duration: '4m 45s',
+        round: 1,
+        reviewRecord: note(1, 'CHANGES_REQUESTED', '2026-11-03T01:28:40Z')
+      });
+      write({ stage: 'Implementation', status: 'COMPLETED', duration: '4m 11s', round: 2 });
+      write({ stage: 'Quality Gate', status: 'COMPLETED', duration: '2m 0s', round: 2 });
+      write({
+        stage: 'AI Review',
+        status: 'APPROVED',
+        duration: '4m 56s',
+        round: 2,
+        reviewRecord: note(2, 'APPROVED', '2026-11-03T01:45:13Z')
+      });
+      write({ stage: 'Commit Gate', status: 'COMPLETED', duration: '15m 0s', round: 1 });
+      write({ commitHash: 'abc1234', commitMessage: 'fix(app): a subject (#376)', commitTimestamp });
+
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      const durationCells = summary
+        .split('\n')
+        .filter((line: string) => /^\| \d+\. /.test(line))
+        .map((line: string) => (line.split('|')[5] || '').trim())
+        .filter((cell: string) => /^(?:\d+m )?\d+s$/.test(cell));
+
+      const totalSeconds = durationCells.reduce((total: number, cell: string) => {
+        const match = /^(?:(\d+)m )?(\d+)s$/.exec(cell) as RegExpExecArray;
+        return total + Number(match[1] ?? 0) * 60 + Number(match[2]);
+      }, 0);
+
+      const elapsedSeconds = (Date.parse(commitTimestamp) - Date.parse(sessionStarted)) / 1000;
+      assert.ok(
+        Math.abs(totalSeconds - elapsedSeconds) <= 1,
+        `the table must reconcile with Session Started → Commit: ${totalSeconds}s vs ${elapsedSeconds}s (${durationCells.join(', ')})`
+      );
+      assert.strictEqual(
+        durationCells.length,
+        10,
+        `every stage row must carry a wall clock: ${durationCells.join(', ')}`
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

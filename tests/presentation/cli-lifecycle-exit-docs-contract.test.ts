@@ -52,10 +52,22 @@ describe('lifecycle exit documentation contract (issue #351)', () => {
     assert.match(help, /exits to COMPLETED/, '--help must name the destination stage');
   });
 
-  test('DOC2: --help states the collector caveat on --create-pr', () => {
-    assert.match(help, /does NOT auto-close/, '--help must say the keyword does not auto-close');
+  test('DOC2: --help phrases the collector advice conditionally (issue #376)', () => {
+    assert.match(help, /collector branch/, '--help must name the measured collector base');
+    assert.match(help, /does not close the issue on merge/, '--help must phrase the remedy conditionally');
     assert.match(help, /codeloop sync/, '--help must name the compensator');
-    assert.match(help, /closes the issue after the merge/, '--help must say what sync does');
+    assert.doesNotMatch(
+      help,
+      /will not auto-close|does NOT auto-close/,
+      '--help must never predict the merge outcome'
+    );
+  });
+
+  test('DOC2b: --help never predicts the merge outcome and names the conditional remedy', () => {
+    assert.match(help, /collector branch/);
+    assert.match(help, /does not close the issue on merge/);
+    assert.match(help, /codeloop sync/);
+    assert.doesNotMatch(help, /will not auto-close|does NOT auto-close/);
   });
 
   test('DOC3: skills/agyloop/SKILL.md states the TRIAGE exit condition', () => {
@@ -111,9 +123,31 @@ describe('lifecycle exit documentation contract (issue #351)', () => {
     }
   });
 
+  test('DOC5b: neither skill predicts the merge outcome (issue #376)', () => {
+    for (const file of [SKILL, OPENCODE_SKILL]) {
+      const doc = readDoc(file);
+      assert.doesNotMatch(
+        doc,
+        /will not auto-close|does NOT auto-close|does \*\*not\*\* auto-close/,
+        `${file} must state the measured base, not a prediction`
+      );
+      assert.match(doc, /does not close the issue on merge/, `${file} must phrase the remedy conditionally`);
+    }
+  });
+
   test('DOC6: README states the collector caveat', () => {
     const doc = readDoc('README.md');
     assert.match(doc, /auto-close/i, 'README.md must say a collector PR does not auto-close');
     assert.match(doc, /closing keyword/i, 'README.md must name the closing keyword');
+  });
+
+  test('DOC6b: README never predicts the merge outcome (issue #376)', () => {
+    const doc = readDoc('README.md');
+    assert.doesNotMatch(
+      doc,
+      /will not auto-close|does NOT auto-close|does \*\*not\*\*\s*\nauto-close/,
+      'README.md must state the measured base, not a prediction'
+    );
+    assert.match(doc, /does not close the issue on merge/, 'README.md must phrase the remedy conditionally');
   });
 });

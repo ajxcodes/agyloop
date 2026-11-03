@@ -39,6 +39,7 @@ import {
   isCommitExcludedPath,
   GATE_COMMIT,
   measureStageWindowMs,
+  resolveStageRound,
   IssueNumber
 } from '../domain';
 import {
@@ -94,7 +95,13 @@ export interface ExecuteCommitResult {
   readonly prExists?: boolean;
   /**
    * True when the PR targets a collector branch (`phase/*`, `feature/*`).
-   * Closing keywords do not fire on a collector-base PR (issue #240/Defect 3).
+   *
+   * It is a MEASUREMENT of the base, not a prediction of the merge outcome
+   * (issue #376, Defect 1): collector-branch merges have auto-closed the issue
+   * on some deliveries (#369/#354) and left it open on others (#399/#401), and
+   * the PR's closing-issue link list is empty on both. `cli.ts` therefore
+   * states the measured base and phrases the `codeloop sync` advice
+   * conditionally.
    */
   readonly prBaseIsCollector?: boolean;
   /**
@@ -654,6 +661,10 @@ export class ExecuteCommitUseCase {
           stage: SUMMARY_STAGE_COMMIT_PR,
           status: SUMMARY_STATUS_COMPLETED,
           duration: formatStageDuration(commitGateWaitMs),
+          // Issue #376 (AC14): the round this write belongs to, from the ONE
+          // shared formula — a re-commit after a remediation round must not
+          // replace the first Commit Gate row.
+          round: resolveStageRound(sm.history, STAGE_COMMIT),
           commitHash,
           commitMessage: commitMessage.toSingleLine(),
           commitTimestamp: new Date().toISOString(),

@@ -429,5 +429,20 @@ describe('plan directory grammar (#283)', () => {
         assert.strictEqual(planArtifactFileName('discovery', title), '[Discovery] - Die at seed.md', title);
       }
     });
+
+    test('T-383.10: a derived filename never ends on a dangling article (#402)', () => {
+      const title402 =
+        '[Phase 6] [Bug] The root-build mutation boundary is broken at both ends (baseline executor rebuilds the workspace root; the baseline mutates the root while the gate measures it)';
+      const name = planArtifactFileName('discovery', title402);
+
+      assert.doesNotMatch(
+        name,
+        /[ ](the|a|an|and|of|to)\.md$/,
+        `a derived filename may not end on a dangling article, got: ${name}`
+      );
+      assert.match(name, /[A-Za-z0-9)]\.md$/, `the filename must end on a word: ${name}`);
+      assert.ok(name.length > '[Discovery] - .md'.length, `the title must survive: ${name}`);
+      assert.ok(planByteLength(name) <= PLAN_FILE_NAME_MAX_BYTES, `${planByteLength(name)} bytes`);
+    });
   });
 });

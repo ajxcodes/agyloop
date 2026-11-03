@@ -205,9 +205,15 @@ describe('72-character subject bound (issue #345 in #339, T11.8 / AC-4.4)', () =
 
       // Every word in the surviving description is a WHOLE word from the input
       // — a word-boundary cut, never a mid-word slice.
+      //
+      // Issue #376: a clause-boundary cut (and the dangling-token backoff)
+      // strips a trailing `,`/`;`/`:`/`—`, so the comparison normalises that on
+      // both sides instead of demanding byte equality of the last word.
+      const normaliseWord = (word: string) => word.replace(/[,;:\u2014]+$/u, '');
       const truncatedDesc = subject.slice(prefix.length, subject.length - suffix.length);
-      const inputWords = title.split(' ');
-      const keptWords = truncatedDesc.split(' ');
+      assert.doesNotMatch(truncatedDesc, /[,;:/\u2014-]$/u, `a label may not dangle: ${subject}`);
+      const inputWords = title.split(' ').map(normaliseWord);
+      const keptWords = truncatedDesc.split(' ').map(normaliseWord);
       for (const word of keptWords) {
         assert.ok(inputWords.includes(word), `partial word emitted: '${word}' in ${subject}`);
       }
@@ -237,5 +243,77 @@ describe('72-character subject bound (issue #345 in #339, T11.8 / AC-4.4)', () =
     const header = msg.toFullMessage().split('\n')[0];
     assert.strictEqual(header, msg.toSingleLine());
     assert.ok(header.length <= SUBJECT_LIMIT, `header exceeds the limit: ${header.length}`);
+  });
+
+  test('T11.8-376: an explicit -m keeps (#400) and stays within 72', () => {
+    const msg = CommitMessage.parse(
+      'fix(cli): correct plan subagent attribution and Tier 1 critique failure signalling (#400)'
+    );
+    const subject = msg.toSingleLine();
+    assert.strictEqual(
+      subject,
+      'fix(cli): correct plan subagent attribution and Tier 1 critique (#400)'
+    );
+    assert.strictEqual(subject.length, 70);
+    assert.ok(subject.includes('(#400)'), `the issue token must survive: ${subject}`);
+  });
+
+  test("T11.8-376: the #388 title ends on APPROVAL, not the article 'a'", () => {
+    const subject = CommitMessage.create({
+      type: 'fix',
+      scope: 'app',
+      description:
+        'plan evidence is never executed before APPROVAL: a false reproduced baseline, smoke blocks that die at seed',
+      issueNumber: 388
+    }).toSingleLine();
+    assert.strictEqual(subject, 'fix(app): plan evidence is never executed before APPROVAL (#388)');
+    assert.ok(subject.length <= SUBJECT_LIMIT, `subject exceeds ${SUBJECT_LIMIT}: ${subject}`);
+  });
+
+  test("T11.8-376: a #N mention of a DIFFERENT issue does not suppress this issue's suffix", () => {
+    const followUp = CommitMessage.create({
+      type: 'fix',
+      scope: 'app',
+      description: 'follow-up to #400 without the paren form',
+      issueNumber: 4
+    });
+    assert.strictEqual(
+      followUp.toSingleLine(),
+      'fix(app): follow-up to #400 without the paren form (#4)'
+    );
+    assert.ok(followUp.toSingleLine().includes('#400'), 'another issue token must survive');
+
+    const prefixCollision = CommitMessage.create({
+      type: 'fix',
+      scope: 'app',
+      description: 'touch the #40 path',
+      issueNumber: 4
+    });
+    assert.strictEqual(prefixCollision.toSingleLine(), 'fix(app): touch the #40 path (#4)');
+
+    // …and THIS issue's own token is normalised out and re-appended exactly
+    // once, so an explicit `-m` cannot lose it to the bound.
+    const own = CommitMessage.create({
+      type: 'fix',
+      scope: 'app',
+      description: 'a bounded description (#4)',
+      issueNumber: 4
+    });
+    assert.strictEqual(own.toSingleLine(), 'fix(app): a bounded description (#4)');
+  });
+
+  test('T11.8-376: the #408 whole word that fits exactly at the budget is kept', () => {
+    const subject = CommitMessage.create({
+      type: 'fix',
+      scope: 'app',
+      description:
+        'post-#405 gate-evidence residuals: a refused transition still reports success',
+      issueNumber: 408
+    }).toSingleLine();
+    assert.strictEqual(
+      subject,
+      'fix(app): post-#405 gate-evidence residuals: a refused transition (#408)'
+    );
+    assert.strictEqual(subject.length, 72);
   });
 });

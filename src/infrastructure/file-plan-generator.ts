@@ -167,10 +167,11 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 |---|---|---|---|---|
 | 1. Discovery | \`discovery\` | \`inherit\` | PENDING | - |
 | 2. Plan Review | Human Gate | - | PENDING | - |
-| 3. Implementation | \`implementer\` | \`inherit\` | PENDING | - |
-| 4. Quality Gate | \`gate\` | \`flash_lite\` | PENDING | - |
-| 5. AI Review | \`reviewer\` | \`flash\` | PENDING | - |
-| 6. Commit Gate | Human Gate | - | PENDING | - |
+| 3. Plan Approval | Human Gate | - | PENDING | - |
+| 4. Implementation | \`implementer\` | \`inherit\` | PENDING | - |
+| 5. Quality Gate | \`gate\` | \`flash_lite\` | PENDING | - |
+| 6. AI Review | \`reviewer\` | \`flash\` | PENDING | - |
+| 7. Commit Gate | Human Gate | - | PENDING | - |
 
 ## Quality Gate Metrics
 - **Build Status:** not recorded
@@ -812,9 +813,65 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         // Normalize stage query keywords: strip digits, punctuation, and plurals for robust matching
         const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
         const normQuery = normalize(rawQuery);
+        /**
+         * The row this write addresses (issue #376, AC14).
+         *
+         * Absent/`1` is the unlabelled `<N>. Stage` row — today's behaviour,
+         * unchanged. `R > 1` addresses `<N>. Stage (round R)`.
+         */
+        const requestedRound = Math.max(1, Math.trunc(updateData.round ?? 1));
 
         const lines = content.split('\n');
         let updated = false;
+
+        /**
+         * Parses a row label into its BASE stage label and its round.
+         *
+         * The suffix parser is anchored (`$`), so a stage name that merely
+         * contains parentheses is untouched. `round: null` is the plain row.
+         */
+        const splitStageLabel = (label: string): { base: string; round: number | null } => {
+          const match = label.match(/\s*\(round\s+(\d+)\)\s*$/i);
+          if (!match || match.index === undefined) {
+            return { base: label.trim(), round: null };
+          }
+          return {
+            base: label.slice(0, match.index).trim(),
+            round: parseInt(match[1], 10)
+          };
+        };
+
+        /**
+         * True when this row is the one the write may touch.
+         *
+         * A round-1 write owns the plain row AND `(round 1)`; a later round
+         * owns ONLY its own labelled row, so it can never overwrite round 1.
+         */
+        const acceptsRound = (rowRound: number | null): boolean =>
+          requestedRound > 1 ? rowRound === requestedRound : rowRound === null || rowRound === 1;
+
+        interface StageRow {
+          readonly index: number;
+          readonly parts: string[];
+          readonly base: string;
+          readonly normBase: string;
+          readonly round: number | null;
+        }
+
+        const collectStageRows = (): StageRow[] => {
+          const rows: StageRow[] = [];
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line.startsWith('|') || line.includes('---') || line.includes('Stage | Subagent')) {
+              continue;
+            }
+            const parts = line.split('|').map((p) => p.trim());
+            if (parts.length < 6) continue;
+            const { base, round } = splitStageLabel(parts[1]);
+            rows.push({ index: i, parts, base, normBase: normalize(base), round });
+          }
+          return rows;
+        };
 
         /**
          * Two-pass row matcher (issue #236, collateral fix):
@@ -823,23 +880,40 @@ export class FilePlanGenerator implements PlanGeneratorPort {
          * landing on the `'2. Plan Review'` row via the loose `review`/`review`
          * cross-match (which fired first and broke before reaching `'5. AI Review'`).
          * First-match `break` semantics are preserved within each pass.
+         *
+         * Issue #376: the match runs against the BASE label (round suffix
+         * stripped), and the `plan`/`review` synonym rules are suppressed when
+         * either side names an `approval`, so `Plan Approval` never collides
+         * with `Plan Review`. The `Quality Gates` query still reaches its row
+         * through the `quality` synonym.
          */
-        const rowMatches = (rowStage: string, normRow: string): { direct: boolean; synonym: boolean } => ({
-          direct:
-            rowStage.includes(rawQuery) ||
-            rawQuery.includes(rowStage) ||
-            normRow.includes(normQuery) ||
-            normQuery.includes(normRow),
-          synonym:
-            (normQuery.includes('commit') && normRow.includes('commit')) ||
-            (normQuery.includes('quality') && normRow.includes('quality')) ||
-            (normQuery.includes('discovery') && normRow.includes('discovery')) ||
-            (normQuery.includes('plan') && normRow.includes('plan')) ||
-            (normQuery.includes('implement') && normRow.includes('implement')) ||
-            (normQuery.includes('review') && normRow.includes('review'))
-        });
+        const rowMatches = (rowStage: string, normRow: string): { direct: boolean; synonym: boolean } => {
+          const approvalOnEitherSide =
+            normQuery.includes('approval') || normRow.includes('approval');
+          return {
+            direct:
+              rowStage.includes(rawQuery) ||
+              rawQuery.includes(rowStage) ||
+              normRow.includes(normQuery) ||
+              normQuery.includes(normRow),
+            synonym:
+              (normQuery.includes('commit') && normRow.includes('commit')) ||
+              (normQuery.includes('quality') && normRow.includes('quality')) ||
+              (normQuery.includes('discovery') && normRow.includes('discovery')) ||
+              (!approvalOnEitherSide &&
+                normQuery.includes('plan') &&
+                normRow.includes('plan')) ||
+              (normQuery.includes('implement') && normRow.includes('implement')) ||
+              (!approvalOnEitherSide &&
+                normQuery.includes('review') &&
+                normRow.includes('review'))
+          };
+        };
 
-        const rewriteRow = (i: number, parts: string[]): void => {
+        const buildRowLine = (parts: string[], label: string): string =>
+          `| ${label} | ${parts[2]} | ${parts[3]} | ${parts[4]} | ${parts[5]} |`;
+
+        const rewriteRow = (i: number, parts: string[], label: string = parts[1]): void => {
           const formatCell = (val?: string, fallback = '-'): string => {
             if (!val) return fallback;
             const trimmed = val.trim();
@@ -853,43 +927,61 @@ export class FilePlanGenerator implements PlanGeneratorPort {
           const currentStatus = updateData.status ? updateData.status.toUpperCase() : parts[4];
           const currentDuration = updateData.duration ? updateData.duration : parts[5];
 
-          lines[i] = `| ${parts[1]} | ${currentSubagent} | ${currentModel} | ${currentStatus} | ${currentDuration} |`;
+          lines[i] = `| ${label} | ${currentSubagent} | ${currentModel} | ${currentStatus} | ${currentDuration} |`;
           updated = true;
         };
 
-        // Pass 1: direct / raw / normalized containment only.
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (line.startsWith('|') && !line.includes('---') && !line.includes('Stage | Subagent')) {
-            const parts = line.split('|').map((p) => p.trim());
-            if (parts.length >= 6) {
-              const rowStage = parts[1].toLowerCase();
-              const normRow = normalize(parts[1]);
+        const stageRows = collectStageRows();
+        const directMatch = (row: StageRow): boolean =>
+          rowMatches(row.base.toLowerCase(), row.normBase).direct;
+        const synonymMatch = (row: StageRow): boolean =>
+          rowMatches(row.base.toLowerCase(), row.normBase).synonym;
 
-              if (rowMatches(rowStage, normRow).direct) {
-                rewriteRow(i, parts);
-                break;
-              }
+        let target: StageRow | null = null;
+        for (const row of stageRows) {
+          if (acceptsRound(row.round) && directMatch(row)) {
+            target = row;
+            break;
+          }
+        }
+        if (!target) {
+          for (const row of stageRows) {
+            if (acceptsRound(row.round) && synonymMatch(row)) {
+              target = row;
+              break;
             }
           }
         }
 
-        // Pass 2 (only when no direct match): synonym cross-match rules.
-        if (!updated) {
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.startsWith('|') && !line.includes('---') && !line.includes('Stage | Subagent')) {
-              const parts = line.split('|').map((p) => p.trim());
-              if (parts.length >= 6) {
-                const rowStage = parts[1].toLowerCase();
-                const normRow = normalize(parts[1]);
-
-                if (rowMatches(rowStage, normRow).synonym) {
-                  rewriteRow(i, parts);
-                  break;
-                }
-              }
+        if (target) {
+          rewriteRow(target.index, target.parts);
+        } else if (requestedRound > 1) {
+          // No row for this round yet. Rename the plain row to `(round 1)` and
+          // append this round after it — never replace the earlier round.
+          const plain =
+            stageRows.find((row) => row.round === null && directMatch(row)) ??
+            stageRows.find((row) => row.round === null && synonymMatch(row));
+          if (plain) {
+            const label = `${plain.base} (round ${requestedRound})`;
+            lines[plain.index] = buildRowLine(plain.parts, `${plain.base} (round 1)`);
+            lines.splice(plain.index + 1, 0, buildRowLine(plain.parts, label));
+            rewriteRow(plain.index + 1, plain.parts, label);
+          } else {
+            // Only labelled rows exist: append after the highest same-base row
+            // so a third round lands in ascending order.
+            const sameBase = stageRows.filter(
+              (row) => row.round !== null && (directMatch(row) || synonymMatch(row))
+            );
+            if (sameBase.length > 0) {
+              const highest = sameBase.reduce((best, row) =>
+                (row.round ?? 0) > (best.round ?? 0) ? row : best
+              );
+              const label = `${highest.base} (round ${requestedRound})`;
+              lines.splice(highest.index + 1, 0, buildRowLine(highest.parts, label));
+              rewriteRow(highest.index + 1, highest.parts, label);
             }
+            // No matching row at all: skip the write (fail-closed) rather than
+            // inventing a stage row.
           }
         }
 
@@ -960,14 +1052,19 @@ export class FilePlanGenerator implements PlanGeneratorPort {
         content = setSummaryMetric(content, LABEL_SMOKE_PROTOCOL, updateData.smokeProtocol);
       }
 
-      if (updateData.reviewRecord) {
-        const record = updateData.reviewRecord;
-        const base = record.baseCommit ? record.baseCommit.slice(0, 7) : 'unrecorded';
-        content = this.replaceSection(
+      if (updateData.gateSelfReport) {
+        // Issue #376 (AC16): the gate's own timer is NOT the row's clock. It
+        // renders once per round as a named note carrying BOTH clocks, so the
+        // Duration column stays one summable wall clock.
+        content = this.upsertGateSelfReport(
           content,
-          'Review Notes',
-          `- **Round ${record.round} · ${record.verdict} · base \`${base}\` · ${record.timestamp}** — ${record.summary}`
+          updateData.gateSelfReport.round,
+          updateData.gateSelfReport.text
         );
+      }
+
+      if (updateData.reviewRecord) {
+        content = this.upsertReviewNote(content, updateData.reviewRecord);
       } else if (updateData.reviewNote) {
         if (content.includes('## Review Notes')) {
           content = content.replace(
@@ -1113,6 +1210,10 @@ export class FilePlanGenerator implements PlanGeneratorPort {
    * was that each write appended, so a re-review left two verdicts with no
    * supersede marker. Headings are preserved exactly — `updateSummaryLog`'s
    * other section regexes key off them.
+   *
+   * Issue #376 (AC17): `upsertReviewNote` builds the body for Review Notes, so
+   * a re-review keeps every round's verdict while still rewriting the section
+   * as a whole.
    */
   private replaceSection(content: string, heading: string, body: string): string {
     const headingLine = `## ${heading}`;
@@ -1125,6 +1226,116 @@ export class FilePlanGenerator implements PlanGeneratorPort {
     const end = nextSection === -1 ? content.length : nextSection;
     const tail = nextSection === -1 ? '' : content.slice(end);
     return `${content.slice(0, bodyStart)}\n${body}${tail === '' ? '\n' : tail}`;
+  }
+
+  /**
+   * Upserts ONE review bullet per round (issue #376, AC17, absorbing #396).
+   *
+   * The section used to be replaced on every write, so round 1's
+   * `CHANGES_REQUESTED` verdict and its remediation vanished from the run's own
+   * deliverable. Rounds are now accumulated, sorted ascending, and the highest
+   * round is marked ` (current)` — but ONLY when more than one round exists, so
+   * a single-round note stays byte-identical to the pre-#376 shape.
+   */
+  private upsertReviewNote(
+    content: string,
+    record: {
+      readonly round: number;
+      readonly verdict: string;
+      readonly baseCommit: string | null;
+      readonly timestamp: string;
+      readonly summary: string;
+    }
+  ): string {
+    const bullets = new Map<number, string>();
+
+    const headingLine = '## Review Notes';
+    const start = content.indexOf(headingLine);
+    if (start !== -1) {
+      const bodyStart = start + headingLine.length;
+      const nextSection = content.indexOf('\n## ', bodyStart);
+      const body = content.slice(bodyStart, nextSection === -1 ? content.length : nextSection);
+      for (const line of body.split('\n')) {
+        const match = line.match(/^- \*\*Round (\d+) · /);
+        if (!match) continue;
+        // Strip the previous render's ` (current)` marker before re-rendering.
+        bullets.set(parseInt(match[1], 10), line.replace(/ \(current\)(?= · base )/, ''));
+      }
+    }
+
+    const base = record.baseCommit ? record.baseCommit.slice(0, 7) : 'unrecorded';
+    bullets.set(
+      record.round,
+      `- **Round ${record.round} · ${record.verdict} · base \`${base}\` · ${record.timestamp}** — ${record.summary}`
+    );
+
+    const rounds = [...bullets.keys()].sort((a, b) => a - b);
+    const rendered = rounds.map((round) => bullets.get(round) as string);
+    if (rounds.length > 1) {
+      const highest = rounds[rounds.length - 1];
+      const index = rounds.indexOf(highest);
+      rendered[index] = rendered[index].replace(
+        /^(- \*\*Round \d+ · [^·]+?)( · )/,
+        '$1 (current)$2'
+      );
+    }
+
+    return this.replaceSection(content, 'Review Notes', rendered.join('\n'));
+  }
+
+  /**
+   * Upserts ONE `Quality Gate self-report (round R)` note (issue #376, AC16).
+   *
+   * The Duration column carries the wall clock only — two clocks packed into
+   * one cell cannot be summed and no longer reconciled with
+   * `Session Started → Commit`. The gate's own timer therefore renders as a
+   * named note carrying both clocks, once per round, kept in ascending order.
+   */
+  private upsertGateSelfReport(content: string, round: number, text: string): string {
+    const lines = content.split('\n');
+    const rendered = `- **Quality Gate self-report (round ${round}):** ${text}`;
+    const keyPrefix = `- **Quality Gate self-report (round ${round}):**`;
+
+    const existingIndex = lines.findIndex((line) => line.startsWith(keyPrefix));
+    if (existingIndex !== -1) {
+      lines[existingIndex] = rendered;
+      return lines.join('\n');
+    }
+
+    let anchor = -1;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i].startsWith('- **Quality Gate self-report (round ')) {
+        anchor = i;
+        break;
+      }
+    }
+    if (anchor === -1) {
+      // The last row of the LIFECYCLE table: the notes read directly beneath
+      // the table they explain, never after a later section's table.
+      const sectionStart = lines.findIndex(
+        (line) => line.trim() === '## Lifecycle Execution Log'
+      );
+      const sectionEnd =
+        sectionStart === -1
+          ? -1
+          : lines.findIndex(
+              (line, index) => index > sectionStart && line.startsWith('## ')
+            );
+      const limit = sectionStart === -1 ? lines.length : sectionEnd === -1 ? lines.length : sectionEnd;
+      for (let i = limit - 1; i >= Math.max(sectionStart, 0); i -= 1) {
+        const line = lines[i];
+        if (line.startsWith('|') && !line.includes('---') && !line.includes('Stage | Subagent')) {
+          anchor = i;
+          break;
+        }
+      }
+    }
+    if (anchor === -1) {
+      return `${content.trimEnd()}\n\n${rendered}\n`;
+    }
+
+    lines.splice(anchor + 1, 0, '', rendered);
+    return lines.join('\n');
   }
 
   /**

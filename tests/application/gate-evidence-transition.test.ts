@@ -132,25 +132,30 @@ function row(summary: string, label: string): string {
 }
 
 /**
- * The gate row's duration cell, split into the labelled clocks (issue #315,
- * AC-15/AC-18). A cell that does not name its clock fails here: the defect was
- * a self-timer posing as the stage's wall clock.
+ * The gate row's Duration cell: exactly ONE clock (issue #376, AC16).
+ *
+ * The cell used to pack the gate's self-timer and the wall window into one
+ * non-summable string. It now carries the wall clock only (or `-`), so nothing
+ * but `1m 32s` / `-` may appear here.
  */
-function gateRowDuration(summary: string): {
-  reported: string;
-  wallSeconds: number | null;
-} {
-  const cell = (row(summary, '4. Quality Gate').split('|')[5] ?? '').trim();
-  const match: RegExpExecArray | null =
-    /^(.*?) \(gate-reported(?:; (?:(\d+)m )?(\d+)s wall)?\)$/.exec(cell);
+function gateRowWallSeconds(summary: string): number | null {
+  const cell = (row(summary, '5. Quality Gate').split('|')[5] ?? '').trim();
+  if (cell === '-') return null;
+  const match = /^(?:(\d+)m )?(\d+)s$/.exec(cell);
   if (match === null) {
-    throw new Error(`the gate row must label the clock it reports, got: ${cell}`);
+    throw new Error(`the gate Duration cell must carry exactly ONE clock, got: ${cell}`);
   }
-  const wallSeconds =
-    match[2] === undefined && match[3] === undefined
-      ? null
-      : Number(match[2] ?? 0) * 60 + Number(match[3]);
-  return { reported: match[1], wallSeconds };
+  return Number(match[1] ?? 0) * 60 + Number(match[2]);
+}
+
+/** The gate's self-reported timer for `round`, as a named note. */
+function gateSelfReport(summary: string, round: number): string {
+  const prefix = `- **Quality Gate self-report (round ${round}):**`;
+  const line = summary
+    .split('\n')
+    .find((candidate) => candidate.startsWith(prefix));
+  assert.ok(line, `the round-${round} self-report note must exist, got:\n${summary}`);
+  return (line as string).slice(prefix.length).trim();
 }
 
 /** A plan carrying the declared verification targets (for the #325/#412 cases). */
@@ -186,6 +191,57 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
     console.warn = originalWarn;
   });
 
+  test('the Quality Gate row has one wall clock and the self-report note names both clocks (#376)', async () => {
+    // State 1: the wall window IS measurable (the gate entry is penultimate).
+    const now = Date.now();
+    const measured = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
+      { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const repo = new FakeGateReportRepository();
+    repo.reports.set(String(ISSUE), PASSED_REPORT);
+
+    try {
+      await runTransition(measured.ws, STAGE_REVIEW, repo);
+      const summary = fs.readFileSync(measured.summaryPath, 'utf8');
+
+      const cell = (row(summary, '5. Quality Gate').split('|')[5] ?? '').trim();
+      assert.match(cell, /^(?:\d+m )?\d+s$/, `the cell must carry ONE clock, got: ${cell}`);
+      const wallSeconds = gateRowWallSeconds(summary);
+      assert.ok(
+        wallSeconds !== null && Math.abs(wallSeconds - 200) <= 5,
+        `the cell must be the wall window, got: ${cell}`
+      );
+      assert.match(
+        gateSelfReport(summary, 1),
+        /^3m 16s \(gate-reported; .* wall\)$/,
+        `round 1's note must name both clocks, got: ${gateSelfReport(summary, 1)}`
+      );
+    } finally {
+      fs.rmSync(measured.ws, { recursive: true, force: true });
+    }
+
+    // State 2: no QUALITY_GATE history entry, so no wall window is measurable.
+    const unmeasured = scaffoldWorkspace(STAGE_QUALITY_GATE, [
+      { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() }
+    ]);
+    const repo2 = new FakeGateReportRepository();
+    repo2.reports.set(String(ISSUE), PASSED_REPORT);
+    try {
+      await runTransition(unmeasured.ws, STAGE_REVIEW, repo2);
+      const summary = fs.readFileSync(unmeasured.summaryPath, 'utf8');
+      const cell = (row(summary, '5. Quality Gate').split('|')[5] ?? '').trim();
+      assert.strictEqual(cell, '-', `an unmeasurable window must print '-', got: ${cell}`);
+      assert.strictEqual(
+        gateSelfReport(summary, 1),
+        '3m 16s (gate-reported)',
+        `the note must name the clock it shows, got:\n${summary}`
+      );
+    } finally {
+      fs.rmSync(unmeasured.ws, { recursive: true, force: true });
+    }
+  });
+
   test('a filed PASSED report writes the verdict, build system, test count and measured duration', async () => {
     const now = Date.now();
     const { ws, summaryPath } = scaffoldWorkspace(STAGE_QUALITY_GATE, [
@@ -211,13 +267,17 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         summary.includes('- **Build System:** node'),
         `the build system must be recorded, got:\n${summary}`
       );
-      // Issue #315 (AC-15/AC-18): the gate's self-timer is labelled, and the
-      // wall window is derived from the seeded history (entered 200 s ago).
-      const clock = gateRowDuration(summary);
-      assert.strictEqual(clock.reported, '3m 16s');
+      // Issue #315 (AC-15/AC-18) / #376 (AC16): the Duration cell is the WALL
+      // clock; the gate's self-timer lives in a named note carrying both.
+      const wallSeconds = gateRowWallSeconds(summary);
       assert.ok(
-        clock.wallSeconds !== null && Math.abs(clock.wallSeconds - 200) <= 5,
-        `the gate row must report the stage wall clock it measured, got: ${clock.wallSeconds}`
+        wallSeconds !== null && Math.abs(wallSeconds - 200) <= 5,
+        `the gate row must report the stage wall clock it measured, got: ${wallSeconds}`
+      );
+      assert.match(
+        gateSelfReport(summary, 1),
+        /^3m 16s \(gate-reported; .* wall\)$/,
+        `the note must name both clocks, got: ${gateSelfReport(summary, 1)}`
       );
       assert.ok(!summary.includes('Build Status:** PENDING'), `PENDING must never survive, got:\n${summary}`);
 
@@ -345,8 +405,8 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       assert.strictEqual(sm.history[sm.history.length - 1].metadata.gateVerdict, 'NOT_RECORDED');
       const summary = fs.readFileSync(summaryPath, 'utf8');
       assert.strictEqual(
-        row(summary, '4. Quality Gate'),
-        '| 4. Quality Gate | `gate` | `flash_lite` | NOT RECORDED | - |'
+        row(summary, '5. Quality Gate'),
+        '| 5. Quality Gate | `gate` | `flash_lite` | NOT RECORDED | 3m 20s |'
       );
       assert.strictEqual(warnings.length, 1, warnings.join(' | '));
       assert.ok(
@@ -418,15 +478,14 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         `a freshly filed round-1 report must not be discarded, got: ${warnings.join(' | ')}`
       );
       const summary = fs.readFileSync(summaryPath, 'utf8');
-      // No QUALITY_GATE entry existed, so only the next entry's timestamp is
-      // available: the self-timer is labelled, with no wall window claimed.
-      const clock = gateRowDuration(summary);
-      assert.strictEqual(clock.reported, '3m 16s');
+      // No QUALITY_GATE entry existed, so no wall clock is measurable: the cell
+      // is `-` and the note names only the clock it is showing.
       assert.strictEqual(
-        clock.wallSeconds,
+        gateRowWallSeconds(summary),
         null,
         'an unmeasurable wall window must not be invented'
       );
+      assert.strictEqual(gateSelfReport(summary, 1), '3m 16s (gate-reported)');
       const last = sm.history[sm.history.length - 1];
       assert.strictEqual(last.stage, STAGE_REVIEW);
       assert.strictEqual(last.metadata.gateVerdict, 'PASSED');
@@ -943,9 +1002,18 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       await runTransition(ws, STAGE_IMPLEMENT, repo);
 
       const second = fs.readFileSync(summaryPath, 'utf8');
-      assert.strictEqual(
-        row(second, '4. Quality Gate'),
-        '| 4. Quality Gate | `gate` | `flash_lite` | NOT RECORDED | - |'
+      // Issue #376: the second gate pass is its own labelled row, never an
+      // overwrite of round 1.
+      const gateRows = second
+        .split('\n')
+        .filter((line: string) => line.startsWith('| 5. Quality Gate'));
+      assert.strictEqual(gateRows.length, 2, `both gate rounds must render, got:\n${second}`);
+      const secondRoundRow = gateRows.find((line: string) => line.includes('(round 2)'));
+      assert.ok(secondRoundRow, `the round-2 gate row must be labelled, got:\n${second}`);
+      assert.match(
+        secondRoundRow as string,
+        /^\| 5\. Quality Gate \(round 2\) \| `gate` \| `flash_lite` \| NOT RECORDED \| (?:\d+m )?\d+s \|$/,
+        `the round-2 row must be NOT RECORDED with one wall clock, got: ${secondRoundRow}`
       );
       const stale = second
         .split('\n')

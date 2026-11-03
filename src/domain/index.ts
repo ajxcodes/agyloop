@@ -28,6 +28,7 @@ export * from './value-objects/ai-review-report';
 export * from './value-objects/finding-refutation';
 export * from './value-objects/review-verdict';
 export * from './value-objects/commit-message';
+export * from './value-objects/subject-truncation';
 export * from './value-objects/diff-analyzer';
 export * from './value-objects/worktree-descriptor';
 export * from './value-objects/branch-inference';

@@ -33,6 +33,7 @@
 
 import { VALIDATION_FIELD_PLAN_TITLE } from '../constants';
 import { ValidationError } from '../errors';
+import { trimDanglingTail } from './subject-truncation';
 
 /**
  * Byte budget for a derived plan FOLDER name.
@@ -348,6 +349,13 @@ function trimPlanHeadPunctuation(head: string): string {
  * 2. trailing punctuation/whitespace is trimmed, so the head never ends on a
  *    truncated `,`/`;`/`:`/`-`/`—`/`.` before the extension.
  *
+ * A THIRD post-step shares the domain's subject-truncation helper (issue #376,
+ * Defect 2, absorbing the #402 filename case): `trimDanglingTail` drops a
+ * dangling article/preposition/conjunction/possessive/adverb and an unmatched
+ * opening quote or bracket, then the punctuation trim runs again because a
+ * dropped stopword can expose a `;` from the original title. It only ever
+ * removes characters, so the byte budget proof above is preserved.
+ *
  * @param type - The plan type.
  * @param title - The raw plan title.
  */
@@ -376,6 +384,11 @@ export function planArtifactFileName(
   }
 
   head = trimPlanHeadPunctuation(head);
+  // Issue #376 (absorbing the #402 filename case): the retained head of a long
+  // title ended on a dangling article (`… and the.md`). The shared helper drops
+  // that tail; the punctuation trim then runs again because dropping a stopword
+  // can expose a `;` from the original title.
+  head = trimPlanHeadPunctuation(trimDanglingTail(head));
   const safeHead = head.length === 0 ? PLAN_UNTITLED_TITLE : head;
   return `${prefix}${safeHead}${PLAN_FILE_EXTENSION}`;
 }

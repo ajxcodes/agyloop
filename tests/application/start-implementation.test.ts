@@ -380,9 +380,18 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.ok(result.taskPrompt.includes('Definition of Done'));
 
     // Verify summary log was updated
-    assert.strictEqual(planGen.summaryUpdates.length, 2);
-    assert.strictEqual(planGen.summaryUpdates[0].data.status, 'APPROVED');
-    assert.strictEqual(planGen.summaryUpdates[1].data.status, 'IN PROGRESS');
+    //
+    // Issue #376 (AC15): leaving APPROVAL writes its OWN row first, with the
+    // wait this transition consumed; then Plan Review, then Implementation.
+    assert.strictEqual(planGen.summaryUpdates.length, 3);
+    assert.deepStrictEqual(
+      planGen.summaryUpdates.map((update: any) => [update.data.stage, update.data.status]),
+      [
+        ['Plan Approval', 'COMPLETED'],
+        ['Plan Review', 'APPROVED'],
+        ['Implementation', 'IN PROGRESS']
+      ]
+    );
   });
 
   test('allows resuming when pipeline is already at IMPLEMENT stage', async () => {

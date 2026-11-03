@@ -12,10 +12,11 @@
 |---|---|---|---|---|
 | 1. Discovery | `discovery` | `inherit` | PENDING | - |
 | 2. Plan Review | Human Gate | - | PENDING | - |
-| 3. Implementation | `implementer` | `inherit` | PENDING | - |
-| 4. Quality Gate | `gate` | `flash_lite` | PENDING | - |
-| 5. AI Review | `reviewer` | `flash` | PENDING | - |
-| 6. Commit Gate | Human Gate | - | PENDING | - |
+| 3. Plan Approval | Human Gate | - | PENDING | - |
+| 4. Implementation | `implementer` | `inherit` | PENDING | - |
+| 5. Quality Gate | `gate` | `flash_lite` | PENDING | - |
+| 6. AI Review | `reviewer` | `flash` | PENDING | - |
+| 7. Commit Gate | Human Gate | - | PENDING | - |
 
 ## Quality Gate Metrics
 - **Build Status:** not recorded

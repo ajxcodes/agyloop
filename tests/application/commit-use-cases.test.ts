@@ -197,7 +197,7 @@ new file mode 100644
       // this issue removes; `description` still carries the complete text.
       assert.strictEqual(
         result.commitMessage.toSingleLine(),
-        'feat(commit): implement Interactive Conventional Commit Drafter & (#30)'
+        'feat(commit): implement Interactive Conventional Commit Drafter (#30)'
       );
       assert.ok(result.commitMessage.toSingleLine().length <= 72);
     });
@@ -484,6 +484,49 @@ diff --git a/src/app.ts b/src/app.ts
       assert.ok(planGen.updatedSummary);
       assert.strictEqual(planGen.updatedSummary!.data.commitHash, 'a1b2c3d4e5f6');
       assert.strictEqual(planGen.updatedSummary!.data.commitMessage, 'feat(scope): test feature (#30)');
+    });
+
+    test('the committed -m subject agrees with the draft and carries (#400)', async () => {
+      const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), worktree: mockWorktree });
+      sm.setIssue(400);
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const executor = new MockCommandExecutor();
+      executor.responses['git status --porcelain'] = { stdout: 'M src/file.ts\n' };
+      executor.responses['git add -A'] = { exitCode: 0 };
+      executor.responses['git rev-parse HEAD'] = { stdout: 'a1b2c3d4e5f6\n' };
+
+      const prompter = new MockConfirmationPrompt(true);
+      const planGen = new MockPlanGenerator();
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        executor,
+        planGen as unknown as PlanGeneratorPort,
+        prompter
+      );
+
+      // THE #400 INVOCATION: an explicit `-m` that already carries `(#400)`.
+      // Pre-#376 the `(#N)` token was sliced off the tail and the commit
+      // carried no issue reference at all.
+      const commitMsg = CommitMessage.parse(
+        'fix(cli): correct plan subagent attribution and Tier 1 critique failure signalling (#400)'
+      );
+
+      const result = await useCase.execute({ commitMessage: commitMsg });
+      assert.strictEqual(result.success, true);
+
+      const commitCallIndex = executor.executedOptions.findIndex(
+        (options: any) => Array.isArray(options?.args) && options.args[0] === 'commit'
+      );
+      assert.notStrictEqual(commitCallIndex, -1, 'a git commit invocation must be recorded');
+      assert.strictEqual(executor.executedCommands[commitCallIndex], 'git');
+      const args = executor.executedOptions[commitCallIndex].args;
+      assert.deepStrictEqual(args.slice(0, 2), ['commit', '-m']);
+
+      const fullMessage = args[2] as string;
+      const subject = fullMessage.split('\n')[0];
+      assert.strictEqual(subject, commitMsg.toSingleLine(), 'draft and commit must agree');
+      assert.ok(subject.includes('(#400)'), `the issue token must survive: ${subject}`);
+      assert.ok(subject.length <= 72, `over the 72 bound (${subject.length}): ${subject}`);
     });
 
     test('auto-approves in YOLO mode without interactive prompt', async () => {

@@ -21,6 +21,7 @@ import {
   COMMIT_SUBJECT_MAX_LENGTH
 } from '../constants';
 import { ValidationError } from '../errors';
+import { stripOwnIssueToken, truncateSubjectDescription } from './subject-truncation';
 
 export interface CommitMessageProps {
   readonly type: ConventionalCommitType | string;
@@ -126,24 +127,24 @@ export class CommitMessage {
    * #345 in #339 (AC-4.4): never longer than `COMMIT_SUBJECT_MAX_LENGTH` (72).
    * The bound lives HERE — not in the drafter — so the drafted subject and the
    * committed subject agree by construction: `toFullMessage()` headers with
-   * this method. An over-long description is cut at a WORD boundary (the last
-   * space that fits the remaining budget); a hard cut at the budget is used
-   * only when the fitting head contains no space at all. An explicit `-m`
-   * override never reaches this path.
+   * this method. An explicit `-m` message IS parsed into this value object
+   * (`draft-commit.ts:181-193`, `execute-commit.ts:172-173`) and is bounded
+   * here too — which is exactly why the `(#N)` token must be reserved rather
+   * than left inside the description where the cut can slice it off (#400).
+   *
+   * The cut is boundary-aware (issue #376, Defect 2): this issue's own token is
+   * normalised out of the description first, ` (#N)` is always appended as the
+   * suffix when an issue is associated (so its budget is always reserved), and
+   * an over-long description is bounded by `truncateSubjectDescription` — exact
+   * boundary → clause separator → last space — then trimmed of a dangling
+   * article/preposition/conjunction/possessive/adverb, trailing label
+   * punctuation and an unmatched opening quote or bracket.
    */
   public toSingleLine(): string {
     const scopePart = this.scope ? `(${this.scope})` : '';
     const breakingMark = this.isBreaking ? TOKEN_BREAKING_EXCLAMATION : '';
-    const desc = this.description;
-
-    let issueSuffix = '';
-    if (this.issueNumber !== null) {
-      const issueTokenParen = `(#${this.issueNumber})`;
-      const issueTokenHash = `#${this.issueNumber}`;
-      if (!desc.includes(issueTokenParen) && !desc.includes(issueTokenHash)) {
-        issueSuffix = ` ${issueTokenParen}`;
-      }
-    }
+    const baseDescription = stripOwnIssueToken(this.description, this.issueNumber);
+    const issueSuffix = this.issueNumber !== null ? ` (#${this.issueNumber})` : '';
 
     const prefix = `${this.type}${scopePart}${breakingMark}: `;
     const budget = COMMIT_SUBJECT_MAX_LENGTH - prefix.length - issueSuffix.length;
@@ -151,11 +152,12 @@ export class CommitMessage {
     // budget < 1 is only reachable with a pathological (near-72-char) explicit
     // scope; refusing to truncate there keeps the tail tokens intact rather
     // than emitting a malformed empty description.
-    let boundedDesc = desc;
-    if (budget > 0 && prefix.length + desc.length + issueSuffix.length > COMMIT_SUBJECT_MAX_LENGTH) {
-      const head = desc.slice(0, budget);
-      const lastSpace = head.lastIndexOf(' ');
-      boundedDesc = lastSpace > 0 ? head.slice(0, lastSpace) : head;
+    let boundedDesc = baseDescription;
+    if (
+      budget > 0 &&
+      prefix.length + baseDescription.length + issueSuffix.length > COMMIT_SUBJECT_MAX_LENGTH
+    ) {
+      boundedDesc = truncateSubjectDescription(baseDescription, budget);
     }
 
     return `${prefix}${boundedDesc}${issueSuffix}`;

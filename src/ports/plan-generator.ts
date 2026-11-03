@@ -82,14 +82,37 @@ export interface SummaryUpdateData {
   readonly model?: string;
   readonly duration?: string;
   readonly notes?: string;
+  /**
+   * The remediation ROUND this write belongs to (issue #376, AC14).
+   *
+   * Absent or `1` addresses the unlabelled `<N>. Stage` row exactly as before.
+   * `R > 1` names `${base} (round R)`: the first such write renames the plain
+   * row to `${base} (round 1)` and appends the `R` row after it, so a later
+   * round can never silently replace an earlier one.
+   */
+  readonly round?: number;
+  /**
+   * The Quality Gate's OWN timer for this round (issue #376, AC16).
+   *
+   * The Duration column carries ONE clock — the wall clock — so the gate's
+   * self-reported number renders as a named note beside the table instead of
+   * packing two units into a non-summable cell. `text` is pre-rendered by the
+   * application layer (`formatGateReportedDuration`).
+   */
+  readonly gateSelfReport?: {
+    readonly round: number;
+    readonly text: string;
+  };
   readonly buildStatus?: string;
   readonly testsStatus?: string;
   readonly reviewNote?: string;
   /**
-   * ONE authoritative review note (issue #284, AC6).
+   * ONE review note PER ROUND (issue #284, AC6; re-scoped by issue #376, AC17).
    *
-   * Replace-on-write: the section is rewritten, never appended to, so a
-   * re-review cannot leave two verdicts with no authority marker.
+   * `## Review Notes` accumulates one bullet per round, sorted by round. A
+   * SECOND round no longer erases the first: the section keeps every verdict
+   * and marks the highest round ` (current)`. With a single round the bullet is
+   * byte-identical to the pre-#376 shape.
    */
   readonly reviewRecord?: {
     readonly round: number;
