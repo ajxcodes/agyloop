@@ -16,6 +16,10 @@
  * #464).
  *
  * Pure domain: no I/O. The measured change set is supplied by the caller.
+ *
+ * Issue #506: a plan-declared operator step belongs to `out-of-scope`. The
+ * label/declaration match below is ADVISORY — it can only sharpen a refusal
+ * that is already happening, never grant acceptance.
  */
 
 import {
@@ -297,4 +301,37 @@ export function classifyAcEvidence(
   }
 
   return { ac: entry.ac, status: AC_EVIDENCE_STATUS_MET, unverifiablePaths: [] };
+}
+
+/**
+ * The AC label an `unverifiable` use-case entry carries (issue #506).
+ *
+ * `RunReviewUseCase` records the entry as `AC4 — \`path\``, so the label is the
+ * token before the em dash. A bare path (the older four-argument callers of
+ * `applyTwoTierInvariant`) yields `null`, which never matches a declaration.
+ */
+export function acLabelOfUnverifiableEntry(entry: string): string | null {
+  const match = /^([A-Za-z][A-Za-z0-9._-]*)\s+—\s/.exec(String(entry ?? '').trim());
+  return match ? match[1] : null;
+}
+
+/**
+ * The plan declaration that names this AC, if any (issue #506).
+ *
+ * Matching requires a whole label token, so `AC4` matches `AC4's …` while
+ * `AC40` and `xAC4` do not. Advisory only: a hit adds diagnostic text to a
+ * refusal whose decision was already taken.
+ */
+export function findOutOfScopeDeclarationForAc(
+  ac: string | null,
+  declarations: readonly string[]
+): string | null {
+  if (!ac || declarations.length === 0) return null;
+  const label = ac.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (label.length === 0) return null;
+  const pattern = new RegExp(`(?:^|[^\\w])${label}(?![\\w])`, 'i');
+  for (const declaration of declarations) {
+    if (pattern.test(String(declaration ?? ''))) return declaration;
+  }
+  return null;
 }

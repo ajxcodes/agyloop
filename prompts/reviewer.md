@@ -49,10 +49,16 @@ REMEDIATION_GUIDANCE:
 - <Actionable remediation item 1> (or "None" if approved)
 AC_EVIDENCE:
 - AC1: met — `src/domain/plan-deviation.ts`, `tests/domain/plan-deviation.test.ts`
-- AC6: unverifiable — `artifacts/plans/425-task-plan/implementation_plan.md`
+- AC2: unverifiable — `src/domain/missing-module.ts`
+- AC4: out-of-scope — the plan declares Step 11 an operator step, so no delivered path exists
 ```
 
 The `AC_EVIDENCE:` block is mandatory for an `APPROVED` verdict. A `path:line` or `path:start-end` citation is accepted — the suffix is ignored when the path is matched — and `codeloop review` refuses an `APPROVED` verdict that omits the block, or whose block carries no parseable entry.
+
+The status you report is what the tool certifies, so choose it by where the evidence lives:
+- `met` — the criterion is satisfied by files in this diff; cite their paths.
+- `unverifiable` — a path that must ship in this diff is missing from it, or the only evidence is gitignored or outside this worktree. Name the path: the review command refuses an `APPROVED` verdict that carries one, so never use it for a criterion that has no delivered evidence BY DESIGN.
+- `out-of-scope` — the plan declares the criterion an operator step, a post-merge action, or deliberately undelivered: no delivered path can exist and none is expected. Report it `out-of-scope` with no path and name the plan declaration in the note; it is recorded and never escalates an `APPROVED` verdict. Never use it to excuse a change that should have shipped.
 
 If all Acceptance Criteria are met, repository standards are respected, and no critical/error issues exist, set `REVIEW_STATUS: APPROVED`. Otherwise, set `REVIEW_STATUS: CHANGES_REQUESTED`.
 

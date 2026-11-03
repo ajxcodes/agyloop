@@ -116,6 +116,7 @@ import {
   PLAN_DEVIATION_MARKER,
   AC_EVIDENCE_MARKER,
   REVIEWER_AC_EVIDENCE_SENTENCE,
+  REVIEWER_AC_EVIDENCE_STATUS_CONTRACT,
   HEADING_TEST_REGISTER,
   formatPlanDeviationChannelNote,
   formatAcEvidenceExample,
@@ -1505,7 +1506,8 @@ export class ResolveSubagentUseCase {
     }
 
     prompt += `### Delivered Evidence Contract (${AC_EVIDENCE_MARKER}):\n`;
-    prompt += `Evidence must be a path in the DELIVERED change set: a tracked/untracked file in this worktree that appears in \`git diff <base>\` or \`git ls-files --others --exclude-standard\`. An absolute path in the root workspace is NOT evidence, and neither is anything under a gitignored tree (\`artifacts/\`, \`.agyloop/\`). If a criterion's only evidence lives outside the diff, report it \`unverifiable\` and name the path — the tool refuses a verdict that counts it met.\n`;
+    prompt += `Evidence must be a path in the DELIVERED change set: a tracked/untracked file in this worktree that appears in \`git diff <base>\` or \`git ls-files --others --exclude-standard\`. An absolute path in the root workspace is NOT evidence, and neither is anything under a gitignored tree (\`artifacts/\`, \`.agyloop/\`).\n`;
+    prompt += `${REVIEWER_AC_EVIDENCE_STATUS_CONTRACT}\n`;
     prompt += `A \`path:line\` or \`path:start-end\` citation is accepted: the suffix is ignored when the path is matched against the delivered change set. The ${AC_EVIDENCE_MARKER} block is MANDATORY for an \`APPROVED\` verdict — a filed \`APPROVED\` verdict that omits it, or whose block carries no parseable entry, is refused by the review command.\n\n`;
 
     prompt += `### Required Verdict Output:\n`;

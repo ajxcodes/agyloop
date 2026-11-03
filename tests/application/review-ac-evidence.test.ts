@@ -16,7 +16,8 @@ const {
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
-  STAGE_REVIEW
+  STAGE_REVIEW,
+  REVIEWER_AC_EVIDENCE_STATUS_CONTRACT
 } = require('../../dist/domain');
 const { ProcessCommandExecutor } = require('../../dist/infrastructure');
 
@@ -108,6 +109,26 @@ function writePlan(criteria: string[]): void {
   fs.writeFileSync(
     planPath,
     ['# Plan', '', '- **Acceptance Criteria:**', ...criteria, ''].join('\n')
+  );
+}
+
+/**
+ * The #502 shape (issue #506): AC4 is a plan-declared operator step, so no
+ * delivered path can exist for it.
+ */
+function writeOperatorStepPlan(): void {
+  fs.writeFileSync(
+    planPath,
+    [
+      '# Plan',
+      '',
+      '- **Acceptance Criteria:**',
+      '- AC1: The release path refuses a label it cannot verify.',
+      '- AC4: The phase/6-codeloop PR is opened by the operator after the change merges.',
+      '',
+      "- **Out of Scope:** Opening the real `phase/6-codeloop` PR during this run. AC4's label provisioning is an operator step (Step 11); the PR itself is opened by the operator after the change merges.",
+      ''
+    ].join('\n')
   );
 }
 
@@ -489,5 +510,78 @@ describe('Review AC evidence (issue #432)', () => {
     assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, [
       'AC1 — `node_modules/left-pad/index.js`'
     ]);
+  });
+
+  test('RAE19 a #502-shaped operator-step AC reported out-of-scope approves in one round (#506 AC3/AC4)', async () => {
+    writeOperatorStepPlan();
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const shipped = 1;\n');
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 506,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: #502-shaped round',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`',
+        '- AC4: out-of-scope'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.deepStrictEqual([...result.acEvidence.outOfScope], ['AC4']);
+    assert.deepStrictEqual([...result.acEvidence.unverifiable], []);
+    assert.strictEqual(repo.saves, 1);
+    const history = repo.snapshot.history;
+    assert.strictEqual(history[history.length - 1].stage, 'COMMIT');
+    assert.strictEqual(history[history.length - 2].stage, 'REVIEW');
+    assert.ok(!('reviewAcEvidence' in history[history.length - 1].metadata));
+  });
+
+  test('RAE20 the same plan-declared AC reported unverifiable is refused with out-of-scope and the declaration named (#506 AC2)', async () => {
+    writeOperatorStepPlan();
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const shipped = 1;\n');
+    const { useCase } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 506,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: #502-shaped round',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`',
+        '- AC4: unverifiable — `ajxcodes/agyloop`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    const criteria = result.verdict.unfulfilledCriteria.join('\n');
+    assert.ok(criteria.includes('out-of-scope'), criteria);
+    assert.ok(criteria.includes("AC4's label provisioning is an operator step"), criteria);
+  });
+
+  test('RAE21 the review use case renders the plan\'s out-of-scope declaration into its own AC_EVIDENCE contract (#506 AC1)', async () => {
+    writeOperatorStepPlan();
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const shipped = 1;\n');
+    const { useCase } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 506,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: #502-shaped round',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`',
+        '- AC4: out-of-scope'
+      ].join('\n')
+    });
+
+    assert.ok(result.taskPrompt.includes(REVIEWER_AC_EVIDENCE_STATUS_CONTRACT));
+    assert.ok(result.taskPrompt.includes("AC4's label provisioning is an operator step"));
   });
 });
