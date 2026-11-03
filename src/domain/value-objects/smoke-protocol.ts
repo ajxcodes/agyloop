@@ -13,6 +13,8 @@
  * invokes the CLI must create its directory sandbox where the state guard
  * recognises it), sandbox-cwd (issue #440 — a check that DECLARES such a
  * sandbox must actually run the CLI inside it, or point `--workspace` at it),
+ * sandbox-missing (issue #498 — a check that invokes the CLI outside every
+ * recognised sandbox and never declares one; the complement of sandbox-cwd),
  * missing-parent-directory (issue #388 — a check that WRITES
  * a path must create that path's parent first, or it dies before product code),
  * nested-single-quote (issue #467 — a raw apostrophe inside a single-quoted
@@ -43,6 +45,7 @@ import {
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
   SMOKE_RULE_QUOTED_JSON_COMPARISON,
   SMOKE_RULE_SANDBOX_CWD,
+  SMOKE_RULE_SANDBOX_MISSING,
   SMOKE_RULE_SANDBOX_PATH,
   SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
   SMOKE_SANDBOX_RECOMMENDED_PATH
@@ -1124,7 +1127,7 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #440: the `sandbox-cwd` rule.
+// Issue #440 / #498: the `sandbox-cwd` and `sandbox-missing` rules.
 //
 // `sandbox-path` (issue #359) asks only WHERE a check creates its sandbox. The
 // #370 reproduction declared `$HOME/.cache/agyloop/smoke-348/approval`, cd'd to
@@ -1132,12 +1135,22 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
 // have mutated the LIVE checkpoint while the plan validated clean. Naming a
 // sandbox is not entering it.
 //
-// The rule arms only when a check DECLARES a recognised sandbox, then requires
-// every non-inert CLI invocation in that check to be anchored: a `cd` in force
-// at the invocation (direct, same-line, subshell, command substitution, or
-// mktemp/variable indirection), or a `--workspace` target inside a sandbox.
-// An UNKNOWN cwd is fail-open — historical plans read variables set outside the
-// fence, and the runtime `AGYLOOP_SMOKE` guard is the backstop.
+// The walk asks two questions of every non-inert CLI invocation in a check:
+//
+//   1. Does it run anchored — a `cd` in force at the invocation (direct,
+//      same-line, subshell, command substitution, or mktemp/variable
+//      indirection), or a `--workspace` target inside a sandbox?
+//   2. Did this check DECLARE a recognised sandbox?
+//
+// Declared + unanchored -> `sandbox-cwd` (issue #440). Undeclared + unanchored
+// -> `sandbox-missing` (issue #498): before #498 the walk bailed out on
+// `!declared`, so the check that ignored the sandbox contract entirely was the
+// only shape that certified clean.
+//
+// Deliberate boundaries: (a) an invocation anchored by an earlier check's `cd`
+// is accepted because `toScript()` executes ONE shell, and (b) an UNKNOWN cwd
+// is fail-open — historical plans read variables set outside the fence, and the
+// runtime `AGYLOOP_SMOKE` guard is the backstop.
 // ---------------------------------------------------------------------------
 
 /** Sentinel cwd for the worktree root the gate executes the script from. */
@@ -1358,7 +1371,12 @@ function sandboxCwdLabel(cwd: string | null): string {
 }
 
 /**
- * Emits at most one `sandbox-cwd` finding per check (issue #440).
+ * Emits at most one `sandbox-cwd` or `sandbox-missing` finding per check
+ * (issues #440 and #498).
+ *
+ * `sandbox-cwd` is reserved for a check that DECLARES a recognised sandbox and
+ * then runs the CLI outside it. `sandbox-missing` covers the complement: a
+ * check that declares none and still runs the CLI outside every sandbox.
  *
  * The walk is cumulative across checks because `toScript()` executes ONE shell:
  * a `cd` or a variable set in check 1 is still in force in check 2. Comment,
@@ -1441,9 +1459,23 @@ function collectSandboxCwdFindings(
       if (restoreCwd !== undefined) state.cwd = restoreCwd;
     });
 
-    if (!state.declared) continue;
     const offending = firstUnanchoredInvocation(invocations);
     if (offending === null) continue;
+
+    // Issue #498: an undeclared check whose invocation actually runs outside
+    // every sandbox is the residual half of the #370/#440 family. The rule id
+    // says "declares no sandbox"; `sandbox-cwd` stays reserved for the check
+    // that DOES declare one and then leaves it.
+    if (!state.declared) {
+      findings.push({
+        rule: SMOKE_RULE_SANDBOX_MISSING,
+        checkIndex: check.index,
+        label: check.label,
+        line: check.planLine + 1 + offending.offset,
+        excerpt: `${truncate(bodyLines[offending.offset] ?? '')} — declares no sandbox but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; create and cd into ${SMOKE_SANDBOX_RECOMMENDED_PATH} first`
+      });
+      continue;
+    }
 
     findings.push({
       rule: SMOKE_RULE_SANDBOX_CWD,

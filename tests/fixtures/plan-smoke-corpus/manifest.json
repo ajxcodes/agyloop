@@ -10,7 +10,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "248",
@@ -20,7 +21,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "283",
@@ -30,7 +32,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "284",
@@ -40,7 +43,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "297",
@@ -50,7 +54,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "298",
@@ -60,7 +65,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "301",
@@ -70,7 +76,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "306",
@@ -80,7 +87,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "311",
@@ -90,7 +98,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "313",
@@ -100,7 +109,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 4
     },
     {
       "issue": "314",
@@ -110,7 +120,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "315",
@@ -120,7 +131,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 7
     },
     {
       "issue": "320",
@@ -130,7 +142,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "327",
@@ -140,7 +153,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "328",
@@ -150,7 +164,8 @@
       "sandboxFindings": 3,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "336",
@@ -160,7 +175,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "337",
@@ -170,7 +186,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "338",
@@ -180,7 +197,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "339",
@@ -190,7 +208,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "349",
@@ -200,7 +219,8 @@
       "sandboxFindings": 4,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 1
     },
     {
       "issue": "351",
@@ -210,7 +230,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "352",
@@ -220,7 +241,8 @@
       "sandboxFindings": 2,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 1
     },
     {
       "issue": "356",
@@ -230,7 +252,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "359",
@@ -240,7 +263,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "362",
@@ -250,7 +274,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "382",
@@ -260,7 +285,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 2,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "440",
@@ -270,7 +296,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 1,
-      "nestedQuoteFindings": 0
+      "nestedQuoteFindings": 0,
+      "sandboxMissingFindings": 0
     },
     {
       "issue": "467",
@@ -280,7 +307,8 @@
       "sandboxFindings": 0,
       "missingParentFindings": 0,
       "sandboxCwdFindings": 0,
-      "nestedQuoteFindings": 1
+      "nestedQuoteFindings": 1,
+      "sandboxMissingFindings": 0
     }
   ]
 }

@@ -57,6 +57,9 @@
  * SP53 - the escaped payload is analysed past the quote by
  *        missing-parent-directory (#467)
  * SP54 - the committed corpus freezes the nested-single-quote column (#467 AC3)
+ * SP55 - a CLI check that declares no sandbox is refused as sandbox-missing;
+ *        --help/--version and an entered sandbox stay clean (#498 AC1-AC4)
+ * SP56 - the committed corpus freezes the sandbox-missing column (#498)
  */
 
 const { test, describe } = require('node:test');
@@ -71,6 +74,7 @@ const {
   SMOKE_RULE_MISSING_PARENT_DIRECTORY,
   SMOKE_RULE_NESTED_SINGLE_QUOTE,
   SMOKE_RULE_SANDBOX_CWD,
+  SMOKE_RULE_SANDBOX_MISSING,
   SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED
 } = require('../../dist/domain');
 
@@ -337,6 +341,13 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   function cwdFindings(markdown: string): any[] {
     return SmokeProtocol.fromPlan(markdown).findings.filter(
       (finding: any) => finding.rule === SMOKE_RULE_SANDBOX_CWD
+    );
+  }
+
+  /** Issue #498: the `sandbox-missing` findings only, so sibling rules stay independent. */
+  function missingSandboxFindings(markdown: string): any[] {
+    return SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === SMOKE_RULE_SANDBOX_MISSING
     );
   }
 
@@ -862,6 +873,8 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     readonly sandboxCwdFindings?: number;
     /** Issue #467. */
     readonly nestedQuoteFindings: number;
+    /** Issue #498. */
+    readonly sandboxMissingFindings: number;
   }
 
   /** Reads + validates the committed corpus; throws loudly when it is absent. */
@@ -1788,6 +1801,67 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Issue #498: `sandbox-cwd` only judged a check that NAMED a sandbox, so a
+  // check that declared nothing and ran the CLI from the worktree root — whose
+  // `.agyloop` symlinks the live checkpoint — certified executable.
+  // -------------------------------------------------------------------------
+
+  test('SP55: a CLI check that declares no sandbox is refused as sandbox-missing; --help/--version and an entered sandbox stay clean (#498 AC1-AC4)', () => {
+    const rulesOf = (markdown: string): string[] =>
+      SmokeProtocol.fromPlan(markdown).findings.map((finding: any) => finding.rule);
+    const lineOf = (markdown: string, needle: string): number =>
+      markdown.split('\n').findIndex((line) => line.includes(needle)) + 1;
+
+    const bare = planOf(['```bash', 'node bin/codeloop.js next --json', '```']);
+    const bareProtocol = SmokeProtocol.fromPlan(bare);
+    assert.strictEqual(bareProtocol.executable, false);
+    assert.deepStrictEqual(rulesOf(bare), [SMOKE_RULE_SANDBOX_MISSING]);
+    const bareFinding = bareProtocol.findings[0];
+    assert.strictEqual(bareFinding.checkIndex, 1);
+    assert.strictEqual(bareFinding.line, lineOf(bare, 'node bin/codeloop.js next --json'));
+    assert.ok(bareFinding.excerpt.includes('declares no sandbox'), bareFinding.excerpt);
+    assert.ok(bareFinding.excerpt.includes('$HOME/.cache/agyloop/smoke-'), bareFinding.excerpt);
+
+    const fromRoot = planOf([
+      '```bash',
+      'env -u AGY_SUBAGENT node "$PWD/bin/codeloop.js" transition APPROVAL',
+      '```'
+    ]);
+    assert.deepStrictEqual(rulesOf(fromRoot), [SMOKE_RULE_SANDBOX_MISSING]);
+
+    const named = planOf([
+      '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-498/x"',
+      'mkdir -p "$SBX"',
+      'node bin/codeloop.js next --json',
+      '```'
+    ]);
+    assert.deepStrictEqual(rulesOf(named), [SMOKE_RULE_SANDBOX_CWD]);
+
+    const accepted: ReadonlyArray<readonly [string, readonly string[]]> = [
+      ['declared and entered', ['SBX="$HOME/.cache/agyloop/smoke-498/x"', 'cd "$SBX"', 'node bin/codeloop.js next --json']],
+      ['workspace inside the sandbox', ['SBX="$HOME/.cache/agyloop/smoke-498/x"', 'node bin/codeloop.js next --json --workspace "$SBX/ws"']],
+      ['help only', ['node bin/codeloop.js --help']],
+      ['version only', ['node bin/codeloop.js --version']],
+      ['no CLI invocation', ['echo smoke-498']]
+    ];
+    for (const [label, body] of accepted) {
+      const protocol = SmokeProtocol.fromPlan(planOf(['```bash', ...body, '```']));
+      assert.deepStrictEqual(protocol.findings, [], `${label}: ${JSON.stringify(protocol.findings)}`);
+      assert.strictEqual(protocol.executable, true, label);
+    }
+
+    const inherited = [
+      '# Plan', '', SMOKE_HEADING, '',
+      '#### Check 1 — declare and enter', '', '```bash',
+      'SBX="$HOME/.cache/agyloop/smoke-498/x"', 'cd "$SBX"', '```', '',
+      '#### Check 2 — reuse the carried cwd', '', '```bash',
+      'node bin/codeloop.js next --json', '```', ''
+    ].join('\n');
+    assert.deepStrictEqual(rulesOf(inherited), []);
+  });
+
+  // -------------------------------------------------------------------------
   // Issue #467: a raw apostrophe inside a single-quoted `node -e` program
   // closes the shell word early. The check that approval certified runnable
   // receives a different program and fails verbatim at the gate (#447).
@@ -1950,5 +2024,23 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       }
     }
     assert.ok(canary, 'the 467 canary is missing from the corpus manifest');
+  });
+
+  test('SP56: the committed corpus freezes the sandbox-missing column (#498)', () => {
+    const { entries } = readCorpus(CORPUS_DIR);
+    const canaries = new Set(['313.md', '315.md', '349.md', '352.md']);
+    let fired = 0;
+    for (const entry of entries) {
+      const markdown = fs.readFileSync(path.join(CORPUS_DIR, entry.file), 'utf8');
+      const measured = missingSandboxFindings(markdown).length;
+      assert.strictEqual(measured, entry.sandboxMissingFindings, entry.file);
+      if (canaries.has(entry.file)) {
+        fired += 1;
+        assert.ok(measured > 0, `${entry.file}: the #498 canary must fire`);
+      } else {
+        assert.strictEqual(measured, 0, `${entry.file}: historical verdict changed`);
+      }
+    }
+    assert.strictEqual(fired, canaries.size, 'a #498 canary is missing from the corpus manifest');
   });
 });
