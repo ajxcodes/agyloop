@@ -45,6 +45,18 @@
  *        --workspace and --help classify correctly (#440)
  * SP45 - cross-check cwd and variables keep historical plans clean (#440)
  * SP46 - the committed corpus freezes the sandbox-cwd column (#440)
+ * SP47 - a raw apostrophe inside a multi-line node -e program is refused at
+ *        its plan line (#467 AC1)
+ * SP48 - a single-line node -e program with a raw apostrophe is refused; a
+ *        clean one is not (#467 AC1)
+ * SP49 - bash -c, sh -c and python3 -c wrappers are held to the same rule (#467 AC1)
+ * SP50 - the escaped and heredoc spellings stay executable (#467 AC2)
+ * SP51 - a backslash-escaped or unterminated program is refused (#467 AC1/AC2)
+ * SP52 - heredoc data, comment lines and quoted prose are not scanned for a
+ *        nested quote (#467)
+ * SP53 - the escaped payload is analysed past the quote by
+ *        missing-parent-directory (#467)
+ * SP54 - the committed corpus freezes the nested-single-quote column (#467 AC3)
  */
 
 const { test, describe } = require('node:test');
@@ -56,6 +68,8 @@ const {
   SmokeProtocol,
   SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
   SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
+  SMOKE_RULE_MISSING_PARENT_DIRECTORY,
+  SMOKE_RULE_NESTED_SINGLE_QUOTE,
   SMOKE_RULE_SANDBOX_CWD,
   SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED
 } = require('../../dist/domain');
@@ -846,6 +860,8 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     readonly missingParentFindings: number;
     /** Issue #440. Optional so historical entries stay literally unchanged. */
     readonly sandboxCwdFindings?: number;
+    /** Issue #467. */
+    readonly nestedQuoteFindings: number;
   }
 
   /** Reads + validates the committed corpus; throws loudly when it is absent. */
@@ -1769,5 +1785,170 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       }
     }
     assert.ok(canary, 'the #370 canary is missing from the corpus manifest');
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #467: a raw apostrophe inside a single-quoted `node -e` program
+  // closes the shell word early. The check that approval certified runnable
+  // receives a different program and fails verbatim at the gate (#447).
+  // -------------------------------------------------------------------------
+
+  /** Issue #467: the `nested-single-quote` findings only, so siblings stay independent. */
+  const nestedQuoteFindings = (markdown: string): any[] =>
+    SmokeProtocol.fromPlan(markdown).findings.filter(
+      (finding: any) => finding.rule === SMOKE_RULE_NESTED_SINGLE_QUOTE
+    );
+
+  test('SP47: a raw apostrophe inside a multi-line node -e program is refused at its plan line (#467 AC1)', () => {
+    const markdown = planOf([
+      '```bash',
+      "node -e '",
+      'const fs = require("fs");',
+      'const out = fs.readFileSync("out.txt", "utf8");',
+      'if (!out.includes("[dry-run] Would fetch origin and process 45 merged PRs for \'phase/447\'.")) process.exit(1);',
+      "'",
+      '```'
+    ]);
+
+    const protocol = SmokeProtocol.fromPlan(markdown);
+    const nested = nestedQuoteFindings(markdown);
+
+    assert.strictEqual(protocol.executable, false);
+    assert.strictEqual(nested.length, 1, JSON.stringify(protocol.findings));
+    assert.strictEqual(nested[0].line, 9);
+    assert.strictEqual(nested[0].rule, SMOKE_RULE_NESTED_SINGLE_QUOTE);
+    assert.strictEqual(nested[0].checkIndex, 1);
+    // The remedy is the only quoting guidance the planner sees.
+    assert.ok(nested[0].excerpt.includes('heredoc'), nested[0].excerpt);
+  });
+
+  test('SP48: a single-line node -e program with a raw apostrophe is refused; a clean one is not (#467 AC1)', () => {
+    const raw = planOf(['```bash', `node -e 'const s = "don't"; console.log(s)'`, '```']);
+    const protocol = SmokeProtocol.fromPlan(raw);
+    assert.deepStrictEqual(
+      protocol.findings.map((finding: any) => finding.rule),
+      [SMOKE_RULE_NESTED_SINGLE_QUOTE],
+      JSON.stringify(protocol.findings)
+    );
+
+    const clean = SmokeProtocol.fromPlan(
+      planOf(['```bash', `node -e 'const s = "dont"; console.log(s)'`, '```'])
+    );
+    assert.deepStrictEqual(clean.findings, []);
+    assert.strictEqual(clean.executable, true);
+  });
+
+  test('SP49: bash -c, sh -c and python3 -c wrappers are held to the same rule (#467 AC1)', () => {
+    const protocol = SmokeProtocol.fromPlan(
+      planOf([
+        '```bash',
+        `bash -c 'echo "it's"'`,
+        `sh -c 'echo "it's"'`,
+        `python3 -c 'print("it's")'`,
+        '```'
+      ])
+    );
+
+    assert.strictEqual(protocol.findings.length, 3, JSON.stringify(protocol.findings));
+    assert.deepStrictEqual(
+      protocol.findings.map((finding: any) => finding.rule),
+      [SMOKE_RULE_NESTED_SINGLE_QUOTE, SMOKE_RULE_NESTED_SINGLE_QUOTE, SMOKE_RULE_NESTED_SINGLE_QUOTE]
+    );
+  });
+
+  test('SP50: the escaped and heredoc spellings stay executable (#467 AC2)', () => {
+    const escapedDouble = String.raw`node -e 'const s = "don'"'"'t"; console.log(s)'`;
+    const escapedBackslash = String.raw`node -e 'const s = "don'\''t"; console.log(s)'`;
+    const heredoc = ["node - \"$arg\" <<'NODE'", "if (!/it's/.test(\"it's\")) process.exit(1);", 'NODE'].join('\n');
+
+    const protocol = SmokeProtocol.fromPlan(
+      planOf(['```bash', escapedDouble, escapedBackslash, heredoc, '```'])
+    );
+
+    assert.deepStrictEqual(protocol.findings, [], JSON.stringify(protocol.findings));
+    assert.strictEqual(protocol.executable, true);
+  });
+
+  test('SP51: a backslash-escaped or unterminated program is refused (#467 AC1/AC2)', () => {
+    // `\'` is NOT a sanctioned escape: bash keeps the backslash and closes the
+    // word, so the program would die with a SyntaxError.
+    const backslash = SmokeProtocol.fromPlan(
+      planOf(['```bash', String.raw`node -e 'const s = "don\'t"; console.log(s)'`, '```'])
+    );
+    assert.strictEqual(backslash.findings.length, 1, JSON.stringify(backslash.findings));
+    assert.strictEqual(backslash.findings[0].rule, SMOKE_RULE_NESTED_SINGLE_QUOTE);
+
+    const unterminated = SmokeProtocol.fromPlan(
+      planOf(['```bash', `node -e 'const s = 1;`, '```'])
+    );
+    assert.strictEqual(unterminated.findings.length, 1, JSON.stringify(unterminated.findings));
+    assert.ok(
+      unterminated.findings[0].excerpt.includes('never closes'),
+      unterminated.findings[0].excerpt
+    );
+  });
+
+  test('SP52: heredoc data, comment lines and quoted prose are not scanned for a nested quote (#467)', () => {
+    const protocol = SmokeProtocol.fromPlan(
+      planOf([
+        '```bash',
+        "node - <<'NODE'",
+        `const docs = "node -e 'echo \\"it's\\"'";`,
+        'NODE',
+        `# then run node -e 'echo "it's"'`,
+        `echo "node -e 'echo \\"it's\\"'"`,
+        '```'
+      ])
+    );
+
+    assert.deepStrictEqual(protocol.findings, [], JSON.stringify(protocol.findings));
+  });
+
+  test('SP53: the escaped payload is analysed past the quote by missing-parent-directory (#467)', () => {
+    // Before #467 the payload capture stopped at the first apostrophe, so a
+    // write after the `'"'"'` escape was never seen by the write rule.
+    const protocol = SmokeProtocol.fromPlan(
+      planOf([
+        '```bash',
+        `node -e 'const s="don'"'"'t";require("fs").writeFileSync("build467/out.json", s)'`,
+        '```'
+      ])
+    );
+    assert.deepStrictEqual(
+      protocol.findings.map((finding: any) => finding.rule),
+      [SMOKE_RULE_MISSING_PARENT_DIRECTORY],
+      JSON.stringify(protocol.findings)
+    );
+
+    // A flag placed before `-e` used to hide the payload entirely.
+    const flagged = SmokeProtocol.fromPlan(
+      planOf([
+        '```bash',
+        `node --no-warnings -e 'const s="don'"'"'t";require("fs").writeFileSync("build467/out.json", s)'`,
+        '```'
+      ])
+    );
+    assert.deepStrictEqual(
+      flagged.findings.map((finding: any) => finding.rule),
+      [SMOKE_RULE_MISSING_PARENT_DIRECTORY],
+      JSON.stringify(flagged.findings)
+    );
+  });
+
+  test('SP54: the committed corpus freezes the nested-single-quote column (#467 AC3)', () => {
+    const { entries } = readCorpus(CORPUS_DIR);
+    let canary = false;
+    for (const entry of entries) {
+      const markdown = fs.readFileSync(path.join(CORPUS_DIR, entry.file), 'utf8');
+      const measured = nestedQuoteFindings(markdown).length;
+      assert.strictEqual(measured, entry.nestedQuoteFindings, entry.file);
+      if (entry.issue === '467') {
+        canary = true;
+        assert.strictEqual(measured, 1, 'the #447 shape must fire exactly once in the 467 canary');
+      } else {
+        assert.strictEqual(measured, 0, `${entry.file}: historical verdict changed`);
+      }
+    }
+    assert.ok(canary, 'the 467 canary is missing from the corpus manifest');
   });
 });

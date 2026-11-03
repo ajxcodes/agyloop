@@ -9,7 +9,8 @@
       "checks": 6,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "248",
@@ -18,7 +19,8 @@
       "checks": 2,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "283",
@@ -27,7 +29,8 @@
       "checks": 1,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "284",
@@ -36,7 +39,8 @@
       "checks": 12,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "297",
@@ -45,7 +49,8 @@
       "checks": 7,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "298",
@@ -54,7 +59,8 @@
       "checks": 4,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "301",
@@ -63,7 +69,8 @@
       "checks": 9,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "306",
@@ -72,7 +79,8 @@
       "checks": 5,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "311",
@@ -81,7 +89,8 @@
       "checks": 4,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "313",
@@ -90,7 +99,8 @@
       "checks": 5,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "314",
@@ -99,7 +109,8 @@
       "checks": 5,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "315",
@@ -108,7 +119,8 @@
       "checks": 15,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "320",
@@ -117,7 +129,8 @@
       "checks": 4,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "327",
@@ -126,7 +139,8 @@
       "checks": 5,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "328",
@@ -135,7 +149,8 @@
       "checks": 3,
       "sandboxFindings": 3,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "336",
@@ -144,7 +159,8 @@
       "checks": 9,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "337",
@@ -153,7 +169,8 @@
       "checks": 6,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "338",
@@ -162,7 +179,8 @@
       "checks": 4,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "339",
@@ -171,7 +189,8 @@
       "checks": 13,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "349",
@@ -180,7 +199,8 @@
       "checks": 7,
       "sandboxFindings": 4,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "351",
@@ -189,7 +209,8 @@
       "checks": 4,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "352",
@@ -198,7 +219,8 @@
       "checks": 3,
       "sandboxFindings": 2,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "356",
@@ -207,7 +229,8 @@
       "checks": 5,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "359",
@@ -216,7 +239,8 @@
       "checks": 3,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "362",
@@ -225,7 +249,8 @@
       "checks": 4,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "382",
@@ -234,7 +259,8 @@
       "checks": 9,
       "sandboxFindings": 0,
       "missingParentFindings": 2,
-      "sandboxCwdFindings": 0
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 0
     },
     {
       "issue": "440",
@@ -243,7 +269,18 @@
       "checks": 1,
       "sandboxFindings": 0,
       "missingParentFindings": 0,
-      "sandboxCwdFindings": 1
+      "sandboxCwdFindings": 1,
+      "nestedQuoteFindings": 0
+    },
+    {
+      "issue": "467",
+      "file": "467.md",
+      "headingLine": 7,
+      "checks": 1,
+      "sandboxFindings": 0,
+      "missingParentFindings": 0,
+      "sandboxCwdFindings": 0,
+      "nestedQuoteFindings": 1
     }
   ]
 }

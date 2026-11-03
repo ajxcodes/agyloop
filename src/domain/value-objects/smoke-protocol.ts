@@ -14,9 +14,12 @@
  * recognises it), sandbox-cwd (issue #440 — a check that DECLARES such a
  * sandbox must actually run the CLI inside it, or point `--workspace` at it),
  * missing-parent-directory (issue #388 — a check that WRITES
- * a path must create that path's parent first, or it dies before product code)
- * and the fixture-consistency rules (issue #413 — gate-report-fixture-
- * contradiction, worktree-fixture-unmatched, gate-report-marker-missing).
+ * a path must create that path's parent first, or it dies before product code),
+ * nested-single-quote (issue #467 — a raw apostrophe inside a single-quoted
+ * `node -e` / `bash -c` program closes the shell word early, so the executed
+ * program is not the approved one) and the fixture-consistency rules
+ * (issue #413 — gate-report-fixture-contradiction, worktree-fixture-unmatched,
+ * gate-report-marker-missing).
  *
  * The #413 rules are textual mirrors of runtime contracts: each one protects a
  * check's OWN fixture from making its assertion impossible, so approval never
@@ -36,6 +39,7 @@ import {
   SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
   SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
   SMOKE_RULE_MISSING_PARENT_DIRECTORY,
+  SMOKE_RULE_NESTED_SINGLE_QUOTE,
   SMOKE_RULE_NO_EXECUTABLE_CHECK,
   SMOKE_RULE_QUOTED_JSON_COMPARISON,
   SMOKE_RULE_SANDBOX_CWD,
@@ -1507,7 +1511,16 @@ const LITERAL_WRITE_CALLS: ReadonlySet<string> = new Set([
 ]);
 
 const HEREDOC_OPEN = /<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/;
-const NODE_EVAL = /\bnode\s+(?:--eval|-e)\s+'([^']*)'/;
+/**
+ * The prefix of a `node -e '<program>'` wrapper (issue #467, D2).
+ *
+ * The old pattern captured the payload with `'([^']*)'`, so it stopped at the
+ * first apostrophe and never saw a write after one — raw or correctly
+ * escaped. The prefix is matched here and the payload is walked by
+ * `readQuotedProgram`, the same quote model the refusal rule uses. Non-global:
+ * only the first wrapper on a statement is read.
+ */
+const NODE_EVAL = /\bnode\b[^\n]*?\s(?:--eval|-e)\s+'/;
 
 interface WriteTarget {
   /** 0-based offset of the line within the check body. */
@@ -1586,6 +1599,190 @@ function quotedContinuationLines(bodyLines: readonly string[]): ReadonlySet<numb
   });
 
   return continuation;
+}
+
+/** Characters that end a shell word. */
+const SHELL_WORD_SEPARATORS: ReadonlySet<string> = new Set([
+  ' ',
+  '\t',
+  '\n',
+  '\r',
+  ';',
+  '&',
+  '|',
+  ')',
+  '>',
+  '<'
+]);
+
+/** Interpreters whose program is one shell-quoted word (issue #467). */
+const SHELL_PROGRAM_WRAPPER =
+  /\b(?:node\b[^\n]*?\s(?:--eval|-e)|(?:ba|da|z)?sh\s+-c|python3?\s+-c)\s+'/g;
+
+interface QuotedProgram {
+  /** The program bash hands the interpreter, sanctioned escapes decoded. */
+  readonly program: string;
+  /** Offset of the apostrophe that closed the word early, or null. */
+  readonly offendingOffset: number | null;
+  /** Index just past the closing quote; `body.length` when the word never closes. */
+  readonly endOffset: number;
+  /** True when no terminating quote exists. */
+  readonly unterminated: boolean;
+}
+
+interface DoubleQuotedSegment {
+  /** The segment with bash's double-quote escapes decoded. */
+  readonly text: string;
+  /** Index just past the closing `"`, or `body.length` when it never closes. */
+  readonly endOffset: number;
+  readonly closed: boolean;
+}
+
+/**
+ * Reads the double-quoted segment opened at `openIndex` (issue #467).
+ *
+ * A `'"'"'` spelling is a double-quoted `'` adjacent to single-quoted
+ * segments; bash concatenates the three pieces, so the walker copies the
+ * segment's CONTENT into the program rather than its delimiters.
+ */
+function skipDoubleQuoted(body: string, openIndex: number): DoubleQuotedSegment {
+  let text = '';
+  let index = openIndex + 1;
+
+  while (index < body.length) {
+    const char = body[index];
+    if (char === '\\' && index + 1 < body.length) {
+      const next = body[index + 1];
+      if (next === '"' || next === '\\' || next === '$' || next === '`') {
+        text += next;
+        index += 2;
+        continue;
+      }
+      if (next === '\n') {
+        // A backslash-newline is a line continuation: it removes both.
+        index += 2;
+        continue;
+      }
+      text += char;
+      index++;
+      continue;
+    }
+    if (char === '"') return { text, endOffset: index + 1, closed: true };
+    text += char;
+    index++;
+  }
+
+  return { text, endOffset: body.length, closed: false };
+}
+
+/**
+ * Walks the single-quoted shell word opened at `openIndex` (issue #467).
+ *
+ * The walker follows the WORD, not the line. A closing apostrophe followed by
+ * a separator (or EOF) ends the word cleanly; followed by `"` it is a
+ * sanctioned `'"'"'`/`'"$VAR"'` continuation; followed by anything else the
+ * word closes EARLY and bash re-glues the remainder by concatenation — the
+ * #447 defect, where `… for 'phase/447'.` reached node as `… for phase/447.`.
+ *
+ * Sanctioned spellings: `'"'"'`, `'\''`, a `"…"` continuation, and a heredoc.
+ * `\'` is deliberately NOT sanctioned: bash does not honour it inside a
+ * single-quoted word, so accepting it would certify a `SyntaxError`. The
+ * `'a'b` concatenation is refused by design — it is legal shell, but the
+ * payload a reviewer reads is not the program that runs. An unterminated word
+ * is a separate finding (see `collectNestedSingleQuoteFindings`).
+ */
+function readQuotedProgram(body: string, openIndex: number): QuotedProgram {
+  let program = '';
+  let index = openIndex + 1;
+  let mode: 'single' | 'outside' = 'single';
+
+  while (index < body.length) {
+    if (mode === 'single') {
+      if (body[index] !== "'") {
+        program += body[index];
+        index++;
+        continue;
+      }
+
+      // `'\''` — a backslash-escaped apostrophe the shell does honour.
+      if (body.startsWith("'\\''", index)) {
+        program += "'";
+        index += 4;
+        continue;
+      }
+
+      // `'"…"'` — a double-quoted continuation adjacent to the word.
+      if (body[index + 1] === '"') {
+        const segment = skipDoubleQuoted(body, index + 1);
+        if (!segment.closed) {
+          return {
+            program: program + segment.text,
+            offendingOffset: null,
+            endOffset: segment.endOffset,
+            unterminated: true
+          };
+        }
+        program += segment.text;
+        index = segment.endOffset;
+        mode = 'outside';
+        continue;
+      }
+
+      // `''` — an empty adjacent segment.
+      if (body[index + 1] === "'") {
+        index += 2;
+        continue;
+      }
+
+      // A clean close: separator, or the end of the body.
+      if (index + 1 >= body.length || SHELL_WORD_SEPARATORS.has(body[index + 1])) {
+        return { program, offendingOffset: null, endOffset: index + 1, unterminated: false };
+      }
+
+      // Anything else re-glues the word: the program the operator approved is
+      // not the one bash hands the interpreter.
+      return {
+        program,
+        offendingOffset: index,
+        endOffset: index + 1,
+        unterminated: false
+      };
+    }
+
+    const char = body[index];
+    if (char === "'") {
+      mode = 'single';
+      index++;
+      continue;
+    }
+    if (char === '"') {
+      const segment = skipDoubleQuoted(body, index);
+      if (!segment.closed) {
+        return {
+          program: program + segment.text,
+          offendingOffset: null,
+          endOffset: segment.endOffset,
+          unterminated: true
+        };
+      }
+      program += segment.text;
+      index = segment.endOffset;
+      continue;
+    }
+    if (SHELL_WORD_SEPARATORS.has(char)) {
+      return { program, offendingOffset: null, endOffset: index, unterminated: false };
+    }
+
+    return {
+      program,
+      offendingOffset: index,
+      endOffset: index + 1,
+      unterminated: false
+    };
+  }
+
+  // The word never closed.
+  return { program, offendingOffset: null, endOffset: body.length, unterminated: true };
 }
 
 /** True when `text` starts a new JS string literal at `index`. */
@@ -1735,7 +1932,15 @@ function teeTargets(statement: string, offset: number, statementIndex: number): 
 function nodeEvalTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
   const match = NODE_EVAL.exec(statement);
   if (match === null) return [];
-  return literalWritePaths(match[1]).map((path) => ({ offset, statement: statementIndex, path }));
+  const program = readQuotedProgram(statement, match.index + match[0].length - 1);
+  // An offending quote is refused by `nested-single-quote`; reading a mutated
+  // payload would only produce a misleading write target.
+  if (program.offendingOffset !== null) return [];
+  return literalWritePaths(program.program).map((path) => ({
+    offset,
+    statement: statementIndex,
+    path
+  }));
 }
 
 /** Every write target of one statement. */
@@ -2018,6 +2223,75 @@ function collectFixtureFindings(
   }
 }
 
+/**
+ * Emits one `nested-single-quote` finding per interpreter wrapper whose
+ * single-quoted program closes early (issue #467).
+ *
+ * The #447 plan's Check 2 nested a raw apostrophe inside `node -e '…'`; bash
+ * closed the word there, node received a different needle, and the check that
+ * approval had certified `executable: true` failed verbatim at the gate. The
+ * refusal happens here, before the plan digest is pinned — execution never
+ * rewrites the fence (`toScript` stays byte-identical to the approved plan).
+ *
+ * Heredoc DATA is blanked to spaces first (line offsets survive) so a fixture
+ * that merely documents the shape is not scanned. Comment lines and quoted
+ * prose are skipped for the same reason: `# then run node -e '…'` and
+ * `assert.ok(x.includes("node -e '…'"))` are not programs.
+ */
+function collectNestedSingleQuoteFindings(
+  checkIndex: number,
+  label: string,
+  fenceStartLine: number,
+  bodyLines: readonly string[],
+  findings: SmokeFinding[]
+): void {
+  const heredocData = heredocDataLines(bodyLines);
+  const maskedLines = bodyLines.map((line, offset) =>
+    heredocData.has(offset) ? ' '.repeat(line.length) : line
+  );
+  const masked = maskedLines.join('\n');
+
+  SHELL_PROGRAM_WRAPPER.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SHELL_PROGRAM_WRAPPER.exec(masked)) !== null) {
+    const openIndex = match.index + match[0].length - 1;
+    const openingOffset = lineOffsetOf(masked, match.index);
+    const openingLine = maskedLines[openingOffset] ?? '';
+    const lineStart = match.index === 0 ? 0 : masked.lastIndexOf('\n', match.index - 1) + 1;
+
+    if (isCommentLine(openingLine) || isProseAt(openingLine, match.index - lineStart)) {
+      SHELL_PROGRAM_WRAPPER.lastIndex = openIndex + 1;
+      continue;
+    }
+
+    const program = readQuotedProgram(masked, openIndex);
+
+    if (program.offendingOffset !== null) {
+      const offset = lineOffsetOf(masked, program.offendingOffset);
+      findings.push({
+        rule: SMOKE_RULE_NESTED_SINGLE_QUOTE,
+        checkIndex,
+        label,
+        line: fenceStartLine + 1 + offset,
+        // The remedy rides AFTER truncation, so the 160-char cap cannot cut it.
+        excerpt: `${truncate(bodyLines[offset] ?? '')} — a raw ' inside the single-quoted program ends it early; use '"'"', '\\'' or a heredoc`
+      });
+    } else if (program.unterminated) {
+      findings.push({
+        rule: SMOKE_RULE_NESTED_SINGLE_QUOTE,
+        checkIndex,
+        label,
+        line: fenceStartLine + 1 + openingOffset,
+        excerpt: `${truncate(bodyLines[openingOffset] ?? '')} — the single-quoted program never closes; close it with ' or use a heredoc`
+      });
+    }
+
+    // Advance past the walked word: a payload that documents the wrapper
+    // shape must not be reported twice.
+    SHELL_PROGRAM_WRAPPER.lastIndex = Math.max(program.endOffset, openIndex + 1);
+  }
+}
+
 function collectFindings(
   checkIndex: number,
   label: string,
@@ -2036,6 +2310,10 @@ function collectFindings(
     });
     return;
   }
+
+  // Issue #467: a raw apostrophe inside a single-quoted interpreter program is
+  // refused before the plan digest is pinned, not after a full gate round.
+  collectNestedSingleQuoteFindings(checkIndex, label, fenceStartLine, bodyLines, findings);
 
   // The function set is per CHECK, not per fence-wide substring search.
   const jsonFunctions = jsonQuotingFunctions(bodyLines);

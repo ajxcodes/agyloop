@@ -757,6 +757,16 @@ export const SMOKE_RULE_SANDBOX_CWD = 'sandbox-cwd' as const;
  */
 export const SMOKE_RULE_MISSING_PARENT_DIRECTORY = 'missing-parent-directory' as const;
 /**
+ * A check nests a raw `'` inside a single-quoted interpreter program
+ * (`node -e '…'`, `bash -c '…'`, issue #467). Bash closes the quoted word at
+ * that apostrophe and re-glues the remainder by concatenation, so the program
+ * the interpreter receives is NOT the program the plan displays — the #447
+ * fence lost the quotes around `'phase/447'` and its needle stopped matching.
+ * `bash -n` cannot see this: the mutated script is still syntactically valid,
+ * which is why the rule walks the shell word instead of asking bash.
+ */
+export const SMOKE_RULE_NESTED_SINGLE_QUOTE = 'nested-single-quote' as const;
+/**
  * Fixture-consistency findings (issue #413). Each rule is a documented textual
  * mirror of the runtime contract it protects; every filed reproduction was a
  * check whose OWN fixture made the assertion impossible, certified executable
