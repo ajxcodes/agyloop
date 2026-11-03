@@ -9,6 +9,7 @@ export * from './gemini-model-catalog';
 export * from './file-plan-generator';
 export * from './file-prompt-repository';
 export * from './process-command-executor';
+export * from './workspace-discovery';
 export * from './file-build-detector';
 export * from './cli-critique-gateway';
 export * from './github-critique-installer-gateway';

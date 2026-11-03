@@ -9,6 +9,7 @@ import * as path from 'path';
 import {
   ProjectScaffolderPort,
   ProjectMarkers,
+  SubprojectMarkers,
   LegacyLayout,
   GitIgnoreChange,
   VerificationConfig,
@@ -17,10 +18,41 @@ import {
 import {
   CODELOOP_STATE_DIR,
   CODELOOP_CONFIG_FILE,
-  DEFAULT_SMOKE_TIMEOUT_SECONDS
+  DEFAULT_SMOKE_TIMEOUT_SECONDS,
+  MARKER_PACKAGE_JSON,
+  MARKER_PNPM_LOCK,
+  MARKER_YARN_LOCK,
+  MARKER_BUN_LOCK,
+  MARKER_PACKAGE_LOCK,
+  MARKER_PNPM_WORKSPACE,
+  MARKER_TURBO_JSON,
+  MARKER_NX_JSON,
+  MARKER_LERNA_JSON,
+  PKG_MGR_PNPM,
+  PKG_MGR_YARN,
+  PKG_MGR_BUN,
+  PKG_MGR_NPM,
+  ECOSYSTEM_NODE,
+  ECOSYSTEM_GO,
+  ECOSYSTEM_RUST,
+  ECOSYSTEM_PYTHON,
+  ECOSYSTEM_GRADLE,
+  ECOSYSTEM_MAVEN,
+  ECOSYSTEM_DOTNET
 } from '../domain';
+import {
+  classifyDirectory,
+  discoverSubprojects,
+  scanDirectory,
+  withWorkingDirectory
+} from './workspace-discovery';
 
-const MONOREPO_FILES = ['pnpm-workspace.yaml', 'turbo.json', 'nx.json', 'lerna.json'];
+const MONOREPO_FILES = [
+  MARKER_PNPM_WORKSPACE,
+  MARKER_TURBO_JSON,
+  MARKER_NX_JSON,
+  MARKER_LERNA_JSON
+];
 const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
 const MIGRATION_TOOLS: readonly { name: string; markers: readonly string[] }[] = [
   { name: 'prisma', markers: ['prisma'] },
@@ -35,16 +67,66 @@ const E2E_TOOLS: readonly { name: string; markers: readonly string[] }[] = [
   { name: 'playwright', markers: ['playwright.config.ts', 'playwright.config.js'] },
   { name: 'cypress', markers: ['cypress.config.ts', 'cypress.config.js', 'cypress'] }
 ];
+const E2E_SCRIPT_CANDIDATES = ['test:e2e', 'e2e:smoke', 'e2e'];
 const BACKEND_MARKERS = ['backend', 'server', 'api', 'apps/api', 'apps/server', 'services'];
 const FRONTEND_MARKERS = ['frontend', 'client', 'web', 'apps/web', 'apps/frontend'];
 const IGNORE_HEADER = '# codeloop / agyloop ephemeral runtime state';
 
+/** Ecosystem types present in one directory, in canonical priority order (#334). */
+function ecosystemTypesFor(fileNames: ReadonlySet<string>): string[] {
+  const markers = classifyDirectory(fileNames);
+  const types: string[] = [];
+  if (markers.node) types.push(ECOSYSTEM_NODE);
+  if (markers.go) types.push(ECOSYSTEM_GO);
+  if (markers.rust) types.push(ECOSYSTEM_RUST);
+  if (markers.python.length > 0) types.push(ECOSYSTEM_PYTHON);
+  if (markers.gradle.length > 0) types.push(ECOSYSTEM_GRADLE);
+  if (markers.maven) types.push(ECOSYSTEM_MAVEN);
+  if (markers.dotnet.length > 0) types.push(ECOSYSTEM_DOTNET);
+  return types;
+}
+
+/** Package manager declared by a directory's own lockfile, or null (#334). */
+function lockfilePackageManager(fileNames: ReadonlySet<string>): string | null {
+  if (fileNames.has(MARKER_PNPM_LOCK)) return PKG_MGR_PNPM;
+  if (fileNames.has(MARKER_YARN_LOCK)) return PKG_MGR_YARN;
+  if (fileNames.has(MARKER_BUN_LOCK)) return PKG_MGR_BUN;
+  if (fileNames.has(MARKER_PACKAGE_LOCK)) return PKG_MGR_NPM;
+  return null;
+}
+
+/** Reads one directory's `package.json` scripts, tolerating malformed JSON. */
+function readPackageScriptsAt(dir: string): Record<string, string> {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(dir, MARKER_PACKAGE_JSON), 'utf8')
+    ) as Record<string, unknown>;
+    const scripts = pkg?.scripts;
+    if (scripts && typeof scripts === 'object') {
+      const out: Record<string, string> = {};
+      for (const [key, value] of Object.entries(scripts)) {
+        if (typeof value === 'string') out[key] = value;
+      }
+      return out;
+    }
+  } catch {
+    // A malformed or absent package.json contributes no scripts.
+  }
+  return {};
+}
+
 export class FileProjectScaffolder implements ProjectScaffolderPort {
   public async detectMarkers(workspaceDir: string): Promise<ProjectMarkers> {
+    const rootFileNames = scanDirectory(workspaceDir);
     const has = (rel: string): boolean => fs.existsSync(path.join(workspaceDir, rel));
-    const firstMatch = (list: readonly { name: string; markers: readonly string[] }[]): string | null => {
+    const findTool = (
+      list: readonly { name: string; markers: readonly string[] }[],
+      dir: string
+    ): string | null => {
       for (const item of list) {
-        if (item.markers.some(has)) return item.name;
+        if (item.markers.some((marker) => fs.existsSync(path.join(dir, marker)))) {
+          return item.name;
+        }
       }
       return null;
     };
@@ -52,7 +134,7 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
     let packageScripts: Record<string, string> = {};
     let deps: Record<string, unknown> = {};
     let hasWorkspaces = false;
-    const pkgPath = path.join(workspaceDir, 'package.json');
+    const pkgPath = path.join(workspaceDir, MARKER_PACKAGE_JSON);
     if (fs.existsSync(pkgPath)) {
       try {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as Record<string, unknown>;
@@ -72,20 +154,62 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
       }
     }
 
-    let migrationTool = firstMatch(MIGRATION_TOOLS);
+    // Discovery is shared with the build detector, so the gate list and the
+    // marker verdict can never disagree about what the repository contains.
+    let discovered: ReturnType<typeof discoverSubprojects>;
+    try {
+      discovered = discoverSubprojects(workspaceDir, rootFileNames);
+    } catch {
+      discovered = [];
+    }
+
+    const subprojects: SubprojectMarkers[] = discovered.map((subproject) => ({
+      path: subproject.relDir,
+      ecosystems: ecosystemTypesFor(subproject.fileNames),
+      packageManager: lockfilePackageManager(subproject.fileNames),
+      scripts: readPackageScriptsAt(subproject.dir),
+      e2eTool: findTool(E2E_TOOLS, subproject.dir),
+      migrationTool: findTool(MIGRATION_TOOLS, subproject.dir)
+    }));
+
+    let migrationTool = findTool(MIGRATION_TOOLS, workspaceDir);
+    let migrationPath: string | null = null;
     if (!migrationTool && (deps.prisma || deps['@prisma/client'])) migrationTool = 'prisma';
-    let e2eTool = firstMatch(E2E_TOOLS);
+    let e2eTool = findTool(E2E_TOOLS, workspaceDir);
+    let e2ePath: string | null = null;
     if (!e2eTool && deps['@playwright/test']) e2eTool = 'playwright';
     if (!e2eTool && deps.cypress) e2eTool = 'cypress';
 
+    // Root first, then discovered subprojects in sorted path order: first hit wins.
+    if (!migrationTool) {
+      const hit = subprojects.find((subproject) => subproject.migrationTool !== null);
+      if (hit) {
+        migrationTool = hit.migrationTool;
+        migrationPath = hit.path;
+      }
+    }
+    if (!e2eTool) {
+      const hit = subprojects.find((subproject) => subproject.e2eTool !== null);
+      if (hit) {
+        e2eTool = hit.e2eTool;
+        e2ePath = hit.path;
+      }
+    }
+
     return {
-      monorepo: hasWorkspaces || MONOREPO_FILES.some(has),
+      monorepo: hasWorkspaces || MONOREPO_FILES.some((file) => rootFileNames.has(file)) || subprojects.length >= 2,
       dockerCompose: COMPOSE_FILES.some(has),
       migrationTool,
+      migrationPath,
       e2eTool,
+      e2ePath,
+      packageManager:
+        lockfilePackageManager(rootFileNames) ??
+        (rootFileNames.has(MARKER_PNPM_WORKSPACE) ? PKG_MGR_PNPM : null),
       hasBackendMarkers: BACKEND_MARKERS.some(has),
       hasFrontendMarkers: FRONTEND_MARKERS.some(has),
-      packageScripts
+      packageScripts,
+      subprojects
     };
   }
 
@@ -106,6 +230,14 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
     let setup: string | undefined;
     let teardown: string | undefined;
 
+    const subprojects = markers.subprojects ?? [];
+    const subprojectAt = (relDir: string | null): SubprojectMarkers | null =>
+      relDir === null ? null : subprojects.find((subproject) => subproject.path === relDir) ?? null;
+    const packageManagerAt = (relDir: string | null): string =>
+      subprojectAt(relDir)?.packageManager ?? markers.packageManager ?? PKG_MGR_NPM;
+    const scriptsAt = (relDir: string | null): Readonly<Record<string, string>> =>
+      subprojectAt(relDir)?.scripts ?? markers.packageScripts;
+
     const hasServices = markers.dockerCompose || markers.migrationTool !== null || markers.e2eTool !== null;
     if (hasServices) {
       if (markers.dockerCompose) {
@@ -114,8 +246,14 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
       }
       if (markers.migrationTool) {
         const migrate = this.migrationCommand(markers.migrationTool);
-        setup = setup ? `${setup} && ${migrate.apply}` : migrate.apply;
-        steps.push({ id: 'db-status', label: 'Database migration status', command: migrate.status });
+        const migrationPath = markers.migrationPath ?? null;
+        const apply = withWorkingDirectory(migrationPath ?? '', migrate.apply);
+        setup = setup ? `${setup} && ${apply}` : apply;
+        steps.push({
+          id: 'db-status',
+          label: 'Database migration status',
+          command: withWorkingDirectory(migrationPath ?? '', migrate.status)
+        });
       }
       if (markers.hasBackendMarkers || markers.dockerCompose) {
         steps.push({
@@ -125,15 +263,17 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
         });
       }
       if (markers.e2eTool) {
-        const scriptKey = ['test:e2e', 'e2e:smoke', 'e2e'].find((k) => markers.packageScripts[k]);
+        const e2ePath = markers.e2ePath ?? null;
+        const scriptKey = E2E_SCRIPT_CANDIDATES.find((key) => scriptsAt(e2ePath)[key]);
+        const e2eCommand = scriptKey
+          ? `${packageManagerAt(e2ePath)} run ${scriptKey}`
+          : markers.e2eTool === 'cypress'
+            ? 'npx cypress run'
+            : 'npx playwright test --grep @smoke';
         steps.push({
           id: 'e2e-smoke',
           label: 'E2E smoke test',
-          command: scriptKey
-            ? `npm run ${scriptKey}`
-            : markers.e2eTool === 'cypress'
-              ? 'npx cypress run'
-              : 'npx playwright test --grep @smoke'
+          command: withWorkingDirectory(e2ePath ?? '', e2eCommand)
         });
       }
     } else if (testGate) {
@@ -147,7 +287,26 @@ export class FileProjectScaffolder implements ProjectScaffolderPort {
       steps
     };
 
-    return { ecosystem, fastCheck, smoke, gates };
+    return {
+      ecosystem,
+      monorepo: markers.monorepo,
+      markers: {
+        dockerCompose: markers.dockerCompose,
+        migrationTool: markers.migrationTool,
+        e2eTool: markers.e2eTool
+      },
+      ...(subprojects.length > 0
+        ? {
+            subprojects: subprojects.map((subproject) => ({
+              path: subproject.path,
+              ecosystems: subproject.ecosystems
+            }))
+          }
+        : {}),
+      fastCheck,
+      smoke,
+      gates
+    };
   }
 
   private migrationCommand(tool: string): { apply: string; status: string } {

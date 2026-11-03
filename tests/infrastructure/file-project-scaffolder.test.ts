@@ -221,3 +221,82 @@ describe('FileProjectScaffolder', () => {
     assert.deepStrictEqual(again, { added: [], replaced: [] });
   });
 });
+
+describe('FileProjectScaffolder - monorepo markers (#334)', () => {
+  let dir: string;
+  const scaffolder = new FileProjectScaffolder();
+
+  const write = (rel: string, content = ''): void => {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  };
+
+  // The portfolio layout (smoke S1): a thin root manifest over apps/web + apps/api.
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-scaffold-334-'));
+    write(
+      'package.json',
+      JSON.stringify({
+        name: 'root',
+        private: true,
+        workspaces: ['apps/*'],
+        scripts: { build: 'pnpm --filter web build' }
+      })
+    );
+    write('pnpm-workspace.yaml', 'packages:\n  - "apps/*"\n');
+    write('pnpm-lock.yaml');
+    write(
+      'apps/web/package.json',
+      JSON.stringify({
+        name: 'web',
+        scripts: { typecheck: 'tsc --noEmit', test: 'jest', 'test:e2e': 'playwright test' }
+      })
+    );
+    write('apps/web/playwright.config.ts', 'export default {};');
+    write('apps/api/Portfolio.sln', '<Solution></Solution>');
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const gates = [
+    { id: 'build', label: 'Build Script', command: 'pnpm run build' },
+    { id: 'typecheck:apps/web', label: 'Typecheck', command: 'cd apps/web && pnpm run typecheck' },
+    { id: 'test:apps/web', label: 'Test', command: 'cd apps/web && pnpm test' }
+  ];
+
+  test('FPS-334-1 finds Playwright inside apps/web and infers monorepo', async () => {
+    const m = await scaffolder.detectMarkers(dir);
+
+    assert.strictEqual(m.e2ePath, 'apps/web');
+    assert.strictEqual(m.e2eTool, 'playwright');
+    assert.strictEqual(m.monorepo, true);
+  });
+
+  test('FPS-334-2 emits monorepo, markers and subprojects in the verification profile', async () => {
+    const m = await scaffolder.detectMarkers(dir);
+    const profile = scaffolder.buildVerificationProfile(m, 'node+dotnet', gates);
+
+    assert.strictEqual(profile.monorepo, true);
+    assert.deepStrictEqual(profile.markers, {
+      dockerCompose: false,
+      migrationTool: null,
+      e2eTool: 'playwright'
+    });
+    assert.deepStrictEqual(
+      (profile.subprojects ?? []).map((p: any) => p.path),
+      ['apps/api', 'apps/web']
+    );
+  });
+
+  test('FPS-334-3 scopes the E2E smoke command to the subproject and its package manager', async () => {
+    const m = await scaffolder.detectMarkers(dir);
+    const profile = scaffolder.buildVerificationProfile(m, 'node+dotnet', gates);
+    const e2e = profile.smoke.steps.find((step: any) => step.id === 'e2e-smoke');
+
+    assert.ok(e2e, 'an e2e-smoke step must exist');
+    assert.strictEqual(e2e.command, 'cd apps/web && pnpm run test:e2e');
+  });
+});

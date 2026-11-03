@@ -26,12 +26,20 @@ export interface GateCommandResolutionOptions {
   readonly planPath?: string | null;
 }
 
+export interface DetectedSubproject {
+  /** Repo-relative POSIX directory, e.g. 'apps/web'. */
+  readonly path: string;
+  /** Ecosystem types detected in that directory, priority-ordered. */
+  readonly ecosystems: readonly string[];
+}
+
 export interface DetectedProject {
   readonly workspaceDir: string;
   readonly ecosystems: readonly Ecosystem[];
   readonly primaryEcosystem: Ecosystem;
   readonly commands: readonly GateCommandDefinition[];
-  readonly hasOverrides: boolean;
+  /** Subprojects discovered below the workspace root (#334); omitted defaults to none. */
+  readonly subprojects?: readonly DetectedSubproject[];
 }
 
 /**
