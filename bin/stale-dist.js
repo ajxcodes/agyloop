@@ -35,6 +35,15 @@ const VALUE_FLAGS = new Set([
   '--title', '--type', '--config', '--model', '--workspace', '--workspace-dir'
 ]);
 
+/**
+ * The ONLY `VALUE_FLAGS` entries whose value may be the literal `-` (stdin).
+ * Mirrors `parseArguments`: `--critique-report` (src/presentation/cli.ts:960-969),
+ * `--report-file` (:973-980) and `--deviation-file` (:988-995) accept `-`;
+ * every other value flag rejects it, so the parser pushes `-` as a positional
+ * that becomes the command (issue #471).
+ */
+const STDIN_VALUE_FLAGS = new Set(['--critique-report', '--report-file', '--deviation-file']);
+
 /** Mirrors REGEX_POSITIONAL_ISSUE_ID (src/domain/constants.ts:2374). */
 const REGEX_POSITIONAL_ISSUE_ID = /^#?(\d+)$/;
 
@@ -81,10 +90,23 @@ function checkStaleDist(baseDir) {
 }
 
 /**
+ * True when `parseArguments` consumes `next` as the VALUE of `flag`.
+ * A literal `-` is a value ONLY for the stdin flags (issue #471); every other
+ * value flag rejects it, so `-` stays positional.
+ */
+function consumesValue(flag, next) {
+  if (!VALUE_FLAGS.has(flag) || next === undefined) {
+    return false;
+  }
+  return next === '-' ? STDIN_VALUE_FLAGS.has(flag) : !next.startsWith('-');
+}
+
+/**
  * The command `parseArguments` would dispatch, without loading `dist/`.
  * Mirrors the positional grammar at src/presentation/cli.ts:1096-1132:
- * `-`-prefixed tokens are flags (skipping a known value), `--` ends options, a
- * leading `#?<digits>` token is an issue id, the next positional is the command.
+ * `-`-prefixed tokens are flags (skipping a known value, where a literal `-` is
+ * a value only for the stdin flags), `--` ends options, a leading `#?<digits>`
+ * token is an issue id, the next positional is the command.
  */
 function commandFromArgv(argv) {
   const positional = [];
@@ -95,7 +117,7 @@ function commandFromArgv(argv) {
       break;
     }
     if (arg.startsWith('-') && arg !== '-') {
-      if (VALUE_FLAGS.has(arg) && i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+      if (consumesValue(arg, argv[i + 1])) {
         i++;
       }
       continue;
@@ -110,8 +132,21 @@ function commandFromArgv(argv) {
     : positional[0];
 }
 
+/**
+ * Mirrors the parser's end-of-options rule: `--` stops flag scanning, so
+ * `codeloop sync -- --help` passes `--help` to `sync` as a positional and is
+ * NOT a help request (issue #471).
+ */
 function wantsHelpOrVersion(argv) {
-  return argv.some((arg) => HELP_OR_VERSION_FLAGS.includes(arg));
+  for (const arg of argv) {
+    if (arg === '--') {
+      return false;
+    }
+    if (HELP_OR_VERSION_FLAGS.includes(arg)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** A git worktree has `.git` as a FILE; a clone has it as a DIRECTORY. Both count. */
@@ -161,6 +196,7 @@ module.exports = {
   NOTICE_STALE_DIST,
   RELEASE_PATH_COMMANDS,
   VALUE_FLAGS,
+  STDIN_VALUE_FLAGS,
   detectStaleDist,
   checkStaleDist,
   commandFromArgv,
