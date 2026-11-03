@@ -89,7 +89,7 @@ function row(summary: string, label: string): string {
 }
 
 describe('transition durations (issue #284, AC5)', () => {
-  test('leaving the APPROVAL gate never prints human idle time as Plan Review work', async () => {
+  test('leaving APPROVAL writes the consumed wait on the Plan Approval row (#376)', async () => {
     const ws = makeWorkspace();
     try {
       const summaryPath = scaffoldSummary(ws);
@@ -99,6 +99,8 @@ describe('transition durations (issue #284, AC5)', () => {
         history: [{ stage: STAGE_APPROVAL, timestamp: iso(now - 100_000) }],
         pausedAtGate: STAGE_APPROVAL,
         pausedAtTimestamp: iso(now - 80_000),
+        // A CUMULATIVE bank from an earlier gate: 50m 38s. It must never be
+        // printed as stage work — only the wait this transition consumed.
         totalHumanWaitMs: HUMAN_WAIT_50M
       });
 
@@ -106,16 +108,21 @@ describe('transition durations (issue #284, AC5)', () => {
 
       const summary = fs.readFileSync(summaryPath, 'utf8');
       assert.strictEqual(
-        row(summary, '2. Plan Review'),
-        '| 2. Plan Review | Human Gate | - | COMPLETED | - |'
+        row(summary, '3. Plan Approval'),
+        '| 3. Plan Approval | Human Gate | - | COMPLETED | 1m 20s |'
       );
       assert.ok(
-        !summary.includes('50m 39s'),
+        !summary.includes('50m'),
         `the cumulative human wait must never be printed as work, got:\n${summary}`
       );
       assert.ok(
-        !row(summary, '2. Plan Review').includes('50m'),
-        `the Plan Review row must not carry the human wait, got:\n${summary}`
+        !row(summary, '3. Plan Approval').includes('50m'),
+        `the approval row must carry only the consumed wait, got:\n${summary}`
+      );
+      // The plan-review row belongs to the planner, not to the gate.
+      assert.strictEqual(
+        row(summary, '2. Plan Review'),
+        '| 2. Plan Review | Human Gate | - | PENDING | - |'
       );
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
@@ -141,8 +148,8 @@ describe('transition durations (issue #284, AC5)', () => {
 
       const summary = fs.readFileSync(summaryPath, 'utf8');
       assert.strictEqual(
-        row(summary, '3. Implementation'),
-        '| 3. Implementation | `implementer` | `inherit` | COMPLETED | 1m 0s |'
+        row(summary, '4. Implementation'),
+        '| 4. Implementation | `implementer` | `inherit` | COMPLETED | 1m 0s |'
       );
       assert.ok(
         !summary.includes('50m 38s'),
@@ -176,8 +183,8 @@ describe('transition durations (issue #284, AC5)', () => {
       const summary = fs.readFileSync(summaryPath, 'utf8');
       // 60s window − 20s wait consumed by this transition.
       assert.strictEqual(
-        row(summary, '3. Implementation'),
-        '| 3. Implementation | `implementer` | `inherit` | COMPLETED | 40s |'
+        row(summary, '4. Implementation'),
+        '| 4. Implementation | `implementer` | `inherit` | COMPLETED | 40s |'
       );
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });

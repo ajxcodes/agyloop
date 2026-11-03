@@ -1170,6 +1170,7 @@ export class RunReviewUseCase {
           model: reviewerDef.model,
           status: verdict.status,
           duration: measuredDurationStr,
+          round: reviewRound,
           reviewRecord
         });
       }

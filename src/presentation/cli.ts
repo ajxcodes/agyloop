@@ -664,7 +664,7 @@ Operational Flags:
       --deviation-file <path|->  Read an implementer's PLAN_DEVIATION block from a file (codeloop deviation)
       --deviation-stdin  Read an implementer's PLAN_DEVIATION block from stdin (codeloop deviation)
       --ack <id>         Acknowledge a recorded plan deviation; requires --reason (codeloop deviation)
-      --create-pr    Automatically create a PR after commit. A PR that targets a collector branch (phase/* or feature/*) does NOT auto-close the issue on merge — closing keywords fire only on the default branch — so \`commit\` prints that caveat whether the issue came from --issue or the checkpoint, and \`codeloop sync\` closes the issue after the merge.
+      --create-pr    Automatically create a PR after commit. When the PR targets a collector branch (phase/* or feature/*) — not the default branch — \`commit\` states the measured base and, when an issue is associated, prints conditional advice: if \`Closes #N\` does not close the issue on merge, run \`codeloop sync\`. The advice is printed only when a PR exists.
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
   -f, --force        Force operation (force abort, fresh version check or reinstallation)
       --quarantine   Quarantine uncommitted changes to a dedicated branch during abort
@@ -4379,23 +4379,28 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               `\n⚠ Branch '${headBranch}' is pushed but NOT delivered — no PR exists. Run:\n  ${execResult.prCommand}\n`
             );
           }
-          // Issue #240/Defect 3: a closing keyword only auto-closes on the
-          // DEFAULT branch. Say so, and name the compensator, instead of
-          // letting the operator assume `Closes #N` did something.
+          // Issue #376 (Defect 1): GitHub's documented closing-keyword rule
+          // covers the DEFAULT branch only, but delivery here has NOT been
+          // consistent — some collector-branch merges auto-close the issue
+          // (#369 closed 12 s after merge, `sync` then a no-op) and some do not
+          // (#401 stayed open until `sync` ran). A pre-merge read of the PR's
+          // closing-issue links cannot discriminate: the list is empty on both
+          // shapes. So the caveat states ONLY what the tool measured — the PR's
+          // base and that it is not the default branch — and phrases the remedy
+          // conditionally. It is printed only when a PR exists: on the
+          // push-without-PR path there is no PR to make the claim about.
           //
-          // Issue #351: the caveat keyed on `issueValue` — the `--issue` flag
-          // only — so the pipeline's OWN recommended invocation (`codeloop
-          // commit --create-pr`, issue taken from the checkpoint) suppressed
-          // it. `resolvedIssue` is the value that produced the body's `Closes
-          // #N`, so the warning can no longer describe a keyword the PR does
-          // not carry, nor stay silent when it does.
+          // Issue #351: `resolvedIssue` is the value that produced the body's
+          // `Closes #N`, so the warning can no longer describe a keyword the
+          // PR does not carry, nor stay silent when it does.
           const caveatIssue = execResult.resolvedIssue ?? issueValue;
-          if (execResult.prBaseIsCollector && caveatIssue) {
+          const prDelivered = execResult.prCreated === true || execResult.prExists === true;
+          if (prDelivered && execResult.prBaseIsCollector && caveatIssue) {
             console.log(
-              `\n⚠ Closing keyword caveat: this PR targets the collector branch '${execResult.prBaseBranch}'.`
+              `\n⚠ Closing keyword caveat: this PR targets the collector branch '${execResult.prBaseBranch}' (not the default branch).`
             );
             console.log(
-              `  \`Closes #${caveatIssue}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
+              `  If \`Closes #${caveatIssue}\` does not close the issue on merge, run \`codeloop sync\` to close it.`
             );
           }
           if (execResult.summaryUpdated) {

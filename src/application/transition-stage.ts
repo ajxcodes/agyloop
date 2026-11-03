@@ -21,6 +21,7 @@ import {
   STAGE_COMPLETED,
   SUMMARY_STAGE_DISCOVERY,
   SUMMARY_STAGE_PLAN_REVIEW,
+  SUMMARY_STAGE_PLAN_APPROVAL,
   SUMMARY_STAGE_IMPLEMENTATION,
   SUMMARY_STAGE_QUALITY_GATES,
   SUMMARY_STAGE_AI_REVIEW,
@@ -43,7 +44,9 @@ import {
   consumedHumanWaitMs,
   deriveStageDuration,
   formatGateReportedDuration,
+  formatStageDuration,
   measureStageWindowMs,
+  resolveStageRound,
   SMOKE_PROTOCOL_NOT_REPORTED,
   parseQualityGateTargets,
   formatActNotRunReason,
@@ -587,7 +590,10 @@ export class TransitionStageUseCase {
           const stageMap: Record<string, string> = {
             [STAGE_DISCOVERY]: SUMMARY_STAGE_DISCOVERY,
             [STAGE_PLAN]: SUMMARY_STAGE_PLAN_REVIEW,
-            [STAGE_APPROVAL]: SUMMARY_STAGE_PLAN_REVIEW,
+            // Issue #376 (AC15): APPROVAL has its OWN row. Mapping it onto
+            // `Plan Review` meant the gate that actually paused the run had no
+            // row, so its consumed wait vanished from the table.
+            [STAGE_APPROVAL]: SUMMARY_STAGE_PLAN_APPROVAL,
             [STAGE_IMPLEMENT]: SUMMARY_STAGE_IMPLEMENTATION,
             [STAGE_QUALITY_GATE]: SUMMARY_STAGE_QUALITY_GATES,
             [STAGE_REVIEW]: SUMMARY_STAGE_AI_REVIEW,
@@ -633,6 +639,11 @@ export class TransitionStageUseCase {
 
           const prevMappedStage = stageMap[prevStage];
           const mappedStage = stageMap[targetStageStr];
+          // Issue #376 (AC14): the round each row belongs to. `0` means the
+          // stage was never entered, which the writer treats as the unlabelled
+          // row — no fabricated `(round 0)` can appear.
+          const prevRound = resolveStageRound(sm.history, exitedStage);
+          const targetRound = resolveStageRound(sm.history, targetStageStr);
 
           // 1. Mark preceding stage as COMPLETED if transitioning forward
           if (prevMappedStage && prevMappedStage !== mappedStage) {
@@ -653,24 +664,29 @@ export class TransitionStageUseCase {
                     ? SUMMARY_STATUS_FAILED
                     : SUMMARY_STATUS_NOT_RECORDED;
 
+              // Issue #376 (AC16): the Duration column is the WALL clock (it
+              // must be summable); the gate's own timer renders as a named note
+              // carrying both clocks. Issuing #315's transparency through one
+              // cell is what made the column impossible to reconcile.
+              const gateWallMs = measureStageWindowMs(sm.history, STAGE_QUALITY_GATE);
+              // A gate that filed a report ran, even when the checkpoint has no
+              // QUALITY_GATE entry yet: the gate ROUND is clamped to 1 exactly
+              // like `resolveGateRound`, so no `(round 0)` can appear.
+              const gateRowRound = Math.max(1, prevRound);
+
               this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
                 stage: prevMappedStage,
                 status: gateRowStatus,
-                // Issue #315 (AC-15/AC-18): the cell names the clock it shows.
-                // The gate ran OUTSIDE this process: only a filed report can
-                // measure its duration, and `(gate-reported; … wall)` keeps the
-                // self-timer from posing as the stage's wall clock. With no
-                // evidence the cell is `-`, never a guess.
                 duration:
+                  gateWallMs !== null ? formatStageDuration(gateWallMs) : DURATION_NOT_RECORDED,
+                round: gateRowRound,
+                gateSelfReport:
                   gateReportedMs !== undefined
-                    ? formatGateReportedDuration(
-                        gateReportedMs,
-                        // Measurable once this transition has left the gate: its
-                        // entry is the penultimate one. `null` means the label
-                        // names only the clock it is showing.
-                        measureStageWindowMs(sm.history, STAGE_QUALITY_GATE),
-                      )
-                    : DURATION_NOT_RECORDED,
+                    ? {
+                        round: gateRowRound,
+                        text: formatGateReportedDuration(gateReportedMs, gateWallMs)
+                      }
+                    : undefined,
                 buildStatus: gateEvidence ? gateEvidence.buildStatus : EVIDENCE_NOT_RECORDED,
                 testsStatus: gateTestsStatus ?? EVIDENCE_NOT_RECORDED,
                 // #338: a NOT RECORDED round names no ecosystem, no command and
@@ -686,16 +702,27 @@ export class TransitionStageUseCase {
                 notRun: gateNotRun
               });
             } else {
+              // Issue #376 (AC15): the APPROVAL row carries only the wait THIS
+              // transition consumed — never the cumulative `totalHumanWaitMs`,
+              // which is a running bank across the whole run.
+              const approvalDuration: string | undefined =
+                exitedStage === STAGE_APPROVAL
+                  ? humanWaitMs > 0
+                    ? formatStageDuration(humanWaitMs)
+                    : DURATION_NOT_RECORDED
+                  : prevDurationStr;
               this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
                 stage: prevMappedStage,
                 status: SUMMARY_STATUS_COMPLETED,
-                ...(prevDurationStr !== undefined ? { duration: prevDurationStr } : {})
+                round: prevRound,
+                ...(approvalDuration !== undefined ? { duration: approvalDuration } : {})
               });
             }
           } else if (prevMappedStage && prevDurationStr !== undefined) {
             this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
               stage: prevMappedStage,
-              duration: prevDurationStr
+              duration: prevDurationStr,
+              round: prevRound
             });
           }
 
@@ -709,6 +736,7 @@ export class TransitionStageUseCase {
             this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
               stage: mappedStage,
               status: statusMap[targetStageStr] || SUMMARY_STATUS_IN_PROGRESS,
+              round: targetRound,
               notes: (params.metadata?.note as string) || undefined
             });
           }

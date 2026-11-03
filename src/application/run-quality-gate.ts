@@ -116,7 +116,9 @@ import {
   formatSmokeCheckId,
   resolveGateRound,
   formatGateReportedDuration,
+  formatStageDuration,
   measureStageWindowMs,
+  DURATION_NOT_RECORDED,
   SMOKE_PROTOCOL_NOT_REPORTED,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
@@ -605,8 +607,12 @@ export class RunQualityGateUseCase {
     // Issue #338 (S4): the gate measured ITSELF; the cell must name that clock,
     // exactly like the dispatched path. The wall window is measurable once this
     // use case has appended the REVIEW/IMPLEMENT entry.
+    //
+    // Issue #376 (AC16): the Duration COLUMN is the wall clock only (one clock,
+    // summable); the gate's own timer is passed as a named self-report note so
+    // both clocks survive without sharing a cell.
     const gateWallMs = measureStageWindowMs(sm.history, STAGE_QUALITY_GATE);
-    const durationStr = formatGateReportedDuration(totalDurationMs, gateWallMs);
+    const durationStr = gateWallMs !== null ? formatStageDuration(gateWallMs) : DURATION_NOT_RECORDED;
     const gateStatus = allPassed ? SUMMARY_STATUS_COMPLETED : SUMMARY_STATUS_FAILED;
 
     // Issue #284: file the SAME evidence the dispatched path files, so an
@@ -668,6 +674,11 @@ export class RunQualityGateUseCase {
           model: gateDef.model,
           status: gateStatus,
           duration: durationStr,
+          round: gateRound,
+          gateSelfReport: {
+            round: gateRound,
+            text: formatGateReportedDuration(totalDurationMs, gateWallMs)
+          },
           buildStatus,
           testsStatus,
           // One source: the same values the evidence record carries (issue #338).

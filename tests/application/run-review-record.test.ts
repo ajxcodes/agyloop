@@ -150,7 +150,7 @@ function makeSummary(): { dir: string; summaryPath: string; planPath: string } {
 }
 
 describe('review record (issue #284, AC3/AC6)', () => {
-  test('a re-review leaves exactly ONE note, naming the round and the base commit', async () => {
+  test('a re-review keeps both rounds and marks the latest current', async () => {
     const { dir, summaryPath, planPath } = makeSummary();
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-git-'));
     try {
@@ -222,8 +222,21 @@ describe('review record (issue #284, AC3/AC6)', () => {
 
       const summary = fs.readFileSync(summaryPath, 'utf8');
       const bullets = summary.match(/^- \*\*Round /gm) ?? [];
-      assert.strictEqual(bullets.length, 1, `exactly one review note expected, got:\n${summary}`);
-      assert.ok(summary.includes('Round 2'), `the note must name round 2, got:\n${summary}`);
+      assert.strictEqual(
+        bullets.length,
+        2,
+        `one review note per round expected, got:\n${summary}`
+      );
+      assert.ok(summary.includes('Round 1'), `round 1 must be kept, got:\n${summary}`);
+      assert.ok(summary.includes('Round 2'), `the latest round must be named, got:\n${summary}`);
+      assert.ok(
+        summary.includes('· APPROVED ·'),
+        `round 1's verdict must survive, got:\n${summary}`
+      );
+      assert.ok(
+        summary.includes('Round 2 · CHANGES_REQUESTED (current)'),
+        `the latest round must be marked current, got:\n${summary}`
+      );
       assert.ok(
         summary.includes(`base \`${headSha.slice(0, 7)}\``),
         `the note must name the reviewed base commit, got:\n${summary}`

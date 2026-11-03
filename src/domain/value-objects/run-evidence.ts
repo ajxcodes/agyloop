@@ -133,6 +133,24 @@ export function isHumanWaitStage(stage: string): boolean {
 }
 
 /**
+ * How many times `stage` has been ENTERED, i.e. which round the checkpoint is
+ * in (issue #376, AC14/AC15).
+ *
+ * `0` means the stage was never entered at all — the caller must SKIP the row
+ * rather than write `(round 0)`. This is the generic form of
+ * `resolveGateRound` (`gate-result-report.ts`), which clamps to `1` because a
+ * gate report is filed even when the history has no QUALITY_GATE entry; a
+ * summary row has no such excuse, so the honest answer is `0`.
+ */
+export function resolveStageRound(
+  history: readonly { readonly stage?: string }[] | null | undefined,
+  stage: string
+): number {
+  const entries = Array.isArray(history) ? history : [];
+  return entries.filter((entry) => entry.stage === stage).length;
+}
+
+/**
  * The summary cell for a stage that ran OUT OF PROCESS and measured itself
  * (issue #325.3, AC-18; the transport field is `gateReportedDurationMs` after
  * issue #315 AC-15).

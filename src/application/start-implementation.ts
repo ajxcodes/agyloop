@@ -21,9 +21,15 @@ import {
   MODE_YOLO,
   ROLE_IMPLEMENTER,
   SUMMARY_STAGE_PLAN_REVIEW,
+  SUMMARY_STAGE_PLAN_APPROVAL,
   SUMMARY_STAGE_IMPLEMENTATION,
   SUMMARY_STATUS_APPROVED,
   SUMMARY_STATUS_IN_PROGRESS,
+  SUMMARY_STATUS_COMPLETED,
+  DURATION_NOT_RECORDED,
+  consumedHumanWaitMs,
+  formatStageDuration,
+  resolveStageRound,
   NOTE_DEVELOPER_APPROVED,
   NOTE_AUTO_APPROVED_YOLO,
   NOTE_IMPLICIT_APPROVAL,
@@ -172,7 +178,13 @@ export class StartImplementationUseCase {
     // Nothing is persisted until the final save below, so a refusal after this
     // point (gate-target contract, missing plan, worktree failure) leaves the
     // on-disk pause intact, and `--dry-run` never saves at all.
+    //
+    // Issue #376 (AC15): the APPROVAL row carries the wait THIS transition
+    // consumed, so the bank is read immediately before the only code that
+    // banks it. `resumeFromGate()` is a no-op when there is no pause.
+    const waitBefore = sm.totalHumanWaitMs;
     sm.resumeFromGate();
+    const approvalWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
 
     // 2. Enforce lifecycle transition rules
     //
@@ -182,6 +194,13 @@ export class StartImplementationUseCase {
     // had already been approved.
     const enteredFromApproval =
       sm.currentStage === STAGE_APPROVAL && Boolean(sm.approvedPlanDigest);
+    // Issue #376 (AC15): the stage the operator ANSWERED with this call. A
+    // re-entry at IMPLEMENT resumed a run that already recorded its approval,
+    // so it must not rewrite that row with `-`.
+    const originalStage = sm.currentStage;
+    const approvalExited =
+      originalStage === STAGE_APPROVAL ||
+      (originalStage === STAGE_PLAN && sm.mode !== MODE_YOLO);
     let resumed = false;
     if (sm.currentStage === STAGE_APPROVAL) {
       sm.transition(STAGE_IMPLEMENT, { note: NOTE_DEVELOPER_APPROVED });
@@ -431,15 +450,33 @@ export class StartImplementationUseCase {
       await this.stateRepo.save(sm.toSnapshot());
 
       if (resolved?.summaryPath) {
+        // Issue #376 (AC15): the APPROVAL human gate gets its OWN row, written
+        // FIRST, and its Duration is the wait that gate CONSUMED — never the
+        // cumulative `totalHumanWaitMs`, which is a running bank across the
+        // whole run. A re-entry at IMPLEMENT (or a yolo run that never paused)
+        // writes no approval row at all, so a recorded one is never rewritten
+        // with `-`.
+        const approvalRound = resolveStageRound(sm.history, STAGE_APPROVAL);
+        if (approvalExited && approvalRound > 0) {
+          this.planGenerator.updateSummaryLog(resolved.summaryPath, {
+            stage: SUMMARY_STAGE_PLAN_APPROVAL,
+            status: SUMMARY_STATUS_COMPLETED,
+            duration:
+              approvalWaitMs > 0 ? formatStageDuration(approvalWaitMs) : DURATION_NOT_RECORDED,
+            round: approvalRound
+          });
+        }
         this.planGenerator.updateSummaryLog(resolved.summaryPath, {
           stage: SUMMARY_STAGE_PLAN_REVIEW,
-          status: SUMMARY_STATUS_APPROVED
+          status: SUMMARY_STATUS_APPROVED,
+          round: resolveStageRound(sm.history, STAGE_PLAN)
         });
         this.planGenerator.updateSummaryLog(resolved.summaryPath, {
           stage: SUMMARY_STAGE_IMPLEMENTATION,
           subagent: implementerDef.name,
           model: implementerDef.model,
-          status: SUMMARY_STATUS_IN_PROGRESS
+          status: SUMMARY_STATUS_IN_PROGRESS,
+          round: resolveStageRound(sm.history, STAGE_IMPLEMENT)
         });
       }
     }

@@ -225,6 +225,29 @@ describe('FilePlanGenerator - #383 residuals', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  test('FPG-376.1: a scaffolded artifact filename never ends on a dangling article (#402)', () => {
+    // The #402 scaffold wrote `[Discovery] - … and the.md`: the retained head of
+    // a long title ended on an article. The shared subject-truncation helper
+    // now drops that tail, so BOTH the derived name and the file on disk read
+    // as a finished phrase.
+    const title =
+      '[Phase 6] [Bug] The root-build mutation boundary is broken at both ends (baseline executor rebuilds the workspace root; the baseline mutates the root while the gate measures it)';
+    const result = generator.generatePlan({
+      targetDir: tempDir,
+      type: 'discovery',
+      title
+    });
+    const name = path.basename(result.planPath);
+
+    assert.doesNotMatch(
+      name,
+      /[ ](the|a|an|and|of|to)\.md$/,
+      `a derived filename may not end on a dangling article, got: ${name}`
+    );
+    assert.match(name, /[A-Za-z0-9)]\.md$/, `the filename must end on a word: ${name}`);
+    assert.ok(fs.existsSync(result.planPath), `the artifact must exist: ${result.planPath}`);
+  });
+
   test('FPG-383.1: a raw ENAMETOOLONG becomes the typed plan-title message', () => {
     // AC-D2-4: the single branch that converts the OS error into a remedy. The
     // `fs` here is the same module object the generator reads through, so the

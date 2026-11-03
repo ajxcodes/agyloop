@@ -516,6 +516,15 @@ export const CANDIDATE_PLAN_FILENAMES = Object.freeze([
 // Summary Log Stage Names & Statuses
 export const SUMMARY_STAGE_DISCOVERY = 'Discovery' as const;
 export const SUMMARY_STAGE_PLAN_REVIEW = 'Plan Review' as const;
+/**
+ * The APPROVAL human gate's own row (issue #376, AC15).
+ *
+ * `STAGE_PLAN` and `STAGE_APPROVAL` both mapped onto `Plan Review`, so the gate
+ * that actually PAUSED the run had no row at all and its consumed wait vanished
+ * from the table. The row is dedicated and carries only the wait that gate
+ * consumed — never the cumulative `totalHumanWaitMs`.
+ */
+export const SUMMARY_STAGE_PLAN_APPROVAL = 'Plan Approval' as const;
 export const SUMMARY_STAGE_IMPLEMENTATION = 'Implementation' as const;
 export const SUMMARY_STAGE_QUALITY_GATES = 'Quality Gates' as const;
 export const SUMMARY_STAGE_AI_REVIEW = 'AI Review' as const;

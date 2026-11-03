@@ -43,6 +43,7 @@ import {
   isPlanContentSubstantive,
   isDiscoveryPlanDocument,
   deriveStageDuration,
+  resolveStageRound,
   planFolderName,
   planIssuePart,
   planArtifactFileName,
@@ -696,12 +697,16 @@ export class StartPlanningUseCase {
         const discoveryDuration = deriveStageDuration(sm.history, STAGE_DISCOVERY, {
           humanWaitMs: 0
         });
+        // Issue #376 (AC14): the round each row belongs to.
+        const discoveryRound = resolveStageRound(sm.history, STAGE_DISCOVERY);
+        const planningRound = resolveStageRound(sm.history, STAGE_PLAN);
         if (sm.currentStage === STAGE_DISCOVERY) {
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
             subagent: discoveryDef.name,
             model: discoveryDef.model,
-            status: SUMMARY_STATUS_IN_PROGRESS
+            status: SUMMARY_STATUS_IN_PROGRESS,
+            round: discoveryRound
           });
         } else if (sm.currentStage === STAGE_PLAN) {
           this.planGenerator.updateSummaryLog(summaryPath, {
@@ -709,14 +714,16 @@ export class StartPlanningUseCase {
             subagent: discoverySubagent,
             model: discoveryModel,
             status: discoveryStatus,
-            duration: discoveryDuration
+            duration: discoveryDuration,
+            round: discoveryRound
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,
             model: plannerDef.model,
             status: SUMMARY_STATUS_IN_PROGRESS,
-            planRevisionCount: sm.planRevisionCount
+            planRevisionCount: sm.planRevisionCount,
+            round: planningRound
           });
         } else {
           this.planGenerator.updateSummaryLog(summaryPath, {
@@ -724,11 +731,13 @@ export class StartPlanningUseCase {
             subagent: discoverySubagent,
             model: discoveryModel,
             status: discoveryStatus,
-            duration: discoveryDuration
+            duration: discoveryDuration,
+            round: discoveryRound
           });
           this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
-            status: SUMMARY_STATUS_PENDING
+            status: SUMMARY_STATUS_PENDING,
+            round: planningRound
           });
         }
       }

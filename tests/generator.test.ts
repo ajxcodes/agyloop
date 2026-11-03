@@ -364,11 +364,11 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
 
       const content = fs.readFileSync(summaryResult.summaryPath, 'utf8');
       assert.ok(
-        content.includes('| 4. Quality Gate | `gate` | `flash_lite` | PASSED | 45s |'),
+        content.includes('| 5. Quality Gate | `gate` | `flash_lite` | PASSED | 45s |'),
         'Summary table should reflect updated Quality Gate row'
       );
       assert.ok(
-        content.includes('| 6. Commit Gate | Human Gate | - | COMPLETED | 1m 15s |'),
+        content.includes('| 7. Commit Gate | Human Gate | - | COMPLETED | 1m 15s |'),
         'Summary table should reflect updated Commit Gate row'
       );
     });
@@ -384,7 +384,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       // Issue #259 (S7b): the scaffolded placeholders are PENDING for every
       // stage that has not run — they no longer pre-claim APPROVED.
       assert.ok(original.includes('| 2. Plan Review | Human Gate | - | PENDING | - |'));
-      assert.ok(original.includes('| 5. AI Review | `reviewer` | `flash` | PENDING | - |'));
+      assert.ok(original.includes('| 6. AI Review | `reviewer` | `flash` | PENDING | - |'));
 
       // 1. 'AI Review' must land on row 5 and leave row 2 untouched
       const updatedAi = generator.updateSummaryLog(summaryResult.summaryPath, {
@@ -397,7 +397,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
 
       const afterAi = fs.readFileSync(summaryResult.summaryPath, 'utf8');
       assert.ok(
-        afterAi.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        afterAi.includes('| 6. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
         `AI Review row should be SKIPPED, got:\n${afterAi}`
       );
       assert.ok(
@@ -420,7 +420,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         'Plan Review row should be COMPLETED'
       );
       assert.ok(
-        afterPlan.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        afterPlan.includes('| 6. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
         'AI Review row must keep the SKIPPED status written earlier'
       );
     });
@@ -537,10 +537,11 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       // Every stage that has not run is PENDING.
       const notRunStages = [
         '2. Plan Review',
-        '3. Implementation',
-        '4. Quality Gate',
-        '5. AI Review',
-        '6. Commit Gate'
+        '3. Plan Approval',
+        '4. Implementation',
+        '5. Quality Gate',
+        '6. AI Review',
+        '7. Commit Gate'
       ];
       for (const stage of notRunStages) {
         const row = rows.get(stage) ?? '';
@@ -589,7 +590,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
 
       const before = fs.readFileSync(summaryResult.summaryPath, 'utf8');
       assert.ok(
-        before.includes('| 4. Quality Gate | `gate` | `flash_lite` | PENDING | - |'),
+        before.includes('| 5. Quality Gate | `gate` | `flash_lite` | PENDING | - |'),
         `the Quality Gate row must start as PENDING, got:\n${before}`
       );
 
@@ -606,11 +607,11 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
 
       const after = fs.readFileSync(summaryResult.summaryPath, 'utf8');
       assert.ok(
-        after.includes('| 4. Quality Gate | `gate` | `flash_lite` | PASSED | 12s |'),
+        after.includes('| 5. Quality Gate | `gate` | `flash_lite` | PASSED | 12s |'),
         `the real status must replace the placeholder, got:\n${after}`
       );
       assert.ok(
-        !after.includes('| 4. Quality Gate | `gate` | `flash_lite` | PENDING | - |'),
+        !after.includes('| 5. Quality Gate | `gate` | `flash_lite` | PENDING | - |'),
         `the placeholder must be gone, got:\n${after}`
       );
       assert.ok(after.includes('- **Build Status:** PASSED'));
@@ -631,7 +632,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         `the Plan Review placeholder must be PENDING, got:\n${original}`
       );
       assert.ok(
-        original.includes('| 5. AI Review | `reviewer` | `flash` | PENDING | - |'),
+        original.includes('| 6. AI Review | `reviewer` | `flash` | PENDING | - |'),
         `the AI Review placeholder must be PENDING, got:\n${original}`
       );
 
@@ -645,7 +646,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
 
       const afterAi = fs.readFileSync(summaryResult.summaryPath, 'utf8');
       assert.ok(
-        afterAi.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        afterAi.includes('| 6. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
         `AI Review row should be SKIPPED, got:\n${afterAi}`
       );
       assert.ok(
@@ -667,7 +668,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         'Plan Review row should be COMPLETED'
       );
       assert.ok(
-        afterPlan.includes('| 5. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
+        afterPlan.includes('| 6. AI Review | `reviewer` | `flash` | SKIPPED | 0.1s |'),
         'AI Review row must keep the SKIPPED status written earlier'
       );
     });
@@ -686,10 +687,11 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
 
       const notRunStages = [
         '2. Plan Review',
-        '3. Implementation',
-        '4. Quality Gate',
-        '5. AI Review',
-        '6. Commit Gate'
+        '3. Plan Approval',
+        '4. Implementation',
+        '5. Quality Gate',
+        '6. AI Review',
+        '7. Commit Gate'
       ];
 
       for (const stage of notRunStages) {
@@ -717,7 +719,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
         );
       }
 
-      // EVERY lifecycle row — 1 to 6, and every CELL of it (subagent, model,
+      // EVERY lifecycle row — 1 to 7, and every CELL of it (subagent, model,
       // status, duration) — must agree, not just the status cell of rows 2-6.
       // A divergence in row 1 or in a non-status column is a drift too.
       const fallbackRows = lifecycleRows(fallback);
@@ -725,21 +727,22 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
       const allStages = [
         '1. Discovery',
         '2. Plan Review',
-        '3. Implementation',
-        '4. Quality Gate',
-        '5. AI Review',
-        '6. Commit Gate'
+        '3. Plan Approval',
+        '4. Implementation',
+        '5. Quality Gate',
+        '6. AI Review',
+        '7. Commit Gate'
       ];
 
       assert.deepStrictEqual(
         [...fallbackRows.keys()],
         allStages,
-        `the fallback must carry exactly the six lifecycle rows, got:\n${fallback}`
+        `the fallback must carry exactly the seven lifecycle rows, got:\n${fallback}`
       );
       assert.deepStrictEqual(
         [...onDiskRows.keys()],
         allStages,
-        `templates/summary-log.md must carry exactly the six lifecycle rows, got:\n${onDisk}`
+        `templates/summary-log.md must carry exactly the seven lifecycle rows, got:\n${onDisk}`
       );
 
       for (const stage of allStages) {

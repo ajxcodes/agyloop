@@ -338,7 +338,7 @@ describe('commit output accuracy (issue #284)', () => {
     }
   });
 
-  test('the collector-base caveat names the branch, the keyword and `codeloop sync`', () => {
+  test('the collector-base caveat states the measured base and phrases sync conditionally (#376)', () => {
     const sandbox = makeSandbox('phase/6-smoke');
     try {
       const review = runReviewToCommit(sandbox);
@@ -346,17 +346,50 @@ describe('commit output accuracy (issue #284)', () => {
       const run = runCommit(sandbox, ['--create-pr']);
       const output = `${run.stdout}\n${run.stderr}`;
 
+      // The MEASURED fact: the base and that it is not the default branch.
       assert.ok(
         output.includes(
-          "⚠ Closing keyword caveat: this PR targets the collector branch 'phase/6-smoke'."
+          "this PR targets the collector branch 'phase/6-smoke' (not the default branch)"
         ),
-        `the caveat must name the collector branch, got:\n${output}`
+        `the caveat must state the measured base, got:\n${output}`
+      );
+      // The CONDITIONAL remedy — true whichever way the platform lands.
+      assert.ok(
+        output.includes(
+          `If \`Closes #${ISSUE}\` does not close the issue on merge, run \`codeloop sync\` to close it.`
+        ),
+        `the caveat must phrase the remedy conditionally, got:\n${output}`
+      );
+      // …and never the categorical prediction the issue filed.
+      assert.ok(
+        !output.includes('will not auto-close'),
+        `the caveat must not predict the merge outcome, got:\n${output}`
+      );
+    } finally {
+      fs.rmSync(sandbox.dir, { recursive: true, force: true });
+      fs.rmSync(`${sandbox.dir}.origin.git`, { recursive: true, force: true });
+    }
+  });
+
+  test('no collector caveat is printed when no PR exists (#376)', () => {
+    const sandbox = makeSandbox('phase/6-smoke');
+    try {
+      const review = runReviewToCommit(sandbox);
+      assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
+
+      // No `--create-pr`: the branch is pushed, no PR exists, so there is no PR
+      // whose base could be described — the old caveat still said "this PR".
+      const run = runCommit(sandbox);
+      const output = `${run.stdout}\n${run.stderr}`;
+      assert.strictEqual(run.status, 0, output);
+
+      assert.ok(
+        output.includes('is pushed but NOT delivered'),
+        `the no-PR warning must survive, got:\n${output}`
       );
       assert.ok(
-        output.includes(
-          `\`Closes #${ISSUE}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
-        ),
-        `the caveat must name the keyword and the compensator, got:\n${output}`
+        !output.includes('collector branch'),
+        `no collector caveat may be printed without a PR, got:\n${output}`
       );
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -379,13 +412,13 @@ describe('commit output accuracy (issue #284)', () => {
 
       assert.ok(
         output.includes(
-          "⚠ Closing keyword caveat: this PR targets the collector branch 'phase/6-smoke'."
+          "⚠ Closing keyword caveat: this PR targets the collector branch 'phase/6-smoke'"
         ),
         `the caveat must fire without --issue, got:\n${output}`
       );
       assert.ok(
         output.includes(
-          `\`Closes #${ISSUE}\` will not auto-close the issue on merge. Run \`codeloop sync\` after the merge to close it.`
+          `If \`Closes #${ISSUE}\` does not close the issue on merge, run \`codeloop sync\` to close it.`
         ),
         `the caveat must name the keyword and the compensator, got:\n${output}`
       );
@@ -487,11 +520,11 @@ describe('commit output accuracy (issue #284)', () => {
       const summary = fs.readFileSync(sandbox.summaryPath, 'utf8');
       assert.ok(!summary.includes('PENDING'), `no PENDING may survive a completed run, got:\n${summary}`);
 
-      const row = summary.split('\n').find((line: string) => line.startsWith('| 6. Commit Gate |'));
+      const row = summary.split('\n').find((line: string) => line.startsWith('| 7. Commit Gate |'));
       assert.ok(row, `the Commit Gate row must exist, got:\n${summary}`);
       assert.match(
         row as string,
-        /^\| 6\. Commit Gate \| Human Gate \| - \| COMPLETED \| (?:\d+m )?\d+s \|$/,
+        /^\| 7\. Commit Gate \| Human Gate \| - \| COMPLETED \| (?:\d+m )?\d+s \|$/,
         `the row must be terminal with a measured duration, got: ${row}`
       );
       // The row is the MEASURED confirmation wait, not a constant and not `0s`.
