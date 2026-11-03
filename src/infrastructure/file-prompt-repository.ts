@@ -33,29 +33,9 @@ import {
 
 export class FilePromptRepository implements PromptRepository {
   public loadPrompt(role: string, options: PromptLoadOptions = {}): string {
-    const cwd = options.cwd || process.cwd();
-    let promptFileName: string;
+    const targetPath = this.resolvePath(role, options);
 
-    if (role === ROLE_PLANNER) {
-      promptFileName = PROMPT_FILE_PLANNER;
-    } else if (role === ROLE_IMPLEMENTER) {
-      promptFileName = PROMPT_FILE_IMPLEMENTER;
-    } else if (role === ROLE_GATE) {
-      promptFileName = PROMPT_FILE_GATE;
-    } else if (role === ROLE_REVIEWER) {
-      promptFileName = PROMPT_FILE_REVIEWER;
-    } else if (role === ROLE_DISCOVERY) {
-      promptFileName = PROMPT_FILE_DISCOVERY;
-    } else if (role === ROLE_TRIAGE) {
-      promptFileName = PROMPT_FILE_TRIAGE;
-    } else {
-      promptFileName = `${role}.md`;
-    }
-
-    const defaultPath = path.resolve(cwd, DEFAULT_PROMPTS_DIR, promptFileName);
-    const targetPath = options.promptPath || defaultPath;
-
-    if (fs.existsSync(targetPath)) {
+    if (targetPath) {
       try {
         return fs.readFileSync(targetPath, 'utf8');
       } catch {
@@ -83,6 +63,43 @@ export class FilePromptRepository implements PromptRepository {
     }
 
     return '';
+  }
+
+  /**
+   * Issue #290 (AC6): the ONE resolver `loadPrompt` also uses, so the label the
+   * inspection command prints can never disagree with what was read.
+   */
+  public resolvePromptPath(role: string, options: PromptLoadOptions = {}): string | null {
+    return this.resolvePath(role, options);
+  }
+
+  private resolvePath(role: string, options: PromptLoadOptions): string | null {
+    const cwd = options.cwd || process.cwd();
+    const defaultPath = path.resolve(cwd, DEFAULT_PROMPTS_DIR, this.promptFileNameFor(role));
+    const targetPath = options.promptPath || defaultPath;
+    return fs.existsSync(targetPath) ? targetPath : null;
+  }
+
+  private promptFileNameFor(role: string): string {
+    if (role === ROLE_PLANNER) {
+      return PROMPT_FILE_PLANNER;
+    }
+    if (role === ROLE_IMPLEMENTER) {
+      return PROMPT_FILE_IMPLEMENTER;
+    }
+    if (role === ROLE_GATE) {
+      return PROMPT_FILE_GATE;
+    }
+    if (role === ROLE_REVIEWER) {
+      return PROMPT_FILE_REVIEWER;
+    }
+    if (role === ROLE_DISCOVERY) {
+      return PROMPT_FILE_DISCOVERY;
+    }
+    if (role === ROLE_TRIAGE) {
+      return PROMPT_FILE_TRIAGE;
+    }
+    return `${role}.md`;
   }
 }
 

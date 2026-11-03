@@ -12,6 +12,7 @@ const {
   ToolWhitelist,
   ResolveSubagentUseCase,
   FileConfigRepository,
+  DEFAULT_CONFIG,
   BASELINE_DECLARED_SHAPE_SENTENCE,
   BASELINE_COMMAND_CWD_CONTRACT,
   ROOT_BUILD_PROHIBITION_SENTENCE
@@ -264,7 +265,14 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
   });
 
   test('getReviewerDefinition integrates with config and resolves model tier', () => {
-    const def = resolveUseCase.execute({ role: 'reviewer' });
+    // Issue #290: the whitelist is now rendered for the SELECTED host, so this
+    // descriptor test pins its config instead of inheriting the operator's
+    // ~/.gemini/config (which selects `opencode` on some machines). `auto` is an
+    // unresolved host, so the Antigravity identifiers below stay the default.
+    const def = resolveUseCase.execute({
+      role: 'reviewer',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'auto' }
+    });
     assert.strictEqual(def.name, 'reviewer');
     assert.strictEqual(def.model, 'flash');
     assert.strictEqual(def.apiModel, 'gemini-3.5-flash');

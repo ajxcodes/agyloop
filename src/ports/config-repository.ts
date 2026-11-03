@@ -4,7 +4,9 @@
  * Inversion of control contract for multi-source hierarchical configuration loading.
  */
 
-import { ModelTierName, SubagentRoleName } from '../domain';
+import { ModelTierName, RunnerType, SubagentRoleName } from '../domain';
+
+export type { RunnerType };
 
 export interface ModelRoutingConfig {
   readonly planner: string;
@@ -53,8 +55,6 @@ export interface VersioningConfig {
   readonly autoCreate?: boolean;
   readonly initialVersion?: string;
 }
-
-export type RunnerType = 'auto' | 'antigravity' | 'opencode';
 
 export interface OpenCodeConfig {
   readonly model?: string;

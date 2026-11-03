@@ -59,6 +59,10 @@ import {
   NOTE_REVIEW_VERDICT_RETURN,
   formatCritiqueEvidenceReturnNote,
   formatToolProse,
+  resolveHostToolVocabulary,
+  renderSystemPromptForHost,
+  translateToolNames,
+  type HostToolVocabulary,
   TOOL_CAPABILITY_READ,
   TOOL_CAPABILITY_SEARCH,
   TOOL_CAPABILITY_LIST,
@@ -238,6 +242,18 @@ export interface ResolveSubagentOptions {
   readonly customConfig?: AgyLoopConfig;
   readonly promptPath?: string;
   readonly workspaceDir?: string;
+}
+
+/**
+ * The shared options object for the six system-prompt readers (issue #290).
+ *
+ * `vocabulary` is the host resolved from the SAME config the whitelist came
+ * from; when it is absent the Antigravity asset is returned byte-identically.
+ */
+export interface SystemPromptOptions {
+  readonly promptPath?: string;
+  readonly workspaceDir?: string;
+  readonly vocabulary?: HostToolVocabulary | null;
 }
 
 export interface PlanningTaskPromptParams {
@@ -570,70 +586,101 @@ export class ResolveSubagentUseCase {
     }
   }
 
-  public getPlannerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getPlannerSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_PLANNER, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_PLANNER, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_PLANNER_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_PLANNER_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getDiscoverySystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getDiscoverySystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_DISCOVERY, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_DISCOVERY, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_DISCOVERY_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_DISCOVERY_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getImplementerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getImplementerSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_IMPLEMENTER, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_IMPLEMENTER, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_IMPLEMENTER_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_IMPLEMENTER_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getGateSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getGateSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_GATE, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_GATE, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_GATE_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_GATE_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getReviewerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getReviewerSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_REVIEWER, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_REVIEWER, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getTriageSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getTriageSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_TRIAGE, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_TRIAGE, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return buildDefaultTriageSystemPrompt();
+    return renderSystemPromptForHost(buildDefaultTriageSystemPrompt(), options.vocabulary);
+  }
+
+  /**
+   * Resolves the selected host ONCE per render (issue #290, invariant I4).
+   *
+   * A builder that is handed no config resolves `null`, which is the identity:
+   * the host-neutral #241 prose and the Antigravity asset stay the default.
+   */
+  private vocabularyFor(config?: AgyLoopConfig): HostToolVocabulary | null {
+    return resolveHostToolVocabulary(config?.runner);
   }
 
   public execute(options: ResolveSubagentOptions = {}): SubagentDescriptor {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
     const config = options.customConfig || this.configRepo.loadConfig({ cwd: options.workspaceDir });
     const resolved = this.configRepo.resolveModel(roleVo.value, config);
+    // Resolved ONCE per descriptor (issue #290, invariant I4): the whitelist and
+    // the system prompt below both derive from this single vocabulary.
+    const vocabulary = this.vocabularyFor(config);
 
     if (roleVo.value === ROLE_DISCOVERY) {
       const whitelist = ToolWhitelist.planner();
@@ -643,7 +690,7 @@ export class ResolveSubagentUseCase {
         description: DISCOVERY_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: true,
           enable_subagent_tools: false,
@@ -651,7 +698,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getDiscoverySystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -664,7 +712,7 @@ export class ResolveSubagentUseCase {
         description: IMPLEMENTER_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: true,
           enable_subagent_tools: false,
@@ -672,7 +720,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getImplementerSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -685,7 +734,7 @@ export class ResolveSubagentUseCase {
         description: GATE_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: false,
           enable_subagent_tools: false,
@@ -693,7 +742,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getGateSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -706,7 +756,7 @@ export class ResolveSubagentUseCase {
         description: REVIEWER_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: false,
           enable_subagent_tools: false,
@@ -714,7 +764,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getReviewerSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -726,7 +777,7 @@ export class ResolveSubagentUseCase {
         description: TRIAGE_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: TRIAGE_TOOLS.slice(),
+        tools: translateToolNames(TRIAGE_TOOLS, vocabulary),
         capabilities: {
           enable_write_tools: false,
           enable_subagent_tools: false,
@@ -734,7 +785,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getTriageSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -753,7 +805,7 @@ export class ResolveSubagentUseCase {
       description: PLANNER_SUBAGENT_DEF.description,
       model: resolved.tier,
       apiModel: resolved.apiModel,
-      tools: whitelist.toArray(),
+      tools: translateToolNames(whitelist.toArray(), vocabulary),
       capabilities: {
         enable_write_tools: true,
         enable_subagent_tools: false,
@@ -761,13 +813,15 @@ export class ResolveSubagentUseCase {
       },
       system_prompt: this.getPlannerSystemPrompt({
         promptPath: options.promptPath,
-        workspaceDir: options.workspaceDir
+        workspaceDir: options.workspaceDir,
+        vocabulary
       })
     };
   }
 
   public buildDiscoveryTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
+    const vocabulary = this.vocabularyFor(params.config);
     const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
     const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
     const repo = params.repo || resolvedRepo;
@@ -828,7 +882,7 @@ export class ResolveSubagentUseCase {
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true, vocabulary })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
 
     if (isContainerAvailable) {
       // Issue #389: the boundary is MUTATION, not containment. The old
@@ -899,6 +953,7 @@ export class ResolveSubagentUseCase {
 
   public buildPlanningTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
+    const vocabulary = this.vocabularyFor(params.config);
     const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
     const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
     const repo = params.repo || resolvedRepo;
@@ -935,7 +990,7 @@ export class ResolveSubagentUseCase {
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true, vocabulary })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
     if (params.planPath) {
       prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n`;
@@ -992,14 +1047,15 @@ export class ResolveSubagentUseCase {
   }
 
   public buildImplementationTaskPrompt(params: ImplementationTaskPromptParams): string {
+    const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Implementation Execution\n\n`;
     prompt += `You are executing the **IMPLEMENT** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to surgically implement the changes specified in the approved plan, run verification tests, and ensure all quality criteria are met.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Plan Fidelity**: Adhere strictly to the approved specification. Do not perform unauthorized refactorings, style drifts, or introduce unrequested dependencies.\n`;
-    prompt += `2. **Surgical Modifications**: Use ${formatToolProse([TOOL_CAPABILITY_EDIT])} for targeted edits on existing files. Use ${formatToolProse([TOOL_CAPABILITY_WRITE])} only for new files.\n`;
-    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via ${formatToolProse([TOOL_CAPABILITY_SHELL])} to validate all code edits before completing.\n`;
+    prompt += `2. **Surgical Modifications**: Use ${formatToolProse([TOOL_CAPABILITY_EDIT], { vocabulary })} for targeted edits on existing files. Use ${formatToolProse([TOOL_CAPABILITY_WRITE], { vocabulary })} only for new files.\n`;
+    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })} to validate all code edits before completing.\n`;
     prompt += `4. **No Commits**: Do NOT commit your changes. Leave them staged or unstaged in the worktree. The orchestrator's commit gate handles committing.\n\n`;
 
     if (params.workspaceDir) {
@@ -1057,7 +1113,7 @@ export class ResolveSubagentUseCase {
       const planFileName = params.planPath.replace(/^.*[\\/]/, '');
       prompt += `### Approved Technical Plan (${planFileName}):\n`;
       prompt += `The approved technical plan is located at \`${params.planPath}\`.\n`;
-      prompt += `You MUST read this file using ${formatToolProse([TOOL_CAPABILITY_READ])} to understand the acceptance criteria and implementation checklist before proceeding.\n`;
+      prompt += `You MUST read this file using ${formatToolProse([TOOL_CAPABILITY_READ], { vocabulary })} to understand the acceptance criteria and implementation checklist before proceeding.\n`;
       prompt += `Do not edit the approved plan; its digest is verified by the gate. Record progress in the CodeLoop Summary, never in the plan.\n\n`;
     } else if (params.planContent && params.planContent.trim()) {
       prompt += `### Approved Technical Plan (${PLAN_DEFAULT_SPECIFICATION_TITLE}):\n\n`;
@@ -1117,12 +1173,13 @@ export class ResolveSubagentUseCase {
   }
 
   public buildGateTaskPrompt(params: GateTaskPromptParams = {}): string {
+    const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Quality Gate Verification\n\n`;
     prompt += `You are executing the **QUALITY_GATE** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to execute automated build, typecheck, and test suites, isolate diagnostics, and report an objective quality verdict.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Verification Only**: You have access strictly to ${formatToolProse([TOOL_CAPABILITY_SHELL, TOOL_CAPABILITY_READ], { plural: true })}. Never attempt to edit source files.\n`;
+    prompt += `1. **Verification Only**: You have access strictly to ${formatToolProse([TOOL_CAPABILITY_SHELL, TOOL_CAPABILITY_READ], { plural: true, vocabulary })}. Never attempt to edit source files.\n`;
     prompt += `2. **Log Shielding Mandate**: Do not flood the parent conversation with raw terminal output. Filter noise and extract concise failure summaries.\n`;
     prompt += `3. **Strict Timeout & Exit Code Respect**: Any non-zero exit code or timeout is an immediate gate failure.\n\n`;
 
@@ -1228,7 +1285,7 @@ export class ResolveSubagentUseCase {
     }
 
     prompt += `### Plan Immutability\n`;
-    prompt += `The approved plan${params.planPath ? ` at \`${params.planPath}\`` : ''} is frozen. You may read it with ${formatToolProse([TOOL_CAPABILITY_READ])}, but editing it is itself a gate failure: report \`FAILED\` and name the path. Annotations belong in the CodeLoop Summary, not in the plan.\n\n`;
+    prompt += `The approved plan${params.planPath ? ` at \`${params.planPath}\`` : ''} is frozen. You may read it with ${formatToolProse([TOOL_CAPABILITY_READ], { vocabulary })}, but editing it is itself a gate failure: report \`FAILED\` and name the path. Annotations belong in the CodeLoop Summary, not in the plan.\n\n`;
 
     prompt += `### Required Verdict Output:\n`;
     prompt += `- Overall Status: PASSED or FAILED\n`;
@@ -1266,6 +1323,7 @@ export class ResolveSubagentUseCase {
   }
 
   public buildReviewerTaskPrompt(params: ReviewerTaskPromptParams = {}): string {
+    const vocabulary = this.vocabularyFor(params.config);
     // Issue #314: an explicit path (run-review) is authoritative; otherwise ask
     // the port. Never fall back to a literal home-directory path — the
     // installer writes to the user-data directory, not ~/.local/bin.
@@ -1291,12 +1349,12 @@ export class ResolveSubagentUseCase {
       : 'Never attempt to write or edit files.';
 
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_SHELL], { plural: true })}). ${readOnlyRule}\n`;
+    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_SHELL], { plural: true, vocabulary })}). ${readOnlyRule}\n`;
     prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
 
     prompt += `### Two-Tier Review Methodology:\n`;
-    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
+    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })}:\n`;
     if (resolvedCritiquePath) {
       prompt += `   \`\`\`bash\n`;
       prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath, critiqueReportPath, reviewCwd, baseBranch)}\n`;
@@ -1392,7 +1450,7 @@ export class ResolveSubagentUseCase {
           prompt += `#### Diff Stat:\n\`\`\`\n${statSummary}\n\`\`\`\n\n`;
         }
         prompt += `### Working Diff Inspection:\n`;
-        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using ${formatToolProse([TOOL_CAPABILITY_SHELL])}:\n`;
+        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })}:\n`;
         prompt += `\`\`\`bash\n`;
         prompt += `git diff --stat ${baseBranch} -- . ${diffExcludeArgs}\n`;
         prompt += `git diff ${baseBranch} -- <file_path>\n`;
@@ -1402,7 +1460,7 @@ export class ResolveSubagentUseCase {
       }
     } else {
       prompt += `### Working Diff Inspection:\n`;
-      prompt += `Inspect the working diff using ${formatToolProse([TOOL_CAPABILITY_SHELL])} with \`${diffInspectionCmd}\`:\n`;
+      prompt += `Inspect the working diff using ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })} with \`${diffInspectionCmd}\`:\n`;
       prompt += `\`\`\`bash\n`;
       prompt += `${diffInspectionCmd}\n`;
       prompt += `\`\`\`\n\n`;
@@ -1411,7 +1469,7 @@ export class ResolveSubagentUseCase {
     const untrackedFiles = normalizeUntrackedFiles(params.untrackedFiles);
     if (untrackedFiles.length > 0) {
       prompt += `### Untracked Implementation Files (invisible to \`git diff\`):\n`;
-      prompt += `\`${diffInspectionCmd}\` does NOT show untracked files. These paths are NEW and part of this change set, so inspect them with ${formatToolProse([TOOL_CAPABILITY_SHELL])} — the commands below print each one's FULL content:\n`;
+      prompt += `\`${diffInspectionCmd}\` does NOT show untracked files. These paths are NEW and part of this change set, so inspect them with ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })} — the commands below print each one's FULL content:\n`;
       prompt += '```bash\n';
       for (const file of untrackedFiles) {
         prompt += `${formatUntrackedContentCommand(file)}\n`;
@@ -1477,6 +1535,7 @@ export class ResolveSubagentUseCase {
   }
 
   public buildTriageTaskPrompt(params: TriageTaskPromptParams = {}): string {
+    const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Triage PR Review Comments\n\n`;
     prompt += `You are executing the **TRIAGE** phase of the AgyLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to categorize review comments and route the pipeline to the appropriate next stage.\n\n`;
@@ -1496,7 +1555,7 @@ export class ResolveSubagentUseCase {
 
     prompt += `You are the Triage Subagent. Directly inspect the comments and route the pipeline by executing:\n`;
     prompt += `    ${formatTriageRoutingCommand({ issue: effectiveIssue })}\n`;
-    prompt += `Run that command with ${formatToolProse([TOOL_CAPABILITY_SHELL])}.\n`;
+    prompt += `Run that command with ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })}.\n`;
     prompt += `Where \`<action>\` is one of: ${formatTriageActionList()}.\n`;
     prompt += `Side effects: ${formatTriageActionSideEffects()}.\n`;
     prompt += `A routing action requires the checkpoint to be at the TRIAGE gate; \`codeloop next\` is the entry path. Do NOT spawn another subagent to do this.\n\n`;

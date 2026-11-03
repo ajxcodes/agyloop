@@ -35,7 +35,8 @@ import {
   CB_ACTION_PAUSE_FOR_HUMAN,
   CB_ACTIONS,
   ValidationError,
-  DEFAULT_OPENCODE_MODEL
+  DEFAULT_OPENCODE_MODEL,
+  isRunnerType
 } from '../domain';
 
 export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
@@ -193,7 +194,7 @@ export class FileConfigRepository implements ConfigRepository {
     const envRunner = process.env.CODELOOP_RUNNER;
     if (envRunner) {
       const normalizedEnv = envRunner.toLowerCase().trim();
-      if (normalizedEnv === 'auto' || normalizedEnv === 'antigravity' || normalizedEnv === 'opencode') {
+      if (isRunnerType(normalizedEnv)) {
         runner = normalizedEnv;
       }
     }
