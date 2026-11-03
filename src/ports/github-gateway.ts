@@ -132,6 +132,11 @@ export interface CreatePullRequestOptions extends GitHubGatewayOptions {
   readonly draft?: boolean;
 }
 
+export interface CreateLabelOptions extends GitHubGatewayOptions {
+  readonly color?: string;
+  readonly description?: string;
+}
+
 export interface GitHubGateway {
   /**
    * Resolves the active GitHub repository slug ('owner/repo') from git remotes or manifest.
@@ -187,6 +192,21 @@ export interface GitHubGateway {
     labels: readonly string[],
     options?: GitHubGatewayOptions
   ): Promise<void> | void;
+
+  /**
+   * Reports whether a label exists in the repository (issue #502).
+   *
+   * Optional, matching this port's convention for capabilities. A caller that
+   * must guarantee a label before writing treats ABSENCE as "cannot verify"
+   * and refuses — it never assumes the label exists.
+   */
+  labelExists?(name: string, options?: GitHubGatewayOptions): Promise<boolean> | boolean;
+
+  /**
+   * Creates a label, or updates its colour/description when it already exists
+   * (`gh label create --force`, issue #502).
+   */
+  createLabel?(name: string, options?: CreateLabelOptions): Promise<void> | void;
 
   /**
    * Posts a comment on an issue or pull request.

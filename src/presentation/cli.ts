@@ -619,7 +619,7 @@ Operational Modes:
   plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate. Bug-labelled issues enter DISCOVERY first and park until the RCA report is populated.
   implement          Resume implementation directly from approved plan specification
   commit             Draft Conventional Commit and prompt for interactive human approval
-  release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label
+  release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label (creates the release:<bump> label when missing; --dry-run validates it)
   sync               Fast-forward collector branch and process EVERY merged PR to auto-close issues
 
 Pipeline Management:
@@ -3984,6 +3984,15 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         // Issue #315 (AC-27): the headline counts DELIVERABLES; the git
         // topology is reported separately so the two can never be confused.
         console.log(`Commit Metrics   : ${result.evaluation.totalCommits} deliverables (${result.evaluation.featuresCount} feats, ${result.evaluation.fixesCount} fixes, ${result.evaluation.breakingCount} breaking; ${result.evaluation.commitObjects} commit objects)`);
+        if (result.labelPrecondition) {
+          const precondition = result.labelPrecondition;
+          const state = precondition.existed
+            ? `verified${precondition.repo ? ` in ${precondition.repo}` : ''}`
+            : precondition.provisioned
+              ? 'missing; created just now'
+              : 'missing; the real run will create it';
+          console.log(`Release Label    : ${paint('36', precondition.label)} (${state})`);
+        }
         // Issue #315 (AC-32): the GitHub Release-notes half lives in another
         // repository. Say so, so this in-repo change never implies it closed it.
         console.log(`⚠ ${NOTE_RELEASE_NOTES_DEPENDENCY}`);
@@ -3995,11 +4004,14 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (result.dryRun) {
           console.log(`\n[DRY RUN] Generated Changelog Preview:\n`);
           console.log(result.evaluation.changelog);
-          console.log(`\n[DRY RUN] Would create Milestone PR targeting '${result.baseBranch}' with label '${result.evaluation.releaseLabel}'.\n`);
+          console.log(`\n${result.message}\n`);
           return EXIT_CODE_SUCCESS;
         }
 
         if (result.pullRequest) {
+          if (result.labelPrecondition && result.labelPrecondition.provisioned) {
+            console.log(`✓ Release Label Created  : ${paint('36', result.labelPrecondition.label)} (was missing; created with: ${result.labelPrecondition.remedyCommand})`);
+          }
           console.log(`\n✓ Milestone Pull Request: ${paint('1', result.pullRequest.url || '#' + result.pullRequest.number)}`);
           console.log(`✓ Release Label Applied : ${paint('36', result.evaluation.releaseLabel)} (Triggers ajxcodes/auto-tag@v1 upon merge)`);
         }

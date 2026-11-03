@@ -20,6 +20,7 @@ import {
   GitHubPullRequestData,
   FindPullRequestOptions,
   CreatePullRequestOptions,
+  CreateLabelOptions,
   formatIssueForPrompt
 } from '../ports';
 import {
@@ -46,6 +47,7 @@ import {
   ReviewSeverity,
   DISMISS_CONVERSATION_REPLY_REFERENCE,
   DISMISS_CONVERSATION_PERMALINK_TEMPLATE,
+  DEFAULT_RELEASE_LABEL_COLOR,
   shellQuote
 } from '../domain';
 
@@ -876,6 +878,54 @@ export class CliGitHubGateway implements GitHubGateway {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * True when `name` exists verbatim in the repository's label vocabulary
+   * (issue #502). `gh label list --search` matches names AND descriptions, so
+   * the comparison is exact; an empty result set prints nothing (exit 0), which
+   * is "absent", not a parse error.
+   */
+  public labelExists(name: string, options: GitHubGatewayOptions = {}): boolean {
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const args: string[] = ['label', 'list'];
+    if (repo) args.push('--repo', repo);
+    args.push('--search', name);
+    args.push('--json', 'name');
+    args.push('--limit', '100');
+
+    const raw = this.runGhArgs(args, { cwd: options.cwd });
+    if (!raw) return false;
+
+    let parsed: Array<{ name?: string }>;
+    try {
+      parsed = JSON.parse(raw) as Array<{ name?: string }>;
+    } catch (err: unknown) {
+      throw new GitHubContextError(`labelExists: ${name}`, { cwd: options.cwd }, err);
+    }
+    if (!Array.isArray(parsed)) {
+      throw new GitHubContextError(
+        `labelExists: ${name}`,
+        { cwd: options.cwd },
+        new Error('gh label list did not return a JSON array')
+      );
+    }
+    return parsed.some((entry) => entry && entry.name === name);
+  }
+
+  /**
+   * Provisions `name` (issue #502). `--force` makes the call idempotent: an
+   * existing label has its colour/description refreshed instead of failing.
+   */
+  public createLabel(name: string, options: CreateLabelOptions = {}): void {
+    const repo = options.repo || this.getCurrentRepo(options.cwd);
+    const args: string[] = ['label', 'create', name];
+    if (repo) args.push('--repo', repo);
+    args.push('--color', options.color || DEFAULT_RELEASE_LABEL_COLOR);
+    args.push('--description', options.description || `SemVer release label (${name})`);
+    args.push('--force');
+
+    this.runGhArgs(args, { cwd: options.cwd });
   }
 
   /**

@@ -40,6 +40,7 @@ function installFakeGh(): void {
     '#!/bin/sh',
     `printf '%s' '--INV--' >> ${JSON.stringify(argvFile)}`,
     'for a in "$@"; do printf \'%s\\0\' "$a" >> ' + JSON.stringify(argvFile) + '; done',
+    'if [ -f "$GH_FAIL_FILE" ]; then cat "$GH_FAIL_FILE" >&2; exit 1; fi',
     'if [ -f "$GH_STDOUT_FILE" ]; then cat "$GH_STDOUT_FILE"; fi',
     'exit 0'
   ].join('\n');
@@ -77,11 +78,13 @@ before(() => {
 beforeEach(() => {
   fs.writeFileSync(argvFile, '');
   fs.writeFileSync(stdoutFile, '');
+  delete process.env.GH_FAIL_FILE;
 });
 
 after(() => {
   process.env.PATH = origPath;
   delete process.env.GH_STDOUT_FILE;
+  delete process.env.GH_FAIL_FILE;
   if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
 });
 
@@ -218,6 +221,55 @@ describe('CliGitHubGateway free text reaches gh verbatim (#262)', () => {
 
     const argv = lastInvocation();
     assert.strictEqual(argv[argv.indexOf('--search') + 1], '262');
+  });
+
+  test('labelExists matches the label name exactly and treats an empty list as absent (#502 AC1)', POSIX_ONLY, () => {
+    const gateway = new CliGitHubGateway();
+
+    assert.strictEqual(gateway.labelExists('release:minor', { repo: 'ajxcodes/agyloop', cwd: workDir }), false);
+    assert.deepStrictEqual(lastInvocation().slice(0, 2), ['label', 'list']);
+
+    fs.writeFileSync(stdoutFile, '[{"name":"release:minor"}]');
+    assert.strictEqual(gateway.labelExists('release:minor', { repo: 'ajxcodes/agyloop', cwd: workDir }), true);
+
+    fs.writeFileSync(stdoutFile, '[{"name":"release:minor-notes"}]');
+    assert.strictEqual(gateway.labelExists('release:minor', { repo: 'ajxcodes/agyloop', cwd: workDir }), false);
+  });
+
+  test('createLabel creates the release label with --force and a fixed colour (#502 AC1)', POSIX_ONLY, () => {
+    const gateway = new CliGitHubGateway();
+
+    gateway.createLabel('release:minor', {
+      repo: 'ajxcodes/agyloop',
+      cwd: workDir,
+      color: '0e8a16',
+      description: 'SemVer minor release (auto-tag)'
+    });
+
+    const argv = lastInvocation();
+    assert.deepStrictEqual(argv.slice(0, 3), ['label', 'create', 'release:minor']);
+    assert.strictEqual(argv[argv.indexOf('--color') + 1], '0e8a16');
+    assert.strictEqual(argv[argv.indexOf('--description') + 1], 'SemVer minor release (auto-tag)');
+    assert.ok(argv.includes('--force'));
+  });
+
+  test('a failing label list is surfaced as a GitHub context error (#502 AC1)', POSIX_ONLY, () => {
+    const gateway = new CliGitHubGateway();
+    const failFile = path.join(workDir, 'gh-fail.txt');
+    fs.writeFileSync(failFile, 'HTTP 401: Bad credentials\n');
+    process.env.GH_FAIL_FILE = failFile;
+
+    try {
+      assert.throws(
+        () => gateway.labelExists('release:minor', { repo: 'ajxcodes/agyloop', cwd: workDir }),
+        (err: any) => {
+          assert.strictEqual(err.code, 'ERR_GITHUB_CONTEXT');
+          return true;
+        }
+      );
+    } finally {
+      delete process.env.GH_FAIL_FILE;
+    }
   });
 });
 
