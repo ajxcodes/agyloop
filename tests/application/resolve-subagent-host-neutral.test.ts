@@ -9,14 +9,25 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   ResolveSubagentUseCase,
   GATE_SUBAGENT_DEF
 } = require('../../dist/application');
 const {
+  DEFAULT_CONFIG,
+  FileConfigRepository,
+  FilePromptRepository
+} = require('../../dist/infrastructure');
+const {
   ANTI_INCEPTION_GUARDRAIL,
   DEFAULT_GATE_SYSTEM_PROMPT,
+  DEFAULT_PLANNER_SYSTEM_PROMPT,
+  IMPLEMENTER_TOOLS,
+  PLANNER_TOOLS,
   formatToolProse,
   TOOL_CAPABILITY_READ,
   TOOL_CAPABILITY_SEARCH,
@@ -26,8 +37,28 @@ const {
   TOOL_CAPABILITY_SHELL
 } = require('../../dist/domain');
 
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+
 const AGY_TOOL_IDENTIFIER =
   /\b(view_file|grep_search|find_by_name|list_dir|write_to_file|replace_file_content|run_command)\b/;
+const OC_BACKTICKED_IDENTIFIER = /`(read|grep|glob|list|write|edit|shell)`/;
+
+/**
+ * A workspace with no `prompts/` directory: the repository must fall back to the
+ * embedded default, which is what "the Antigravity asset by default" means when
+ * the operator's tree has no asset on disk.
+ */
+function emptyWorkspace(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-290-'));
+}
+
+function hostAwareUseCase(): InstanceType<typeof ResolveSubagentUseCase> {
+  return new ResolveSubagentUseCase(
+    new FileConfigRepository(),
+    undefined,
+    new FilePromptRepository()
+  );
+}
 
 function allTaskPrompts(): Map<string, string> {
   const useCase = new ResolveSubagentUseCase({});
@@ -132,5 +163,183 @@ describe('Dispatched prompt host neutrality (issue #241, D6)', () => {
       false,
       'the directive must not instruct an operator to run the deprecated launcher'
     );
+  });
+
+  test('HN6: a configured host renders both the dispatched prompt and the system prompt for that host (AC2)', () => {
+    const useCase = hostAwareUseCase();
+
+    for (const host of ['antigravity', 'opencode']) {
+      const config = { ...DEFAULT_CONFIG, runner: host };
+      const dispatched = useCase.buildPlanningTaskPrompt({ issueNumber: 290, config });
+      const systemPrompt = useCase.execute({
+        role: 'implementer',
+        customConfig: config,
+        workspaceDir: PROJECT_ROOT
+      }).system_prompt;
+
+      for (const [surface, text] of [
+        ['dispatched', dispatched],
+        ['system', systemPrompt]
+      ] as [string, string][]) {
+        if (host === 'opencode') {
+          assert.strictEqual(
+            AGY_TOOL_IDENTIFIER.test(text),
+            false,
+            `the ${host} ${surface} prompt must not name an Antigravity tool:\n${text}`
+          );
+        } else {
+          assert.strictEqual(
+            OC_BACKTICKED_IDENTIFIER.test(text),
+            false,
+            `the ${host} ${surface} prompt must not name an OpenCode tool:\n${text}`
+          );
+        }
+      }
+
+      if (host === 'opencode') {
+        assert.ok(
+          dispatched.includes('your harness-provided read, grep, glob, write and edit tools'),
+          `the opencode dispatched prompt must name OpenCode's tools:\n${dispatched}`
+        );
+        assert.ok(systemPrompt.includes('in OpenCode'), systemPrompt);
+      } else {
+        assert.ok(
+          dispatched.includes(
+            'your harness-provided view_file, grep_search, list_dir, write_to_file and replace_file_content tools'
+          ),
+          `the antigravity dispatched prompt must name Antigravity's tools:\n${dispatched}`
+        );
+        assert.ok(systemPrompt.includes('in Google Antigravity'), systemPrompt);
+      }
+    }
+  });
+
+  test('HN7: the antigravity render names no OpenCode identifier (AC2)', () => {
+    const useCase = hostAwareUseCase();
+
+    const antigravity = useCase.execute({
+      role: 'implementer',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'antigravity' },
+      workspaceDir: PROJECT_ROOT
+    }).system_prompt;
+    assert.ok(antigravity.includes('in Google Antigravity'), antigravity);
+    assert.strictEqual(OC_BACKTICKED_IDENTIFIER.test(antigravity), false, antigravity);
+
+    const opencode = useCase.execute({
+      role: 'implementer',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'opencode' },
+      workspaceDir: PROJECT_ROOT
+    }).system_prompt;
+    assert.ok(opencode.includes('in OpenCode'), opencode);
+    assert.strictEqual(AGY_TOOL_IDENTIFIER.test(opencode), false, opencode);
+  });
+
+  test('HN8: execute() translates the whitelist and the system prompt for the selected host (AC3)', () => {
+    const useCase = hostAwareUseCase();
+
+    const opencode = useCase.execute({
+      role: 'implementer',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'opencode' },
+      workspaceDir: PROJECT_ROOT
+    });
+    assert.deepStrictEqual([...opencode.tools], ['read', 'grep', 'glob', 'write', 'edit', 'shell']);
+
+    const antigravity = useCase.execute({
+      role: 'implementer',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'antigravity' },
+      workspaceDir: PROJECT_ROOT
+    });
+    assert.deepStrictEqual([...antigravity.tools], [...IMPLEMENTER_TOOLS]);
+
+    const gate = useCase.execute({
+      role: 'gate',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'opencode' },
+      workspaceDir: PROJECT_ROOT
+    });
+    assert.deepStrictEqual([...gate.tools], ['shell', 'read']);
+  });
+
+  test('HN9: an unresolved host keeps the Antigravity default and the neutral dispatched prose (AC4)', () => {
+    const useCase = hostAwareUseCase();
+    const workspace = emptyWorkspace();
+    try {
+      const def = useCase.execute({
+        role: 'planner',
+        customConfig: { ...DEFAULT_CONFIG, runner: 'auto' },
+        workspaceDir: workspace
+      });
+      assert.deepStrictEqual([...def.tools], [...PLANNER_TOOLS]);
+      assert.strictEqual(def.system_prompt, DEFAULT_PLANNER_SYSTEM_PROMPT);
+
+      const prompt = useCase.buildPlanningTaskPrompt({
+        issueNumber: 290,
+        config: { ...DEFAULT_CONFIG, runner: 'auto' }
+      });
+      assert.ok(
+        prompt.includes('your harness-provided read, search, list, write and edit tools'),
+        `the neutral dispatched prose must survive an unresolved host:\n${prompt}`
+      );
+      assert.strictEqual(AGY_TOOL_IDENTIFIER.test(prompt), false, prompt);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('HN10: the planner renders its dispatched prompt and its system prompt from the same host vocabulary (AC2)', () => {
+    const useCase = hostAwareUseCase();
+
+    for (const host of ['antigravity', 'opencode']) {
+      const config = { ...DEFAULT_CONFIG, runner: host };
+      const dispatched = useCase.buildPlanningTaskPrompt({ issueNumber: 290, config });
+      const systemPrompt = useCase.execute({
+        role: 'planner',
+        customConfig: config,
+        workspaceDir: PROJECT_ROOT
+      }).system_prompt;
+
+      assert.ok(dispatched.includes('your harness-provided'), dispatched);
+      assert.ok(systemPrompt.includes('AgyLoop Architectural Planning Subagent'), systemPrompt);
+
+      if (host === 'opencode') {
+        assert.ok(
+          dispatched.includes('your harness-provided read, grep, glob, write and edit tools'),
+          `the opencode dispatched planner prompt must name OpenCode's tools:\n${dispatched}`
+        );
+        assert.strictEqual(
+          AGY_TOOL_IDENTIFIER.test(dispatched),
+          false,
+          `the opencode dispatched planner prompt must not name an Antigravity tool:\n${dispatched}`
+        );
+        assert.ok(systemPrompt.includes('in OpenCode'), systemPrompt);
+        assert.ok(systemPrompt.includes('(`read`, `grep`, `glob`)'), systemPrompt);
+        assert.strictEqual(
+          AGY_TOOL_IDENTIFIER.test(systemPrompt),
+          false,
+          `the opencode system planner prompt must not name an Antigravity tool:\n${systemPrompt}`
+        );
+      } else {
+        assert.ok(
+          dispatched.includes(
+            'your harness-provided view_file, grep_search, list_dir, write_to_file and replace_file_content tools'
+          ),
+          `the antigravity dispatched planner prompt must name Antigravity's tools:\n${dispatched}`
+        );
+        assert.strictEqual(
+          OC_BACKTICKED_IDENTIFIER.test(dispatched),
+          false,
+          `the antigravity dispatched planner prompt must not name an OpenCode tool:\n${dispatched}`
+        );
+        assert.ok(systemPrompt.includes('in Google Antigravity'), systemPrompt);
+        assert.ok(
+          systemPrompt.includes('(`view_file`, `grep_search`, `find_by_name`, `list_dir`)'),
+          systemPrompt
+        );
+        assert.strictEqual(
+          OC_BACKTICKED_IDENTIFIER.test(systemPrompt),
+          false,
+          `the antigravity system planner prompt must not name an OpenCode tool:\n${systemPrompt}`
+        );
+      }
+    }
   });
 });

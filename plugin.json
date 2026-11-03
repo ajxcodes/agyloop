@@ -132,13 +132,15 @@
       "name": "gate",
       "description": "Fast, isolated quality gate subagent executing builds, tests, and linters",
       "model": "flash_lite",
-      "role": "Quality Gate Verification Subagent"
+      "role": "Quality Gate Verification Subagent",
+      "system_prompt": "prompts/gate.md"
     },
     "reviewer": {
       "name": "reviewer",
       "description": "Standards compliance and acceptance criteria review subagent",
       "model": "flash",
-      "role": "AI Reviewer Subagent"
+      "role": "AI Reviewer Subagent",
+      "system_prompt": "prompts/reviewer.md"
     },
     "triage": {
       "name": "triage",

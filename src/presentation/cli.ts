@@ -29,10 +29,11 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MODE_COMMIT,
   ROLE_PLANNER,
-  ROLE_IMPLEMENTER,
-  ROLE_GATE,
-  ROLE_REVIEWER,
-  ROLE_TRIAGE,
+  // Issue #290: the host axis. The vocabulary registry is domain data; the CLI
+  // only resolves it once at the composition root and renders the label.
+  SUBAGENT_ROLES,
+  resolveHostToolVocabulary,
+  formatWriteCapabilitySummary,
   VERDICT_SKIPPED,
   DEFAULT_PROMPTS_DIR,
   DEFAULT_STATE_DIR,
@@ -629,7 +630,7 @@ Pipeline Management:
   status             Display current pipeline stage, active tasks matrix, and checkpoint history
   config             Display active configuration and model routing table
   models             List available Gemini models and mapped Antigravity tiers
-  prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|implementer|gate|reviewer)
+  prompt [role]      Inspect subagent definition, whitelist, and system prompt (planner|discovery|implementer|gate|reviewer|triage)
   reset              Reset .agyloop/state.json checkpoint (supports --issue <id> and --all)
   resume             Clear a persisted gate pause (CIRCUIT_BREAKER, APPROVAL, COMMIT, TRIAGE) and checkpoint the wait time
   halt --reason quota [--retry-after <s>]  Record provider quota halt (429) and checkpoint at CIRCUIT_BREAKER (exits 2)
@@ -1916,6 +1917,11 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     model: options.model || undefined
   });
 
+  // Issue #290: the host the role prompts describe. Resolved ONCE here, beside
+  // the config load, so every operator surface below reads the same selection
+  // (`config.runner` already carries the CODELOOP_RUNNER override).
+  const hostVocabulary = resolveHostToolVocabulary(config.runner);
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const runner = RunnerFactory.createRunner({
     config,
@@ -2488,6 +2494,9 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'config': {
       console.log('\n=== CodeLoop: Configuration & Model Routing ===');
+      // Issue #290 (AC6): the operator must be able to see which host selected
+      // the tool vocabulary; `unresolved` is `auto`, never a guess.
+      console.log(`\nRunner / Host : ${config.runner} (${hostVocabulary?.displayName ?? 'unresolved'})`);
       const roles = ['planner', 'implementer', 'gate', 'reviewer', 'triage'];
       console.log('\nSubagent Model Routing Table:');
       console.log('----------------------------------------------------------------------');
@@ -3897,8 +3906,12 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
     case 'prompt': {
       const role = options.roleArg || ROLE_PLANNER;
-      if (role !== ROLE_PLANNER && role !== ROLE_IMPLEMENTER && role !== ROLE_GATE && role !== ROLE_REVIEWER && role !== ROLE_TRIAGE) {
-        console.error(`Valid prompt roles: '${ROLE_PLANNER}', '${ROLE_IMPLEMENTER}', '${ROLE_GATE}', '${ROLE_REVIEWER}', '${ROLE_TRIAGE}'. Received: '${role}'.`);
+      // Issue #290 (AC6): every real subagent role is inspectable, `discovery`
+      // included. The list is the domain's own role registry, never a re-typed
+      // literal that can omit a member.
+      const validPromptRoles: readonly string[] = Object.values(SUBAGENT_ROLES);
+      if (!validPromptRoles.includes(role)) {
+        console.error(`Valid prompt roles: ${validPromptRoles.map((name) => `'${name}'`).join(', ')}. Received: '${role}'.`);
         return EXIT_CODE_FAILURE;
       }
 
@@ -3908,16 +3921,29 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         promptRepo
       );
       const def = resolveSubagentUseCase.execute({ role, customConfig: config });
+      // The label names the source actually read (issue #290, AC6): the
+      // repository shares one resolver with `loadPrompt`, so an absent asset is
+      // reported as the built-in default instead of inventing a path.
+      const promptSource = promptRepo.resolvePromptPath(role, { cwd: process.cwd() });
+      const hostLabel = hostVocabulary
+        ? `${config.runner} (${hostVocabulary.displayName})`
+        : `${config.runner} unresolved — Antigravity vocabulary is the default`;
+      const writeToolsLabel = def.capabilities.enable_write_tools
+        ? `ENABLED (${formatWriteCapabilitySummary(hostVocabulary)})`
+        : 'DISABLED (Read-Only)';
       console.log('\n=== CodeLoop: Subagent Definition ===');
       console.log(`Subagent Name : ${def.name}`);
       console.log(`Subagent Role : ${def.role}`);
       console.log(`Resolved Tier : ${def.model} (API default: ${def.apiModel})`);
-      console.log(`Write Tools   : ${def.capabilities.enable_write_tools ? 'ENABLED' : 'DISABLED (Read-Only)'}`);
+      console.log(`Host          : ${hostLabel}`);
+      console.log(`Write Tools   : ${writeToolsLabel}`);
       console.log(`Tool Whitelist: ${def.tools.join(', ')}`);
       console.log(
         `Capabilities  : write_tools=${def.capabilities.enable_write_tools}, mcp_tools=${def.capabilities.enable_mcp_tools}`
       );
-      console.log(`\n=== CodeLoop: System Prompt (${DEFAULT_PROMPTS_DIR}/${role}.md) ===\n`);
+      console.log(
+        `\n=== CodeLoop: System Prompt (${promptSource ? `${DEFAULT_PROMPTS_DIR}/${role}.md` : 'built-in default'}) ===\n`
+      );
       console.log(def.system_prompt);
       console.log('');
       return EXIT_CODE_SUCCESS;
@@ -4214,7 +4240,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         if (impl?.implementerDef) {
           console.log(`Subagent     : ${impl.implementerDef.name} (${impl.implementerDef.role})`);
           console.log(`Model Tier   : ${impl.implementerDef.model}`);
-          console.log(`Write Tools  : ENABLED (write_to_file, replace_file_content, run_command)`);
+          console.log(`Write Tools  : ENABLED (${formatWriteCapabilitySummary(hostVocabulary)})`);
           console.log(`Whitelisted  : ${impl.implementerDef.tools.join(', ')}\n`);
         }
         console.log(`Next Step    : Execute checklist items and run 'codeloop next' when complete.\n`);

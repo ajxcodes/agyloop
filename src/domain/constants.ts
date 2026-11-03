@@ -219,6 +219,7 @@ export const READ_ONLY_TOOLS = Object.freeze([
 
 export const TOOL_WRITE_TO_FILE = 'write_to_file' as const;
 export const TOOL_REPLACE_FILE_CONTENT = 'replace_file_content' as const;
+export const TOOL_MULTI_REPLACE_FILE_CONTENT = 'multi_replace_file_content' as const;
 export const TOOL_RUN_COMMAND = 'run_command' as const;
 
 /**
