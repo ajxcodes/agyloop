@@ -60,6 +60,14 @@
  * SP55 - a CLI check that declares no sandbox is refused as sandbox-missing;
  *        --help/--version and an entered sandbox stay clean (#498 AC1-AC4)
  * SP56 - the committed corpus freezes the sandbox-missing column (#498)
+ * SP57 - every launcher and wrapper spelling is refused as sandbox-missing at
+ *        its own plan line (#503 AC1-AC3)
+ * SP58 - every spelling is accepted when its sandbox is entered and refused as
+ *        sandbox-cwd when only declared (#503 AC4)
+ * SP59 - fixture prose, array definitions and --help/--version stay clean
+ *        (#503 AC3)
+ * SP60 - a shell -c program's own cd and --workspace anchor the invocation
+ *        (#503 AC4)
  */
 
 const { test, describe } = require('node:test');
@@ -2042,5 +2050,166 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       }
     }
     assert.strictEqual(fired, canaries.size, 'a #498 canary is missing from the corpus manifest');
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #503: the shared classifier did not recognise the CLI's own shipped
+  // launcher, `NAME=value`-prefixed commands, a shell interpreter holding the
+  // script, or a `sh -c` program — so both sandbox rules certified them clean.
+  // -------------------------------------------------------------------------
+
+  const SPELLINGS: ReadonlyArray<readonly [string, string]> = [
+    ['./bin/codeloop', './bin/codeloop next --json'],
+    ['bin/codeloop.js', 'bin/codeloop.js next --json'],
+    ['bin/agyloop launcher', 'bin/agyloop next --json'],
+    ['env-prefixed launcher', 'AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1 ./bin/codeloop next --json'],
+    ['name=value bare', 'FOO=bar codeloop next --json'],
+    ['name=value node', 'FOO=bar node bin/codeloop.js next --json'],
+    ['name=value launcher', 'FOO=bar ./bin/codeloop next --json'],
+    ['two assignments', 'A=1 B=2 codeloop next --json'],
+    ['quoted value assignment', 'MSG="a b" codeloop next --json'],
+    ['bash script', 'bash bin/codeloop.js next --json'],
+    ['sh script', 'sh bin/codeloop.js next --json'],
+    ['bash -c', 'bash -c "codeloop next --json"'],
+    ['sh -c', 'sh -c "codeloop next --json"'],
+    ['env + sh -c', 'FOO=bar sh -c "codeloop next --json"']
+  ];
+
+  test('SP57: every launcher and wrapper spelling is refused as sandbox-missing at its own plan line (#503 AC1-AC3)', () => {
+    const rulesOf = (markdown: string): string[] =>
+      SmokeProtocol.fromPlan(markdown).findings.map((finding: any) => finding.rule);
+    const lineOf = (markdown: string, needle: string): number =>
+      markdown.split('\n').findIndex((line) => line.includes(needle)) + 1;
+
+    for (const [label, line] of SPELLINGS) {
+      const markdown = planOf(['```bash', line, '```']);
+      const protocol = SmokeProtocol.fromPlan(markdown);
+      assert.strictEqual(protocol.executable, false, label);
+      assert.deepStrictEqual(rulesOf(markdown), [SMOKE_RULE_SANDBOX_MISSING], label);
+      assert.strictEqual(protocol.findings[0].checkIndex, 1, label);
+      assert.strictEqual(protocol.findings[0].line, lineOf(markdown, line), label);
+      assert.ok(
+        protocol.findings[0].excerpt.includes('declares no sandbox'),
+        `${label}: ${protocol.findings[0].excerpt}`
+      );
+    }
+  });
+
+  test('SP58: every spelling is accepted when its sandbox is entered and refused as sandbox-cwd when only declared (#503 AC4)', () => {
+    const rulesOf = (markdown: string): string[] =>
+      SmokeProtocol.fromPlan(markdown).findings.map((finding: any) => finding.rule);
+
+    for (const [label, line] of SPELLINGS) {
+      const entered = planOf([
+        '```bash',
+        'SBX="$HOME/.cache/agyloop/smoke-503/x"',
+        'cd "$SBX"',
+        line,
+        '```'
+      ]);
+      assert.deepStrictEqual(rulesOf(entered), [], label);
+
+      const declared = planOf([
+        '```bash',
+        'SBX="$HOME/.cache/agyloop/smoke-503/x"',
+        'mkdir -p "$SBX"',
+        line,
+        '```'
+      ]);
+      assert.deepStrictEqual(rulesOf(declared), [SMOKE_RULE_SANDBOX_CWD], label);
+    }
+  });
+
+  test('SP59: fixture prose, array definitions and --help/--version stay clean (#503 AC3)', () => {
+    const clean: ReadonlyArray<readonly [string, string]> = [
+      [
+        'node -e seed of the node form',
+        'node -e \'const cmd = "node bin/codeloop.js next --json"\''
+      ],
+      [
+        'node -e seed of the launcher form',
+        'node -e \'const cmd = "./bin/codeloop next --json"\''
+      ],
+      [
+        'node -e seed of the sh -c form',
+        "node -e 'const cmd = \"sh -c \\\"codeloop next --json\\\"\"'"
+      ],
+      [
+        'quoted node statement',
+        '"node bin/codeloop.js transition --issue 362"'
+      ],
+      [
+        'quoted env statement',
+        '"env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 362"'
+      ],
+      ['array definition', 'CLI=(node "$REPO/bin/codeloop.js")'],
+      ['bare assignments', 'A=1 B=2'],
+      ['launcher help', './bin/codeloop --help'],
+      ['interpreter version', 'bash bin/codeloop.js --version'],
+      ['shell -c help', 'sh -c "codeloop --help"'],
+      ['quoted prose', 'echo "run ./bin/codeloop next --json"']
+    ];
+
+    for (const [label, line] of clean) {
+      const protocol = SmokeProtocol.fromPlan(planOf(['```bash', line, '```']));
+      assert.deepStrictEqual(protocol.findings, [], `${label}: ${JSON.stringify(protocol.findings)}`);
+      assert.strictEqual(protocol.executable, true, label);
+    }
+  });
+
+  test("SP60: a shell -c program's own cd and --workspace anchor the invocation (#503 AC4)", () => {
+    const rulesOf = (markdown: string): string[] =>
+      SmokeProtocol.fromPlan(markdown).findings.map((finding: any) => finding.rule);
+    const declared = 'SBX="$HOME/.cache/agyloop/smoke-503/x"';
+
+    const anchored: ReadonlyArray<readonly [string, string]> = [
+      ['bare $SBX cd', 'sh -c "cd $SBX && codeloop next --json"'],
+      ['quoted $SBX cd', 'sh -c "cd \\"$SBX\\" && codeloop next --json"'],
+      ['workspace inside the sandbox', 'sh -c "codeloop next --json --workspace \\"$SBX/ws\\""']
+    ];
+    for (const [label, line] of anchored) {
+      assert.deepStrictEqual(
+        rulesOf(planOf(['```bash', declared, 'mkdir -p "$SBX"', line, '```'])),
+        [],
+        label
+      );
+    }
+
+    assert.deepStrictEqual(
+      rulesOf(
+        planOf([
+          '```bash',
+          declared,
+          'cd "$SBX"',
+          'sh -c "codeloop next --json"',
+          '```'
+        ])
+      ),
+      []
+    );
+    assert.deepStrictEqual(
+      rulesOf(
+        planOf([
+          '```bash',
+          declared,
+          'mkdir -p "$SBX"',
+          'sh -c "codeloop next --json"',
+          '```'
+        ])
+      ),
+      [SMOKE_RULE_SANDBOX_CWD]
+    );
+
+    const unanchored: ReadonlyArray<readonly [string, string]> = [
+      ['cd outside the sandbox', 'sh -c "cd /tmp && codeloop next --json"'],
+      ['workspace outside the sandbox', 'sh -c "codeloop next --json --workspace /tmp/elsewhere"']
+    ];
+    for (const [label, line] of unanchored) {
+      assert.deepStrictEqual(
+        rulesOf(planOf(['```bash', declared, 'mkdir -p "$SBX"', line, '```'])),
+        [SMOKE_RULE_SANDBOX_CWD],
+        label
+      );
+    }
   });
 });
