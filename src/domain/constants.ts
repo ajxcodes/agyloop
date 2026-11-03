@@ -5059,6 +5059,10 @@ export const MSG_PLAN_TEST_REGISTER_EMPTY =
 export const MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW =
   'Test Register row {row} declares a New test "{title}" in {path}, but that file already contains a test with that exact title (line {line}). A case that already exists is not new.' as const;
 
+/** A `New test:` title already exists at the base revision (issue #489). */
+export const MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE =
+  'Test Register row {row} declares a New test "{title}" in {path}, but that title already exists at the base revision "{base}" (line {line}). A case that already exists is not new; pin it with **Pins:** instead of declaring it new.' as const;
+
 /** An AC or checklist step targets a path the commit can never contain. */
 export const MSG_PLAN_EVIDENCE_EXCLUDED_PATH =
   'The plan\'s {target} names {path} (plan line {line}), which cannot appear in the delivered change set: {reason}. Deliver the correction as a tracked document, or declare it out of scope in the plan (a `- **Out of Scope:** <reason>` bullet).' as const;

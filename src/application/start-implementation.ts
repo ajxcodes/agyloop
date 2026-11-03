@@ -62,7 +62,7 @@ import {
   resolvePlanDigest
 } from './plan-digest-contract';
 import { assertSmokeProtocolContract } from './smoke-protocol-contract';
-import { assertPlanTestRegisterContract } from './plan-test-register-contract';
+import { assertPlanTestRegisterContract, resolveTestRegisterBaseRef } from './plan-test-register-contract';
 import { assertPlanEvidenceContract } from './plan-evidence-contract';
 
 export interface StartImplementationParams {
@@ -613,6 +613,14 @@ export class StartImplementationUseCase {
       sourceFileReader: this.sourceFileReader,
       planPath: resolved.planPath,
       workspaceDir: workspace,
+      // Issue #489: a re-approval runs over the implementation's own dirty
+      // worktree, so the base revision — not that tree — decides whether a
+      // `New test:` title already exists.
+      baseRef: resolveTestRegisterBaseRef([
+        params.baseBranch,
+        sm.baseBranch,
+        sm.worktree ? sm.worktree.baseBranch : null
+      ]),
       dryRun: params.dryRun
     });
   }
