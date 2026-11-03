@@ -14,6 +14,10 @@
  *        prose cannot disarm Rule C at the shared approval surface (#413 AC-4)
  * SPA7 - a sandbox-naming block that never enters the sandbox is refused at
  *        APPROVAL before any state is saved (#440)
+ * SPA8 - a plan whose fence nests a raw apostrophe inside a `node -e`
+ *        program is refused at APPROVAL and nothing is saved (#467 AC1)
+ * SPA9 - the same fence with the sanctioned `'"'"'` escape approves unchanged
+ *        (#467 AC2)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -323,5 +327,63 @@ describe('Smoke protocol approval guard (issue #388)', () => {
 
     assert.strictEqual(stateRepo.saveCallCount, 0);
     assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN);
+  });
+
+  // Issue #467: the shared approval surface must refuse a single-quoted
+  // interpreter program that nests a raw apostrophe — the #447 shape, which
+  // was certified executable and then failed verbatim at the gate.
+
+  test('SPA8: a plan whose fence nests a raw apostrophe is refused at APPROVAL and nothing is saved (#467 AC1)', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithSmoke([
+        "node -e '",
+        'const fs = require("fs");',
+        'const out = fs.readFileSync("out.txt", "utf8");',
+        'if (!out.includes("[dry-run] Would fetch origin and process 45 merged PRs for \'phase/447\'.")) process.exit(1);',
+        "'"
+      ]),
+      'utf8'
+    );
+    const stateRepo = stateAtPlan();
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'smokeProtocol');
+        assert.ok(err.message.includes('nested-single-quote'), err.message);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN);
+  });
+
+  test('SPA9: the same fence with the sanctioned escape approves unchanged (#467 AC2)', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithSmoke([`node -e 'const s = "don'"'"'t"; console.log(s)'`]),
+      'utf8'
+    );
+    const stateRepo = stateAtPlan();
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    const approved = await useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root });
+    assert.strictEqual(approved.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_APPROVAL);
   });
 });
