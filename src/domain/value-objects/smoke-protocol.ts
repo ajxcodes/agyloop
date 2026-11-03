@@ -23,6 +23,11 @@
  * (issue #413 — gate-report-fixture-contradiction, worktree-fixture-unmatched,
  * gate-report-marker-missing).
  *
+ * `sandbox-cwd` and `sandbox-missing` share ONE invocation classifier, which
+ * (issue #503) also recognises the shipped launcher (`./bin/codeloop`,
+ * `bin/codeloop.js`), `NAME=value`-prefixed commands, shell interpreter forms
+ * (`bash bin/codeloop.js`) and `sh -c` programs.
+ *
  * The #413 rules are textual mirrors of runtime contracts: each one protects a
  * check's OWN fixture from making its assertion impossible, so approval never
  * pins a digest for a protocol that only fails once executed. They call the
@@ -562,8 +567,11 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
 
 /**
  * A codeloop CLI invocation, anchored at the command token: bare
- * (`codeloop transition`), `node <…>/bin/codeloop.js …`, `npx codeloop …`, the
- * deprecated `agyloop` launcher, each optionally prefixed `env [-u AGY_SUBAGENT] …`.
+ * (`codeloop transition`), the shipped launcher (`./bin/codeloop`,
+ * `bin/codeloop.js`, `/abs/bin/codeloop`), `node <…>/bin/codeloop.js …`, a shell
+ * interpreter holding that script (`bash bin/codeloop.js`), `npx codeloop …`,
+ * the deprecated `agyloop` launcher, each optionally prefixed
+ * `env [-u AGY_SUBAGENT] …` or `NAME=value` words (issue #503).
  *
  * Quote-precedence (issue #359, I4) is NOT a property of this pattern: for
  * `"node bin/codeloop.js transition …"` inside a `node -e '…'` fixture-seeding
@@ -573,11 +581,15 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
  * match is a real invocation is therefore decided by POSITION in
  * `invokesCodeloopCli` — see `isProseAt`/`chainStart` (issue #362, F2.2).
  */
-const CLI_INVOCATION_PATTERN =
-  /(?:^|[\s;&|(=])(?:env\s+(?:(?:-\S+|[\w=]+)\s+)*|npx\s+)?(?:node\s+\S*bin\/(?:codeloop|agyloop)\.js|(?:codeloop|agyloop)(?![\w-]))/;
-
-/** A `g`-flagged copy, so `exec` can iterate every candidate on a line. */
-const CLI_INVOCATION_SCAN = new RegExp(CLI_INVOCATION_PATTERN.source, 'g');
+const CLI_LAUNCHER_TOKEN =
+  String.raw`(?:[^\s'"();&|]*\/)?bin\/(?:codeloop|agyloop)(?:\.js)?`;
+const CLI_INVOCATION_PATTERN = new RegExp(
+  String.raw`(?:^|[\s;&|(=])(?:env\s+(?:(?:-\S+|[\w=]+)\s+)*|npx\s+)?(?:` +
+    String.raw`(?:ba|da|z)?sh\s+\S*bin\/(?:codeloop|agyloop)\.js|` +
+    String.raw`node\s+\S*bin\/(?:codeloop|agyloop)\.js|` +
+    `${CLI_LAUNCHER_TOKEN}|` +
+    String.raw`(?:codeloop|agyloop)(?![\w-]))`
+);
 
 /**
  * The `env`/`npx` prefix immediately before a command token, whether or not the
@@ -768,6 +780,81 @@ function chainStart(line: string, tokenStart: number): number {
   return prefix.length - match[1].length;
 }
 
+/** One `(ba|da|z)?sh -c '<program>'` program exposed as its own statement (#503). */
+interface ShellProgramRegion {
+  /** The RAW source slice between the quotes — offsets map 1:1 onto the statement. */
+  readonly text: string;
+  /** Offset of the first content character in the statement. */
+  readonly start: number;
+  /** Offset of the closing quote. */
+  readonly end: number;
+}
+
+/**
+ * A shell interpreter handing a program to `-c` (issue #503). One quoted word
+ * per wrapper: `env -S`, clustered flags (`bash -lc`) and nested wrappers are
+ * out of scope.
+ */
+const SHELL_C_WRAPPER_SOURCE = String.raw`(?:^|[\s;&|(])(?:ba|da|z)?sh\s+-c\s+(['"])`;
+
+function readShellProgram(line: string, quoteIndex: number): ShellProgramRegion | null {
+  const quote = line[quoteIndex];
+  let index = quoteIndex + 1;
+  while (index < line.length) {
+    const char = line[index];
+    if (char === '\\' && quote === '"' && index + 1 < line.length) {
+      index += 2; // bash honours \" \\ \$ \` inside a double-quoted word
+      continue;
+    }
+    if (char === quote) {
+      return { text: line.slice(quoteIndex + 1, index), start: quoteIndex + 1, end: index };
+    }
+    index++;
+  }
+  return null; // unterminated: another rule owns that shape
+}
+
+/**
+ * The programs of every NON-PROSE `sh -c '<program>'` wrapper on a statement,
+ * in source order (issue #503). Each program is analysed as a statement of its
+ * own, so its CLI invocation counts and its own `cd`/`--workspace` anchors it.
+ */
+function shellProgramRegions(statement: string): ShellProgramRegion[] {
+  const scanner = new RegExp(SHELL_C_WRAPPER_SOURCE, 'g'); // fresh: recursion must not share lastIndex
+  const regions: ShellProgramRegion[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = scanner.exec(statement)) !== null) {
+    // The pattern consumes one boundary character (unless it matched at `^`).
+    const wrapperStart = match.index + (match.index === 0 ? 0 : 1);
+    if (isProseAt(statement, wrapperStart)) continue;
+    const word = readShellProgram(statement, match.index + match[0].length - 1);
+    if (word === null) continue;
+    regions.push(word);
+    scanner.lastIndex = word.end + 1;
+  }
+  return regions;
+}
+
+/**
+ * The offset of the chain start of the FIRST real codeloop invocation in
+ * `text`, or `null` when it does not invoke the CLI. Recursion-safe: every call
+ * builds a FRESH `g` regex because a shared `lastIndex` would silently skip
+ * candidates after a nested scan (issue #503).
+ */
+function scanCodeloopInvocation(text: string): number | null {
+  const scanner = new RegExp(CLI_INVOCATION_PATTERN.source, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = scanner.exec(text)) !== null) {
+    // The pattern consumes one boundary character (unless it matched at `^`).
+    const tokenStart = match.index + (match.index === 0 ? 0 : 1);
+    if (!isProseAt(text, chainStart(text, tokenStart))) {
+      return chainStart(text, tokenStart);
+    }
+    if (match[0].length === 0) scanner.lastIndex++;
+  }
+  return null;
+}
+
 /**
  * The offset of the chain start of the FIRST real codeloop invocation on a
  * line, or `null` when the line does not invoke the CLI.
@@ -775,20 +862,17 @@ function chainStart(line: string, tokenStart: number): number {
  * Every candidate match is classified by POSITION (issue #362, F2.2): an
  * `env`-prefixed chain seeded as quoted text is prose even though the pattern
  * anchored at its inner `node` token, while a real invocation — including
- * `OUT="$(codeloop next --json)"` — still counts.
+ * `OUT="$(codeloop next --json)"` — still counts. A `sh -c` program is scanned
+ * recursively and its inner offset mapped back onto the statement (issue #503).
  */
 function codeloopInvocationOffset(line: string): number | null {
   if (isCommentLine(line)) return null;
 
-  CLI_INVOCATION_SCAN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CLI_INVOCATION_SCAN.exec(line)) !== null) {
-    // The pattern consumes one boundary character (unless it matched at `^`).
-    const tokenStart = match.index + (match.index === 0 ? 0 : 1);
-    if (!isProseAt(line, chainStart(line, tokenStart))) {
-      return chainStart(line, tokenStart);
-    }
-    if (match[0].length === 0) CLI_INVOCATION_SCAN.lastIndex++;
+  const direct = scanCodeloopInvocation(line);
+  if (direct !== null) return direct;
+  for (const region of shellProgramRegions(line)) {
+    const inner = codeloopInvocationOffset(region.text);
+    if (inner !== null) return region.start + inner;
   }
 
   return null;
@@ -1127,7 +1211,7 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #440 / #498: the `sandbox-cwd` and `sandbox-missing` rules.
+// Issue #440 / #498 / #503: the `sandbox-cwd` and `sandbox-missing` rules.
 //
 // `sandbox-path` (issue #359) asks only WHERE a check creates its sandbox. The
 // #370 reproduction declared `$HOME/.cache/agyloop/smoke-348/approval`, cd'd to
@@ -1147,17 +1231,25 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
 // `!declared`, so the check that ignored the sandbox contract entirely was the
 // only shape that certified clean.
 //
+// Both rules ask the SAME classifier (issue #503). It recognises the CLI's own
+// shipped launcher (`./bin/codeloop`, `bin/codeloop.js`, `$ROOT/bin/codeloop`),
+// `NAME=value`-prefixed commands (`AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1 …`,
+// quoted verbatim in the dispatched implementer/gate prompts), a shell
+// interpreter holding the script (`bash bin/codeloop.js`) and a non-prose
+// `sh -c '<program>'` wrapper, whose program is read as a statement of its own.
+//
 // Deliberate boundaries: (a) an invocation anchored by an earlier check's `cd`
-// is accepted because `toScript()` executes ONE shell, and (b) an UNKNOWN cwd
-// is fail-open — historical plans read variables set outside the fence, and the
-// runtime `AGYLOOP_SMOKE` guard is the backstop.
+// is accepted because `toScript()` executes ONE shell, (b) an UNKNOWN cwd is
+// fail-open — historical plans read variables set outside the fence, and the
+// runtime `AGYLOOP_SMOKE` guard is the backstop, and (c) a nested `sh -c` is
+// followed for DETECTION but judged against the outer program's prefix.
 // ---------------------------------------------------------------------------
 
 /** Sentinel cwd for the worktree root the gate executes the script from. */
 const SANDBOX_CWD_WORKTREE = '$PWD';
 const WORKTREE_ROOT_LABEL = 'the worktree root ($PWD)';
 /** An invocation carrying one of these flags cannot mutate state. */
-const NON_MUTATING_FLAG = /(?:^|\s)(?:--help|-h|--version|-V)(?=\s|$)/;
+const NON_MUTATING_FLAG = /(?:^|\s)(?:--help|-h|--version|-V)(?=[\s;&|)"']|$)/;
 /** `--workspace <path>` / `--workspace=<path>` (and the `-dir` spelling). */
 const WORKSPACE_FLAG = /--workspace(?:-dir)?(?:=|\s+)(\S+)/g;
 /** A statement whose trimmed form is `cd <target>`, optionally inside `(`. */
@@ -1301,47 +1393,78 @@ function advanceSandboxCwd(statement: string, state: SandboxCwdState): boolean {
 }
 
 /**
- * The effective cwd for an invocation: the last inline `cd` between the start
- * of its statement (or the last `;`/`&&`/`(`) and the CLI token wins, which is
- * what makes `OUT="$(cd "$WS" && cli)"` anchored. Falls back to the statement
- * cwd when the statement carries no inline `cd`.
+ * The effective cwd for an invocation inside `text`: the last inline `cd`
+ * between the start of the statement (or the last `;`/`&&`/`(`) and the CLI
+ * token wins, which is what makes `OUT="$(cd "$WS" && cli)"` anchored. Falls
+ * back to `baseCwd` when the text carries no inline `cd` (issue #503).
  */
+function inlineCwdWithin(
+  text: string,
+  prefixEnd: number,
+  baseCwd: string | null,
+  state: SandboxCwdState
+): { readonly found: boolean; readonly cwd: string | null } {
+  INLINE_CD.lastIndex = 0;
+  let found = false;
+  let cwd = baseCwd;
+  let match: RegExpExecArray | null;
+  const prefix = text.slice(0, prefixEnd);
+  while ((match = INLINE_CD.exec(prefix)) !== null) {
+    const start = match.index + (match[0].startsWith('cd') ? 0 : 1);
+    if (isProseAt(text, start)) continue;
+    found = true;
+    cwd = sandboxCwdTarget(match[1], baseCwd, state.variables);
+  }
+  return { found, cwd };
+}
+
 function inlineSandboxCwd(
   statement: string,
   tokenOffset: number,
   state: SandboxCwdState
 ): string | null {
-  const prefix = statement.slice(0, tokenOffset);
-  INLINE_CD.lastIndex = 0;
-  let found = false;
-  let cwd = state.cwd;
-  let match: RegExpExecArray | null;
-  while ((match = INLINE_CD.exec(prefix)) !== null) {
-    const start = match.index + (match[0].startsWith('cd') ? 0 : 1);
-    if (isProseAt(statement, start)) continue;
-    found = true;
-    cwd = sandboxCwdTarget(match[1], state.cwd, state.variables);
+  const outer = inlineCwdWithin(statement, tokenOffset, state.cwd, state);
+  for (const region of shellProgramRegions(statement)) {
+    if (tokenOffset <= region.start || tokenOffset > region.end) continue;
+    const inner = inlineCwdWithin(region.text, tokenOffset - region.start, outer.cwd, state);
+    return inner.found ? inner.cwd : outer.cwd;
   }
-
-  return found ? cwd : state.cwd;
+  return outer.cwd;
 }
 
-/** The last `--workspace` target of an invocation statement, when present. */
-function sandboxWorkspaceTarget(
-  statement: string,
+/** The last `--workspace` target of an invocation text, when present (#503). */
+function workspaceWithin(
+  text: string,
   state: SandboxCwdState
 ): { readonly present: boolean; readonly target: string | null } {
   WORKSPACE_FLAG.lastIndex = 0;
   let present = false;
   let target: string | null = null;
   let match: RegExpExecArray | null;
-  while ((match = WORKSPACE_FLAG.exec(statement)) !== null) {
-    if (isProseAt(statement, match.index)) continue;
+  while ((match = WORKSPACE_FLAG.exec(text)) !== null) {
+    if (isProseAt(text, match.index)) continue;
     present = true;
     target = sandboxCwdTarget(match[1], state.cwd, state.variables);
   }
-
   return { present, target };
+}
+
+/**
+ * The last `--workspace` target of an invocation statement, when present. A
+ * `sh -c` program's own `--workspace` is honoured when the statement carries
+ * none of its own (issue #503).
+ */
+function sandboxWorkspaceTarget(
+  statement: string,
+  state: SandboxCwdState
+): { readonly present: boolean; readonly target: string | null } {
+  const outer = workspaceWithin(statement, state);
+  if (outer.present) return outer;
+  for (const region of shellProgramRegions(statement)) {
+    const inner = workspaceWithin(region.text, state);
+    if (inner.present) return inner;
+  }
+  return { present: false, target: null };
 }
 
 /** `--help`/`--version` invocations cannot mutate state. */
@@ -1349,9 +1472,31 @@ function isNonMutatingInvocation(statement: string): boolean {
   return NON_MUTATING_FLAG.test(statement);
 }
 
-/** A pure assignment without a command substitution is a definition. */
+/**
+ * One leading `NAME=value` word of a command line. A per-command assignment
+ * (`FOO=bar codeloop …`) is NOT a definition: the command that follows runs
+ * (issue #503).
+ */
+const ASSIGNMENT_WORD =
+  /^\s*[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S*)\s+/;
+/** `NAME=(…)` is a shell ARRAY definition, never a command prefix. */
+const ARRAY_ASSIGNMENT = /^\s*[A-Za-z_][A-Za-z0-9_]*=\(/;
+
+function stripAssignmentPrefix(statement: string): string {
+  let remainder = statement;
+  for (;;) {
+    if (ARRAY_ASSIGNMENT.test(remainder)) return remainder;
+    const match = ASSIGNMENT_WORD.exec(remainder);
+    if (!match) return remainder;
+    remainder = remainder.slice(match[0].length);
+  }
+}
+
+/** An assignment with no command after it is a definition (issue #503). */
 function isInertAssignment(statement: string): boolean {
-  const match = ASSIGNMENT_PATTERN.exec(statement);
+  const stripped = stripAssignmentPrefix(statement);
+  if (ARRAY_ASSIGNMENT.test(stripped)) return true;
+  const match = ASSIGNMENT_PATTERN.exec(stripped);
   if (!match) return false;
   return !match[2].includes('$(');
 }

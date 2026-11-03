@@ -22,6 +22,8 @@
  *         at APPROVAL (#498 AC1)
  * SPA11 - a plan whose smoke check declares and enters the sandbox is still
  *         approved (#498 AC3)
+ * SPA12 - a plan whose smoke check uses the shipped launcher with an env
+ *         prefix is refused at APPROVAL (#503 AC1/AC2)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -442,5 +444,38 @@ describe('Smoke protocol approval guard (issue #388)', () => {
     const approved = await useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root });
     assert.strictEqual(approved.currentStage, STAGE_APPROVAL);
     assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  // Issue #503: the shared CLI-invocation classifier now also recognises the
+  // shipped launcher and `NAME=value` prefixes, so the prompt-quoted
+  // cross-worktree escape hatch cannot certify a plan clean either.
+
+  test('SPA12: a plan whose smoke check uses the shipped launcher with an env prefix is refused at APPROVAL (#503 AC1/AC2)', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithSmoke(['AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1 ./bin/codeloop next --json']),
+      'utf8'
+    );
+    const stateRepo = stateAtPlan();
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'smokeProtocol');
+        assert.match(err.message, /sandbox-missing/);
+        assert.match(err.message, /declares no sandbox/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN);
   });
 });
