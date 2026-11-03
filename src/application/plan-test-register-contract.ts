@@ -13,13 +13,13 @@
 import {
   MSG_PLAN_TEST_REGISTER_CONTRADICTION,
   MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW,
+  MSG_PLAN_TEST_REGISTER_EMPTY,
   MSG_PLAN_TEST_REGISTER_MISSING_MARKER,
   MSG_PLAN_TEST_REGISTER_UNRESOLVABLE,
   ValidationError,
   extractTestBlock,
   findContradiction,
-  findDuplicateNewTest,
-  parseTestRegister,
+  readTestRegister,
   type TestRegisterRow
 } from '../domain';
 import { PlanGeneratorPort, SourceFileReaderPort } from '../ports';
@@ -61,11 +61,18 @@ export function assertPlanTestRegisterContract(params: PlanTestRegisterContractP
     return;
   }
 
-  const rows = parseTestRegister(content);
-  if (rows.length === 0) return;
+  const section = readTestRegister(content);
+  if (!section.present) return;
 
   const refusals: string[] = [];
-  for (const row of rows) {
+  if (section.rows.length === 0) {
+    refusals.push(
+      format(MSG_PLAN_TEST_REGISTER_EMPTY, {
+        line: String(section.headingLine ?? 0)
+      })
+    );
+  }
+  for (const row of section.rows) {
     if (!row.pins && !row.newTest) {
       refusals.push(missingMarker(row));
       continue;
@@ -114,12 +121,14 @@ export function assertPlanTestRegisterContract(params: PlanTestRegisterContractP
 
     if (row.newTest && sourceFileReader) {
       const source = sourceFileReader.read(row.newTest.path, params.workspaceDir);
-      if (source !== null && findDuplicateNewTest(source, row.newTest.title)) {
+      const duplicate = source === null ? null : extractTestBlock(source, row.newTest.title);
+      if (duplicate !== null) {
         refusals.push(
           format(MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW, {
             row: row.id,
             path: row.newTest.path,
-            title: row.newTest.title
+            title: row.newTest.title,
+            line: String(duplicate.line)
           })
         );
       }

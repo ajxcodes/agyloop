@@ -4960,9 +4960,13 @@ export const MSG_PLAN_TEST_REGISTER_MISSING_MARKER =
 export const MSG_PLAN_TEST_REGISTER_UNRESOLVABLE =
   'Test Register row {row} pins "{path}" :: "{title}", which cannot be resolved inside the workspace: {reason}.' as const;
 
+/** A `Test Register` heading carries no parsable row (issue #436, AC1). */
+export const MSG_PLAN_TEST_REGISTER_EMPTY =
+  'The plan has a `Test Register` heading (plan line {line}) but no parsable row. A row is a `- **<id>**` bullet or a table row opening with a bold id, carrying a **Pins:** path :: title or **New test:** path :: title marker plus an **Asserts:** literal. Rewrite the register as rows, or remove the heading if the plan has no register.' as const;
+
 /** A `New test:` title already exists. */
 export const MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW =
-  'Test Register row {row} declares a New test "{title}" in {path}, but that file already contains a test with that exact title. A case that already exists is not new.' as const;
+  'Test Register row {row} declares a New test "{title}" in {path}, but that file already contains a test with that exact title (line {line}). A case that already exists is not new.' as const;
 
 /** An AC or checklist step targets a path the commit can never contain. */
 export const MSG_PLAN_EVIDENCE_EXCLUDED_PATH =

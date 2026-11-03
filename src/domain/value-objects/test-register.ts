@@ -63,12 +63,25 @@ function isFence(line: string): boolean {
   return line.trim().startsWith('```');
 }
 
-/** The `Test Register` section body, or null when the plan has none. */
-function extractRegisterLines(planContent: string): ReadonlyArray<{ text: string; line: number }> | null {
+/** A Test Register section: its heading line and every body line. */
+interface RegisterSection {
+  /** 1-based plan line of the `Test Register` heading. */
+  readonly headingLine: number;
+  readonly lines: ReadonlyArray<{ text: string; line: number }>;
+}
+
+/**
+ * The `Test Register` section, or null when the plan has no heading.
+ *
+ * Presence and rows are separate facts (issue #436, AC1): a heading with an
+ * empty body returns a section with `lines: []`, not null.
+ */
+function extractRegisterSection(planContent: string): RegisterSection | null {
   const lines = planContent.split('\n');
   let fence = false;
   let inRegister = false;
   let openLevel = 0;
+  let headingLine: number | null = null;
   const collected: Array<{ text: string; line: number }> = [];
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -93,6 +106,7 @@ function extractRegisterLines(planContent: string): ReadonlyArray<{ text: string
       ) {
         inRegister = true;
         openLevel = heading.level;
+        headingLine = index + 1;
         continue;
       }
       if (inRegister) collected.push({ text: line, line: index + 1 });
@@ -102,7 +116,8 @@ function extractRegisterLines(planContent: string): ReadonlyArray<{ text: string
     if (inRegister) collected.push({ text: line, line: index + 1 });
   }
 
-  return inRegister || collected.length > 0 ? collected : null;
+  if (headingLine === null) return null;
+  return { headingLine, lines: collected };
 }
 
 /** Strips backticks/quotes a marker value may be wrapped in. */
@@ -123,7 +138,7 @@ function parseReference(value: string): TestRegisterReference | null {
   return { path, title };
 }
 
-const MARKER = /\*\*(Pins|New test|Asserts):\*\*\s*(.*)$/;
+const MARKER_ANY = /\*\*(Pins|New test|Asserts):\*\*\s*/g;
 const MARKER_IDS: readonly string[] = Object.freeze([
   'Pins',
   'Pins:',
@@ -133,35 +148,115 @@ const MARKER_IDS: readonly string[] = Object.freeze([
   'Asserts:'
 ]);
 
-function applyMarker(row: TestRegisterRow | null, line: string): TestRegisterRow | null {
+/**
+ * Applies EVERY `**(Pins|New test|Asserts):**` marker in `text` to `row`.
+ *
+ * A table cell may carry more than one marker, and a bullet line may carry one
+ * inline. Each value runs from the end of its marker to the start of the next.
+ */
+function applyMarkers(row: TestRegisterRow | null, text: string): TestRegisterRow | null {
   if (!row) return row;
-  const match = MARKER.exec(line);
-  if (!match) return row;
-  const kind = match[1];
-  const value = match[2].trim();
-  if (kind === 'Pins') {
-    return { ...row, pins: parseReference(value) ?? row.pins };
+  let next = row;
+  MARKER_ANY.lastIndex = 0;
+  const matches = [...text.matchAll(MARKER_ANY)];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const kind = match[1];
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const valueEnd = index + 1 < matches.length ? matches[index + 1].index : text.length;
+    const value = text.slice(valueStart, valueEnd).trim();
+    if (kind === 'Pins') {
+      next = { ...next, pins: parseReference(value) ?? next.pins };
+      continue;
+    }
+    if (kind === 'New test') {
+      next = { ...next, newTest: parseReference(value) ?? next.newTest };
+      continue;
+    }
+    if (value.length > 0) {
+      next = { ...next, asserts: [...next.asserts, value] };
+    }
   }
-  if (kind === 'New test') {
-    return { ...row, newTest: parseReference(value) ?? row.newTest };
+  return next;
+}
+
+/** Split a `| a | b |` row into trimmed cells, honouring `\|`. */
+function splitTableCells(text: string): string[] {
+  if (!text.trim().startsWith('|')) return [];
+  const cells: string[] = [];
+  let current = '';
+  let escaped = false;
+  for (const char of text.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '|') {
+      cells.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
   }
-  if (value.length > 0) {
-    return { ...row, asserts: [...row.asserts, value] };
+  cells.push(current.trim());
+  if (cells.length > 0 && cells[0].length === 0) cells.shift();
+  if (cells.length > 0 && cells[cells.length - 1].length === 0) cells.pop();
+  return cells;
+}
+
+/** A markdown table separator row: every cell is `---`, `:---` or `---:`. */
+function isSeparatorRow(text: string): boolean {
+  if (!text.trim().startsWith('|')) return false;
+  const cells = splitTableCells(text);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+/** Parse a table row whose first cell opens with a bold id; otherwise null. */
+function parseTableRow(text: string, line: number): TestRegisterRow | null {
+  const cells = splitTableCells(text);
+  if (cells.length === 0) return null;
+  const first = /^\s*\*\*([^*]+)\*\*\s*(.*)$/.exec(cells[0]);
+  if (!first) return null;
+
+  let row: TestRegisterRow = {
+    id: first[1].trim(),
+    pins: null,
+    newTest: null,
+    asserts: [],
+    line
+  };
+  row = applyMarkers(row, first[2]) ?? row;
+  for (let index = 1; index < cells.length; index += 1) {
+    row = applyMarkers(row, cells[index]) ?? row;
   }
   return row;
 }
 
-/** Every Test Register row, in plan order. An absent section returns `[]`. */
-export function parseTestRegister(planContent: string | null | undefined): readonly TestRegisterRow[] {
-  if (!planContent || typeof planContent !== 'string') return Object.freeze([]);
-  const lines = extractRegisterLines(planContent);
-  if (!lines) return Object.freeze([]);
+/** The next non-blank line in the section, or null. */
+function nextNonBlank(
+  lines: ReadonlyArray<{ text: string; line: number }>,
+  start: number
+): string | null {
+  for (let index = start; index < lines.length; index += 1) {
+    if (lines[index].text.trim().length > 0) return lines[index].text;
+  }
+  return null;
+}
 
+function parseRows(
+  lines: ReadonlyArray<{ text: string; line: number }>
+): readonly TestRegisterRow[] {
   const rows: TestRegisterRow[] = [];
   let current: TestRegisterRow | null = null;
   let fence = false;
 
-  for (const { text, line } of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const { text, line } = lines[index];
     if (isFence(text)) {
       fence = !fence;
       continue;
@@ -183,12 +278,25 @@ export function parseTestRegister(planContent: string | null | undefined): reado
         line
       };
       // A marker may sit on the row bullet itself.
-      current = applyMarker(current, rowMatch[2]);
+      current = applyMarkers(current, rowMatch[2]);
       continue;
     }
 
+    if (text.trim().startsWith('|')) {
+      const following = nextNonBlank(lines, index + 1);
+      if (isSeparatorRow(text)) continue;
+      // The row immediately above a separator is the table header.
+      if (following !== null && isSeparatorRow(following)) continue;
+      const tableRow = parseTableRow(text, line);
+      if (tableRow) {
+        if (current) rows.push(current);
+        current = tableRow;
+        continue;
+      }
+    }
+
     if (current) {
-      current = applyMarker(current, text);
+      current = applyMarkers(current, text);
     }
   }
 
@@ -196,26 +304,103 @@ export function parseTestRegister(planContent: string | null | undefined): reado
   return Object.freeze(rows);
 }
 
+/**
+ * The exact guidance comment `templates/implementation-plan.md` places under
+ * its `### Test Register` heading.
+ *
+ * If the template's guidance changes, this placeholder stops matching and the
+ * scaffold is treated as a real (empty) register: the carve-out is deliberately
+ * narrow rather than "any HTML comment".
+ */
+const SCAFFOLD_REGISTER_PLACEHOLDER =
+  "<!-- One row per pinned assertion: `- **TR-1** — **Pins:** `path` :: `test title`` (or `**New test:**`) plus a `**Asserts:**` literal. A `Pins:` row must restate the pinned literal exactly; APPROVAL refuses a contradicting row and names `file:line`. -->";
+
+/**
+ * True when the body is exactly the generated scaffold's guidance comment.
+ *
+ * The `codeloop yolo` fast path never dispatches the PLANNER, so refusing its
+ * comment-only scaffold would make the documented fast path unable to reach
+ * COMMIT. This mirrors the smoke protocol's placeholder-only rule; an empty
+ * heading or any other comment-only body is still a present, unparsable
+ * register and is refused (AC1).
+ */
+function isPlaceholderBody(
+  lines: ReadonlyArray<{ text: string; line: number }>
+): boolean {
+  const nonBlank = lines.filter(({ text }) => text.trim().length > 0);
+  return (
+    nonBlank.length === 1 &&
+    nonBlank[0].text.trim() === SCAFFOLD_REGISTER_PLACEHOLDER
+  );
+}
+
+/** A Test Register section's presence, heading line and parsed rows. */
+export interface TestRegisterSection {
+  readonly present: boolean;
+  readonly headingLine: number | null;
+  readonly rows: readonly TestRegisterRow[];
+}
+
+/**
+ * Reads the register with presence separated from rows (issue #436, AC1/AC2).
+ *
+ * A plan with no `Test Register` heading returns
+ * `{ present: false, headingLine: null, rows: [] }` and is never refused.
+ */
+export function readTestRegister(
+  planContent: string | null | undefined
+): TestRegisterSection {
+  if (!planContent || typeof planContent !== 'string') {
+    return Object.freeze({ present: false, headingLine: null, rows: Object.freeze([]) });
+  }
+  const section = extractRegisterSection(planContent);
+  if (!section) {
+    return Object.freeze({ present: false, headingLine: null, rows: Object.freeze([]) });
+  }
+  const rows = parseRows(section.lines);
+  if (rows.length === 0 && isPlaceholderBody(section.lines)) {
+    return Object.freeze({ present: false, headingLine: null, rows: Object.freeze([]) });
+  }
+  return Object.freeze({ present: true, headingLine: section.headingLine, rows });
+}
+
+/** Every Test Register row, in plan order. An absent section returns `[]`. */
+export function parseTestRegister(planContent: string | null | undefined): readonly TestRegisterRow[] {
+  return readTestRegister(planContent).rows;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
- * Extracts the block of `test('<title>', () => { … })` from a source file.
+ * The project's test declaration grammar: `test(` or its `it(` alias, with the
+ * usual modifiers (`it.only`, `test.skip`, …) (issue #436, AC4).
+ */
+const TEST_DECLARATION =
+  '(?:test|it)(?:\\.(?:only|skip|concurrent|concurrently|todo|failing))?';
+
+function declarationPattern(title: string): RegExp {
+  return new RegExp(
+    `(?:^|[^\\w.$])(${TEST_DECLARATION})\\(\\s*['"\`]${escapeRegExp(title)}['"\`]`
+  );
+}
+
+/**
+ * Extracts the block of `test('<title>', () => { … })` (or an `it(` alias) from
+ * a source file.
  *
- * Returns the block text and the 1-based line of the `test(` declaration, or
+ * Returns the block text and the 1-based line of the declaration keyword, or
  * `null` when the title is absent.
  */
 export function extractTestBlock(
   source: string,
   title: string
 ): { readonly text: string; readonly line: number } | null {
-  const pattern = new RegExp(
-    `(?:^|[^\\w.$])test\\(\\s*['"\`]${escapeRegExp(title)}['"\`]`
-  );
+  const pattern = declarationPattern(title);
   const match = pattern.exec(source);
   if (!match) return null;
-  const start = match.index + match[0].indexOf('test(');
+  const start = match.index + match[0].indexOf(match[1]);
   const line = source.slice(0, start).split('\n').length;
 
   const braceStart = source.indexOf('{', start);
@@ -429,8 +614,5 @@ export function findContradiction(
 /** True when `source` already declares a test with this exact title. */
 export function findDuplicateNewTest(source: string, title: string): boolean {
   if (!source) return false;
-  const pattern = new RegExp(
-    `(?:^|[^\\w.$])test\\(\\s*['"\`]${escapeRegExp(title)}['"\`]`
-  );
-  return pattern.test(source);
+  return declarationPattern(title).test(source);
 }

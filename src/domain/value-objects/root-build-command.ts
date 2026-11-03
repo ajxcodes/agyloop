@@ -27,7 +27,14 @@
  * see inside an arbitrary script, so a rebuild hidden behind
  * `node scripts/build.mjs` is out of scope for this fix. The executable script
  * that plan would ship is itself a workspace write, which the boundary and the
- * gate review still see.
+ * gate review still see. A shell wrapper such as `bash -c 'npm run build'` is
+ * also a named residual: the wrapper's command word is `bash`, and this module
+ * does not parse an arbitrary nested shell.
+ *
+ * Issue #436, AC5: detection runs at COMMAND POSITION per shell segment, so a
+ * build command quoted inside an argument (`grep "npm run build" …`) is not a
+ * build. Quoted spans are never scanned because only the command word and its
+ * immediate operands are inspected.
  *
  * No imports, no I/O.
  */
@@ -47,30 +54,281 @@ export interface DetectRootBuildOptions {
 const MAX_EXCERPT_LENGTH = 160;
 
 /** `npm run build`, `npm test`, `npm run build:docs`, `npm run prepare`. */
-const NPM_BUILD = /\bnpm\s+(run\s+)?(build(?::[\w-]+)?|compile|prepare|test)\b/;
+const NPM_SCRIPT = /^(?:build(?::[\w-]+)?|compile|prepare|test)$/;
 
 /** `yarn build`, `pnpm run build:docs`. */
-const YARN_PNPM_BUILD = /\b(yarn|pnpm)\s+(run\s+)?(build(?::[\w-]+)?|compile|test)\b/;
-
-/** A bare `tsc` binary invocation (not `tsconfig`, not a path segment). */
-const TSC_COMMAND = /(^|[\s;&|()])(?:npx\s+)?(?:node_modules\/\.bin\/)?tsc(?=\s|$)/;
+const YARN_PNPM_SCRIPT = /^(?:build(?::[\w-]+)?|compile|test)$/;
 
 /** `--outDir <value>` / `--outDir=<value>`. */
 const TSC_OUT_DIR = /--outDir(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/;
 
-const CARGO_BUILD = /\bcargo\s+build\b/;
-const GO_BUILD = /\bgo\s+build\b/;
-const VITE_BUILD = /\bvite\s+build\b/;
-const NEXT_BUILD = /\bnext\s+build\b/;
-const MAKE_COMMAND = /(^|[\s;&|()])make(?=\s|$)/;
-const WEBPACK_COMMAND = /(^|[\s;&|()])webpack(?=\s|$)/;
-const ROLLUP_CONFIG = /(^|[\s;&|()])rollup(?=[\s;&|()]|$)[^;&|]*\s-c(?=\s|$)/;
-const DESTRUCTIVE_ROOT_BUILD = /\brm\s+(?:-[a-zA-Z]+\s+)*(?:\.\/)?(dist|build)\b/;
+/** A leading environment assignment: `FOO=bar npm …`. */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** A leading redirection token: `>/dev/null`, `2>&1`, `&>log`. */
+const REDIRECTION = /^(?:\d*(?:>>?|<)|&>)/;
+
+/** Wrapper flags that consume the NEXT token as their value. */
+const WRAPPER_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--package',
+  '-p',
+  '--call',
+  '-c',
+  '--node-options',
+  '--node-arg',
+  '--unset',
+  '-u',
+  '--split-string',
+  '-S'
+]);
 
 function normalise(command: string): string {
   return String(command ?? '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Splits a command into pipeline segments on top-level `&&`, `||`, `;`, `|`
+ * and newlines, respecting single quotes, double quotes and backslash escapes.
+ */
+function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  let escaped = false;
+
+  const flush = (): void => {
+    const trimmed = current.trim();
+    if (trimmed.length > 0) segments.push(trimmed);
+    current = '';
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === '\\' && quote === '"') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '\\') {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    const next = command[index + 1];
+    if ((char === '&' && next === '&') || (char === '|' && next === '|')) {
+      flush();
+      index += 1;
+      continue;
+    }
+    if (char === '|' || char === ';' || char === '\n') {
+      flush();
+      continue;
+    }
+    current += char;
+  }
+  flush();
+  return segments;
+}
+
+/** Tokens of one segment; surrounding quotes are stripped, quoted runs stay one token. */
+function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  let escaped = false;
+  let hasContent = false;
+
+  const push = (): void => {
+    if (hasContent || current.length > 0) words.push(current);
+    current = '';
+    hasContent = false;
+  };
+
+  for (const char of segment) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      hasContent = true;
+      continue;
+    }
+    if (quote) {
+      if (char === '\\' && quote === '"') {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+        continue;
+      }
+      current += char;
+      hasContent = true;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      hasContent = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      push();
+      continue;
+    }
+    current += char;
+    hasContent = true;
+  }
+  push();
+  return words;
+}
+
+/** The words starting at the command position of a segment. */
+function commandWords(segment: string): string[] {
+  const words = shellWords(segment);
+  let index = 0;
+  while (
+    index < words.length &&
+    (ENV_ASSIGNMENT.test(words[index]) || REDIRECTION.test(words[index]))
+  ) {
+    index += 1;
+  }
+  return words.slice(index);
+}
+
+/** Skips a wrapper's flags/assignments, returning the wrapped command's offset. */
+function skipWrapperArguments(words: readonly string[], start: number, isEnv: boolean): number {
+  let index = start;
+  while (index < words.length) {
+    const word = words[index];
+    if (word === '--') return index + 1;
+    if (isEnv && ENV_ASSIGNMENT.test(word)) {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('-')) {
+      index += WRAPPER_VALUE_FLAGS.has(word) ? 2 : 1;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
+/**
+ * Unwraps command wrappers (`npx`, `npm exec`, `pnpm dlx`, `env`) so detection
+ * sees the effective command word. `npx --yes tsc` and `npm exec tsc` name the
+ * same root build as `tsc`; a wrapper must not hide it from the refusal.
+ */
+function unwrapCommand(words: readonly string[]): string[] {
+  let index = 0;
+  let guard = 0;
+  while (index < words.length && guard < 20) {
+    guard += 1;
+    const word = words[index];
+    if (word === 'npx' || word === 'env') {
+      index = skipWrapperArguments(words, index + 1, word === 'env');
+      continue;
+    }
+    if (word === 'npm' && words[index + 1] === 'exec') {
+      index = skipWrapperArguments(words, index + 2, false);
+      continue;
+    }
+    if (word === 'pnpm' && words[index + 1] === 'dlx') {
+      index = skipWrapperArguments(words, index + 2, false);
+      continue;
+    }
+    break;
+  }
+  return words.slice(index);
+}
+
+/** Command-position words with any wrapper removed. */
+function effectiveCommandWords(segment: string): string[] {
+  return unwrapCommand(commandWords(segment));
+}
+
+/** True when the words name a `tsc` invocation. */
+function isTsc(words: readonly string[]): boolean {
+  const first = words[0];
+  if (!first) return false;
+  if (first === 'tsc') return true;
+  if (first.includes('node_modules/.bin/') && first.endsWith('/tsc')) return true;
+  return first === 'npx' && words[1] === 'tsc';
+}
+
+/** An operand's normalised basename, e.g. `./build/` -> `build`. */
+function basename(token: string): string {
+  const normalised = token.replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalised.slice(normalised.lastIndexOf('/') + 1);
+}
+
+/** The `rm -rf dist|build` label, if the segment is a destructive root write. */
+function destructiveLabel(words: readonly string[]): string | null {
+  const operand = words.slice(1).find((word) => !word.startsWith('-'));
+  if (!operand) return null;
+  const name = basename(operand);
+  return name === 'dist' || name === 'build' ? `rm -rf ${name}` : null;
+}
+
+/** The build-like label of one segment, detected at command position. */
+function detectSegment(segment: string): string | null {
+  const words = effectiveCommandWords(segment);
+  if (words.length === 0) return null;
+  const [first, second, third] = words;
+
+  switch (first) {
+    case 'npm': {
+      const script = second === 'run' ? third : second;
+      if (script && NPM_SCRIPT.test(script)) {
+        return `npm ${second === 'run' ? 'run ' : ''}${script}`;
+      }
+      return null;
+    }
+    case 'yarn':
+    case 'pnpm': {
+      const script = second === 'run' ? third : second;
+      if (script && YARN_PNPM_SCRIPT.test(script)) {
+        return `${first} ${second === 'run' ? 'run ' : ''}${script}`;
+      }
+      return null;
+    }
+    case 'cargo':
+      return second === 'build' ? 'cargo build' : null;
+    case 'go':
+      return second === 'build' ? 'go build' : null;
+    case 'vite':
+      return second === 'build' ? 'vite build' : null;
+    case 'next':
+      return second === 'build' ? 'next build' : null;
+    case 'make':
+      return 'make';
+    case 'webpack':
+      return 'webpack';
+    case 'rollup':
+      return words.includes('-c') ? 'rollup -c' : null;
+    case 'rm':
+      return destructiveLabel(words);
+    default:
+      return null;
+  }
 }
 
 function truncate(text: string): string {
@@ -98,66 +356,26 @@ function isOutDirOutsideWorkspace(outDir: string, workspaceDir?: string): boolea
   return !target.startsWith(`${root}/`);
 }
 
-function tscMatch(command: string, workspaceDir?: string): RootBuildMatch | null {
-  if (!TSC_COMMAND.test(command)) return null;
-  if (/\s--noEmit\b/.test(command)) return null;
+/** True when a segment is a `tsc` invocation that still emits in the workspace. */
+function isRootBuildTsc(segment: string, workspaceDir?: string): boolean {
+  if (!isTsc(effectiveCommandWords(segment))) return false;
+  if (/\s--noEmit\b/.test(segment)) return false;
 
-  const outDir = TSC_OUT_DIR.exec(command);
+  const outDir = TSC_OUT_DIR.exec(segment);
   if (outDir) {
     const value = outDir[1] ?? outDir[2] ?? outDir[3] ?? '';
-    if (isOutDirOutsideWorkspace(value, workspaceDir)) return null;
+    if (isOutDirOutsideWorkspace(value, workspaceDir)) return false;
   }
-
-  return { label: 'tsc', excerpt: truncate(command) };
-}
-
-function firstMatch(command: string): RootBuildMatch | null {
-  const npm = NPM_BUILD.exec(command);
-  if (npm) {
-    const script = npm[2];
-    return {
-      label: `npm ${npm[1] ? 'run ' : ''}${script}`.replace(/\s+/g, ' ').trim(),
-      excerpt: truncate(command)
-    };
-  }
-
-  const packageManager = YARN_PNPM_BUILD.exec(command);
-  if (packageManager) {
-    return {
-      label: `${packageManager[1]} ${packageManager[2] ? 'run ' : ''}${packageManager[3]}`,
-      excerpt: truncate(command)
-    };
-  }
-
-  const cargo = CARGO_BUILD.exec(command);
-  if (cargo) return { label: 'cargo build', excerpt: truncate(command) };
-
-  const go = GO_BUILD.exec(command);
-  if (go) return { label: 'go build', excerpt: truncate(command) };
-
-  const vite = VITE_BUILD.exec(command);
-  if (vite) return { label: 'vite build', excerpt: truncate(command) };
-
-  const next = NEXT_BUILD.exec(command);
-  if (next) return { label: 'next build', excerpt: truncate(command) };
-
-  if (MAKE_COMMAND.test(command)) return { label: 'make', excerpt: truncate(command) };
-  if (WEBPACK_COMMAND.test(command)) return { label: 'webpack', excerpt: truncate(command) };
-  if (ROLLUP_CONFIG.test(command)) return { label: 'rollup -c', excerpt: truncate(command) };
-
-  const destructive = DESTRUCTIVE_ROOT_BUILD.exec(command);
-  if (destructive) {
-    return { label: `rm -rf ${destructive[1]}`, excerpt: truncate(command) };
-  }
-
-  return null;
+  return true;
 }
 
 /**
  * Returns the build-like construct the command carries, or `null`.
  *
- * `tsc` is checked before the other package-manager forms so the documented
- * `--outDir` exemption applies to the invocation that carries it.
+ * `tsc` is checked across every segment before the other package-manager forms
+ * so the documented `--outDir` exemption applies to the invocation that carries
+ * it. Detection runs at command position, so a quoted argument is never a
+ * build (issue #436, AC5).
  */
 export function detectRootBuildCommand(
   command: string,
@@ -165,6 +383,16 @@ export function detectRootBuildCommand(
 ): RootBuildMatch | null {
   const normalised = normalise(command);
   if (normalised.length === 0) return null;
+  const segments = splitShellSegments(normalised);
 
-  return tscMatch(normalised, options.workspaceDir) ?? firstMatch(normalised);
+  for (const segment of segments) {
+    if (isRootBuildTsc(segment, options.workspaceDir)) {
+      return { label: 'tsc', excerpt: truncate(normalised) };
+    }
+  }
+  for (const segment of segments) {
+    const label = detectSegment(segment);
+    if (label) return { label, excerpt: truncate(normalised) };
+  }
+  return null;
 }

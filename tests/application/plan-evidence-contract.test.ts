@@ -109,6 +109,17 @@ const OUTSIDE = [
   '- [ ] **Step 1:** edit `/elsewhere/outside/file.ts`'
 ].join('\n');
 
+const MODULE_SPECIFIER = [
+  '## 3. Implementation Checklist',
+  '- [ ] **Step 1:** Require `../../dist/application` from `tests/legacy.test.ts` so the use case is exercised.',
+  '- [ ] **Step 2:** Update `src/application/run-review.ts` to gate the refusal.'
+].join('\n');
+
+const WRITE_ESCAPING = [
+  '## 3. Implementation Checklist',
+  '- [ ] **Step 1:** Correct `../../dist/application` so the module specifier is corrected.'
+].join('\n');
+
 const FENCED = [
   '# Plan',
   '',
@@ -191,6 +202,26 @@ describe('Plan evidence contract (issue #432)', () => {
     assert.strictEqual(repo.saves, 0);
     assert.strictEqual(repo.snapshot.approvedPlanDigest ?? null, null);
     assert.ok(warnings.some((warning) => warning.includes('artifacts/plans/425-task-plan')));
+  });
+
+  test('PE8 a required module specifier is accepted', () => {
+    let refused = false;
+    try {
+      guard(MODULE_SPECIFIER);
+    } catch {
+      refused = true;
+    }
+    assert.strictEqual(refused, false);
+  });
+
+  test('PE9 a write verb on an escaping path is still refused', () => {
+    let message = '';
+    try {
+      guard(WRITE_ESCAPING);
+    } catch (err: any) {
+      message = err.message;
+    }
+    assert.strictEqual(message.includes('it lies outside the workspace'), true);
   });
 
   test('PE7 a fixture plan inside a smoke fence is not scanned', () => {

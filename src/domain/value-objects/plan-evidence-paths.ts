@@ -21,6 +21,20 @@ export interface PlanEvidenceFinding {
   readonly line: number;
   readonly target: PlanEvidenceTarget;
   readonly reason: string;
+  /**
+   * True when the checklist text mentions the path as a module identifier
+   * rather than naming it as a delivery target (issue #436, AC3). AC-region
+   * findings are always targets.
+   */
+  readonly moduleSpecifier: boolean;
+}
+
+/** A path-shaped occurrence on one plan line, with its delivery classification. */
+interface PathOccurrence {
+  readonly path: string;
+  /** Offset of the opening backtick or bare token. */
+  readonly index: number;
+  readonly moduleSpecifier: boolean;
 }
 
 interface HeadingLine {
@@ -52,28 +66,84 @@ export function stripLineSuffix(token: string): string {
   return token.replace(/:\d+(?:-\d+)?$/, '');
 }
 
-/** Backticked spans that name a path. */
-function backtickedPaths(line: string): string[] {
-  const found: string[] = [];
+/** A module keyword that turns the following path into an identifier mention. */
+const MODULE_CONTEXT =
+  /\b(?:require\s*\(\s*['"`]?|from\s+['"`]?|import\s*(?:\(\s*)?['"`]?|requir(?:e|es|ed|ing)\b|import(?:s|ed|ing)?\b)/gi;
+
+/** A verb that asks the implementer to write the named path. */
+const WRITE_VERB =
+  /\b(?:add|change|correct|create|delete|deliver|edit|extract|fix|implement|introduce|modify|move|patch|place|port|put|refactor|remove|rename|replace|rewrite|ship|split|update|wire|write)\b/gi;
+
+/** The last match of `pattern` in `text`, or null. */
+function lastMatch(text: string, pattern: RegExp): RegExpExecArray | null {
+  pattern.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    last = match;
+  }
+  return last;
+}
+
+/**
+ * True when the token at `index` names an identifier, not a delivery target.
+ *
+ * A path is a target only when a write verb precedes it and no module keyword
+ * (require/import/from) sits after that verb. A step that merely mentions a
+ * path — or requires it as a module specifier — is not an instruction.
+ */
+function isIdentifierOccurrence(line: string, index: number): boolean {
+  const prefix = line.slice(0, index);
+  const writeVerb = lastMatch(prefix, WRITE_VERB);
+  if (!writeVerb) return true;
+  const moduleContext = lastMatch(prefix, MODULE_CONTEXT);
+  return moduleContext !== null && moduleContext.index > writeVerb.index;
+}
+
+/** A whole backticked span that is a `require(...)` / `import(...)` call. */
+const MODULE_INVOCATION = /^(?:require|import)\s*\(\s*(['"`])(.+?)\1\s*\)$/;
+
+/** Backticked path-shaped spans, classified as targets or identifiers. */
+function backtickedPaths(line: string): PathOccurrence[] {
+  const found: PathOccurrence[] = [];
   const pattern = /`([^`]+)`/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(line)) !== null) {
-    const value = stripLineSuffix(match[1].trim());
+    const span = match[1].trim();
+    const invocation = MODULE_INVOCATION.exec(span);
+    if (invocation) {
+      const value = stripLineSuffix(invocation[2].trim());
+      if (value.includes('/')) {
+        found.push({ path: value, index: match.index, moduleSpecifier: true });
+      }
+      continue;
+    }
+    const value = stripLineSuffix(span);
     if (value.includes('/')) {
-      found.push(value);
+      found.push({
+        path: value,
+        index: match.index,
+        moduleSpecifier: isIdentifierOccurrence(line, match.index)
+      });
     }
   }
   return found;
 }
 
 /** Bare path-shaped tokens (no backticks) on the line. */
-function barePaths(line: string): string[] {
-  const withoutBackticks = line.replace(/`[^`]*`/g, ' ');
-  const found: string[] = [];
+function barePaths(line: string): PathOccurrence[] {
+  // Blank a backticked span with spaces of the SAME length so later offsets stay
+  // aligned with `line` (issue #436, D2).
+  const withoutBackticks = line.replace(/`[^`]*`/g, (span) => ' '.repeat(span.length));
+  const found: PathOccurrence[] = [];
   let match: RegExpExecArray | null;
   PATH_TOKEN.lastIndex = 0;
   while ((match = PATH_TOKEN.exec(withoutBackticks)) !== null) {
-    found.push(stripLineSuffix(match[0]));
+    found.push({
+      path: stripLineSuffix(match[0]),
+      index: match.index,
+      moduleSpecifier: isIdentifierOccurrence(withoutBackticks, match.index)
+    });
   }
   return found;
 }
@@ -144,20 +214,32 @@ export function extractPlanTargetPaths(
     const isCheckbox = /^\s*[-*+]\s+\[[ xX]\]\s+/.test(line);
 
     if (inAc && isListItem) {
-      for (const path of [...backtickedPaths(line), ...barePaths(line)]) {
-        const key = `${lineNumber}|${path}|acceptance criteria`;
+      for (const occurrence of [...backtickedPaths(line), ...barePaths(line)]) {
+        const key = `${lineNumber}|${occurrence.path}|acceptance criteria|false`;
         if (seen.has(key)) continue;
         seen.add(key);
-        findings.push({ path, line: lineNumber, target: 'acceptance criteria', reason: '' });
+        findings.push({
+          path: occurrence.path,
+          line: lineNumber,
+          target: 'acceptance criteria',
+          reason: '',
+          moduleSpecifier: false
+        });
       }
     }
 
     if (isCheckbox) {
-      for (const path of [...backtickedPaths(line), ...barePaths(line)]) {
-        const key = `${lineNumber}|${path}|implementation checklist`;
+      for (const occurrence of [...backtickedPaths(line), ...barePaths(line)]) {
+        const key = `${lineNumber}|${occurrence.path}|implementation checklist|${occurrence.moduleSpecifier}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        findings.push({ path, line: lineNumber, target: 'implementation checklist', reason: '' });
+        findings.push({
+          path: occurrence.path,
+          line: lineNumber,
+          target: 'implementation checklist',
+          reason: '',
+          moduleSpecifier: occurrence.moduleSpecifier
+        });
       }
     }
   }
@@ -219,21 +301,26 @@ export function lintPlanEvidencePaths(
 ): readonly PlanEvidenceFinding[] {
   const findings: PlanEvidenceFinding[] = [];
   for (const candidate of extractPlanTargetPaths(planContent)) {
+    // The excluded-tree rule is a safety net: it fires even for an identifier
+    // mention (issue #436, AC3).
     if (isInCommitExcludedTree(candidate.path)) {
       findings.push({
         path: candidate.path,
         line: candidate.line,
         target: candidate.target,
-        reason: 'it is inside a commit-excluded tree (artifacts/, .agyloop/, node_modules/)'
+        reason: 'it is inside a commit-excluded tree (artifacts/, .agyloop/, node_modules/)',
+        moduleSpecifier: candidate.moduleSpecifier
       });
       continue;
     }
+    if (candidate.moduleSpecifier) continue;
     if (isOutsideWorkspace(candidate.path, workspaceRoot)) {
       findings.push({
         path: candidate.path,
         line: candidate.line,
         target: candidate.target,
-        reason: 'it lies outside the workspace'
+        reason: 'it lies outside the workspace',
+        moduleSpecifier: candidate.moduleSpecifier
       });
     }
   }

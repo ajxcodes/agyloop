@@ -94,6 +94,46 @@ describe('Plan evidence paths (issue #432)', () => {
     assert.deepStrictEqual([...extractOutOfScopeDeclarations(text)], ['the first declaration', 'the second declaration']);
   });
 
+  test('PEP8 a required module specifier is not a delivery target', () => {
+    const text = plan([
+      '## 3. Implementation Checklist',
+      '- [ ] **Step 1:** Require `../../dist/application` from `tests/legacy.test.ts` so the use case is exercised.'
+    ]);
+    assert.deepStrictEqual(lintPlanEvidencePaths(text, ROOT), []);
+  });
+
+  test('PEP9 a write verb on an escaping or excluded path is still a delivery target', () => {
+    const text = plan([
+      '## 3. Implementation Checklist',
+      '- [ ] **Step 1:** Correct `../../dist/application` so the module specifier is corrected.',
+      '- [ ] **Step 2:** Update `artifacts/plans/436-task-plan/implementation_plan.md` with the row.'
+    ]);
+    const findings = lintPlanEvidencePaths(text, ROOT);
+    assert.deepStrictEqual(findings.map((finding: any) => finding.path), [
+      '../../dist/application',
+      'artifacts/plans/436-task-plan/implementation_plan.md'
+    ]);
+  });
+
+  test('PEP10 an excluded-tree module specifier is still refused', () => {
+    const text = plan([
+      '## 3. Implementation Checklist',
+      '- [ ] **Step 1:** Require `node_modules/left-pad/index.js` from `src/x.ts`.'
+    ]);
+    const findings = lintPlanEvidencePaths(text, ROOT);
+    assert.deepStrictEqual(findings.map((finding: any) => finding.path), [
+      'node_modules/left-pad/index.js'
+    ]);
+  });
+
+  test('PEP11 a requiring gerund is module context', () => {
+    const text = plan([
+      '## 3. Implementation Checklist',
+      '- [ ] **Step 1:** Update `tests/x.ts`, requiring `../../dist/y` so the module is exercised.'
+    ]);
+    assert.deepStrictEqual(lintPlanEvidencePaths(text, ROOT), []);
+  });
+
   test('PEP7 blank lines, headings, fences and rules end a declaration (issue #439)', () => {
     const text = [
       '- **Out of Scope:** joined across',
