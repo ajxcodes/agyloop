@@ -18,6 +18,10 @@
  *        program is refused at APPROVAL and nothing is saved (#467 AC1)
  * SPA9 - the same fence with the sanctioned `'"'"'` escape approves unchanged
  *        (#467 AC2)
+ * SPA10 - a plan whose smoke check invokes the CLI with no sandbox is refused
+ *         at APPROVAL (#498 AC1)
+ * SPA11 - a plan whose smoke check declares and enters the sandbox is still
+ *         approved (#498 AC3)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -385,5 +389,58 @@ describe('Smoke protocol approval guard (issue #388)', () => {
     assert.strictEqual(approved.currentStage, STAGE_APPROVAL);
     assert.strictEqual(stateRepo.saveCallCount, 1);
     assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_APPROVAL);
+  });
+
+  // Issue #498: a check that never declares a sandbox used to skip the
+  // state-safety rule entirely, so a CLI invocation from the worktree root
+  // validated clean — and mutated the live checkpoint the gate certifies.
+
+  test('SPA10: a plan whose smoke check invokes the CLI with no sandbox is refused at APPROVAL (#498 AC1)', async () => {
+    fs.writeFileSync(planPath, planWithSmoke(['node bin/codeloop.js next --json']), 'utf8');
+    const stateRepo = stateAtPlan();
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    await assert.rejects(
+      () => useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'smokeProtocol');
+        assert.match(err.message, /sandbox-missing/);
+        assert.match(err.message, /declares no sandbox/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+    assert.strictEqual(stateRepo.snapshot.currentStage, STAGE_PLAN);
+  });
+
+  test('SPA11: a plan whose smoke check declares and enters the sandbox is still approved (#498 AC3)', async () => {
+    fs.writeFileSync(
+      planPath,
+      planWithSmoke([
+        'SBX="$HOME/.cache/agyloop/smoke-498/approval"',
+        'mkdir -p "$SBX"',
+        'cd "$SBX"',
+        'node bin/codeloop.js next --json'
+      ]),
+      'utf8'
+    );
+    const stateRepo = stateAtPlan();
+    const useCase = new TransitionStageUseCase(
+      stateRepo as any,
+      undefined,
+      undefined,
+      makePlanGenerator(planDir, planPath)
+    );
+
+    const approved = await useCase.execute({ targetStage: STAGE_APPROVAL, workspaceDir: root });
+    assert.strictEqual(approved.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
   });
 });
