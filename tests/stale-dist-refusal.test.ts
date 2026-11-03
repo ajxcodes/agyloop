@@ -11,12 +11,16 @@ const {
   evaluateStaleDist,
   commandFromArgv,
   wantsHelpOrVersion,
+  hasCommitAfter,
+  writeBuildStamp,
+  detectStaleDist,
   VALUE_FLAGS,
 } = require('../bin/stale-dist.js');
 
 interface FixtureOptions {
   stale?: boolean;
   git?: 'dir' | 'file' | 'none';
+  stamp?: 'match' | 'mismatch' | 'preserved';
 }
 
 interface Fixture {
@@ -59,6 +63,16 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
     options.stale === false ? past : now,
     options.stale === false ? past : now
   );
+  if (options.stamp) {
+    writeBuildStamp(dir);
+    if (options.stamp !== 'match') {
+      fs.appendFileSync(path.join(dir, 'src', 'x.ts'), 'export const y = 2;\n');
+    }
+    if (options.stamp === 'preserved') {
+      // A preserved-timestamp unpack: the content changed, the mtime did not.
+      fs.utimesSync(path.join(dir, 'src', 'x.ts'), past, past);
+    }
+  }
   if (options.git === 'file') {
     fs.writeFileSync(path.join(dir, '.git'), 'gitdir: /nowhere\n');
   } else if (options.git !== 'none') {
@@ -192,21 +206,6 @@ describe('Stale build refusal', () => {
     }
   });
 
-  test('runs sync in an installed layout without .git, with the notice', () => {
-    const fixture = makeFixture({ git: 'none' });
-    try {
-      const res = spawnLauncher(fixture, 'codeloop.js', ['sync']);
-      assert.strictEqual(res.status, 0, `An installed layout must not be refused:\n${res.stderr}`);
-      assert.ok(
-        res.stderr.includes('Notice: src/ contains modifications newer than dist/'),
-        `An installed layout must keep the notice:\n${res.stderr}`
-      );
-      assert.ok(fs.existsSync(fixture.sentinel), 'dist must load in an installed layout');
-    } finally {
-      fs.rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
   test('treats a git worktree .git file as a source checkout', () => {
     const fixture = makeFixture({ git: 'file' });
     try {
@@ -254,6 +253,155 @@ describe('Stale build refusal', () => {
         parseArguments(argv).command,
         `Classifier disagrees with parseArguments for: ${JSON.stringify(argv)}`
       );
+    }
+  });
+
+  test('refuses yolo <issue> --commit-after on a stale checkout before dist loads (AC1, issue #492)', () => {
+    const fixture = makeFixture();
+    try {
+      const res = spawnLauncher(fixture, 'codeloop.js', ['yolo', '467', '--commit-after']);
+      assertRefused(fixture, res, 'yolo');
+      assert.ok(
+        res.stderr.includes("then re-run 'codeloop yolo 467 --commit-after'"),
+        `The refusal must name the full invocation to re-run:\n${res.stderr}`
+      );
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses a bare continuous run carrying --commit-after in any position (AC1, issue #492)', () => {
+    const fixture = makeFixture();
+    try {
+      for (const argv of [['467', '--commit-after'], ['--commit-after', '467'], ['--commit-after']]) {
+        const res = spawnLauncher(fixture, 'codeloop.js', argv);
+        assertRefused(fixture, res, '--commit-after');
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses the --yolo flag with --commit-after on a stale checkout (AC1, issue #492)', () => {
+    const fixture = makeFixture();
+    try {
+      const res = spawnLauncher(fixture, 'codeloop.js', ['--yolo', '--commit-after']);
+      assertRefused(fixture, res, '--commit-after');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps yolo <issue> usable on a stale checkout with the notice (AC2, issue #492)', () => {
+    const fixture = makeFixture();
+    try {
+      const res = spawnLauncher(fixture, 'codeloop.js', ['yolo', '467']);
+      assert.strictEqual(res.status, 0, `Plain yolo must not be refused:\n${res.stderr}`);
+      assert.ok(
+        res.stderr.includes('Notice: src/ contains modifications newer than dist/'),
+        `Plain yolo must keep the notice:\n${res.stderr}`
+      );
+      assert.ok(res.stdout.includes('STUB-SUCCESS'), `Plain yolo must run:\n${res.stdout}`);
+      assert.ok(fs.existsSync(fixture.sentinel), 'dist must load for plain yolo');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps yolo --help a read-only success on a stale checkout (AC2, issue #492)', () => {
+    const fixture = makeFixture();
+    try {
+      for (const argv of [['yolo', '--help'], ['yolo', '--help', '--commit-after'], ['--commit-after', '--help']]) {
+        const res = spawnLauncher(fixture, 'codeloop.js', argv);
+        assert.strictEqual(res.status, 0, `'${argv.join(' ')}' must succeed:\n${res.stderr}`);
+        assert.ok(
+          !res.stderr.includes('Refusing to run'),
+          `'${argv.join(' ')}' must not be refused:\n${res.stderr}`
+        );
+        assert.ok(fs.existsSync(fixture.sentinel), `'${argv.join(' ')}' must load dist`);
+        fs.rmSync(fixture.sentinel, { force: true });
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not treat --commit-after after -- as a flag (AC3, issue #492)', () => {
+    const fixture = makeFixture();
+    try {
+      assert.strictEqual(hasCommitAfter(['yolo', '467', '--', '--commit-after']), false);
+      const res = spawnLauncher(fixture, 'codeloop.js', ['yolo', '467', '--', '--commit-after']);
+      assert.strictEqual(res.status, 0, `A post-terminator --commit-after is a positional:\n${res.stderr}`);
+      assert.ok(res.stdout.includes('STUB-SUCCESS'), res.stdout);
+      assert.ok(fs.existsSync(fixture.sentinel), 'dist must load when the flag is positional');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('classifies --commit-after like parseArguments in every position (AC3, issue #492)', () => {
+    const argvs = [
+      ['--commit-after'],
+      ['--commit-after', '467'],
+      ['467', '--commit-after'],
+      ['yolo', '467', '--commit-after'],
+      ['--yolo', '--commit-after'],
+      ['yolo', '467'],
+      ['yolo', '--help'],
+      ['yolo', '467', '--', '--commit-after'],
+      ['--', '--commit-after'],
+      ['--critique-report', '--commit-after', 'commit'],
+      ['--workspace', '--commit-after', 'sync'],
+      ['-m', '--commit-after', 'commit'],
+      ['--commit-after=1'],
+    ];
+    for (const argv of argvs) {
+      assert.strictEqual(
+        hasCommitAfter(argv),
+        parseArguments(argv).options.commitAfter,
+        `commit-after parity: ${JSON.stringify(argv)}`
+      );
+    }
+  });
+
+  test('refuses sync without .git when the build is genuinely stale (AC4, issue #492)', () => {
+    const fixture = makeFixture({ git: 'none', stamp: 'mismatch' });
+    const legacy = makeFixture({ git: 'none' });
+    try {
+      for (const argv of [['sync'], ['release', 'phase/6-codeloop'], ['commit']]) {
+        const res = spawnLauncher(fixture, 'codeloop.js', argv);
+        assertRefused(fixture, res, argv[0]);
+      }
+      assertRefused(legacy, spawnLauncher(legacy, 'codeloop.js', ['sync']), 'sync');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+      fs.rmSync(legacy.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps an extracted copy without .git usable when the build stamp matches (AC4, issue #492)', () => {
+    const fixture = makeFixture({ git: 'none', stamp: 'match' });
+    try {
+      const res = spawnLauncher(fixture, 'codeloop.js', ['sync']);
+      assert.strictEqual(res.status, 0, `A matching build stamp is a fresh build:\n${res.stderr}`);
+      assert.ok(!res.stderr.includes('Notice:'), `A fresh build must print no notice:\n${res.stderr}`);
+      assert.ok(res.stdout.includes('STUB-SUCCESS'), res.stdout);
+      assert.ok(fs.existsSync(fixture.sentinel), 'dist must load when the stamp matches');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('detects staleness from the build stamp despite preserved mtimes (AC4, issue #492)', () => {
+    const fixture = makeFixture({ stamp: 'preserved' });
+    try {
+      const detected = detectStaleDist(fixture.dir);
+      assert.strictEqual(detected.method, 'stamp');
+      assert.strictEqual(detected.stale, true);
+      const res = spawnLauncher(fixture, 'codeloop.js', ['sync']);
+      assertRefused(fixture, res, 'sync');
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 

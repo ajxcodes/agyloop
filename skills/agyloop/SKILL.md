@@ -276,9 +276,14 @@ To prevent context rot, token degradation, and hallucination during multi-step d
 
 ### Stale-Build Refusal
 
-`dist/` is git-ignored, so `git pull` refreshes `src/` but not the compiled CLI. In a **source checkout** (a `.git` directory or worktree `.git` file is present), when any `src/**/*.ts` file is newer than `dist/presentation/cli.js`, the launcher treats the build as stale: `codeloop sync`, `codeloop release`, and `codeloop commit` refuse with exit 1, naming `npm run build`, **before `dist/` is loaded** — so no `git` or `gh` command runs. `sync --dry-run` is refused too, because a stale forecast is the same defect.
+`dist/` is git-ignored, so `git pull` refreshes `src/` but not the compiled CLI. `npm run build` writes `dist/build-stamp.json`, a SHA-256 of every TypeScript file under `src/`; the launcher compares the current `src/` hash with that stamp. When the stamp is missing (a `dist/` built before the stamp existed) it falls back to the older mtime rule: any `src/**/*.ts` newer than `dist/presentation/cli.js`.
 
-Read-only commands (`codeloop next`, `codeloop status`, `codeloop triage list`) and `--help`/`--version` keep the warning and run normally. An **npm-installed** copy has no `.git` and cannot rebuild, so it is never refused; its `src/` is always newer by extraction order and it keeps the notice only. Run `npm run build` after pulling or merging, then re-run the command.
+When the build is stale, the release path refuses with exit 1, naming `npm run build`, **before `dist/` is loaded** — so no `git` or `gh` command runs:
+
+- `codeloop sync` (including `sync --dry-run`), `codeloop release`, and `codeloop commit`;
+- **any** invocation carrying `--commit-after`, whatever the command: `codeloop yolo <issue> --commit-after`, `codeloop <issue> --commit-after`, and `codeloop --yolo --commit-after`. The flag implies `--create-pr`, so the stale run would draft, commit, push and open the delivery PR.
+
+Read-only commands (`codeloop next`, `codeloop status`, `codeloop triage list`), `--help`/`--version`, and `codeloop yolo <issue>` **without** `--commit-after` keep the warning and run normally: plain `yolo` stops at the COMMIT gate and never drafts or commits. An **npm-installed** copy has no `.git`, but its stamp matches — extraction order cannot make it stale — so it is never refused. A tarball or extracted checkout that ships a stale `dist/` is treated like any other checkout: a stamp mismatch refuses it. Run `npm run build` after pulling or merging, then re-run the command.
 
 ### Gate Pause Recovery
 
