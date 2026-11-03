@@ -422,4 +422,72 @@ describe('Review AC evidence (issue #432)', () => {
       'AC2 — `.agyloop/critique/445.json`'
     ]);
   });
+
+  test('RAE16 a verdict citing a backticked literal beside delivered paths stays APPROVED (issue #464)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: Both tiers clean.',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts` (SCD1 records `protocol-not-declared`)'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.deepStrictEqual([...result.acEvidence.verified], ['AC1']);
+    assert.deepStrictEqual([...result.acEvidence.unverifiable], []);
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.strictEqual(last.metadata.reviewerVerdict, 'APPROVED');
+    assert.ok(!('reviewAcEvidence' in last.metadata));
+  });
+
+  test('RAE17 a backticked path-shaped citation absent from the diff still escalates, naming it (issue #464)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const x = 1;\n');
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: Both tiers clean.',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`, `src/domain/missing.ts`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, [
+      'AC1 — `src/domain/missing.ts`'
+    ]);
+  });
+
+  test('RAE18 a backtick-quoted node_modules path still escalates (issue #464)', async () => {
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    const result = await useCase.execute({
+      issue: 432,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: Both tiers clean.',
+        'AC_EVIDENCE:',
+        '- AC1: met — `node_modules/left-pad/index.js`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, [
+      'AC1 — `node_modules/left-pad/index.js`'
+    ]);
+  });
 });

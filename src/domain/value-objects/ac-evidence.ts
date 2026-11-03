@@ -11,6 +11,10 @@
  * Verdict prose is never swept: a report path the reviewer is required to name
  * is not a claim that an acceptance criterion is met.
  *
+ * A backticked span is evidence only when it is path-shaped; a literal,
+ * identifier, flag or command in backticks stays in the entry's note (issue
+ * #464).
+ *
  * Pure domain: no I/O. The measured change set is supplied by the caller.
  */
 
@@ -27,9 +31,9 @@ export interface AcEvidenceEntry {
   /** The criterion label as written, e.g. `AC1`. */
   readonly ac: string;
   readonly status: AcEvidenceStatus;
-  /** Every backticked path cited for this criterion, in order. */
+  /** Every backticked PATH-SHAPED citation for this criterion, in order. */
   readonly paths: readonly string[];
-  /** Any trailing prose after the status/paths. */
+  /** Trailing prose after the status, including backticked literals that are not paths. */
   readonly note: string;
 }
 
@@ -84,14 +88,53 @@ function parseStatus(token: string): AcEvidenceStatus | null {
   return null;
 }
 
-function backticked(value: string): string[] {
-  const found: string[] = [];
-  const pattern = /`([^`]+)`/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(value)) !== null) {
-    found.push(match[1].trim());
-  }
-  return found;
+/** Extensions that make a lone token path-shaped without a directory separator. */
+const PATH_EXTENSIONS: ReadonlySet<string> = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'mts', 'cts',
+  'json', 'jsonc', 'json5', 'md', 'mdx', 'markdown',
+  'yml', 'yaml', 'toml', 'ini', 'cfg', 'conf', 'env',
+  'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+  'py', 'pyi', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'swift',
+  'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hh', 'cs', 'fs', 'fsx',
+  'php', 'pl', 'pm', 'lua', 'r', 'jl', 'ex', 'exs', 'erl', 'hrl',
+  'clj', 'cljs', 'dart', 'groovy', 'gradle',
+  'sql', 'graphql', 'gql', 'proto', 'thrift',
+  'html', 'htm', 'css', 'scss', 'sass', 'less', 'vue', 'svelte', 'astro',
+  'xml', 'xsl', 'svg', 'txt', 'csv', 'tsv', 'log', 'lock', 'patch', 'diff'
+]);
+
+/** Extensionless files that are still paths when cited alone. */
+const PATH_BASENAMES: ReadonlySet<string> = new Set([
+  'Makefile', 'Dockerfile', 'Containerfile', 'Procfile', 'LICENSE', 'LICENCE',
+  'NOTICE', 'Rakefile', 'Gemfile', 'Vagrantfile', 'Brewfile', 'GNUmakefile',
+  '.gitignore', '.gitattributes', '.npmrc', '.nvmrc', '.env',
+  '.editorconfig', '.eslintrc', '.prettierrc'
+]);
+
+/** Characters that never appear in a repository-relative path citation.
+ *  `[` is left unescaped inside the class on purpose: `eslint`'s
+ *  `no-useless-escape` refuses `\[` here, and JS accepts it unescaped. */
+const NON_PATH_CHARS = /[\s"'`$*?<>|(){}[\],;]/;
+
+/**
+ * True when a backticked span is a PATH CANDIDATE (issue #464).
+ *
+ * Only a path-shaped span is evidence: it has a directory separator, a known
+ * source/config extension, or is a known extensionless file; it carries no
+ * whitespace, quotes, expansion/glob characters, brackets or shell
+ * punctuation; it does not start with `-`; and its only colon is a `:line` /
+ * `:start-end` citation suffix (#435).
+ */
+function isPathShapedEvidence(span: string): boolean {
+  const value = stripLineSuffix(String(span ?? '').trim());
+  if (value.length === 0) return false;
+  if (value.startsWith('-')) return false;
+  if (NON_PATH_CHARS.test(value)) return false;
+  if (value.includes(':')) return false;
+  if (value.includes('/')) return true;
+  if (PATH_BASENAMES.has(value)) return true;
+  const dot = value.lastIndexOf('.');
+  return dot > 0 && PATH_EXTENSIONS.has(value.slice(dot + 1).toLowerCase());
 }
 
 /**
@@ -147,19 +190,26 @@ export function parseAcEvidence(verdictText: string | null | undefined): AcEvide
     }
 
     // The grammar is `AC1: met — \`path\``, so the evidence paths live AFTER
-    // the em dash. Take every backticked span on the line, then keep whatever
-    // prose remains as the note.
+    // the em dash. Only a PATH-SHAPED span is evidence (issue #464); a literal,
+    // identifier, flag or command in backticks stays in the note as prose.
     const rest = match[3];
-    const note = rest
-      .replace(/`[^`]+`/g, ' ')
-      .replace(/^[\s—:–-]+/, '')
-      .replace(/[\s—:–-]+$/, '')
+    const paths: string[] = [];
+    const noteSource = rest.replace(/`([^`]+)`/g, (whole: string, inner: string) => {
+      const citation = inner.trim();
+      if (!isPathShapedEvidence(citation)) return whole;
+      paths.push(citation);
+      return ' ';
+    });
+    const note = noteSource
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s—:–,-]+/, '')
+      .replace(/[\s—:–,-]+$/, '')
       .trim();
     entries.push(
       Object.freeze({
         ac: match[1].trim(),
         status,
-        paths: Object.freeze(backticked(rest)),
+        paths: Object.freeze(paths),
         note
       })
     );
