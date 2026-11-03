@@ -132,6 +132,30 @@ function writeOperatorStepPlan(): void {
   );
 }
 
+/**
+ * The #502 declaration-3 shape (issue #512): label provisioning is out of scope,
+ * and the declaration MENTIONS AC1 only to say AC1's own release path is in
+ * scope. It must never steer an AC1 gap to `out-of-scope`.
+ */
+const IN_SCOPE_MENTION =
+  'Provisioning `release:*` labels from `codeloop init`. AC1 only requires the release path to provision-or-refuse; a startup validation in unrelated commands would make `status`/`next` depend on GitHub.';
+
+function writeInScopeMentionPlan(): void {
+  fs.writeFileSync(
+    planPath,
+    [
+      '# Plan',
+      '',
+      '- **Acceptance Criteria:**',
+      '- AC1: The release path refuses a label it cannot verify.',
+      '- AC4: The phase/6-codeloop PR is opened by the operator after the change merges.',
+      '',
+      `- **Out of Scope:** ${IN_SCOPE_MENTION}`,
+      ''
+    ].join('\n')
+  );
+}
+
 describe('Review AC evidence (issue #432)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-evidence-'));
@@ -583,5 +607,45 @@ describe('Review AC evidence (issue #432)', () => {
 
     assert.ok(result.taskPrompt.includes(REVIEWER_AC_EVIDENCE_STATUS_CONTRACT));
     assert.ok(result.taskPrompt.includes("AC4's label provisioning is an operator step"));
+  });
+
+  test('RAE22 the #502 declaration shape refuses a real AC1 gap without steering it out-of-scope (#512 AC4)', async () => {
+    writeInScopeMentionPlan();
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const shipped = 1;\n');
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor() });
+    const GAP = 'AC1 — `src/domain/missing.ts`';
+    const reviewOutput = [
+      'REVIEW_STATUS: APPROVED',
+      'REVIEW_SUMMARY: real gap in AC1',
+      'AC_EVIDENCE:',
+      '- AC1: unverifiable — `src/domain/missing.ts`'
+    ].join('\n');
+
+    const result = await useCase.execute({
+      issue: 512,
+      workspaceDir: root,
+      baseRef: 'HEAD',
+      reviewOutput
+    });
+
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    const criteria = result.verdict.unfulfilledCriteria.join('\n');
+    const remediation = result.verdict.remediationGuidance.join('\n');
+    assert.ok(
+      criteria.includes(`[Unverifiable evidence] ${GAP} is not in the delivered change set`),
+      criteria
+    );
+    assert.ok(!criteria.includes('out-of-scope'), criteria);
+    assert.ok(!remediation.includes('out-of-scope'), remediation);
+    assert.ok(!remediation.includes('Report AC1 as'), remediation);
+    assert.ok(
+      remediation.includes(
+        `Cite tracked evidence for [Unverifiable evidence] ${GAP} is not in the delivered change set`
+      ),
+      remediation
+    );
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, [GAP]);
   });
 });

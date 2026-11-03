@@ -20,6 +20,12 @@
  * Issue #506: a plan-declared operator step belongs to `out-of-scope`. The
  * label/declaration match below is ADVISORY — it can only sharpen a refusal
  * that is already happening, never grant acceptance.
+ *
+ * Issue #512: that match is also POSITIVE. A declaration only steers when the
+ * AC label shares a clause with a non-delivery predicate, so a declaration that
+ * merely mentions the label — including one that says the AC is IN scope —
+ * falls back to the pre-#506 diagnostic instead of steering a real gap into an
+ * `out-of-scope` approval.
  */
 
 import {
@@ -316,11 +322,62 @@ export function acLabelOfUnverifiableEntry(entry: string): string | null {
 }
 
 /**
- * The plan declaration that names this AC, if any (issue #506).
+ * A declaration clause boundary (issue #512). A sentence or semicolon ends the
+ * span in which a label can be the SUBJECT of a non-delivery predicate; an em
+ * dash, colon and comma deliberately do NOT, so `AC4 — operator step` and
+ * `AC4's label provisioning is an operator step` stay in one clause.
+ */
+const DECLARATION_CLAUSE_BOUNDARY = /(?:[.!?](?:\s|$)|;)/;
+
+/**
+ * A negated non-delivery predicate (issue #512): `AC1 is not out of scope`
+ * and `AC1 is not deferred` declare the criterion IN scope.
+ */
+const NEGATED_NON_DELIVERY =
+  /\b(?:is|are|was|were|remains?|stays?)\s+not\s+(?:an?\s+)?(?:operator|out\s+of\s+scope|deferred|undelivered|excluded|manual|post-?merge)\b|\bno\s+operator\b/i;
+
+/**
+ * Predicates that declare the clause's subject NON-DELIVERED (issue #512).
+ * Each names an agent or a state that cannot live in this diff.
+ */
+const NON_DELIVERY_PREDICATES: readonly RegExp[] = Object.freeze([
+  /\b(?:is|are|remains?|stays?)\s+(?:an?\s+)?operator(?:-only)?\s+(?:step|action|task)\b/i,
+  /\b(?:is|are|remains?|stays?)\s+(?:declared\s+|considered\s+|treated\s+as\s+)?out\s+of\s+scope\b/i,
+  /\b(?:is|are|remains?|stays?)\s+(?:undelivered|deferred|excluded|omitted|not\s+delivered)\b/i,
+  /\b(?:is|are)\s+(?:opened|performed|handled|provisioned|executed|run|done)\s+by\s+the\s+operator\b/i,
+  /\b(?:is|are)\s+(?:delivered|shipped)\s+by\s+the\s+operator\b/i,
+  /\b(?:is|are)\s+(?:a\s+)?post-?merge\s+(?:action|step|task)\b/i,
+  /\b(?:is|are)\s+manual\b/i
+]);
+
+/**
+ * True when ONE declaration clause declares `label` non-delivered (issue #512).
+ * The label and a non-delivery predicate must share the clause, and the clause
+ * must not negate the predicate.
+ */
+function clauseDeclaresNonDelivery(clause: string, labelPattern: RegExp): boolean {
+  if (!labelPattern.test(clause)) return false;
+  if (NEGATED_NON_DELIVERY.test(clause)) return false;
+  return NON_DELIVERY_PREDICATES.some((predicate) => predicate.test(clause));
+}
+
+function declarationDeclaresNonDelivery(declaration: string, labelPattern: RegExp): boolean {
+  return String(declaration ?? '')
+    .split(DECLARATION_CLAUSE_BOUNDARY)
+    .some((clause) => clauseDeclaresNonDelivery(clause, labelPattern));
+}
+
+/**
+ * The plan declaration that POSITIVELY declares this AC non-delivered, if any
+ * (issues #506, #512).
  *
  * Matching requires a whole label token, so `AC4` matches `AC4's …` while
- * `AC40` and `xAC4` do not. Advisory only: a hit adds diagnostic text to a
- * refusal whose decision was already taken.
+ * `AC40` and `xAC4` do not, AND the label must share a clause with a
+ * non-delivery predicate (`is an operator step`, `is out of scope`, `is
+ * deferred`, `is delivered by the operator`, …). A declaration that merely
+ * mentions the label — even one that says the AC is in scope — returns `null`,
+ * so the caller keeps its pre-#506 diagnostic. Advisory only: a hit adds
+ * diagnostic text to a refusal whose decision was already taken.
  */
 export function findOutOfScopeDeclarationForAc(
   ac: string | null,
@@ -331,7 +388,7 @@ export function findOutOfScopeDeclarationForAc(
   if (label.length === 0) return null;
   const pattern = new RegExp(`(?:^|[^\\w])${label}(?![\\w])`, 'i');
   for (const declaration of declarations) {
-    if (pattern.test(String(declaration ?? ''))) return declaration;
+    if (declarationDeclaresNonDelivery(String(declaration ?? ''), pattern)) return declaration;
   }
   return null;
 }
