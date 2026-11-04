@@ -490,7 +490,10 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
       'utf8'
     );
 
-    const blocks = source.split('makeLifecycleUseCase(scope.repo).execute({').slice(1);
+    // `ctx.repo` is the resolved-checkpoint repository rename the command
+    // context introduced (issue #441); the call-shape the test keys on is the
+    // lifecycle entry's own.
+    const blocks = source.split('makeLifecycleUseCase(ctx.repo).execute({').slice(1);
     assert.strictEqual(blocks.length, 4, 'expected four lifecycle call sites (plan, implement, yolo, default)');
 
     for (const block of blocks) {
