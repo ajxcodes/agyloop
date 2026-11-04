@@ -1,3 +1,7 @@
+function runGit(dir: string, args: readonly string[]): void {
+  gitIn(dir, args as string[]);
+}
+
 /**
  * agyloop - `next --json` actionability, end to end (issue #337)
  *
@@ -32,6 +36,10 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { GateResultReport, resolveGateRound, NOTE_IMPLEMENT_GATE_FAILED } = require('../../dist/domain');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { gitIn } = require('../helpers/sandbox.ts');
+const { readTaskCheckpoint } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 9;
@@ -102,40 +110,12 @@ const BLANK_REPORT = [
   '- **Relevant Code References:**'
 ].join('\n');
 
-function makeSandbox(prefix = 'agyloop-cli-next-actionability-'): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
 function taskStatePath(dir: string, issue: number = ISSUE): string {
   return path.join(dir, '.agyloop', 'tasks', `${issue}.json`);
 }
 
-function readCheckpoint(dir: string, issue: number = ISSUE): any {
-  return JSON.parse(fs.readFileSync(taskStatePath(dir, issue), 'utf8'));
-}
 
 function writeCheckpoint(dir: string, checkpoint: any, issue: number = ISSUE): void {
   fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
@@ -175,22 +155,19 @@ function seedPlanDir(dir: string, documents: { plan?: string; discovery?: string
   return planDir;
 }
 
-function git(dir: string, args: readonly string[]): void {
-  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-}
 
 /** A real repository whose task worktree is a real linked git worktree. */
 function makeImplementSandbox(): { dir: string; worktreePath: string } {
-  const dir = makeSandbox('agyloop-cli-next-actionability-git-');
-  git(dir, ['init', '-q', '-b', 'main']);
-  git(dir, ['config', 'user.email', 'smoke@test']);
-  git(dir, ['config', 'user.name', 'smoke']);
+  const dir = makeSandbox({ prefix: 'agyloop-cli-next-actionability-git-', initGit: false, dirName: '' }).dir;
+  runGit(dir, ['init', '-q', '-b', 'main']);
+  runGit(dir, ['config', 'user.email', 'smoke@test']);
+  runGit(dir, ['config', 'user.name', 'smoke']);
   fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
-  git(dir, ['add', 'README.md']);
-  git(dir, ['commit', '-qm', 'chore: base']);
+  runGit(dir, ['add', 'README.md']);
+  runGit(dir, ['commit', '-qm', 'chore: base']);
 
   const worktreePath = path.join(dir, '.worktrees', String(ISSUE));
-  git(dir, ['worktree', 'add', '-q', '-b', `task/${ISSUE}-probe`, worktreePath, 'main']);
+  runGit(dir, ['worktree', 'add', '-q', '-b', `task/${ISSUE}-probe`, worktreePath, 'main']);
 
   const planDir = seedPlanDir(dir, { plan: REAL_PLAN });
   writeCheckpoint(
@@ -213,7 +190,7 @@ function makeImplementSandbox(): { dir: string; worktreePath: string } {
 
 describe('codeloop next --json reports actionability from evidence (#337)', () => {
   test('A1: COMPLETED is not actionable and never names the placeholder command', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       writeCheckpoint(
         dir,
@@ -223,7 +200,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
         })
       );
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -241,9 +218,9 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   });
 
   test('A2: INITIALIZED is not actionable and a query creates no checkpoint', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const run = await runIn(dir, ['next', '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -258,13 +235,13 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   });
 
   test('A3 + A12: DISCOVERY with a populated report advances and writes nothing', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       const planDir = seedPlanDir(dir, { plan: REAL_PLAN, discovery: POPULATED_REPORT });
       writeCheckpoint(dir, baseCheckpoint({ planDir }));
       const before = fs.readFileSync(taskStatePath(dir), 'utf8');
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -287,12 +264,12 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   });
 
   test('A4: DISCOVERY with a blank report stays dispatchable (control)', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       const planDir = seedPlanDir(dir, { plan: REAL_PLAN, discovery: BLANK_REPORT });
       writeCheckpoint(dir, baseCheckpoint({ planDir }));
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -300,14 +277,14 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
       assert.strictEqual(payload.role, 'discovery');
       assert.strictEqual(payload.actionable, true);
       assert.ok(payload.invocationPayload);
-      assert.strictEqual(readCheckpoint(dir).discoveryDispatchCount, 1);
+      assert.strictEqual(readTaskCheckpoint(dir, ISSUE).discoveryDispatchCount, 1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
   test('A5: PLAN with a substantive plan advances and names the transition', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       const planDir = seedPlanDir(dir, { plan: REAL_PLAN });
       writeCheckpoint(
@@ -323,7 +300,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
       );
 
       const before = fs.readFileSync(taskStatePath(dir), 'utf8');
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -341,7 +318,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
       );
       assert.strictEqual(payload.planDispatchCount, 0);
       // A met read writes nothing: no counter key, byte-identical bytes.
-      assert.strictEqual(readCheckpoint(dir).planDispatchCount, undefined);
+      assert.strictEqual(readTaskCheckpoint(dir, ISSUE).planDispatchCount, undefined);
       assert.strictEqual(fs.readFileSync(taskStatePath(dir), 'utf8'), before);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -349,7 +326,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   });
 
   test('A6: PLAN with a blank plan stays dispatchable (control)', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       const planDir = seedPlanDir(dir, { plan: BLANK_PLAN });
       writeCheckpoint(
@@ -364,7 +341,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
         })
       );
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -388,7 +365,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
       );
 
       const before = fs.readFileSync(taskStatePath(sandbox.dir), 'utf8');
-      const run = await runIn(sandbox.dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -406,7 +383,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
         payload.description
       );
       // A met read writes nothing: no counter key, byte-identical bytes.
-      assert.strictEqual(readCheckpoint(sandbox.dir).implementationDispatchCount, undefined);
+      assert.strictEqual(readTaskCheckpoint(sandbox.dir, ISSUE).implementationDispatchCount, undefined);
       assert.strictEqual(fs.readFileSync(taskStatePath(sandbox.dir), 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -416,7 +393,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   test('A8: IMPLEMENT with a clean worktree stays dispatchable (control)', async () => {
     const sandbox = makeImplementSandbox();
     try {
-      const run = await runIn(sandbox.dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
 
@@ -425,14 +402,14 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
       assert.strictEqual(payload.actionable, true);
       assert.ok(payload.invocationPayload);
       assert.strictEqual(payload.implementationDispatchCount, 1);
-      assert.strictEqual(readCheckpoint(sandbox.dir).implementationDispatchCount, 1);
+      assert.strictEqual(readTaskCheckpoint(sandbox.dir, ISSUE).implementationDispatchCount, 1);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('A9: after gate-report the gate directive advances and drops the filing note', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       writeCheckpoint(
         dir,
@@ -447,16 +424,16 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
       const reportFile = path.join(dir, 'gate.txt');
       fs.writeFileSync(reportFile, PASSED_BLOCK, 'utf8');
 
-      const filed = await runIn(dir, [
+      const filed = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         reportFile
-      ]);
+      ], { dir: dir, stripAnsi: true });
       assert.strictEqual(filed.code, 0, `${filed.stdout}\n${filed.stderr}`);
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
       const text = `${payload.description}\n${payload.humanSummary}`;
@@ -478,7 +455,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   });
 
   test('A10: with nothing filed the gate directive still asks for the block', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       writeCheckpoint(
         dir,
@@ -491,7 +468,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
         })
       );
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
       const text = `${payload.description}\n${payload.humanSummary}`;
@@ -508,7 +485,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
   });
 
   test('A11: a STALE block cannot certify this round', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       const checkpoint = baseCheckpoint({
         currentStage: 'QUALITY_GATE',
@@ -528,7 +505,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
         'utf8'
       );
 
-      const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
       const text = `${payload.description}\n${payload.humanSummary}`;
@@ -556,7 +533,7 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
 
       // Move the seeded checkpoint to the gate, then file a FAILED block the way
       // a dispatched gate does.
-      const checkpoint = readCheckpoint(sandbox.dir);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       checkpoint.currentStage = 'QUALITY_GATE';
       checkpoint.history = [
         { stage: 'IMPLEMENT', timestamp: new Date(Date.now() - 60_000).toISOString() },
@@ -566,26 +543,26 @@ describe('codeloop next --json reports actionability from evidence (#337)', () =
 
       const reportFile = path.join(sandbox.dir, 'gate.txt');
       fs.writeFileSync(reportFile, FAILED_BLOCK, 'utf8');
-      const filed = await runIn(sandbox.dir, [
+      const filed = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         reportFile
-      ]);
+      ], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(filed.code, 0, `${filed.stdout}\n${filed.stderr}`);
 
       // The legal "go fix it" exit: QUALITY_GATE -> IMPLEMENT.
-      const transitioned = await runIn(sandbox.dir, [
+      const transitioned = await runCliInSandboxCanonical([
         'transition',
         'IMPLEMENT',
         '--issue',
         String(ISSUE)
-      ]);
+      ], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(transitioned.code, 0, `${transitioned.stdout}\n${transitioned.stderr}`);
-      assert.strictEqual(readCheckpoint(sandbox.dir).currentStage, 'IMPLEMENT');
+      assert.strictEqual(readTaskCheckpoint(sandbox.dir, ISSUE).currentStage, 'IMPLEMENT');
 
-      const run = await runIn(sandbox.dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(run.code, 0, run.stderr);
       const payload = JSON.parse(run.stdout);
       const text = `${payload.description}\n${payload.humanSummary}`;

@@ -39,7 +39,7 @@ import type {
 } from '../../src/ports';
 import type { StateMachineSnapshot, GateCommandDefinition } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -63,7 +63,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-class MockBuildDetector implements BuildDetectorPort {
+class BuildDetectorDouble implements BuildDetectorPort {
   private readonly commands: readonly GateCommandDefinition[];
   public lintCommand: string | null = null;
 
@@ -130,7 +130,7 @@ class MockBuildDetector implements BuildDetectorPort {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   public content = '';
   public digest: string | null = null;
   public planPath = '/repo/artifacts/plans/41-task/implementation_plan.md';
@@ -165,7 +165,7 @@ class MockPlanGenerator {
   }
 }
 
-function makeMockConfig(overrides: Partial<AgyLoopConfig> = {}): ConfigRepository {
+function makeMockConfigLocal(overrides: Partial<AgyLoopConfig> = {}): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -211,8 +211,8 @@ function makeMockConfig(overrides: Partial<AgyLoopConfig> = {}): ConfigRepositor
 describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
   test('returns preflight action for STAGE_INITIALIZED', async () => {
     const sm = StateMachine.createInitial({ issue: 41 });
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_INITIALIZED);
@@ -224,8 +224,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
   test('returns discovery subagent payload for STAGE_DISCOVERY', async () => {
     const sm = StateMachine.createInitial({ issue: 41, baseBranch: 'phase/1-bridge' });
     sm.transition(STAGE_DISCOVERY);
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_DISCOVERY);
@@ -248,8 +248,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const sm = StateMachine.createInitial({ issue: 41, mode: MODE_STANDARD });
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_PLAN);
@@ -264,8 +264,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
     sm.setWorktree(new WorktreeDescriptor({ taskId: '41', worktreePath: '/repo/.worktrees/41', branch: 'task/41', baseBranch: 'main' }));
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_PLAN);
@@ -295,8 +295,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_APPROVAL);
@@ -321,8 +321,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
@@ -353,8 +353,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     // '/repo/.' resolves onto the workspace root ('/repo'), so the shared
     // predicate — not a raw `===` compare — must reject it.
@@ -409,8 +409,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_QUALITY_GATE);
@@ -455,14 +455,14 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const mockBuildDetector = new MockBuildDetector([
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const mockBuildDetector = new BuildDetectorDouble([
       { id: 'test', command: 'npm test', label: 'Run test suite' },
       { id: 'typecheck', command: 'npx tsc --noEmit', label: 'TypeScript check' }
     ]);
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       undefined,
       undefined,
@@ -498,8 +498,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_REVIEW);
@@ -526,8 +526,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_REVIEW);
     sm.transition(STAGE_COMMIT);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_COMMIT);
@@ -547,8 +547,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_COMMIT);
 
     const result = await new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig()
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal()
     ).execute({ workspaceDir: '/repo' });
 
     const text = `${result.description}\n${result.humanSummary}`;
@@ -571,8 +571,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_COMMIT);
     sm.transition(STAGE_COMPLETED);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const completedResult = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(completedResult.currentStage, STAGE_COMPLETED);
@@ -609,10 +609,10 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     };
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       mockGithub
     );
@@ -657,10 +657,10 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     };
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       mockGithub
     );
@@ -678,7 +678,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_DISCOVERY);
     assert.strictEqual(sm.baseBranch, null);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const mockWorktreeManager: any = {
       resolveBaseBranch: async () => 'main',
       listBranches: async () => ['main', 'phase/5-quality-gates'],
@@ -705,7 +705,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
 
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       mockGithub,
       undefined,
@@ -723,7 +723,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const sm = StateMachine.createInitial({ issue: 93 });
     sm.transition(STAGE_DISCOVERY);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const mockWorktreeManager: any = {
       resolveBaseBranch: async () => 'main',
       listBranches: async () => ['main', 'phase/5-quality-gates'],
@@ -744,7 +744,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
 
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       mockGithub,
       undefined,
@@ -760,7 +760,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     const sm = StateMachine.createInitial({ issue: 93 });
     sm.transition(STAGE_DISCOVERY);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const mockInferUseCase: any = {
       execute: async () => {
         throw new Error('Network failure or git corruption');
@@ -769,7 +769,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
 
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       undefined,
       undefined,
@@ -788,8 +788,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
     sm.transition(STAGE_TRIAGE);
     sm.setTriagePayload('Reviewer: Please fix the magic constants in resolve-subagent.ts');
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_TRIAGE);
@@ -815,8 +815,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       })
     );
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
@@ -873,8 +873,8 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
         sm.setTriagePayload('Sample review comment');
       }
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
-      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
       const result = await useCase.execute({ workspaceDir: '/repo' });
       assert.ok(
@@ -914,8 +914,8 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
 
   test('E1 IMPLEMENT with a null worktree returns a re-provision directive (AC-10)', async () => {
     const sm = implementWithoutWorktree();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -933,8 +933,8 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
 
   test('E2 the directive is stable across IMPLEMENT retries (AC-10)', async () => {
     const sm = implementWithoutWorktree();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const first = await useCase.execute({ workspaceDir: '/repo' });
     const second = await useCase.execute({ workspaceDir: '/repo' });
@@ -953,8 +953,8 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -976,8 +976,8 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
       history: [{ stage: STAGE_TRIAGE, timestamp: NOW }]
     } as unknown;
 
-    const triageRepo = new MockStateRepo(triageSnapshot as any);
-    const triageUseCase = new GetNextActionUseCase(triageRepo, makeMockConfig());
+    const triageRepo = new StateRepositoryDouble(triageSnapshot as any);
+    const triageUseCase = new GetNextActionUseCase(triageRepo, makeMockConfigLocal());
     const triageResult = await triageUseCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(triageResult.currentStage, STAGE_TRIAGE);
     assert.strictEqual(triageResult.actionType, 'subagent');
@@ -992,8 +992,8 @@ describe('GetNextActionUseCase — missing worktree directive (#266)', () => {
     sm.transition(STAGE_REVIEW);
     sm.transition(STAGE_COMMIT);
 
-    const commitRepo = new MockStateRepo(sm.toSnapshot());
-    const commitUseCase = new GetNextActionUseCase(commitRepo, makeMockConfig());
+    const commitRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const commitUseCase = new GetNextActionUseCase(commitRepo, makeMockConfigLocal());
     const commitResult = await commitUseCase.execute({ workspaceDir: '/repo' });
     assert.strictEqual(commitResult.actionType, 'human_gate');
     assert.ok(commitResult.humanSummary.includes('codeloop commit'));
@@ -1130,8 +1130,8 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   }
 
   caseTest('T-292.1: the DISCOVERY directive names the condition, the command and the target', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(BLANK_PLAN));
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -1147,8 +1147,8 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   caseTest('T-292.2: the PLAN directive names the condition, the command and the spec target', async () => {
     // Issue #337: a NON-BLANK plan is no longer dispatchable (it reports
     // `advance`), so the dispatch directive this case tests needs a blank one.
-    const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+    const stateRepo = new StateRepositoryDouble(planCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(BLANK_PLAN));
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -1163,8 +1163,8 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-292.5: three reads at DISCOVERY name the command and record counts 1, 2, 3', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(BLANK_PLAN));
 
     for (let read = 1; read <= 3; read += 1) {
       const result = await useCase.execute({ workspaceDir: '/repo' });
@@ -1175,10 +1175,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-292.5: three reads at PLAN record planDispatchCount 1, 2, 3', async () => {
-    const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
+    const stateRepo = new StateRepositoryDouble(planCheckpoint().toSnapshot());
     // Issue #337: a non-blank plan reports `advance`, so the counter case needs
     // the blank-plan dispatch directive.
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(BLANK_PLAN));
 
     for (let read = 1; read <= 3; read += 1) {
       const result = await useCase.execute({ workspaceDir: '/repo' });
@@ -1190,8 +1190,8 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
 
   caseTest('T-292.6: three reads never advance the stage or alter history', async () => {
     const sm = discoveryCheckpoint();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(BLANK_PLAN));
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(BLANK_PLAN));
 
     const beforeStage = stateRepo.savedSnapshot!.currentStage;
     const beforeHistory = JSON.stringify(stateRepo.savedSnapshot!.history);
@@ -1210,10 +1210,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-320.7 / T-337.D1: a populated discovery report is a MET completion condition', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(REAL_PLAN, DISCOVERY_POPULATED)
     );
 
@@ -1241,8 +1241,8 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-337.P1: a non-blank plan is a MET completion condition', async () => {
-    const stateRepo = new MockStateRepo(planCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(REAL_PLAN));
+    const stateRepo = new StateRepositoryDouble(planCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(REAL_PLAN));
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -1264,10 +1264,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-320.8: a blank discovery report is reported blank and names the missing evidence', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(REAL_PLAN, DISCOVERY_BLANK)
     );
 
@@ -1291,8 +1291,8 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-320.9: an implementation document resolved at DISCOVERY is never RCA evidence', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), implementationOnlyGen());
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), implementationOnlyGen());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -1315,10 +1315,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     // The projection is a field of the RESULT, not of the checkpoint — this
     // stays true on the dispatch path (issue #337 moved the populated case to
     // T-337.D2 below, where the stage is complete and nothing is written).
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(REAL_PLAN, DISCOVERY_BLANK)
     );
 
@@ -1343,10 +1343,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-337.D2: a populated discovery report writes NOTHING (no dispatch counter)', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(REAL_PLAN, DISCOVERY_POPULATED)
     );
 
@@ -1363,10 +1363,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
   });
 
   caseTest('T-267.A2: a blank plan at IMPLEMENT offers the PLANNER, a real plan the implementer', async () => {
-    const blankRepo = new MockStateRepo(implementCheckpoint().toSnapshot());
+    const blankRepo = new StateRepositoryDouble(implementCheckpoint().toSnapshot());
     const blankResult = await new GetNextActionUseCase(
       blankRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(BLANK_PLAN)
     ).execute({ workspaceDir: '/repo' });
 
@@ -1376,10 +1376,10 @@ describe('Discovery/Plan directives and blank-plan recovery (#292, #267)', () =>
     assert.strictEqual(blankResult.currentStage, STAGE_IMPLEMENT);
     assert.ok(blankResult.humanSummary.includes('--plan-path'), blankResult.humanSummary);
 
-    const realRepo = new MockStateRepo(implementCheckpoint().toSnapshot());
+    const realRepo = new StateRepositoryDouble(implementCheckpoint().toSnapshot());
     const realResult = await new GetNextActionUseCase(
       realRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(REAL_PLAN)
     ).execute({ workspaceDir: '/repo' });
 
@@ -1446,12 +1446,12 @@ describe('Blank-plan directive reachability & guard ordering (#267)', () => {
 
   caseTest('finding 1: the IMPLEMENT blank-plan directive names only reachable commands', async () => {
     const sm = implementCheckpoint();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     // This path reads back the BLANK document.
     const generator = suppliedPlanGen('/repo/blank-plan.md');
     const result = await new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       generator
     ).execute({ workspaceDir: '/repo' });
 
@@ -1476,11 +1476,11 @@ describe('Blank-plan directive reachability & guard ordering (#267)', () => {
   caseTest('finding 2: a recorded supplied plan wins over a blank sibling document', async () => {
     const suppliedPath = '/repo/myplan.md';
     const sm = implementCheckpoint(suppliedPath);
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const generator = suppliedPlanGen(suppliedPath);
     const result = await new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       generator
     ).execute({ workspaceDir: '/repo' });
 
@@ -1515,7 +1515,7 @@ describe('Blank-plan directive reachability & guard ordering (#267)', () => {
 
     const result = await new GetNextActionUseCase(
       stateRepo as any,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       suppliedPlanGen('/repo/artifacts/plans/41-bug-probe/[Discovery] - probe.md')
     ).execute({ workspaceDir: '/repo' });
 
@@ -1542,8 +1542,8 @@ describe('Blank-plan directive reachability & guard ordering (#267)', () => {
     await assert.rejects(
       async () =>
         new GetNextActionUseCase(
-          new MockStateRepo(sm.toSnapshot()),
-          makeMockConfig(),
+          new StateRepositoryDouble(sm.toSnapshot()),
+          makeMockConfigLocal(),
           suppliedPlanGen('/repo/README.md')
         ).execute({ workspaceDir: '/repo' }),
       /Zero Direct Root Mutation/
@@ -1619,7 +1619,7 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       'node --test tests/e.test.ts',
       'npm test'
     ];
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(commands);
     planGenerator.digest = 'digest-1';
 
@@ -1627,8 +1627,8 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
     );
     const useCase = new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     );
 
@@ -1649,19 +1649,19 @@ describe('Quality Gate evidence contract (issue #298)', () => {
   });
 
   test('GNA-L2: lint is appended and reported when the plan omits it', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run build', 'npm test']);
     planGenerator.digest = 'digest-1';
 
-    const detector = new MockBuildDetector();
+    const detector = new BuildDetectorDouble();
     detector.lintCommand = 'npm run lint';
 
     const sm = gateCheckpoint((machine: any) =>
       machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
     );
     const useCase = new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator,
       undefined,
       undefined,
@@ -1679,7 +1679,7 @@ describe('Quality Gate evidence contract (issue #298)', () => {
   });
 
   test('GNA-C1: the prompt states the execution cwd and why it must not cd to the root', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     planGenerator.digest = 'digest-1';
 
@@ -1687,8 +1687,8 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
     );
     const useCase = new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     );
 
@@ -1702,7 +1702,7 @@ describe('Quality Gate evidence contract (issue #298)', () => {
   });
 
   test('GNA-C2 (#348): a legacy-approved committed-tree target blocks dispatch and names the command', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['git diff --exit-code -- package-lock.json']);
     planGenerator.digest = 'digest-1';
 
@@ -1710,8 +1710,8 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
     );
     const useCase = new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     );
 
@@ -1738,13 +1738,13 @@ describe('Quality Gate evidence contract (issue #298)', () => {
   });
 
   test('GNA-S1: a non-executable smoke protocol blocks dispatch and names the check', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithSmoke(['npm test']);
 
     const sm = gateCheckpoint();
     const useCase = new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     );
 
@@ -1771,7 +1771,7 @@ describe('Quality Gate evidence contract (issue #298)', () => {
   });
 
   test('GNA-D1: a digest mismatch blocks dispatch and names both digests', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     planGenerator.digest = 'actual-digest';
 
@@ -1779,8 +1779,8 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       machine.recordApprovedPlan(PLAN_HEADER, 'approved-digest')
     );
     const blocked = await new GetNextActionUseCase(
-      new MockStateRepo(mismatched.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(mismatched.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     ).execute({ workspaceDir: '/repo' });
 
@@ -1810,8 +1810,8 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       machine.recordApprovedPlan(PLAN_HEADER, 'actual-digest')
     );
     const dispatched = await new GetNextActionUseCase(
-      new MockStateRepo(matching.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(matching.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     ).execute({ workspaceDir: '/repo' });
 
@@ -1820,7 +1820,7 @@ describe('Quality Gate evidence contract (issue #298)', () => {
   });
 
   test('GNA-X1: every transition named in a QUALITY_GATE directive is legal there (#327 AC-7)', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     planGenerator.digest = 'digest-1';
 
@@ -1828,8 +1828,8 @@ describe('Quality Gate evidence contract (issue #298)', () => {
       machine.recordApprovedPlan(PLAN_HEADER, 'digest-1')
     );
     const result = await new GetNextActionUseCase(
-      new MockStateRepo(sm.toSnapshot()),
-      makeMockConfig(),
+      new StateRepositoryDouble(sm.toSnapshot()),
+      makeMockConfigLocal(),
       planGenerator
     ).execute({ workspaceDir: '/repo' });
 

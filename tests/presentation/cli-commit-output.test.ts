@@ -1,3 +1,7 @@
+function readCommitTaskCheckpoint(sandbox: Sandbox): any {
+  return readTaskCheckpoint(sandbox.dir, ISSUE);
+}
+
 /**
  * agyloop - `commit` reports what it did (issue #284: #240 Defect 1/2/3, AC2)
  *
@@ -23,6 +27,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { readTaskCheckpoint } = require('../helpers/state-seed.ts');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ISSUE = 289;
@@ -35,24 +41,24 @@ interface Sandbox {
   readonly summaryPath: string;
 }
 
-function makeSandbox(baseBranch: string, options: { gitignore?: boolean } = {}): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-commit-output-'));
-  const git = (args: string[], cwd = dir) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+function makeCommitOutputSandbox(baseBranch: string, options: { gitignore?: boolean } = {}): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-commit-output-',
+    dirName: '',
+    gitignore: options.gitignore === false ? false : ['.agyloop/', 'artifacts/', '.bin/', '.plan-tmp/'],
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
+    },
+    initialCommit: 'chore: seed'
+  });
+  const dir = sandbox.dir;
+  const g = (args: string[], cwd = dir) => sandbox.git(args, { cwd });
 
-  git(['init', '-q']);
-  git(['config', 'user.email', 'smoke@test']);
-  git(['config', 'user.name', 'smoke']);
-  if (options.gitignore !== false) {
-    fs.writeFileSync(path.join(dir, '.gitignore'), '.agyloop/\nartifacts/\n.bin/\n.plan-tmp/\n', 'utf8');
-  }
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'chore: seed']);
-  git(['checkout', '-qb', `task/${ISSUE}`]);
+  g(['checkout', '-qb', `task/${ISSUE}`]);
 
   const origin = `${dir}.origin.git`;
-  git(['init', '-q', '--bare', origin]);
-  git(['remote', 'add', 'origin', origin]);
+  g(['init', '-q', '--bare', origin]);
+  g(['remote', 'add', 'origin', origin]);
 
   const planDir = path.join(dir, 'artifacts', 'plans', `${ISSUE}-smoke`);
   fs.mkdirSync(planDir, { recursive: true });
@@ -248,11 +254,6 @@ function runReviewToCommit(sandbox: Sandbox) {
   }
 }
 
-function readCheckpoint(sandbox: Sandbox): any {
-  return JSON.parse(
-    fs.readFileSync(path.join(sandbox.dir, '.agyloop', 'tasks', `${ISSUE}.json`), 'utf8')
-  );
-}
 
 
 /** Moves the fake `gh` outside the repo so it is never an untracked change. */
@@ -266,7 +267,7 @@ function externaliseBin(sandbox: Sandbox): { sandbox: Sandbox; binDir: string } 
 
 describe('commit output accuracy (issue #284)', () => {
   test('--create-pr reports the created URL and never prints the manual script', () => {
-    const sandbox = makeSandbox('phase/6-smoke');
+    const sandbox = makeCommitOutputSandbox('phase/6-smoke');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -295,7 +296,7 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('commit without --create-pr prints one gh command and warns the run is not delivered (issue #315, AC-25)', () => {
-    const sandbox = makeSandbox('main');
+    const sandbox = makeCommitOutputSandbox('main');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -325,7 +326,7 @@ describe('commit output accuracy (issue #284)', () => {
         .filter((line: string) => line.includes('pr create'));
       assert.strictEqual(ghCalls.length, 0, `no PR may be created without the flag: ${ghCalls.join('\n')}`);
 
-      const persisted = readCheckpoint(sandbox);
+      const persisted = readCommitTaskCheckpoint(sandbox);
       assert.strictEqual(persisted.currentStage, 'COMPLETED');
       assert.deepStrictEqual(persisted.pullRequest, {
         number: null,
@@ -339,7 +340,7 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('the collector-base caveat states the measured base and phrases sync conditionally (#376)', () => {
-    const sandbox = makeSandbox('phase/6-smoke');
+    const sandbox = makeCommitOutputSandbox('phase/6-smoke');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -372,7 +373,7 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('no collector caveat is printed when no PR exists (#376)', () => {
-    const sandbox = makeSandbox('phase/6-smoke');
+    const sandbox = makeCommitOutputSandbox('phase/6-smoke');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -398,7 +399,7 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('the collector-base caveat fires with NO --issue flag (issue #351)', () => {
-    const sandbox = makeSandbox('phase/6-smoke');
+    const sandbox = makeCommitOutputSandbox('phase/6-smoke');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -441,7 +442,7 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('no caveat is printed for a default-branch base', () => {
-    const sandbox = makeSandbox('main');
+    const sandbox = makeCommitOutputSandbox('main');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -459,7 +460,7 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('the uncompressed file list includes the untracked file the commit really contains', () => {
-    const sandbox = makeSandbox('phase/6-smoke');
+    const sandbox = makeCommitOutputSandbox('phase/6-smoke');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -492,13 +493,13 @@ describe('commit output accuracy (issue #284)', () => {
   });
 
   test('the completed summary carries the measured commit-gate wait, no PENDING, and the real subject once', async () => {
-    const sandbox = makeSandbox('phase/6-smoke');
+    const sandbox = makeCommitOutputSandbox('phase/6-smoke');
     try {
       // The PRODUCTION sequence: REVIEW --(APPROVED)--> COMMIT (paused).
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
 
-      const atCommit = readCheckpoint(sandbox);
+      const atCommit = readCommitTaskCheckpoint(sandbox);
       assert.strictEqual(atCommit.currentStage, 'COMMIT');
       assert.strictEqual(
         atCommit.pausedAtGate,
@@ -538,7 +539,7 @@ describe('commit output accuracy (issue #284)', () => {
         `the duration must match the real confirmation delta (${deltaMs}ms), got ${measuredMs}ms (${row})`
       );
 
-      const persisted = readCheckpoint(sandbox);
+      const persisted = readCommitTaskCheckpoint(sandbox);
       assert.strictEqual(persisted.currentStage, 'COMPLETED');
       assert.ok(
         persisted.totalHumanWaitMs > 0,
@@ -580,7 +581,7 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
     execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
 
   test('N-31 / AC-9: the printed list equals the committed paths without a .gitignore', () => {
-    const external = externaliseBin(makeSandbox('main', { gitignore: false }));
+    const external = externaliseBin(makeCommitOutputSandbox('main', { gitignore: false }));
     const sandbox = external.sandbox;
     try {
       // Leave exactly ONE real change: the bookkeeping trees stay untracked.
@@ -620,7 +621,7 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
   });
 
   test('N-32 / AC-9: a tree with only bookkeeping paths fails honestly and moves no HEAD', () => {
-    const external = externaliseBin(makeSandbox('main', { gitignore: false }));
+    const external = externaliseBin(makeCommitOutputSandbox('main', { gitignore: false }));
     const sandbox = external.sandbox;
     try {
       // Remove every real change; `.agyloop` and `artifacts` are untracked.
@@ -650,7 +651,7 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
   });
 
   test('N-33 / AC-8 + AC-10: a descriptor-less COMMIT commits from the workspace root', () => {
-    const sandbox = makeSandbox('main');
+    const sandbox = makeCommitOutputSandbox('main');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);
@@ -691,7 +692,7 @@ describe('the breaking-change warning reflects the final message (#382)', () => 
   const SUBJECT = `docs: probe subject (#${ISSUE})`;
 
   test('CLI-COMMIT-1: plan flag, non-breaking override, then a breaking override', () => {
-    const sandbox = makeSandbox('main');
+    const sandbox = makeCommitOutputSandbox('main');
     try {
       const review = runReviewToCommit(sandbox);
       assert.strictEqual(review.status, 0, `${review.stdout}\n${review.stderr}`);

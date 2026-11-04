@@ -20,6 +20,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const POSIX_ONLY = process.platform === 'win32' ? { skip: 'POSIX-only test' } : {};
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 
 const OPEN_ISSUE_PAYLOAD = JSON.stringify({
   number: 306,
@@ -42,31 +43,33 @@ interface Sandbox {
  * Builds a throwaway repo on `phase/test` with a bare `origin`, plus a fake
  * `gh` that answers merged PRs and (per `mode`) refuses or serves the issue.
  */
-function makeSandbox(mode: 'fail' | 'open'): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-sync-failclosed-'));
-  const repo = path.join(dir, 'repo');
+function makeSyncFailClosedSandbox(mode: 'fail' | 'open'): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-sync-failclosed-',
+    dirName: 'repo',
+    gitignore: false,
+    initialBranch: 'phase/test',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe'
+  });
+  const dir = sandbox.root;
+  const repo = sandbox.dir;
   const binDir = path.join(dir, 'bin');
   const home = path.join(dir, 'home');
   const logPath = path.join(dir, 'gh.log');
 
-  fs.mkdirSync(repo, { recursive: true });
   fs.mkdirSync(binDir, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
 
-  const git = (args: string[], cwd = repo): void => {
-    execFileSync('git', args, { cwd, stdio: 'ignore' });
+  const g = (args: string[], cwd = repo): void => {
+    sandbox.git(args, { cwd });
   };
 
-  git(['init', '-q']);
-  git(['checkout', '-q', '-b', 'phase/test']);
-  git(['config', 'user.email', 'smoke@test']);
-  git(['config', 'user.name', 'smoke']);
-  fs.writeFileSync(path.join(repo, 'README.md'), 'probe\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'chore: probe']);
-  git(['init', '-q', '--bare', path.join(dir, 'origin.git')], dir);
-  git(['remote', 'add', 'origin', path.join(dir, 'origin.git')]);
-  git(['push', '-qu', 'origin', 'phase/test']);
+  g(['init', '-q', '--bare', path.join(dir, 'origin.git')], dir);
+  g(['remote', 'add', 'origin', path.join(dir, 'origin.git')]);
+  g(['push', '-qu', 'origin', 'phase/test']);
 
   const issueAnswer =
     mode === 'fail'
@@ -136,7 +139,7 @@ describe('sync fails closed on an unreadable issue (#328)', () => {
    * on #306 and exited 0.
    */
   test('an unreadable issue is neither closed nor commented and exits non-zero', POSIX_ONLY, () => {
-    const sandbox = makeSandbox('fail');
+    const sandbox = makeSyncFailClosedSandbox('fail');
     try {
       const result = runSync(sandbox, []);
 
@@ -165,7 +168,7 @@ describe('sync fails closed on an unreadable issue (#328)', () => {
 
   /** AC-328.5: the negative control — the working case must still work. */
   test('a readable open issue is closed and commented exactly once', POSIX_ONLY, () => {
-    const sandbox = makeSandbox('open');
+    const sandbox = makeSyncFailClosedSandbox('open');
     try {
       const result = runSync(sandbox, []);
 
@@ -192,7 +195,7 @@ describe('sync fails closed on an unreadable issue (#328)', () => {
 
   /** AC-328.6: a dry run forecasts the write and performs none. */
   test('dry run lists the write it would perform', POSIX_ONLY, () => {
-    const sandbox = makeSandbox('open');
+    const sandbox = makeSyncFailClosedSandbox('open');
     try {
       const result = runSync(sandbox, ['--dry-run']);
 

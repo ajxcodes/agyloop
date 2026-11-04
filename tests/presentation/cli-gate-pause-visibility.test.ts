@@ -36,13 +36,12 @@ const {
   APPROVAL_GATE_COMMAND
 } = require('../../dist/presentation/cli');
 const { GATE_CIRCUIT_BREAKER, QUOTA_RESUME_COMMAND } = require('../../dist/domain');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const PAUSED_AT = '2026-10-14T12:00:00.000Z';
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 interface CaptureResult {
   readonly code: number;
@@ -122,63 +121,10 @@ function seedRunningState(
  * Runs `runCli` in a throwaway cwd with both console streams captured, restoring
  * everything (cwd, TTY flags, console) in `finally`.
  */
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-gate-pause-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    if (seed) {
-      seed(tempDir);
-    }
-    process.chdir(tempDir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await Promise.race([
-      runCli(args),
-      // Hang guard (same recipe as cli-prompt-guards.test.ts): a prompt opened on a
-      // silent stdin pipe never settles, and a hung suite is worse than a red one.
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`HANG: runCli(${JSON.stringify(args)}) never settled.`)),
-          20000
-        );
-        if (typeof timer.unref === 'function') {
-          timer.unref();
-        }
-      })
-    ]);
-
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 describe('next --json surfaces a persisted gate pause as data', () => {
   test('the pause reaches stdout as JSON, with no prose mixed in', async () => {
-    const result = await runCliInSandbox(['next', '--json'], seedPausedState);
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: seedPausedState, stripAnsi: true });
 
     // A harness that cannot parse the document cannot act on the pause either.
     const parsed = JSON.parse(result.stdout.trim());
@@ -207,7 +153,7 @@ describe('next --json surfaces a persisted gate pause as data', () => {
   });
 
   test('the directive itself is still emitted alongside the pause', async () => {
-    const result = await runCliInSandbox(['next', '--json'], seedPausedState);
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: seedPausedState, stripAnsi: true });
     const parsed = JSON.parse(result.stdout.trim());
 
     assert.strictEqual(result.code, 0, 'a pause is reportable, not a crash');
@@ -218,7 +164,7 @@ describe('next --json surfaces a persisted gate pause as data', () => {
   });
 
   test('the pause warning goes to stderr, never stdout', async () => {
-    const result = await runCliInSandbox(['next', '--json'], seedPausedState);
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: seedPausedState, stripAnsi: true });
 
     assert.ok(result.stderr.includes(GATE_CIRCUIT_BREAKER), result.stderr);
     assert.ok(result.stderr.includes(RESUME_COMMAND), result.stderr);
@@ -226,7 +172,7 @@ describe('next --json surfaces a persisted gate pause as data', () => {
   });
 
   test('an unpaused pipeline reports pause: null and stays actionable', async () => {
-    const result = await runCliInSandbox(['next', '--json'], seedRunningState);
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: seedRunningState, stripAnsi: true });
     const parsed = JSON.parse(result.stdout.trim());
 
     assert.strictEqual(parsed.pause, null);
@@ -241,9 +187,8 @@ describe('next --json surfaces a persisted gate pause as data', () => {
     // checkpoint production never created, so it would pass a fix changing
     // nothing. Here the pause is PERSISTED, and it must still read as a gate:
     // the next step is `codeloop commit`, never `codeloop resume`.
-    const result = await runCliInSandbox(['next', '--json'], (dir) =>
-      seedRunningState(dir, 'COMMIT', { gate: 'COMMIT', at: PAUSED_AT })
-    );
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: (dir: string) =>
+      seedRunningState(dir, 'COMMIT', { gate: 'COMMIT', at: PAUSED_AT }), stripAnsi: true });
     const parsed = JSON.parse(result.stdout.trim());
 
     assert.strictEqual(parsed.actionType, 'human_gate');
@@ -273,9 +218,8 @@ describe('an APPROVAL pause presents one next step (issue #362, Finding 3)', () 
     // `pausedAtGate: 'APPROVAL'` plus the timestamp. The persisted pause used to
     // shadow the synthesised human-gate pause, so `next --json` said "run
     // codeloop resume" beside a humanSummary that said "run codeloop implement".
-    const result = await runCliInSandbox(['next', '--json'], (dir) =>
-      seedRunningState(dir, 'APPROVAL', { gate: 'APPROVAL', at: PAUSED_AT })
-    );
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: (dir: string) =>
+      seedRunningState(dir, 'APPROVAL', { gate: 'APPROVAL', at: PAUSED_AT }), stripAnsi: true });
     const parsed = JSON.parse(result.stdout.trim());
 
     assert.strictEqual(parsed.actionType, 'human_gate');
@@ -298,9 +242,8 @@ describe('an APPROVAL pause presents one next step (issue #362, Finding 3)', () 
 
   test('PA2: a TRIAGE pause still advertises codeloop resume', async () => {
     // A persisted TRIAGE pause genuinely gates re-dispatch, so its hint stays.
-    const result = await runCliInSandbox(['next', '--json'], (dir) =>
-      seedRunningState(dir, 'TRIAGE', { gate: 'TRIAGE', at: PAUSED_AT })
-    );
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: (dir: string) =>
+      seedRunningState(dir, 'TRIAGE', { gate: 'TRIAGE', at: PAUSED_AT }), stripAnsi: true });
     const parsed = JSON.parse(result.stdout.trim());
 
     assert.strictEqual(parsed.pause.resumeCommand, RESUME_COMMAND, result.stdout);
@@ -308,9 +251,8 @@ describe('an APPROVAL pause presents one next step (issue #362, Finding 3)', () 
   });
 
   test('PA3: the shared predicate did not widen — COMMIT is unchanged', async () => {
-    const result = await runCliInSandbox(['next', '--json'], (dir) =>
-      seedRunningState(dir, 'COMMIT', { gate: 'COMMIT', at: PAUSED_AT })
-    );
+    const result = await runCliInSandboxCanonical(['next', '--json'], { seed: (dir: string) =>
+      seedRunningState(dir, 'COMMIT', { gate: 'COMMIT', at: PAUSED_AT }), stripAnsi: true });
     const parsed = JSON.parse(result.stdout.trim());
 
     assert.strictEqual(parsed.pause.gate, 'COMMIT');
@@ -322,7 +264,7 @@ describe('an APPROVAL pause presents one next step (issue #362, Finding 3)', () 
 
 describe('status renders a persisted gate pause', () => {
   test('human output names the gate and when the pause was recorded', async () => {
-    const result = await runCliInSandbox(['status'], seedPausedState);
+    const result = await runCliInSandboxCanonical(['status'], { seed: seedPausedState, stripAnsi: true });
 
     assert.strictEqual(result.code, 0);
     assert.ok(result.stdout.includes('Paused At Gate'), result.stdout);
@@ -334,7 +276,7 @@ describe('status renders a persisted gate pause', () => {
   });
 
   test('existing status output is untouched when the pipeline is paused', async () => {
-    const result = await runCliInSandbox(['status'], seedPausedState);
+    const result = await runCliInSandboxCanonical(['status'], { seed: seedPausedState, stripAnsi: true });
 
     assert.ok(result.stdout.includes('=== CodeLoop: Pipeline Status ==='), result.stdout);
     assert.ok(result.stdout.includes('IMPLEMENT'), result.stdout);
@@ -343,14 +285,14 @@ describe('status renders a persisted gate pause', () => {
   });
 
   test('no pause block is printed for a healthy pipeline', async () => {
-    const result = await runCliInSandbox(['status'], seedRunningState);
+    const result = await runCliInSandboxCanonical(['status'], { seed: seedRunningState, stripAnsi: true });
 
     assert.strictEqual(result.code, 0);
     assert.ok(!result.stdout.includes('Paused At Gate'), result.stdout);
   });
 
   test('a non-breaker pause (human gate) is rendered without a breaker recovery hint', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => seedPausedState(dir, 'APPROVAL'));
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => seedPausedState(dir, 'APPROVAL'), stripAnsi: true });
 
     assert.ok(result.stdout.includes('Paused At Gate'), result.stdout);
     assert.ok(result.stdout.includes('APPROVAL'), result.stdout);
@@ -430,7 +372,7 @@ describe('codeloop resume', () => {
   });
 
   test('an unpaused pipeline is a no-op that still exits 0', async () => {
-    const result = await runCliInSandbox(['resume'], seedRunningState);
+    const result = await runCliInSandboxCanonical(['resume'], { seed: seedRunningState, stripAnsi: true });
 
     assert.strictEqual(result.code, 0);
     assert.ok(result.stdout.includes('=== CodeLoop: Pipeline Resume ==='), result.stdout);

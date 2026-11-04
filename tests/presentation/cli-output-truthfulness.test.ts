@@ -1,3 +1,14 @@
+/** The canonical task seed with this suite's merged snapshot shape. */
+function seedModelessCheckpoint(dir: string, issue: number, snapshot: Record<string, unknown>): void {
+  const now = new Date().toISOString();
+  seedTask(dir, {
+    ...snapshot,
+    issue,
+    createdAt: now,
+    updatedAt: now
+  });
+}
+
 /**
  * agyloop - operator output is TRUE when piped and when the checkpoint is absent
  * (issue #315, Defects A and G7)
@@ -18,6 +29,25 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawn, spawnSync } = require('node:child_process');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { readTaskCheckpoint } = require('../helpers/state-seed.ts');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPath } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+
+function makeTruthfulnessSandbox(): Sandbox {
+  return makeSandbox({
+    prefix: 'codeloop-output-truthfulness-',
+    dirName: '',
+    gitignore: false,
+    seed: (d: string) => {
+      fs.writeFileSync(path.join(d, 'README.md'), 'x\n', 'utf8');
+      fs.mkdirSync(path.join(d, '.home'), { recursive: true });
+    },
+    initialCommit: 'chore: seed'
+  });
+}
+
+
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'codeloop.js');
@@ -26,45 +56,8 @@ interface Sandbox {
   readonly dir: string;
 }
 
-function makeSandbox(): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-output-truthfulness-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: seed'], { cwd: dir, stdio: 'ignore' });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  return { dir };
-}
 
 /** Runs the CLI in `dir` and captures both streams, in-process. */
-async function runCliIn(dir: string, args: readonly string[]) {
-  const { runCli } = require('../../dist/presentation/cli');
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalIsTTY = process.stdin.isTTY;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    process.stdin.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalIsTTY;
-  }
-}
 
 /**
  * Seeds a checkpoint with a history long enough that the report spans many
@@ -125,7 +118,7 @@ function runStatusIntoClosedPipe(dir: string): Promise<{ code: number | null; st
 
 describe('a closed consumer never turns a report into a crash (AC-1, AC-2)', () => {
   test('status piped into a closed consumer exits 0 with no stack trace', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       seedLongHistory(sandbox.dir, 2_000);
       const run = await runStatusIntoClosedPipe(sandbox.dir);
@@ -156,7 +149,7 @@ describe('a closed consumer never turns a report into a crash (AC-1, AC-2)', () 
   });
 
   test('status > /dev/null still exits 0 and the guard is installed once', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const run = spawnSync(process.execPath, [BIN, 'status'], {
         cwd: sandbox.dir,
@@ -176,7 +169,7 @@ describe('a closed consumer never turns a report into a crash (AC-1, AC-2)', () 
     // The guard's contract: EPIPE/ECONNRESET exit 0; anything else is a REAL
     // write failure and must surface exactly as Node would have surfaced it —
     // as an uncaught exception, not a success exit.
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     const resultPath = `${sandbox.dir}.guard-result.json`;
     try {
       const script = `
@@ -226,9 +219,9 @@ describe('a closed consumer never turns a report into a crash (AC-1, AC-2)', () 
 });
 
 describe('a report never names a checkpoint that does not exist (AC-9)', () => {  test('status says (not created yet) and status --json carries stateFileExists:false', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
-      const human = await runCliIn(sandbox.dir, ['status']);
+      const human = await runCliInSandboxCanonical(['status'], { dir: sandbox.dir });
       assert.strictEqual(human.code, 0, human.stderr);
       const checkpointLine = human.stdout
         .split('\n')
@@ -243,7 +236,7 @@ describe('a report never names a checkpoint that does not exist (AC-9)', () => {
         `a path that does not exist must not be printed as the checkpoint, got: ${checkpointLine}`
       );
 
-      const json = await runCliIn(sandbox.dir, ['status', '--json']);
+      const json = await runCliInSandboxCanonical(['status', '--json'], { dir: sandbox.dir });
       assert.strictEqual(json.code, 0, json.stderr);
       const parsed = JSON.parse(json.stdout);
       assert.strictEqual(parsed.stateFileExists, false);
@@ -258,16 +251,16 @@ describe('a report never names a checkpoint that does not exist (AC-9)', () => {
   });
 
   test('an existing checkpoint is named and stateFileExists is true', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       seedLongHistory(sandbox.dir, 1);
-      const human = await runCliIn(sandbox.dir, ['status', '--issue', '315']);
+      const human = await runCliInSandboxCanonical(['status', '--issue', '315'], { dir: sandbox.dir });
       const checkpointLine = human.stdout
         .split('\n')
         .find((line: string) => line.trimStart().startsWith('Checkpoint'));
       assert.ok(checkpointLine!.includes(path.join('tasks', '315.json')), checkpointLine);
 
-      const json = await runCliIn(sandbox.dir, ['status', '--json', '--issue', '315']);
+      const json = await runCliInSandboxCanonical(['status', '--json', '--issue', '315'], { dir: sandbox.dir });
       assert.strictEqual(JSON.parse(json.stdout).stateFileExists, true);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -277,9 +270,9 @@ describe('a report never names a checkpoint that does not exist (AC-9)', () => {
 
 describe('an unknown command names codeloop (AC-8)', () => {
   test('the hint never sends the operator to the deprecated launcher', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
-      const run = await runCliIn(sandbox.dir, ['bogus-command']);
+      const run = await runCliInSandboxCanonical(['bogus-command'], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, 1, run.stderr);
       assert.match(run.stderr, /Run "codeloop --help" for available commands\./);
@@ -324,31 +317,6 @@ const POPULATED_RCA = [
   '- **Potential Regressions / Side Effects:** a planner is no longer advertised from DISCOVERY.'
 ].join('\n');
 
-function seedCheckpoint(dir: string, issue: number, snapshot: Record<string, unknown>): void {
-  const tasksDir = path.join(dir, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const now = new Date().toISOString();
-  fs.writeFileSync(
-    path.join(tasksDir, `${issue}.json`),
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        mode: 'standard',
-        issue,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        totalHumanWaitMs: 0,
-        ...snapshot
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
 
 /**
  * Seeds a plan directory for the issue, optionally with a populated RCA report
@@ -383,24 +351,19 @@ function seedPlanDir(
   return planDir;
 }
 
-function readCheckpoint(dir: string, issue: number): any {
-  return JSON.parse(
-    fs.readFileSync(path.join(dir, '.agyloop', 'tasks', `${issue}.json`), 'utf8')
-  );
-}
 
 describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
   test('a DISCOVERY park never attributes the planner', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'DISCOVERY',
         planDir,
         history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
 
       assert.strictEqual(run.code, 0, run.stderr);
@@ -417,16 +380,16 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
   });
 
   test('a DISCOVERY advance never attributes the planner', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE, { populatedRca: true });
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'DISCOVERY',
         planDir,
         history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
 
       assert.strictEqual(run.code, 0, run.stderr);
@@ -441,10 +404,10 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
   });
 
   test('at PLAN the block prints the model the next directive uses', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE, { populatedRca: true });
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'PLAN',
         planDir,
         history: [
@@ -453,7 +416,7 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
         ]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
       assert.strictEqual(run.code, 0, run.stderr);
       assert.ok(/Subagent\s*:\s*planner/.test(stdout), stdout);
@@ -477,7 +440,7 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
         'utf8'
       );
 
-      const next = await runCliIn(sandbox.dir, ['next', '--issue', String(STAGE_ISSUE), '--json']);
+      const next = await runCliInSandboxCanonical(['next', '--issue', String(STAGE_ISSUE), '--json'], { dir: sandbox.dir });
       const directive = JSON.parse(next.stdout);
       assert.strictEqual(directive.role, 'planner', next.stdout);
       assert.strictEqual(
@@ -491,16 +454,16 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
   });
 
   test('a dry run never prints an advance', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE, { populatedRca: true });
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'DISCOVERY',
         planDir,
         history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE), '--dry-run']);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE), '--dry-run'], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
 
       assert.strictEqual(run.code, 0, run.stderr);
@@ -510,7 +473,7 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
       );
       assert.ok(/\[DRY RUN\] Stage unchanged/.test(stdout), stdout);
       assert.strictEqual(
-        readCheckpoint(sandbox.dir, STAGE_ISSUE).currentStage,
+        readTaskCheckpoint(sandbox.dir, STAGE_ISSUE).currentStage,
         'DISCOVERY',
         'the checkpoint must be untouched'
       );
@@ -524,10 +487,10 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
     // leaves the checkpoint at IMPLEMENT, where the next actionable work is the
     // IMPLEMENTER's, so a planner block there is a false attribution — and the
     // dry run advanced nothing for the block to describe.
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'IMPLEMENT',
         planDir,
         history: [
@@ -536,7 +499,7 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
         ]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE), '--dry-run']);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE), '--dry-run'], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
 
       assert.strictEqual(run.code, 0, run.stderr);
@@ -544,17 +507,17 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
       assert.ok(!/planner/.test(stdout), stdout);
       assert.ok(!/Pipeline advanced to/.test(stdout), stdout);
       assert.ok(/\[DRY RUN\] Stage unchanged: still \[IMPLEMENT\]/.test(stdout), stdout);
-      assert.strictEqual(readCheckpoint(sandbox.dir, STAGE_ISSUE).currentStage, 'IMPLEMENT');
+      assert.strictEqual(readTaskCheckpoint(sandbox.dir, STAGE_ISSUE).currentStage, 'IMPLEMENT');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('a re-plan from IMPLEMENT advertises the planner (PLAN is next actionable)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'IMPLEMENT',
         planDir,
         history: [
@@ -563,11 +526,11 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
         ]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
 
       assert.strictEqual(run.code, 0, run.stderr);
-      assert.strictEqual(readCheckpoint(sandbox.dir, STAGE_ISSUE).currentStage, 'PLAN');
+      assert.strictEqual(readTaskCheckpoint(sandbox.dir, STAGE_ISSUE).currentStage, 'PLAN');
       assert.ok(/Subagent\s*:\s*planner/.test(stdout), stdout);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -575,10 +538,10 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
   });
 
   test('at QUALITY_GATE plan prints a no-op line, not an advance', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'QUALITY_GATE',
         planDir,
         history: [
@@ -587,7 +550,7 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
         ]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const stdout = run.stdout.replace(ANSI_ESCAPE, '');
 
       assert.strictEqual(run.code, 0, run.stderr);
@@ -601,10 +564,10 @@ describe('plan at a stage it does not leave (AC-3, AC-4, AC-5)', () => {
 
 describe('a resume hint is printed only when a pause is recorded (AC-9)', () => {
   test('a DISCOVERY park with no pause never tells the operator to resume', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'DISCOVERY',
         planDir,
         pausedAtGate: null,
@@ -612,7 +575,7 @@ describe('a resume hint is printed only when a pause is recorded (AC-9)', () => 
         history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const output = `${run.stdout}\n${run.stderr}`;
 
       assert.strictEqual(run.code, 0, output);
@@ -628,11 +591,11 @@ describe('a resume hint is printed only when a pause is recorded (AC-9)', () => 
   });
 
   test('a DISCOVERY park with a recorded pause keeps the resume hint', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
       const pausedAt = new Date(Date.now() - 60_000).toISOString();
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'DISCOVERY',
         planDir,
         pausedAtGate: 'CIRCUIT_BREAKER',
@@ -640,7 +603,7 @@ describe('a resume hint is printed only when a pause is recorded (AC-9)', () => 
         history: [{ stage: 'DISCOVERY', timestamp: pausedAt }]
       });
 
-      const run = await runCliIn(sandbox.dir, ['plan', '--issue', String(STAGE_ISSUE)]);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const output = `${run.stdout}\n${run.stderr}`;
 
       assert.match(output, /Parked at DISCOVERY/, output);
@@ -657,9 +620,9 @@ describe('a resume hint is printed only when a pause is recorded (AC-9)', () => 
 
 describe('status --json carries every dispatch counter (AC-11)', () => {
   test('all four counters appear under the checkpoint’s names', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'IMPLEMENT',
         discoveryDispatchCount: 1,
         planDispatchCount: 2,
@@ -668,7 +631,7 @@ describe('status --json carries every dispatch counter (AC-11)', () => {
         history: [{ stage: 'IMPLEMENT', timestamp: new Date().toISOString() }]
       });
 
-      const json = await runCliIn(sandbox.dir, ['status', '--json', '--issue', String(STAGE_ISSUE)]);
+      const json = await runCliInSandboxCanonical(['status', '--json', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(json.code, 0, json.stderr);
       const parsed = JSON.parse(json.stdout);
 
@@ -703,9 +666,9 @@ describe('delivery is reported truthfully (AC-22, AC-24)', () => {
   });
 
   test('a COMPLETED run with no recorded PR is reported as NOT delivered', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'COMPLETED',
         pullRequest: null,
         history: [
@@ -714,7 +677,7 @@ describe('delivery is reported truthfully (AC-22, AC-24)', () => {
         ]
       });
 
-      const human = await runCliIn(sandbox.dir, ['status', '--issue', String(STAGE_ISSUE)]);
+      const human = await runCliInSandboxCanonical(['status', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(human.code, 0, human.stderr);
       const deliveryLine = human.stdout
         .split('\n')
@@ -723,7 +686,7 @@ describe('delivery is reported truthfully (AC-22, AC-24)', () => {
       assert.match(deliveryLine!, /NOT delivered/);
       assert.doesNotMatch(deliveryLine!, /PR #/);
 
-      const json = await runCliIn(sandbox.dir, ['status', '--json', '--issue', String(STAGE_ISSUE)]);
+      const json = await runCliInSandboxCanonical(['status', '--json', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       const parsed = JSON.parse(json.stdout);
       assert.strictEqual(parsed.pullRequest, null, 'an unrecorded PR is null, never "delivered"');
     } finally {
@@ -732,9 +695,9 @@ describe('delivery is reported truthfully (AC-22, AC-24)', () => {
   });
 
   test('a COMPLETED run with a recorded PR names it', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     try {
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'COMPLETED',
         pullRequest: {
           number: 331,
@@ -747,11 +710,11 @@ describe('delivery is reported truthfully (AC-22, AC-24)', () => {
         ]
       });
 
-      const human = await runCliIn(sandbox.dir, ['status', '--issue', String(STAGE_ISSUE)]);
+      const human = await runCliInSandboxCanonical(['status', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(human.code, 0, human.stderr);
       assert.match(human.stdout, /Delivery\s*: PR #331 \(https:\/\/example\.test\/pull\/331\)/);
 
-      const json = await runCliIn(sandbox.dir, ['status', '--json', '--issue', String(STAGE_ISSUE)]);
+      const json = await runCliInSandboxCanonical(['status', '--json', '--issue', String(STAGE_ISSUE)], { dir: sandbox.dir });
       assert.deepStrictEqual(JSON.parse(json.stdout).pullRequest, {
         number: 331,
         url: 'https://example.test/pull/331',
@@ -773,11 +736,11 @@ REMEDIATION_GUIDANCE:
 `;
 
   test('review --verdict-file prints exactly one report title', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTruthfulnessSandbox();
     const inputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-input-'));
     try {
       const planDir = seedPlanDir(sandbox.dir, STAGE_ISSUE);
-      seedCheckpoint(sandbox.dir, STAGE_ISSUE, {
+      seedModelessCheckpoint(sandbox.dir, STAGE_ISSUE, {
         currentStage: 'REVIEW',
         planDir,
         history: [{ stage: 'REVIEW', timestamp: new Date().toISOString() }]

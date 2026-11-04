@@ -68,7 +68,7 @@ const DISCOVERY_POPULATED = [
   '- **Potential Regressions / Side Effects:** none when no probe is injected'
 ].join('\n');
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -92,7 +92,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
     options: {
@@ -125,7 +125,7 @@ function planGen(discoveryContent: string | (() => string)): any {
   };
 }
 
-class FakeProbe {
+class DetectImplementationDiffDouble {
   public readonly snapshotCalls: any[] = [];
   public readonly compareCalls: any[] = [];
   public nextFindings: readonly any[] = [];
@@ -171,11 +171,11 @@ function trackedFinding(): any {
 
 describe('DISCOVERY scoped-write boundary (issue #389)', () => {
   test('T1: the dispatch captures the baseline exactly once and excludes the plan dir', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const probe = new FakeProbe();
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const probe = new DetectImplementationDiffDouble();
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(DISCOVERY_BLANK),
       undefined,
       undefined,
@@ -202,13 +202,13 @@ describe('DISCOVERY scoped-write boundary (issue #389)', () => {
   });
 
   test('T2: a report-only run advances with no stageFindings key', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const probe = new FakeProbe();
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const probe = new DetectImplementationDiffDouble();
     probe.nextFindings = [];
     let content = DISCOVERY_BLANK;
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(() => content),
       undefined,
       undefined,
@@ -234,12 +234,12 @@ describe('DISCOVERY scoped-write boundary (issue #389)', () => {
   });
 
   test('T3: a dist finding rides the subagent path and names dist', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const probe = new FakeProbe();
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const probe = new DetectImplementationDiffDouble();
     probe.nextFindings = [distFinding()];
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(DISCOVERY_BLANK),
       undefined,
       undefined,
@@ -262,13 +262,13 @@ describe('DISCOVERY scoped-write boundary (issue #389)', () => {
   });
 
   test('T4: the same finding on the populated path keeps advance', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const probe = new FakeProbe();
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const probe = new DetectImplementationDiffDouble();
     probe.nextFindings = [distFinding()];
     let content = DISCOVERY_BLANK;
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(() => content),
       undefined,
       undefined,
@@ -292,13 +292,13 @@ describe('DISCOVERY scoped-write boundary (issue #389)', () => {
 
   test('T5: a tracked finding is the blocking human gate on both paths', async () => {
     for (const settledContent of [DISCOVERY_BLANK, DISCOVERY_POPULATED]) {
-      const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-      const probe = new FakeProbe();
+      const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+      const probe = new DetectImplementationDiffDouble();
       probe.nextFindings = [trackedFinding()];
       let content = DISCOVERY_BLANK;
       const useCase = new GetNextActionUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         planGen(() => content),
         undefined,
         undefined,
@@ -324,8 +324,8 @@ describe('DISCOVERY scoped-write boundary (issue #389)', () => {
   });
 
   test('T6: no probe injected means no stageFindings key', async () => {
-    const stateRepo = new MockStateRepo(discoveryCheckpoint().toSnapshot());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), planGen(DISCOVERY_POPULATED));
+    const stateRepo = new StateRepositoryDouble(discoveryCheckpoint().toSnapshot());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), planGen(DISCOVERY_POPULATED));
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -357,11 +357,11 @@ describe('DISCOVERY scoped-write boundary (issue #389)', () => {
     // Re-entering DISCOVERY allows a fresh capture.
     sm.transition(STAGE_DISCOVERY, { note: 'probe' });
     sm.setPlanDir(PLAN_DIR);
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const probe = new FakeProbe();
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const probe = new DetectImplementationDiffDouble();
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       planGen(DISCOVERY_BLANK),
       undefined,
       undefined,

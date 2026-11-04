@@ -287,9 +287,9 @@ describe('CLI triage dismissal call site', () => {
       const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
       fs.mkdirSync(tasksDir, { recursive: true });
       const now = new Date().toISOString();
-      const checkpointPath = path.join(tasksDir, '259.json');
+      const checkpointPathLocal = path.join(tasksDir, '259.json');
       fs.writeFileSync(
-        checkpointPath,
+        checkpointPathLocal,
         JSON.stringify({
           version: '1.0.0',
           currentStage: 'TRIAGE',
@@ -303,9 +303,9 @@ describe('CLI triage dismissal call site', () => {
           pausedAtTimestamp: null
         })
       );
-      checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+      checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
       exitCode = await runCli(['triage', 'dismiss', '-m', 'not applicable', '--issue', '259']);
-      checkpointAfter = fs.readFileSync(checkpointPath, 'utf8');
+      checkpointAfter = fs.readFileSync(checkpointPathLocal, 'utf8');
     } finally {
       process.chdir(prevCwd);
       console.log = originalLog;

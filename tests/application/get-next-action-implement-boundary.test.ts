@@ -55,7 +55,7 @@ const PLAN_CONTENT = [
 import type { StateRepository } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null;
   public saveCallCount = 0;
 
@@ -81,7 +81,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-class MockConfigRepo {
+class ConfigRepositoryDouble {
   public config: any;
 
   constructor() {
@@ -118,7 +118,7 @@ class MockConfigRepo {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   private readonly content: string;
 
   constructor(content: string = PLAN_CONTENT) {
@@ -177,7 +177,7 @@ const UNMEASURABLE_CLEAN_DIFF: any = {
   measurementError: 'git merge-base HEAD main could not resolve the branch point'
 };
 
-class FakeProbe {
+class DetectImplementationDiffDouble {
   public result: any;
   public calls: any[] = [];
   public throwOnExecute = false;
@@ -225,11 +225,11 @@ function machineAtImplement(options: any = {}) {
   return sm;
 }
 
-function useCaseFor(snapshot: any, probe: any, planGenerator: any = new MockPlanGenerator()) {
-  const stateRepo = new MockStateRepo(snapshot);
+function useCaseFor(snapshot: any, probe: any, planGenerator: any = new PlanGeneratorDouble()) {
+  const stateRepo = new StateRepositoryDouble(snapshot);
   const useCase = new GetNextActionUseCase(
     stateRepo,
-    new MockConfigRepo(),
+    new ConfigRepositoryDouble(),
     planGenerator,
     undefined,
     undefined,
@@ -242,7 +242,7 @@ function useCaseFor(snapshot: any, probe: any, planGenerator: any = new MockPlan
   return { stateRepo, useCase };
 }
 
-async function readNext(snapshot: any, probe: any, params: any = {}, planGenerator: any = new MockPlanGenerator()) {
+async function readNext(snapshot: any, probe: any, params: any = {}, planGenerator: any = new PlanGeneratorDouble()) {
   const { stateRepo, useCase } = useCaseFor(snapshot, probe, planGenerator);
   const result = await useCase.execute({ workspaceDir: '/repo', ...params });
   return { result, stateRepo };
@@ -251,7 +251,7 @@ async function readNext(snapshot: any, probe: any, params: any = {}, planGenerat
 describe('IMPLEMENT directive names the completing command and the condition (#327 AC-8/AC-11)', () => {
   test('IB1: a clean worktree names the advancing command, the condition and the absent state', async () => {
     const sm = machineAtImplement();
-    const probe = new FakeProbe(CLEAN_DIFF);
+    const probe = new DetectImplementationDiffDouble(CLEAN_DIFF);
 
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe);
 
@@ -272,7 +272,7 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
 
   test('IB2: a non-empty diff is a met condition — advance, no payload, no counter write', async () => {
     const sm = machineAtImplement();
-    const probe = new FakeProbe(PRESENT_DIFF);
+    const probe = new DetectImplementationDiffDouble(PRESENT_DIFF);
 
     // One dispatch already recorded, as a real re-read would have left it.
     sm.recordImplementationDispatch();
@@ -299,7 +299,7 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
 
   test('IB3: an unreadable tree is UNVERIFIED and records NO dispatch', async () => {
     const sm = machineAtImplement();
-    const probe = new FakeProbe(UNREADABLE_DIFF);
+    const probe = new DetectImplementationDiffDouble(UNREADABLE_DIFF);
 
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe);
 
@@ -321,7 +321,7 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
     assert.ok(absent.result.description.includes(NOTE_IMPLEMENT_UNVERIFIED));
     assert.strictEqual(absent.stateRepo.saveCallCount, 0);
 
-    const throwing = new FakeProbe(CLEAN_DIFF);
+    const throwing = new DetectImplementationDiffDouble(CLEAN_DIFF);
     throwing.throwOnExecute = true;
     const threw = await readNext(sm.toSnapshot(), throwing);
     assert.strictEqual(threw.result.implementationPresent, null);
@@ -330,7 +330,7 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
 
   test('IB3c: a readable but UNMEASURABLE clean tree makes no claim either', async () => {
     const sm = machineAtImplement();
-    const probe = new FakeProbe(UNMEASURABLE_CLEAN_DIFF);
+    const probe = new DetectImplementationDiffDouble(UNMEASURABLE_CLEAN_DIFF);
 
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe);
 
@@ -342,7 +342,7 @@ describe('IMPLEMENT directive names the completing command and the condition (#3
 
 describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
   test('IB4: consecutive reads persist 1/2/3 and never advance the stage', async () => {
-    const probe = new FakeProbe(CLEAN_DIFF);
+    const probe = new DetectImplementationDiffDouble(CLEAN_DIFF);
     const machine = machineAtImplement();
     const { stateRepo, useCase } = useCaseFor(machine.toSnapshot(), probe);
     const before = machine.toSnapshot();
@@ -384,7 +384,7 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
 
   test('IB5: a paused read records 0', async () => {
     const sm = machineAtImplement({ pausedAtGate: STAGE_QUALITY_GATE });
-    const probe = new FakeProbe(CLEAN_DIFF);
+    const probe = new DetectImplementationDiffDouble(CLEAN_DIFF);
 
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe);
 
@@ -394,7 +394,7 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
 
   test('IB6: --dry-run declares the counter write and persists nothing', async () => {
     const sm = machineAtImplement();
-    const probe = new FakeProbe(CLEAN_DIFF);
+    const probe = new DetectImplementationDiffDouble(CLEAN_DIFF);
     const before = JSON.stringify(sm.toSnapshot());
 
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe, { dryRun: true });
@@ -419,7 +419,7 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
         createdAt: new Date().toISOString()
       })
     );
-    const probe = new FakeProbe(PRESENT_DIFF);
+    const probe = new DetectImplementationDiffDouble(PRESENT_DIFF);
 
     const { result, stateRepo } = await readNext(sm.toSnapshot(), probe);
 
@@ -437,7 +437,7 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
 
   test('IB8: the probe receives the task worktree and the descriptor base branch', async () => {
     const sm = machineAtImplement();
-    const probe = new FakeProbe(CLEAN_DIFF);
+    const probe = new DetectImplementationDiffDouble(CLEAN_DIFF);
 
     await readNext(sm.toSnapshot(), probe);
 
@@ -447,7 +447,7 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
   });
 
   test('IB9: every transition named at IMPLEMENT is legal there', async () => {
-    const probe = new FakeProbe(PRESENT_DIFF);
+    const probe = new DetectImplementationDiffDouble(PRESENT_DIFF);
     const { result } = await readNext(machineAtImplement().toSnapshot(), probe);
 
     const named = new Set();
@@ -486,7 +486,7 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
       reviewRound: 2
     });
 
-    const { result, stateRepo } = await readNext(sm.toSnapshot(), new FakeProbe(PRESENT_DIFF));
+    const { result, stateRepo } = await readNext(sm.toSnapshot(), new DetectImplementationDiffDouble(PRESENT_DIFF));
 
     const text = `${result.description}\n${result.humanSummary}`;
     assert.strictEqual(result.actionType, 'subagent');
@@ -520,9 +520,9 @@ describe('IMPLEMENT re-dispatch record (#327 AC-10/AC-13)', () => {
     const sm = machineAtImplement();
     const { result } = await readNext(
       sm.toSnapshot(),
-      new FakeProbe(CLEAN_DIFF),
+      new DetectImplementationDiffDouble(CLEAN_DIFF),
       {},
-      new MockPlanGenerator(plan)
+      new PlanGeneratorDouble(plan)
     );
 
     const prompt = result.invocationPayload.Subagents[0].Prompt;

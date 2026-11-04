@@ -46,7 +46,7 @@ import type {
   ResolvedPlanLocation
 } from '../../src/ports';
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: any = null;
   public initialSnapshot: any = null;
 
@@ -72,7 +72,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public loadConfig(): AgyLoopConfig {
     return DEFAULT_CONFIG;
   }
@@ -91,7 +91,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public summaryUpdates: any[] = [];
   public planContent: string = '';
 
@@ -130,7 +130,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 }
 
-class MockStandardsRepository implements StandardsRepository {
+class StandardsRepositoryDouble implements StandardsRepository {
   public standardsText: string | null = null;
 
   public loadStandards(): string | null {
@@ -207,7 +207,7 @@ function newReviewUseCase(
   );
 }
 
-class MockCritique implements CritiquePort {
+class CritiqueDouble implements CritiquePort {
   public reportToReturn: AiReviewReportType | null = null;
 
   public resolveReviewer(): CritiqueResolution {
@@ -280,11 +280,11 @@ Other content...
 });
 
 describe('RunReviewUseCase (Application Layer)', () => {
-  let stateRepo: MockStateRepository;
-  let configRepo: MockConfigRepository;
-  let planGenerator: MockPlanGenerator;
-  let standardsRepo: MockStandardsRepository;
-  let critique: MockCritique;
+  let stateRepo: StateRepositoryDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
+  let standardsRepo: StandardsRepositoryDouble;
+  let critique: CritiqueDouble;
 
   beforeEach(() => {
     const initialSm = new StateMachine({
@@ -292,17 +292,17 @@ describe('RunReviewUseCase (Application Layer)', () => {
       issue: new IssueNumber(28)
     });
 
-    stateRepo = new MockStateRepository(initialSm.toSnapshot());
-    configRepo = new MockConfigRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble(initialSm.toSnapshot());
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
     planGenerator.planContent = `
 ## Acceptance Criteria
 - AC 1: Reviewer subagent definition created
 - AC 2: Standards ingestion supported
 `;
-    standardsRepo = new MockStandardsRepository();
+    standardsRepo = new StandardsRepositoryDouble();
     standardsRepo.standardsText = '# Standards\nRule: Pure domain only.';
-    critique = new MockCritique();
+    critique = new CritiqueDouble();
     activeGateRepo = new MockGateReportRepository(
       GateResultReport.fromJSON(GATE_REPORT as any)
     );

@@ -22,37 +22,21 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { seedTask } = require('../helpers/state-seed.ts');
 
 const ISSUE = 336;
 const RECORDED_AT = '2026-10-28T05:16:20.604Z';
 
-function seedCheckpoint(snapshot: Record<string, any>): { dir: string; file: string } {
+function seedDispositionSandbox(snapshot: Record<string, any>): { dir: string; file: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-status-disposition-'));
-  const tasksDir = path.join(dir, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
   const now = new Date().toISOString();
-  const file = path.join(tasksDir, `${ISSUE}.json`);
-  fs.writeFileSync(
-    file,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: 'COMPLETED',
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage: 'TRIAGE', timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        ...snapshot
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
+  const file = seedTask(dir, {
+    ...snapshot,
+    currentStage: snapshot.currentStage ?? 'COMPLETED',
+    createdAt: snapshot.createdAt ?? now,
+    updatedAt: snapshot.updatedAt ?? now,
+    issue: ISSUE
+  });
   return { dir, file };
 }
 
@@ -95,7 +79,7 @@ function deliveryLine(text: string): string | undefined {
 
 describe('status reports the triage disposition (issue #336)', () => {
   test('ST1 (AC-6): status --json carries triageDisposition under the checkpoint name', async () => {
-    const sandbox = seedCheckpoint({ triageDisposition: DISPOSITION, pullRequest: null });
+    const sandbox = seedDispositionSandbox({ triageDisposition: DISPOSITION, pullRequest: null });
     try {
       const run = await runStatus(sandbox.dir, true);
       const payload = JSON.parse(run.stdout);
@@ -110,7 +94,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST2 (AC-6): a legacy checkpoint reports triageDisposition null, not absent', async () => {
-    const sandbox = seedCheckpoint({ pullRequest: null });
+    const sandbox = seedDispositionSandbox({ pullRequest: null });
     try {
       const run = await runStatus(sandbox.dir, true);
       const payload = JSON.parse(run.stdout);
@@ -123,7 +107,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST3 (AC-6): the text report names the action, the PR and the recorded-at', async () => {
-    const sandbox = seedCheckpoint({ triageDisposition: DISPOSITION, pullRequest: null });
+    const sandbox = seedDispositionSandbox({ triageDisposition: DISPOSITION, pullRequest: null });
     try {
       const run = await runStatus(sandbox.dir, false);
 
@@ -138,7 +122,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST4 (AC-7): Delivery never denies a PR the checkpoint records', async () => {
-    const sandbox = seedCheckpoint({ triageDisposition: DISPOSITION, pullRequest: null });
+    const sandbox = seedDispositionSandbox({ triageDisposition: DISPOSITION, pullRequest: null });
     try {
       const run = await runStatus(sandbox.dir, false);
       const delivery = deliveryLine(run.stdout);
@@ -156,7 +140,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST5 (AC-7): the delivery PR and the disposition PR are both reported', async () => {
-    const sandbox = seedCheckpoint({
+    const sandbox = seedDispositionSandbox({
       triageDisposition: DISPOSITION,
       pullRequest: { number: 331, url: 'https://example.invalid/pr/331', status: 'created' }
     });
@@ -176,7 +160,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST6 (AC-6): a disposition is rendered at a non-terminal stage too', async () => {
-    const sandbox = seedCheckpoint({
+    const sandbox = seedDispositionSandbox({
       currentStage: 'IMPLEMENT',
       triageDisposition: { ...DISPOSITION, action: 'implement' },
       pullRequest: null
@@ -192,7 +176,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST7 (control): with no disposition the old wording survives where it is true', async () => {
-    const sandbox = seedCheckpoint({ pullRequest: null });
+    const sandbox = seedDispositionSandbox({ pullRequest: null });
     try {
       const run = await runStatus(sandbox.dir, false);
       const delivery = deliveryLine(run.stdout);
@@ -206,7 +190,7 @@ describe('status reports the triage disposition (issue #336)', () => {
   });
 
   test('ST8 (robustness): a corrupt disposition renders as not recorded in both surfaces', async () => {
-    const sandbox = seedCheckpoint({
+    const sandbox = seedDispositionSandbox({
       triageDisposition: { prNumber: 'garbage' },
       pullRequest: null
     });

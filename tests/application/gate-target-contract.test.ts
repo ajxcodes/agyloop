@@ -1,3 +1,7 @@
+function runGit(cwd: string, args: string[]) {
+  return gitStatus(cwd, args, { stdio: 'pipe' });
+}
+
 /**
  * agyloop - Gate target contract regression suite (issue #348, AC1/AC3/AC4)
  *
@@ -30,6 +34,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { gitStatus } = require('../helpers/sandbox.ts');
 const {
   StartImplementationUseCase,
   TransitionStageUseCase
@@ -52,12 +57,9 @@ const BAD_COMMAND = 'git diff --exit-code -- package-lock.json';
 const ISSUE = 348;
 
 /** Runs git with an argument array (never a shell string). */
-function git(cwd: string, args: string[]) {
-  return spawnSync('git', args, { cwd, encoding: 'utf8' });
-}
 
-function gitOk(cwd: string, args: string[]): string {
-  const result = git(cwd, args);
+function runGitOk(cwd: string, args: string[]): string {
+  const result = runGit(cwd, args);
   assert.strictEqual(
     result.status,
     0,
@@ -77,7 +79,7 @@ function planWithTarget(command: string): string {
   ].join('\n');
 }
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public snapshot: any;
   public saveCallCount = 0;
 
@@ -103,7 +105,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   public loadConfig(): any {
     return {
       models: {
@@ -126,7 +128,7 @@ class MockConfigRepository {
   }
 }
 
-class RecordingWorktreeManager {
+class WorktreeManagerDouble {
   public createWorktreeCallCount = 0;
   public readonly root: string;
 
@@ -215,12 +217,12 @@ describe('Gate target contract (issue #348)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gate-target-'));
     // A REAL repository with an intended, uncommitted change to a tracked file.
-    gitOk(root, ['init', '-q']);
-    gitOk(root, ['config', 'user.email', 'smoke@example.com']);
-    gitOk(root, ['config', 'user.name', 'smoke']);
+    runGitOk(root, ['init', '-q']);
+    runGitOk(root, ['config', 'user.email', 'smoke@example.com']);
+    runGitOk(root, ['config', 'user.name', 'smoke']);
     fs.writeFileSync(path.join(root, 'package-lock.json'), 'v1\n', 'utf8');
-    gitOk(root, ['add', '-A']);
-    gitOk(root, ['commit', '-qm', 'seed']);
+    runGitOk(root, ['add', '-A']);
+    runGitOk(root, ['commit', '-qm', 'seed']);
     fs.writeFileSync(path.join(root, 'package-lock.json'), 'v2\n', 'utf8');
 
     planDir = path.join(root, 'artifacts/plans/348-gate-target-contract');
@@ -242,11 +244,11 @@ describe('Gate target contract (issue #348)', () => {
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const worktreeManager = new WorktreeManagerDouble(root);
     const useCase = new StartImplementationUseCase(
       stateRepo as any,
-      new MockConfigRepository() as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath),
       undefined,
       undefined,
@@ -286,7 +288,7 @@ describe('Gate target contract (issue #348)', () => {
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       undefined,
@@ -320,7 +322,7 @@ describe('Gate target contract (issue #348)', () => {
   });
 
   test('GTC3: the intended uncommitted change makes the assertion exit 1', () => {
-    const result = git(root, ['diff', '--exit-code', '--', 'package-lock.json']);
+    const result = runGit(root, ['diff', '--exit-code', '--', 'package-lock.json']);
     assert.strictEqual(
       result.status,
       1,
@@ -349,22 +351,22 @@ describe('Gate target contract (issue #348)', () => {
     sm.transition(STAGE_APPROVAL);
 
     const useCase = new StartImplementationUseCase(
-      new MockStateRepository(sm.toSnapshot()) as any,
-      new MockConfigRepository() as any,
+      new StateRepositoryDouble(sm.toSnapshot()) as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath)
     );
 
     await assert.rejects(() => useCase.execute({ issue: ISSUE, workspaceDir: root }));
 
-    const staged = gitOk(root, ['diff', '--cached', '--name-only']).trim();
+    const staged = runGitOk(root, ['diff', '--cached', '--name-only']).trim();
     assert.strictEqual(staged, '', 'the refusal must stage nothing');
 
-    const unstaged = gitOk(root, ['diff', '--name-only']).trim();
+    const unstaged = runGitOk(root, ['diff', '--name-only']).trim();
     assert.strictEqual(unstaged, 'package-lock.json');
 
     // The commit draft enumerates with `git diff HEAD` (draft-commit.ts:117),
     // so the file is visible with or without a legacy staging workaround.
-    const stagedAndUnstaged = gitOk(root, ['diff', 'HEAD', '--name-only']).trim();
+    const stagedAndUnstaged = runGitOk(root, ['diff', 'HEAD', '--name-only']).trim();
     assert.strictEqual(stagedAndUnstaged, 'package-lock.json');
   });
 
@@ -385,7 +387,7 @@ describe('Gate target contract (issue #348)', () => {
 
   test('GTC2b: an illegal transition APPROVAL still raises InvalidTransitionError (#369)', async () => {
     const sm = checkpoint(STAGE_IMPLEMENT);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       undefined,
@@ -413,8 +415,8 @@ describe('Gate target contract (issue #348)', () => {
 
   test('GTC6: the YOLO PLAN -> IMPLEMENT refusal provisions nothing (#369)', async () => {
     const sm = checkpoint(STAGE_PLAN, MODE_YOLO);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const worktreeManager = new WorktreeManagerDouble(root);
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       worktreeManager as any,
@@ -448,7 +450,7 @@ describe('Gate target contract (issue #348)', () => {
 
   test('GTC7: transition APPROVAL --dry-run warns instead of throwing (#369)', async () => {
     const sm = checkpoint(STAGE_PLAN);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       undefined,
@@ -480,7 +482,7 @@ describe('Gate target contract (issue #348)', () => {
 
   test('GTC8: transition IMPLEMENT --dry-run warns, then the real run refuses (#369, AC-9)', async () => {
     const sm = checkpoint(STAGE_APPROVAL);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       undefined,
@@ -528,11 +530,11 @@ describe('Gate target contract (issue #348)', () => {
     assert.strictEqual(parsed.rejections.length, 1);
 
     const sm = checkpoint(STAGE_APPROVAL);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const worktreeManager = new WorktreeManagerDouble(root);
     const implement = new StartImplementationUseCase(
       stateRepo as any,
-      new MockConfigRepository() as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath),
       undefined,
       undefined,
@@ -554,7 +556,7 @@ describe('Gate target contract (issue #348)', () => {
     assert.strictEqual(worktreeManager.createWorktreeCallCount, 0);
 
     const smApproval = checkpoint(STAGE_PLAN);
-    const approvalRepo = new MockStateRepository(smApproval.toSnapshot());
+    const approvalRepo = new StateRepositoryDouble(smApproval.toSnapshot());
     const approve = new TransitionStageUseCase(
       approvalRepo as any,
       undefined,
@@ -582,8 +584,8 @@ describe('Gate target contract (issue #348)', () => {
 
     const smApproval = checkpoint(STAGE_APPROVAL);
     const implement = new StartImplementationUseCase(
-      new MockStateRepository(smApproval.toSnapshot()) as any,
-      new MockConfigRepository() as any,
+      new StateRepositoryDouble(smApproval.toSnapshot()) as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath)
     );
     let implementMessage = '';
@@ -597,7 +599,7 @@ describe('Gate target contract (issue #348)', () => {
 
     const smPlan = checkpoint(STAGE_PLAN);
     const approve = new TransitionStageUseCase(
-      new MockStateRepository(smPlan.toSnapshot()) as any,
+      new StateRepositoryDouble(smPlan.toSnapshot()) as any,
       undefined,
       undefined,
       makePlanGenerator(planDir, planPath)
@@ -624,7 +626,7 @@ describe('Gate target contract (issue #348)', () => {
     fs.writeFileSync(planPath, planWithTarget(command), 'utf8');
 
     const sm = checkpoint(STAGE_PLAN);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       undefined,
@@ -650,7 +652,7 @@ describe('Gate target contract (issue #348)', () => {
     fs.writeFileSync(planPath, planWithTarget(command), 'utf8');
 
     const sm = checkpoint(STAGE_PLAN);
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
       undefined,
@@ -675,11 +677,11 @@ describe('Gate target contract (issue #348)', () => {
 
     // The same wrapper at the OTHER approval entry point also provisions nothing.
     const approvalSnapshot = checkpoint(STAGE_APPROVAL).toSnapshot();
-    const implementRepo = new MockStateRepository(approvalSnapshot);
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const implementRepo = new StateRepositoryDouble(approvalSnapshot);
+    const worktreeManager = new WorktreeManagerDouble(root);
     const implement = new StartImplementationUseCase(
       implementRepo as any,
-      new MockConfigRepository() as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath),
       undefined,
       undefined,

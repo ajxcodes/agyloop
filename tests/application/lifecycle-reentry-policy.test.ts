@@ -55,7 +55,7 @@ const ALL_STAGES = Object.freeze([
 
 describe('Lifecycle Re-Entry Policy (issue #237)', () => {
   describe('DISCOVERY_REENTRY_RULES (Defect 1)', () => {
-    test('every row of the table resolves to its declared decision', () => {
+    test('every DISCOVERY_REENTRY_RULES row resolves to its declared decision', () => {
       for (const rule of DISCOVERY_REENTRY_RULES) {
         const decision = resolveDiscoveryReentry({
           currentStage: STAGE_DISCOVERY,
@@ -125,7 +125,7 @@ describe('Lifecycle Re-Entry Policy (issue #237)', () => {
       }
     });
 
-    test('is total: never returns undefined for an exhaustive-table refactor', () => {
+    test('discovery re-entry is total: never returns undefined for an exhaustive-table refactor', () => {
       for (const currentStage of ALL_STAGES) {
         for (const skipDiscovery of [false, true]) {
           for (const discoveryReportPresent of [false, true]) {
@@ -145,7 +145,7 @@ describe('Lifecycle Re-Entry Policy (issue #237)', () => {
   });
 
   describe('COMPLETED_REENTRY_RULES (Defect 2)', () => {
-    test('every row of the table resolves to its declared decision', () => {
+    test('every COMPLETED_REENTRY_RULES row resolves to its declared decision', () => {
       for (const rule of COMPLETED_REENTRY_RULES) {
         const decision = resolveCompletedReentry({
           currentStage: STAGE_COMPLETED,
@@ -221,7 +221,7 @@ describe('Lifecycle Re-Entry Policy (issue #237)', () => {
       }
     });
 
-    test('is total: never returns undefined for an exhaustive-table refactor', () => {
+    test('completed re-entry is total: never returns undefined for an exhaustive-table refactor', () => {
       for (const currentStage of ALL_STAGES) {
         for (const restartOptIn of [false, true]) {
           for (const hasOpenReviewFeedback of [false, true]) {

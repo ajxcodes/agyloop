@@ -1,3 +1,7 @@
+function runGit(dir: string, args: readonly string[]): void {
+  gitIn(dir, args as string[]);
+}
+
 /**
  * agyloop - `next` reports a DISCOVERY boundary violation (issue #389, AC3a/c)
  *
@@ -16,6 +20,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { gitIn } = require('../helpers/sandbox.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 389;
@@ -43,42 +49,17 @@ const GIT_AVAILABLE = (() => {
   }
 })();
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
-function git(dir: string, args: readonly string[]): void {
-  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-}
 
 function seedSandbox(): { dir: string; planDir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-boundary-'));
-  git(dir, ['init', '-q', '-b', 'main']);
-  git(dir, ['config', 'user.email', 'smoke@test']);
-  git(dir, ['config', 'user.name', 'smoke']);
+  runGit(dir, ['init', '-q', '-b', 'main']);
+  runGit(dir, ['config', 'user.email', 'smoke@test']);
+  runGit(dir, ['config', 'user.name', 'smoke']);
   fs.writeFileSync(path.join(dir, '.gitignore'), 'dist/\nbuild/\nartifacts/\n.agyloop/\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
-  git(dir, ['add', '-A']);
-  git(dir, ['commit', '-qm', 'chore: base']);
+  runGit(dir, ['add', '-A']);
+  runGit(dir, ['commit', '-qm', 'chore: base']);
 
   const planDir = path.join(dir, 'artifacts', 'plans', `${ISSUE}-task`);
   fs.mkdirSync(planDir, { recursive: true });
@@ -117,7 +98,7 @@ describe('`next` reports a root dist rebuild (issue #389)', { skip: !GIT_AVAILAB
   test('C1: --json names the dist finding and stays actionable', async () => {
     const { dir } = seedSandbox();
 
-    const dispatch = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+    const dispatch = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
     assert.strictEqual(dispatch.code, 0, dispatch.stderr);
     const dispatched = JSON.parse(dispatch.stdout);
     assert.strictEqual(dispatched.actionType, 'subagent');
@@ -132,7 +113,7 @@ describe('`next` reports a root dist rebuild (issue #389)', { skip: !GIT_AVAILAB
       ''
     );
 
-    const after = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+    const after = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
     assert.strictEqual(after.code, 0, after.stderr);
     const result = JSON.parse(after.stdout);
 
@@ -148,13 +129,13 @@ describe('`next` reports a root dist rebuild (issue #389)', { skip: !GIT_AVAILAB
   test('C2: text mode prints the finding', async () => {
     const { dir } = seedSandbox();
 
-    const dispatch = await runIn(dir, ['next', '--issue', String(ISSUE)]);
+    const dispatch = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: dir, stripAnsi: true });
     assert.strictEqual(dispatch.code, 0, dispatch.stderr);
 
     fs.mkdirSync(path.join(dir, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'dist', 'polluted.js'), '// rebuilt\n', 'utf8');
 
-    const after = await runIn(dir, ['next', '--issue', String(ISSUE)]);
+    const after = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: dir, stripAnsi: true });
     assert.strictEqual(after.code, 0, after.stderr);
     assert.ok(after.stdout.includes('Findings      : 1'), after.stdout);
     assert.ok(after.stdout.includes('dist/'), after.stdout);

@@ -1,3 +1,7 @@
+function runGit(cwd: string, args: string[]): string {
+  return String(gitIn(cwd, args, { stdio: 'pipe', encoding: 'utf8' })).trim();
+}
+
 /**
  * agyloop - DetectImplementationDiffUseCase against REAL git histories
  * (issue #263, R1-R5)
@@ -21,6 +25,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 
 const { DetectImplementationDiffUseCase } = require('../../dist/application');
 const { ProcessCommandExecutor } = require('../../dist/infrastructure');
+const { gitIn } = require('../helpers/sandbox.ts');
 
 type CommandExecutorPort = import('../../src').CommandExecutorPort;
 type CommandExecutionOptions = import('../../src').CommandExecutionOptions;
@@ -38,9 +43,6 @@ after(() => {
   }
 });
 
-function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' });
-}
 
 interface Fixture {
   repo: string;
@@ -68,27 +70,27 @@ function buildFixture(
   const wt = path.join(root, 'wt');
 
   fs.mkdirSync(repo);
-  git(repo, ['init', '-q', '-b', 'main']);
-  git(repo, ['config', 'user.email', 'test@example.com']);
-  git(repo, ['config', 'user.name', 'Test']);
+  runGit(repo, ['init', '-q', '-b', 'main']);
+  runGit(repo, ['config', 'user.email', 'test@example.com']);
+  runGit(repo, ['config', 'user.name', 'Test']);
 
   fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
-  git(repo, ['add', '-A']);
-  git(repo, ['commit', '-qm', 'base: initial']);
+  runGit(repo, ['add', '-A']);
+  runGit(repo, ['commit', '-qm', 'base: initial']);
 
   fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n');
-  git(repo, ['add', '-A']);
-  git(repo, ['commit', '-qm', 'base: second']);
-  const branchPoint = git(repo, ['rev-parse', 'HEAD']).trim();
+  runGit(repo, ['add', '-A']);
+  runGit(repo, ['commit', '-qm', 'base: second']);
+  const branchPoint = runGit(repo, ['rev-parse', 'HEAD']).trim();
 
-  git(repo, ['worktree', 'add', '-q', '-b', 'task/263', wt, 'main']);
+  runGit(repo, ['worktree', 'add', '-q', '-b', 'task/263', wt, 'main']);
 
   if (ownCommit) {
     fs.mkdirSync(path.join(wt, 'src'), { recursive: true });
     fs.writeFileSync(path.join(wt, 'src', 'impl.ts'), 'export const impl = 1;\n');
-    git(wt, ['add', '-A']);
-    git(wt, ['commit', '-qm', 'feat: own work']);
+    runGit(wt, ['add', '-A']);
+    runGit(wt, ['commit', '-qm', 'feat: own work']);
   }
 
   if (dirtyTrackedEdit) {
@@ -98,16 +100,16 @@ function buildFixture(
   const advances: Array<() => void> = [
     () => {
       fs.appendFileSync(path.join(repo, 'a.txt'), 'a2\n');
-      git(repo, ['commit', '-qam', 'base: advance a']);
+      runGit(repo, ['commit', '-qam', 'base: advance a']);
     },
     () => {
       fs.appendFileSync(path.join(repo, 'b.txt'), 'b2\n');
-      git(repo, ['commit', '-qam', 'base: advance b']);
+      runGit(repo, ['commit', '-qam', 'base: advance b']);
     },
     () => {
       fs.writeFileSync(path.join(repo, 'c.txt'), 'c\n');
-      git(repo, ['add', '-A']);
-      git(repo, ['commit', '-qm', 'base: add c']);
+      runGit(repo, ['add', '-A']);
+      runGit(repo, ['commit', '-qm', 'base: add c']);
     }
   ];
   for (const advance of advances.slice(0, baseAdvance)) {
@@ -127,7 +129,7 @@ async function runProbe(
 }
 
 /** Records every command while delegating to the real executor. */
-class RecordingCommandExecutor implements CommandExecutorPort {
+class CommandExecutorDouble implements CommandExecutorPort {
   public executed: string[] = [];
   private readonly inner: CommandExecutorPort;
 
@@ -159,7 +161,7 @@ describe(
       assert.strictEqual(diff.ownCommits, 0);
 
       // Control: the OLD two-dot form really does report the base's work.
-      const twoDot = git(fixture.wt, ['diff', '--name-only', 'main', '--', '.'])
+      const twoDot = runGit(fixture.wt, ['diff', '--name-only', 'main', '--', '.'])
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean);
@@ -201,7 +203,7 @@ describe(
 
     test('R5 (AC7): an unresolvable base ref is reported as unmeasurable, and no diff command runs', async () => {
       const fixture = buildFixture();
-      const executor = new RecordingCommandExecutor(new ProcessCommandExecutor());
+      const executor = new CommandExecutorDouble(new ProcessCommandExecutor());
       const diff = await runProbe(fixture.wt, 'does-not-exist', executor);
 
       assert.notStrictEqual(diff.measurementError, null);

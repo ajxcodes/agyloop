@@ -34,7 +34,7 @@ type ScaffoldResult = import('../../src').ScaffoldResult;
 type SummaryUpdateData = import('../../src').SummaryUpdateData;
 type ModelCatalogPort = import('../../src').ModelCatalogPort;
 type DiscoveredModel = import('../../src').DiscoveredModel;
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: StateMachineSnapshot | null = null;
   public saveCallCount = 0;
   public resetCallCount = 0;
@@ -58,7 +58,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockGitHubGateway implements GitHubGateway {
+class GitHubGatewayDouble implements GitHubGateway {
   public issueToReturn: GitHubIssueData | null = null;
 
   public getCurrentRepo(): string | null {
@@ -78,7 +78,7 @@ class MockGitHubGateway implements GitHubGateway {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -115,7 +115,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public lastScaffoldParams: ScaffoldParams | null = null;
   public summaryUpdates: SummaryUpdateData[] = [];
 
@@ -187,10 +187,10 @@ class MockModelCatalog implements ModelCatalogPort {
 
 describe('Application Layer Use Cases (with Mock Adapters)', () => {
   test('StartPlanningUseCase coordinates discovery, scaffolding, transitions to APPROVAL and saves state', async () => {
-    const stateRepo = new MockStateRepository();
-    const github = new MockGitHubGateway();
-    const config = new MockConfigRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const github = new GitHubGatewayDouble();
+    const config = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
 
     const useCase = new StartPlanningUseCase(stateRepo, github, config, planGen);
     const result = await useCase.execute({
@@ -207,10 +207,10 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('StartPlanningUseCase resets state and transitions to APPROVAL when previous stage was COMPLETED', async () => {
-    const stateRepo = new MockStateRepository();
-    const github = new MockGitHubGateway();
-    const config = new MockConfigRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const github = new GitHubGatewayDouble();
+    const config = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
 
     // Previous run was completed
     stateRepo.snapshot = {
@@ -236,10 +236,10 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('StartPlanningUseCase resets state when initiated with a new issue ID even if previous was in another stage', async () => {
-    const stateRepo = new MockStateRepository();
-    const github = new MockGitHubGateway();
-    const config = new MockConfigRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const github = new GitHubGatewayDouble();
+    const config = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
 
     // Previous run was left in IMPLEMENT for issue 10
     stateRepo.snapshot = {
@@ -265,7 +265,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('TransitionStageUseCase advances stage and persists snapshot', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const transitionUseCase = new TransitionStageUseCase(stateRepo);
 
     const sm1 = await transitionUseCase.execute({
@@ -283,7 +283,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('TransitionStageUseCase blocks transition to PLAN if planDir is null', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const transitionUseCase = new TransitionStageUseCase(stateRepo);
 
     await assert.rejects(
@@ -297,8 +297,8 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in AgyLoop Summary.md', async () => {
-    const stateRepo = new MockStateRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
     const transitionUseCase = new TransitionStageUseCase(
       stateRepo,
       undefined,
@@ -342,8 +342,8 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('TransitionStageUseCase subtracts ONLY the wait this transition consumed, never the cumulative total', async () => {
-    const stateRepo = new MockStateRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
     const transitionUseCase = new TransitionStageUseCase(
       stateRepo,
       undefined,
@@ -385,8 +385,8 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     );
 
     // ...and a wait consumed by THIS transition IS subtracted.
-    const stateRepo2 = new MockStateRepository();
-    const planGen2 = new MockPlanGenerator();
+    const stateRepo2 = new StateRepositoryDouble();
+    const planGen2 = new PlanGeneratorDouble();
     const transitionUseCase2 = new TransitionStageUseCase(stateRepo2, undefined, undefined, planGen2);
     stateRepo2.snapshot = {
       version: '1.0.0',
@@ -432,7 +432,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
      */
     for (const sourceStage of [STAGE_COMMIT, 'TRIAGE']) {
       test(`entering COMPLETED from ${sourceStage} issues zero removeWorktree calls`, async () => {
-        const stateRepo = new MockStateRepository();
+        const stateRepo = new StateRepositoryDouble();
         let removeWorktreeCalls = 0;
         const worktreeManager: any = {
           createWorktree: async () => WORKTREE,
@@ -491,7 +491,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('GetPipelineStatusUseCase retrieves state and history from repository', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
 
     const result = await getStatusUseCase.execute();
@@ -501,7 +501,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('ResetPipelineUseCase clears state repository and returns fresh initial state', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     stateRepo.snapshot = {
       version: '1.0.0',
       currentStage: STAGE_QUALITY_GATE,
@@ -526,7 +526,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('ResolveSubagentUseCase resolves subagent definition with safety invariants', () => {
-    const configRepo = new MockConfigRepository();
+    const configRepo = new ConfigRepositoryDouble();
     const resolveUseCase = new ResolveSubagentUseCase(configRepo);
 
     const def = resolveUseCase.execute({ role: 'planner' });

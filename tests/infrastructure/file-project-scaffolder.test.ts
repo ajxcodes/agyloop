@@ -93,7 +93,7 @@ describe('FileProjectScaffolder', () => {
   });
 
   test('reconciles blanket ignores so config.json is tracked but state is ignored', () => {
-    const git = (...args: string[]) => {
+    const runGit = (...args: string[]) => {
       try {
         return execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
       } catch {
@@ -114,12 +114,12 @@ describe('FileProjectScaffolder', () => {
     const content = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
     assert.ok(content.includes('node_modules\nconfig.json\n'));
 
-    assert.strictEqual(git('check-ignore', '.codeloop/config.json'), null);
-    assert.strictEqual(git('check-ignore', '.agyloop/config.json'), null);
+    assert.strictEqual(runGit('check-ignore', '.codeloop/config.json'), null);
+    assert.strictEqual(runGit('check-ignore', '.agyloop/config.json'), null);
     // Issue #315 (AC-12): state lives in `.agyloop/` only. `.codeloop/` holds
     // config and nothing writes `.codeloop/state.json`, so no rule claims it.
-    assert.strictEqual(git('check-ignore', '.codeloop/state.json'), null);
-    assert.ok(git('check-ignore', '.agyloop/state.json'));
+    assert.strictEqual(runGit('check-ignore', '.codeloop/state.json'), null);
+    assert.ok(runGit('check-ignore', '.agyloop/state.json'));
 
     const again = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
     assert.deepStrictEqual(again, { added: [], replaced: [] });
@@ -128,7 +128,7 @@ describe('FileProjectScaffolder', () => {
   });
 
   test('SC1: the dispatched-review evidence directory is ignored and config stays trackable (issue #397)', () => {
-    const git = (...args: string[]) => {
+    const runGit = (...args: string[]) => {
       try {
         return execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
       } catch {
@@ -146,12 +146,12 @@ describe('FileProjectScaffolder', () => {
     assert.ok(first.added.includes('.agyloop/critique/'));
 
     assert.ok(
-      git('check-ignore', '.agyloop/critique/397.json'),
+      runGit('check-ignore', '.agyloop/critique/397.json'),
       'the Tier 1 evidence file would be committed as review evidence'
     );
     // The re-inclusions the rule must not disturb.
-    assert.strictEqual(git('check-ignore', '.agyloop/config.json'), null);
-    assert.ok(git('check-ignore', '.agyloop/tasks/397.json'));
+    assert.strictEqual(runGit('check-ignore', '.agyloop/config.json'), null);
+    assert.ok(runGit('check-ignore', '.agyloop/tasks/397.json'));
 
     const content = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
     const again = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
@@ -178,7 +178,7 @@ describe('FileProjectScaffolder', () => {
   });
 
   test('detects indirect parent-dir ignores and appends directory negations before granular rules with warnings', () => {
-    const git = (...args: string[]) => {
+    const runGit = (...args: string[]) => {
       try {
         return execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
       } catch {
@@ -209,12 +209,12 @@ describe('FileProjectScaffolder', () => {
     assert.ok(agyloopNegIdx < agyloopStateIdx);
 
     // Verify git check-ignore behaves as expected
-    assert.strictEqual(git('check-ignore', '.codeloop/config.json'), null);
-    assert.strictEqual(git('check-ignore', '.agyloop/config.json'), null);
-    assert.strictEqual(git('check-ignore', '.codeloop/state.json'), null);
-    assert.ok(git('check-ignore', '.agyloop/state.json'));
-    assert.ok(git('check-ignore', '.agyloop/critique-update-cache.json'));
-    assert.ok(git('check-ignore', '.agyloop/state.json.bak'));
+    assert.strictEqual(runGit('check-ignore', '.codeloop/config.json'), null);
+    assert.strictEqual(runGit('check-ignore', '.agyloop/config.json'), null);
+    assert.strictEqual(runGit('check-ignore', '.codeloop/state.json'), null);
+    assert.ok(runGit('check-ignore', '.agyloop/state.json'));
+    assert.ok(runGit('check-ignore', '.agyloop/critique-update-cache.json'));
+    assert.ok(runGit('check-ignore', '.agyloop/state.json.bak'));
 
     // Idempotent
     const again = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);

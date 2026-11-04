@@ -16,6 +16,8 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const NOW = '2026-10-24T00:00:00.000Z';
 const ISSUE = 803;
@@ -25,17 +27,17 @@ interface Sandbox {
   readonly dir: string;
 }
 
-function makeSandbox(): Sandbox {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-missing-wt-'));
-  const dir = path.join(base, 'repo');
-  fs.mkdirSync(dir, { recursive: true });
-
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+function makeMissingWorktreeSandbox(): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-next-missing-wt-',
+    dirName: 'repo',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
+  const base = sandbox.root;
 
   // A substantive plan: a BLANK plan at IMPLEMENT is the #267 planner
   // directive, which is checked before the worktree guard. These tests are
@@ -73,46 +75,12 @@ function makeSandbox(): Sandbox {
   return { base, dir };
 }
 
-async function runCliIn(
-  dir: string,
-  args: readonly string[]
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalSubagent = process.env.AGY_SUBAGENT;
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    process.chdir(dir);
-    delete process.env.AGY_SUBAGENT;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-  }
-}
 
 describe('codeloop next with a missing worktree (#266, absorbs #287)', () => {
   test('F1 `next --issue N --json` exits 0 with a directive (AC-10, AC-12)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeMissingWorktreeSandbox();
     try {
-      const run = await runCliIn(sandbox.dir, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
       const parsed = JSON.parse(run.stdout);
@@ -138,13 +106,13 @@ describe('codeloop next with a missing worktree (#266, absorbs #287)', () => {
   });
 
   test('F2 no `Fatal:` and no stack trace escapes (AC-10)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeMissingWorktreeSandbox();
     try {
       for (const args of [
         ['next', '--issue', String(ISSUE), '--json'],
         ['next', '--issue', String(ISSUE)]
       ]) {
-        const run = await runCliIn(sandbox.dir, args);
+        const run = await runCliInSandboxCanonical(args, { dir: sandbox.dir });
         const combined = run.stdout + run.stderr;
         assert.strictEqual(/Fatal:/.test(combined), false, `${args.join(' ')}:\n${combined}`);
         assert.strictEqual(
@@ -159,9 +127,9 @@ describe('codeloop next with a missing worktree (#266, absorbs #287)', () => {
   });
 
   test('F3 the human renderer names the title and the command (AC-10)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeMissingWorktreeSandbox();
     try {
-      const run = await runCliIn(sandbox.dir, ['next', '--issue', String(ISSUE)]);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
       assert.ok(run.stdout.includes('Next Action   : Worktree Required'), run.stdout);

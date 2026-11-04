@@ -16,6 +16,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { readCheckpoint } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 327;
@@ -30,45 +33,26 @@ const REAL_PLAN = [
 const ADVANCE = `codeloop transition QUALITY_GATE --issue ${ISSUE}`;
 const CONDITION = 'This stage ends when an implementation diff exists in the task worktree.';
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
-
-function git(dir: string, args: readonly string[]): void {
-  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-}
 
 /** A real repository whose task worktree is a real linked git worktree. */
-function makeSandbox() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-implement-'));
-  git(dir, ['init', '-q', '-b', 'main']);
-  git(dir, ['config', 'user.email', 'smoke@test']);
-  git(dir, ['config', 'user.name', 'smoke']);
-  fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
-  git(dir, ['add', 'README.md']);
-  git(dir, ['commit', '-qm', 'chore: base']);
+function makeImplBoundarySandbox() {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-next-implement-',
+    dirName: '',
+    gitignore: false,
+    initialBranch: 'main',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
+    },
+    initialCommit: 'chore: base'
+  });
+  const dir = sandbox.dir;
+  const g = (args: readonly string[]): void => {
+    sandbox.git(args);
+  };
 
   const worktreePath = path.join(dir, '.worktrees', String(ISSUE));
-  git(dir, ['worktree', 'add', '-q', '-b', `task/${ISSUE}-boundary`, worktreePath, 'main']);
+  g(['worktree', 'add', '-q', '-b', `task/${ISSUE}-boundary`, worktreePath, 'main']);
 
   const planDir = path.join(dir, 'artifacts', 'plans', `${ISSUE}-task`);
   fs.mkdirSync(planDir, { recursive: true });
@@ -109,9 +93,6 @@ function makeSandbox() {
   return { dir, worktreePath, checkpointPath: path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`) };
 }
 
-function readCheckpoint(file: string): any {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
-}
 
 /** Adds one untracked source file to the task worktree. */
 function implementInWorktree(worktreePath: string): void {
@@ -121,10 +102,10 @@ function implementInWorktree(worktreePath: string): void {
 
 describe('codeloop next at IMPLEMENT (issue #327)', () => {
   test('CB1/CB2: terminal render names the command; a real diff flips the condition and the count', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeImplBoundarySandbox();
     try {
       // --- clean worktree -------------------------------------------------
-      const cleanJson = await runIn(sandbox.dir, ['next', '--issue', String(ISSUE), '--json']);
+      const cleanJson = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(cleanJson.code, 0, cleanJson.stderr);
       const clean = JSON.parse(cleanJson.stdout);
 
@@ -136,7 +117,7 @@ describe('codeloop next at IMPLEMENT (issue #327)', () => {
       assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, 'IMPLEMENT');
 
       // CB1: the TERMINAL render (no --json) carries the same instruction.
-      const terminal = await runIn(sandbox.dir, ['next', '--issue', String(ISSUE)]);
+      const terminal = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(terminal.code, 0, terminal.stderr);
       assert.ok(
         terminal.stdout.includes('Description   :'),
@@ -153,7 +134,7 @@ describe('codeloop next at IMPLEMENT (issue #327)', () => {
       // --- implemented worktree -------------------------------------------
       implementInWorktree(sandbox.worktreePath);
 
-      const presentJson = await runIn(sandbox.dir, ['next', '--issue', String(ISSUE), '--json']);
+      const presentJson = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: sandbox.dir, stripAnsi: true });
       assert.strictEqual(presentJson.code, 0, presentJson.stderr);
       const present = JSON.parse(presentJson.stdout);
       const text = `${present.description}\n${present.humanSummary}`;

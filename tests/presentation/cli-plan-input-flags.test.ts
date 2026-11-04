@@ -1,3 +1,20 @@
+function runGit(dir: string, ...args: string[]): void {
+  gitIn(dir, args);
+}
+
+/** The canonical makeSandbox composed for makePlanInputSandbox (issue #544). */
+function makePlanInputSandbox(): string {
+  return makeSandbox({
+    prefix: 'agyloop-cli-plan-input-',
+    dirName: '',
+    initGit: false,
+    seed: (dir: string) => {
+      fs.mkdirSync(path.join(dir, 'supplied'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'supplied', 'plan.md'), REAL_PLAN, 'utf8');
+      fs.writeFileSync(path.join(dir, 'supplied', 'blank.md'), '', 'utf8');
+    }
+  }).dir;
+}
 /**
  * agyloop - `--plan-path` / `--plan-dir` CLI contract (issue #267)
  *
@@ -26,32 +43,6 @@ const REAL_PLAN = [
   '- [ ] **Step 1:** noop'
 ].join('\n');
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
 function planDirectories(dir: string): string[] {
   const plans = path.join(dir, 'artifacts', 'plans');
@@ -62,13 +53,6 @@ function planDirectories(dir: string): string[] {
     .map((entry: any) => entry.name);
 }
 
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-input-'));
-  fs.mkdirSync(path.join(dir, 'supplied'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'supplied', 'plan.md'), REAL_PLAN, 'utf8');
-  fs.writeFileSync(path.join(dir, 'supplied', 'blank.md'), '', 'utf8');
-  return dir;
-}
 
 describe('--plan-path / --plan-dir CLI contract (#267)', () => {
   // #382 D4 (amended fail-closed rule): these fixtures run OFFLINE, so the
@@ -79,31 +63,31 @@ describe('--plan-path / --plan-dir CLI contract (#267)', () => {
   const PLAN_TYPE = ['--type', 'implementation'];
 
   test('T-267.B1: accepted by plan/implement/yolo and refused by other commands', async () => {
-    const dir = makeSandbox();
+    const dir = makePlanInputSandbox();
     try {
       const suppliedPlan = path.join(dir, 'supplied', 'plan.md');
 
-      const plan = await runIn(dir, ['plan', '--issue', '283', ...PLAN_TYPE, '--plan-path', suppliedPlan]);
+      const plan = await runCliInSandboxCanonical(['plan', '--issue', '283', ...PLAN_TYPE, '--plan-path', suppliedPlan], { dir: dir, stripAnsi: true });
       assert.strictEqual(plan.code, 0, `${plan.stdout}\n${plan.stderr}`);
       assert.doesNotMatch(plan.stderr, /only supported by/);
       assert.doesNotMatch(plan.stderr, /Unknown flag/);
 
-      const implement = await runIn(dir, ['implement', '--issue', '283', '--plan-dir', path.join(dir, 'supplied')]);
+      const implement = await runCliInSandboxCanonical(['implement', '--issue', '283', '--plan-dir', path.join(dir, 'supplied')], { dir: dir, stripAnsi: true });
       assert.doesNotMatch(implement.stderr, /only supported by/);
       assert.doesNotMatch(implement.stderr, /Unknown flag/);
 
-      const yolo = await runIn(dir, ['yolo', '--issue', '284', '--plan-path', suppliedPlan]);
+      const yolo = await runCliInSandboxCanonical(['yolo', '--issue', '284', '--plan-path', suppliedPlan], { dir: dir, stripAnsi: true });
       assert.doesNotMatch(yolo.stderr, /only supported by/);
       assert.doesNotMatch(yolo.stderr, /Unknown flag/);
 
       for (const command of ['status', 'next', 'transition']) {
-        const refused = await runIn(dir, [command, '--plan-path', suppliedPlan]);
+        const refused = await runCliInSandboxCanonical([command, '--plan-path', suppliedPlan], { dir: dir, stripAnsi: true });
         assert.strictEqual(refused.code, 1, `${command} must refuse --plan-path`);
         assert.match(refused.stderr, /only supported by plan\/implement\/yolo/);
         assert.doesNotMatch(refused.stderr, /Unknown flag/);
       }
 
-      const missing = await runIn(dir, ['plan', '--plan-path']);
+      const missing = await runCliInSandboxCanonical(['plan', '--plan-path'], { dir: dir, stripAnsi: true });
       assert.strictEqual(missing.code, 1);
       assert.match(missing.stderr, /without a value/);
     } finally {
@@ -112,17 +96,17 @@ describe('--plan-path / --plan-dir CLI contract (#267)', () => {
   });
 
   test('T-267.B2: a supplied plan creates no competing directory and prints the supplied path', async () => {
-    const dir = makeSandbox();
+    const dir = makePlanInputSandbox();
     try {
       const before = planDirectories(dir).length;
-      const result = await runIn(dir, [
+      const result = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '283',
         ...PLAN_TYPE,
         '--plan-path',
         path.join(dir, 'supplied', 'plan.md')
-      ]);
+      ], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
       assert.strictEqual(planDirectories(dir).length, before, 'no plan directory may be created');
@@ -139,16 +123,16 @@ describe('--plan-path / --plan-dir CLI contract (#267)', () => {
   });
 
   test('T-267.B3: a blank supplied plan is rejected and no directive is produced', async () => {
-    const dir = makeSandbox();
+    const dir = makePlanInputSandbox();
     try {
-      const result = await runIn(dir, [
+      const result = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '283',
         ...PLAN_TYPE,
         '--plan-path',
         path.join(dir, 'supplied', 'blank.md')
-      ]);
+      ], { dir: dir, stripAnsi: true });
 
       assert.notStrictEqual(result.code, 0);
       assert.match(result.stderr, /blank/i);
@@ -166,10 +150,10 @@ describe('--plan-path / --plan-dir CLI contract (#267)', () => {
 // ============================================================================
 
 const { execFileSync } = require('node:child_process');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { gitIn } = require('../helpers/sandbox.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
-function git(dir: string, ...args: string[]): void {
-  execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-}
 
 /** Root-level entries that are NOT the tool's own bookkeeping. */
 function rootArtifacts(dir: string): string[] {
@@ -181,14 +165,14 @@ function rootArtifacts(dir: string): string[] {
 
 describe('supplied plan end to end with the real generator (#267)', () => {
   test('finding 2/3: the supplied plan is executed and a second plan pass writes nothing outside the plan directory', async () => {
-    const dir = makeSandbox();
+    const dir = makePlanInputSandbox();
     try {
-      git(dir, 'init', '-q');
-      git(dir, 'config', 'user.email', 'smoke@test');
-      git(dir, 'config', 'user.name', 'smoke');
+      runGit(dir, 'init', '-q');
+      runGit(dir, 'config', 'user.email', 'smoke@test');
+      runGit(dir, 'config', 'user.name', 'smoke');
       fs.writeFileSync(path.join(dir, 'README.md'), '# probe\n', 'utf8');
-      git(dir, 'add', '-A');
-      git(dir, 'commit', '-qm', 'chore: init');
+      runGit(dir, 'add', '-A');
+      runGit(dir, 'commit', '-qm', 'chore: init');
 
       fs.writeFileSync(
         path.join(dir, 'myplan.md'),
@@ -203,7 +187,7 @@ describe('supplied plan end to end with the real generator (#267)', () => {
 
       const before = rootArtifacts(dir);
 
-      const yolo = await runIn(dir, ['yolo', '--issue', '901', '--type', 'implementation', '--plan-path', './myplan.md']);
+      const yolo = await runCliInSandboxCanonical(['yolo', '--issue', '901', '--type', 'implementation', '--plan-path', './myplan.md'], { dir: dir, stripAnsi: true });
       assert.strictEqual(yolo.code, 0, `${yolo.stdout}\n${yolo.stderr}`);
 
       // The supplied plan's DIRECTORY (the repo root) must not receive scaffold
@@ -217,7 +201,7 @@ describe('supplied plan end to end with the real generator (#267)', () => {
       // The documented dispatch path resolves the SUPPLIED document, not a
       // lexicographic neighbour such as README.md.
       const nextAfterYolo = JSON.parse(
-        (await runIn(dir, ['next', '--issue', '901', '--json'])).stdout
+        (await runCliInSandboxCanonical(['next', '--issue', '901', '--json'], { dir: dir, stripAnsi: true })).stdout
       );
       assert.strictEqual(nextAfterYolo.role, 'implementer');
       assert.strictEqual(nextAfterYolo.planBlank, false);
@@ -232,13 +216,13 @@ describe('supplied plan end to end with the real generator (#267)', () => {
 
       // A second planning pass may create the canonical plan directory, but it
       // must not write ANYTHING into the supplied plan's own directory.
-      const plan = await runIn(dir, ['plan', '--issue', '901', '--title', 'second pass']);
+      const plan = await runCliInSandboxCanonical(['plan', '--issue', '901', '--title', 'second pass'], { dir: dir, stripAnsi: true });
       assert.strictEqual(plan.code, 0, `${plan.stdout}\n${plan.stderr}`);
       assert.deepStrictEqual(rootArtifacts(dir), before, 'a second plan pass must not write to the repo root');
 
       // The supplied plan still wins over the new blank canonical scaffold.
       const nextAfterPlan = JSON.parse(
-        (await runIn(dir, ['next', '--issue', '901', '--json'])).stdout
+        (await runCliInSandboxCanonical(['next', '--issue', '901', '--json'], { dir: dir, stripAnsi: true })).stdout
       );
       assert.strictEqual(nextAfterPlan.currentStage, 'PLAN');
       assert.match(nextAfterPlan.description, /myplan\.md/);
@@ -249,10 +233,10 @@ describe('supplied plan end to end with the real generator (#267)', () => {
   });
 
   test('finding 4: --plan-dir prints the ACTUAL target directory', async () => {
-    const dir = makeSandbox();
+    const dir = makePlanInputSandbox();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-dir-outside-'));
     try {
-      const result = await runIn(dir, [
+      const result = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '906',
@@ -260,7 +244,7 @@ describe('supplied plan end to end with the real generator (#267)', () => {
         'implementation',
         '--plan-dir',
         outside
-      ]);
+      ], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(result.code, 0, `${result.stdout}\n${result.stderr}`);
       // The line names where the files really are — never a fabricated

@@ -42,7 +42,7 @@ type WorktreeManagerPort = import('../../src').WorktreeManagerPort;
 type CreateWorktreeOptions = import('../../src').CreateWorktreeOptions;
 type RemoveWorktreeOptions = import('../../src').RemoveWorktreeOptions;
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: StateMachineSnapshot | null = null;
   public saveCallCount: number = 0;
 
@@ -68,7 +68,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockGitHubGateway implements GitHubGateway {
+class GitHubGatewayDouble implements GitHubGateway {
   public issueToReturn: GitHubIssueData | null = null;
 
   constructor(issueToReturn: GitHubIssueData | null = null) {
@@ -92,7 +92,7 @@ class MockGitHubGateway implements GitHubGateway {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public config: AgyLoopConfig;
 
   constructor(customModels: Record<string, string> = {}) {
@@ -139,7 +139,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public planDir: string | null;
   public summaryUpdates: Array<{ file: string; data: SummaryUpdateData }> = [];
 
@@ -228,7 +228,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
  * only meaningful if the mock would have created one. Without it the assertion
  * would be reporting on a stub rather than on the filesystem.
  */
-class MockWorktreeManager implements WorktreeManagerPort {
+class WorktreeManagerDouble implements WorktreeManagerPort {
   public createWorktreeCallCount = 0;
   public readonly createdBranches: string[] = [];
   private readonly root: string;
@@ -351,7 +351,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('advances stage from APPROVAL to IMPLEMENT, loads plan, and saves state', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -363,9 +363,9 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
         { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
       ]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
-    const github = new MockGitHubGateway();
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen, github);
     const result = await useCase.execute({
@@ -416,7 +416,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('allows resuming when pipeline is already at IMPLEMENT stage', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_IMPLEMENT,
       mode: MODE_STANDARD,
@@ -425,8 +425,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -451,7 +451,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       ].join('\n'),
       'utf8'
     );
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_IMPLEMENT,
       mode: MODE_STANDARD,
@@ -460,11 +460,11 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     });
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(
       stateRepo,
-      new MockConfigRepository(),
+      new ConfigRepositoryDouble(),
       planGen
     );
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
@@ -478,7 +478,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('allows direct transition from PLAN to IMPLEMENT in YOLO mode', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_PLAN,
       mode: MODE_YOLO,
@@ -487,8 +487,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_PLAN, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -501,7 +501,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('allows reopening implementation when pipeline is at COMPLETED stage', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_COMPLETED,
       mode: MODE_STANDARD,
@@ -510,8 +510,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_COMPLETED, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -525,7 +525,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('allows direct transition from PLAN to IMPLEMENT in standard mode by implicitly approving', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_PLAN,
       mode: MODE_STANDARD,
@@ -534,8 +534,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_PLAN, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
@@ -551,9 +551,9 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('throws InvalidTransitionError when pipeline state is uninitialized', async () => {
-    const stateRepo = new MockStateRepository(null);
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const stateRepo = new StateRepositoryDouble(null);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     await assert.rejects(
@@ -563,7 +563,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('throws InvalidTransitionError when attempting implementation from DISCOVERY stage', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_DISCOVERY,
       mode: MODE_STANDARD,
@@ -572,8 +572,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     await assert.rejects(
@@ -583,7 +583,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('throws ValidationError when approved plan document cannot be found', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -592,8 +592,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(null); // No plan directory found
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(null); // No plan directory found
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     await assert.rejects(
@@ -610,7 +610,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       'utf8'
     );
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -619,8 +619,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(null);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(null);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -639,7 +639,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('dryRun avoids saving state or mutating disk', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -648,8 +648,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -673,7 +673,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   // about the filesystem and not merely about a call counter.
 
   test('implement --dry-run provisions no worktree directory and no branch (#226)', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -683,12 +683,12 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const worktreeManager = new MockWorktreeManager(tempDir);
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
 
     const useCase = new StartImplementationUseCase(
       stateRepo,
-      new MockConfigRepository(),
-      new MockPlanGenerator(testPlanDir),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(testPlanDir),
       undefined,
       undefined,
       worktreeManager
@@ -714,7 +714,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('does not auto-provision a worktree when noWorktree is true (#247)', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -724,12 +724,12 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const worktreeManager = new MockWorktreeManager(tempDir);
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
 
     const useCase = new StartImplementationUseCase(
       stateRepo,
-      new MockConfigRepository(),
-      new MockPlanGenerator(testPlanDir),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(testPlanDir),
       undefined,
       undefined,
       worktreeManager
@@ -752,7 +752,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('implement without --dry-run still provisions exactly one worktree (negative control)', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -762,12 +762,12 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const worktreeManager = new MockWorktreeManager(tempDir);
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
 
     const useCase = new StartImplementationUseCase(
       stateRepo,
-      new MockConfigRepository(),
-      new MockPlanGenerator(testPlanDir),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(testPlanDir),
       undefined,
       undefined,
       worktreeManager
@@ -788,7 +788,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('ResolveSubagentUseCase resolves implementer role with custom model config', () => {
-    const configRepo = new MockConfigRepository({ implementer: 'gemini-3.5-pro' });
+    const configRepo = new ConfigRepositoryDouble({ implementer: 'gemini-3.5-pro' });
     const resolveUseCase = new ResolveSubagentUseCase(configRepo);
 
     const def = resolveUseCase.execute({ role: 'implementer' });
@@ -818,7 +818,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir, 'implementation_plan.md'), '# Plan 24\n- [ ] Task 1');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_IMPLEMENT,
       mode: MODE_STANDARD,
@@ -840,8 +840,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
         }
       ]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -861,7 +861,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir, 'implementation_plan.md'), '# Plan 24\n- [ ] Task 1');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -870,8 +870,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -891,7 +891,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir2, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir2, 'implementation_plan.md'), '# Conflict Plan\n- [ ] Fix conflicts');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -900,8 +900,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir2);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir2);
 
     type CommandExecutorPort = import('../../src').CommandExecutorPort;
     type CommandExecutionResult = import('../../src').CommandExecutionResult;
@@ -976,7 +976,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir3, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir3, 'implementation_plan.md'), '# Clean Merge Plan\n- [ ] Task');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -985,8 +985,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir3);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir3);
 
     type CommandExecutorPort = import('../../src').CommandExecutorPort;
     type CommandExecutionResult = import('../../src').CommandExecutionResult;
@@ -1034,7 +1034,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir4, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir4, 'implementation_plan.md'), '# Fetch Fail Plan\n- [ ] Task');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -1043,8 +1043,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir4);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir4);
 
     type CommandExecutorPort = import('../../src').CommandExecutorPort;
     type CommandExecutionResult = import('../../src').CommandExecutionResult;
@@ -1093,7 +1093,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir5, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir5, 'implementation_plan.md'), '# No Executor Plan\n- [ ] Task');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -1102,8 +1102,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir5);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir5);
 
     // No commandExecutor provided — conflict logic should be skipped
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
@@ -1127,7 +1127,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
    * opt-out.
    */
   test('refuses a wrong-stage checkpoint before the auto-sync runs (AC1, #514)', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_DISCOVERY,
       mode: MODE_STANDARD,
@@ -1136,10 +1136,10 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
-    const github = new MockGitHubGateway();
-    const worktree = new MockWorktreeManager(tempDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
+    const worktree = new WorktreeManagerDouble(tempDir);
     const executor = new SpyCommandExecutor();
     const capturedProgress: string[] = [];
 
@@ -1172,7 +1172,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('reports a Syncing progress line before the auto-sync on a valid checkpoint (AC2, #514)', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -1184,10 +1184,10 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
         { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
       ]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
-    const github = new MockGitHubGateway();
-    const worktree = new MockWorktreeManager(tempDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
+    const worktree = new WorktreeManagerDouble(tempDir);
     const executor = new SpyCommandExecutor();
     const capturedProgress: string[] = [];
 
@@ -1217,7 +1217,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('skips the auto-sync when noSync is true (AC3, #514)', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -1229,10 +1229,10 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
         { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
       ]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
-    const github = new MockGitHubGateway();
-    const worktree = new MockWorktreeManager(tempDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
+    const worktree = new WorktreeManagerDouble(tempDir);
     const executor = new SpyCommandExecutor();
     const capturedProgress: string[] = [];
 
@@ -1291,11 +1291,11 @@ describe('StartImplementationUseCase supplied-plan validation (#267)', () => {
       const blank = pathReal.join(tempDir, 'blank.md');
       fsReal.writeFileSync(blank, '', 'utf8');
 
-      const stateRepo = new MockStateRepository(approvalCheckpoint(16));
-      const planGen = new MockPlanGenerator(null);
+      const stateRepo = new StateRepositoryDouble(approvalCheckpoint(16));
+      const planGen = new PlanGeneratorDouble(null);
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        new MockConfigRepository(),
+        new ConfigRepositoryDouble(),
         planGen
       );
 
@@ -1350,9 +1350,9 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   }
 
   test('SI-D1: a fresh approval records the digest and the plan path', async () => {
-    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
-    const planGen = new MockPlanGenerator(planDir);
-    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
 
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
     const expected = planGen.hashPlanDocument(planPath);
@@ -1364,14 +1364,14 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   });
 
   test('SI-D2: a resume never overwrites an existing approved digest', async () => {
-    const stateRepo = new MockStateRepository(
+    const stateRepo = new StateRepositoryDouble(
       snapshotAt(STAGE_IMPLEMENT, {
         approvedPlanDigest: 'frozen-digest',
         approvedPlanPath: planPath
       })
     );
-    const planGen = new MockPlanGenerator(planDir);
-    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
 
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
 
@@ -1380,9 +1380,9 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   });
 
   test('SI-D3: a dry run records nothing', async () => {
-    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
-    const planGen = new MockPlanGenerator(planDir);
-    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
 
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: true });
 
@@ -1395,18 +1395,18 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   // -------------------------------------------------------------------------
 
   test('SI-D4: implement refuses a plan edited after approval', async () => {
-    const planGen = new MockPlanGenerator(planDir);
+    const planGen = new PlanGeneratorDouble(planDir);
     const approved = planGen.hashPlanDocument(planPath);
-    const stateRepo = new MockStateRepository(
+    const stateRepo = new StateRepositoryDouble(
       snapshotAt(STAGE_APPROVAL, {
         approvedPlanDigest: approved,
         approvedPlanPath: planPath
       })
     );
-    const worktreeManager = new MockWorktreeManager(tempDir);
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
     const useCase = new StartImplementationUseCase(
       stateRepo,
-      new MockConfigRepository(),
+      new ConfigRepositoryDouble(),
       planGen,
       undefined,
       undefined,
@@ -1438,15 +1438,15 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   });
 
   test('SI-D5: a matching plan keeps the gate-time identity', async () => {
-    const planGen = new MockPlanGenerator(planDir);
+    const planGen = new PlanGeneratorDouble(planDir);
     const approved = planGen.hashPlanDocument(planPath);
-    const stateRepo = new MockStateRepository(
+    const stateRepo = new StateRepositoryDouble(
       snapshotAt(STAGE_APPROVAL, {
         approvedPlanDigest: approved,
         approvedPlanPath: planPath
       })
     );
-    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
 
     // A different resolution (byte-identical copy) must not overwrite the
     // recorded path: the APPROVAL checkpoint owns the identity.
@@ -1467,11 +1467,11 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   });
 
   test('SI-D6: a YOLO PLAN entry still records the digest', async () => {
-    const stateRepo = new MockStateRepository(
+    const stateRepo = new StateRepositoryDouble(
       snapshotAt(STAGE_PLAN, { mode: MODE_YOLO })
     );
-    const planGen = new MockPlanGenerator(planDir);
-    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
     const expected = planGen.hashPlanDocument(planPath);
 
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
@@ -1483,15 +1483,15 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   });
 
   test('SI-D7: a dry-run mismatch warns and writes nothing', async () => {
-    const planGen = new MockPlanGenerator(planDir);
+    const planGen = new PlanGeneratorDouble(planDir);
     const actual = planGen.hashPlanDocument(planPath);
-    const stateRepo = new MockStateRepository(
+    const stateRepo = new StateRepositoryDouble(
       snapshotAt(STAGE_APPROVAL, {
         approvedPlanDigest: 'wrong-digest',
         approvedPlanPath: planPath
       })
     );
-    const useCase = new StartImplementationUseCase(stateRepo, new MockConfigRepository(), planGen);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
 
     const warnings: string[] = [];
     const originalWarn = console.warn;
@@ -1553,7 +1553,7 @@ describe('StartImplementationUseCase - frozen smoke directive (issue #388)', () 
   });
 
   test('SI-SMOKE: the directive carries the protocol parsed from the resolved plan', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -1564,8 +1564,8 @@ describe('StartImplementationUseCase - frozen smoke directive (issue #388)', () 
     });
     const useCase = new StartImplementationUseCase(
       stateRepo,
-      new MockConfigRepository(),
-      new MockPlanGenerator(planDir)
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(planDir)
     );
 
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });

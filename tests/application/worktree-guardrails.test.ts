@@ -39,7 +39,7 @@ import type {
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -110,7 +110,7 @@ function makeMockPrompt(confirmed = true): ConfirmationPromptPort {
   };
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -196,7 +196,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       let createdTaskId = '';
 
       const mockWorktree = makeMockWorktree({
@@ -230,7 +230,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const useCase = new TransitionStageUseCase(stateRepo); // No worktreeManager
 
       await assert.rejects(
@@ -251,7 +251,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const useCase = new TransitionStageUseCase(stateRepo);
 
       const updatedSm = await useCase.execute({
@@ -267,12 +267,12 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
   describe('StartImplementationUseCase Stage Validation & Worktree Provisioning', () => {
     test('enforces stage transition validation first before attempting worktree operations', async () => {
       const sm = StateMachine.createInitial({ issue: 41 }); // in INITIALIZED
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -297,12 +297,12 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -322,7 +322,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
       let capturedParams: any = null;
 
@@ -350,7 +350,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -368,7 +368,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
       let capturedParams: any = null;
 
@@ -396,7 +396,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -415,11 +415,11 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('APPROVAL');
 
       const runWith = async (params: import('../../src/application/start-implementation').StartImplementationParams) => {
-        const stateRepo = new MockStateRepo(sm.toSnapshot());
+        const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
         let createWorktreeCalls = 0;
         const useCase = new StartImplementationUseCase(
           stateRepo,
-          makeMockConfig(),
+          makeMockConfigLocal(),
           makeMockPlanGenerator(),
           undefined,
           undefined,
@@ -478,7 +478,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('REVIEW');
       sm.transition('COMMIT');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       let removedPath = '';
       let forceRemoved = false;
       let pruned = false;
@@ -539,7 +539,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('REVIEW');
       sm.transition('COMMIT');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       let removeCalled = false;
 
       const mockWorktree = makeMockWorktree({
@@ -600,7 +600,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
         sm.transition('REVIEW');
         sm.transition(STAGE_COMMIT);
 
-        const stateRepo = new MockStateRepo(sm.toSnapshot());
+        const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
         let removeCalled = false;
 
         const mockWorktree = makeMockWorktree({
@@ -658,7 +658,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
         sm.transition('REVIEW');
         sm.transition(STAGE_COMMIT);
 
-        const stateRepo = new MockStateRepo(sm.toSnapshot());
+        const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
         let removeCalled = false;
 
         const mockWorktree = makeMockWorktree({
@@ -712,7 +712,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('REVIEW');
       sm.transition(STAGE_COMMIT);
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const calls: RemoveWorktreeOptions[] = [];
 
       const mockWorktree = makeMockWorktree({
@@ -763,7 +763,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('REVIEW');
       sm.transition(STAGE_COMMIT);
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const promptMessages: string[] = [];
       const recordingPrompt = {
         confirm: async (message: string): Promise<boolean> => {

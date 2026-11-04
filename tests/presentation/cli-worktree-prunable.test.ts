@@ -18,11 +18,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
-function git(dir: string, args: readonly string[]): string {
+function gitRun(dir: string, args: readonly string[]): string {
   return execFileSync('git', [...args], {
     cwd: dir,
     encoding: 'utf8',
@@ -36,58 +37,26 @@ function git(dir: string, args: readonly string[]): string {
  */
 function makePrunableSandbox(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-worktree-prunable-'));
-  git(dir, ['init', '-q']);
-  git(dir, ['config', 'user.email', 'smoke@test']);
-  git(dir, ['config', 'user.name', 'smoke']);
+  gitRun(dir, ['init', '-q']);
+  gitRun(dir, ['config', 'user.email', 'smoke@test']);
+  gitRun(dir, ['config', 'user.name', 'smoke']);
   fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  git(dir, ['add', '-A']);
-  git(dir, ['commit', '-qm', 'chore: seed']);
-  git(dir, ['worktree', 'add', '-q', '-b', 'task/2', '.worktrees/task-2']);
+  gitRun(dir, ['add', '-A']);
+  gitRun(dir, ['commit', '-qm', 'chore: seed']);
+  gitRun(dir, ['worktree', 'add', '-q', '-b', 'task/2', '.worktrees/task-2']);
   fs.rmSync(path.join(dir, '.worktrees', 'task-2'), { recursive: true, force: true });
 
-  const porcelain = git(dir, ['worktree', 'list', '--porcelain']);
+  const porcelain = gitRun(dir, ['worktree', 'list', '--porcelain']);
   assert.match(porcelain, /^prunable/m, 'precondition: git must call the registration prunable');
   return dir;
 }
 
-async function runCliIn(
-  dir: string,
-  args: readonly string[]
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const { runCli } = require('../../dist/presentation/cli');
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinTTY = process.stdin.isTTY;
-  const originalStdoutTTY = process.stdout.isTTY;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinTTY;
-    process.stdout.isTTY = originalStdoutTTY;
-  }
-}
 
 describe('item 5: `worktree list` labels a prunable registration (AC-2.2)', () => {
   test('T5.2: the dead registration is listed as prunable, not active', async () => {
     const dir = makePrunableSandbox();
     try {
-      const run = await runCliIn(dir, ['worktree', 'list']);
+      const run = await runCliInSandboxCanonical(['worktree', 'list'], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /=== CodeLoop: Isolated Git Worktrees ===/, run.stdout);
@@ -97,7 +66,7 @@ describe('item 5: `worktree list` labels a prunable registration (AC-2.2)', () =
       );
       assert.match(run.stdout, /Status/, `a Status column must exist:\n${run.stdout}`);
 
-      const row = run.stdout.split('\n').find((line) => line.includes('task-2'));
+      const row = run.stdout.split('\n').find((line: string) => line.includes('task-2'));
       assert.ok(row, `the dead registration must be listed:\n${run.stdout}`);
       assert.match(row!, /\bprunable\b/, `the row must be labelled prunable: ${row}`);
       assert.ok(!/\bactive\b/.test(row!), `a prunable row must not say active: ${row}`);
@@ -111,9 +80,9 @@ describe('item 5: prune predicts what it removes (AC-2.2)', () => {
   test('T5.3: dry-run count === real count === 1, and the dry run mutates nothing', async () => {
     const dir = makePrunableSandbox();
     try {
-      const porcelainBefore = git(dir, ['worktree', 'list', '--porcelain']);
+      const porcelainBefore = gitRun(dir, ['worktree', 'list', '--porcelain']);
 
-      const dry = await runCliIn(dir, ['worktree', 'prune', '--dry-run']);
+      const dry = await runCliInSandboxCanonical(['worktree', 'prune', '--dry-run'], { dir: dir, stripAnsi: true });
       assert.strictEqual(dry.code, 0, dry.stderr);
       assert.match(dry.stdout, /\[dry-run\]/i, dry.stdout);
       const dryMatch = /Would remove (\d+)/.exec(dry.stdout);
@@ -121,7 +90,7 @@ describe('item 5: prune predicts what it removes (AC-2.2)', () => {
       const dryCount = Number(dryMatch![1]);
 
       // The dry run must not prune, remove or rewrite anything.
-      const porcelainAfterDry = git(dir, ['worktree', 'list', '--porcelain']);
+      const porcelainAfterDry = gitRun(dir, ['worktree', 'list', '--porcelain']);
       assert.strictEqual(
         porcelainAfterDry,
         porcelainBefore,
@@ -133,7 +102,7 @@ describe('item 5: prune predicts what it removes (AC-2.2)', () => {
         'the dry run must not resurrect anything'
       );
 
-      const real = await runCliIn(dir, ['worktree', 'prune']);
+      const real = await runCliInSandboxCanonical(['worktree', 'prune'], { dir: dir, stripAnsi: true });
       assert.strictEqual(real.code, 0, real.stderr);
       const realMatch = /Cleaned (\d+)/.exec(real.stdout);
       assert.ok(realMatch, `the real run must report a count:\n${real.stdout}`);

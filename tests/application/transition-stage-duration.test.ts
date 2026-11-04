@@ -16,6 +16,28 @@ const path = require('node:path');
 
 const { TransitionStageUseCase } = require('../../dist/application');
 const { FileStateRepository, FilePlanGenerator } = require('../../dist/infrastructure');
+const { seedCheckpoint } = require('../helpers/state-seed.ts');
+const stateSeedHelpers = require('../helpers/state-seed.ts');
+
+/** The duration suite's base shape (retired local seedCheckpoint's `base`). */
+function seedDurationCheckpoint(ws: string, snapshot: Record<string, unknown>): string {
+  const now = Date.now();
+  return stateSeedHelpers.seedCheckpoint(ws, { ...snapshot, issue: ISSUE }, {
+    file: stateSeedHelpers.checkpointPath(ws, ISSUE),
+    defaults: {
+      version: '1.0.0',
+      mode: 'standard',
+      issue: ISSUE,
+      baseBranch: 'main',
+      planDir: `artifacts/plans/${ISSUE}-smoke`,
+      createdAt: iso(now - 900_000),
+      updatedAt: iso(now),
+      pausedAtGate: null,
+      pausedAtTimestamp: null,
+      totalHumanWaitMs: 0
+    }
+  });
+}
 const {
   StateMachine,
   STAGE_APPROVAL,
@@ -48,29 +70,9 @@ function scaffoldSummary(ws: string): string {
   return summaryPath;
 }
 
-function seedCheckpoint(ws: string, snapshot: Record<string, unknown>): string {
-  const tasksDir = path.join(ws, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const file = path.join(tasksDir, `${ISSUE}.json`);
-  const now = Date.now();
-  const base = {
-    version: '1.0.0',
-    mode: 'standard',
-    issue: ISSUE,
-    baseBranch: 'main',
-    planDir: `artifacts/plans/${ISSUE}-smoke`,
-    createdAt: iso(now - 900_000),
-    updatedAt: iso(now),
-    pausedAtGate: null,
-    pausedAtTimestamp: null,
-    totalHumanWaitMs: 0
-  };
-  fs.writeFileSync(file, JSON.stringify({ ...base, ...snapshot }, null, 2), 'utf8');
-  return file;
-}
 
 async function runTransition(ws: string, targetStage: string): Promise<any> {
-  const stateRepo = new FileStateRepository({ workspaceDir: ws, issue: ISSUE });
+  const stateRepo = createStateRepository({ workspaceDir: ws, issue: ISSUE });
   const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, new FilePlanGenerator());
   return useCase.execute({
     targetStage,
@@ -94,7 +96,7 @@ describe('transition durations (issue #284, AC5)', () => {
     try {
       const summaryPath = scaffoldSummary(ws);
       const now = Date.now();
-      seedCheckpoint(ws, {
+      seedDurationCheckpoint(ws, {
         currentStage: STAGE_APPROVAL,
         history: [{ stage: STAGE_APPROVAL, timestamp: iso(now - 100_000) }],
         pausedAtGate: STAGE_APPROVAL,
@@ -134,7 +136,7 @@ describe('transition durations (issue #284, AC5)', () => {
     try {
       const summaryPath = scaffoldSummary(ws);
       const now = Date.now();
-      seedCheckpoint(ws, {
+      seedDurationCheckpoint(ws, {
         currentStage: STAGE_IMPLEMENT,
         createdAt: iso(now - 3_600_000),
         history: [
@@ -165,7 +167,7 @@ describe('transition durations (issue #284, AC5)', () => {
     try {
       const summaryPath = scaffoldSummary(ws);
       const now = Date.now();
-      seedCheckpoint(ws, {
+      seedDurationCheckpoint(ws, {
         currentStage: STAGE_IMPLEMENT,
         createdAt: iso(now - 3_600_000),
         history: [
@@ -196,7 +198,7 @@ describe('transition durations (issue #284, AC5)', () => {
     try {
       const summaryPath = scaffoldSummary(ws);
       const now = Date.now();
-      seedCheckpoint(ws, {
+      seedDurationCheckpoint(ws, {
         currentStage: STAGE_IMPLEMENT,
         createdAt: iso(now - 3_600_000),
         history: [
@@ -225,3 +227,5 @@ describe('transition durations (issue #284, AC5)', () => {
     }
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

@@ -15,6 +15,9 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { FilePlanGenerator } = require('../../dist/infrastructure');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { readCheckpoint } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -50,23 +53,27 @@ function seedPlanDir(dir: string): void {
   fs.copyFileSync(path.join(REPO_ROOT, 'templates', 'summary-log.md'), path.join(planDir, 'CodeLoop Summary.md'));
 }
 
-function makeSandbox(options: { withPlan?: boolean } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-gate-evidence-'));
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
-  execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: base'], { cwd: dir, stdio: 'ignore' });
+function makeGateEvidenceSandbox(options: { withPlan?: boolean } = {}) {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-gate-evidence-',
+    dirName: '',
+    gitignore: false,
+    initialBranch: 'main',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
+    },
+    initialCommit: 'chore: base'
+  });
+  const dir = sandbox.dir;
 
   const now = new Date().toISOString();
   fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
   if (options.withPlan) {
     seedPlanDir(dir);
   }
-  const checkpointPath = path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
+  const checkpointPathLocal = path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
   fs.writeFileSync(
-    checkpointPath,
+    checkpointPathLocal,
     JSON.stringify(
       {
         version: '1.0.0',
@@ -93,52 +100,20 @@ function makeSandbox(options: { withPlan?: boolean } = {}) {
 
   return {
     dir,
-    checkpointPath,
+    checkpointPathLocal,
     evidencePath: path.join(dir, '.agyloop', 'tasks', `${ISSUE}.gate.json`)
   };
 }
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    // The transition advice is a `console.warn`, which reaches stderr in a real
-    // invocation; capturing only `console.error` would silently miss it.
-    console.warn = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    console.warn = originalWarn;
-  }
-}
 
-function readCheckpoint(file: string): any {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
-}
 
 describe('QUALITY_GATE exit consumes evidence (issue #327)', () => {
   test('GE1: no evidence refuses the exit, writes nothing and records no REVIEW row', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeGateEvidenceSandbox();
     try {
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox.dir, ['transition', 'REVIEW', '--issue', String(ISSUE)]);
+      const run = await runCliInSandboxCanonical(['transition', 'REVIEW', '--issue', String(ISSUE)], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE, run.stdout);
       assert.ok(run.stderr.includes('Gate evidence refused'), run.stderr);
@@ -146,11 +121,11 @@ describe('QUALITY_GATE exit consumes evidence (issue #327)', () => {
       assert.ok(run.stderr.includes(`codeloop transition ${STAGE_REVIEW} --issue ${ISSUE}`), run.stderr);
 
       assert.strictEqual(
-        fs.readFileSync(sandbox.checkpointPath, 'utf8'),
+        fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'),
         before,
         'a refusal must leave the checkpoint byte-identical'
       );
-      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      const checkpoint = readCheckpoint(sandbox.checkpointPathLocal);
       assert.strictEqual(checkpoint.currentStage, STAGE_QUALITY_GATE);
       assert.ok(!checkpoint.history.some((entry: any) => entry.stage === STAGE_REVIEW));
       assert.ok(!fs.existsSync(sandbox.evidencePath), 'a refusal must not create evidence');
@@ -160,24 +135,24 @@ describe('QUALITY_GATE exit consumes evidence (issue #327)', () => {
   });
 
   test('GE2: file then transition records the verdict and consumes the evidence', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeGateEvidenceSandbox();
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
 
-      const filed = await runIn(sandbox.dir, [
+      const filed = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(filed.code, EXIT_CODE_SUCCESS, filed.stderr);
       assert.ok(fs.existsSync(sandbox.evidencePath));
 
-      const advance = await runIn(sandbox.dir, ['transition', 'REVIEW', '--issue', String(ISSUE)]);
+      const advance = await runCliInSandboxCanonical(['transition', 'REVIEW', '--issue', String(ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(advance.code, EXIT_CODE_SUCCESS, advance.stderr);
 
-      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      const checkpoint = readCheckpoint(sandbox.checkpointPathLocal);
       assert.strictEqual(checkpoint.currentStage, STAGE_REVIEW);
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.stage, STAGE_REVIEW);
@@ -190,19 +165,19 @@ describe('QUALITY_GATE exit consumes evidence (issue #327)', () => {
   });
 
   test('GE3: filing past the consuming exit names the legal walk-back', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeGateEvidenceSandbox();
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      await runIn(sandbox.dir, ['gate-report', '--issue', String(ISSUE), '--report-file', 'gate.json']);
-      await runIn(sandbox.dir, ['transition', 'REVIEW', '--issue', String(ISSUE)]);
+      await runCliInSandboxCanonical(['gate-report', '--issue', String(ISSUE), '--report-file', 'gate.json'], { dir: sandbox.dir });
+      await runCliInSandboxCanonical(['transition', 'REVIEW', '--issue', String(ISSUE)], { dir: sandbox.dir });
 
-      const late = await runIn(sandbox.dir, [
+      const late = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(late.code, EXIT_CODE_FAILURE);
       assert.ok(late.stderr.includes('Gate evidence refused'), late.stderr);
@@ -218,7 +193,7 @@ describe('QUALITY_GATE exit consumes evidence (issue #327)', () => {
         late.stderr.includes(`codeloop gate-report --issue ${ISSUE} --report-file <path>`),
         late.stderr
       );
-      assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, STAGE_REVIEW);
+      assert.strictEqual(readCheckpoint(sandbox.checkpointPathLocal).currentStage, STAGE_REVIEW);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
@@ -227,9 +202,9 @@ describe('QUALITY_GATE exit consumes evidence (issue #327)', () => {
 
 describe('stage-boundary operator output (issue #315)', () => {
   test('AC-10: QG -> PLAN names the re-plan sequence, never the gate walk-back', async () => {
-    const sandbox = makeSandbox({ withPlan: true });
+    const sandbox = makeGateEvidenceSandbox({ withPlan: true });
     try {
-      const run = await runIn(sandbox.dir, ['transition', 'PLAN', '--issue', String(ISSUE)]);
+      const run = await runCliInSandboxCanonical(['transition', 'PLAN', '--issue', String(ISSUE)], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `${run.stdout}\n${run.stderr}`);
       assert.ok(
@@ -244,22 +219,22 @@ describe('stage-boundary operator output (issue #315)', () => {
         !run.stderr.includes('gate-report'),
         `a re-plan exit must never ask for evidence for a round that was not dispatched, got: ${run.stderr}`
       );
-      assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, 'PLAN');
+      assert.strictEqual(readCheckpoint(sandbox.checkpointPathLocal).currentStage, 'PLAN');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('AC-10 regression: QG -> IMPLEMENT keeps the gate walk-back', async () => {
-    const sandbox = makeSandbox({ withPlan: true });
+    const sandbox = makeGateEvidenceSandbox({ withPlan: true });
     try {
-      const run = await runIn(sandbox.dir, [
+      const run = await runCliInSandboxCanonical([
         'transition',
         'IMPLEMENT',
         '--issue',
         String(ISSUE),
         '--no-worktree'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `${run.stdout}\n${run.stderr}`);
       assert.ok(
@@ -273,7 +248,7 @@ describe('stage-boundary operator output (issue #315)', () => {
   });
 
   test('AC-17: smoke labels never enter executedCommands, and render on their own line', async () => {
-    const sandbox = makeSandbox({ withPlan: true });
+    const sandbox = makeGateEvidenceSandbox({ withPlan: true });
     try {
       fs.writeFileSync(
         path.join(sandbox.dir, 'gate.json'),
@@ -287,11 +262,11 @@ describe('stage-boundary operator output (issue #315)', () => {
 `,
         'utf8'
       );
-      await runIn(sandbox.dir, ['gate-report', '--issue', String(ISSUE), '--report-file', 'gate.json']);
-      const advance = await runIn(sandbox.dir, ['transition', 'REVIEW', '--issue', String(ISSUE)]);
+      await runCliInSandboxCanonical(['gate-report', '--issue', String(ISSUE), '--report-file', 'gate.json'], { dir: sandbox.dir });
+      const advance = await runCliInSandboxCanonical(['transition', 'REVIEW', '--issue', String(ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(advance.code, EXIT_CODE_SUCCESS, advance.stderr);
 
-      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      const checkpoint = readCheckpoint(sandbox.checkpointPathLocal);
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(
         last.metadata.gateExecutedCommands.length,
@@ -341,61 +316,61 @@ describe('stage-boundary operator output (issue #315)', () => {
  */
 describe('a refused gate exit preserves filed evidence (issue #408)', () => {
   test('T-D1-E2E: a refused digest keeps the evidence, and the repaired retry consumes it once', async () => {
-    const sandbox = makeSandbox({ withPlan: true });
+    const sandbox = makeGateEvidenceSandbox({ withPlan: true });
     try {
       const planPath = path.join(sandbox.dir, PLAN_DIR, 'implementation_plan.md');
-      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      const checkpoint = readCheckpoint(sandbox.checkpointPathLocal);
       checkpoint.approvedPlanPath = planPath;
       checkpoint.approvedPlanDigest = 'deadbeef';
       fs.writeFileSync(
-        sandbox.checkpointPath,
+        sandbox.checkpointPathLocal,
         `${JSON.stringify(checkpoint, null, 2)}\n`,
         'utf8'
       );
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      const filed = await runIn(sandbox.dir, [
+      const filed = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(filed.code, EXIT_CODE_SUCCESS, filed.stderr);
       assert.ok(fs.existsSync(sandbox.evidencePath));
 
-      const refused = await runIn(sandbox.dir, [
+      const refused = await runCliInSandboxCanonical([
         'transition',
         'REVIEW',
         '--issue',
         String(ISSUE)
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(refused.code, EXIT_CODE_FAILURE, refused.stdout);
       assert.match(refused.stderr, /changed during the quality gate/i);
       assert.match(refused.stderr, /NOT consumed/);
       assert.ok(fs.existsSync(sandbox.evidencePath), 'the refusal must not delete the report');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
-      assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, STAGE_QUALITY_GATE);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
+      assert.strictEqual(readCheckpoint(sandbox.checkpointPathLocal).currentStage, STAGE_QUALITY_GATE);
 
       // Repair the digest only: the SAME filed block certifies the exit.
-      const repaired = readCheckpoint(sandbox.checkpointPath);
+      const repaired = readCheckpoint(sandbox.checkpointPathLocal);
       repaired.approvedPlanDigest = new FilePlanGenerator().hashPlanDocument(planPath);
       fs.writeFileSync(
-        sandbox.checkpointPath,
+        sandbox.checkpointPathLocal,
         `${JSON.stringify(repaired, null, 2)}\n`,
         'utf8'
       );
 
-      const advanced = await runIn(sandbox.dir, [
+      const advanced = await runCliInSandboxCanonical([
         'transition',
         'REVIEW',
         '--issue',
         String(ISSUE)
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(advanced.code, EXIT_CODE_SUCCESS, advanced.stderr);
-      assert.strictEqual(readCheckpoint(sandbox.checkpointPath).currentStage, STAGE_REVIEW);
+      assert.strictEqual(readCheckpoint(sandbox.checkpointPathLocal).currentStage, STAGE_REVIEW);
       assert.ok(!fs.existsSync(sandbox.evidencePath), 'the committed exit consumes exactly once');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });

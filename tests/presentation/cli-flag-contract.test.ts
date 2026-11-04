@@ -18,6 +18,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { runCli, parseArguments } = require('../../dist/presentation/cli');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 const {
   COMMAND_CAPABILITIES,
   KNOWN_LONG_FLAGS,
@@ -34,9 +36,6 @@ interface CaptureResult {
   readonly stderr: string;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 function taskCheckpoint(issue: number): Record<string, unknown> {
   return {
@@ -101,50 +100,10 @@ function treeHash(root: string): string {
   return crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void,
-  inspect?: (dir: string) => void
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-flags-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    if (seed) seed(tempDir);
-    process.chdir(tempDir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-
-    if (inspect) inspect(tempDir);
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
   test('T-F1: an unknown long flag exits 1 and leaves stdout empty', async () => {
-    const result = await runCliInSandbox(['status', '--bogus-flag']);
+    const result = await runCliInSandboxCanonical(['status', '--bogus-flag'], { stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.strictEqual(result.stdout, '');
     assert.match(result.stderr, /Unknown flag '--bogus-flag'/);
@@ -153,16 +112,12 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
   test('T-F2: --dry-runn is rejected with a suggestion and mutates nothing', async () => {
     let hashBefore = '';
     let hashAfter = '';
-    const result = await runCliInSandbox(
-      ['reset', '--dry-runn', '--issue', '888'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['reset', '--dry-runn', '--issue', '888'], { seed: (dir: string) => {
         seedWorkspace(dir);
         hashBefore = treeHash(path.join(dir, '.agyloop'));
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         hashAfter = treeHash(path.join(dir, '.agyloop'));
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 1);
     assert.match(result.stderr, /Did you mean '--dry-run'\?/);
@@ -170,21 +125,21 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
   });
 
   test('T-F3: --skip-discoveryy suggests --skip-discovery and prints no directive', async () => {
-    const result = await runCliInSandbox(['next', '--skip-discoveryy']);
+    const result = await runCliInSandboxCanonical(['next', '--skip-discoveryy'], { stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.match(result.stderr, /Did you mean '--skip-discovery'\?/);
     assert.ok(!result.stdout.includes('Next Subagent Directive'), result.stdout);
   });
 
   test('T-F4: a flag value never becomes the command', async () => {
-    const result = await runCliInSandbox(['--bogus', 'value', 'status']);
+    const result = await runCliInSandboxCanonical(['--bogus', 'value', 'status'], { stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.ok(result.stderr.includes('--bogus'), result.stderr);
     assert.ok(!result.stderr.includes('Unknown command "value"'), result.stderr);
   });
 
   test('T-F5: a short flag is never answered with a long-flag suggestion', async () => {
-    const result = await runCliInSandbox(['status', '-q']);
+    const result = await runCliInSandboxCanonical(['status', '-q'], { stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.ok(result.stderr.includes('-q'), result.stderr);
     assert.ok(!result.stderr.includes("'-y'"), result.stderr);
@@ -194,7 +149,7 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
   test('T-F6: --plan-path is IMPLEMENTED (#267) and scoped to plan/implement/yolo', async () => {
     // A command that does not execute a plan refuses it loudly — never
     // "unknown" (a typo signal) and never a silent drop.
-    const refused = await runCliInSandbox(['status', '--plan-path', 'artifacts/x.md']);
+    const refused = await runCliInSandboxCanonical(['status', '--plan-path', 'artifacts/x.md'], { stripAnsi: true });
     assert.strictEqual(refused.code, 1);
     assert.ok(refused.stderr.includes('--plan-path'), refused.stderr);
     assert.ok(refused.stderr.includes('only supported by plan/implement/yolo'), refused.stderr);
@@ -202,13 +157,13 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
     assert.ok(!refused.stderr.includes('Did you mean'), refused.stderr);
 
     // A present-but-valueless flag is a loud failure.
-    const missing = await runCliInSandbox(['plan', '--plan-path']);
+    const missing = await runCliInSandboxCanonical(['plan', '--plan-path'], { stripAnsi: true });
     assert.strictEqual(missing.code, 1);
     assert.ok(missing.stderr.includes('without a value'), missing.stderr);
   });
 
   test('T-F9: a flag before the command is still rejected', async () => {
-    const result = await runCliInSandbox(['--bogus', 'status']);
+    const result = await runCliInSandboxCanonical(['--bogus', 'status'], { stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.ok(result.stderr.includes('--bogus'), result.stderr);
   });
@@ -240,28 +195,24 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
     for (const args of invocations) {
       let before = '';
       let after = '';
-      const result = await runCliInSandbox(
-        args,
-        (dir) => {
+      const result = await runCliInSandboxCanonical(args, { seed: (dir: string) => {
           seedWorkspace(dir);
           before = treeHash(dir);
-        },
-        (dir) => {
+        }, inspect: (dir: string) => {
           after = treeHash(dir);
-        }
-      );
+        }, stripAnsi: true });
       assert.notStrictEqual(result.code, 0, `${args.join(' ')} must be rejected`);
       assert.strictEqual(after, before, `${args.join(' ')} must not mutate the workspace`);
     }
   });
 
   test('T-F12: an unknown flag beats --help', async () => {
-    const rejected = await runCliInSandbox(['status', '--bogus', '--help']);
+    const rejected = await runCliInSandboxCanonical(['status', '--bogus', '--help'], { stripAnsi: true });
     assert.strictEqual(rejected.code, 1);
     assert.ok(rejected.stderr.includes('--bogus'), rejected.stderr);
     assert.ok(!rejected.stdout.includes('Usage:'), rejected.stdout);
 
-    const help = await runCliInSandbox(['--help']);
+    const help = await runCliInSandboxCanonical(['--help'], { stripAnsi: true });
     assert.strictEqual(help.code, 0);
     assert.ok(help.stdout.includes('Usage:'), help.stdout);
   });
@@ -269,16 +220,12 @@ describe('unknown flags are hard errors (#248 AC-248.9/10)', () => {
   test('T-F13: =value on a boolean flag is a shape error, not an unknown flag', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['reset', '--dry-run=true', '--issue', '888'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['reset', '--dry-run=true', '--issue', '888'], { seed: (dir: string) => {
         seedWorkspace(dir);
         before = treeHash(path.join(dir, '.agyloop'));
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = treeHash(path.join(dir, '.agyloop'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.ok(result.stderr.includes('does not take a value'), result.stderr);
     assert.ok(!result.stderr.includes('Unknown flag'), result.stderr);
@@ -305,16 +252,12 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
     for (const [label, args] of refusedDryRun) {
       let before = '';
       let after = '';
-      const result = await runCliInSandbox(
-        args,
-        (dir) => {
+      const result = await runCliInSandboxCanonical(args, { seed: (dir: string) => {
           seedWorkspace(dir);
           before = treeHash(dir);
-        },
-        (dir) => {
+        }, inspect: (dir: string) => {
           after = treeHash(dir);
-        }
-      );
+        }, stripAnsi: true });
       assert.strictEqual(result.code, 1, `${label} must refuse --dry-run`);
       assert.ok(result.stderr.includes('--dry-run'), `${label}: ${result.stderr}`);
       assert.strictEqual(after, before, `${label} must change nothing`);
@@ -327,16 +270,12 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
   test('N-29: next --dry-run succeeds and writes nothing (#301)', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['next', '--dry-run', '--issue', '888'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['next', '--dry-run', '--issue', '888'], { seed: (dir: string) => {
         seedWorkspace(dir);
         before = treeHash(path.join(dir, '.agyloop'));
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = treeHash(path.join(dir, '.agyloop'));
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.strictEqual(after, before, 'next --dry-run must not touch the checkpoint tree');
@@ -360,7 +299,7 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
     ];
 
     for (const [label, args] of refusedJson) {
-      const result = await runCliInSandbox(args);
+      const result = await runCliInSandboxCanonical(args, { stripAnsi: true });
       assert.strictEqual(result.code, 1, `${label} must refuse --json`);
       assert.ok(result.stdout.trim().startsWith('{') === false, `${label} printed a JSON document: ${result.stdout}`);
       assert.ok(result.stderr.includes('--json'), `${label}: ${result.stderr}`);
@@ -385,7 +324,7 @@ describe('capability gate refusals (#248 AC-248.11, #275 AC-275.2)', () => {
 
 describe('help text documents the flag contract (#275 AC-275.5)', () => {
   test('T-J8: --json names its supported commands and both plan flags are documented', async () => {
-    const result = await runCliInSandbox(['--help']);
+    const result = await runCliInSandboxCanonical(['--help'], { stripAnsi: true });
     assert.strictEqual(result.code, 0);
     assert.match(result.stdout, /--json\s+Machine-readable JSON \(supported by: init, next, branch-info, status/);
     assert.match(result.stdout, /--plan-path <f> Supply an existing plan file/);

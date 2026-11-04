@@ -43,7 +43,7 @@ const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
 const SCOPED_WORKSPACE = '/mock/workspace';
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any = null;
   public saveCount = 0;
 
@@ -69,7 +69,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   public config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
   /** #425: the ACTIVE workspace must be the `cwd` of every policy read. */
   public loadConfigCalls: any[] = [];
@@ -88,7 +88,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   public planContent = '# Test Plan\n\n## Acceptance Criteria\n- [ ] Code compiles\n';
 
   public scaffoldPlanDirectory(params: any): any {
@@ -122,7 +122,7 @@ class MockPlanGenerator {
   }
 }
 
-class MockGitHubGateway {
+class GitHubGatewayDouble {
   public async getCurrentRepo(): Promise<string> {
     return 'ajxcodes/agyloop';
   }
@@ -137,7 +137,7 @@ class MockGitHubGateway {
   }
 }
 
-class MockCommandExecutor {
+class CommandExecutorDouble {
   public executedCommands: string[] = [];
 
   public async execute(cmd: string): Promise<any> {
@@ -189,7 +189,7 @@ class MockCommandExecutor {
   }
 }
 
-class MockBuildDetector {
+class BuildDetectorDouble {
   public detect(): any {
     return {
       ecosystem: 'node',
@@ -214,7 +214,7 @@ class MockBuildDetector {
   }
 }
 
-class MockStandardsRepository {
+class StandardsRepositoryDouble {
   public loadStandards(): string {
     return '# Repository Coding Standards\n\n1. Hexagonal boundaries.\n';
   }
@@ -224,7 +224,7 @@ class MockStandardsRepository {
   }
 }
 
-class MockCritique {
+class CritiqueDouble {
   public async review(): Promise<any> {
     return AiReviewReport.parse(
       JSON.stringify({
@@ -238,7 +238,7 @@ class MockCritique {
   }
 }
 
-class MockWorktreeManager {
+class WorktreeManagerDouble {
   public createWorktreeCallCount = 0;
 
   public async createWorktree(params: any): Promise<any> {
@@ -306,22 +306,22 @@ class RecordingStartImplementationUseCase {
   }
 }
 
-let stateRepo: MockStateRepository;
-let configRepo: MockConfigRepository;
+let stateRepo: StateRepositoryDouble;
+let configRepo: ConfigRepositoryDouble;
 
 function freshDeps(): any {
-  stateRepo = new MockStateRepository();
-  configRepo = new MockConfigRepository();
+  stateRepo = new StateRepositoryDouble();
+  configRepo = new ConfigRepositoryDouble();
   return {
     stateRepo,
     configRepo,
-    planGenerator: new MockPlanGenerator(),
-    githubGateway: new MockGitHubGateway(),
-    commandExecutor: new MockCommandExecutor(),
-    buildDetector: new MockBuildDetector(),
-    standardsRepo: new MockStandardsRepository(),
-    critique: new MockCritique(),
-    worktreeManager: new MockWorktreeManager()
+    planGenerator: new PlanGeneratorDouble(),
+    githubGateway: new GitHubGatewayDouble(),
+    commandExecutor: new CommandExecutorDouble(),
+    buildDetector: new BuildDetectorDouble(),
+    standardsRepo: new StandardsRepositoryDouble(),
+    critique: new CritiqueDouble(),
+    worktreeManager: new WorktreeManagerDouble()
   };
 }
 

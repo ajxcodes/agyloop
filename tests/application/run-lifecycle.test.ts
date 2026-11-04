@@ -61,7 +61,7 @@ const {
 } = require('../../dist/application');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any = null;
   public saveCount = 0;
 
@@ -87,7 +87,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   public config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
   public loadConfig(): any {
@@ -108,7 +108,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   public scaffoldCalls: any[] = [];
   public updateSummaryCalls: any[] = [];
   public planContent = '# Test Plan\n\n## Acceptance Criteria\n- [ ] Code compiles\n- [ ] Tests pass\n';
@@ -146,7 +146,7 @@ class MockPlanGenerator {
   }
 }
 
-class MockGitHubGateway {
+class GitHubGatewayDouble {
   public async getCurrentRepo(): Promise<string> {
     return 'ajxcodes/agyloop';
   }
@@ -161,7 +161,7 @@ class MockGitHubGateway {
   }
 }
 
-class MockCommandExecutor {
+class CommandExecutorDouble {
   public executedCommands: string[] = [];
   public failCommands = new Set<string>();
 
@@ -237,7 +237,7 @@ class MockCommandExecutor {
   }
 }
 
-class MockBuildDetector {
+class BuildDetectorDouble {
   public detect(): any {
     return {
       ecosystem: 'node',
@@ -262,7 +262,7 @@ class MockBuildDetector {
   }
 }
 
-class MockStandardsRepository {
+class StandardsRepositoryDouble {
   public loadStandards(): string {
     return '# Repository Coding Standards\n\n1. Hexagonal boundaries.\n2. Conventional commits.\n';
   }
@@ -272,7 +272,7 @@ class MockStandardsRepository {
   }
 }
 
-class MockCritique {
+class CritiqueDouble {
   public reviewResult: any = AiReviewReport.parse(
     JSON.stringify({
       summary: 'All code meets requirements and standards.',
@@ -288,7 +288,7 @@ class MockCritique {
   }
 }
 
-class MockConfirmationPrompt {
+class ConfirmationPromptDouble {
   public answer = true;
   public promptCalls: string[] = [];
 
@@ -298,24 +298,7 @@ class MockConfirmationPrompt {
   }
 }
 
-class MockWorktreeManager {
-  /** Counts real provisioning attempts so "no worktree was created" is observable. */
-  public createWorktreeCallCount = 0;
 
-  public async createWorktree(params: any): Promise<any> {
-    this.createWorktreeCallCount++;
-    return WorktreeDescriptor.create({
-      taskId: params.issueNumber || 999,
-      worktreePath: `/mock/workspace/.worktrees/${params.issueNumber || 999}`,
-      branch: `task/${params.issueNumber || 999}`,
-      baseBranch: params.baseBranch || 'main'
-    });
-  }
-  public async removeWorktree(options: any): Promise<void> {}
-  public async cleanOrphanedWorktrees(options?: any): Promise<number> { return 0; }
-  public async resolveTaskWorktreePath(): Promise<string | null> { return '/mock/workspace/.worktrees/999'; }
-  public async resolveTaskBranchName(): Promise<string> { return 'task/999'; }
-}
 
 /**
  * Records provisioning/teardown calls IN ORDER, so "was provenance captured
@@ -327,7 +310,7 @@ class MockWorktreeManager {
  * same fields, so `null` there reads as `[]` exactly like the real adapter's
  * failed read does.
  */
-class RecordingWorktreeManager {
+class WorktreeManagerDouble {
   public calls: string[] = [];
   public removedOptions: any[] = [];
   public deletedBranches: any[] = [];
@@ -342,6 +325,7 @@ class RecordingWorktreeManager {
   public removeWorktreeError: Error | null = null;
 
   public createWorktreeCount = 0;
+  public createWorktreeCallCount = 0;
 
   public async probeProvisioningState(): Promise<any> {
     this.calls.push('probeProvisioningState');
@@ -367,9 +351,10 @@ class RecordingWorktreeManager {
     return this.probedBranches ?? [];
   }
 
-  public async createWorktree(): Promise<any> {
+  public async createWorktree(params?: any): Promise<any> {
     this.calls.push('createWorktree');
     this.createWorktreeCount++;
+    this.createWorktreeCallCount++;
     return WorktreeDescriptor.create({
       taskId: 32,
       worktreePath: '/mock/workspace/.worktrees/32',
@@ -398,7 +383,7 @@ class RecordingWorktreeManager {
  * The implementation-evidence probe (issue #259). Injected so the verdict is
  * deterministic — no real git repository is involved.
  */
-class MockDetectImplementationDiffUseCase {
+class DetectImplementationDiffDouble {
   public verdict: any;
   public calls: any[] = [];
 
@@ -420,29 +405,29 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     baseBranch: 'main'
   });
 
-  let stateRepo: MockStateRepository;
-  let configRepo: MockConfigRepository;
-  let planGenerator: MockPlanGenerator;
-  let githubGateway: MockGitHubGateway;
-  let commandExecutor: MockCommandExecutor;
-  let buildDetector: MockBuildDetector;
-  let standardsRepo: MockStandardsRepository;
-  let critique: MockCritique;
-  let confirmationPrompt: MockConfirmationPrompt;
-  let worktreeManager: MockWorktreeManager;
+  let stateRepo: StateRepositoryDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
+  let githubGateway: GitHubGatewayDouble;
+  let commandExecutor: CommandExecutorDouble;
+  let buildDetector: BuildDetectorDouble;
+  let standardsRepo: StandardsRepositoryDouble;
+  let critique: CritiqueDouble;
+  let confirmationPrompt: ConfirmationPromptDouble;
+  let worktreeManager: WorktreeManagerDouble;
   let lifecycleUseCase: any;
 
   beforeEach(() => {
-    stateRepo = new MockStateRepository();
-    configRepo = new MockConfigRepository();
-    planGenerator = new MockPlanGenerator();
-    githubGateway = new MockGitHubGateway();
-    commandExecutor = new MockCommandExecutor();
-    buildDetector = new MockBuildDetector();
-    standardsRepo = new MockStandardsRepository();
-    critique = new MockCritique();
-    confirmationPrompt = new MockConfirmationPrompt();
-    worktreeManager = new MockWorktreeManager();
+    stateRepo = new StateRepositoryDouble();
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
+    githubGateway = new GitHubGatewayDouble();
+    commandExecutor = new CommandExecutorDouble();
+    buildDetector = new BuildDetectorDouble();
+    standardsRepo = new StandardsRepositoryDouble();
+    critique = new CritiqueDouble();
+    confirmationPrompt = new ConfirmationPromptDouble();
+    worktreeManager = new WorktreeManagerDouble();
 
     lifecycleUseCase = new RunLifecycleUseCase({
       stateRepo,
@@ -503,7 +488,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       critique,
       confirmationPrompt,
       worktreeManager,
-      detectImplementationDiffUseCase: new MockDetectImplementationDiffUseCase(verdict)
+      detectImplementationDiffUseCase: new DetectImplementationDiffDouble(verdict)
     });
   }
 
@@ -906,7 +891,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       sm.transition(STAGE_APPROVAL);
       stateRepo.savedSnapshot = sm.toSnapshot();
 
-      const probe = new MockDetectImplementationDiffUseCase(NO_IMPLEMENTATION_VERDICT);
+      const probe = new DetectImplementationDiffDouble(NO_IMPLEMENTATION_VERDICT);
       const lifecycle = buildLifecycleWithProbe(NO_IMPLEMENTATION_VERDICT);
 
       const result = await lifecycle.execute({
@@ -1575,7 +1560,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
     });
 
     test('A4: worktree descriptor is persisted immediately after resolveWorktree (crash-safety)', async () => {
-      class HistoryStateRepository extends MockStateRepository {
+      class HistoryStateRepository extends StateRepositoryDouble {
         public saved: any[] = [];
 
         public async save(snapshot: any): Promise<void> {
@@ -1871,7 +1856,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
       ].join('\n');
 
       for (const mode of [MODE_PLAN, MODE_STANDARD]) {
-        stateRepo = new MockStateRepository();
+        stateRepo = new StateRepositoryDouble();
         seedDiscoveryCheckpoint();
         const lifecycle = buildYoloLifecycle();
         const result = await lifecycle.execute({
@@ -2209,14 +2194,14 @@ Score content from either shape and make the park name the empty sections and bl
         critique,
         confirmationPrompt,
         worktreeManager,
-        detectImplementationDiffUseCase: new MockDetectImplementationDiffUseCase(verdict),
+        detectImplementationDiffUseCase: new DetectImplementationDiffDouble(verdict),
         ...extraDeps
       });
     }
 
     test('V4 (AC2, standard mode): a standard-mode run on an unchanged tree reports the VACUOUS refusal with success === true and never "Quality gates failed" or "reverted to IMPLEMENT"', async () => {
       seedImplementCheckpoint(MODE_STANDARD);
-      const probe = new MockDetectImplementationDiffUseCase(unchangedVerdict('main'));
+      const probe = new DetectImplementationDiffDouble(unchangedVerdict('main'));
       const lifecycle = buildLifecycle(unchangedVerdict('main'), {
         detectImplementationDiffUseCase: probe
       });
@@ -2474,7 +2459,7 @@ Score content from either shape and make the park name the empty sections and bl
    */
   describe('the resolved checkpoint keeps its own issue (R9)', () => {
     test('a branch-inferred issue never relabels a checkpoint that already has one', async () => {
-      const scopedRepo = new MockStateRepository({
+      const scopedRepo = new StateRepositoryDouble({
         version: '1.0.0',
         currentStage: STAGE_INITIALIZED,
         mode: MODE_STANDARD,
@@ -2486,19 +2471,19 @@ Score content from either shape and make the park name the empty sections and bl
       });
 
       // The cwd/branch hint points at a DIFFERENT issue (251).
-      const branchWorktreeManager: any = new MockWorktreeManager();
+      const branchWorktreeManager: any = new WorktreeManagerDouble();
       branchWorktreeManager.resolveBaseBranch = async () => 'task/251-x';
 
       const scopedLifecycle = new RunLifecycleUseCase({
         stateRepo: scopedRepo,
-        configRepo: new MockConfigRepository(),
-        planGenerator: new MockPlanGenerator(),
-        githubGateway: new MockGitHubGateway(),
-        commandExecutor: new MockCommandExecutor(),
-        buildDetector: new MockBuildDetector(),
-        standardsRepo: new MockStandardsRepository(),
-        critique: new MockCritique(),
-        confirmationPrompt: new MockConfirmationPrompt(),
+        configRepo: new ConfigRepositoryDouble(),
+        planGenerator: new PlanGeneratorDouble(),
+        githubGateway: new GitHubGatewayDouble(),
+        commandExecutor: new CommandExecutorDouble(),
+        buildDetector: new BuildDetectorDouble(),
+        standardsRepo: new StandardsRepositoryDouble(),
+        critique: new CritiqueDouble(),
+        confirmationPrompt: new ConfirmationPromptDouble(),
         worktreeManager: branchWorktreeManager
       });
 
@@ -2555,12 +2540,12 @@ Score content from either shape and make the park name the empty sections and bl
     /** Seeds the checkpoint and returns the manager + a lifecycle whose stage throws. */
     function buildRefusingLifecycle(
       error: Error,
-      configure?: (manager: RecordingWorktreeManager) => void
-    ): { manager: RecordingWorktreeManager; lifecycle: any; seeded: any; progress: string[] } {
-      const manager = new RecordingWorktreeManager();
+      configure?: (manager: WorktreeManagerDouble) => void
+    ): { manager: WorktreeManagerDouble; lifecycle: any; seeded: any; progress: string[] } {
+      const manager = new WorktreeManagerDouble();
       configure?.(manager);
       const seeded = seedApprovalSnapshot();
-      stateRepo = new MockStateRepository(seeded);
+      stateRepo = new StateRepositoryDouble(seeded);
       const progress: string[] = [];
       const lifecycle = new RunLifecycleUseCase({
         stateRepo,
@@ -2691,7 +2676,7 @@ Score content from either shape and make the park name the empty sections and bl
     });
 
     test('IMPL-420-4: a checkpoint that already carries a descriptor captures no provenance and removes nothing', async () => {
-      const manager = new RecordingWorktreeManager();
+      const manager = new WorktreeManagerDouble();
       const seeded = seedApprovalSnapshot({
         worktree: {
           taskId: '32',
@@ -2700,7 +2685,7 @@ Score content from either shape and make the park name the empty sections and bl
           baseBranch: 'main'
         }
       });
-      stateRepo = new MockStateRepository(seeded);
+      stateRepo = new StateRepositoryDouble(seeded);
       const lifecycle = new RunLifecycleUseCase({
         stateRepo,
         configRepo,
@@ -2817,9 +2802,9 @@ Score content from either shape and make the park name the empty sections and bl
     });
 
     test('IMPL-420-9: the success path provisions once and removes nothing', async () => {
-      const manager = new RecordingWorktreeManager();
+      const manager = new WorktreeManagerDouble();
       const seeded = seedApprovalSnapshot();
-      stateRepo = new MockStateRepository(seeded);
+      stateRepo = new StateRepositoryDouble(seeded);
       const descriptor = WorktreeDescriptor.create({
         taskId: 32,
         worktreePath: DESCRIPTOR_PATH,
@@ -2924,12 +2909,12 @@ Score content from either shape and make the park name the empty sections and bl
 
     function buildRefusingLifecycle(
       error: Error,
-      configure?: (manager: RecordingWorktreeManager) => void
-    ): { manager: RecordingWorktreeManager; lifecycle: any; seeded: any; progress: string[] } {
-      const manager = new RecordingWorktreeManager();
+      configure?: (manager: WorktreeManagerDouble) => void
+    ): { manager: WorktreeManagerDouble; lifecycle: any; seeded: any; progress: string[] } {
+      const manager = new WorktreeManagerDouble();
       configure?.(manager);
       const seeded = seedApprovalSnapshot();
-      stateRepo = new MockStateRepository(seeded);
+      stateRepo = new StateRepositoryDouble(seeded);
       const progress: string[] = [];
       const lifecycle = new RunLifecycleUseCase({
         stateRepo,
@@ -3154,7 +3139,7 @@ describe('workspace scoping (#425)', () => {
   const SCOPED_WORKSPACE = '/mock/scoped-workspace';
   const SEEDED_AT = '2026-11-01T00:00:00.000Z';
 
-  class RecordingConfigRepository extends MockConfigRepository {
+  class WorkspaceScopedConfigRepositoryDouble extends ConfigRepositoryDouble {
     public loadConfigCalls: any[] = [];
 
     public loadConfig(params?: any): any {
@@ -3164,7 +3149,7 @@ describe('workspace scoping (#425)', () => {
   }
 
   /** Records the provisioning root the lifecycle hands to the adapter. */
-  class RecordingProvisioner {
+  class WorkspaceScopedWorktreeManagerDouble {
     public createWorktreeCalls: any[] = [];
     public createWorktreeCount = 0;
 
@@ -3214,20 +3199,20 @@ describe('workspace scoping (#425)', () => {
       totalHumanWaitMs: 0
     };
 
-    const stateRepo = new MockStateRepository(seeded);
-    const configRepo = new RecordingConfigRepository();
-    const provisioner = new RecordingProvisioner();
+    const stateRepo = new StateRepositoryDouble(seeded);
+    const configRepo = new WorkspaceScopedConfigRepositoryDouble();
+    const provisioner = new WorkspaceScopedWorktreeManagerDouble();
 
     const lifecycle = new RunLifecycleUseCase({
       stateRepo,
       configRepo,
-      planGenerator: new MockPlanGenerator(),
-      githubGateway: new MockGitHubGateway(),
-      commandExecutor: new MockCommandExecutor(),
-      buildDetector: new MockBuildDetector(),
-      standardsRepo: new MockStandardsRepository(),
-      critique: new MockCritique(),
-      confirmationPrompt: new MockConfirmationPrompt(),
+      planGenerator: new PlanGeneratorDouble(),
+      githubGateway: new GitHubGatewayDouble(),
+      commandExecutor: new CommandExecutorDouble(),
+      buildDetector: new BuildDetectorDouble(),
+      standardsRepo: new StandardsRepositoryDouble(),
+      critique: new CritiqueDouble(),
+      confirmationPrompt: new ConfirmationPromptDouble(),
       worktreeManager: provisioner as any,
       inferBaseBranchUseCase: {
         execute: async () => ({ baseBranch: 'main', taskBranchPrefix: 'task' })
@@ -3300,7 +3285,7 @@ describe('#428 provisioning guard ordering', () => {
     STAGE_COMPLETED
   ];
 
-  class GuardingWorktreeManager extends MockWorktreeManager {
+  class GuardingWorktreeManager extends WorktreeManagerDouble {
     /** Every `assertWorkspaceProvisionable` call, in order. */
     public assertCalls: Array<{ workspaceDir?: string; issue?: number | null }> = [];
     /** Set to make the guard refuse; `null` lets the run continue. */
@@ -3314,18 +3299,18 @@ describe('#428 provisioning guard ordering', () => {
 
   function makeLifecycle(
     worktreeManager: any,
-    stateRepo: MockStateRepository
+    stateRepo: StateRepositoryDouble
   ): any {
     return new RunLifecycleUseCase({
       stateRepo,
-      configRepo: new MockConfigRepository(),
-      planGenerator: new MockPlanGenerator(),
-      githubGateway: new MockGitHubGateway(),
-      commandExecutor: new MockCommandExecutor(),
-      buildDetector: new MockBuildDetector(),
-      standardsRepo: new MockStandardsRepository(),
-      critique: new MockCritique(),
-      confirmationPrompt: new MockConfirmationPrompt(),
+      configRepo: new ConfigRepositoryDouble(),
+      planGenerator: new PlanGeneratorDouble(),
+      githubGateway: new GitHubGatewayDouble(),
+      commandExecutor: new CommandExecutorDouble(),
+      buildDetector: new BuildDetectorDouble(),
+      standardsRepo: new StandardsRepositoryDouble(),
+      critique: new CritiqueDouble(),
+      confirmationPrompt: new ConfirmationPromptDouble(),
       worktreeManager
     });
   }
@@ -3357,7 +3342,7 @@ describe('#428 provisioning guard ordering', () => {
   }
 
   test('IMPL-428-1: implement with no checkpoint refuses before any write (AC5)', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const manager = new GuardingWorktreeManager();
     const refusal = bareRefusal();
     manager.refusal = refusal;
@@ -3374,7 +3359,7 @@ describe('#428 provisioning guard ordering', () => {
 
   test('IMPL-428-2: implement with an APPROVAL checkpoint leaves it untouched (AC5)', async () => {
     const seeded = snapshotAt(STAGE_APPROVAL);
-    const stateRepo = new MockStateRepository(seeded);
+    const stateRepo = new StateRepositoryDouble(seeded);
     const manager = new GuardingWorktreeManager();
     const refusal = bareRefusal();
     manager.refusal = refusal;
@@ -3392,7 +3377,7 @@ describe('#428 provisioning guard ordering', () => {
 
   test('IMPL-428-3: implement without --issue hands the checkpoint issue to the guard (AC5)', async () => {
     const seeded = snapshotAt(STAGE_APPROVAL);
-    const stateRepo = new MockStateRepository(seeded);
+    const stateRepo = new StateRepositoryDouble(seeded);
     const manager = new GuardingWorktreeManager();
 
     await makeLifecycle(manager, stateRepo).execute({ mode: MODE_IMPLEMENT, workspaceDir: WORKSPACE });
@@ -3403,7 +3388,7 @@ describe('#428 provisioning guard ordering', () => {
 
   test('IMPL-428-4: excluded paths never pay the guard (AC5)', async () => {
     // (a) --dry-run
-    const dryRepo = new MockStateRepository();
+    const dryRepo = new StateRepositoryDouble();
     const dryManager = new GuardingWorktreeManager();
     await settle(() =>
       makeLifecycle(dryManager, dryRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE, dryRun: true })
@@ -3411,7 +3396,7 @@ describe('#428 provisioning guard ordering', () => {
     assert.strictEqual(dryManager.assertCalls.length, 0, '--dry-run must not probe');
 
     // (b) --no-worktree
-    const noWtRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const noWtRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
     const noWtManager = new GuardingWorktreeManager();
     await settle(() =>
       makeLifecycle(noWtManager, noWtRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE, worktree: false })
@@ -3419,7 +3404,7 @@ describe('#428 provisioning guard ordering', () => {
     assert.strictEqual(noWtManager.assertCalls.length, 0, '--no-worktree must not probe');
 
     // (c) plan mode (planning into a plain directory stays supported)
-    const planRepo = new MockStateRepository();
+    const planRepo = new StateRepositoryDouble();
     const planManager = new GuardingWorktreeManager();
     await settle(() =>
       makeLifecycle(planManager, planRepo).execute({ mode: MODE_PLAN, issue: 32, workspaceDir: WORKSPACE })
@@ -3429,7 +3414,7 @@ describe('#428 provisioning guard ordering', () => {
     // (d) standard at INITIALIZED only plans, then stops at PLAN — no worktree is
     // provisioned by this leg, so the guard must not run. (Standard provisions
     // only at APPROVAL; that path is exercised by IMPL-428-5.)
-    const stdRepo = new MockStateRepository(StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 }).toSnapshot());
+    const stdRepo = new StateRepositoryDouble(StateMachine.createInitial({ mode: MODE_STANDARD, issue: 32 }).toSnapshot());
     const stdManager = new GuardingWorktreeManager();
     const stdResult = await makeLifecycle(stdManager, stdRepo).execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: WORKSPACE });
     assert.strictEqual(stdManager.assertCalls.length, 0, 'standard planning must not probe');
@@ -3437,7 +3422,7 @@ describe('#428 provisioning guard ordering', () => {
     assert.strictEqual(stdResult.currentStage, STAGE_PLAN, 'the standard leg must still plan');
 
     // (e) a finished standard read is a read-only no-op
-    const doneRepo = new MockStateRepository(snapshotAt(STAGE_COMPLETED));
+    const doneRepo = new StateRepositoryDouble(snapshotAt(STAGE_COMPLETED));
     const doneManager = new GuardingWorktreeManager();
     const doneResult = await makeLifecycle(doneManager, doneRepo).execute({ mode: MODE_STANDARD, issue: 32, workspaceDir: WORKSPACE });
     assert.strictEqual(doneManager.assertCalls.length, 0, 'a finished read must not probe');
@@ -3445,20 +3430,20 @@ describe('#428 provisioning guard ordering', () => {
     assert.strictEqual(doneRepo.saveCount, 0, 'a finished read must not write');
 
     // (f) no issue anywhere
-    const noIssueRepo = new MockStateRepository();
+    const noIssueRepo = new StateRepositoryDouble();
     const noIssueManager = new GuardingWorktreeManager();
     await settle(() => makeLifecycle(noIssueManager, noIssueRepo).execute({ mode: MODE_IMPLEMENT, workspaceDir: WORKSPACE }));
     assert.strictEqual(noIssueManager.assertCalls.length, 0, 'a run with no issue must not probe');
 
     // (g) an adapter without the optional method keeps the previous ordering
-    const plainRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
-    const plainManager = new MockWorktreeManager();
+    const plainRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
+    const plainManager = new WorktreeManagerDouble();
     await makeLifecycle(plainManager, plainRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE });
     assert.strictEqual(plainManager.createWorktreeCallCount, 1, 'provisioning must proceed exactly as before');
   });
 
   test('IMPL-428-5: standard at APPROVAL is refused before any write (AC5)', async () => {
-    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
     const manager = new GuardingWorktreeManager();
     const refusal = bareRefusal();
     manager.refusal = refusal;
@@ -3473,7 +3458,7 @@ describe('#428 provisioning guard ordering', () => {
   });
 
   test('IMPL-428-6: yolo probes unless the checkpoint is COMPLETED (AC5)', async () => {
-    const approvalRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const approvalRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
     const approvalManager = new GuardingWorktreeManager();
     const refusal = bareRefusal();
     approvalManager.refusal = refusal;
@@ -3484,7 +3469,7 @@ describe('#428 provisioning guard ordering', () => {
     );
     assert.strictEqual(approvalManager.assertCalls.length, 1, 'yolo at APPROVAL must probe');
 
-    const doneRepo = new MockStateRepository(snapshotAt(STAGE_COMPLETED));
+    const doneRepo = new StateRepositoryDouble(snapshotAt(STAGE_COMPLETED));
     const doneManager = new GuardingWorktreeManager();
     await settle(() =>
       makeLifecycle(doneManager, doneRepo).execute({ mode: MODE_YOLO, issue: 32, workspaceDir: WORKSPACE })
@@ -3493,7 +3478,7 @@ describe('#428 provisioning guard ordering', () => {
   });
 
   test('IMPL-428-7: a passing guard does not replace provisioning (AC5)', async () => {
-    const stateRepo = new MockStateRepository(snapshotAt(STAGE_APPROVAL));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
     const manager = new GuardingWorktreeManager();
 
     await makeLifecycle(manager, stateRepo).execute({ mode: MODE_IMPLEMENT, issue: 32, workspaceDir: WORKSPACE });

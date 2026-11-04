@@ -57,7 +57,7 @@ const PLAN_CONTENT = [
   ''
 ].join('\n');
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: StateMachineSnapshot | null = null;
   public saveCallCount = 0;
 
@@ -83,7 +83,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   private readonly config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -117,7 +117,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class StubPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public returnNull = false;
 
   public scaffoldPlanDirectory(): any {
@@ -197,7 +197,7 @@ const CLEAN_DIFF: any = {
   rawStatus: ''
 };
 
-class FakeProbe {
+class DetectImplementationDiffDouble {
   public readonly result: any;
 
   constructor(result: any = CLEAN_DIFF) {
@@ -209,14 +209,14 @@ class FakeProbe {
   }
 }
 
-function makeImplementationUseCase(stateRepo: MockStateRepository, plan: StubPlanGenerator) {
-  return new StartImplementationUseCase(stateRepo, new MockConfigRepository(), plan);
+function makeImplementationUseCase(stateRepo: StateRepositoryDouble, plan: PlanGeneratorDouble) {
+  return new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), plan);
 }
 
 describe('`implement` consumes the APPROVAL pause it answers (issue #367)', () => {
   test('IP1: implement consumes the pause and banks the wait', async () => {
-    const stateRepo = new MockStateRepository(seedApprovalPaused());
-    const useCase = makeImplementationUseCase(stateRepo, new StubPlanGenerator());
+    const stateRepo = new StateRepositoryDouble(seedApprovalPaused());
+    const useCase = makeImplementationUseCase(stateRepo, new PlanGeneratorDouble());
 
     const result = await useCase.execute({ issue: 354, workspaceDir: '/repo' });
 
@@ -238,14 +238,14 @@ describe('`implement` consumes the APPROVAL pause it answers (issue #367)', () =
   });
 
   test('IP2: implement and transition IMPLEMENT converge on the same checkpoint shape', async () => {
-    const implementRepo = new MockStateRepository(seedApprovalPaused());
-    await makeImplementationUseCase(implementRepo, new StubPlanGenerator()).execute({
+    const implementRepo = new StateRepositoryDouble(seedApprovalPaused());
+    await makeImplementationUseCase(implementRepo, new PlanGeneratorDouble()).execute({
       issue: 354,
       workspaceDir: '/repo'
     });
     const viaImplement = implementRepo.snapshot!;
 
-    const transitionRepo = new MockStateRepository(seedApprovalPaused());
+    const transitionRepo = new StateRepositoryDouble(seedApprovalPaused());
     const transition = new TransitionStageUseCase(transitionRepo);
     await transition.execute({
       targetStage: STAGE_IMPLEMENT,
@@ -272,8 +272,8 @@ describe('`implement` consumes the APPROVAL pause it answers (issue #367)', () =
 
   test('IP3: implement --dry-run writes nothing and changes no accounting', async () => {
     const seeded = seedApprovalPaused();
-    const stateRepo = new MockStateRepository(seeded);
-    const useCase = makeImplementationUseCase(stateRepo, new StubPlanGenerator());
+    const stateRepo = new StateRepositoryDouble(seeded);
+    const useCase = makeImplementationUseCase(stateRepo, new PlanGeneratorDouble());
 
     const result = await useCase.execute({ issue: 354, workspaceDir: '/repo', dryRun: true });
 
@@ -287,8 +287,8 @@ describe('`implement` consumes the APPROVAL pause it answers (issue #367)', () =
 
   test('IP4: a refusal keeps the pause on disk', async () => {
     const seeded = seedApprovalPaused();
-    const stateRepo = new MockStateRepository(seeded);
-    const plan = new StubPlanGenerator();
+    const stateRepo = new StateRepositoryDouble(seeded);
+    const plan = new PlanGeneratorDouble();
     plan.returnNull = true;
     const useCase = makeImplementationUseCase(stateRepo, plan);
 
@@ -304,8 +304,8 @@ describe('`implement` consumes the APPROVAL pause it answers (issue #367)', () =
   });
 
   test('IP5: a second implement at IMPLEMENT banks nothing twice', async () => {
-    const stateRepo = new MockStateRepository(seedApprovalPaused());
-    const plan = new StubPlanGenerator();
+    const stateRepo = new StateRepositoryDouble(seedApprovalPaused());
+    const plan = new PlanGeneratorDouble();
     const useCase = makeImplementationUseCase(stateRepo, plan);
 
     await useCase.execute({ issue: 354, workspaceDir: '/repo' });
@@ -322,24 +322,24 @@ describe('`implement` consumes the APPROVAL pause it answers (issue #367)', () =
   });
 
   test('IP6: the saved checkpoint makes `next` actionable for the implementer', async () => {
-    const stateRepo = new MockStateRepository(seedApprovalPaused());
-    await makeImplementationUseCase(stateRepo, new StubPlanGenerator()).execute({
+    const stateRepo = new StateRepositoryDouble(seedApprovalPaused());
+    await makeImplementationUseCase(stateRepo, new PlanGeneratorDouble()).execute({
       issue: 354,
       workspaceDir: '/repo'
     });
 
-    const nextRepo = new MockStateRepository(stateRepo.snapshot);
+    const nextRepo = new StateRepositoryDouble(stateRepo.snapshot);
     const next = new GetNextActionUseCase(
       nextRepo,
-      new MockConfigRepository(),
-      new StubPlanGenerator(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       undefined,
       undefined,
       undefined,
       undefined,
       undefined,
-      new FakeProbe()
+      new DetectImplementationDiffDouble()
     );
 
     const result = await next.execute({ workspaceDir: '/repo' });

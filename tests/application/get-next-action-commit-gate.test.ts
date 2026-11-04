@@ -33,7 +33,7 @@ type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type ConfigRepository = import('../../src').ConfigRepository;
 type AgyLoopConfig = import('../../src').AgyLoopConfig;
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -57,7 +57,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -116,8 +116,8 @@ async function commitGateDescription(
   reviewVerdict: string | null,
   extraMetadata: Record<string, unknown> = {}
 ): Promise<string> {
-  const stateRepo = new MockStateRepo(buildCommitCheckpoint(reviewVerdict, extraMetadata));
-  const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+  const stateRepo = new StateRepositoryDouble(buildCommitCheckpoint(reviewVerdict, extraMetadata));
+  const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
   const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -229,8 +229,8 @@ describe('GetNextActionUseCase COMMIT-gate description (issue #259, AC4)', () =>
       files: []
     });
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
-    const result = await new GetNextActionUseCase(stateRepo, makeMockConfig()).execute({
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const result = await new GetNextActionUseCase(stateRepo, makeMockConfigLocal()).execute({
       workspaceDir: '/repo'
     });
 
@@ -259,13 +259,13 @@ describe('GetNextActionUseCase COMMIT-gate description after a recorded reviewer
     sm.transition(STAGE_QUALITY_GATE);
     sm.transition(STAGE_REVIEW);
 
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     // The production recording path: `RunReviewUseCase` with a reviewer
     // subagent's verdict block (what `codeloop review --verdict-file` does).
     const reviewUseCase = new RunReviewUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       {
         resolvePlanFile: () => null,
         readPlanDocument: () => '',
@@ -281,7 +281,7 @@ describe('GetNextActionUseCase COMMIT-gate description after a recorded reviewer
     assert.strictEqual(review.currentStage, STAGE_COMMIT);
 
     // Now the COMMIT gate must describe what ACTUALLY happened.
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.currentStage, STAGE_COMMIT);

@@ -1,3 +1,12 @@
+/** The canonical seedTask composed with this suite's snapshot() default shape. */
+function seedTaskAt(
+  dir: string,
+  issue: number,
+  overrides: Record<string, unknown> = {}
+): void {
+  seedTaskCanonical(dir, snapshot({ issue, ...overrides }));
+}
+
 /**
  * agyloop - `--json` surface contract (#275, absorbed by #248 Wave 3)
  *
@@ -23,6 +32,9 @@ const { execFileSync } = require('node:child_process');
 const { runCli } = require('../../dist/presentation/cli');
 const { buildChangeSetDigestCommand } = require('../../dist/application');
 const { COMMAND_CAPABILITIES } = require('../../dist/presentation/cli-flags');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { seedTask: seedTaskCanonical } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const SEEDED_AT = '2026-10-01T00:00:00.000Z';
@@ -33,9 +45,6 @@ interface CaptureResult {
   readonly stderr: string;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 function snapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -67,13 +76,6 @@ function seedRoot(dir: string, overrides: Record<string, unknown> = {}): void {
   fs.writeFileSync(path.join(dir, '.agyloop', 'state.json'), JSON.stringify(snapshot(overrides)));
 }
 
-function seedTask(dir: string, issue: number, overrides: Record<string, unknown> = {}): void {
-  fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.agyloop', 'tasks', `${issue}.json`),
-    JSON.stringify(snapshot({ issue, ...overrides }))
-  );
-}
 
 function initGitWorkspace(dir: string): void {
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
@@ -106,42 +108,6 @@ function initCritiqueProvenance(dir: string, reportName: string, baseRef = 'main
   );
 }
 
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-json-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    seed?.(tempDir);
-    process.chdir(tempDir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 /**
  * One fixture per capability key. A key added to the table without a fixture
@@ -172,13 +138,13 @@ const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = 
   'opencode:install': { args: ['opencode', 'install', '--json'] },
   triage: {
     args: ['triage', '--issue', '901', '--json'],
-    seed: (dir) => seedTask(dir, 901, { currentStage: 'TRIAGE' })
+    seed: (dir) => seedTaskAt(dir, 901, { currentStage: 'TRIAGE' })
   },
   review: {
     args: ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json'],
     seed: (dir) => {
       initGitWorkspace(dir);
-      seedTask(dir, 905, { currentStage: 'REVIEW' });
+      seedTaskAt(dir, 905, { currentStage: 'REVIEW' });
       fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
       // Issue #297: the hermetic Tier 1 evidence channel — the fixture never
       // shells out to a host `critique`, and the invariant still runs.
@@ -200,7 +166,7 @@ const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = 
     args: ['gate-report', '--issue', '906', '--report-file', 'gate.json', '--json'],
     seed: (dir) => {
       initGitWorkspace(dir);
-      seedTask(dir, 906, {
+      seedTaskAt(dir, 906, {
         currentStage: 'QUALITY_GATE',
         history: [{ stage: 'QUALITY_GATE', timestamp: SEEDED_AT }]
       });
@@ -241,7 +207,7 @@ describe('--json surface contract (#275)', () => {
 
     for (const key of supported) {
       const fixture = CASES[key];
-      const result = await runCliInSandbox(fixture.args, fixture.seed);
+      const result = await runCliInSandboxCanonical(fixture.args, { seed: fixture.seed, stripAnsi: true });
       // `halt` predicts the real command's exit code (2) even in JSON mode.
       assert.ok(
         result.code === 0 || (key === 'halt' && result.code === 2),
@@ -264,7 +230,7 @@ describe('--json surface contract (#275)', () => {
     );
     for (const key of refused) {
       const fixture = CASES[key];
-      const result = await runCliInSandbox(fixture.args, fixture.seed);
+      const result = await runCliInSandboxCanonical(fixture.args, { seed: fixture.seed, stripAnsi: true });
       assert.notStrictEqual(result.code, 0, `${key} must refuse --json`);
       assert.ok(result.stderr.includes('--json'), `${key}: ${result.stderr}`);
       assert.ok(!result.stdout.trimStart().startsWith('{'), `${key} printed a JSON document`);
@@ -272,9 +238,8 @@ describe('--json surface contract (#275)', () => {
   });
 
   test('T-J4: `triage --json` stdout is parseable on its own (the banner bug)', async () => {
-    const result = await runCliInSandbox(['triage', '--issue', '901', '--json'], (dir) =>
-      seedTask(dir, 901, { currentStage: 'TRIAGE' })
-    );
+    const result = await runCliInSandboxCanonical(['triage', '--issue', '901', '--json'], { seed: (dir: string) =>
+      seedTaskAt(dir, 901, { currentStage: 'TRIAGE' }), stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(
       !result.stdout.includes('=== CodeLoop: PR Review Comments Triage ==='),
@@ -287,10 +252,10 @@ describe('--json surface contract (#275)', () => {
   });
 
   test('T-J5: `status --json` is a single document with raw (ANSI-free) fields', async () => {
-    const result = await runCliInSandbox(['status', '--json'], (dir) => {
+    const result = await runCliInSandboxCanonical(['status', '--json'], { seed: (dir: string) => {
       seedRoot(dir, { currentStage: 'COMPLETED', mode: 'standard', issue: 905 });
-      seedTask(dir, 999, { currentStage: 'PLAN' });
-    });
+      seedTaskAt(dir, 999, { currentStage: 'PLAN' });
+    }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(!result.stdout.includes('\x1b'), 'no ANSI in a JSON document');
     const payload = JSON.parse(result.stdout);
@@ -304,11 +269,9 @@ describe('--json surface contract (#275)', () => {
   });
 
   test('T-J6: `review --json --dry-run` asserts no unwritten state', async () => {
-    const result = await runCliInSandbox(
-      ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
-        seedTask(dir, 905, { currentStage: 'REVIEW' });
+        seedTaskAt(dir, 905, { currentStage: 'REVIEW' });
         fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
         fs.writeFileSync(
           path.join(dir, 'critique.json'),
@@ -320,8 +283,7 @@ describe('--json surface contract (#275)', () => {
           })
         );
         initCritiqueProvenance(dir, 'critique.json');
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.strictEqual(payload.dryRun, true);
@@ -335,7 +297,7 @@ describe('--json surface contract (#275)', () => {
 
   test('JP1: `review --json` carries the provenance as booleans, in one document (issue #297)', async () => {
     const fixture = CASES.review;
-    const result = await runCliInSandbox(fixture.args, fixture.seed);
+    const result = await runCliInSandboxCanonical(fixture.args, { seed: fixture.seed, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
@@ -347,10 +309,7 @@ describe('--json surface contract (#275)', () => {
   });
 
   test('T-J9: `triage --json --dry-run` reports a prediction, never a written disposition', async () => {
-    const result = await runCliInSandbox(
-      ['triage', 'implement', '--issue', '901', '--dry-run', '--json'],
-      (dir) => seedTask(dir, 901, { currentStage: 'TRIAGE' })
-    );
+    const result = await runCliInSandboxCanonical(['triage', 'implement', '--issue', '901', '--dry-run', '--json'], { seed: (dir: string) => seedTaskAt(dir, 901, { currentStage: 'TRIAGE' }), stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
 

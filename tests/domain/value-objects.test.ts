@@ -238,7 +238,7 @@ describe('Domain Value Objects (Pure)', () => {
       assert.strictEqual(eco.toString(), 'node (pnpm)');
     });
 
-    test('validates equality across instances', () => {
+    test('validates Ecosystem equality across instances', () => {
       const e1 = new Ecosystem({ type: ECOSYSTEM_GO, markerFiles: ['go.mod'] });
       const e2 = new Ecosystem({ type: ECOSYSTEM_GO, markerFiles: ['go.mod'] });
       const e3 = new Ecosystem({ type: ECOSYSTEM_NODE, markerFiles: ['package.json'] });

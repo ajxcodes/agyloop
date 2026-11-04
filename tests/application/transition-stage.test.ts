@@ -12,7 +12,7 @@
  * checkpoint save was gated on `!params.dryRun` but the worktree provisioning
  * was not, so `transition --dry-run IMPLEMENT` wrote a worktree and no state.
  *
- * Preamble idioms (`MockStateRepo`, `makeMockWorktree`, `makeMockConfig`,
+ * Preamble idioms (`StateRepositoryDouble`, `makeMockWorktree`, `makeMockConfig`,
  * `makeMockPlanGenerator`) are copied from
  * `tests/application/worktree-guardrails.test.ts` — that file's helpers are
  * module-private, so they cannot be shared.
@@ -51,7 +51,7 @@ import type {
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
   public saveCallCount = 0;
 
@@ -166,7 +166,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
 
   test('a REJECTED transition creates no worktree directory, no branch, and no checkpoint (#226)', async () => {
     // PLAN -> IMPLEMENT is legal only in YOLO; in `plan` mode it is rejected.
-    const stateRepo = new MockStateRepo(snapshotAt(STAGE_PLAN, MODE_PLAN));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_PLAN, MODE_PLAN));
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
     const useCase = new TransitionStageUseCase(
       stateRepo,
@@ -201,7 +201,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
   });
 
   test('a REJECTED transition from INITIALIZED also provisions nothing', async () => {
-    const stateRepo = new MockStateRepo(snapshotAt(STAGE_INITIALIZED));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_INITIALIZED));
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
     const useCase = new TransitionStageUseCase(stateRepo, worktreeManager);
 
@@ -217,7 +217,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
   });
 
   test('a LEGAL transition into IMPLEMENT still provisions exactly one worktree (control)', async () => {
-    const stateRepo = new MockStateRepo(snapshotAt(STAGE_APPROVAL));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
     const useCase = new TransitionStageUseCase(stateRepo, worktreeManager);
 
@@ -234,7 +234,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
   });
 
   test('transition IMPLEMENT --dry-run provisions nothing and writes no checkpoint', async () => {
-    const stateRepo = new MockStateRepo(snapshotAt(STAGE_APPROVAL));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
     const useCase = new TransitionStageUseCase(stateRepo, worktreeManager);
 
@@ -255,7 +255,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
     // Proves `if (!params.dryRun)` is live independent of the CLI forwarding it.
     // APPROVAL is chosen because it is a legal, side-effect-free target that
     // does not need a plan directory and does not touch a worktree.
-    const stateRepo = new MockStateRepo(snapshotAt(STAGE_PLAN));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_PLAN));
     const useCase = new TransitionStageUseCase(stateRepo);
 
     const sm = await useCase.execute({ targetStage: STAGE_APPROVAL, dryRun: true });
@@ -265,7 +265,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
   });
 
   test('the PLAN precondition still halts before any worktree work', async () => {
-    const stateRepo = new MockStateRepo(snapshotAt(STAGE_DISCOVERY));
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_DISCOVERY));
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
     const useCase = new TransitionStageUseCase(stateRepo, worktreeManager);
 
@@ -392,7 +392,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   }
 
   test('TS-D1: entering IMPLEMENT from APPROVAL records the approved digest', async () => {
-    const stateRepo = new MockStateRepo(machineAt(STAGE_APPROVAL).toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machineAt(STAGE_APPROVAL).toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     const result = await useCase.execute({
@@ -412,7 +412,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('TS-D2: QUALITY_GATE -> REVIEW succeeds while the digest still matches', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo,
       undefined,
@@ -435,7 +435,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('TS-D3: a plan edited after approval refuses QUALITY_GATE -> REVIEW and persists nothing', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     // Round-matching evidence, so the DIGEST check is what refuses: the
     // evidence gate runs first and would otherwise mask this rule.
     const useCase = new TransitionStageUseCase(
@@ -458,7 +458,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
   test('TS-D4: a legacy checkpoint with no digest still transitions', async () => {
     const machine = machineAt('QUALITY_GATE');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(
       stateRepo,
       undefined,
@@ -480,7 +480,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('TS-D5 (#327 AC-3): re-planning re-records the digest on the fresh-approval hop', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     // 1. Edit the plan: it is no longer the approved bytes.
@@ -547,7 +547,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
   test('TS-D6 (#327 AC-3): QUALITY_GATE -> PLAN is executable and -> REVIEW without evidence refuses', async () => {
     const machine = machineAt('QUALITY_GATE');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     await assert.rejects(
@@ -583,7 +583,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     const digest = `digest:${fs.readFileSync(planPath, 'utf8')}`;
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, digest);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     const result = await useCase.execute({
@@ -607,7 +607,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   // -------------------------------------------------------------------------
 
   test('TS-D6 (#421): transition APPROVAL freezes the approved plan identity', async () => {
-    const stateRepo = new MockStateRepo(machineAt(STAGE_PLAN).toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machineAt(STAGE_PLAN).toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
     const expected = `digest:${fs.readFileSync(planPath, 'utf8')}`;
 
@@ -628,7 +628,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('TS-D13 (#421): re-approval overwrites the identity and IMPLEMENT keeps it', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (re-approved)\n', 'utf8');
@@ -658,7 +658,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     const deletedPath = path.join(planDir, 'deleted-plan.md');
     const machine = machineAt(STAGE_PLAN);
     machine.recordApprovedPlan(deletedPath, 'stale-digest');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
 
     // A resolver that behaves like the real adapter: an explicit planPath wins
     // (and a missing one resolves to null); otherwise the planDir is scanned.
@@ -701,7 +701,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
   test('TS-D7 (#421): transition IMPLEMENT refuses a plan edited after approval', async () => {
     const recorder: WorktreeRecorder = { createWorktreeCalls: 0, branches: [] };
-    const stateRepo = new MockStateRepo(machineAt(STAGE_PLAN).toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machineAt(STAGE_PLAN).toSnapshot());
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder);
     const useCase = new TransitionStageUseCase(
       stateRepo,
@@ -737,7 +737,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   });
 
   test('TS-D8 (#421): transition APPROVAL --dry-run is inert', async () => {
-    const stateRepo = new MockStateRepo(machineAt(STAGE_PLAN).toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machineAt(STAGE_PLAN).toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     const result = await useCase.execute({
@@ -757,7 +757,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     yolo.setPlanDir(planDir);
     yolo.transition(STAGE_DISCOVERY);
     yolo.transition(STAGE_PLAN);
-    const stateRepo = new MockStateRepo(yolo.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(yolo.toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
     const expected = `digest:${fs.readFileSync(planPath, 'utf8')}`;
 
@@ -777,7 +777,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('TS-D10 (#421): a QUALITY_GATE -> IMPLEMENT retry neither refuses nor re-records', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const useCase = new TransitionStageUseCase(stateRepo, undefined, undefined, planGenerator());
 
     fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (edited during retry)\n', 'utf8');
@@ -807,7 +807,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('T-D1-1 (#408 D1, extends TS-D3): a digest refusal keeps the report, and the same block certifies after repair', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, 'digest:the-approved-bytes');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const gateRepo = gateRepoWith(machine);
     const useCase = new TransitionStageUseCase(
       stateRepo,
@@ -835,7 +835,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
     // Repair the digest: the SAME block (never re-filed) certifies the exit.
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
-    const retryRepo = new MockStateRepo(machine.toSnapshot());
+    const retryRepo = new StateRepositoryDouble(machine.toSnapshot());
     const retry = new TransitionStageUseCase(
       retryRepo,
       undefined,
@@ -856,7 +856,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
 
   test('T-D1-2 (#408 D1): a worktree refusal on QUALITY_GATE -> IMPLEMENT keeps the report', async () => {
     const machine = machineAt('QUALITY_GATE');
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const gateRepo = gateRepoWith(machine);
     const recorder: WorktreeRecorder = { createWorktreeCalls: 0, branches: [] };
     const worktreeManager = makeRecordingWorktreeManager(tempDir, recorder, {
@@ -916,7 +916,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
       'utf8'
     );
     const machine = machineAt(STAGE_APPROVAL);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const gateRepo = gateRepoWith(machine);
     const useCase = new TransitionStageUseCase(
       stateRepo,
@@ -946,7 +946,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
     const events: string[] = [];
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     stateRepo.save = async (snapshot: any) => {
       events.push('save');
       stateRepo.saveCallCount += 1;
@@ -983,7 +983,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
     const events: string[] = [];
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     stateRepo.save = async () => {
       events.push('save');
       stateRepo.saveCallCount += 1;
@@ -1032,7 +1032,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     );
 
     // AC2: the retry certifies with that same block, consumed exactly once.
-    const retryRepo = new MockStateRepo(machine.toSnapshot());
+    const retryRepo = new StateRepositoryDouble(machine.toSnapshot());
     const retry = new TransitionStageUseCase(
       retryRepo,
       undefined,
@@ -1056,7 +1056,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('T-D1-6 (#410): entering QUALITY_GATE still discards stale evidence BEFORE its save', async () => {
     const machine = machineAt(STAGE_IMPLEMENT);
     const events: string[] = [];
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     stateRepo.save = async (snapshot: any) => {
       events.push('save');
       stateRepo.saveCallCount += 1;
@@ -1100,7 +1100,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
     fs.writeFileSync(planPath, plan, 'utf8');
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${plan}`);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const gateRepo = gateRepoWith(machine);
     gateRepo.reports.set(
       '16',
@@ -1152,7 +1152,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   test('T-D2-2 (#408 D2): a plan with no declared targets keeps the pre-#408 behaviour', async () => {
     const machine = machineAt('QUALITY_GATE');
     machine.recordApprovedPlan(planPath, `digest:${fs.readFileSync(planPath, 'utf8')}`);
-    const stateRepo = new MockStateRepo(machine.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machine.toSnapshot());
     const gateRepo = gateRepoWith(machine);
     gateRepo.reports.set(
       '16',
@@ -1226,7 +1226,7 @@ describe('TransitionStageUseCase save-before-scaffold (#301)', () => {
 
   test('N-6 / AC-7: a refused save writes no plan artifacts', async () => {
     const { StateStorageError } = require('../../dist/domain');
-    const failingRepo = new (class extends MockStateRepo {
+    const failingRepo = new (class extends StateRepositoryDouble {
       async save(): Promise<void> {
         throw new StateStorageError('/repo/.agyloop/tasks/906.json', 'save', 'refused by the fixture');
       }
@@ -1249,7 +1249,7 @@ describe('TransitionStageUseCase save-before-scaffold (#301)', () => {
   });
 
   test('N-7 / AC-7: the success path still scaffolds and records planDir', async () => {
-    const stateRepo = new MockStateRepo(
+    const stateRepo = new StateRepositoryDouble(
       StateMachine.createInitial({ issue: 906, mode: MODE_STANDARD }).toSnapshot()
     );
     const calls: any[] = [];

@@ -107,7 +107,7 @@ function scaffoldWorkspace(
 }
 
 async function runTransition(ws: string, targetStage: string, repo: unknown) {
-  const stateRepo = new FileStateRepository({ workspaceDir: ws, issue: ISSUE });
+  const stateRepo = createStateRepository({ workspaceDir: ws, issue: ISSUE });
   const useCase = new TransitionStageUseCase(
     stateRepo,
     undefined,
@@ -305,8 +305,8 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
     ]);
     const repo = new FakeGateReportRepository();
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
     const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
 
     try {
@@ -323,7 +323,7 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       );
 
       // NOTHING was written: no checkpoint change, no summary row, no consume.
-      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(checkpointPathLocal, 'utf8'), checkpointBefore);
       assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
       assert.strictEqual(repo.clears, 0, 'a refused exit must not consume anything');
       assert.strictEqual(repo.loads, 1, 'the ingest side reads the evidence once');
@@ -346,8 +346,8 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
     ]);
     const repo = new FakeGateReportRepository();
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
     const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
     // A stale report for round 0 while the checkpoint is at round 2.
     repo.reports.set(
@@ -378,7 +378,7 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         }
       );
 
-      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(checkpointPathLocal, 'utf8'), checkpointBefore);
       assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
       assert.ok(
         !summaryBefore.includes('9999 passed'),
@@ -595,8 +595,8 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         1
       )
     );
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
     const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
 
     try {
@@ -610,7 +610,7 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         }
       );
 
-      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(checkpointPathLocal, 'utf8'), checkpointBefore);
       assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
       assert.strictEqual(repo.clears, 0, 'a coverage refusal must not consume the report');
       assert.ok(repo.load(ISSUE) !== null, 'the report stays readable for a corrected refile');
@@ -642,8 +642,8 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         1
       )
     );
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
     const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
 
     try {
@@ -656,7 +656,7 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         }
       );
 
-      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(checkpointPathLocal, 'utf8'), checkpointBefore);
       assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
       assert.strictEqual(repo.clears, 0, 'a zero-test refusal must not consume the report');
       assert.ok(repo.load(ISSUE) !== null, 'the report stays readable for a corrected refile');
@@ -823,8 +823,8 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         1
       )
     );
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
     const summaryBefore = fs.readFileSync(summaryPath, 'utf8');
 
     try {
@@ -838,7 +838,7 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
         }
       );
 
-      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(checkpointPathLocal, 'utf8'), checkpointBefore);
       assert.strictEqual(fs.readFileSync(summaryPath, 'utf8'), summaryBefore);
       assert.strictEqual(repo.clears, 0, 'an unmeasured refusal must not consume the report');
       assert.ok(repo.load(ISSUE) !== null, 'the report stays readable for a corrected refile');
@@ -1070,11 +1070,11 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
       { stage: STAGE_IMPLEMENT, timestamp: new Date(now - 200_000).toISOString() },
       { stage: STAGE_QUALITY_GATE, timestamp: new Date(now - 200_000).toISOString() }
     ]);
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const before = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const before = fs.readFileSync(checkpointPathLocal, 'utf8');
     const round = resolveGateRound(JSON.parse(before).history);
 
-    const inner = new FileStateRepository({ workspaceDir: ws, issue: ISSUE });
+    const inner = createStateRepository({ workspaceDir: ws, issue: ISSUE });
     const gateRepo = new FileGateReportRepository({ workspaceDir: ws, issue: ISSUE });
     const evidencePath = gateRepo.save(
       ISSUE,
@@ -1103,7 +1103,7 @@ describe('gate evidence ingested on gate exit (issue #284)', () => {
 
     assert.strictEqual(faulty.saves, 1);
     assert.strictEqual(
-      fs.readFileSync(checkpointPath, 'utf8'),
+      fs.readFileSync(checkpointPathLocal, 'utf8'),
       before,
       'the checkpoint is byte-identical'
     );
@@ -1196,8 +1196,8 @@ describe('gate smoke protocol coverage on gate exit (issue #444)', () => {
       String(ISSUE),
       smokeReport({ smokeProtocol: 'NOT_DECLARED', smokeChecks: [] })
     );
-    const checkpointPath = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
-    const checkpointBefore = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpointPathLocal = path.join(ws, '.agyloop', 'tasks', `${ISSUE}.json`);
+    const checkpointBefore = fs.readFileSync(checkpointPathLocal, 'utf8');
 
     try {
       await assert.rejects(
@@ -1213,7 +1213,7 @@ describe('gate smoke protocol coverage on gate exit (issue #444)', () => {
       );
 
       assert.strictEqual(repo.clears, 0);
-      assert.strictEqual(fs.readFileSync(checkpointPath, 'utf8'), checkpointBefore);
+      assert.strictEqual(fs.readFileSync(checkpointPathLocal, 'utf8'), checkpointBefore);
       assert.strictEqual(JSON.parse(checkpointBefore).currentStage, STAGE_QUALITY_GATE);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
@@ -1260,3 +1260,5 @@ describe('gate smoke protocol coverage on gate exit (issue #444)', () => {
     }
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

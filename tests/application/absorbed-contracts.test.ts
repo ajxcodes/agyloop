@@ -96,7 +96,7 @@ describe('#278: StateMachine.setMode is a no-op when the mode is unchanged', () 
 });
 
 describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
-  function makeSandbox(overrides: Record<string, unknown> = {}) {
+  function makeAbsorbedStateSandbox(overrides: Record<string, unknown> = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-278-'));
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'state.json');
@@ -156,9 +156,9 @@ describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
   }
 
   test('(a) writes nothing, runs no preflight, provisions no worktree, keeps mode', async () => {
-    const { dir, stateFile } = makeSandbox();
+    const { dir, stateFile } = makeAbsorbedStateSandbox();
     let saves = 0;
-    const realRepo = new FileStateRepository({ stateFilePath: stateFile });
+    const realRepo = createStateRepository({ stateFilePath: stateFile });
     const countedRepo = {
       load: () => realRepo.load(),
       save: async (s: any) => {
@@ -199,8 +199,8 @@ describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
   });
 
   test('(c) COMPLETED + MODE_IMPLEMENT still re-opens the implementation path', async () => {
-    const { dir, stateFile } = makeSandbox();
-    const realRepo = new FileStateRepository({ stateFilePath: stateFile });
+    const { dir, stateFile } = makeAbsorbedStateSandbox();
+    const realRepo = createStateRepository({ stateFilePath: stateFile });
     let implCalls = 0;
 
     const useCase = makeUseCase({
@@ -233,7 +233,7 @@ describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'state.json');
     fs.writeFileSync(stateFile, JSON.stringify(snapshot({ currentStage: 'PLAN', mode: 'standard', issue: 909 })));
-    const realRepo = new FileStateRepository({ stateFilePath: stateFile });
+    const realRepo = createStateRepository({ stateFilePath: stateFile });
     let saves = 0;
     const countedRepo = {
       load: () => realRepo.load(),
@@ -284,7 +284,7 @@ describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'state.json');
     fs.writeFileSync(stateFile, JSON.stringify(snapshot({ currentStage: 'PLAN', mode: 'standard', issue: 909 })));
-    const realRepo = new FileStateRepository({ stateFilePath: stateFile });
+    const realRepo = createStateRepository({ stateFilePath: stateFile });
     let saves = 0;
     const countedRepo = {
       load: () => realRepo.load(),
@@ -494,7 +494,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
     });
   }
 
-  function makeSandbox(overrides: Record<string, unknown> = {}) {
+  function makeAbsorbedTaskSandbox(overrides: Record<string, unknown> = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-301-'));
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'tasks', '301.json');
@@ -517,7 +517,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   }
 
   function countedRepo(stateFile: string, failOnSave?: number) {
-    const real = new FileStateRepository({ stateFilePath: stateFile });
+    const real = createStateRepository({ stateFilePath: stateFile });
     let saves = 0;
     const repo = {
       load: () => real.load(),
@@ -590,7 +590,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   }
 
   test('N-1 / AC-1: a bare run at PLAN writes nothing and provisions nothing', async () => {
-    const { dir, stateFile } = makeSandbox();
+    const { dir, stateFile } = makeAbsorbedTaskSandbox();
     const { repo, saves } = countedRepo(stateFile);
     const d = deps();
     let worktreeCalls = 0;
@@ -615,7 +615,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-2 / AC-1 + AC-6: a DISCOVERY park writes nothing and scaffolds nothing', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_DISCOVERY,
       planDir: null,
       history: [{ stage: STAGE_DISCOVERY, timestamp: NOW }]
@@ -645,7 +645,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-3 / AC-1: a TRIAGE checkpoint is exempt by early return and is byte-identical', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_TRIAGE,
       history: [{ stage: STAGE_TRIAGE, timestamp: NOW }]
     });
@@ -671,7 +671,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-8 / AC-3: a refused descriptor save tears the worktree down and fails loudly', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_APPROVAL,
       history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
     });
@@ -705,7 +705,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-9 / AC-3: a failing createWorktree is not swallowed', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_APPROVAL,
       history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
     });
@@ -733,7 +733,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
         branch: 'task/301',
         baseBranch: 'main'
       });
-      const { dir, stateFile } = makeSandbox({
+      const { dir, stateFile } = makeAbsorbedTaskSandbox({
         currentStage: stage,
         worktree: stage === STAGE_PLAN ? null : wt,
         history: [{ stage, timestamp: NOW }]
@@ -798,7 +798,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-11 / AC-2: a standard APPROVAL run provisions exactly once', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_APPROVAL,
       history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
     });
@@ -825,7 +825,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-12 / AC-2: a failed implementation leg tears down the worktree it just created', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_APPROVAL,
       history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
     });
@@ -850,7 +850,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   });
 
   test('N-34 / AC-10: a --no-worktree run reaches COMPLETED end to end', async () => {
-    const { dir, stateFile } = makeSandbox({
+    const { dir, stateFile } = makeAbsorbedTaskSandbox({
       currentStage: STAGE_APPROVAL,
       history: [{ stage: STAGE_APPROVAL, timestamp: NOW }]
     });
@@ -917,3 +917,5 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

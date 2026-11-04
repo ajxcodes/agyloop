@@ -119,7 +119,7 @@ function failingPlan(): string {
   ].join('\n');
 }
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public snapshot: any;
   public saveCallCount = 0;
 
@@ -145,7 +145,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   public loadConfig(): any {
     return {
       models: {
@@ -168,7 +168,7 @@ class MockConfigRepository {
   }
 }
 
-class RecordingWorktreeManager {
+class WorktreeManagerDouble {
   public createWorktreeCallCount = 0;
   private readonly root: string;
 
@@ -358,7 +358,7 @@ describe('Approval baseline guard (issue #388)', () => {
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const executor = makeExecutor('{ additions: 4, deletions: 0 }\n');
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
@@ -396,12 +396,12 @@ describe('Approval baseline guard (issue #388)', () => {
     sm.transition(STAGE_PLAN);
     sm.transition(STAGE_APPROVAL);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const worktreeManager = new WorktreeManagerDouble(root);
     const executor = makeExecutor('{ additions: 4, deletions: 0 }\n');
     const useCase = new StartImplementationUseCase(
       stateRepo as any,
-      new MockConfigRepository() as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath),
       undefined,
       undefined,
@@ -436,7 +436,7 @@ describe('Approval baseline guard (issue #388)', () => {
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const executor = makeExecutor('{ additions: 3, deletions: 0 }\n');
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
@@ -474,7 +474,7 @@ describe('Approval baseline guard (issue #388)', () => {
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const executor = makeExecutor('built\n');
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
@@ -509,7 +509,7 @@ describe('Approval baseline guard (issue #388)', () => {
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
 
-    const stateRepo = new MockStateRepository(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const executor = makeExecutor('{ additions: 4, deletions: 0 }\n');
     const useCase = new TransitionStageUseCase(
       stateRepo as any,
@@ -570,7 +570,7 @@ describe('Approval baseline guard (issue #388)', () => {
     approvalMachine.setPlanDir(planDir);
     approvalMachine.transition(STAGE_DISCOVERY);
     approvalMachine.transition(STAGE_PLAN);
-    const approvalRepo = new MockStateRepository(approvalMachine.toSnapshot());
+    const approvalRepo = new StateRepositoryDouble(approvalMachine.toSnapshot());
     const approvalExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
     const transition = new TransitionStageUseCase(
       approvalRepo as any,
@@ -594,12 +594,12 @@ describe('Approval baseline guard (issue #388)', () => {
     implementMachine.transition(STAGE_DISCOVERY);
     implementMachine.transition(STAGE_PLAN);
     implementMachine.transition(STAGE_APPROVAL);
-    const implementRepo = new MockStateRepository(implementMachine.toSnapshot());
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const implementRepo = new StateRepositoryDouble(implementMachine.toSnapshot());
+    const worktreeManager = new WorktreeManagerDouble(root);
     const implementExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
     const implement = new StartImplementationUseCase(
       implementRepo as any,
-      new MockConfigRepository() as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath),
       undefined,
       undefined,
@@ -632,7 +632,7 @@ describe('Approval baseline guard (issue #388)', () => {
     approvalMachine.setPlanDir(planDir);
     approvalMachine.transition(STAGE_DISCOVERY);
     approvalMachine.transition(STAGE_PLAN);
-    const approvalRepo = new MockStateRepository(approvalMachine.toSnapshot());
+    const approvalRepo = new StateRepositoryDouble(approvalMachine.toSnapshot());
     const approvalExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
     const transition = new TransitionStageUseCase(
       approvalRepo as any,
@@ -665,12 +665,12 @@ describe('Approval baseline guard (issue #388)', () => {
     implementMachine.transition(STAGE_DISCOVERY);
     implementMachine.transition(STAGE_PLAN);
     implementMachine.transition(STAGE_APPROVAL);
-    const implementRepo = new MockStateRepository(implementMachine.toSnapshot());
-    const worktreeManager = new RecordingWorktreeManager(root);
+    const implementRepo = new StateRepositoryDouble(implementMachine.toSnapshot());
+    const worktreeManager = new WorktreeManagerDouble(root);
     const implementExecutor = makeRecordingExecutor(new ProcessCommandExecutor());
     const implement = new StartImplementationUseCase(
       implementRepo as any,
-      new MockConfigRepository() as any,
+      new ConfigRepositoryDouble() as any,
       makePlanGenerator(planDir, planPath),
       undefined,
       undefined,

@@ -152,7 +152,7 @@ describe('TriageDisposition value object (issue #269)', () => {
     const originalCwd = process.cwd;
     try {
       const stateFile = path.join(tempDir, '.agyloop', 'state.json');
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
 
       // The repository refuses a save whose issue does not match the worktree
       // the CWD names; the scratch directory names no worktree, so the cwd is
@@ -258,3 +258,5 @@ describe('TriageDisposition value object (issue #269)', () => {
     );
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

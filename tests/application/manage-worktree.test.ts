@@ -30,7 +30,7 @@ import type {
   StateRepository
 } from '../../src/ports';
 
-class MockWorktreeManager implements WorktreeManagerPort {
+class WorktreeManagerDouble implements WorktreeManagerPort {
   public createWorktreeCalls: CreateWorktreeOptions[] = [];
   public removeWorktreeCalls: RemoveWorktreeOptions[] = [];
   public pruneWorktreesCalls: PruneWorktreesOptions[] = [];
@@ -100,11 +100,11 @@ class MockStateStore {
   public readonly corrupt = new Set<string>();
 
   public repo(filePath = ROOT_STATE_PATH): StateRepository {
-    return new MockStateRepository(this, filePath);
+    return new StateRepositoryDouble(this, filePath);
   }
 }
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   private readonly store: MockStateStore;
   private readonly filePath: string;
 
@@ -134,7 +134,7 @@ class MockStateRepository implements StateRepository {
   }
 
   public forIssue(issue: number | string): StateRepository {
-    return new MockStateRepository(this.store, taskStatePath(issue));
+    return new StateRepositoryDouble(this.store, taskStatePath(issue));
   }
 
   public listAllStates(): any[] {
@@ -171,7 +171,7 @@ function worktreeSnapshot(issue: number, worktreePath: string): any {
 
 describe('ManageWorktreeUseCase (Application Layer)', () => {
   test('provision calls worktreeManager.createWorktree with resolved parameters', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     const result = await useCase.provision({
@@ -196,7 +196,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('teardown calls worktreeManager.removeWorktree with defaults', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     const result = await useCase.teardown({
@@ -213,7 +213,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('prune calls worktreeManager.pruneWorktrees', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     const result = await useCase.prune({ workspaceDir: '/repo', expire: 'now' });
@@ -225,7 +225,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('list returns active worktrees from manager', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const descriptor1 = new WorktreeDescriptor({
       taskId: '1',
       branch: 'task/1-first',
@@ -253,7 +253,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('list reports the prunable count when a registration is prunable (T5.4)', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     mock.mockWorktrees = [
       new WorktreeDescriptor({
         taskId: '1',
@@ -280,7 +280,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('list forwards includeExternal to manager', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     await useCase.list({ workspaceDir: '/repo', includeExternal: true });
@@ -291,7 +291,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('clean cleans orphaned worktrees and returns count', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     mock.cleanCount = 4;
     const useCase = new ManageWorktreeUseCase(mock);
 
@@ -304,7 +304,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('clean forwards subagents and all flags to worktreeManager', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     await useCase.clean({ workspaceDir: '/repo', subagents: true, all: true });
@@ -324,7 +324,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.snapshots.set(taskStatePath(87), worktreeSnapshot(87, '/repo/.worktrees/87'));
 
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock, store.repo());
 
     const result = await useCase.teardown({
@@ -352,7 +352,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const sibling = worktreeSnapshot(88, '/repo/.worktrees/88');
     store.snapshots.set(taskStatePath(88), sibling);
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     await useCase.teardown({ worktreePath: '/repo/.worktrees/87', workspaceDir: '/repo', issue: 87 });
 
     assert.strictEqual(
@@ -367,7 +367,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.snapshots.set(taskStatePath(87), worktreeSnapshot(87, '/repo/.worktrees/999'));
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     const result = await useCase.teardown({
       worktreePath: '/repo/.worktrees/87',
       workspaceDir: '/repo',
@@ -384,7 +384,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.snapshots.set(taskStatePath(87), worktreeSnapshot(87, '/repo/.worktrees/87'));
 
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock, store.repo());
 
     const result = await useCase.teardown({
@@ -400,7 +400,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('T-A5 without a state repository the result is unchanged and no clear is attempted', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     const result = await useCase.teardown({
@@ -418,7 +418,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.snapshots.set(taskStatePath(87), worktreeSnapshot(87, '/repo/.worktrees/87'));
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     const result = await useCase.teardown({
       worktreePath: '/repo/.worktrees/87',
       workspaceDir: '/repo'
@@ -434,7 +434,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.corrupt.add(taskStatePath(87));
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     const result = await useCase.teardown({
       worktreePath: '/repo/.worktrees/87',
       workspaceDir: '/repo',
@@ -447,7 +447,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
   });
 
   test('T-A8 forwards force/prune/tolerateMissing/allowExternal defaults', async () => {
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock);
 
     await useCase.teardown({ worktreePath: '/repo/.worktrees/87', workspaceDir: '/repo' });
@@ -466,7 +466,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     store.snapshots.set(ROOT_STATE_PATH, worktreeSnapshot(87, '/repo/.worktrees/87'));
     store.snapshots.set(taskStatePath(87), worktreeSnapshot(87, '/repo/.worktrees/87'));
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     const result = await useCase.teardown({
       worktreePath: '/repo/.worktrees/87',
       workspaceDir: '/repo',
@@ -490,7 +490,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.snapshots.set(ROOT_STATE_PATH, worktreeSnapshot(87, '/repo/.worktrees/87'));
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     const result = await useCase.teardown({
       worktreePath: '/repo/.worktrees/87',
       workspaceDir: '/repo',
@@ -508,7 +508,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     store.snapshots.set(ROOT_STATE_PATH, worktreeSnapshot(42, '/repo/.worktrees/42'));
     store.snapshots.set(taskStatePath(42), worktreeSnapshot(42, '/repo/.worktrees/42'));
 
-    const mock = new MockWorktreeManager();
+    const mock = new WorktreeManagerDouble();
     const useCase = new ManageWorktreeUseCase(mock, store.repo());
     const result = await useCase.clearStaleDescriptor({
       worktreePath: '/repo/.worktrees/42',
@@ -524,7 +524,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
 
   test('T-A12 clearStaleDescriptor is an idempotent no-op when nothing matches (AC-9)', async () => {
     const store = new MockStateStore();
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
 
     const result = await useCase.clearStaleDescriptor({
       worktreePath: '/repo/.worktrees/42',
@@ -541,7 +541,7 @@ describe('ManageWorktreeUseCase (Application Layer)', () => {
     const store = new MockStateStore();
     store.corrupt.add(taskStatePath(42));
 
-    const useCase = new ManageWorktreeUseCase(new MockWorktreeManager(), store.repo());
+    const useCase = new ManageWorktreeUseCase(new WorktreeManagerDouble(), store.repo());
     const result = await useCase.clearStaleDescriptor({
       worktreePath: '/repo/.worktrees/42',
       issue: 42
@@ -563,7 +563,7 @@ describe('clean message shapes are unchanged (#339 T5.4)', () => {
     [4, 'Would remove 4 orphaned worktree directories and prune dangling git registrations.']
   ] as const) {
     test(`dry-run count ${count} keeps its exact wording`, async () => {
-      const mock = new MockWorktreeManager();
+      const mock = new WorktreeManagerDouble();
       mock.cleanCount = count;
       const useCase = new ManageWorktreeUseCase(mock);
       const result = await useCase.clean({ workspaceDir: '/repo', dryRun: true });
@@ -579,7 +579,7 @@ describe('clean message shapes are unchanged (#339 T5.4)', () => {
     [4, 'Cleaned 4 orphaned worktree(s) and metadata lock(s).']
   ] as const) {
     test(`real-run count ${count} keeps its exact wording`, async () => {
-      const mock = new MockWorktreeManager();
+      const mock = new WorktreeManagerDouble();
       mock.cleanCount = count;
       const useCase = new ManageWorktreeUseCase(mock);
       const result = await useCase.clean({ workspaceDir: '/repo' });

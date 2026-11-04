@@ -40,7 +40,7 @@ const {
 import type { StateRepository, ConfigRepository, AgyLoopConfig } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
   public saveCalls = 0;
 
@@ -66,7 +66,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -178,10 +178,10 @@ function assertTerminalExit(result: any, saved: StateMachineSnapshot | null, sta
 
 describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   test('T1: a MERGED PR exits to COMPLETED without a triage action', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('MERGED')
     );
@@ -192,10 +192,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T2: a CLOSED PR exits the same way', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('CLOSED')
     );
@@ -206,10 +206,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T3: an OPEN PR still dispatches the triage subagent', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('OPEN')
     );
@@ -227,8 +227,8 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T4: fail closed — no gateway keeps the gate', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -240,7 +240,7 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T5: fail closed — a throwing gateway keeps the gate', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const gateway = {
       getCurrentRepo: () => 'owner/repo',
       fetchIssue: async () => null,
@@ -248,7 +248,7 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
         throw new Error('gh: not authenticated');
       }
     } as any;
-    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
 
     const result = await useCase.execute({ workspaceDir: '/repo' });
 
@@ -260,10 +260,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T6: `--dry-run` predicts the exit and writes nothing', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('MERGED')
     );
@@ -282,10 +282,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T7: the idle report says WHY the gate ended', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('MERGED')
     );
@@ -303,10 +303,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T8: the stated exit condition matches the implemented one', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('OPEN')
     );
@@ -319,10 +319,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T9: a CLOSED PR idle report names the non-delivery (issue #354)', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('CLOSED')
     );
@@ -343,10 +343,10 @@ describe('TRIAGE gate exits when the PR is terminal (issue #351)', () => {
   });
 
   test('T10: a MERGED PR does not claim a delivery it cannot prove', async () => {
-    const stateRepo = new MockStateRepo(seedTriage());
+    const stateRepo = new StateRepositoryDouble(seedTriage());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithPr('MERGED')
     );

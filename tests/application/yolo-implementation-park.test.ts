@@ -80,7 +80,7 @@ function changedVerdict(baseRef = 'main'): any {
  * The mock probe. It records the parameters it received so the caller can see
  * WHERE the probe ran, and it replays a fixed verdict.
  */
-class MockDetectImplementationDiffUseCase {
+class DetectImplementationDiffDouble {
   public verdict: any;
   public calls: any[] = [];
 
@@ -98,7 +98,7 @@ class MockDetectImplementationDiffUseCase {
  * Dependency doubles
  * -------------------------------------------------------------------------- */
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any = null;
   public savedSnapshots: any[] = [];
 
@@ -120,7 +120,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   public config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
   public loadConfig(): any {
@@ -136,7 +136,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   public planContent = '# Test Plan\n\n## Acceptance Criteria\n- [ ] Code compiles\n- [ ] Tests pass\n';
 
   public scaffoldPlanDirectory(): any {
@@ -170,7 +170,7 @@ class MockPlanGenerator {
   }
 }
 
-class MockGitHubGateway {
+class GitHubGatewayDouble {
   public async getCurrentRepo(): Promise<string> {
     return 'ajxcodes/agyloop';
   }
@@ -189,7 +189,7 @@ class MockGitHubGateway {
  * Without a resolvable merge-base the REAL probe (Y6) would report a
  * `measurementError` by accident, so the branch-point routes must be real.
  */
-class MockCommandExecutor implements CommandExecutorPort {
+class CommandExecutorDouble implements CommandExecutorPort {
   public executedCommands: string[] = [];
   public statusStdout = '';
   public diffStdout = '';
@@ -245,7 +245,7 @@ class MockCommandExecutor implements CommandExecutorPort {
   }
 }
 
-class MockBuildDetector {
+class BuildDetectorDouble {
   public detect(): any {
     return {
       ecosystem: 'node',
@@ -262,7 +262,7 @@ class MockBuildDetector {
   }
 }
 
-class MockStandardsRepository {
+class StandardsRepositoryDouble {
   public loadStandards(): string {
     return '# Repository Coding Standards\n';
   }
@@ -272,7 +272,7 @@ class MockStandardsRepository {
   }
 }
 
-class MockCritique {
+class CritiqueDouble {
   public reviewResult: any = AiReviewReport.parse(
     JSON.stringify({
       summary: 'All code meets requirements and standards.',
@@ -288,13 +288,13 @@ class MockCritique {
   }
 }
 
-class MockConfirmationPrompt {
+class ConfirmationPromptDouble {
   public async confirm(): Promise<boolean> {
     return true;
   }
 }
 
-class MockWorktreeManager {
+class WorktreeManagerDouble {
   public async createWorktree(params: any): Promise<any> {
     return WorktreeDescriptor.create({
       taskId: params.issueNumber || 999,
@@ -322,11 +322,11 @@ class MockWorktreeManager {
 
 interface Harness {
   lifecycle: any;
-  stateRepo: MockStateRepository;
-  commandExecutor: MockCommandExecutor;
-  configRepo: MockConfigRepository;
-  planGenerator: MockPlanGenerator;
-  probe: MockDetectImplementationDiffUseCase | null;
+  stateRepo: StateRepositoryDouble;
+  commandExecutor: CommandExecutorDouble;
+  configRepo: ConfigRepositoryDouble;
+  planGenerator: PlanGeneratorDouble;
+  probe: DetectImplementationDiffDouble | null;
 }
 
 /**
@@ -336,23 +336,23 @@ interface Harness {
  * without re-creating the mocks.
  */
 function buildHarness(verdict: any = unchangedVerdict(), extraDeps?: (deps: any) => any): Harness {
-  const stateRepo = new MockStateRepository();
-  const configRepo = new MockConfigRepository();
-  const planGenerator = new MockPlanGenerator();
-  const commandExecutor = new MockCommandExecutor();
-  const probe = new MockDetectImplementationDiffUseCase(verdict);
+  const stateRepo = new StateRepositoryDouble();
+  const configRepo = new ConfigRepositoryDouble();
+  const planGenerator = new PlanGeneratorDouble();
+  const commandExecutor = new CommandExecutorDouble();
+  const probe = new DetectImplementationDiffDouble(verdict);
 
   const deps: any = {
     stateRepo,
     configRepo,
     planGenerator,
-    githubGateway: new MockGitHubGateway(),
+    githubGateway: new GitHubGatewayDouble(),
     commandExecutor,
-    buildDetector: new MockBuildDetector(),
-    standardsRepo: new MockStandardsRepository(),
-    critique: new MockCritique(),
-    confirmationPrompt: new MockConfirmationPrompt(),
-    worktreeManager: new MockWorktreeManager(),
+    buildDetector: new BuildDetectorDouble(),
+    standardsRepo: new StandardsRepositoryDouble(),
+    critique: new CritiqueDouble(),
+    confirmationPrompt: new ConfirmationPromptDouble(),
+    worktreeManager: new WorktreeManagerDouble(),
     detectImplementationDiffUseCase: probe
   };
 

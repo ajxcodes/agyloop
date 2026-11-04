@@ -19,6 +19,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const cliModule = require('../../dist/presentation/cli');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+const { makeSandbox } = require('../helpers/sandbox.ts');
 const { runCli } = cliModule;
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
@@ -98,41 +100,22 @@ function seedImplementCheckpoint(dir: string, issue: number): string {
  * Runs `runCli` in a git-initialized sandbox (the same host shape the smoke
  * protocol builds), with both console streams captured and everything restored.
  */
-async function runCliInSandbox(
+
+/** The canonical harness composed for this suite: makeSandbox dir (smoke@example.com/Smoke) + the ISSUE impl checkpoint. */
+async function runCliInSandboxLocal(
   args: readonly string[]
 ): Promise<{ code: number; stdout: string; stderr: string; dir: string }> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-command-context-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'smoke@example.com'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Smoke'], { cwd: dir });
-
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-  let stdout = '';
-  let stderr = '';
-  try {
-    seedImplementCheckpoint(dir, ISSUE);
-    process.chdir(dir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, ''), dir };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-  }
+  const sandbox = makeSandbox({
+    prefix: 'agyloop-cli-command-context-',
+    dirName: '',
+    gitignore: false,
+    userConfig: { email: 'smoke@example.com', name: 'Smoke' },
+    initialCommit: null
+  });
+  const dir = sandbox.dir;
+  seedImplementCheckpoint(dir, ISSUE);
+  const result = await runCliInSandboxCanonical(args, { dir, stripAnsi: true });
+  return { ...result, dir };
 }
 
 describe('status, next and branch-info share the command context (TR-14, AC2)', () => {
@@ -142,7 +125,7 @@ describe('status, next and branch-info share the command context (TR-14, AC2)', 
     let branchInfoParsed: Record<string, any>;
     let dir: string;
 
-    const status = await runCliInSandbox(['status', '--issue', String(ISSUE), '--json']);
+    const status = await runCliInSandboxLocal(['status', '--issue', String(ISSUE), '--json']);
     dir = status.dir;
     try {
       assert.strictEqual(status.code, 0, status.stderr);
@@ -183,34 +166,13 @@ describe('status, next and branch-info share the command context (TR-14, AC2)', 
 /**
  * Runs `runCli` again in the SAME sandbox without re-seeding, restoring state.
  */
+
+/** The canonical harness run in a caller-owned dir. */
 async function runCliInSandboxNoSeed(
   dir: string,
   args: readonly string[]
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-  }
+  const result = await runCliInSandboxCanonical(args, { dir, stripAnsi: true });
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 }
+

@@ -29,7 +29,7 @@ function makeFreshnessFixture(): string {
   return dir;
 }
 
-class MockCommandExecutor {
+class CommandExecutorDouble {
   executedCommands: string[] = [];
   responses: Record<string, any> = {};
   /** Issue #516: runs when the collector branch is fast-forwarded. */
@@ -47,7 +47,7 @@ class MockCommandExecutor {
   }
 }
 
-class MockGitHubGateway {
+class GitHubGatewayDouble {
   issues: any[] = [];
   closedIssues: number[] = [];
   comments: { issueId: number, body: string }[] = [];
@@ -86,7 +86,7 @@ class MockGitHubGateway {
   }
 }
 
-class MockStateRepo {
+class StateRepositoryDouble {
   snapshot: any = null;
 
   async load() {
@@ -94,7 +94,7 @@ class MockStateRepo {
   }
 }
 
-class MockWorktreeManager {
+class WorktreeManagerDouble {
   baseBranch: string = 'main';
 
   async resolveBaseBranch() {
@@ -104,10 +104,10 @@ class MockWorktreeManager {
 
 describe('SyncUseCase', () => {
   test('resolves base branch, fetches, fast-forwards, and processes merged PRs', async () => {
-    const executor = new MockCommandExecutor();
-    const github = new MockGitHubGateway();
-    const state = new MockStateRepo();
-    const worktree = new MockWorktreeManager();
+    const executor = new CommandExecutorDouble();
+    const github = new GitHubGatewayDouble();
+    const state = new StateRepositoryDouble();
+    const worktree = new WorktreeManagerDouble();
 
     worktree.baseBranch = 'phase/123';
     
@@ -151,10 +151,10 @@ describe('SyncUseCase', () => {
   });
 
   test('fast-forwards branch without checking out if not currently on it', async () => {
-    const executor = new MockCommandExecutor();
-    const github = new MockGitHubGateway();
-    const state = new MockStateRepo();
-    const worktree = new MockWorktreeManager();
+    const executor = new CommandExecutorDouble();
+    const github = new GitHubGatewayDouble();
+    const state = new StateRepositoryDouble();
+    const worktree = new WorktreeManagerDouble();
 
     worktree.baseBranch = 'phase/123';
     
@@ -171,10 +171,10 @@ describe('SyncUseCase', () => {
   });
 
   test('does NOT close an issue on a test-only PR (issue #240/Defect 3)', async () => {
-    const executor = new MockCommandExecutor();
-    const github = new MockGitHubGateway();
-    const state = new MockStateRepo();
-    const worktree = new MockWorktreeManager();
+    const executor = new CommandExecutorDouble();
+    const github = new GitHubGatewayDouble();
+    const state = new StateRepositoryDouble();
+    const worktree = new WorktreeManagerDouble();
 
     worktree.baseBranch = 'phase/123';
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
@@ -204,10 +204,10 @@ describe('SyncUseCase', () => {
   });
 
   test('does NOT close an issue when the PR diff cannot be verified (fail closed)', async () => {
-    const executor = new MockCommandExecutor();
-    const github = new MockGitHubGateway();
-    const state = new MockStateRepo();
-    const worktree = new MockWorktreeManager();
+    const executor = new CommandExecutorDouble();
+    const github = new GitHubGatewayDouble();
+    const state = new StateRepositoryDouble();
+    const worktree = new WorktreeManagerDouble();
 
     worktree.baseBranch = 'phase/123';
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
@@ -235,10 +235,10 @@ describe('SyncUseCase', () => {
     );
   });
 
-  test('returns warnings in result metadata if an operation fails', async () => {    const executor = new MockCommandExecutor();
-    const github = new MockGitHubGateway();
-    const state = new MockStateRepo();
-    const worktree = new MockWorktreeManager();
+  test('returns warnings in result metadata if an operation fails', async () => {    const executor = new CommandExecutorDouble();
+    const github = new GitHubGatewayDouble();
+    const state = new StateRepositoryDouble();
+    const worktree = new WorktreeManagerDouble();
 
     worktree.baseBranch = 'phase/123';
     
@@ -267,11 +267,11 @@ describe('SyncUseCase', () => {
    */
   function harness(
     prs: { number: number; body: string }[]
-  ): { executor: MockCommandExecutor; github: MockGitHubGateway; useCase: any } {
-    const executor = new MockCommandExecutor();
-    const github = new MockGitHubGateway();
-    const state = new MockStateRepo();
-    const worktree = new MockWorktreeManager();
+  ): { executor: CommandExecutorDouble; github: GitHubGatewayDouble; useCase: any } {
+    const executor = new CommandExecutorDouble();
+    const github = new GitHubGatewayDouble();
+    const state = new StateRepositoryDouble();
+    const worktree = new WorktreeManagerDouble();
 
     worktree.baseBranch = 'phase/123';
     executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
@@ -420,10 +420,10 @@ describe('SyncUseCase', () => {
   test('refuses after a pull that advances src/ past dist/, before any gh write (AC1, AC2, #516)', async () => {
     const fixtureDir = makeFreshnessFixture();
     try {
-      const executor = new MockCommandExecutor();
-      const github = new MockGitHubGateway();
-      const state = new MockStateRepo();
-      const worktree = new MockWorktreeManager();
+      const executor = new CommandExecutorDouble();
+      const github = new GitHubGatewayDouble();
+      const state = new StateRepositoryDouble();
+      const worktree = new WorktreeManagerDouble();
 
       worktree.baseBranch = 'phase/123';
       executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
@@ -466,10 +466,10 @@ describe('SyncUseCase', () => {
   test('completes a sync whose pull leaves src/ unchanged (AC3, #516)', async () => {
     const fixtureDir = makeFreshnessFixture();
     try {
-      const executor = new MockCommandExecutor();
-      const github = new MockGitHubGateway();
-      const state = new MockStateRepo();
-      const worktree = new MockWorktreeManager();
+      const executor = new CommandExecutorDouble();
+      const github = new GitHubGatewayDouble();
+      const state = new StateRepositoryDouble();
+      const worktree = new WorktreeManagerDouble();
 
       worktree.baseBranch = 'phase/123';
       executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };

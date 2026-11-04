@@ -21,7 +21,7 @@ import type {
   CritiqueUpdateOptions
 } from '../../src/ports';
 
-class MockCritiquePort implements CritiquePort {
+class CritiqueDouble implements CritiquePort {
   public resolution: CritiqueResolution;
   public version: string | null;
 
@@ -92,7 +92,7 @@ class MockCritiqueInstallerPort implements CritiqueInstallerPort {
 
 describe('ManageCritiqueUseCase (Application Layer)', () => {
   it('getStatus reports not installed when critique is missing', async () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       resolution: { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false }
     });
     const installerPort = new MockCritiqueInstallerPort({ latestVersion: '0.2.0' });
@@ -108,7 +108,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
   });
 
   it('getStatus reports up to date when current equals latest', async () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       resolution: {
         source: RESOLVER_SOURCE_USER_DATA,
         path: '/mock/user/critique/bin/critique.js',
@@ -129,7 +129,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
   });
 
   it('getStatus reports outdated when current is older than latest', async () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       resolution: {
         source: RESOLVER_SOURCE_USER_DATA,
         path: '/mock/user/critique/bin/critique.js',
@@ -150,7 +150,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
   });
 
   it('getStatus forces isOutdated false when source is sibling', async () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       resolution: {
         source: 'sibling',
         path: '/mock/user/critique/bin/critique.js',
@@ -171,7 +171,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
   });
 
   it('install executes installer and returns result', async () => {
-    const critiquePort = new MockCritiquePort();
+    const critiquePort = new CritiqueDouble();
     const installerPort = new MockCritiqueInstallerPort({
       installResult: {
         success: true,
@@ -190,7 +190,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
   });
 
   it('update executes installer update and returns result', async () => {
-    const critiquePort = new MockCritiquePort();
+    const critiquePort = new CritiqueDouble();
     const installerPort = new MockCritiqueInstallerPort({
       installResult: {
         success: true,
@@ -209,7 +209,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
 
   describe('resolveCritiquePath', () => {
     it('instance method returns resolved path when critique is available', () => {
-      const critiquePort = new MockCritiquePort({
+      const critiquePort = new CritiqueDouble({
         resolution: {
           source: RESOLVER_SOURCE_USER_DATA,
           path: '/custom/bin/critique',
@@ -224,7 +224,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
     });
 
     it('instance method returns null when critique is unavailable', () => {
-      const critiquePort = new MockCritiquePort({
+      const critiquePort = new CritiqueDouble({
         resolution: {
           source: RESOLVER_SOURCE_NONE,
           path: null,
@@ -239,7 +239,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
     });
 
     it('static method safely returns path when critiquePort is available', () => {
-      const critiquePort = new MockCritiquePort({
+      const critiquePort = new CritiqueDouble({
         resolution: {
           source: RESOLVER_SOURCE_USER_DATA,
           path: '/usr/local/bin/critique',
@@ -254,7 +254,7 @@ describe('ManageCritiqueUseCase (Application Layer)', () => {
     it('static method safely returns null when critiquePort is undefined or unavailable', () => {
       assert.strictEqual(ManageCritiqueUseCase.resolveCritiquePath(undefined), null);
 
-      const unavailablePort = new MockCritiquePort({
+      const unavailablePort = new CritiqueDouble({
         resolution: {
           source: RESOLVER_SOURCE_NONE,
           path: null,

@@ -43,7 +43,7 @@ import type {
   AgyLoopConfig
 } from '../../src/ports';
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: any = null;
 
   constructor(initialSnapshot: any = null) {
@@ -67,7 +67,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockGitHubGateway implements GitHubGateway {
+class GitHubGatewayDouble implements GitHubGateway {
   public issueToReturn: GitHubIssueData | null = null;
 
   public getCurrentRepo(): string | null {
@@ -88,7 +88,7 @@ class MockGitHubGateway implements GitHubGateway {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public loadConfig(): AgyLoopConfig {
     return DEFAULT_CONFIG;
   }
@@ -107,7 +107,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public summaryUpdates: any[] = [];
   public scaffoldedParams: ScaffoldParams | null = null;
   /**
@@ -190,16 +190,16 @@ class MockPlanGenerator implements PlanGeneratorPort {
 }
 
 describe('StartPlanningUseCase (Application Layer)', () => {
-  let stateRepo: MockStateRepository;
-  let githubGateway: MockGitHubGateway;
-  let configRepo: MockConfigRepository;
-  let planGenerator: MockPlanGenerator;
+  let stateRepo: StateRepositoryDouble;
+  let githubGateway: GitHubGatewayDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
 
   beforeEach(() => {
-    stateRepo = new MockStateRepository();
-    githubGateway = new MockGitHubGateway();
-    configRepo = new MockConfigRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble();
+    githubGateway = new GitHubGatewayDouble();
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
   });
 
   test('bypasses DISCOVERY directly to PLAN and APPROVAL when skipDiscovery is set', async () => {
@@ -1103,8 +1103,8 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
 
   caseBeforeEach(() => {
     workspace = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'agyloop-start-planning-283-'));
-    stateRepo = new MockStateRepository();
-    githubGateway = new MockGitHubGateway();
+    stateRepo = new StateRepositoryDouble();
+    githubGateway = new GitHubGatewayDouble();
     githubGateway.issueToReturn = {
       repo: 'owner/repo',
       number: 283,
@@ -1114,7 +1114,7 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
       comments: [],
       state: 'OPEN'
     };
-    configRepo = new MockConfigRepository();
+    configRepo = new ConfigRepositoryDouble();
     planGenerator = new FilePlanGenerator();
   });
 
@@ -1533,10 +1533,10 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
 // never ran attributes `-`, never a subagent/model pair.
 describe('Discovery summary row never claims a COMPLETED RCA that never ran (#339 E6)', () => {
   test('T13.1: a fresh MODE_PLAN run records SKIPPED with `-` attribution and dispatchCount 0', async () => {
-    const stateRepo = new MockStateRepository();
-    const githubGateway = new MockGitHubGateway();
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const githubGateway = new GitHubGatewayDouble();
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
 
     const useCase = new StartPlanningUseCase(
       stateRepo,
@@ -1578,10 +1578,10 @@ describe('Discovery summary row never claims a COMPLETED RCA that never ran (#33
   });
 
   test('T13.1 control: a populated report on the same path still records COMPLETED', async () => {
-    const stateRepo = new MockStateRepository();
-    const githubGateway = new MockGitHubGateway();
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const githubGateway = new GitHubGatewayDouble();
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
     // The scaffold's own discovery artifact IS populated (a real RCA ran).
     planGenerator.resolvedPlan = {
       planDir: '/fake/plans/41',
@@ -1657,12 +1657,12 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
   const LONG = 'z'.repeat(372);
 
   test('DRY-364.1: the scaffold preview carries the derived bounded names', async () => {
-    const stateRepo = new MockStateRepository();
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
     const useCase = new StartPlanningUseCase(
       stateRepo,
-      new MockGitHubGateway(),
+      new GitHubGatewayDouble(),
       configRepo,
       planGenerator
     );
@@ -1688,9 +1688,9 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
     const realGenerator = new FilePlanGenerator();
     try {
       const dry = await new StartPlanningUseCase(
-        new MockStateRepository(),
-        new MockGitHubGateway(),
-        new MockConfigRepository(),
+        new StateRepositoryDouble(),
+        new GitHubGatewayDouble(),
+        new ConfigRepositoryDouble(),
         realGenerator
       ).execute({
         issue: 364,
@@ -1702,9 +1702,9 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
       assert.strictEqual(dry.dryRunPreview?.action, 'scaffold');
 
       const real = await new StartPlanningUseCase(
-        new MockStateRepository(),
-        new MockGitHubGateway(),
-        new MockConfigRepository(),
+        new StateRepositoryDouble(),
+        new GitHubGatewayDouble(),
+        new ConfigRepositoryDouble(),
         realGenerator
       ).execute({
         issue: 364,
@@ -1741,9 +1741,9 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
     const realGenerator = new FilePlanGenerator();
     try {
       const dry = await new StartPlanningUseCase(
-        new MockStateRepository(),
-        new MockGitHubGateway(),
-        new MockConfigRepository(),
+        new StateRepositoryDouble(),
+        new GitHubGatewayDouble(),
+        new ConfigRepositoryDouble(),
         realGenerator
       ).execute({
         issue: 364,
@@ -1757,9 +1757,9 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
       assert.strictEqual(dry.dryRunPreview?.dir, path.join(plansDir, legacy));
 
       const real = await new StartPlanningUseCase(
-        new MockStateRepository(),
-        new MockGitHubGateway(),
-        new MockConfigRepository(),
+        new StateRepositoryDouble(),
+        new GitHubGatewayDouble(),
+        new ConfigRepositoryDouble(),
         realGenerator
       ).execute({
         issue: 364,

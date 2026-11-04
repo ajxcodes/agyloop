@@ -3,7 +3,7 @@
  *
  * Pins the entry decision the use case takes from the issue kind, and the
  * `next` directive it leaves behind. The issue-label lookup is stubbed through
- * `MockGitHubGateway.issueToReturn.labels`, so the two branches (bug ->
+ * `GitHubGatewayDouble.issueToReturn.labels`, so the two branches (bug ->
  * DISCOVERY, feature -> PLAN) are proven to come from the label, not from the
  * execution mode.
  */
@@ -71,7 +71,7 @@ const BLANK_REPORT = [
   '- **Identified Failure Mode:**'
 ].join('\n');
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: any = null;
   public saveCount = 0;
 
@@ -97,7 +97,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockGitHubGateway implements GitHubGateway {
+class GitHubGatewayDouble implements GitHubGateway {
   public issueToReturn: GitHubIssueData | null = null;
 
   public getCurrentRepo(): string | null {
@@ -118,7 +118,7 @@ class MockGitHubGateway implements GitHubGateway {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public loadConfig(): AgyLoopConfig {
     return DEFAULT_CONFIG;
   }
@@ -137,7 +137,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public summaryUpdates: any[] = [];
   public scaffoldedParams: ScaffoldParams | null = null;
   public resolvedPlan: any = null;
@@ -207,20 +207,20 @@ function issueWithLabels(number: number, labels: string[]): GitHubIssueData {
 }
 
 describe('Plan entry stage (issue #379)', () => {
-  let stateRepo: MockStateRepository;
-  let githubGateway: MockGitHubGateway;
-  let configRepo: MockConfigRepository;
-  let planGenerator: MockPlanGenerator;
+  let stateRepo: StateRepositoryDouble;
+  let githubGateway: GitHubGatewayDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
 
   function buildUseCase(): any {
     return new StartPlanningUseCase(stateRepo, githubGateway, configRepo, planGenerator);
   }
 
   beforeEach(() => {
-    stateRepo = new MockStateRepository();
-    githubGateway = new MockGitHubGateway();
-    configRepo = new MockConfigRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble();
+    githubGateway = new GitHubGatewayDouble();
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
   });
 
   test('PE-SP1: a bug-labelled issue parks at DISCOVERY with an actionable entry', async () => {
@@ -290,9 +290,9 @@ describe('Plan entry stage (issue #379)', () => {
       'type-override'
     );
 
-    stateRepo = new MockStateRepository();
-    planGenerator = new MockPlanGenerator();
-    githubGateway = new MockGitHubGateway();
+    stateRepo = new StateRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
+    githubGateway = new GitHubGatewayDouble();
     githubGateway.issueToReturn = issueWithLabels(11, ['enhancement']);
     const featureDiscovery = await buildUseCase().execute({
       issue: 11,
@@ -321,8 +321,8 @@ describe('Plan entry stage (issue #379)', () => {
     assert.strictEqual(blank.discoveryReportEvidence.populated, false);
 
     // (b) A report already filled on disk is evidence and advances to PLAN.
-    stateRepo = new MockStateRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
     planGenerator.resolvedPlan = {
       planDir: PLAN_DIR,
       planPath: REPORT_PATH,
@@ -343,8 +343,8 @@ describe('Plan entry stage (issue #379)', () => {
     assert.strictEqual(planEntry.metadata.discoveryReportPath, REPORT_PATH);
 
     // (c) A feature entry records its skip reason.
-    stateRepo = new MockStateRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
     githubGateway.issueToReturn = issueWithLabels(11, ['enhancement']);
     const feature = await buildUseCase().execute({
       issue: 11,
@@ -361,9 +361,9 @@ describe('Plan entry stage (issue #379)', () => {
       ['enhancement', STAGE_PLAN]
     ];
     for (const [label, expected] of cases) {
-      stateRepo = new MockStateRepository();
-      planGenerator = new MockPlanGenerator();
-      githubGateway = new MockGitHubGateway();
+      stateRepo = new StateRepositoryDouble();
+      planGenerator = new PlanGeneratorDouble();
+      githubGateway = new GitHubGatewayDouble();
       githubGateway.issueToReturn = issueWithLabels(11, [label]);
       const result = await buildUseCase().execute({
         issue: 11,
@@ -407,8 +407,8 @@ describe('Plan entry stage (issue #379)', () => {
     assert.strictEqual(bugRow.updateData.status, SUMMARY_STATUS_IN_PROGRESS);
     assert.strictEqual(bugRow.updateData.subagent, 'discovery');
 
-    stateRepo = new MockStateRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
     githubGateway.issueToReturn = issueWithLabels(11, ['enhancement']);
     await buildUseCase().execute({
       issue: 11,
@@ -556,13 +556,13 @@ describe('unreadable label lookup (issue #382)', () => {
   }
 
   function harness() {
-    const stateRepo = new MockStateRepository();
-    const githubGateway = new MockGitHubGateway();
-    const planGenerator = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const githubGateway = new GitHubGatewayDouble();
+    const planGenerator = new PlanGeneratorDouble();
     const useCase = new StartPlanningUseCase(
       stateRepo,
       githubGateway,
-      new MockConfigRepository(),
+      new ConfigRepositoryDouble(),
       planGenerator
     );
     return { stateRepo, githubGateway, planGenerator, useCase };

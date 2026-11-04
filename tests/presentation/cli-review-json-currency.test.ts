@@ -1,3 +1,16 @@
+/** The canonical task seed with this suite's REVIEW history shape. */
+function seedReviewStageCheckpoint(sandbox: string, stage: string, history: Array<Record<string, unknown>>): void {
+  const now = new Date().toISOString();
+  seedTask(sandbox, {
+    issue: ISSUE,
+    currentStage: stage,
+    createdAt: now,
+    updatedAt: now,
+    history,
+    totalHumanWaitMs: 0
+  });
+}
+
 /**
  * agyloop - `review --json` reports THIS round's verdict (issue #284, D7/AC8)
  *
@@ -19,60 +32,14 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { EXIT_CODE_SUCCESS } = require('../../dist/domain');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 const { CliCritiqueGateway } = require('../../dist/infrastructure');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPath } = require('../helpers/state-seed.ts');
 
 const CRITIQUE_BINARY = 'critique';
 const ISSUE = 911;
 
-function buildCritiqueFreePathShadow(shadowRoot: string): string {
-  fs.mkdirSync(shadowRoot, { recursive: true });
-  const seen = new Set<string>();
-  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const shadowEntries: string[] = [];
-  let idx = 0;
-
-  for (const dir of parts) {
-    let real: string;
-    try {
-      real = fs.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    if (seen.has(real)) continue;
-    seen.add(real);
-
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(real);
-    } catch {
-      continue;
-    }
-
-    const target = path.join(shadowRoot, `d${idx++}`);
-    if (!entries.includes(CRITIQUE_BINARY)) {
-      try {
-        fs.symlinkSync(real, target, 'dir');
-        shadowEntries.push(target);
-        continue;
-      } catch {
-        // Fall through to entry-by-entry copy.
-      }
-    }
-
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of entries) {
-      if (entry === CRITIQUE_BINARY || entry.startsWith(`${CRITIQUE_BINARY}.`)) continue;
-      try {
-        fs.symlinkSync(fs.realpathSync(path.join(real, entry)), path.join(target, entry));
-      } catch {
-        // Skip unresolvable entries.
-      }
-    }
-    shadowEntries.push(target);
-  }
-
-  return shadowEntries.join(path.delimiter);
-}
 
 interface Sandbox {
   readonly dir: string;
@@ -80,44 +47,21 @@ interface Sandbox {
   readonly headSha: string;
 }
 
-function seedCheckpoint(sandbox: string, stage: string, history: Array<Record<string, unknown>>): void {
-  const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const now = new Date().toISOString();
-  fs.writeFileSync(
-    path.join(tasksDir, `${ISSUE}.json`),
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: stage,
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history,
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        totalHumanWaitMs: 0
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
 
-function makeSandbox(stage: string, history: Array<Record<string, unknown>>): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-review-json-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+function makeReviewJsonSandbox(stage: string, history: Array<Record<string, unknown>>): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-review-json-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
   const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  seedCheckpoint(dir, stage, history);
+  seedReviewStageCheckpoint(dir, stage, history);
   return { dir, shadowPath: buildCritiqueFreePathShadow(path.join(dir, '.shadow-bin')), headSha };
 }
 
@@ -201,7 +145,7 @@ async function assertCritiqueAbsent(t: any, sandbox: Sandbox): Promise<boolean> 
 
 describe('review --json currency (issue #284, D7)', () => {
   test('D7a: a critique-only re-run OMITS reviewerVerdict instead of inheriting the previous round', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW', reReviewHistory());
+    const sandbox = makeReviewJsonSandbox('REVIEW', reReviewHistory());
     try {
       if (!(await assertCritiqueAbsent(t, sandbox))) return;
 
@@ -224,7 +168,7 @@ describe('review --json currency (issue #284, D7)', () => {
   });
 
   test('D7b: a filed verdict reports ITS status and the reviewed base commit', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW', reReviewHistory());
+    const sandbox = makeReviewJsonSandbox('REVIEW', reReviewHistory());
     try {
       if (!(await assertCritiqueAbsent(t, sandbox))) return;
 
@@ -251,7 +195,7 @@ describe('review --json currency (issue #284, D7)', () => {
 
   test('D7c: with no earlier round and no block the field is absent (control)', async (t: any) => {
     const now = new Date().toISOString();
-    const sandbox = makeSandbox('REVIEW', [{ stage: 'REVIEW', timestamp: now }]);
+    const sandbox = makeReviewJsonSandbox('REVIEW', [{ stage: 'REVIEW', timestamp: now }]);
     try {
       if (!(await assertCritiqueAbsent(t, sandbox))) return;
 
@@ -267,7 +211,7 @@ describe('review --json currency (issue #284, D7)', () => {
   });
 
   test('D7d: --dry-run omits reviewVerdict and reviewerVerdict', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW', reReviewHistory());
+    const sandbox = makeReviewJsonSandbox('REVIEW', reReviewHistory());
     try {
       if (!(await assertCritiqueAbsent(t, sandbox))) return;
 

@@ -1,3 +1,26 @@
+/** The canonical harness with this suite's task-checkpoint re-read shape. */
+async function runRestartSandbox(
+  args: readonly string[],
+  { env = {}, seed }: { env?: Record<string, string | undefined>; seed?: (dir: string) => void } = {}
+): Promise<any> {
+  let persisted: Record<string, unknown> | null = null;
+  let persistedRaw = '';
+  const result = await runCliInSandboxCanonical(args, {
+    env,
+    stripAnsi: true,
+    seed,
+    inspect: (dir: string) => {
+      try {
+        persistedRaw = fs.readFileSync(taskStatePath(dir, 237), 'utf8');
+      } catch {
+        persistedRaw = '';
+      }
+      persisted = persistedRaw ? JSON.parse(persistedRaw) : null;
+    }
+  });
+  return { ...result, persisted, persistedRaw, tempDir: result.dir };
+}
+
 /**
  * agyloop - `next --restart` / `--skip-discovery` e2e through runCli (issue #237)
  *
@@ -28,6 +51,7 @@ const path = require('node:path');
 const { runCli, parseArguments } = require('../../dist/presentation/cli');
 const { EXIT_CODE_SUCCESS } = require('../../dist/domain');
 const { NOTE_RESTARTED_FROM_COMPLETED } = require('../../dist/domain');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
@@ -36,65 +60,6 @@ const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
  * restoring cwd/env/console afterwards. `seed` runs after `chdir` so a fixture
  * can lay down a task-scoped checkpoint.
  */
-async function runCliInSandbox(
-  args: readonly string[],
-  { env = {}, seed }: { env?: Record<string, string | undefined>; seed?: (dir: string) => void } = {}
-): Promise<any> {
-  const prevCwd = process.cwd();
-  const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-restart-'));
-  const originalEnv: any = {};
-  for (const key of Object.keys(env)) {
-    originalEnv[key] = process.env[key];
-    if (env[key] === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = env[key];
-    }
-  }
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(tempDir);
-    if (seed) {
-      seed(tempDir);
-    }
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    let persistedRaw = '';
-    try {
-      persistedRaw = fs.readFileSync(taskStatePath(tempDir, 237), 'utf8');
-    } catch {
-      persistedRaw = '';
-    }
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, ''),
-      tempDir,
-      persisted: persistedRaw ? JSON.parse(persistedRaw) : null,
-      persistedRaw
-    };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    for (const key of Object.keys(env)) {
-      if (originalEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = originalEnv[key];
-      }
-    }
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 /** Task-scoped state file, which is what `next --issue <n>` resolves. */
 function taskStatePath(dir: string, issue: number): string {
@@ -214,7 +179,7 @@ describe('codeloop next --restart / --skip-discovery (issue #237)', () => {
   describe('T8: end-to-end write contract', () => {
     test('Case A: next --issue <n> on COMPLETED is a pure read', async () => {
       const capture = captureCompletedCheckpoint();
-      const result = await runCliInSandbox(['next', '--issue', '237', '--json'], {
+      const result = await runRestartSandbox(['next', '--issue', '237', '--json'], {
         env: { AGY_SUBAGENT: undefined },
         seed: capture.seed
       });
@@ -232,10 +197,10 @@ describe('codeloop next --restart / --skip-discovery (issue #237)', () => {
     });
 
     test('Case B: --restart is the only destructive path and it lands at DISCOVERY', async () => {
-      const result = await runCliInSandbox(['next', '--issue', '237', '--restart', '--json'], {
+      const result = await runRestartSandbox(['next', '--issue', '237', '--restart', '--json'], {
         env: { AGY_SUBAGENT: undefined },
         seed: seedCompletedTask
-      });
+    });
       const parsed = JSON.parse(result.stdout.trim());
 
       assert.strictEqual(result.code, EXIT_CODE_SUCCESS);
@@ -256,10 +221,10 @@ describe('codeloop next --restart / --skip-discovery (issue #237)', () => {
     });
 
     test('Case C: --skip-discovery releases the DISCOVERY park and records the bypass', async () => {
-      const result = await runCliInSandbox(['plan', '--issue', '237', '--skip-discovery'], {
+      const result = await runRestartSandbox(['plan', '--issue', '237', '--skip-discovery'], {
         env: { AGY_SUBAGENT: undefined },
         seed: seedDiscoveryPark
-      });
+    });
 
       assert.strictEqual(result.code, EXIT_CODE_SUCCESS, `stdout=${result.stdout} stderr=${result.stderr}`);
 

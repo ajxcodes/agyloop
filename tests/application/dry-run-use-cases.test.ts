@@ -127,7 +127,7 @@ describe('ResetPipelineUseCase dryRun (#248 AC-248.1/2)', () => {
 });
 
 describe('SyncUseCase dryRun (#248 AC-248.3, #328 AC-328.6)', () => {
-  class MockExecutor {
+  class CommandExecutorDouble {
     public commands: string[] = [];
     public responses: Record<string, any> = {};
     public async execute(command: string) {
@@ -171,7 +171,7 @@ describe('SyncUseCase dryRun (#248 AC-248.3, #328 AC-328.6)', () => {
   }
 
   function harness(candidates: { number: number; body: string }[]) {
-    const executor = new MockExecutor();
+    const executor = new CommandExecutorDouble();
     const github = new MockGitHub();
     executor.responses["gh pr list --base 'phase/1' --state merged --limit 100 --json number,title,body"] = green(
       'gh pr list',
@@ -193,7 +193,7 @@ describe('SyncUseCase dryRun (#248 AC-248.3, #328 AC-328.6)', () => {
   }
 
   test('dry run issues no fetch/pull/close and closes no issue', async () => {
-    const executor = new MockExecutor();
+    const executor = new CommandExecutorDouble();
     const github = new MockGitHub();
     executor.responses["gh pr list --base 'phase/1' --state merged --limit 100 --json number,title,body"] = green('gh pr list', '[]');
     const result = await new SyncUseCase(executor as any, github as any, new MockState() as any, new MockWorktree() as any).execute({
@@ -262,7 +262,7 @@ describe('SyncUseCase dryRun (#248 AC-248.3, #328 AC-328.6)', () => {
   });
 
   test('internal caller regression: no dryRun still fetches (R7)', async () => {
-    const executor = new MockExecutor();
+    const executor = new CommandExecutorDouble();
     await new SyncUseCase(executor as any, new MockGitHub() as any, new MockState() as any, new MockWorktree() as any).execute({
       workspaceDir: '/mock'
     });

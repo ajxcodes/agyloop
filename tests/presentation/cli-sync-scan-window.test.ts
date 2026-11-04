@@ -16,6 +16,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const POSIX_ONLY = process.platform === 'win32' ? { skip: 'POSIX-only test' } : {};
 const ROOT = path.resolve(__dirname, '..', '..');
 const TOTAL_MERGED_PRS = 45;
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 
 interface Sandbox {
   readonly dir: string;
@@ -24,31 +25,33 @@ interface Sandbox {
   readonly logPath: string;
 }
 
-function makeSandbox(mode: 'complete' | 'truncated'): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-sync-window-'));
-  const repo = path.join(dir, 'repo');
+function makeSyncWindowSandbox(mode: 'complete' | 'truncated'): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-sync-window-',
+    dirName: 'repo',
+    gitignore: false,
+    initialBranch: 'phase/test',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe'
+  });
+  const dir = sandbox.root;
+  const repo = sandbox.dir;
   const binDir = path.join(dir, 'bin');
   const home = path.join(dir, 'home');
   const logPath = path.join(dir, 'gh.log');
 
-  fs.mkdirSync(repo, { recursive: true });
   fs.mkdirSync(binDir, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
 
-  const git = (args: string[], cwd = repo): void => {
-    execFileSync('git', args, { cwd, stdio: 'ignore' });
+  const g = (args: string[], cwd = repo): void => {
+    sandbox.git(args, { cwd });
   };
 
-  git(['init', '-q']);
-  git(['checkout', '-q', '-b', 'phase/test']);
-  git(['config', 'user.email', 'smoke@test']);
-  git(['config', 'user.name', 'smoke']);
-  fs.writeFileSync(path.join(repo, 'README.md'), 'probe\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'chore: probe']);
-  git(['init', '-q', '--bare', path.join(dir, 'origin.git')], dir);
-  git(['remote', 'add', 'origin', path.join(dir, 'origin.git')]);
-  git(['push', '-qu', 'origin', 'phase/test']);
+  g(['init', '-q', '--bare', path.join(dir, 'origin.git')], dir);
+  g(['remote', 'add', 'origin', path.join(dir, 'origin.git')]);
+  g(['push', '-qu', 'origin', 'phase/test']);
 
   const config = {
     total: mode === 'truncated' ? 1000 : TOTAL_MERGED_PRS,
@@ -119,7 +122,7 @@ function runSync(sandbox: Sandbox, args: string[]): {
 
 describe('sync reads every merged PR (#447)', () => {
   test('S447-1: the CLI asks gh for every merged PR and closes the oldest one (issue #447)', POSIX_ONLY, () => {
-    const sandbox = makeSandbox('complete');
+    const sandbox = makeSyncWindowSandbox('complete');
     try {
       const result = runSync(sandbox, []);
 
@@ -142,7 +145,7 @@ describe('sync reads every merged PR (#447)', () => {
   });
 
   test('S447-2: a truncated scan exits non-zero and closes nothing (issue #447)', POSIX_ONLY, () => {
-    const sandbox = makeSandbox('truncated');
+    const sandbox = makeSyncWindowSandbox('truncated');
     try {
       const result = runSync(sandbox, []);
 

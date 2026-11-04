@@ -15,12 +15,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli, computePromptsAllowed } = require('../../dist/presentation/cli');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 /**
  * Seeds a pipeline checkpoint sitting exactly at the COMMIT gate, with a worktree
@@ -59,7 +58,9 @@ interface CaptureResult {
  * console output. Rejects with an explicit HANG error instead of blocking forever
  * if a prompt is ever opened without an answerable stream.
  */
-async function runCliInSandbox(
+
+/** The canonical harness with this suite's explicit TTY attrs + hang-guard option. */
+async function runCliInSandboxLocal(
   args: readonly string[],
   opts: {
     readonly stdinIsTTY: boolean;
@@ -68,53 +69,14 @@ async function runCliInSandbox(
     readonly timeoutMs?: number;
   }
 ): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = (process.stdin as any).isTTY;
-  const originalStdoutIsTTY = (process.stdout as any).isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-prompt-guard-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    if (opts.seed) {
-      opts.seed(tempDir);
-    }
-    process.chdir(tempDir);
-    (process.stdin as any).isTTY = opts.stdinIsTTY;
-    (process.stdout as any).isTTY = opts.stdoutIsTTY;
-    console.log = (...args: unknown[]) => {
-      stdout += args.map(String).join(' ') + '\n';
-    };
-    console.error = (...args: unknown[]) => {
-      stderr += args.map(String).join(' ') + '\n';
-    };
-
-    const timeoutMs = opts.timeoutMs ?? 20000;
-    const code = await Promise.race([
-      runCli(args),
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`HANG: runCli(${JSON.stringify(args)}) never settled — a prompt was opened without an answerable stream.`)),
-          timeoutMs
-        );
-        if (typeof timer.unref === 'function') {
-          timer.unref();
-        }
-      })
-    ]);
-
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    (process.stdin as any).isTTY = originalStdinIsTTY;
-    (process.stdout as any).isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
+  const result = await runCliInSandboxCanonical(args, {
+    seed: opts.seed,
+    stdinIsTTY: opts.stdinIsTTY,
+    stdoutIsTTY: opts.stdoutIsTTY,
+    timeoutMs: opts.timeoutMs,
+    stripAnsi: true
+  });
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 }
 
 describe('computePromptsAllowed (composition-root gate)', () => {
@@ -143,7 +105,7 @@ describe('runCli prompt guards', () => {
   test('default lifecycle does not prompt at the COMMIT gate when stdin is not a TTY', async () => {
     // Pre-fix this call hardcoded `interactiveCommit: true`, entered the commit gate
     // and opened a readline interface on a silent stdin pipe, which never settles.
-    const result = await runCliInSandbox([], {
+    const result = await runCliInSandboxLocal([], {
       stdinIsTTY: false,
       stdoutIsTTY: false,
       seed: (dir) => seedStateAtCommit(dir)
@@ -157,7 +119,7 @@ describe('runCli prompt guards', () => {
   });
 
   test('commit --yes proceeds past the non-interactive guard without prompting', async () => {
-    const result = await runCliInSandbox(['commit', '--yes'], {
+    const result = await runCliInSandboxLocal(['commit', '--yes'], {
       stdinIsTTY: false,
       stdoutIsTTY: false,
       // No worktree in the fixture: the commit use case now legalises the root
@@ -186,7 +148,7 @@ describe('runCli prompt guards', () => {
     // Issue #248 (decision 3): `commit --json` used to mean "never prompt" while
     // printing human text. The non-interactive path is `-y/--yes`; the flag is
     // now a hard, non-zero refusal.
-    const result = await runCliInSandbox(['commit', '--json'], {
+    const result = await runCliInSandboxLocal(['commit', '--json'], {
       stdinIsTTY: true,
       stdoutIsTTY: true,
       seed: (dir) => seedStateAtCommit(dir)
@@ -199,7 +161,7 @@ describe('runCli prompt guards', () => {
   });
 
   test('commit -y --json is refused too (the flag is not a non-interactive shortcut)', async () => {
-    const result = await runCliInSandbox(['commit', '-y', '--json'], {
+    const result = await runCliInSandboxLocal(['commit', '-y', '--json'], {
       stdinIsTTY: true,
       stdoutIsTTY: true,
       seed: (dir) => seedStateAtCommit(dir)
@@ -210,7 +172,7 @@ describe('runCli prompt guards', () => {
   });
 
   test('commit without -y on a non-TTY keeps the exact non-interactive message', async () => {
-    const result = await runCliInSandbox(['commit'], {
+    const result = await runCliInSandboxLocal(['commit'], {
       stdinIsTTY: false,
       stdoutIsTTY: false,
       seed: (dir) => seedStateAtCommit(dir)
@@ -224,10 +186,10 @@ describe('runCli prompt guards', () => {
   });
 
   test('init --json never prompts even on a TTY', async () => {
-    const result = await runCliInSandbox(['init', '--json'], {
+    const result = await runCliInSandboxLocal(['init', '--json'], {
       stdinIsTTY: true,
       stdoutIsTTY: true,
-      seed: (dir) => {
+      seed: (dir: string) => {
         fs.mkdirSync(path.join(dir, '.codeloop'), { recursive: true });
         fs.writeFileSync(
           path.join(dir, '.codeloop', 'config.json'),

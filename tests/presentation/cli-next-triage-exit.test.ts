@@ -1,3 +1,7 @@
+function readTriageExitCheckpoint(sandbox: Sandbox): any {
+  return readCheckpointPath(sandbox.stateFile);
+}
+
 /**
  * agyloop - `next` exits the TRIAGE gate on a terminal PR (issue #351, AC-1)
  *
@@ -20,6 +24,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { readCheckpoint: readCheckpointPath } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 351;
@@ -99,53 +105,20 @@ interface CliRun {
   readonly stderr: string;
 }
 
-async function runIn(sandbox: Sandbox, args: string[]): Promise<CliRun> {
-  const previousCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalPath = process.env.PATH;
-  const originalSubagent = process.env.AGY_SUBAGENT;
-  let stdout = '';
-  let stderr = '';
 
-  try {
-    process.chdir(sandbox.dir);
-    process.env.PATH = `${sandbox.binDir}${path.delimiter}${originalPath ?? ''}`;
-    delete process.env.AGY_SUBAGENT;
-
-    console.log = (...argsOut: any[]) => {
-      stdout += argsOut.map(String).join(' ') + '\n';
-    };
-    console.error = (...argsOut: any[]) => {
-      stderr += argsOut.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(previousCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
+/** The canonical harness run with this suite's shadow-bin PATH and clean env. */
+async function runInLocal(sandbox: Sandbox, args: string[]): Promise<CliRun> {
+  const result = await runCliInSandboxCanonical(args, {
+    dir: sandbox.dir,
+    stripAnsi: true,
+    env: {
+      AGY_SUBAGENT: undefined,
+      PATH: `${sandbox.binDir}${path.delimiter}${process.env.PATH ?? ''}`
     }
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-  }
+  });
+  return { ...result };
 }
 
-function readCheckpoint(sandbox: Sandbox): any {
-  return JSON.parse(fs.readFileSync(sandbox.stateFile, 'utf8'));
-}
 
 describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
   let sandboxes: string[] = [];
@@ -165,7 +138,7 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
       const sandbox = seedSandbox(state);
       sandboxes.push(sandbox.dir);
 
-      const run = await runIn(sandbox, ['next', '--issue', String(ISSUE), '--json']);
+      const run = await runInLocal(sandbox, ['next', '--issue', String(ISSUE), '--json']);
       assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
       const payload = JSON.parse(run.stdout);
@@ -177,7 +150,7 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
         'a merged/closed PR must not yield a triage directive'
       );
 
-      const persisted = readCheckpoint(sandbox);
+      const persisted = readTriageExitCheckpoint(sandbox);
       assert.strictEqual(persisted.currentStage, 'COMPLETED');
       assert.strictEqual(persisted.pausedAtGate, null);
       assert.strictEqual(persisted.triagePayload, null);
@@ -218,7 +191,7 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
     const sandbox = seedSandbox('OPEN');
     sandboxes.push(sandbox.dir);
 
-    const run = await runIn(sandbox, ['next', '--issue', String(ISSUE), '--json']);
+    const run = await runInLocal(sandbox, ['next', '--issue', String(ISSUE), '--json']);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
     const payload = JSON.parse(run.stdout);
@@ -227,7 +200,7 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
     assert.strictEqual(payload.actionType, 'subagent');
     assert.ok(payload.invocationPayload, 'the triage directive carries its payload');
 
-    const persisted = readCheckpoint(sandbox);
+    const persisted = readTriageExitCheckpoint(sandbox);
     assert.strictEqual(persisted.currentStage, 'TRIAGE');
     assert.strictEqual(persisted.pausedAtGate, 'TRIAGE');
   });
@@ -236,7 +209,7 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
     const sandbox = seedSandbox('MERGED');
     sandboxes.push(sandbox.dir);
 
-    const run = await runIn(sandbox, ['next', '--issue', String(ISSUE)]);
+    const run = await runInLocal(sandbox, ['next', '--issue', String(ISSUE)]);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
     assert.match(run.stdout, /\[COMPLETED\]/);
@@ -259,7 +232,7 @@ describe('`next` exits the TRIAGE gate on a terminal PR (issue #351)', () => {
     const sandbox = seedSandbox('CLOSED');
     sandboxes.push(sandbox.dir);
 
-    const run = await runIn(sandbox, ['next', '--issue', String(ISSUE)]);
+    const run = await runInLocal(sandbox, ['next', '--issue', String(ISSUE)]);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
     assert.match(run.stdout, /\[COMPLETED\]/);

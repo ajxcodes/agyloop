@@ -231,7 +231,7 @@ describe('Skill flag rows <-> capability table (issue #339, AC-2.3/AC-2.4)', () 
   }
 
   function rowWith(prefix: string): string {
-    const row = skillRows().find((line) => line.startsWith(prefix));
+    const row = skillRows().find((line: string) => line.startsWith(prefix));
     assert.ok(row, `the skill must document a row starting with ${prefix}`);
     return row!;
   }

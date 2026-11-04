@@ -42,7 +42,7 @@ REMEDIATION_GUIDANCE:
 - Fix the dereference.
 `;
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any;
 
   constructor(snapshot: any) {
@@ -66,7 +66,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   loadConfig(): any {
     return DEFAULT_CONFIG;
   }
@@ -80,7 +80,7 @@ class MockConfigRepository {
   }
 }
 
-class MockCommandExecutor {
+class CommandExecutorDouble {
   public headSha: string;
   public rejectRevParse = false;
   public commands: string[] = [];
@@ -171,18 +171,18 @@ describe('review record (issue #284, AC3/AC6)', () => {
       });
 
       // Round 1: checkpoint at QUALITY_GATE, first review.
-      const round1State = new MockStateRepository(
+      const round1State = new StateRepositoryDouble(
         makeSnapshot(STAGE_QUALITY_GATE, [
           { stage: STAGE_QUALITY_GATE, timestamp: iso(-120_000) }
         ])
       );
       const round1 = new RunReviewUseCase(
         round1State,
-        new MockConfigRepository(),
+        new ConfigRepositoryDouble(),
         planGenerator,
         undefined,
         undefined,
-        new MockCommandExecutor(headSha),
+        new CommandExecutorDouble(headSha),
         undefined,
         undefined,
         undefined,
@@ -193,7 +193,7 @@ describe('review record (issue #284, AC3/AC6)', () => {
       assert.strictEqual(first.reviewedBaseCommit, headSha);
 
       // Round 2: the checkpoint was re-entered at REVIEW after the base moved.
-      const round2State = new MockStateRepository(
+      const round2State = new StateRepositoryDouble(
         makeSnapshot(STAGE_REVIEW, [
           { stage: STAGE_QUALITY_GATE, timestamp: iso(-600_000) },
           { stage: STAGE_REVIEW, timestamp: iso(-500_000), metadata: { reviewerVerdict: 'APPROVED' } },
@@ -204,11 +204,11 @@ describe('review record (issue #284, AC3/AC6)', () => {
       );
       const round2 = new RunReviewUseCase(
         round2State,
-        new MockConfigRepository(),
+        new ConfigRepositoryDouble(),
         planGenerator,
         undefined,
         undefined,
-        new MockCommandExecutor(headSha),
+        new CommandExecutorDouble(headSha),
         undefined,
         undefined,
         undefined,
@@ -271,14 +271,14 @@ describe('review record (issue #284, AC3/AC6)', () => {
         summaryPath
       });
 
-      const executor = new MockCommandExecutor('deadbeef');
+      const executor = new CommandExecutorDouble('deadbeef');
       executor.rejectRevParse = true;
 
       const useCase = new RunReviewUseCase(
-        new MockStateRepository(
+        new StateRepositoryDouble(
           makeSnapshot(STAGE_QUALITY_GATE, [{ stage: STAGE_QUALITY_GATE, timestamp: iso(-1000) }])
         ),
-        new MockConfigRepository(),
+        new ConfigRepositoryDouble(),
         planGenerator,
         undefined,
         undefined,
@@ -316,14 +316,14 @@ describe('review record (issue #284, AC3/AC6)', () => {
       });
 
       const useCase = new RunReviewUseCase(
-        new MockStateRepository(
+        new StateRepositoryDouble(
           makeSnapshot('REVIEW', [{ stage: 'REVIEW', timestamp: iso(-60_000) }])
         ),
-        new MockConfigRepository(),
+        new ConfigRepositoryDouble(),
         planGenerator,
         undefined,
         undefined,
-        new MockCommandExecutor('abc1234'),
+        new CommandExecutorDouble('abc1234'),
         undefined,
         undefined,
         undefined,

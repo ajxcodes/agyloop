@@ -1,3 +1,16 @@
+/** The canonical makeSandbox composed for makeFlagHelpSandbox (issue #544). */
+function makeFlagHelpSandbox(): string {
+  return makeSandbox({
+    prefix: 'codeloop-flag-contract-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
+      fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
+    },
+    initialCommit: 'chore: seed'
+  }).dir;
+}
 /**
  * agyloop - flag & help contracts match the implementation (issue #339,
  * absorbing #340: items 4, 7 + AC-2.5)
@@ -26,23 +39,12 @@ const { spawnSync } = require('node:child_process');
 
 const { printHelp } = require('../../dist/presentation/cli');
 const { COMMAND_CAPABILITIES, capabilityKey } = require('../../dist/presentation/cli-flags');
+const { makeSandbox } = require('../helpers/sandbox.ts');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'codeloop.js');
 const SKILL_FILE = path.join(REPO_ROOT, 'skills', 'agyloop', 'SKILL.md');
 
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-flag-contract-'));
-  const { execFileSync } = require('node:child_process');
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: seed'], { cwd: dir, stdio: 'ignore' });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  return dir;
-}
 
 /** Hash of the sandbox EXCLUDING `.git` (read-only git probes are allowed). */
 function treeHash(root: string, ignoreDirs: readonly string[] = ['.git']): string {
@@ -120,7 +122,7 @@ describe('item 4: `opencode install --dry-run` simulates (AC-2.1)', () => {
   });
 
   test('T4.2: a sandboxed dry run exits 0, names both paths, and writes nothing', () => {
-    const dir = makeSandbox();
+    const dir = makeFlagHelpSandbox();
     try {
       const run = spawnCli(dir, ['opencode', 'install', '--dry-run']);
 
@@ -147,7 +149,7 @@ describe('item 4: `opencode install --dry-run` simulates (AC-2.1)', () => {
   });
 
   test('T4.3: the real install in the same sandbox creates both files (negative control)', () => {
-    const dir = makeSandbox();
+    const dir = makeFlagHelpSandbox();
     try {
       const run = spawnCli(dir, ['opencode', 'install']);
 
@@ -217,7 +219,7 @@ describe('AC-2.5: the capability table, the help line and the skill agree', () =
         `${row.key}: the table must declare dryRun '${row.expect}'`
       );
 
-      const dir = makeSandbox();
+      const dir = makeFlagHelpSandbox();
       try {
         const before = treeHash(dir);
         const run = spawnCli(dir, row.args);

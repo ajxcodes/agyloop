@@ -44,7 +44,7 @@ const {
 import type { StateRepository, ConfigRepository, AgyLoopConfig } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -68,7 +68,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -224,10 +224,10 @@ function dismissalGateway(comments: readonly any[]): any {
 
 describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   test('G1: a COMPLETED checkpoint with an OPEN PR carrying one actionable comment routes to TRIAGE', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([ACTIONABLE_COMMENT])
     );
@@ -245,10 +245,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G2: after a recorded disposition the second `next` reports COMPLETED / completed', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const gateway = gatewayWithComments([ACTIONABLE_COMMENT]);
 
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     const first = await next.execute({ workspaceDir: '/repo' });
     assert.strictEqual(first.currentStage, STAGE_TRIAGE);
 
@@ -265,11 +265,11 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
 
   test('G3: THE AC REGRESSION TEST — route to TRIAGE, triage completed, `next` again is still COMPLETED', async () => {
     // Seed a COMPLETED checkpoint whose PR carries one comment.
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const gateway = gatewayWithComments([ACTIONABLE_COMMENT]);
 
     // route to TRIAGE
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     const routed = await next.execute({ workspaceDir: '/repo' });
     assert.strictEqual(routed.currentStage, STAGE_TRIAGE);
 
@@ -289,10 +289,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G4: a PR carrying ONLY the automated summary does not route', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([SUMMARY_COMMENT])
     );
@@ -308,10 +308,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G5: the summary AND an actionable comment routes, and the payload is actionable-only', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([SUMMARY_COMMENT, ACTIONABLE_COMMENT])
     );
@@ -328,10 +328,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G6: the TRIAGE directive names the exit condition', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([ACTIONABLE_COMMENT])
     );
@@ -354,10 +354,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G6b: the TRIAGE summary names the -m "<notes>" requirement for dismiss (issue #336, AC-4)', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([ACTIONABLE_COMMENT])
     );
@@ -380,10 +380,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G7: the idle report names the recorded disposition', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const gateway = gatewayWithComments([ACTIONABLE_COMMENT]);
 
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     await next.execute({ workspaceDir: '/repo' });
 
     const triage = new TriagePrCommentsUseCase(stateRepo, gateway);
@@ -400,10 +400,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G8: the tool\'s own dismissal reply is excluded from the detected count', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([ACTIONABLE_COMMENT, DISMISSAL_REPLY])
     );
@@ -421,10 +421,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G8b: a PR carrying ONLY the tool\'s own dismissal reply does not route at all', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([DISMISSAL_REPLY])
     );
@@ -435,10 +435,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G9: a real CHANGES_REQUESTED review comment still routes (the detector is not weakened)', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([
         {
@@ -461,7 +461,7 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G10: a NEW actionable comment added after the disposition re-routes', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const comments = [ACTIONABLE_COMMENT];
     const gateway: any = {
       getCurrentRepo: () => 'owner/repo',
@@ -479,7 +479,7 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
       fetchPullRequestComments: async () => comments
     };
 
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     await next.execute({ workspaceDir: '/repo' });
 
     const triage = new TriagePrCommentsUseCase(stateRepo, gateway);
@@ -506,7 +506,7 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
     // The disposition applies to ONE pull request ("for that PR"). A
     // disposition recorded for PR #6 must never suppress the feedback of the
     // task's own PR #7 — the feedback is undispositioned, so it routes.
-    const stateRepo = new MockStateRepo(
+    const stateRepo = new StateRepositoryDouble(
       seedCompleted({
         triageDisposition: {
           prNumber: 6,
@@ -521,7 +521,7 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
 
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       gatewayWithComments([ACTIONABLE_COMMENT])
     );
@@ -539,10 +539,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G12: the dispatch, the list, the record and the handled keys agree (issue #397)', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const gateway = dismissalGateway(THREE_COMMENT_PR);
 
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     await next.execute({ workspaceDir: '/repo' });
 
     const dispatched = await stateRepo.load();
@@ -599,10 +599,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
   });
 
   test('G13: a dismissal never answers the automated summary post (issue #397, D1-AC3)', async () => {
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const gateway = dismissalGateway(THREE_COMMENT_PR);
 
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     await next.execute({ workspaceDir: '/repo' });
 
     const triage = new TriagePrCommentsUseCase(stateRepo, gateway);
@@ -632,10 +632,10 @@ describe('TRIAGE disposition (issue #269, Defect 1)', () => {
       author: 'alice',
       body: 'please rebase and re-run the tests'
     };
-    const stateRepo = new MockStateRepo(seedCompleted());
+    const stateRepo = new StateRepositoryDouble(seedCompleted());
     const gateway = dismissalGateway([...THREE_COMMENT_PR, prose]);
 
-    const next = new GetNextActionUseCase(stateRepo, makeMockConfig(), undefined, gateway);
+    const next = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), undefined, gateway);
     await next.execute({ workspaceDir: '/repo' });
 
     const dispatched = await stateRepo.load();

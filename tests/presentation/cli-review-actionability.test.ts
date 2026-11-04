@@ -1,3 +1,16 @@
+/** The canonical task seed with this suite's stage shape. */
+function seedStageCheckpoint(sandbox: string, stage: string): string {
+  const now = new Date().toISOString();
+  return seedTaskCanonical(sandbox, {
+    issue: ISSUE,
+    currentStage: stage,
+    createdAt: now,
+    updatedAt: now,
+    history: [{ stage, timestamp: now }],
+    reviewDispatchCount: 0
+  });
+}
+
 /**
  * agyloop - `codeloop review`: content-aware blocking (issue #349 AC2/AC3)
  *
@@ -24,7 +37,17 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { buildChangeSetDigestCommand } = require('../../dist/application');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE } = require('../../dist/domain');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
+const { readCheckpoint, checkpointPath, seedTask: seedTaskCanonical } = require('../helpers/state-seed.ts');
+
+/** The task checkpoint when seeded, or null when the file is absent (local envelope of the canonical read). */
+function readCheckpointOrNothing(dir: string): any {
+  const file = checkpointPath(dir, ISSUE);
+  return fs.existsSync(file) ? readCheckpoint(file) : null;
+}
+
 
 const CRITIQUE_BINARY = 'critique';
 const ISSUE = 349;
@@ -32,55 +55,6 @@ const ISSUE = 349;
 let sharedShadowRoot: any = null;
 
 /** A PATH shadow mirroring every entry except the `critique` binary. */
-function buildCritiqueFreePathShadow(shadowRoot: string): string {
-  fs.mkdirSync(shadowRoot, { recursive: true });
-  const seen = new Set();
-  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const shadowEntries = [];
-  let idx = 0;
-
-  for (const dir of parts) {
-    let real;
-    try {
-      real = fs.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    if (seen.has(real)) continue;
-    seen.add(real);
-
-    let entries;
-    try {
-      entries = fs.readdirSync(real);
-    } catch {
-      continue;
-    }
-
-    const target = path.join(shadowRoot, `d${idx++}`);
-    if (!entries.includes(CRITIQUE_BINARY)) {
-      try {
-        fs.symlinkSync(real, target, 'dir');
-        shadowEntries.push(target);
-        continue;
-      } catch {
-        // Fall through to entry-by-entry copies.
-      }
-    }
-
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of entries) {
-      if (entry === CRITIQUE_BINARY || entry.startsWith(`${CRITIQUE_BINARY}.`)) continue;
-      try {
-        fs.symlinkSync(fs.realpathSync(path.join(real, entry)), path.join(target, entry));
-      } catch {
-        // Skip entries that cannot be resolved.
-      }
-    }
-    shadowEntries.push(target);
-  }
-
-  return shadowEntries.join(path.delimiter);
-}
 
 function sharedShadowPath() {
   if (sharedShadowRoot === null) {
@@ -96,58 +70,23 @@ after(() => {
   }
 });
 
-function seedCheckpoint(sandbox: string, stage: string): string {
-  const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const file = path.join(tasksDir, `${ISSUE}.json`);
-  const now = new Date().toISOString();
-  fs.writeFileSync(
-    file,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: stage,
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage, timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        reviewDispatchCount: 0
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-  return file;
-}
 
-function readCheckpoint(sandbox: string): any {
-  try {
-    return JSON.parse(
-      fs.readFileSync(path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`), 'utf8')
-    );
-  } catch {
-    return null;
-  }
-}
 
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-349-review-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  // Issue #452: the provenance sidecar is written AFTER its digest is read, so
-  // it must not itself become part of the change set it describes.
-  fs.writeFileSync(path.join(dir, '.gitignore'), '*.provenance.json\n', 'utf8');
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+function makeReviewActionabilitySandbox(): string {
+  const sandbox = makeSandboxCanonical({
+    // Issue #452: the provenance sidecar is written AFTER its digest is read, so
+    // it must not itself become part of the change set it describes.
+    prefix: 'agyloop-349-review-',
+    dirName: '',
+    gitignore: ['*.provenance.json'],
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  seedCheckpoint(dir, 'REVIEW');
+  seedStageCheckpoint(dir, 'REVIEW');
   return dir;
 }
 
@@ -257,7 +196,7 @@ const DEFECT_COMMENT = {
 
 describe('codeloop review - content-aware blocking (issue #349)', () => {
   test('C1: a critical affirmation records APPROVED and is named on stderr (AC2)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewActionabilitySandbox();
     try {
       const verdictFile = writeVerdict(sandbox);
       const critiqueFile = writeCritique(sandbox, [AFFIRMATION_COMMENT]);
@@ -285,7 +224,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
       assert.ok(run.stderr.includes('src/app.ts:10'), run.stderr);
       assert.ok(run.stderr.includes('[critical/affirmation]'), run.stderr);
 
-      const checkpoint = readCheckpoint(sandbox);
+      const checkpoint = readCheckpointOrNothing(sandbox);
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'APPROVED');
@@ -297,7 +236,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
   });
 
   test('C2: a genuine defect still exits 1 and reverts to IMPLEMENT (AC3)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewActionabilitySandbox();
     try {
       const run = await withSanitizedEnv(sandbox, async () =>
         runCli([
@@ -316,7 +255,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
       assert.ok(output.includes('detected 1 blocking/error violation(s)'), output);
       assert.ok(!run.stderr.includes('request no change'), run.stderr);
 
-      const checkpoint = readCheckpoint(sandbox);
+      const checkpoint = readCheckpointOrNothing(sandbox);
       assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');
@@ -327,7 +266,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
   });
 
   test('C3: --json carries the exemptions in ONE document', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewActionabilitySandbox();
     try {
       const run = await withSanitizedEnv(sandbox, async () =>
         runCli([
@@ -366,7 +305,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
   });
 
   test('C4: a clean report produces no exemption line and an empty list', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewActionabilitySandbox();
     try {
       const run = await withSanitizedEnv(sandbox, async () =>
         runCli([

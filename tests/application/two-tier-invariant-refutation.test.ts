@@ -164,11 +164,11 @@ describe('applyTwoTierInvariant - operator refutations (issue #349)', () => {
     assert.strictEqual(loaded.history[0].metadata.reviewVerdict, VERDICT_APPROVED);
     assert.ok(!('reviewRefutations' in loaded.history[0].metadata));
 
-    const stateRepo = new MockStateRepository(legacy);
+    const stateRepo = new StateRepositoryDouble(legacy);
     const useCase = new RunReviewUseCase(
       stateRepo,
-      new MockConfigRepository(),
-      new MockPlanGenerator()
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble()
     );
 
     const result = await useCase.execute({
@@ -196,7 +196,7 @@ REMEDIATION_GUIDANCE:
 - None
 `;
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any;
 
   constructor(initialSnapshot: any = null) {
@@ -220,7 +220,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   loadConfig(): any {
     return DEFAULT_CONFIG;
   }
@@ -234,7 +234,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   updateSummaryLog(): boolean {
     return true;
   }
