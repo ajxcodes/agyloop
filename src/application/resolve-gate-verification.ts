@@ -236,8 +236,8 @@ async function resolveCommandPlan(
   // lint command the detector DID find is still enforced.
   if (detector && typeof detector.resolveCommands === 'function') {
     const detectedLint = await detectLintBestEffort(detector, params.workspaceDir, params.config);
-    const configured = params.config?.options?.gateCommands;
-    const hasConfig = Boolean(configured && Array.isArray(configured) && configured.length > 0);
+    const configured = configuredGateCommands(params.config);
+    const hasConfig = Boolean(configured && configured.length > 0);
 
     if (hasConfig) {
       return withDetectedLint(
@@ -379,13 +379,13 @@ function resolveCommandPlanWithoutDetector(
     };
   }
 
-  const configured = params.config?.options?.gateCommands;
-  if (configured && Array.isArray(configured) && configured.length > 0) {
+  const configured = configuredGateCommands(params.config);
+  if (configured && configured.length > 0) {
     return {
       ...base,
       commands: normalizeDefinitions(configured, CMD_PREFIX_CONFIG, CMD_LABEL_CONFIG),
       source: GATE_COMMAND_SOURCE_CONFIG,
-      sourceDetail: 'configuration gateCommands override'
+      sourceDetail: configuredGateCommandDetail(params.config)
     };
   }
 
@@ -395,6 +395,41 @@ function resolveCommandPlanWithoutDetector(
     source: GATE_COMMAND_SOURCE_DEFAULT,
     sourceDetail: 'safe default; no plan targets and no detector available'
   };
+}
+
+/**
+ * Config-sourced gate commands for the detector-less paths (#333 AC1).
+ *
+ * Mirrors the adapter's precedence for the two tiers both layers agree on:
+ * `options.gateCommands` first, then the `verification.gates` profile that
+ * `codeloop init` scaffolds. A `verification.gates`-only config must never
+ * degrade to the safe default.
+ */
+function configuredGateCommands(
+  config?: AgyLoopConfig
+): readonly (string | GateCommandDefinition)[] | null {
+  if (!config) return null;
+
+  const gateCommands = config.options?.gateCommands;
+  if (Array.isArray(gateCommands) && gateCommands.length > 0) {
+    return gateCommands as readonly (string | GateCommandDefinition)[];
+  }
+
+  const verificationGates = config.verification?.gates;
+  if (Array.isArray(verificationGates) && verificationGates.length > 0) {
+    return verificationGates as readonly (string | GateCommandDefinition)[];
+  }
+
+  return null;
+}
+
+/** Names the config key that supplied the commands. */
+function configuredGateCommandDetail(config?: AgyLoopConfig): string {
+  const gateCommands = config?.options?.gateCommands;
+  if (Array.isArray(gateCommands) && gateCommands.length > 0) {
+    return 'configuration gateCommands override';
+  }
+  return 'configuration verification.gates override';
 }
 
 function normalizeDefinitions(

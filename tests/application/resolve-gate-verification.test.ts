@@ -391,6 +391,22 @@ describe('resolveGateVerification (issue #298)', () => {
     assert.deepStrictEqual(result.commandPlan.appended, ['npm run lint']);
   });
 
+  test('RGV-333: a detector-less fallback honours verification.gates before the safe default (#333 AC1)', async () => {
+    const result = await verify({
+      planGenerator: makePlanGenerator({ content: '# Plan\n\n## Context\n' }),
+      buildDetector: makeLegacyDetector(),
+      config: {
+        options: {},
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Legacy Gate', command: 'echo AC-333-LEGACY-GATE' }]
+        }
+      }
+    });
+
+    assert.strictEqual(result.commandPlan.source, 'config');
+    assert.strictEqual(result.commandPlan.commands[0].command, 'echo AC-333-LEGACY-GATE');
+  });
+
   test('RGV10: the gate path scopes and validates the declared section (#362 AC1.4)', async () => {
     // The shape #362 Finding 1 froze: the phrase in the H1, pre-section
     // reproduction/diagram/gate-target fences, then the real section. This is

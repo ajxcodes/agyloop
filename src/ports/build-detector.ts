@@ -80,7 +80,7 @@ export interface BuildDetectorPort {
    * Resolves the concrete verification commands following strict precedence:
    * 1. explicitCommands parameter
    * 2. approved plan targets
-   * 3. config overrides (gateCommands / quality_gates.commands)
+   * 3. config overrides (options.gateCommands / quality_gates.commands / verification.gates)
    * 4. act container gate
    * 5. auto-detected ecosystem commands
    * 6. default gate commands fallback

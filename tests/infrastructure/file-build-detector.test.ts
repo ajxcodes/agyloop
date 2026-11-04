@@ -314,6 +314,86 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       assert.strictEqual(resolved[0].command, 'cargo clippy');
       assert.strictEqual(resolved[1].command, 'cargo test --release');
     });
+
+    // #333 AC1 — the `codeloop init` verification profile is live configuration.
+    const BASE_CONFIG = {
+      models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+      options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+    };
+
+    test('FBD-333-1 verification.gates is consumed as a config-tier source (#333 AC1)', async () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({ name: 'ac333', scripts: { test: 'node --test' } }),
+        'utf8'
+      );
+
+      const detector = new FileBuildDetector();
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Gate', command: 'echo AC-333-CONFIG-GATE' }]
+        }
+      } as any);
+
+      assert.strictEqual(plan.source, 'config');
+      assert.strictEqual(plan.commands[0].command, 'echo AC-333-CONFIG-GATE');
+      assert.strictEqual(plan.sourceDetail, 'configuration verification.gates override');
+    });
+
+    test('FBD-333-2 legacy gateCommands outranks verification.gates (#333 AC1)', async () => {
+      fs.writeFileSync(path.join(tempDir, 'go.mod'), 'module app\n', 'utf8');
+
+      const detector = new FileBuildDetector();
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        options: { ...BASE_CONFIG.options, gateCommands: ['echo LEGACY-GATE'] },
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Gate', command: 'echo AC-333-CONFIG-GATE' }]
+        }
+      } as any);
+
+      assert.strictEqual(plan.commands[0].command, 'echo LEGACY-GATE');
+      assert.strictEqual(plan.commands.length, 1);
+    });
+
+    test('FBD-333-3 verification.gates outranks act and auto-detection (#333 AC1)', async () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({ name: 'ac333', scripts: { test: 'node --test' } }),
+        'utf8'
+      );
+
+      const detector = new FileBuildDetector();
+      detector.resolveActCommand = () => ({ id: 'act', label: 'Act', command: 'act' });
+
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Gate', command: 'echo AC-333-CONFIG-GATE' }]
+        }
+      } as any);
+
+      assert.strictEqual(plan.source, 'config');
+      assert.deepStrictEqual(plan.commands.map((def: { command: string }) => def.command), [
+        'echo AC-333-CONFIG-GATE'
+      ]);
+    });
+
+    test('FBD-333-4 a bare command verification gate is normalised (#333 AC1)', async () => {
+      fs.writeFileSync(path.join(tempDir, 'go.mod'), 'module app\n', 'utf8');
+
+      const detector = new FileBuildDetector();
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        verification: { gates: ['echo BARE-GATE'] }
+      } as any);
+
+      assert.deepStrictEqual(plan.commands.map((def: { command: string }) => def.command), [
+        'echo BARE-GATE'
+      ]);
+      assert.strictEqual(plan.commands[0].id, 'config-cmd-1');
+    });
   });
 
   describe('Act & Container Quality Gates (AC1 - AC5)', () => {

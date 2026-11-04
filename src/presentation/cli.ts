@@ -1386,7 +1386,8 @@ async function printImplementerDirective(
   implementationProbe: ImplementationProbe,
   configPath: string | null,
   issue: number | undefined,
-  critique: CritiquePort
+  critique: CritiquePort,
+  workspaceDir: string
 ): Promise<void> {
   try {
     const getNextActionUseCase = new GetNextActionUseCase(
@@ -1404,7 +1405,8 @@ async function printImplementerDirective(
 
     const directive = await getNextActionUseCase.execute({
       configPath,
-      issue
+      issue,
+      workspaceDir
     });
 
     if (!directive.invocationPayload) {
@@ -1931,7 +1933,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
   const config = configRepo.loadConfig({
     customPath: options.configPath,
-    model: options.model || undefined
+    model: options.model || undefined,
+    cwd: lifecycleWorkspaceDir
   });
 
   // Issue #290: the host the role prompts describe. Resolved ONCE here, beside
@@ -1971,7 +1974,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
     });
 
   const makeInferBaseBranchUseCase = (repo: StateRepository): InferBaseBranchUseCase =>
-    new InferBaseBranchUseCase(worktreeManager, githubGateway, repo);
+    new InferBaseBranchUseCase(worktreeManager, githubGateway, repo, configRepo);
 
   const manageCritiqueUseCase = new ManageCritiqueUseCase(critique, critiqueInstaller);
 
@@ -2067,7 +2070,8 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         configPath: options.configPath,
         issue: issueValue,
         restart: options.restart,
-        dryRun: options.dryRun
+        dryRun: options.dryRun,
+        workspaceDir: lifecycleWorkspaceDir
       });
 
       // A persisted gate pause (quota exhaustion, exhausted retries) must never be
@@ -2242,7 +2246,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         StateMachine.fromSnapshot(snapshot);
       }
       const currentBranch = await worktreeManager.resolveBaseBranch();
-      const defaultBranch = 'main';
+      // #333 AC4: a configured base is the milestone target, and the
+      // "(none - direct from X)" line must name the branch worktrees are cut
+      // from instead of claiming `main` unconditionally.
+      const defaultBranch = config.git?.baseBranch?.trim() || 'main';
 
       let issue = scope.issue ?? snapshot?.issue ?? null;
       if (!issue) {
@@ -4642,7 +4649,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
               console.error(`   ${NOTE_IMPLEMENTATION_PLAN_EMPTY_NEXT}`);
             } else {
               console.error(`   ${NOTE_IMPLEMENTATION_PARK_NEXT}`);
-              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), new DetectImplementationDiffUseCase(commandExecutor), options.configPath, issueValue, critique);
+              await printImplementerDirective(scope.repo, configRepo, planGenerator, githubGateway, worktreeManager, buildDetector, makeInferBaseBranchUseCase(scope.repo), new DetectImplementationDiffUseCase(commandExecutor), options.configPath, issueValue, critique, lifecycleWorkspaceDir);
             }
             return EXIT_CODE_SUCCESS;
           }
