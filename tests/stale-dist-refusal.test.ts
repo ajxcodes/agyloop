@@ -10,10 +10,14 @@ const { parseArguments } = require('../dist/presentation');
 const {
   evaluateStaleDist,
   commandFromArgv,
+  subcommandFromArgv,
   wantsHelpOrVersion,
   hasCommitAfter,
   writeBuildStamp,
   detectStaleDist,
+  STALE_UNSAFE_WRITE_COMMANDS,
+  TRIAGE_WRITE_ACTIONS,
+  WORKTREE_WRITE_SUBCOMMANDS,
   VALUE_FLAGS,
 } = require('../bin/stale-dist.js');
 
@@ -21,6 +25,11 @@ interface FixtureOptions {
   stale?: boolean;
   git?: 'dir' | 'file' | 'none';
   stamp?: 'match' | 'mismatch' | 'preserved';
+  /**
+   * Issue #474: `false` leaves `dist/` absent entirely, the state of a fresh
+   * clone between `npm ci` and `npm run build`.
+   */
+  dist?: false;
 }
 
 interface Fixture {
@@ -34,36 +43,41 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-stale-guard-'));
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'dist', 'presentation'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'stub'), { recursive: true });
   for (const name of ['codeloop.js', 'agyloop.js', 'stale-dist.js']) {
     fs.copyFileSync(path.join(ROOT, 'bin', name), path.join(dir, 'bin', name));
   }
-  fs.writeFileSync(
-    path.join(dir, 'dist', 'presentation', 'cli.js'),
-    "const fs=require('node:fs');" +
-      "const {execFileSync}=require('node:child_process');" +
-      "fs.writeFileSync(process.env.SENTINEL,'dist-loaded');" +
-      "function main(){execFileSync('git',['status'],{stdio:'ignore'});" +
-      "console.log('STUB-SUCCESS: the compiled CLI ran');return Promise.resolve();}" +
-      "module.exports={main,parseArguments:()=>({command:null,options:{},unknownFlags:[]})," +
-      "runCli:()=>Promise.resolve(0)};" +
-      "if(require.main===module){main();}"
-  );
+  const hasDist = options.dist !== false;
+  if (hasDist) {
+    fs.mkdirSync(path.join(dir, 'dist', 'presentation'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'dist', 'presentation', 'cli.js'),
+      "const fs=require('node:fs');" +
+        "const {execFileSync}=require('node:child_process');" +
+        "fs.writeFileSync(process.env.SENTINEL,'dist-loaded');" +
+        "function main(){execFileSync('git',['status'],{stdio:'ignore'});" +
+        "console.log('STUB-SUCCESS: the compiled CLI ran');return Promise.resolve();}" +
+        "module.exports={main,parseArguments:()=>({command:null,options:{},unknownFlags:[]})," +
+        "runCli:()=>Promise.resolve(0)};" +
+        "if(require.main===module){main();}"
+    );
+  }
   fs.writeFileSync(path.join(dir, 'src', 'x.ts'), 'export const x = 1;\n');
   const past = new Date(Date.now() - 120_000);
   const now = new Date();
-  fs.utimesSync(
-    path.join(dir, 'dist', 'presentation', 'cli.js'),
-    options.stale === false ? now : past,
-    options.stale === false ? now : past
-  );
+  if (hasDist) {
+    fs.utimesSync(
+      path.join(dir, 'dist', 'presentation', 'cli.js'),
+      options.stale === false ? now : past,
+      options.stale === false ? now : past
+    );
+  }
   fs.utimesSync(
     path.join(dir, 'src', 'x.ts'),
     options.stale === false ? past : now,
     options.stale === false ? past : now
   );
-  if (options.stamp) {
+  if (options.stamp && hasDist) {
     writeBuildStamp(dir);
     if (options.stamp !== 'match') {
       fs.appendFileSync(path.join(dir, 'src', 'x.ts'), 'export const y = 2;\n');
@@ -194,6 +208,143 @@ describe('Stale build refusal', () => {
     }
   });
 
+  test('refuses triage dismiss, abort, worktree clean and worktree remove on a stale checkout (AC1, #497)', () => {
+    const fixture = makeFixture();
+    try {
+      const rows: Array<[string[], string]> = [
+        [['triage', 'dismiss', '--issue', '521', '-m', 'x'], 'triage dismiss'],
+        [['abort'], 'abort'],
+        [['worktree', 'clean'], 'worktree clean'],
+        [['worktree', 'remove', '521'], 'worktree remove'],
+      ];
+      for (const [argv, subject] of rows) {
+        assertRefused(fixture, spawnLauncher(fixture, 'codeloop.js', argv), subject);
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps triage list mode, triage --help, worktree list and worktree prune runnable on a stale checkout (AC2, #497)', () => {
+    const fixture = makeFixture();
+    try {
+      for (const argv of [
+        ['triage', 'list'],
+        ['triage', '--help'],
+        ['worktree', 'list'],
+        ['worktree', 'prune'],
+      ]) {
+        const res = spawnLauncher(fixture, 'codeloop.js', argv);
+        assert.strictEqual(res.status, 0, `'${argv.join(' ')}' must succeed:\n${res.stderr}`);
+        assert.ok(
+          res.stderr.includes('Notice: src/ contains modifications newer than dist/'),
+          `'${argv.join(' ')}' must keep the notice:\n${res.stderr}`
+        );
+        assert.ok(
+          res.stdout.includes('STUB-SUCCESS'),
+          `'${argv.join(' ')}' must run the command body:\n${res.stdout}`
+        );
+        assert.ok(fs.existsSync(fixture.sentinel), `'${argv.join(' ')}' must load dist`);
+        fs.rmSync(fixture.sentinel, { force: true });
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('classifies triage and worktree sub-actions like parseArguments (AC3, #497)', () => {
+    const triageRows = [
+      ['triage'],
+      ['triage', 'list'],
+      ['triage', 'dismiss', '--issue', '521', '-m', 'x'],
+      ['--issue', '521', 'triage', 'dismiss'],
+      ['521', 'triage', 'plan'],
+    ];
+    for (const argv of triageRows) {
+      assert.strictEqual(
+        subcommandFromArgv(argv),
+        parseArguments(argv).options.triageAction,
+        `triage sub-action parity: ${JSON.stringify(argv)}`
+      );
+    }
+    assert.strictEqual(subcommandFromArgv(['triage']), null);
+
+    const worktreeRows = [
+      ['worktree'],
+      ['worktree', 'list'],
+      ['worktree', 'clean'],
+      ['worktree', 'remove', '521'],
+      ['--issue', '521', 'worktree', 'rm', '5'],
+    ];
+    for (const argv of worktreeRows) {
+      assert.strictEqual(
+        subcommandFromArgv(argv),
+        parseArguments(argv).options.worktreeSubcommand,
+        `worktree sub-action parity: ${JSON.stringify(argv)}`
+      );
+    }
+    assert.strictEqual(subcommandFromArgv(['worktree']), 'list');
+
+    // The sets are the classifier's contract, not incidental strings.
+    assert.deepStrictEqual([...STALE_UNSAFE_WRITE_COMMANDS], ['abort', 'triage', 'worktree']);
+    assert.deepStrictEqual(
+      [...TRIAGE_WRITE_ACTIONS],
+      ['implement', 'plan', 'discovery', 'completed', 'dismiss']
+    );
+    assert.deepStrictEqual([...WORKTREE_WRITE_SUBCOMMANDS], ['clean', 'remove', 'rm']);
+  });
+
+  test('refuses every command with a build diagnostic when dist/ is absent (AC1, #474)', () => {
+    const fixture = makeFixture({ dist: false });
+    try {
+      for (const argv of [
+        ['sync'],
+        ['release', 'phase/6-codeloop'],
+        ['commit'],
+        ['triage', 'dismiss', '--issue', '521', '-m', 'x'],
+        ['abort'],
+        ['worktree', 'clean'],
+        ['next'],
+      ]) {
+        const res = spawnLauncher(fixture, 'codeloop.js', argv);
+        assert.strictEqual(res.status, 1, `'${argv.join(' ')}' must exit 1:\n${res.stdout}\n${res.stderr}`);
+        assert.ok(
+          res.stderr.includes('npm run build'),
+          `'${argv.join(' ')}' must name 'npm run build':\n${res.stderr}`
+        );
+        assert.ok(
+          !res.stderr.includes('MODULE_NOT_FOUND'),
+          `'${argv.join(' ')}' must not surface a raw MODULE_NOT_FOUND:\n${res.stderr}`
+        );
+        assert.strictEqual(fs.existsSync(fixture.sentinel), false, 'dist/presentation/cli.js must not load');
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('prints static usage for --help and --version when dist/ is absent (AC2, #474)', () => {
+    const fixture = makeFixture({ dist: false });
+    try {
+      for (const argv of [['--help'], ['--version']]) {
+        const res = spawnLauncher(fixture, 'codeloop.js', argv);
+        assert.strictEqual(res.status, 0, `'${argv.join(' ')}' must exit 0:\n${res.stderr}`);
+        assert.ok(res.stdout.includes('Usage: codeloop'), `'${argv.join(' ')}' must print usage:\n${res.stdout}`);
+        assert.ok(
+          res.stdout.includes('npm run build'),
+          `'${argv.join(' ')}' must name 'npm run build':\n${res.stdout}`
+        );
+        assert.ok(
+          !res.stderr.includes('MODULE_NOT_FOUND'),
+          `'${argv.join(' ')}' must not surface a raw MODULE_NOT_FOUND:\n${res.stderr}`
+        );
+        assert.strictEqual(fs.existsSync(fixture.sentinel), false, 'dist/presentation/cli.js must not load');
+      }
+    } finally {
+      fs.rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   test('runs sync when dist/ is newer than src/ (no false refusal)', () => {
     const fixture = makeFixture({ stale: false });
     try {
@@ -246,6 +397,10 @@ describe('Stale build refusal', () => {
       ['--version'],
       ['next'],
       ['triage', 'list'],
+      ['triage', 'dismiss', '--issue', '521', '-m', 'x'],
+      ['worktree', 'clean'],
+      ['worktree', 'remove', '521'],
+      ['abort'],
     ];
     for (const argv of argvs) {
       assert.strictEqual(

@@ -306,6 +306,11 @@ export interface CliOptions {
   staged: boolean;
   worktree: boolean;
   noWorktree: boolean;
+  /**
+   * Issue #514 AC3: skip the automatic collector sync before implementation.
+   * `codeloop implement --no-sync` must not wait on a full merged-PR walk.
+   */
+  noSync: boolean;
   keepWorktree: boolean;
   json: boolean;
   baseBranch: string | null;
@@ -683,6 +688,7 @@ Operational Flags:
       --model <name> Override agent runner model (e.g. ornith:9b-128k)
       --worktree     Enable git worktree isolation for task execution (default: true)
       --no-worktree  Disable worktree isolation and execute directly in root workspace
+      --no-sync      Skip the automatic collector sync before implementation
       --keep-worktree Keep git worktree after commit completion (prevent auto-teardown)
       --subagents    Prune external Antigravity subagent worktrees (used with worktree prune/clean)
       --all          Include/prune all worktrees (used with worktree list/prune/clean)
@@ -752,6 +758,7 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     staged: false,
     worktree: true,
     noWorktree: false,
+    noSync: false,
     keepWorktree: false,
     json: false,
     baseBranch: null,
@@ -828,6 +835,11 @@ export function parseArguments(args: readonly string[]): ParsedCliArgs {
     } else if (arg === '--no-worktree') {
       options.worktree = false;
       options.noWorktree = true;
+    } else if (arg === '--no-sync') {
+      // Issue #514 AC3: opt out of the automatic collector sync before
+      // implementation, so the APPROVAL-consuming command never waits on a full
+      // merged-PR history walk.
+      options.noSync = true;
     } else if (arg === '--keep-worktree') {
       options.keepWorktree = true;
     } else if (arg === '--subagents') {
@@ -4220,6 +4232,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           configPath: options.configPath,
           dryRun: options.dryRun,
           worktree: options.noWorktree ? false : true,
+          noSync: options.noSync,
           baseBranch: options.baseBranch || undefined,
           planPath: options.planPath,
           planDir: options.planDir,
@@ -4477,7 +4490,10 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
         );
         const res = await syncUseCase.execute({
           workspaceDir: process.cwd(),
-          dryRun: options.dryRun
+          dryRun: options.dryRun,
+          // Issue #514: the long fetch/pull/scan steps report progress so the
+          // command never looks hung.
+          onProgress: (message) => console.log(message)
         });
         if (res.success) {
           // The dry-run message already carries `[dry-run] `; a `✓` here would
@@ -4536,6 +4552,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           planPath: options.planPath,
           planDir: options.planDir,
           worktree: options.noWorktree ? false : true,
+          noSync: options.noSync,
           baseBranch: options.baseBranch || undefined,
           interactive: promptsAllowed
         });
@@ -4812,6 +4829,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
           configPath: options.configPath,
           skipDiscovery: options.skipDiscovery,
           worktree: options.noWorktree ? false : true,
+          noSync: options.noSync,
           baseBranch: options.baseBranch || undefined,
           planPath: options.planPath,
           planDir: options.planDir
