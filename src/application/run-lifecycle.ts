@@ -391,7 +391,7 @@ export class RunLifecycleUseCase {
 
     this.inferBaseBranchUseCase =
       deps.inferBaseBranchUseCase ??
-      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
+      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo, this.configRepo) : undefined);
 
     this.startImplementationUseCase =
       deps.startImplementationUseCase ??

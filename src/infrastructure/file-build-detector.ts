@@ -528,7 +528,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    * Resolves the concrete verification commands following strict precedence:
    * 1. explicitCommands parameter
    * 2. approved plan targets
-   * 3. config overrides (gateCommands / quality_gates.commands)
+   * 3. config overrides (options.gateCommands / quality_gates.commands / verification.gates)
    * 4. act container gate
    * 5. auto-detected ecosystem commands
    * 6. default gate commands fallback
@@ -603,12 +603,12 @@ export class FileBuildDetector implements BuildDetectorPort {
     }
 
     // 3. Explicit configuration overrides (.agyloop.json / config.default.json)
-    const configuredCommands = this.extractConfiguredCommands(config);
-    if (configuredCommands && configuredCommands.length > 0) {
+    const configured = this.extractConfiguredCommands(config);
+    if (configured && configured.commands.length > 0) {
       return finalize(
-        this.normalizeCommands(configuredCommands, CMD_PREFIX_CONFIG),
+        this.normalizeCommands(configured.commands, CMD_PREFIX_CONFIG),
         GATE_COMMAND_SOURCE_CONFIG,
-        'configuration gateCommands / quality_gates.commands override'
+        configured.detail
       );
     }
 
@@ -1098,12 +1098,24 @@ export class FileBuildDetector implements BuildDetectorPort {
     }
   }
 
-  private extractConfiguredCommands(config?: AgyLoopConfig): readonly unknown[] | null {
+  /**
+   * Config-sourced gate commands, in precedence order (#333):
+   * `options.gateCommands` → `quality_gates.commands` → `verification.gates`.
+   *
+   * `detail` names the winning key so the resolved plan's provenance is
+   * truthful rather than a generic "config override".
+   */
+  private extractConfiguredCommands(
+    config?: AgyLoopConfig
+  ): { commands: readonly unknown[]; detail: string } | null {
     if (!config) return null;
 
     const gateCommands = config.options?.gateCommands;
     if (Array.isArray(gateCommands) && gateCommands.length > 0) {
-      return gateCommands;
+      return {
+        commands: gateCommands,
+        detail: 'configuration options.gateCommands override'
+      };
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1114,7 +1126,20 @@ export class FileBuildDetector implements BuildDetectorPort {
       Array.isArray(qualityGatesSection.commands) &&
       qualityGatesSection.commands.length > 0
     ) {
-      return qualityGatesSection.commands;
+      return {
+        commands: qualityGatesSection.commands,
+        detail: 'configuration quality_gates.commands override'
+      };
+    }
+
+    // #333: the profile `codeloop init` scaffolds. Ignoring it made every gate
+    // `init` wrote dead configuration.
+    const verificationGates = config.verification?.gates;
+    if (Array.isArray(verificationGates) && verificationGates.length > 0) {
+      return {
+        commands: verificationGates,
+        detail: 'configuration verification.gates override'
+      };
     }
 
     return null;

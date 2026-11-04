@@ -64,8 +64,8 @@ export interface OpenCodeConfig {
 export interface GitConfig {
   readonly remote?: string;
   readonly baseBranch?: string;
-  readonly collectorPrefix?: string;
-  readonly taskPrefix?: string;
+  // Branch prefixes (`phase/`, `feature/`, `task/`, `fix/`) are domain
+  // constants, not configuration (#333 AC5): see `src/domain/constants.ts`.
   readonly forge?: 'github' | 'gitlab' | 'generic' | string;
 }
 

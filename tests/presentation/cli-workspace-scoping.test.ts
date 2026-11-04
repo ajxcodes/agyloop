@@ -458,6 +458,32 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     );
   });
 
+  test('WS-10: config and prompt read the --workspace configuration, not the invocation cwd (#333 AC3)', async () => {
+    const base = sandbox();
+    const ws = path.join(base, 'ws');
+    const other = path.join(base, 'other');
+    makeRepo(ws);
+    makeRepo(other);
+
+    fs.mkdirSync(path.join(ws, '.codeloop'), { recursive: true });
+    fs.writeFileSync(
+      path.join(ws, '.codeloop', 'config.json'),
+      JSON.stringify({ models: { planner: 'flash', reviewer: 'flash_lite' } }),
+      'utf8'
+    );
+
+    const binDir = ghStub(base);
+
+    const run = await runIn(other, ['config', '--workspace', ws], binDir);
+    assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /^planner\s+flash\s/m);
+    assert.doesNotMatch(run.stdout, /^planner\s+pro\s/m);
+
+    const promptRun = await runIn(other, ['prompt', 'planner', '--workspace', ws], binDir);
+    assert.strictEqual(promptRun.code, 0, `${promptRun.stdout}\n${promptRun.stderr}`);
+    assert.match(promptRun.stdout, /Resolved Tier : flash/);
+  });
+
   test('WS-6: every lifecycle call site threads the workspace', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '..', '..', 'src', 'presentation', 'cli.ts'),

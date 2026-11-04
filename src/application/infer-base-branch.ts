@@ -8,6 +8,11 @@
  * 4. Enforces milestone sealed protection if collector branch is already merged into main.
  * 5. Auto-creates collector branch from main if missing.
  *
+ * Base-branch precedence (#333 AC4): explicit caller base → `config.git.baseBranch`
+ * → attached HEAD / well-known candidates (`resolveBaseBranch`) → `main`. The
+ * configured value only replaces the generic default; an absent config keeps the
+ * probe behaviour byte-identical.
+ *
  * Strict Hexagonal Architecture: Zero direct I/O, depends only on Domain and Ports.
  */
 
@@ -19,7 +24,13 @@ import {
   WorktreeDescriptor,
   StateMachine
 } from '../domain';
-import { WorktreeManagerPort, GitHubGateway, GitHubIssueData, StateRepository } from '../ports';
+import {
+  WorktreeManagerPort,
+  GitHubGateway,
+  GitHubIssueData,
+  StateRepository,
+  ConfigRepository
+} from '../ports';
 
 export interface InferBaseBranchParams {
   readonly issueNumber?: number | string | null;
@@ -44,15 +55,35 @@ export class InferBaseBranchUseCase {
   private readonly worktreeManager: WorktreeManagerPort;
   private readonly githubGateway?: GitHubGateway;
   private readonly stateRepo?: StateRepository;
+  private readonly configRepo?: ConfigRepository;
 
   constructor(
     worktreeManager: WorktreeManagerPort,
     githubGateway?: GitHubGateway,
-    stateRepo?: StateRepository
+    stateRepo?: StateRepository,
+    configRepo?: ConfigRepository
   ) {
     this.worktreeManager = worktreeManager;
     this.githubGateway = githubGateway;
     this.stateRepo = stateRepo;
+    this.configRepo = configRepo;
+  }
+
+  /**
+   * The configured default base branch (#333 AC4), or null when there is none.
+   *
+   * A config load failure is non-fatal — the caller keeps today's
+   * `resolveBaseBranch` probe, exactly as before this option existed.
+   */
+  private configuredBaseBranch(workspaceDir: string): string | null {
+    if (!this.configRepo) return null;
+    try {
+      const configured = this.configRepo.loadConfig({ cwd: workspaceDir }).git?.baseBranch;
+      const trimmed = configured?.trim();
+      return trimmed ? trimmed : null;
+    } catch {
+      return null;
+    }
   }
 
   public async execute(params: InferBaseBranchParams = {}): Promise<BranchInferenceResult> {
@@ -134,7 +165,7 @@ export class InferBaseBranchUseCase {
       return result;
     }
 
-    const defaultBranch = await this.worktreeManager.resolveBaseBranch(cwd);
+    const defaultBranch = this.configuredBaseBranch(cwd) ?? await this.worktreeManager.resolveBaseBranch(cwd);
 
     // 2. Discover available local and remote branches
     let availableBranches: readonly string[] = [];

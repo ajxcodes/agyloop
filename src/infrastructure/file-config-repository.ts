@@ -141,13 +141,12 @@ export class FileConfigRepository implements ConfigRepository {
     }
 
     // 3. Workspace configuration (.agyloop.json, .codeloop.json, .agyloop/config.json, .codeloop/config.json)
+    // #333: resolve from anywhere inside the checkout — a nested subdirectory or
+    // a linked worktree must see the same workspace config the root does. The
+    // walk is bounded by the checkout root, so a config in `/tmp` or `$HOME` can
+    // never leak into a run.
     const cwd = options.workspaceDir || options.cwd || process.cwd();
-    const wsCandidates = [
-      path.join(cwd, '.codeloop', 'config.json'),
-      path.join(cwd, '.codeloop.json'),
-      path.join(cwd, '.agyloop', 'config.json'),
-      path.join(cwd, '.agyloop.json')
-    ];
+    const wsCandidates = this.workspaceConfigCandidates(cwd);
 
     for (const wsPath of wsCandidates) {
       if (fs.existsSync(wsPath)) {
@@ -222,6 +221,92 @@ export class FileConfigRepository implements ConfigRepository {
     this.validateCircuitBreakers(resolved.circuitBreakers);
 
     return resolved;
+  }
+
+  /**
+   * Ordered workspace-config candidates for `startDir` (#333 AC2).
+   *
+   * Walks upward from `startDir`, testing the four recognised workspace config
+   * locations per directory. The walk is bounded by the checkout root:
+   *
+   * - a `.git` **directory** is the checkout boundary: its directory is
+   *   checked, then the walk stops;
+   * - a `.git` **file** marks a linked worktree (or submodule): after checking
+   *   the worktree directory, the main checkout root — resolved from the
+   *   file's `gitdir:` line and its `commondir` sibling — is appended, then the
+   *   walk stops.
+   *
+   * Nearest wins because callers merge the FIRST readable candidate. The
+   * boundary rule is what stops an ancestor repository (or `/tmp`, `$HOME`)
+   * from leaking a config into this run.
+   */
+  private workspaceConfigCandidates(startDir: string): string[] {
+    const candidates: string[] = [];
+    const pushFor = (dir: string): void => {
+      candidates.push(
+        path.join(dir, '.codeloop', 'config.json'),
+        path.join(dir, '.codeloop.json'),
+        path.join(dir, '.agyloop', 'config.json'),
+        path.join(dir, '.agyloop.json')
+      );
+    };
+
+    let dir = path.resolve(startDir);
+    for (;;) {
+      pushFor(dir);
+
+      const dotGit = path.join(dir, '.git');
+      let dotGitStat: fs.Stats | null;
+      try {
+        dotGitStat = fs.statSync(dotGit);
+      } catch {
+        dotGitStat = null;
+      }
+
+      if (dotGitStat) {
+        if (dotGitStat.isFile()) {
+          const mainRoot = this.mainCheckoutRoot(dir, dotGit);
+          if (mainRoot) {
+            pushFor(mainRoot);
+          }
+        }
+        break;
+      }
+
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+
+    return candidates;
+  }
+
+  /**
+   * Resolves the main checkout root of a linked worktree from its `.git` file.
+   *
+   * `gitdir` is `<root>/.git/worktrees/<name>` (or `<super>/.git/modules/<name>`
+   * for a submodule). `commondir` sits beside it and points at the shared git
+   * directory; otherwise `dirname(dirname(gitdir))` is that directory.
+   */
+  private mainCheckoutRoot(worktreeDir: string, dotGitFile: string): string | null {
+    try {
+      const content = fs.readFileSync(dotGitFile, 'utf8');
+      const match = content.match(/^gitdir:\s*(.+)$/m);
+      if (!match) return null;
+
+      const gitdir = path.resolve(worktreeDir, match[1].trim());
+      const commonDirFile = path.join(gitdir, 'commondir');
+      let commonDir: string;
+      if (fs.existsSync(commonDirFile)) {
+        commonDir = path.resolve(gitdir, fs.readFileSync(commonDirFile, 'utf8').trim());
+      } else {
+        commonDir = path.dirname(path.dirname(gitdir));
+      }
+
+      return path.dirname(commonDir);
+    } catch {
+      return null;
+    }
   }
 
   private validateCircuitBreakers(cb?: AgyLoopConfig['circuitBreakers']): void {
