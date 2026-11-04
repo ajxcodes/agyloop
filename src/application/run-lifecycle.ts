@@ -1338,6 +1338,246 @@ export class RunLifecycleUseCase {
   }
 
   /**
+   * The ONE worktree-decision block for the gated modes
+   * (issue #441: was written twice across YOLO and standard mode, moved verbatim).
+   *
+   * Issue #301: only a leg that actually STARTS implementation provisions.
+   * A gated mode's re-entry (e.g. a YOLO re-run at REVIEW/COMMIT) honours the
+   * descriptor already on the checkpoint instead of creating a second worktree.
+   * The default/implement-mode leg keeps its own call — not in scope.
+   */
+  private async resolveWorktreeAndActiveWorkspace(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    workspace: string,
+    mode: ExecutionMode
+  ): Promise<{
+    worktree: WorktreeDescriptor | null;
+    activeWorkspace: string;
+    hadDescriptor: boolean;
+  }> {
+    const hadDescriptor = Boolean(sm.worktree);
+    const provision = this.shouldProvisionWorktree(sm.currentStage, mode);
+    const worktree = provision
+      ? await this.resolveWorktree(sm, params, workspace)
+      : (sm.worktree ?? null);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+    return { worktree, activeWorkspace, hadDescriptor };
+  }
+
+  /**
+   * The ONE implementation-start leg with teardown-on-refusal
+   * (issue #441: was written twice across YOLO and standard mode, moved verbatim).
+   *
+   * Issue #301: a worktree provisioned by THIS leg is torn down when the leg
+   * fails (a bad plan, a missing approved plan), so the failed run leaves no
+   * orphan worktree DIRECTORY behind. The branch it created is NOT deleted
+   * (issue #420: only the implement-mode leg has provenance-aware branch
+   * cleanup). The leg's own error is what the operator sees — never the cleanup.
+   *
+   * `forwardUserInstructions` preserves the one deliberate behavioural asymmetry
+   * between the modes (AC4): YOLO keeps omitting `userInstructions` from
+   * `StartImplementationUseCase`; standard mode still forwards it. The key order
+   * and the values of every other entry are the mode's own, verbatim.
+   */
+  private async startImplementationWithTeardownGuard(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    workspace: string,
+    hadDescriptor: boolean,
+    worktree: WorktreeDescriptor | null,
+    preflightResult: PreFlightCheckResult | undefined,
+    forwardUserInstructions: boolean
+  ): Promise<StartImplementationResult> {
+    // Issue #301: the teardown below runs ONLY when the leg THROWS — a refusal
+    // (a bad plan) must not leave an orphan worktree DIRECTORY behind.
+    try {
+      return await this.startImplementationUseCase.execute({
+        issue: sm.issue,
+        planPath: params.planPath,
+        planDir: params.planDir,
+        // YOLO keeps OMITTING `userInstructions` (AC4); only standard mode
+        // forwards it into the implementer prompt.
+        ...(forwardUserInstructions ? { userInstructions: params.userInstructions } : {}),
+        configPath: params.configPath,
+        dryRun: params.dryRun,
+        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+        // across the boundary so StartImplementationUseCase's `skipWorktree`
+        // guardrail really short-circuits instead of re-provisioning through the
+        // adopt path. `resolveWorktree` (above) remains the outer layer.
+        noWorktree: params.worktree === false,
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch,
+        // Issue #514: the best-effort sync is now observable and skippable on
+        // every lifecycle leg that can start implementation.
+        noSync: params.noSync,
+        onProgress: params.onProgress
+      });
+    } catch (err: unknown) {
+      if (!hadDescriptor && worktree) {
+        await this.teardownWorktree(worktree, workspace);
+        try {
+          sm.setWorktree(null);
+          await this.stateRepo.save(sm.toSnapshot());
+        } catch {
+          // Best effort: the run fails with the leg's own error.
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * The ONE implementation-evidence probe + `probeError` verdict guard shared by
+   * the gated modes (issue #441: was written twice, moved verbatim).
+   *
+   * The probe answers exactly one question — "is there an implementation?" —
+   * and that question is only meaningful at the IMPLEMENT -> QUALITY_GATE
+   * boundary. YOLO runs it ONLY when the checkpoint is at IMPLEMENT
+   * (`probeOnlyAtImplementStage`); a re-run of the gates from
+   * QUALITY_GATE/COMMIT/COMPLETED answers it implicitly and yields a null diff.
+   * Standard probes unconditionally inside its own IMPLEMENT block.
+   *
+   * A verdict that carries a `probeError` is NOT a verdict: the probe could
+   * not read the tree (no git, not a repository, an unreadable directory).
+   * The run then keeps its pre-existing behaviour instead of parking on an
+   * absence of information.
+   */
+  private async probeImplementationDiffForStage(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    probeOnlyAtImplementStage: false
+  ): Promise<{ implementationDiff: ImplementationDiff; implementationVerdict: ImplementationDiff | null }>;
+  private async probeImplementationDiffForStage(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    probeOnlyAtImplementStage: true
+  ): Promise<{
+    implementationDiff: ImplementationDiff | null;
+    implementationVerdict: ImplementationDiff | null;
+  }>;
+  private async probeImplementationDiffForStage(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    probeOnlyAtImplementStage: boolean
+  ): Promise<{
+    implementationDiff: ImplementationDiff | null;
+    implementationVerdict: ImplementationDiff | null;
+  }> {
+    const implementationDiff =
+      probeOnlyAtImplementStage && sm.currentStage !== STAGE_IMPLEMENT
+        ? null
+        : await this.probeImplementationDiff(sm, params, activeWorkspace);
+
+    const implementationVerdict =
+      implementationDiff !== null && implementationDiff.probeError === null
+        ? implementationDiff
+        : null;
+
+    return { implementationDiff, implementationVerdict };
+  }
+
+  /**
+   * The ONE quality-gate invocation shared by the gated modes
+   * (issue #441: was written twice, byte-identical). The stage-gating,
+   * VACUOUS handling and fail-returns stay per-mode.
+   */
+  private async runStageQualityGate(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    implementationVerdict: ImplementationDiff | null
+  ): Promise<QualityGateRunResult> {
+    // B. Quality Gates
+    return this.runQualityGateUseCase.execute({
+      issue: sm.issue,
+      planPath: params.planPath ?? sm.planPath,
+      planDir: params.planDir,
+      commands: params.commands,
+      timeoutSeconds: params.timeoutSeconds,
+      dryRun: params.dryRun,
+      configPath: params.configPath,
+      workspaceDir: activeWorkspace,
+      implementationDiff: implementationVerdict
+    });
+  }
+
+  /**
+   * The ONE gate-failure policy read and circuit-breaker trip check shared by
+   * the gated modes (issue #441: was written twice, byte-identical except the
+   * surrounding mode).
+   *
+   * The VACUOUS branch (per-mode message constants) STAYS in each mode and
+   * precedes this call exactly as today: a VACUOUS verdict is a REFUSAL, not a
+   * failure, so it must never consume a gate retry — least of all trip the
+   * circuit breaker (issue #259).
+   *
+   * The retry limit is honoured from the ACTIVE workspace's config (`cwd` is
+   * load-bearing for issue #425), the trip comparison stays the seeded
+   * `implementToGateLoops` counter against the configured limit, and
+   * `handleCircuitBreakerTrip` keeps its abort/warn/pause-for-human contract.
+   *
+   * Returns `null` when the counter is under the limit; each mode then keeps
+   * assembling its own fail-return, unchanged.
+   */
+  private async maybeTripGateBreaker(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string
+  ): Promise<RunLifecycleResult | null> {
+    const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
+    const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
+    const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
+
+    if (sm.implementToGateLoops >= maxRetries) {
+      return this.handleCircuitBreakerTrip(
+        sm,
+        'qualityGateRetries',
+        maxRetries,
+        sm.implementToGateLoops,
+        actionOnTrip,
+        'Quality gates failed repeatedly.',
+        params.dryRun
+      );
+    }
+
+    return null;
+  }
+
+  /**
+   * The ONE AI-review invocation params block shared by the gated modes
+   * (issue #441: was written twice, byte-identical). Each mode's
+   * review stage-gating guard stays in the mode code.
+   */
+  private async runStageReview(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string
+  ): Promise<RunReviewResult> {
+    // C. AI PR Review
+    return this.runReviewUseCase.execute({
+      issue: sm.issue,
+      planPath: params.planPath ?? sm.planPath,
+      planDir: params.planDir,
+      standardsPath: params.standardsPath,
+      userInstructions: params.userInstructions,
+      workingDiff: params.workingDiff,
+      reviewOutput: params.reviewOutput,
+      staged: params.staged,
+      baseRef: params.baseRef,
+      dryRun: params.dryRun,
+      configPath: params.configPath,
+      interactive: params.interactive,
+      workspaceDir: activeWorkspace
+    });
+  }
+
+  /**
    * YOLO mode: unattended fast-path.
    * Auto-approves APPROVAL gate, streams into implementation, quality gates, and AI review.
    * If commitAfter is set, completes 100% end-to-end unattended to COMPLETED.
@@ -1436,12 +1676,8 @@ export class RunLifecycleUseCase {
     // YOLO A4 keeps its PLAN/APPROVAL provisioning; a YOLO re-entry at
     // REVIEW/COMMIT honours the descriptor already on the checkpoint instead of
     // creating a second worktree.
-    const hadDescriptor = Boolean(sm.worktree);
-    const provision = this.shouldProvisionWorktree(sm.currentStage, MODE_YOLO);
-    const worktree = provision
-      ? await this.resolveWorktree(sm, params, workspace)
-      : (sm.worktree ?? null);
-    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+    const { worktree, activeWorkspace, hadDescriptor } =
+      await this.resolveWorktreeAndActiveWorkspace(sm, params, workspace, MODE_YOLO);
 
     if (sm.currentStage === STAGE_PLAN || sm.currentStage === STAGE_APPROVAL) {
       // Issue #301: a worktree provisioned by THIS leg is torn down when the
@@ -1449,38 +1685,17 @@ export class RunLifecycleUseCase {
       // behind. The branch it created is NOT deleted (issue #420: only the
       // implement-mode leg has provenance-aware branch cleanup). The operator's
       // failure stays the plan error — never the cleanup.
-      try {
-        implResult = await this.startImplementationUseCase.execute({
-          issue: sm.issue,
-          planPath: params.planPath,
-          planDir: params.planDir,
-          configPath: params.configPath,
-          dryRun: params.dryRun,
-          // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
-          // across the boundary so StartImplementationUseCase's `skipWorktree`
-          // guardrail really short-circuits instead of re-provisioning through the
-          // adopt path. `resolveWorktree` (above) remains the outer layer.
-          noWorktree: params.worktree === false,
-          workspaceDir: activeWorkspace,
-          hasMergeConflicts: preflightResult?.hasMergeConflicts,
-          mergeBaseBranch: preflightResult?.candidateBaseBranch,
-          // Issue #514: the best-effort sync is now observable and skippable on
-          // every lifecycle leg that can start implementation.
-          noSync: params.noSync,
-          onProgress: params.onProgress
-        });
-      } catch (err: unknown) {
-        if (!hadDescriptor && worktree) {
-          await this.teardownWorktree(worktree, workspace);
-          try {
-            sm.setWorktree(null);
-            await this.stateRepo.save(sm.toSnapshot());
-          } catch {
-            // Best effort: the run fails with the leg's own error.
-          }
-        }
-        throw err;
-      }
+      implResult = await this.startImplementationWithTeardownGuard(
+        sm,
+        params,
+        activeWorkspace,
+        workspace,
+        hadDescriptor,
+        worktree,
+        preflightResult,
+        // YOLO keeps omitting `userInstructions` (AC4).
+        false
+      );
 
       sm = implResult.stateMachine;
     }
@@ -1491,25 +1706,13 @@ export class RunLifecycleUseCase {
     // diff. Measure the working tree BEFORE the gates run: when it contains no
     // implementation, park at IMPLEMENT instead of certifying nothing.
     //
-    // The probe answers exactly one question — "is there an implementation?" —
-    // and that question is only meaningful at the IMPLEMENT -> QUALITY_GATE
-    // boundary. A re-run of the gates from QUALITY_GATE/COMMIT/COMPLETED
-    // answers it implicitly: the pipeline only got there over a tree that
-    // carried an implementation. So the probe runs exactly where its answer
-    // can change the outcome, and nowhere else.
-    const implementationDiff =
-      sm.currentStage === STAGE_IMPLEMENT
-        ? await this.probeImplementationDiff(sm, params, activeWorkspace)
-        : null;
-
-    // A verdict that carries a `probeError` is NOT a verdict: the probe could
-    // not read the tree (no git, not a repository, an unreadable directory).
-    // The run then keeps its pre-existing behaviour instead of parking on an
-    // absence of information.
-    const implementationVerdict =
-      implementationDiff !== null && implementationDiff.probeError === null
-        ? implementationDiff
-        : null;
+    // The probe runs exactly where its answer can change the outcome, and
+    // nowhere else: only while the checkpoint is at IMPLEMENT (a re-run of the
+    // gates from QUALITY_GATE/COMMIT/COMPLETED answers the question
+    // implicitly — the pipeline only got there over a tree that carried an
+    // implementation). The shared helper carries the `probeError` guard.
+    const { implementationDiff, implementationVerdict } =
+      await this.probeImplementationDiffForStage(sm, params, activeWorkspace, true);
 
     if (implementationVerdict && !implementationVerdict.hasChanges) {
       // A park performs NO `StateMachine.transition()`: `IMPLEMENT -> IMPLEMENT`
@@ -1621,17 +1824,7 @@ export class RunLifecycleUseCase {
     }
 
     // B. Quality Gates
-    const qgResult = await this.runQualityGateUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath ?? sm.planPath,
-      planDir: params.planDir,
-      commands: params.commands,
-      timeoutSeconds: params.timeoutSeconds,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace,
-      implementationDiff: implementationVerdict
-    });
+    const qgResult = await this.runStageQualityGate(sm, params, activeWorkspace, implementationVerdict);
 
     sm = qgResult.stateMachine;
 
@@ -1656,20 +1849,9 @@ export class RunLifecycleUseCase {
         };
       }
 
-      const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
-      const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
-      const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
-
-      if (sm.implementToGateLoops >= maxRetries) {
-        return this.handleCircuitBreakerTrip(
-          sm,
-          'qualityGateRetries',
-          maxRetries,
-          sm.implementToGateLoops,
-          actionOnTrip,
-          'Quality gates failed repeatedly.',
-          params.dryRun
-        );
+      const trip = await this.maybeTripGateBreaker(sm, params, activeWorkspace);
+      if (trip !== null) {
+        return trip;
       }
 
       return {
@@ -1708,22 +1890,9 @@ export class RunLifecycleUseCase {
       };
     }
 
-    // C. AI PR Review
-    const reviewResult = await this.runReviewUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath ?? sm.planPath,
-      planDir: params.planDir,
-      standardsPath: params.standardsPath,
-      userInstructions: params.userInstructions,
-      workingDiff: params.workingDiff,
-      reviewOutput: params.reviewOutput,
-      staged: params.staged,
-      baseRef: params.baseRef,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      interactive: params.interactive,
-      workspaceDir: activeWorkspace
-    });
+    // C. AI PR Review — one shared params block (issue #441); the
+    // stage-gating guard above stays in the YOLO mode.
+    const reviewResult = await this.runStageReview(sm, params, activeWorkspace);
 
     sm = reviewResult.stateMachine;
 
@@ -1867,12 +2036,8 @@ export class RunLifecycleUseCase {
     // CLI. A bare `codeloop` at PLAN/IMPLEMENT/QUALITY_GATE/REVIEW is a read:
     // it honours the descriptor already on the checkpoint (or runs from the
     // workspace root) and writes NOTHING — the checkpoint stays byte-identical.
-    const hadDescriptor = Boolean(sm.worktree);
-    const provision = this.shouldProvisionWorktree(sm.currentStage, MODE_STANDARD);
-    const worktree = provision
-      ? await this.resolveWorktree(sm, params, workspace)
-      : (sm.worktree ?? null);
-    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+    const { worktree, activeWorkspace, hadDescriptor } =
+      await this.resolveWorktreeAndActiveWorkspace(sm, params, workspace, MODE_STANDARD);
 
     // 2. If at APPROVAL: human review has occurred, start implementation
     let implResult: StartImplementationResult | undefined;
@@ -1882,39 +2047,17 @@ export class RunLifecycleUseCase {
       // no orphan DIRECTORY behind. The branch it created is NOT deleted
       // (issue #420: only the implement-mode leg has provenance-aware branch
       // cleanup). The plan error is what the operator sees.
-      try {
-        implResult = await this.startImplementationUseCase.execute({
-          issue: sm.issue,
-          planPath: params.planPath,
-          planDir: params.planDir,
-          userInstructions: params.userInstructions,
-          configPath: params.configPath,
-          dryRun: params.dryRun,
-          // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
-          // across the boundary so StartImplementationUseCase's `skipWorktree`
-          // guardrail really short-circuits instead of re-provisioning through the
-          // adopt path. `resolveWorktree` (above) remains the outer layer.
-          noWorktree: params.worktree === false,
-          workspaceDir: activeWorkspace,
-          hasMergeConflicts: preflightResult?.hasMergeConflicts,
-          mergeBaseBranch: preflightResult?.candidateBaseBranch,
-          // Issue #514: the best-effort sync is now observable and skippable on
-          // every lifecycle leg that can start implementation.
-          noSync: params.noSync,
-          onProgress: params.onProgress
-        });
-      } catch (err: unknown) {
-        if (!hadDescriptor && worktree) {
-          await this.teardownWorktree(worktree, workspace);
-          try {
-            sm.setWorktree(null);
-            await this.stateRepo.save(sm.toSnapshot());
-          } catch {
-            // Best effort: the run fails with the leg's own error.
-          }
-        }
-        throw err;
-      }
+      implResult = await this.startImplementationWithTeardownGuard(
+        sm,
+        params,
+        activeWorkspace,
+        workspace,
+        hadDescriptor,
+        worktree,
+        preflightResult,
+        // Standard mode forwards the operator's instructions (AC4).
+        true
+      );
 
       sm = implResult.stateMachine;
     }
@@ -1926,25 +2069,13 @@ export class RunLifecycleUseCase {
       // legitimately run the gates on a tree they have not committed — but the
       // gate still receives the implementation-evidence verdict, so a gate
       // over an unchanged tree is reported as VACUOUS instead of certifying
-      // the untouched baseline.
-      //
-      // A verdict that carries a `probeError` is NOT a verdict (the tree could
-      // not be read), so the gate keeps its pre-existing behaviour.
-      const implementationDiff = await this.probeImplementationDiff(sm, params, activeWorkspace);
-      const implementationVerdict =
-        implementationDiff.probeError === null ? implementationDiff : null;
+      // the untouched baseline. The shared helper carries the `probeError`
+      // guard: a verdict whose tree could not be read is NOT a verdict, so
+      // the gate keeps its pre-existing behaviour.
+      const { implementationDiff, implementationVerdict } =
+        await this.probeImplementationDiffForStage(sm, params, activeWorkspace, false);
 
-      qgResult = await this.runQualityGateUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath ?? sm.planPath,
-        planDir: params.planDir,
-        commands: params.commands,
-        timeoutSeconds: params.timeoutSeconds,
-        dryRun: params.dryRun,
-        configPath: params.configPath,
-        workspaceDir: activeWorkspace,
-        implementationDiff: implementationVerdict
-      });
+      qgResult = await this.runStageQualityGate(sm, params, activeWorkspace, implementationVerdict);
 
       sm = qgResult.stateMachine;
 
@@ -1970,20 +2101,9 @@ export class RunLifecycleUseCase {
           };
         }
 
-        const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
-        const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
-        const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
-
-        if (sm.implementToGateLoops >= maxRetries) {
-          return this.handleCircuitBreakerTrip(
-            sm,
-            'qualityGateRetries',
-            maxRetries,
-            sm.implementToGateLoops,
-            actionOnTrip,
-            'Quality gates failed repeatedly.',
-            params.dryRun
-          );
+        const trip = await this.maybeTripGateBreaker(sm, params, activeWorkspace);
+        if (trip !== null) {
+          return trip;
         }
 
         return {
@@ -1999,24 +2119,11 @@ export class RunLifecycleUseCase {
       }
     }
 
-    // 4. If at REVIEW (or just advanced from gates): run AI PR review
+    // 4. If at REVIEW (or just advanced from gates): run AI PR review — one
+    // shared invocation block (issue #441); the stage gate stays per-mode.
     let reviewResult: RunReviewResult | undefined;
     if (sm.currentStage === STAGE_QUALITY_GATE || sm.currentStage === STAGE_REVIEW) {
-      reviewResult = await this.runReviewUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath ?? sm.planPath,
-        planDir: params.planDir,
-        standardsPath: params.standardsPath,
-        userInstructions: params.userInstructions,
-        workingDiff: params.workingDiff,
-        reviewOutput: params.reviewOutput,
-        staged: params.staged,
-        baseRef: params.baseRef,
-        dryRun: params.dryRun,
-        configPath: params.configPath,
-        interactive: params.interactive,
-        workspaceDir: activeWorkspace
-      });
+      reviewResult = await this.runStageReview(sm, params, activeWorkspace);
 
       sm = reviewResult.stateMachine;
 
