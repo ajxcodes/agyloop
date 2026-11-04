@@ -13,7 +13,8 @@
  *
  * A backticked span is evidence only when it is path-shaped; a literal,
  * identifier, flag or command in backticks stays in the entry's note (issue
- * #464).
+ * #464). Issue #473: a git ref is prose too — revision syntax, a known ref, or
+ * a `<ref-namespace>/<tail>` shape is never counted as delivered evidence.
  *
  * Pure domain: no I/O. The measured change set is supplied by the caller.
  *
@@ -127,17 +128,67 @@ const PATH_BASENAMES: ReadonlySet<string> = new Set([
 const NON_PATH_CHARS = /[\s"'`$*?<>|(){}[\],;]/;
 
 /**
- * True when a backticked span is a PATH CANDIDATE (issue #464).
- *
- * Only a path-shaped span is evidence: it has a directory separator, a known
- * source/config extension, or is a known extensionless file; it carries no
- * whitespace, quotes, expansion/glob characters, brackets or shell
- * punctuation; it does not start with `-`; and its only colon is a `:line` /
- * `:start-end` citation suffix (#435).
+ * Git revision syntax that can never be a repository-relative path (issue
+ * #473): an infix range (`main..HEAD`), ancestry/peel (`~`/`^`) or the
+ * `@{upstream}` shorthand.
  */
-function isPathShapedEvidence(span: string): boolean {
+const REVISION_SYNTAX = /[^/]\.\.[^/]|[~^]|@\{/;
+
+/** Leading path segments that namespace a git ref rather than a directory. */
+const REF_NAMESPACES: ReadonlySet<string> = new Set([
+  'refs', 'origin', 'upstream', 'main', 'master', 'develop', 'trunk', 'HEAD'
+]);
+
+/** True when a trailing path segment names a known source/config extension. */
+function hasPathExtension(value: string): boolean {
+  const dot = value.lastIndexOf('.');
+  return dot > 0 && PATH_EXTENSIONS.has(value.slice(dot + 1).toLowerCase());
+}
+
+export interface AcEvidenceParseOptions {
+  /**
+   * Refs this review knows by name (issue #473): the reviewed base and the
+   * checkpoint's declared base. A span that exactly matches one is prose, never
+   * evidence.
+   */
+  readonly knownRefs?: readonly string[];
+}
+
+/**
+ * True when a backticked span is a PATH CANDIDATE (issues #464, #473).
+ *
+ * A git ref is prose, never evidence. The ordered tests below are
+ * load-bearing:
+ *
+ * 1. a relative citation (`../outside.ts`) is a PATH — the outside-workspace
+ *    guard owns it, so the ref rule must not swallow that refusal;
+ * 2. revision syntax (`main..HEAD`, `HEAD~2`, `main@{upstream}`) is a ref;
+ * 3. an exact match in the review's `knownRefs` (`phase/6-codeloop`) is a ref;
+ * 4. `<ref-namespace>/<tail>` with no path extension (`origin/main`) is a ref,
+ *    while `main/index.ts` keeps its extension and stays a path;
+ * 5. otherwise only a path-shaped span is evidence: it has a directory
+ *    separator, a known source/config extension, or is a known extensionless
+ *    file; it carries no whitespace, quotes, expansion/glob characters,
+ *    brackets or shell punctuation; it does not start with `-`; and its only
+ *    colon is a `:line` / `:start-end` citation suffix (#435).
+ */
+function isPathShapedEvidence(span: string, knownRefs?: readonly string[]): boolean {
   const value = stripLineSuffix(String(span ?? '').trim());
   if (value.length === 0) return false;
+  if (/^\.\.?\//.test(value)) return true;
+  if (REVISION_SYNTAX.test(value)) return false;
+  const refs = [
+    ...new Set(
+      (knownRefs ?? []).map((ref) => String(ref ?? '').trim()).filter((ref) => ref.length > 0)
+    )
+  ];
+  if (refs.includes(value)) return false;
+  const slash = value.indexOf('/');
+  if (slash > 0 && slash < value.length - 1) {
+    const head = value.slice(0, slash);
+    const tail = value.slice(slash + 1);
+    if (REF_NAMESPACES.has(head) && !hasPathExtension(tail)) return false;
+  }
   if (value.startsWith('-')) return false;
   if (NON_PATH_CHARS.test(value)) return false;
   if (value.includes(':')) return false;
@@ -155,7 +206,10 @@ function isPathShapedEvidence(span: string): boolean {
  * is recorded as an issue (issue #435, D4), so "present but unreadable" can
  * never collapse into "nothing to verify".
  */
-export function parseAcEvidence(verdictText: string | null | undefined): AcEvidenceReport {
+export function parseAcEvidence(
+  verdictText: string | null | undefined,
+  options?: AcEvidenceParseOptions
+): AcEvidenceReport {
   if (!verdictText || typeof verdictText !== 'string') {
     return Object.freeze({ reported: false, entries: Object.freeze([]) });
   }
@@ -206,7 +260,7 @@ export function parseAcEvidence(verdictText: string | null | undefined): AcEvide
     const paths: string[] = [];
     const noteSource = rest.replace(/`([^`]+)`/g, (whole: string, inner: string) => {
       const citation = inner.trim();
-      if (!isPathShapedEvidence(citation)) return whole;
+      if (!isPathShapedEvidence(citation, options?.knownRefs)) return whole;
       paths.push(citation);
       return ' ';
     });

@@ -16,7 +16,8 @@ const {
   ManageCritiqueUseCase,
   DIFF_EXCLUDE_ARGS,
   MAX_INLINE_DIFF_LINES,
-  ANTI_INCEPTION_GUARDRAIL
+  ANTI_INCEPTION_GUARDRAIL,
+  buildChangeSetDigestCommand
 } = require('../../dist/application');
 const { FileBuildDetector } = require('../../dist/infrastructure');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
@@ -772,7 +773,9 @@ index 1111111..2222222 100644
           'utf8'
         );
 
-        const reportPath = path.join(dir, 'state', 'critique', '445.json');
+        // Issue #452: keep the report inside the tool's excluded state tree, so
+        // publishing it cannot change the change-set digest it records.
+        const reportPath = path.join(dir, '.agyloop', 'critique', '445.json');
         const { fence } = renderTierOne({
           issueNumber: 445,
           baseBranch: 'main',
@@ -790,6 +793,10 @@ index 1111111..2222222 100644
         const provenance = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
         assert.strictEqual(provenance.baseRef, 'main');
         assert.strictEqual(provenance.headCommit, head);
+        assert.strictEqual(
+          provenance.changeSetDigest,
+          execFileSync('sh', ['-c', buildChangeSetDigestCommand()], { cwd: dir, encoding: 'utf8' }).trim()
+        );
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -805,6 +812,52 @@ index 1111111..2222222 100644
       });
       assert.ok(prompt.includes('against the reviewed base `phase/6-codeloop`'), `the prose must name the same base, got:\n${prompt.slice(0, 4000)}`);
       assert.ok(!prompt.includes('against target base branch'));
+    });
+
+    test('PS11: re-running the fence after an edit regenerates a sidecar whose digest matches the new tree (#452 AC3)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-452-'));
+      try {
+        execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+        fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir, stdio: 'ignore' });
+
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        fs.writeFileSync(
+          critiqueStub,
+          "process.stdout.write('{\"summary\":\"stub\",\"comments\":[]}');",
+          'utf8'
+        );
+        // The report lives in the excluded `.agyloop` tree, so the fence's own
+        // provenance writes cannot change the tree it is hashing.
+        const reportPath = path.join(dir, '.agyloop', 'critique', '452.json');
+        const { fence } = renderTierOne({
+          issueNumber: 452,
+          baseBranch: 'main',
+          reviewCwd: dir,
+          critiquePath: critiqueStub,
+          critiqueReportPath: reportPath
+        });
+
+        const firstRun = spawnSync('sh', ['-c', fence], { encoding: 'utf8' });
+        assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+        const first = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
+
+        fs.appendFileSync(path.join(dir, 'base.txt'), 'edited\n', 'utf8');
+        const secondRun = spawnSync('sh', ['-c', fence], { encoding: 'utf8' });
+        assert.strictEqual(secondRun.status, 0, secondRun.stderr);
+        const second = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
+
+        assert.notStrictEqual(second.changeSetDigest, first.changeSetDigest);
+        assert.strictEqual(
+          second.changeSetDigest,
+          execFileSync('sh', ['-c', buildChangeSetDigestCommand()], { cwd: dir, encoding: 'utf8' }).trim()
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

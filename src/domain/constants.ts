@@ -3961,12 +3961,30 @@ export const CRITIQUE_PROVENANCE_UNMEASURED = '(unmeasured)' as const;
 export const MSG_CRITIQUE_PROVENANCE_UNBOUND =
   "Tier 1 critique was NOT verified: the report describes base '{reportBase}' at HEAD {reportHead}, but this review certifies base '{reviewedBase}' at HEAD {reviewedHead}. Recorded critiqueVerified=false — re-run the reviewer's Tier 1 command (it runs in the reviewed worktree with `--commit <base>`) and file the report beside its `.provenance.json` sidecar." as const;
 
-/** The four values `formatCritiqueProvenanceUnbound` renders (issue #445). */
+/**
+ * Issue #452: the sidecar named this review's base and HEAD, but the worktree
+ * content changed after Tier 1 ran (HEAD does not move during REVIEW).
+ */
+export const MSG_CRITIQUE_PROVENANCE_DIGEST_UNBOUND =
+  "Tier 1 critique was NOT verified: the report was produced against change set {reportDigest}, but the reviewed worktree is now {reviewedDigest} at the same base '{reviewedBase}' and HEAD {reviewedHead}. The worktree changed after Tier 1 ran; re-run the reviewer's Tier 1 command (it runs in the reviewed worktree with `--commit <base>`) and file the report beside its `.provenance.json` sidecar." as const;
+
+/** Issue #452: a legacy two-field sidecar carries no change-set digest. */
+export const MSG_CRITIQUE_PROVENANCE_DIGEST_MISSING =
+  "Tier 1 critique was NOT verified: the provenance sidecar carries no usable change-set digest, so it cannot be tied to the worktree it describes. Recorded critiqueVerified=false — re-run the reviewer's Tier 1 command so it writes the digest beside the base and HEAD." as const;
+
+/** Issue #452: this review could not measure the worktree digest. */
+export const MSG_CRITIQUE_PROVENANCE_DIGEST_UNMEASURED =
+  "Tier 1 critique was NOT verified: this review could not measure the worktree's change-set digest, so the report cannot be tied to the tree it describes. Recorded critiqueVerified=false — re-run the review once git can read the reviewed worktree." as const;
+
+/** The values `formatCritiqueProvenanceUnbound` renders (issues #445, #452). */
 export interface CritiqueProvenanceUnboundValues {
   readonly reportBase: string | null;
   readonly reportHead: string | null;
   readonly reviewedBase: string | null;
   readonly reviewedHead: string | null;
+  readonly mismatch?: 'no-sidecar' | 'base' | 'head' | 'missing-digest' | 'unmeasured-digest' | 'change-set' | null;
+  readonly reportDigest?: string | null;
+  readonly reviewedDigest?: string | null;
 }
 
 /** Renders the unbound-report note; a `null` value reads as `(unmeasured)`. */
@@ -3977,6 +3995,19 @@ export function formatCritiqueProvenanceUnbound(
     value === null || value === undefined || String(value).trim().length === 0
       ? CRITIQUE_PROVENANCE_UNMEASURED
       : String(value);
+  const shortDigest = (value: string | null | undefined): string =>
+    value === null || value === undefined || String(value).trim().length === 0
+      ? CRITIQUE_PROVENANCE_UNMEASURED
+      : String(value).trim().slice(0, 8);
+  if (values.mismatch === 'change-set') {
+    return MSG_CRITIQUE_PROVENANCE_DIGEST_UNBOUND
+      .replace('{reportDigest}', () => shortDigest(values.reportDigest))
+      .replace('{reviewedDigest}', () => shortDigest(values.reviewedDigest))
+      .replace('{reviewedBase}', () => render(values.reviewedBase))
+      .replace('{reviewedHead}', () => render(values.reviewedHead));
+  }
+  if (values.mismatch === 'missing-digest') return MSG_CRITIQUE_PROVENANCE_DIGEST_MISSING;
+  if (values.mismatch === 'unmeasured-digest') return MSG_CRITIQUE_PROVENANCE_DIGEST_UNMEASURED;
   return MSG_CRITIQUE_PROVENANCE_UNBOUND
     .replace('{reportBase}', () => render(values.reportBase))
     .replace('{reportHead}', () => render(values.reportHead))

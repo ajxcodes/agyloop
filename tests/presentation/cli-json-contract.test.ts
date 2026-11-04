@@ -21,6 +21,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { buildChangeSetDigestCommand } = require('../../dist/application');
 const { COMMAND_CAPABILITIES } = require('../../dist/presentation/cli-flags');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
@@ -78,6 +79,9 @@ function initGitWorkspace(dir: string): void {
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+  // Issue #452: the provenance sidecar is written AFTER its digest is read, so
+  // it must not itself become part of the change set it describes.
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.provenance.json\n');
   fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
   execFileSync('git', ['add', '-A'], { cwd: dir });
   execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
@@ -90,9 +94,15 @@ function initGitWorkspace(dir: string): void {
  */
 function initCritiqueProvenance(dir: string, reportName: string, baseRef = 'main'): void {
   const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  // Issue #452: the sidecar binds content too, so the fixture seeds the
+  // worktree's current change-set digest.
+  const changeSetDigest = execFileSync('sh', ['-c', buildChangeSetDigestCommand()], {
+    cwd: dir,
+    encoding: 'utf8'
+  }).trim();
   fs.writeFileSync(
     path.join(dir, `${reportName}.provenance.json`),
-    JSON.stringify({ baseRef, headCommit })
+    JSON.stringify({ baseRef, headCommit, changeSetDigest })
   );
 }
 

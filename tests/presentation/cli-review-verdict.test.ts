@@ -34,6 +34,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { buildChangeSetDigestCommand } = require('../../dist/application');
 const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE } = require('../../dist/domain');
 const { CliCritiqueGateway } = require('../../dist/infrastructure');
 
@@ -197,6 +198,9 @@ function makeSandbox(stage: string): Sandbox {
   execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+  // Issue #452: the provenance sidecar is written AFTER its digest is read, so
+  // it must not itself become part of the change set it describes.
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.provenance.json\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
   execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
@@ -800,11 +804,22 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   // report. `codeloop review` certifies only when it names this review's base
   // and HEAD, so the positive-path fixtures seed it.
   function writeProvenance(critiquePath: string, baseRef = 'main'): void {
+    const cwd = path.dirname(critiquePath);
     const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: path.dirname(critiquePath),
+      cwd,
       encoding: 'utf8'
     }).trim();
-    fs.writeFileSync(`${critiquePath}.provenance.json`, JSON.stringify({ baseRef, headCommit }), 'utf8');
+    // Issue #452: the sidecar binds content too, so the fixture seeds the
+    // worktree's current change-set digest.
+    const changeSetDigest = execFileSync('sh', ['-c', buildChangeSetDigestCommand()], {
+      cwd,
+      encoding: 'utf8'
+    }).trim();
+    fs.writeFileSync(
+      `${critiquePath}.provenance.json`,
+      JSON.stringify({ baseRef, headCommit, changeSetDigest }),
+      'utf8'
+    );
   }
 
   const CLEAN_CRITIQUE = {

@@ -82,9 +82,9 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   DiffAnalyzer,
   // Issue #445 (AC2): a supplied Tier 1 report is evidence only when its
-  // provenance sidecar names THIS review's base and HEAD.
+  // provenance sidecar names THIS review's base, HEAD and change-set content.
   DEFAULT_BASE_BRANCH,
-  isCritiqueProvenanceBound,
+  critiqueProvenanceMismatch,
   formatCritiqueProvenanceUnbound,
   type CritiqueProvenance
 } from '../domain';
@@ -101,7 +101,7 @@ import {
   GateReportRepositoryPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
-import { resolveDeliveredChangeSet } from './delivered-change-set';
+import { computeChangeSetDigest, resolveDeliveredChangeSet } from './delivered-change-set';
 import { certifyReviewExit, type CertifiedGateEvidence } from './certify-review-exit';
 
 export interface RunReviewParams {
@@ -783,24 +783,31 @@ export class RunReviewUseCase {
     }
 
     const reviewCwd = sm.worktree?.worktreePath || workspace;
-    const targetBaseRef = params.baseRef || sm.baseBranch || undefined;
-    // Issue #445: the base ref this review CERTIFIES. `targetBaseRef` stays as
-    // it is because `resolveDeliveredChangeSet` has its own `HEAD` fallback
-    // (#432), which is a different contract.
-    const reviewedBaseRef = targetBaseRef ?? DEFAULT_BASE_BRANCH;
+    const declaredBaseRef = params.baseRef || sm.baseBranch || undefined;
+    // Issue #523 (AC1-AC3): the base this review CERTIFIES. Every consumer
+    // below receives THIS value — the gateway flag, the delivered change set,
+    // the prompt diff and the audit record. `resolveDeliveredChangeSet` keeps
+    // its own `HEAD` fallback (#432) for other callers, but the review never
+    // reaches it.
+    const reviewedBaseRef = declaredBaseRef ?? DEFAULT_BASE_BRANCH;
     // Issue #284 (AC6): the commit this verdict was made AGAINST. The worktree,
     // not the repo root — the reviewed diff is the worktree's. The name is a
     // historical misnomer (it stores the reviewed HEAD, not the base, which
     // lives in `reviewedBaseRef`); renaming it would touch every snapshot
     // consumer for no acceptance value (issue #445, out of scope).
     const reviewedBaseCommit = await this.readReviewedBaseCommit(reviewCwd);
+    // Issue #452: the same change set as CONTENT. Only a supplied report needs
+    // it, and `null` means "could not measure" — which can never bind.
+    const reviewedChangeSetDigest = params.priorCritiqueReport
+      ? await computeChangeSetDigest({ commandExecutor: this.commandExecutor, cwd: reviewCwd })
+      : null;
 
     // Issue #432 (AC5): measure the change set the reviewed worktree delivers.
     // `measured: false` on any git failure — never a guess.
     const deliveredChangeSet = await resolveDeliveredChangeSet({
       commandExecutor: this.commandExecutor,
       cwd: reviewCwd,
-      baseRef: targetBaseRef
+      baseRef: reviewedBaseRef
     });
 
     let updateNotification: string | null = null;
@@ -873,7 +880,7 @@ export class RunReviewUseCase {
         aiReport = await this.critique.review({
           cwd: reviewCwd,
           staged: params.staged,
-          baseRef: targetBaseRef,
+          baseRef: reviewedBaseRef,
           timeoutMs: filingPath ? DEFAULT_CRITIQUE_REVIEW_TIMEOUT_MS : undefined
         });
         if (aiReport) {
@@ -895,7 +902,7 @@ export class RunReviewUseCase {
     let workingDiff = params.workingDiff;
     if (workingDiff === undefined && this.commandExecutor) {
       try {
-        const targetBase = targetBaseRef || 'main';
+        const targetBase = reviewedBaseRef;
         const diffCmd = params.staged
           ? `git diff --cached -- . ${DIFF_EXCLUDE_ARGS}`
           : `git diff ${targetBase} -- . ${DIFF_EXCLUDE_ARGS}`;
@@ -975,7 +982,9 @@ export class RunReviewUseCase {
     // `reviewSource` they make the record auditable after the fact.
     // Issue #432 (AC5): classify the reviewer's cited evidence against the
     // delivered change set BEFORE the invariant can escalate the verdict.
-    const acReport = parseAcEvidence(params.reviewOutput);
+    const acReport = parseAcEvidence(params.reviewOutput, {
+      knownRefs: [reviewedBaseRef, sm.baseBranch ?? '']
+    });
 
     // Issue #435 (D1): a filed APPROVED verdict must actually resolve the AC
     // evidence it certifies. The refusal is thrown BEFORE any checkpoint write
@@ -999,7 +1008,7 @@ export class RunReviewUseCase {
       acReport,
       deliveredChangeSet,
       reviewCwd,
-      targetBaseRef ?? null
+      reviewedBaseRef
     );
     if (acEvidence.note) {
       console.warn(`[codeloop] Note: ${acEvidence.note}`);
@@ -1011,9 +1020,15 @@ export class RunReviewUseCase {
     // A report produced by this run is bound by construction (it ran in
     // reviewCwd with --commit reviewedBaseRef).
     const critiqueProvenance = params.critiqueProvenance ?? null;
-    const suppliedReportBound = params.priorCritiqueReport
-      ? isCritiqueProvenanceBound(critiqueProvenance, reviewedBaseRef, reviewedBaseCommit)
-      : true;
+    const provenanceMismatch = params.priorCritiqueReport
+      ? critiqueProvenanceMismatch(
+          critiqueProvenance,
+          reviewedBaseRef,
+          reviewedBaseCommit,
+          reviewedChangeSetDigest
+        )
+      : null;
+    const suppliedReportBound = provenanceMismatch === null;
     const critiqueVerified = Boolean(aiReport && !aiReport.bypassed && suppliedReportBound);
     if (params.priorCritiqueReport && aiReport && !aiReport.bypassed && !suppliedReportBound) {
       console.warn(
@@ -1021,7 +1036,10 @@ export class RunReviewUseCase {
           reportBase: critiqueProvenance?.baseRef ?? null,
           reportHead: critiqueProvenance?.headCommit ?? null,
           reviewedBase: reviewedBaseRef,
-          reviewedHead: reviewedBaseCommit
+          reviewedHead: reviewedBaseCommit,
+          mismatch: provenanceMismatch,
+          reportDigest: critiqueProvenance?.changeSetDigest ?? null,
+          reviewedDigest: reviewedChangeSetDigest
         })}`
       );
     }
@@ -1118,12 +1136,17 @@ export class RunReviewUseCase {
         : {}),
       // Issue #445: ADDITIVE and written only when a report was supplied this
       // round, so an old snapshot (which never carries it) stays valid.
+      // Issue #452: the record now names the digest it compared and why it did
+      // not bind, so the refusal is auditable after the fact.
       ...(params.priorCritiqueReport
         ? {
             reviewCritiqueProvenance: {
               baseRef: critiqueProvenance?.baseRef ?? null,
               headCommit: critiqueProvenance?.headCommit ?? null,
-              bound: suppliedReportBound
+              bound: suppliedReportBound,
+              changeSetDigest: critiqueProvenance?.changeSetDigest ?? null,
+              reviewedChangeSetDigest,
+              mismatch: provenanceMismatch
             }
           }
         : {})

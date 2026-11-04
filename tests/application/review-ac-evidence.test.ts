@@ -63,7 +63,7 @@ const CONFIG = {
 let root: string;
 let planPath: string;
 
-function brief(): string {
+function brief(baseBranch: string | null = 'HEAD'): string {
   const sm = StateMachine.createInitial({ issue: 432 });
   sm.transition(STAGE_DISCOVERY);
   sm.transition(STAGE_PLAN);
@@ -72,12 +72,12 @@ function brief(): string {
   sm.transition(STAGE_QUALITY_GATE);
   sm.transition(STAGE_REVIEW);
   sm.setPlanPath(planPath);
-  sm.setBaseBranch('HEAD');
+  sm.setBaseBranch(baseBranch);
   return sm.toSnapshot();
 }
 
-function makeUseCase(options: { commandExecutor?: any } = {}) {
-  const repo = new MemoryStateRepository(brief());
+function makeUseCase(options: { commandExecutor?: any; baseBranch?: string | null } = {}) {
+  const repo = new MemoryStateRepository(brief(options.baseBranch));
   const planGenerator = {
     resolvePlanFile: (opts: any) => ({ planPath: opts.planPath ?? planPath, summaryPath: null }),
     readPlanDocument: () => fs.readFileSync(planPath, 'utf8'),
@@ -647,5 +647,74 @@ describe('Review AC evidence (issue #432)', () => {
     );
     const last = repo.snapshot.history[repo.snapshot.history.length - 1];
     assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, [GAP]);
+  });
+
+  function commitDeliveredOnBranch(): void {
+    gitOk(root, ['checkout', '-qb', 'phase/6-codeloop']);
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const delivered = 1;\n');
+    gitOk(root, ['add', '-A']);
+    gitOk(root, ['commit', '-qm', 'feat: delivered']);
+  }
+
+  test('RAE23 a committed change in a checkpoint with no baseBranch is recognised as delivered (#450 AC2)', async () => {
+    commitDeliveredOnBranch();
+    const { useCase } = makeUseCase({ commandExecutor: executor(), baseBranch: null });
+    const result = await useCase.execute({
+      issue: 523,
+      workspaceDir: root,
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: committed change reviewed',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.deepStrictEqual([...result.acEvidence.verified], ['AC1']);
+    assert.strictEqual(result.acEvidence.baseRef, 'main');
+  });
+
+  test('RAE24 the no-base review record names main, never null, beside the certified base (#450 AC3)', async () => {
+    commitDeliveredOnBranch();
+    const { useCase, repo } = makeUseCase({ commandExecutor: executor(), baseBranch: null });
+    const result = await useCase.execute({
+      issue: 523,
+      workspaceDir: root,
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: one delivered path, one gap',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts`, `src/domain/missing.ts`'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    const last = repo.snapshot.history[repo.snapshot.history.length - 1];
+    assert.strictEqual(last.metadata.reviewAcEvidence.baseRef, 'main');
+    assert.deepStrictEqual(last.metadata.reviewAcEvidence.unverifiable, ['AC1 — `src/domain/missing.ts`']);
+  });
+
+  test('RAE25 a verdict citing the reviewed base in backticks beside a delivered path stays APPROVED (#473 AC4)', async () => {
+    gitOk(root, ['checkout', '-qb', 'phase/6-codeloop']);
+    fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const delivered = 1;\n');
+    const { useCase } = makeUseCase({
+      commandExecutor: executor(),
+      baseBranch: 'phase/6-codeloop'
+    });
+    const result = await useCase.execute({
+      issue: 523,
+      workspaceDir: root,
+      baseRef: 'phase/6-codeloop',
+      reviewOutput: [
+        'REVIEW_STATUS: APPROVED',
+        'REVIEW_SUMMARY: base ref named in prose',
+        'AC_EVIDENCE:',
+        '- AC1: met — `delivered.ts` (diff vs `phase/6-codeloop`)'
+      ].join('\n')
+    });
+
+    assert.strictEqual(result.verdict.status, 'APPROVED');
+    assert.deepStrictEqual([...result.acEvidence.unverifiable], []);
   });
 });

@@ -270,7 +270,19 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
         prompt.includes("git diff --no-index -- /dev/null '.github/actionlint.yaml' || true"),
         `the prompt must carry a content command for the untracked path:\n${prompt.slice(0, 3000)}`
       );
-      assert.strictEqual(prompt.includes('git add'), false, 'the dispatch must not name staging');
+      // Issue #452: the Tier 1 fence now carries a change-set digest command
+      // that stages into an ALTERNATE (temporary) index. The dispatch must still
+      // never stage the real index, which the assertions below verify.
+      const stagingLines = prompt
+        .split('\n')
+        .filter((line: string) => line.includes('git add'));
+      for (const line of stagingLines) {
+        assert.ok(
+          line.includes('GIT_INDEX_FILE="$digest_idx"'),
+          `the only staging in the dispatch must target the digest's alternate index:\n${line}`
+        );
+      }
+      assert.ok(stagingLines.length <= 1, 'the dispatch must not add a second staging command');
 
       // The dispatch is READ-ONLY evidence: the path is still untracked AND the
       // index is untouched (staging changes what the commit draft sees, #240).
