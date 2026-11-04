@@ -8,7 +8,12 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const { ResolveSubagentUseCase } = require('../../dist/application');
-const { REVIEWER_AC_EVIDENCE_SENTENCE, REVIEWER_AC_EVIDENCE_STATUS_CONTRACT } = require('../../dist/domain');
+const {
+  REVIEWER_AC_EVIDENCE_SENTENCE,
+  REVIEWER_AC_EVIDENCE_STATUS_CONTRACT,
+  PLAN_DEVIATION_EXAMPLE,
+  formatPlanDeviationChannelNote
+} = require('../../dist/domain');
 
 const RECORD = {
   id: 'PD-1',
@@ -33,6 +38,10 @@ describe('implementer/reviewer deviation contract (issue #432)', () => {
     assert.ok(prompt.includes('PLAN_DEVIATION:'), 'the prompt must name the marker');
     assert.ok(prompt.includes('codeloop deviation'), 'the prompt must name the filing command');
     assert.ok(/Never change a literal silently/.test(prompt));
+    for (const key of ['planSection', 'planLiteral', 'implementedAssertion', 'reason']) {
+      assert.ok(prompt.includes(key), `the prompt must name ${key}`);
+    }
+    assert.ok(prompt.includes(PLAN_DEVIATION_EXAMPLE), 'the prompt must show the accepted shape');
   });
 
   test('IDD2 the reviewer prompt mandates AC_EVIDENCE and lists recorded deviations', () => {
@@ -81,5 +90,19 @@ describe('implementer/reviewer deviation contract (issue #432)', () => {
     assert.ok(contract.includes(REVIEWER_AC_EVIDENCE_STATUS_CONTRACT));
     assert.ok(contract.includes('`out-of-scope`'));
     assert.ok(!contract.includes("If a criterion's only evidence lives outside the diff, report it `unverifiable` and name the path"));
+  });
+
+  test('IDD7 the reviewer prompt requires a reported deviation and never a silent edit (#437)', () => {
+    const prompt = useCase().buildReviewerTaskPrompt({ issueNumber: 437 });
+    assert.ok(prompt.includes('Discovered Plan Deviations (report, do not edit)'));
+    assert.ok(prompt.includes('read-only'));
+    assert.ok(prompt.includes(PLAN_DEVIATION_EXAMPLE));
+    assert.ok(prompt.includes('The orchestrator files it'));
+    assert.ok(prompt.includes('REVIEW and COMMIT'));
+  });
+
+  test('IDD8 the channel note states the accepted wire format (#451 AC1)', () => {
+    const note = formatPlanDeviationChannelNote(451);
+    assert.ok(note.includes(PLAN_DEVIATION_EXAMPLE));
   });
 });

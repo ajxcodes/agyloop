@@ -211,6 +211,37 @@ describe('GetNextActionUseCase COMMIT-gate description (issue #259, AC4)', () =>
       `an unknown provenance must not be invented, got: ${description}`
     );
   });
+
+  test('C7 an unacknowledged deviation blocks the COMMIT gate with the acknowledgment command (#437 AC2)', async () => {
+    const sm = StateMachine.createInitial({ issue: 437, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT, { note: 'Reached the commit gate', reviewVerdict: VERDICT_APPROVED });
+    sm.recordPlanDeviation({
+      planSection: '§4.4 Test Register row TR-15',
+      planLiteral: 'tests/application/run-lifecycle.test.ts:664',
+      implementedAssertion: 'tests/application/run-lifecycle.test.ts:4',
+      reason: 'the pinned fixture asserts pausedAtGate at line 4',
+      files: []
+    });
+
+    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const result = await new GetNextActionUseCase(stateRepo, makeMockConfig()).execute({
+      workspaceDir: '/repo'
+    });
+
+    assert.strictEqual(result.title, 'Plan Deviation Unacknowledged');
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(result.description.includes('PD-1'), result.description);
+    assert.ok(
+      result.description.includes('codeloop deviation --issue 437 --ack PD-1'),
+      result.description
+    );
+  });
 });
 
 /**

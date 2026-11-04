@@ -2080,6 +2080,94 @@ Author every target so it passes on the uncommitted worktree; a committed-tree a
 - Always cite specific file paths and line ranges using Markdown links (e.g., \`[file.js:L10-L25]\`).
 - Do not output conversational filler. Deliver focused, high-density technical analysis.` as const;
 
+// ---- Plan deviation wire contract (issues #451/#437) ----------------------
+
+/** The wire keys the parser requires, in message order. */
+export const PLAN_DEVIATION_REQUIRED_KEYS = Object.freeze([
+  'planSection',
+  'planLiteral',
+  'implementedAssertion',
+  'reason'
+] as const);
+
+/** One accepted prose spelling and the wire key it maps onto (issue #451). */
+export interface PlanDeviationProseLabel {
+  readonly label: string;
+  readonly field: 'planSection' | 'planLiteral' | 'implementedAssertion' | 'reason' | 'files';
+}
+
+/** The prose labels the refusal message names, in message order (issue #451). */
+export const PLAN_DEVIATION_PROSE_LABEL_ENTRIES = Object.freeze([
+  { label: 'Plan section', field: 'planSection' },
+  { label: 'Plan literal', field: 'planLiteral' },
+  { label: 'Implemented', field: 'implementedAssertion' },
+  { label: 'Reason', field: 'reason' }
+] as const);
+
+/** Additional prose spellings the parser accepts without advertising them. */
+export const PLAN_DEVIATION_PROSE_LABEL_ALIASES = Object.freeze([
+  { label: 'Implemented assertion', field: 'implementedAssertion' },
+  { label: 'Files', field: 'files' }
+] as const);
+
+const PROSE_LABEL_QUOTES = PLAN_DEVIATION_PROSE_LABEL_ENTRIES.map(
+  (entry) => `\`${entry.label}:\``
+);
+
+/**
+ * The prose labels the parser also accepts (issue #451).
+ *
+ * Rendered from the same table the parser builds its regexes from, so the
+ * refusal text cannot advertise a label the parser does not match.
+ */
+export const PLAN_DEVIATION_PROSE_LABELS = `${PROSE_LABEL_QUOTES.slice(0, -1).join(
+  ', '
+)} and ${PROSE_LABEL_QUOTES[PROSE_LABEL_QUOTES.length - 1]}`;
+
+/** The ONE accepted-shape example every surface reproduces. */
+export const PLAN_DEVIATION_EXAMPLE =
+  'PLAN_DEVIATION:\n' +
+  '{ "planSection": "<the plan section or Test Register row>",\n' +
+  '  "planLiteral": "<the approved literal>",\n' +
+  '  "implementedAssertion": "<the assertion actually written>",\n' +
+  '  "reason": "<why the new literal is right>",\n' +
+  '  "files": ["<path:line>"] }';
+
+/** The refusal every malformed block carries (issue #451, AC2). */
+export const MSG_PLAN_DEVIATION_SHAPE =
+  `expected a JSON object with all four keys: "planSection", "planLiteral", "implementedAssertion", "reason" ` +
+  `(optional "files": ["path:line"]). ${PLAN_DEVIATION_PROSE_LABELS} are also accepted. ` +
+  `Accepted shape:\n${PLAN_DEVIATION_EXAMPLE}`;
+
+/** The commit/PR body heading for recorded deviations (issue #437, AC4). */
+export const PLAN_DEVIATIONS_COMMIT_HEADER = 'Plan deviations (recorded):' as const;
+
+/** Renders the recorded deviations as one commit/PR body section. */
+export function formatPlanDeviationsForCommitBody(
+  records: readonly PlanDeviationSummary[]
+): string | null {
+  if (records.length === 0) return null;
+  const lines: string[] = [PLAN_DEVIATIONS_COMMIT_HEADER];
+  for (const record of records) {
+    lines.push(
+      `- ${record.id} ${record.planSection}: plan said "${record.planLiteral}"; implemented "${record.implementedAssertion}"`
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Idempotent: a body that already carries the section is returned unchanged. */
+export function planDeviationsCommitBody(
+  body: string | null,
+  records: readonly PlanDeviationSummary[]
+): string | null {
+  if (records.length === 0) return body;
+  if (body !== null && body.includes(PLAN_DEVIATIONS_COMMIT_HEADER)) return body;
+  const section = formatPlanDeviationsForCommitBody(records);
+  if (section === null) return body;
+  return body !== null && body.trim().length > 0 ? `${body}\n\n${section}` : section;
+}
+
 export const DEFAULT_IMPLEMENTER_SYSTEM_PROMPT = `# AgyLoop Implementation Subagent System Prompt
 
 You are the **AgyLoop Code Implementation Subagent**, an autonomous, rigorous software engineer in Google Antigravity.
@@ -2127,7 +2215,21 @@ Your primary purpose is to execute code changes, refactoring, test authoring, an
 
 - Provide structured, concise status reports on completed checklist items.
 - Reference modified files explicitly.
-- When all plan items are satisfied and syntax compiles cleanly, report \`IMPLEMENTATION_DONE\` to the parent coordinator.` as const;
+- When all plan items are satisfied and syntax compiles cleanly, report \`IMPLEMENTATION_DONE\` to the parent coordinator.
+
+---
+
+## 4. Plan Deviations (never a silent edit)
+
+An approved plan literal that cannot be satisfied as written is a **deviation**, not a licence to change the assertion silently. STOP and emit one \`PLAN_DEVIATION:\` block per changed literal, in this exact shape:
+
+\`\`\`
+${PLAN_DEVIATION_EXAMPLE}
+\`\`\`
+
+The four required keys are \`planSection\`, \`planLiteral\`, \`implementedAssertion\` and \`reason\`; \`files\` is optional and takes \`path:line\` cites. The prose labels \`Plan section:\`, \`Plan literal:\`, \`Implemented:\` and \`Reason:\` are also accepted.
+
+The orchestrator files the block with \`codeloop deviation --deviation-file <path>\`, or \`codeloop deviation --issue <n> --deviation-file <path>\` when the workspace is not the bound one (pipe it in with \`codeloop deviation --deviation-stdin\`). Filing is legal at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT, and an unacknowledged deviation blocks the commit. Never change a literal silently and never edit the plan — a test that disagrees with a frozen assertion is a defect in the test until the deviation is acknowledged.` as const;
 
 export const DEFAULT_GATE_SYSTEM_PROMPT = `# AgyLoop Quality Gate Subagent System Prompt
 
@@ -5044,14 +5146,19 @@ export function formatPlanDeviationUnacknowledgedMessage(
     `Plan deviation${records.length === 1 ? '' : 's'} ${ids} ${records.length === 1 ? 'is' : 'are'} unacknowledged, so this round cannot be certified.\n` +
     `${lines}\n` +
     `Either acknowledge it if the new literal is right: \`codeloop ${COMMAND_DEVIATION} --issue ${issueToken} ${FLAG_ACK} ${first} ${FLAG_REASON} "<why the new literal is right>"\`, ` +
-    `or route the plan back for revision: \`codeloop ${COMMAND_TRANSITION} ${STAGE_PLAN} --issue ${issueToken}\`.`
+    `or file the deviation now if it surfaced during review (filing is legal at ${STAGE_IMPLEMENT}, ${STAGE_QUALITY_GATE}, ${STAGE_REVIEW} and ${STAGE_COMMIT}), ` +
+    `or route back to ${STAGE_IMPLEMENT} with \`codeloop ${COMMAND_TRANSITION} ${STAGE_IMPLEMENT} --issue ${issueToken}\`, file it there, and re-run the gate. ` +
+    `\`codeloop ${COMMAND_TRANSITION} ${STAGE_PLAN} --issue ${issueToken}\` revises the plan and clears the records.`
   );
 }
 
-/** Filing is legal only at the two stages that can precede REVIEW. */
+/** Filing and acknowledgement are legal at every stage that can precede delivery. */
 export const MSG_PLAN_DEVIATION_STAGE_REFUSAL =
-  `Plan deviations can only be filed or acknowledged at ${STAGE_IMPLEMENT} or ${STAGE_QUALITY_GATE}; ` +
-  `the checkpoint is at {stage}. Nothing was written.`;
+  `Plan deviations can be filed or acknowledged at ${STAGE_IMPLEMENT}, ${STAGE_QUALITY_GATE}, ` +
+  `${STAGE_REVIEW} or ${STAGE_COMMIT}; the checkpoint is at {stage}. ` +
+  `If a deviation surfaced after implementation, route back with ` +
+  `\`codeloop ${COMMAND_TRANSITION} ${STAGE_IMPLEMENT} --issue <n>\`, file it there, and re-run the gate. ` +
+  `Nothing was written.`;
 
 /** The implementer's filing note, addressed to the orchestrator. */
 export function formatPlanDeviationChannelNote(issue?: number | string | null): string {
@@ -5063,7 +5170,8 @@ export function formatPlanDeviationChannelNote(issue?: number | string | null): 
     `Orchestrator: when the implementer emits a ${PLAN_DEVIATION_MARKER} block, file it with ` +
     `\`codeloop ${COMMAND_DEVIATION} --issue ${issueToken} ${FLAG_DEVIATION_FILE} <path>\` (or pipe it into ` +
     `\`codeloop ${COMMAND_DEVIATION} --issue ${issueToken} ${FLAG_DEVIATION_STDIN}\`) before advancing. ` +
-    `\`codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW} --issue ${issueToken}\` refuses while a deviation is unacknowledged.`
+    `\`codeloop ${COMMAND_TRANSITION} ${STAGE_REVIEW} --issue ${issueToken}\` refuses while a deviation is unacknowledged. ` +
+    ` The accepted shape is:\n${PLAN_DEVIATION_EXAMPLE}`
   );
 }
 

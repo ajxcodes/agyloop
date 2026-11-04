@@ -72,6 +72,8 @@ import {
   FLAG_DEVIATION_STDIN,
   FLAG_ACK,
   FLAG_REASON,
+  PLAN_DEVIATION_EXAMPLE,
+  PLAN_DEVIATION_PROSE_LABELS,
   FLAG_PLAN_PATH,
   FLAG_PLAN_DIR,
   VERDICT_INPUT_SOURCE_STDIN,
@@ -616,7 +618,7 @@ Operational Modes:
   init               Scaffold .codeloop/config.json (git, verification profile) and update .gitignore; migrates legacy .agyloop config
   (default)          Run continuous lifecycle (Discovery -> Plan -> [Approval] -> Implement -> Gates -> Review -> [Commit])
   yolo               Unattended fast-path (auto-approves plan gate, streams straight through gates and review)
-  plan               Plan-only mode; generates persistent plan in artifacts/plans/ and halts at [APPROVAL] gate. Bug-labelled issues enter DISCOVERY first and park until the RCA report is populated.
+  plan               Plan-only mode; scaffolds the persistent plan in artifacts/plans/ and leaves the checkpoint at [PLAN] — \`codeloop next\` dispatches the planner subagent. Bug-labelled issues enter DISCOVERY first and park until the RCA report is populated.
   implement          Resume implementation directly from approved plan specification
   commit             Draft Conventional Commit and prompt for interactive human approval
   release [branch]   Generate Milestone Release PR from phase collector to main with SemVer label (creates the release:<bump> label when missing; --dry-run validates it)
@@ -646,6 +648,9 @@ Pipeline Management:
   review            Record an AI Reviewer Subagent's verdict (--verdict-file <path> | --review-output <text> | --verdict-stdin | --critique-report <path|-> | ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>); with no verdict it runs the critique-based review
   gate-report       File a dispatched Quality Gate Subagent's GATE_REPORT_JSON evidence block (--report-file <path|-> | --report-stdin); 'transition REVIEW' ingests it
   deviation         File a dispatched implementer's PLAN_DEVIATION block (--deviation-file <path|-> | --deviation-stdin), acknowledge one (--ack <id> --reason <text>), or list them; 'transition REVIEW' refuses while one is unacknowledged
+        Accepted shape for --deviation-file / --deviation-stdin (one block per changed literal):
+${PLAN_DEVIATION_EXAMPLE}
+        ${PLAN_DEVIATION_PROSE_LABELS} are also accepted. Filing is legal at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT; 'transition REVIEW' and \`codeloop commit\` refuse while one is unacknowledged.
       A PASSED block whose executed test command has no MEASURED positive total is refused. A runner that prints no count (e.g. \`go test ./...\`) must declare \`${TOKEN_TEST_METRICS}: <n> passed, <n> failed, <n> skipped\` in its output.
 
 Operational Flags:
@@ -662,8 +667,8 @@ Operational Flags:
       ${FLAG_REFUTE} <path>:<line>[#<severity>]=<reason>  Refute a critique finding you have verified is false (repeatable; codeloop review with a filed APPROVED verdict only). The reason is mandatory — a refutation without one is refused, and every refuted finding is named on stderr and recorded as reviewRefutations.
       --report-file <path|->  Read a Quality Gate Subagent's GATE_REPORT_JSON block from a file (codeloop gate-report)
       --report-stdin     Read a Quality Gate Subagent's GATE_REPORT_JSON block from stdin (codeloop gate-report)
-      --deviation-file <path|->  Read an implementer's PLAN_DEVIATION block from a file (codeloop deviation)
-      --deviation-stdin  Read an implementer's PLAN_DEVIATION block from stdin (codeloop deviation)
+      --deviation-file <path|->  Read an implementer's PLAN_DEVIATION block from a file (codeloop deviation) — a PLAN_DEVIATION block with "planSection", "planLiteral", "implementedAssertion" and "reason" (optional "files"); prose labels are also accepted
+      --deviation-stdin  Read an implementer's PLAN_DEVIATION block from stdin (codeloop deviation) — a PLAN_DEVIATION block with "planSection", "planLiteral", "implementedAssertion" and "reason" (optional "files"); prose labels are also accepted
       --ack <id>         Acknowledge a recorded plan deviation; requires --reason (codeloop deviation)
       --create-pr    Automatically create a PR after commit. When the PR targets a collector branch (phase/* or feature/*) — not the default branch — \`commit\` states the measured base and, when an issue is associated, prints conditional advice: if \`Closes #N\` does not close the issue on merge, run \`codeloop sync\`. The advice is printed only when a PR exists.
   -s, --staged       Inspect / commit staged changes only (git diff --cached)
@@ -706,7 +711,7 @@ Exit Codes:
 
 Examples:
   codeloop                               Standard continuous loop (stops at [APPROVAL] and [COMMIT] gates)
-  codeloop plan --issue 32               Generate persistent plan for issue #32 and stop at [APPROVAL] gate
+  codeloop plan --issue 32               Scaffold the persistent plan for issue #32 and leave the checkpoint at [PLAN] (codeloop next dispatches the planner)
   codeloop implement                    Resume implementation from approved plan in artifacts/plans/
   codeloop resume                       Clear a persisted gate pause (e.g. CIRCUIT_BREAKER) and checkpoint the wait time
   codeloop commit                        Draft Conventional Commit and prompt for human approval

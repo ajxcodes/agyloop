@@ -8,7 +8,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runCli } = require('../../dist/presentation/cli');
-const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE } = require('../../dist/domain');
+const {
+  EXIT_CODE_SUCCESS,
+  EXIT_CODE_FAILURE,
+  PLAN_DEVIATION_EXAMPLE
+} = require('../../dist/domain');
 
 const BLOCK = [
   'PLAN_DEVIATION:',
@@ -17,7 +21,7 @@ const BLOCK = [
 
 const SEEDED_AT = '2026-11-01T00:00:00.000Z';
 
-function seedImplementCheckpoint(dir: string): string {
+function seedCheckpoint(dir: string, stage: string): string {
   const tasks = path.join(dir, '.agyloop', 'tasks');
   fs.mkdirSync(tasks, { recursive: true });
   const statePath = path.join(tasks, '432.json');
@@ -25,17 +29,21 @@ function seedImplementCheckpoint(dir: string): string {
     statePath,
     JSON.stringify({
       version: '1.0.0',
-      currentStage: 'IMPLEMENT',
+      currentStage: stage,
       mode: 'standard',
       issue: 432,
       planDir: null,
       planPath: null,
       createdAt: SEEDED_AT,
       updatedAt: SEEDED_AT,
-      history: [{ stage: 'IMPLEMENT', timestamp: SEEDED_AT, metadata: {} }]
+      history: [{ stage, timestamp: SEEDED_AT, metadata: {} }]
     })
   );
   return statePath;
+}
+
+function seedImplementCheckpoint(dir: string): string {
+  return seedCheckpoint(dir, 'IMPLEMENT');
 }
 
 describe('codeloop deviation (issue #432)', () => {
@@ -131,5 +139,61 @@ describe('codeloop deviation (issue #432)', () => {
     ]);
     assert.strictEqual(code, EXIT_CODE_SUCCESS, stderr);
     assert.strictEqual(fs.readFileSync(statePath, 'utf8'), before);
+  });
+
+  test('CD4 files a prose deviation at REVIEW end to end (#437)', async () => {
+    statePath = seedCheckpoint(root, 'REVIEW');
+    const prosePath = path.join(root, 'tr15.txt');
+    fs.writeFileSync(
+      prosePath,
+      [
+        'PLAN_DEVIATION:',
+        'Plan section: §4.4 Test Register row TR-15',
+        'Plan literal: /run-lifecycle\\.test\\.ts:664/',
+        'Implemented: /run-lifecycle\\.test\\.ts:4/',
+        'Reason: the pinned fixture asserts pausedAtGate at line 4'
+      ].join('\n')
+    );
+
+    const code = await runCli([
+      'deviation',
+      '--issue',
+      '432',
+      '--workspace',
+      root,
+      '--deviation-file',
+      prosePath
+    ]);
+    assert.strictEqual(code, EXIT_CODE_SUCCESS, stderr);
+
+    const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.strictEqual(saved.planDeviations.length, 1);
+    assert.strictEqual(saved.planDeviations[0].id, 'PD-1');
+    assert.strictEqual(saved.planDeviations[0].planSection, '§4.4 Test Register row TR-15');
+    assert.strictEqual(
+      saved.planDeviations[0].implementedAssertion,
+      '/run-lifecycle\\.test\\.ts:4/'
+    );
+  });
+
+  test('CD5 a block that misses a key is refused with the accepted shape (#451 AC2)', async () => {
+    const incompletePath = path.join(root, 'incomplete.txt');
+    fs.writeFileSync(
+      incompletePath,
+      ['PLAN_DEVIATION:', '{ "planSection": "§4.2", "planLiteral": "a" }'].join('\n')
+    );
+
+    const code = await runCli([
+      'deviation',
+      '--issue',
+      '432',
+      '--workspace',
+      root,
+      '--deviation-file',
+      incompletePath
+    ]);
+    assert.strictEqual(code, EXIT_CODE_FAILURE);
+    assert.ok(stderr.includes(PLAN_DEVIATION_EXAMPLE), stderr);
+    assert.strictEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).planDeviations, undefined);
   });
 });
