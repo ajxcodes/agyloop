@@ -23,6 +23,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { buildChangeSetDigestCommand } = require('../../dist/application');
 const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE } = require('../../dist/domain');
 
 const CRITIQUE_BINARY = 'critique';
@@ -139,6 +140,9 @@ function makeSandbox(): string {
   execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+  // Issue #452: the provenance sidecar is written AFTER its digest is read, so
+  // it must not itself become part of the change set it describes.
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.provenance.json\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
   execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
   execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
@@ -220,11 +224,21 @@ function writeCritique(sandbox: string, comments: any): string {
 // Issue #445: the report is certified only when the sidecar beside it names this
 // review's base and HEAD, so the positive-path fixture seeds it.
 function writeProvenance(critiquePath: string, baseRef = 'main'): void {
+  const cwd = path.dirname(critiquePath);
   const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: path.dirname(critiquePath),
+    cwd,
     encoding: 'utf8'
   }).trim();
-  fs.writeFileSync(`${critiquePath}.provenance.json`, JSON.stringify({ baseRef, headCommit }), 'utf8');
+  // Issue #452: the sidecar binds content too.
+  const changeSetDigest = execFileSync('sh', ['-c', buildChangeSetDigestCommand()], {
+    cwd,
+    encoding: 'utf8'
+  }).trim();
+  fs.writeFileSync(
+    `${critiquePath}.provenance.json`,
+    JSON.stringify({ baseRef, headCommit, changeSetDigest }),
+    'utf8'
+  );
 }
 
 const AFFIRMATION_COMMENT = {
@@ -245,7 +259,9 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
   test('C1: a critical affirmation records APPROVED and is named on stderr (AC2)', async () => {
     const sandbox = makeSandbox();
     try {
+      const verdictFile = writeVerdict(sandbox);
       const critiqueFile = writeCritique(sandbox, [AFFIRMATION_COMMENT]);
+      // Both inputs must exist before the digest is read (#452).
       writeProvenance(critiqueFile);
       const run = await withSanitizedEnv(sandbox, async () =>
         runCli([
@@ -253,7 +269,7 @@ describe('codeloop review - content-aware blocking (issue #349)', () => {
           '--issue',
           String(ISSUE),
           '--verdict-file',
-          writeVerdict(sandbox),
+          verdictFile,
           '--critique-report',
           critiqueFile
         ])

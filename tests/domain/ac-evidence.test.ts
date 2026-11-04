@@ -1,5 +1,9 @@
 /**
  * agyloop - AC evidence value object (issue #432, TR-32)
+ *
+ * AE17-AE19 pin issue #473: a backticked git ref (the reviewed base,
+ * `origin/main`, a revision range) is prose, never evidence, while a genuine
+ * missing path still escalates.
  */
 
 const { test, describe } = require('node:test');
@@ -229,6 +233,55 @@ describe('AC evidence (issue #432)', () => {
     assert.strictEqual(
       findOutOfScopeDeclarationForAc('AC1', [IN_SCOPE_MENTION, 'AC1 is an operator step.']),
       'AC1 is an operator step.'
+    );
+  });
+
+  test('AE17 a backticked branch name beside delivered paths is note text, not evidence (#473 AC1)', () => {
+    const report = parseAcEvidence(
+      'AC_EVIDENCE:\n- AC1: met — `src/app.ts` (diff vs `phase/6-codeloop`)',
+      { knownRefs: ['phase/6-codeloop'] }
+    );
+    const entry = report.entries[0];
+    assert.deepStrictEqual([...report.entries[0].paths], ['src/app.ts']);
+    assert.ok(entry.note.includes('`phase/6-codeloop`'), entry.note);
+    const classified = classifyAcEvidence(
+      entry,
+      { measured: true, paths: ['src/app.ts'] },
+      process.cwd()
+    );
+    assert.strictEqual(classified.status, 'met');
+  });
+
+  test('AE18 origin/main and revision ranges in backticks are never evidence (#473 AC2)', () => {
+    for (const ref of ['origin/main', 'main..phase/6-codeloop', 'HEAD~2', 'main@{upstream}']) {
+      const block = 'AC_EVIDENCE:\n- AC1: met — `src/app.ts` (against `' + ref + '`)';
+      const withoutRefs = parseAcEvidence(block);
+      assert.deepStrictEqual([...withoutRefs.entries[0].paths], ['src/app.ts'], ref);
+      const withRefs = parseAcEvidence(block, { knownRefs: ['phase/6-codeloop'] });
+      assert.deepStrictEqual([...withRefs.entries[0].paths], ['src/app.ts'], ref);
+    }
+  });
+
+  test('AE19 a path-shaped citation absent from the delivered set still escalates, naming it (#473 AC3)', () => {
+    const changeSet = { measured: true, paths: ['src/app.ts'] };
+    const classified = classifyAcEvidence(
+      parseAcEvidence('AC_EVIDENCE:\n- AC1: met — `src/domain/missing.ts`').entries[0],
+      changeSet,
+      process.cwd()
+    );
+    assert.deepStrictEqual([...classified.unverifiablePaths], ['src/domain/missing.ts']);
+    assert.strictEqual(classified.status, 'unverifiable');
+
+    const outside = classifyAcEvidence(
+      parseAcEvidence('AC_EVIDENCE:\n- AC1: met — `../outside.ts`').entries[0],
+      changeSet,
+      process.cwd()
+    );
+    assert.deepStrictEqual([...outside.unverifiablePaths], ['../outside.ts']);
+
+    assert.deepStrictEqual(
+      [...parseAcEvidence('AC_EVIDENCE:\n- AC1: met — `main/index.ts`').entries[0].paths],
+      ['main/index.ts']
     );
   });
 });

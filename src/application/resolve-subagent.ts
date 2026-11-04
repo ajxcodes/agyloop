@@ -143,6 +143,7 @@ import {
   formatIssueForPrompt
 } from '../ports';
 import { ManageCritiqueUseCase } from './manage-critique';
+import { buildChangeSetDigestCommand } from './delivered-change-set';
 
 export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
@@ -397,6 +398,11 @@ export interface TriageTaskPromptParams {
  * The provenance sidecar (`<report>.provenance.json`) is published BEFORE the
  * report, so a report on disk always carries the base/HEAD it was produced
  * from; a stale sidecar is cleared with the stale report.
+ *
+ * Issue #452: the sidecar also names the change set as CONTENT (a worktree tree
+ * hash). HEAD does not move during REVIEW, so refs alone let an edit made after
+ * Tier 1 ran still certify; the digest closes that. A digest that cannot be
+ * computed publishes NO report (fail closed).
  */
 function formatCritiqueTierOneCommand(
   binaryPath: string,
@@ -450,6 +456,7 @@ function formatCritiqueTierOneCommand(
   const jsonBase = shellQuote(baseRef.split('\\').join('\\\\').split('"').join('\\"'));
   const stagingPath = `"$(dirname ${quotedReport})/.critique-report.$$.tmp"`;
   const provenanceStaging = `"$(dirname ${quotedReport})/.critique-provenance.$$.tmp"`;
+  const digestCommand = buildChangeSetDigestCommand();
   return (
     `mkdir -p "$(dirname ${quotedReport})" && ( ` +
     `tmp=${stagingPath}; prov=${provenanceStaging}; ` +
@@ -460,7 +467,9 @@ function formatCritiqueTierOneCommand(
     `if [ "$code" -ne 0 ]; then rm -f "$tmp"; echo "critique failed (exit $code); no report written" >&2; exit $code; fi; ` +
     `if [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "critique exited 0 but wrote no evidence; no report written" >&2; exit 1; fi; ` +
     `head_sha=$(git rev-parse HEAD) || { rm -f "$tmp"; echo "cannot read HEAD in ${quotedCwd}; no report written" >&2; exit 1; }; ` +
-    `printf '{"baseRef":"%s","headCommit":"%s"}\\n' ${jsonBase} "$head_sha" > "$prov" || ` +
+    `change_set_digest=$({ ${digestCommand}; }) || ` +
+    `{ rm -f "$tmp" "$prov"; echo "cannot read the reviewed change set; no report written" >&2; exit 1; }; ` +
+    `printf '{"baseRef":"%s","headCommit":"%s","changeSetDigest":"%s"}\\n' ${jsonBase} "$head_sha" "$change_set_digest" > "$prov" || ` +
     `{ rm -f "$tmp" "$prov"; echo "cannot stage provenance; no report written" >&2; exit 1; }; ` +
     `if ! mv "$prov" ${provenanceReport}; then rm -f "$tmp" "$prov" ${provenanceReport}; echo "publish failed; no report written" >&2; exit 1; fi; ` +
     `if ! mv "$tmp" ${quotedReport}; then rm -f "$tmp" ${provenanceReport}; echo "publish failed; no report written" >&2; exit 1; fi; ` +
