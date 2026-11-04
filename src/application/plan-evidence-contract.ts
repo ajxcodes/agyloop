@@ -14,6 +14,8 @@
 import {
   MSG_PLAN_EVIDENCE_EXCLUDED_PATH,
   ValidationError,
+  extractOutOfScopeDeclarations,
+  isPathDeclaredOutOfScope,
   lintPlanEvidencePaths,
   type PlanEvidenceFinding
 } from '../domain';
@@ -49,10 +51,13 @@ export function assertPlanEvidenceContract(params: PlanEvidenceContractParams): 
     return;
   }
 
-  const findings = lintPlanEvidencePaths(content, params.workspaceDir);
-  if (findings.length === 0) return;
+  const declarations = extractOutOfScopeDeclarations(content);
+  const outstanding = lintPlanEvidencePaths(content, params.workspaceDir).filter(
+    (finding) => !isPathDeclaredOutOfScope(finding.path, declarations)
+  );
+  if (outstanding.length === 0) return;
 
-  const reason = `${findings.map(formatFinding).join(' ')} (plan: ${planPath})`;
+  const reason = `${outstanding.map(formatFinding).join(' ')} (plan: ${planPath})`;
   if (params.dryRun) {
     console.warn(`[codeloop] Warning: ${reason}`);
     return;

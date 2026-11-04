@@ -20,7 +20,8 @@ const {
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_APPROVAL,
-  STAGE_IMPLEMENT
+  STAGE_IMPLEMENT,
+  findTestIdCollisions
 } = require('../../dist/domain');
 const { FileSourceReader } = require('../../dist/infrastructure');
 
@@ -232,6 +233,48 @@ const PIN_BASE_ONLY = PIN_IN_WORKTREE.replace(
   '`tests/added.test.ts` :: `added by the implementation`',
   '`tests/base.test.ts` :: `already on base`'
 ).replace('assert.strictEqual(2, 2)', 'assert.strictEqual(1, 1)');
+
+const ID_FIXTURE_SOURCE = [
+  "const assert = require('node:assert');",
+  "test('PBC15: the existing case', () => {",
+  '  assert.strictEqual(1, 1);',
+  '});'
+].join('\n');
+
+const FRESH_ID_ROW = [
+  '### Test Register',
+  '- **TR-1** — a fresh case',
+  '  - **New test:** `tests/application/run-lifecycle.test.ts` :: `PBC16: a fresh case`',
+  '  - **Asserts:** `assert.strictEqual(1, 1)`'
+].join('\n');
+
+const FRESH_ID_CHECKLIST = [
+  '# Plan',
+  '',
+  '## 3. Implementation Steps',
+  '- [ ] **Step 1:** Add `PBC16` to `tests/application/run-lifecycle.test.ts`'
+].join('\n');
+
+const REUSED_ID_ROW = [
+  '### Test Register',
+  '- **TR-1** — a reused id',
+  '  - **New test:** `tests/application/id-fixture.test.ts` :: `PBC15: a reused case`',
+  '  - **Asserts:** `assert.strictEqual(1, 1)`'
+].join('\n');
+
+const REUSED_ID_TITLE_ROW = [
+  '### Test Register',
+  '- **TR-1** — a duplicated title',
+  '  - **New test:** `tests/application/id-fixture.test.ts` :: `PBC15: the existing case`',
+  '  - **Asserts:** `assert.strictEqual(1, 1)`'
+].join('\n');
+
+const REUSED_ID_CHECKLIST = [
+  '# Plan',
+  '',
+  '## 3. Implementation Steps',
+  '- [ ] **Step 1:** Add `PBC15` to `tests/application/id-fixture.test.ts`'
+].join('\n');
 
 /** Runs the guard at `workspace` with an explicit base reference. */
 function guardAt(
@@ -639,5 +682,52 @@ describe('Test Register contract (issue #432)', () => {
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }
+  });
+
+  test('PTR20 a planned test id absent from the target file passes (#518 AC4)', () => {
+    assert.doesNotThrow(() => guard(FRESH_ID_ROW));
+    assert.doesNotThrow(() => guard(FRESH_ID_CHECKLIST));
+  });
+
+  test('PTR21 an existing test id is refused naming the colliding file:line (#518 AC5)', () => {
+    fs.writeFileSync(path.join(root, 'tests', 'application', 'id-fixture.test.ts'), ID_FIXTURE_SOURCE);
+    assert.throws(
+      () => guard(REUSED_ID_ROW),
+      (err: any) => /id-fixture\.test\.ts:2/.test(err.message) && err.message.includes('PBC15')
+    );
+
+    let message = '';
+    try {
+      guard(REUSED_ID_TITLE_ROW);
+    } catch (err: any) {
+      message = err.message;
+    }
+    assert.ok(/that exact title/.test(message), `the title refusal must stand: ${message}`);
+    assert.strictEqual(
+      /A test id must be unique inside its file/.test(message),
+      false,
+      'one row must not produce two refusals'
+    );
+  });
+
+  test('PTR22 the checklist channel refuses a reused id and the live duplicate is detected (#518 AC5/AC6)', () => {
+    fs.writeFileSync(path.join(root, 'tests', 'application', 'id-fixture.test.ts'), ID_FIXTURE_SOURCE);
+    assert.throws(
+      () => guard(REUSED_ID_CHECKLIST),
+      (err: any) => /id-fixture\.test\.ts:2/.test(err.message)
+    );
+
+    const live = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'tests/application/plan-baseline-contract.test.ts'),
+      'utf8'
+    );
+    assert.deepStrictEqual(
+      findTestIdCollisions(live, 'PBC15').map((collision: any) => collision.line),
+      [859, 905]
+    );
+    assert.strictEqual(findTestIdCollisions(live, 'PBC2b').length, 1);
+    assert.strictEqual(findTestIdCollisions(live, 'PBC2c').length, 1);
+    assert.strictEqual(findTestIdCollisions(live, 'PBC3c').length, 1);
+    assert.strictEqual(findTestIdCollisions(live, 'PBC2').length, 1);
   });
 });

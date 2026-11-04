@@ -5091,6 +5091,10 @@ export const MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW =
 export const MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE =
   'Test Register row {row} declares a New test "{title}" in {path}, but that title already exists at the base revision "{base}" (line {line}). A case that already exists is not new; pin it with **Pins:** instead of declaring it new.' as const;
 
+/** A planned test id already exists in the target file (issue #518, #476). */
+export const MSG_PLAN_TEST_REGISTER_DUPLICATE_ID =
+  'The plan plans test id "{id}" in {path} ({where}), but that file already declares it at {lines}. A test id must be unique inside its file: a reused id makes every reference — the plan, the Test Register, the review verdict and the summary — ambiguous. Choose a fresh id, or pin the existing case with **Pins:** instead of planning the id.' as const;
+
 /** An AC or checklist step targets a path the commit can never contain. */
 export const MSG_PLAN_EVIDENCE_EXCLUDED_PATH =
   'The plan\'s {target} names {path} (plan line {line}), which cannot appear in the delivered change set: {reason}. Deliver the correction as a tracked document, or declare it out of scope in the plan (a `- **Out of Scope:** <reason>` bullet).' as const;
