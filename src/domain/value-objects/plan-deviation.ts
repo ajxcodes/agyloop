@@ -12,7 +12,13 @@
  */
 
 import { ValidationError } from '../errors';
-import { PLAN_DEVIATION_MARKER } from '../constants';
+import {
+  MSG_PLAN_DEVIATION_SHAPE,
+  PLAN_DEVIATION_MARKER,
+  PLAN_DEVIATION_PROSE_LABEL_ALIASES,
+  PLAN_DEVIATION_PROSE_LABEL_ENTRIES,
+  PLAN_DEVIATION_REQUIRED_KEYS
+} from '../constants';
 import { jsObjectLiteralToJson, sliceBalancedObject } from './json-block';
 
 /** One changed plan literal, as the implementer emitted it. */
@@ -39,12 +45,22 @@ export interface RecordedPlanDeviation extends PlanDeviationProps {
 }
 
 /** The physical fields a deviation block must carry, in message order. */
-const REQUIRED_FIELDS: readonly (keyof PlanDeviationProps)[] = [
-  'planSection',
-  'planLiteral',
-  'implementedAssertion',
-  'reason'
-];
+const REQUIRED_FIELDS: readonly (keyof PlanDeviationProps)[] = PLAN_DEVIATION_REQUIRED_KEYS;
+
+/** The prose labels the parser also accepts, mapped onto the wire keys. */
+type ProseField = 'planSection' | 'planLiteral' | 'implementedAssertion' | 'reason' | 'files';
+
+/**
+ * The regexes are derived from the same label table the refusal message
+ * renders, so an advertised spelling and a matched spelling cannot drift.
+ */
+const PROSE_LABELS: ReadonlyArray<{ readonly pattern: RegExp; readonly field: ProseField }> = [
+  ...PLAN_DEVIATION_PROSE_LABEL_ENTRIES,
+  ...PLAN_DEVIATION_PROSE_LABEL_ALIASES
+].map((entry) => ({
+  pattern: new RegExp(`^${entry.label.replace(/\s+/g, '\\s+')}\\s*:`, 'i'),
+  field: entry.field
+}));
 
 /** True when the line is prose/comment rather than a real block marker. */
 function isCommentLine(line: string): boolean {
@@ -66,7 +82,7 @@ function readNonEmptyString(value: unknown, field: string, index: number): strin
     throw new ValidationError(
       field,
       value,
-      `Plan deviation block #${index + 1} is missing a non-empty "${field}" string`
+      `Plan deviation block #${index + 1} is missing a non-empty "${field}" string. ${MSG_PLAN_DEVIATION_SHAPE}`
     );
   }
   return value.trim();
@@ -78,7 +94,7 @@ export function planDeviationFromJSON(value: unknown, index = 0): PlanDeviationP
     throw new ValidationError(
       'planDeviation',
       value,
-      `Plan deviation block #${index + 1} must be a JSON object`
+      `Plan deviation block #${index + 1} must be a JSON object. ${MSG_PLAN_DEVIATION_SHAPE}`
     );
   }
 
@@ -117,10 +133,72 @@ export function planDeviationFromJSON(value: unknown, index = 0): PlanDeviationP
   return Object.freeze({ planSection, planLiteral, implementedAssertion, reason, files });
 }
 
+/** Absolute offset of the first prose label line in [from, to), or null. */
+function firstProseLabelOffset(text: string, from: number, to: number): number | null {
+  let cursor = from;
+  while (cursor < to) {
+    const newline = text.indexOf('\n', cursor);
+    const lineEnd = newline === -1 || newline > to ? to : newline;
+    const line = text.slice(cursor, lineEnd).trim();
+    if (PROSE_LABELS.some((entry) => entry.pattern.test(line))) return cursor;
+    cursor = lineEnd + 1;
+  }
+  return null;
+}
+
+/** True when [from, to) carries block content: an object brace or a prose label. */
+function hasBlockContent(text: string, from: number, to: number): boolean {
+  return text.slice(from, to).includes('{') || firstProseLabelOffset(text, from, to) !== null;
+}
+
+/** Decodes the four prose labels; null when the block carries none. */
+function parseProseBlock(
+  text: string,
+  from: number,
+  to: number,
+  index: number
+): PlanDeviationProps | null {
+  const collected: Record<string, string> = {};
+  let current: string | null = null;
+  let seen = false;
+  for (const line of text.slice(from, to).split('\n')) {
+    const trimmed = line.trim();
+    const label = PROSE_LABELS.find((entry) => entry.pattern.test(trimmed));
+    if (label) {
+      seen = true;
+      current = label.field;
+      collected[current] = trimmed.replace(label.pattern, '').trim();
+      continue;
+    }
+    if (trimmed.length === 0) {
+      current = null;
+      continue;
+    }
+    if (current !== null) {
+      collected[current] = `${collected[current]} ${trimmed}`.trim();
+    }
+  }
+  if (!seen) return null;
+
+  const value: Record<string, unknown> = {};
+  for (const key of REQUIRED_FIELDS) {
+    if (collected[key] !== undefined) value[key] = collected[key];
+  }
+  if (collected.files !== undefined) {
+    value.files = collected.files
+      .split(/[\s,]+/)
+      .map((entry) => entry.replace(/^`|`$/g, '').trim())
+      .filter((entry) => entry.length > 0);
+  }
+  return planDeviationFromJSON(value, index);
+}
+
 /**
- * Parses every balanced object after a `PLAN_DEVIATION:` marker on a
- * non-comment line. A malformed block refuses the whole input: a deviation
- * channel that silently drops a record is the defect it exists to close.
+ * Parses every `PLAN_DEVIATION:` block after a non-comment marker. A block is
+ * either the four prose labels the #445/#518 implementers actually wrote or a
+ * balanced JSON / JS-object-literal object. A malformed block refuses the whole
+ * input with the accepted shape: a deviation channel that silently drops a
+ * record is the defect it exists to close.
  */
 export function parseBlocks(text: string): readonly PlanDeviationProps[] {
   if (typeof text !== 'string' || text.trim().length === 0) {
@@ -145,37 +223,75 @@ export function parseBlocks(text: string): readonly PlanDeviationProps[] {
       continue;
     }
 
-    const sliced = sliceBalancedObject(text, markerOffset + PLAN_DEVIATION_MARKER.length);
-    if (sliced === null) {
+    const markerEnd = markerOffset + PLAN_DEVIATION_MARKER.length;
+    const nextMarker = text.indexOf(PLAN_DEVIATION_MARKER, markerEnd);
+    const blockEnd = nextMarker === -1 ? text.length : nextMarker;
+    const labelOffset = firstProseLabelOffset(text, markerEnd, blockEnd);
+    const braceOffset = text.indexOf('{', markerEnd);
+    const braceInBlock = braceOffset !== -1 && braceOffset < blockEnd ? braceOffset : -1;
+    const preferProse = labelOffset !== null && (braceInBlock === -1 || labelOffset < braceInBlock);
+
+    if (preferProse) {
+      const prose = parseProseBlock(text, markerEnd, blockEnd, blocks.length);
+      if (prose === null) {
+        throw new ValidationError(
+          'planDeviation',
+          text.slice(markerOffset, markerOffset + 80),
+          `the ${PLAN_DEVIATION_MARKER} block #${blocks.length + 1} is not a recognised shape. ${MSG_PLAN_DEVIATION_SHAPE}`
+        );
+      }
+      blocks.push(prose);
+      searchFrom = nextMarker === -1 ? text.length : nextMarker;
+      continue;
+    }
+
+    const sliced = sliceBalancedObject(text, markerEnd);
+    const usable = sliced !== null && sliced.start < blockEnd ? sliced : null;
+    if (usable === null) {
+      const prose = parseProseBlock(text, markerEnd, blockEnd, blocks.length);
+      if (prose !== null) {
+        blocks.push(prose);
+        searchFrom = nextMarker === -1 ? text.length : nextMarker;
+        continue;
+      }
+      // A narrative line can name the marker inline ("… I emit one
+      // PLAN_DEVIATION: block per changed literal:") before the real block.
+      // Such an occurrence owns no block content, so treat it as noise and let
+      // the following marker parse. A marker whose own boundary holds
+      // undecodable content still refuses the whole input.
+      if (nextMarker !== -1 && !hasBlockContent(text, markerEnd, blockEnd)) {
+        searchFrom = blockEnd;
+        continue;
+      }
       throw new ValidationError(
         'planDeviation',
         text.slice(markerOffset, markerOffset + 80),
-        `the ${PLAN_DEVIATION_MARKER} block #${blocks.length + 1} has no balanced object`
+        `the ${PLAN_DEVIATION_MARKER} block #${blocks.length + 1} is not a recognised shape. ${MSG_PLAN_DEVIATION_SHAPE}`
       );
     }
-    searchFrom = sliced.end;
+    searchFrom = usable.end;
 
     let decoded: unknown;
     try {
-      decoded = JSON.parse(sliced.text);
+      decoded = JSON.parse(usable.text);
     } catch {
-      const normalised = jsObjectLiteralToJson(sliced.text);
-      if (normalised === null) {
+      const normalised = jsObjectLiteralToJson(usable.text);
+      let decodedFromNormalised: unknown;
+      if (normalised !== null) {
+        try {
+          decodedFromNormalised = JSON.parse(normalised);
+        } catch {
+          decodedFromNormalised = undefined;
+        }
+      }
+      if (decodedFromNormalised === undefined) {
         throw new ValidationError(
           'planDeviation',
-          sliced.text,
-          `the ${PLAN_DEVIATION_MARKER} block #${blocks.length + 1} is not valid JSON`
+          usable.text,
+          `the ${PLAN_DEVIATION_MARKER} block #${blocks.length + 1} is not a recognised shape. ${MSG_PLAN_DEVIATION_SHAPE}`
         );
       }
-      try {
-        decoded = JSON.parse(normalised);
-      } catch {
-        throw new ValidationError(
-          'planDeviation',
-          sliced.text,
-          `the ${PLAN_DEVIATION_MARKER} block #${blocks.length + 1} is not valid JSON`
-        );
-      }
+      decoded = decodedFromNormalised;
     }
 
     blocks.push(planDeviationFromJSON(decoded, blocks.length));

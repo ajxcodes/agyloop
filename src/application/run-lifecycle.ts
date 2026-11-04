@@ -736,7 +736,8 @@ export class RunLifecycleUseCase {
   }
 
   /**
-   * Plan-only mode: runs discovery & planning, scaffolds persistent plan, halts at APPROVAL gate.
+   * Plan-only mode: scaffolds the persistent plan and leaves the checkpoint at PLAN;
+   * `codeloop next` dispatches the planner.
    */
   private async executePlanMode(
     sm: StateMachine,

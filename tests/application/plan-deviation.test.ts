@@ -11,7 +11,9 @@ const {
   STAGE_PLAN,
   STAGE_APPROVAL,
   STAGE_IMPLEMENT,
-  STAGE_QUALITY_GATE
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT
 } = require('../../dist/domain');
 
 const BLOCK = [
@@ -51,6 +53,10 @@ function machine(stage: string): any {
   sm.transition(STAGE_IMPLEMENT);
   if (stage === STAGE_IMPLEMENT) return sm;
   sm.transition(STAGE_QUALITY_GATE);
+  if (stage === STAGE_QUALITY_GATE) return sm;
+  sm.transition(STAGE_REVIEW);
+  if (stage === STAGE_REVIEW) return sm;
+  sm.transition(STAGE_COMMIT);
   return sm;
 }
 
@@ -66,6 +72,7 @@ describe('ManagePlanDeviationsUseCase (issue #432)', () => {
     assert.strictEqual(saved[0].acknowledged, false);
   });
 
+  // REVIEW and COMMIT are legal filing stages since issue #437.
   test('PDU2 filing is refused outside IMPLEMENT and QUALITY_GATE', async () => {
     const repo = new MemoryStateRepository(machine(STAGE_PLAN).toSnapshot());
     await assert.rejects(
@@ -97,5 +104,45 @@ describe('ManagePlanDeviationsUseCase (issue #432)', () => {
       /PD-1/
     );
     assert.strictEqual(repo.snapshot.planDeviations[0].acknowledged, false);
+  });
+
+  test('PDU5 files a reviewer-discovered deviation at REVIEW (#437)', async () => {
+    const tr15 = [
+      'PLAN_DEVIATION:',
+      '{ "planSection": "§4.4 Test Register row TR-15",',
+      '  "planLiteral": "tests/application/run-lifecycle.test.ts:664",',
+      '  "implementedAssertion": "tests/application/run-lifecycle.test.ts:4",',
+      '  "reason": "the pinned fixture asserts pausedAtGate at line 4" }'
+    ].join('\n');
+    const repo = new MemoryStateRepository(machine(STAGE_REVIEW).toSnapshot());
+    const result = await new ManagePlanDeviationsUseCase(repo as any).file({ text: tr15 });
+    assert.strictEqual(result.id, 'PD-1');
+    assert.strictEqual(repo.saveCount, 1);
+    const saved = repo.snapshot.planDeviations;
+    assert.strictEqual(saved.length, 1);
+    assert.strictEqual(saved[0].planLiteral, 'tests/application/run-lifecycle.test.ts:664');
+    assert.strictEqual(saved[0].implementedAssertion, 'tests/application/run-lifecycle.test.ts:4');
+  });
+
+  test('PDU6 files a deviation at COMMIT (#437)', async () => {
+    const repo = new MemoryStateRepository(machine(STAGE_COMMIT).toSnapshot());
+    const result = await new ManagePlanDeviationsUseCase(repo as any).file({ text: BLOCK });
+    assert.strictEqual(result.id, 'PD-1');
+    assert.strictEqual(repo.saveCount, 1);
+  });
+
+  test('PDU7 the stage refusal names the legal stages and the route-back sequence (#437 AC3)', async () => {
+    const repo = new MemoryStateRepository(machine(STAGE_PLAN).toSnapshot());
+    let message = '';
+    try {
+      await new ManagePlanDeviationsUseCase(repo as any).file({ text: BLOCK });
+    } catch (err: any) {
+      message = err.message;
+    }
+    assert.ok(message.includes('transition IMPLEMENT'), message);
+    for (const stage of ['IMPLEMENT', 'QUALITY_GATE', 'REVIEW', 'COMMIT']) {
+      assert.ok(message.includes(stage), `the refusal must name ${stage}: ${message}`);
+    }
+    assert.strictEqual(repo.saveCount, 0);
   });
 });

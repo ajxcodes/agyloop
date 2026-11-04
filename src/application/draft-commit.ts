@@ -21,8 +21,10 @@ import {
   DraftCommitPlan,
   PublicSanitizer,
   InvalidTransitionError,
-  isCommitExcludedPath
+  isCommitExcludedPath,
+  planDeviationsCommitBody
 } from '../domain';
+import { assertPlanDeviationsAcknowledged } from './plan-deviation';
 import {
   StateRepository,
   CommandExecutorPort,
@@ -102,6 +104,10 @@ export class DraftCommitUseCase {
         `Cannot draft commit: Pipeline is at '${sm.currentStage}'. Current stage must be '${STAGE_COMMIT}'.`
       );
     }
+
+    // Issue #437: a recorded deviation the operator never acknowledged must not
+    // be dropped from the delivered record.
+    assertPlanDeviationsAcknowledged(sm, params.issue ?? sm.issue);
 
     // Extract diff
     let diffText = params.workingDiff || '';
@@ -202,7 +208,7 @@ export class DraftCommitUseCase {
       type: finalCommitMessage.type,
       scope: finalCommitMessage.scope,
       description: sanitizedDesc,
-      body: sanitizedBody,
+      body: planDeviationsCommitBody(sanitizedBody, sm.planDeviations),
       isBreaking: finalCommitMessage.isBreaking,
       issueNumber: finalCommitMessage.issueNumber
     });

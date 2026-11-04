@@ -220,6 +220,64 @@ new file mode 100644
       assert.strictEqual(result.commitMessage.toSingleLine(), 'refactor(core): overhaul lifecycle transitions (#30)');
     });
 
+    test('DCD1 a recorded deviation appears in the drafted commit body (#437 AC4)', async () => {
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        issue: 30,
+        worktree: mockWorktree
+      });
+      sm.recordPlanDeviation({
+        planSection: '§4.4 Test Register row TR-15',
+        planLiteral: 'tests/application/run-lifecycle.test.ts:664',
+        implementedAssertion: 'tests/application/run-lifecycle.test.ts:4',
+        reason: 'the pinned fixture asserts pausedAtGate at line 4',
+        files: []
+      });
+      sm.acknowledgePlanDeviation('PD-1', 'the fixture asserts the literal at line 4');
+
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const useCase = new DraftCommitUseCase(
+        stateRepo,
+        new MockCommandExecutor(),
+        new MockGitHubGateway()
+      );
+
+      const result = await useCase.execute({ workingDiff: 'diff --git a/file.ts b/file.ts' });
+      const body = result.commitMessage.body || '';
+      assert.ok(body.includes('PD-1'), body);
+      assert.ok(body.includes('Plan deviations (recorded):'), body);
+    });
+
+    test('DCD2 an unacknowledged deviation refuses the commit draft (#437 AC2)', async () => {
+      const sm = new StateMachine({
+        stage: new Stage(STAGE_COMMIT),
+        issue: 30,
+        worktree: mockWorktree
+      });
+      sm.recordPlanDeviation({
+        planSection: '§4.4 Test Register row TR-15',
+        planLiteral: 'tests/application/run-lifecycle.test.ts:664',
+        implementedAssertion: 'tests/application/run-lifecycle.test.ts:4',
+        reason: 'the pinned fixture asserts pausedAtGate at line 4',
+        files: []
+      });
+
+      const stateRepo = new MockStateRepository(sm.toSnapshot());
+      const useCase = new DraftCommitUseCase(
+        stateRepo,
+        new MockCommandExecutor(),
+        new MockGitHubGateway()
+      );
+
+      await assert.rejects(
+        () => useCase.execute({ workingDiff: 'diff --git a/file.ts b/file.ts' }),
+        (err: any) => {
+          assert.ok(String(err.message).includes('PD-1'), err.message);
+          return true;
+        }
+      );
+    });
+
     test('lists untracked files alongside the tracked diff (issue #240/Defect 2)', async () => {
       const sm = new StateMachine({ stage: new Stage(STAGE_COMMIT), issue: null, worktree: mockWorktree });
       sm.setIssue(30);

@@ -114,6 +114,7 @@ import {
   // Issue #432: the deviation channel, the Test Register grammar, the
   // excluded-path rule and the reviewer's AC evidence block.
   PLAN_DEVIATION_MARKER,
+  PLAN_DEVIATION_EXAMPLE,
   AC_EVIDENCE_MARKER,
   REVIEWER_AC_EVIDENCE_SENTENCE,
   REVIEWER_AC_EVIDENCE_STATUS_CONTRACT,
@@ -1165,7 +1166,9 @@ export class ResolveSubagentUseCase {
     // Issue #432 (AC1): the ONE finding the implementer used to drop was "the
     // plan is wrong here". It is now a machine-readable block, filed by the
     // orchestrator, so the gate and the reviewer can see it.
-    prompt += `5. **Plan deviations go through the channel, never a silent edit.** If an approved literal cannot be satisfied as written, STOP and emit one \`${PLAN_DEVIATION_MARKER}\` block per changed literal, naming the plan section, the plan literal, the assertion you actually wrote and the reason. Never change a literal silently and never edit the plan — a test that disagrees with a frozen assertion is a defect in the test until the deviation is acknowledged.\n`;
+    prompt += `5. **Plan deviations go through the channel, never a silent edit.** If an approved literal cannot be satisfied as written, STOP and emit one \`${PLAN_DEVIATION_MARKER}\` block per changed literal in this exact shape:\n`;
+    prompt += '```\n' + PLAN_DEVIATION_EXAMPLE + '\n```\n';
+    prompt += `   The four required keys are "planSection", "planLiteral", "implementedAssertion" and "reason"; "files" is optional. Never change a literal silently and never edit the plan — a test that disagrees with a frozen assertion is a defect in the test until the deviation is acknowledged.\n`;
     prompt += `   ${formatPlanDeviationChannelNote(effectiveIssue)}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
@@ -1487,12 +1490,16 @@ export class ResolveSubagentUseCase {
     const deviations = params.planDeviations ?? [];
     if (deviations.length > 0) {
       prompt += `### Recorded Plan Deviations:\n`;
-      prompt += `The implementer changed an approved plan literal. The deviation is recorded, not silently edited: judge whether the new literal is right, and say so in \`UNFULFILLED_AC\` only if it is not.\n`;
+      prompt += `The implementer changed an approved plan literal. The deviation is recorded, not silently edited: judge whether the new literal is right, and say so in \`UNFULFILLED_AC\` only if it is not. Report any ADDITIONAL deviation you find in the section below; do not edit the plan.\n`;
       for (const deviation of deviations) {
         prompt += `- ${deviation.id}${deviation.acknowledged ? ' (acknowledged)' : ' (unacknowledged)'}: plan section "${deviation.planSection}" pins "${deviation.planLiteral}"; the implementation asserts "${deviation.implementedAssertion}" — ${deviation.reason}\n`;
       }
       prompt += `\n`;
     }
+
+    prompt += `### Discovered Plan Deviations (report, do not edit):\n`;
+    prompt += `You are read-only: never edit the plan or the implementation, and never run a mutating command. If an approved plan literal cannot be satisfied as written, report it by emitting one \`${PLAN_DEVIATION_MARKER}\` block per changed literal, after your verdict, in the accepted wire format below. The orchestrator files it (legal at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT) before delivery; an unacknowledged deviation blocks the commit.\n`;
+    prompt += '```\n' + PLAN_DEVIATION_EXAMPLE + '\n```\n\n';
 
     const outOfScope = params.outOfScope ?? [];
     if (outOfScope.length > 0) {

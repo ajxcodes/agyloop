@@ -1,22 +1,28 @@
 /**
  * agyloop - ManagePlanDeviationsUseCase (issue #432, AC1/AC2)
  *
- * The implementer emits `PLAN_DEVIATION:` blocks; the orchestrator files them
- * here. Filing is legal only at IMPLEMENT or QUALITY_GATE — the two stages that
- * can precede REVIEW — and it saves the checkpoint, because the record IS the
- * finding (there is no sidecar/consume cycle to lose it).
+ * The implementer (or the read-only reviewer, reporting to the orchestrator)
+ * emits `PLAN_DEVIATION:` blocks; the orchestrator files them here. Filing and
+ * acknowledgement are legal at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT — the
+ * four stages that can precede delivery — and filing saves the checkpoint,
+ * because the record IS the finding (there is no sidecar/consume cycle to lose
+ * it).
  *
- * Acknowledgement is the ONLY thing that releases the REVIEW refusal, and it
- * requires a reason. Routing the plan back to PLAN clears the records instead.
+ * Acknowledgement remains operator-only (the `AGY_SUBAGENT` capability guard
+ * blocks a subagent), and it requires a reason. Routing the plan back to PLAN
+ * clears the records instead.
  */
 
 import {
   MSG_PLAN_DEVIATION_STAGE_REFUSAL,
   RecordedPlanDeviation,
+  STAGE_COMMIT,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
   StateMachine,
   ValidationError,
+  formatPlanDeviationUnacknowledgedMessage,
   isUnacknowledged,
   parseBlocks
 } from '../domain';
@@ -44,7 +50,12 @@ export interface AcknowledgeDeviationParams {
   readonly dryRun?: boolean;
 }
 
-const LEGAL_STAGES: readonly string[] = Object.freeze([STAGE_IMPLEMENT, STAGE_QUALITY_GATE]);
+const LEGAL_STAGES: readonly string[] = Object.freeze([
+  STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT
+]);
 
 export class ManagePlanDeviationsUseCase {
   constructor(private readonly stateRepo: StateRepository) {}
@@ -146,4 +157,18 @@ export class ManagePlanDeviationsUseCase {
 /** The unacknowledged records that block a REVIEW certification. */
 export function unacknowledgedDeviations(sm: StateMachine): readonly RecordedPlanDeviation[] {
   return sm.planDeviations.filter(isUnacknowledged);
+}
+
+/** Refuses a commit while any recorded deviation is unacknowledged (issue #437). */
+export function assertPlanDeviationsAcknowledged(
+  sm: Pick<StateMachine, 'planDeviations'>,
+  issue?: number | string | null
+): void {
+  const unacknowledged = sm.planDeviations.filter(isUnacknowledged);
+  if (unacknowledged.length === 0) return;
+  throw new ValidationError(
+    'planDeviations',
+    unacknowledged.map((record) => record.id),
+    `Cannot commit: ${formatPlanDeviationUnacknowledgedMessage(unacknowledged, issue)}`
+  );
 }

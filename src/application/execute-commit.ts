@@ -40,8 +40,10 @@ import {
   GATE_COMMIT,
   measureStageWindowMs,
   resolveStageRound,
-  IssueNumber
+  IssueNumber,
+  planDeviationsCommitBody
 } from '../domain';
+import { assertPlanDeviationsAcknowledged } from './plan-deviation';
 import {
   StateRepository,
   CommandExecutorPort,
@@ -173,6 +175,10 @@ export class ExecuteCommitUseCase {
         `Cannot execute commit: Pipeline is at stage '${sm.currentStage}'. Current stage must be '${STAGE_COMMIT}'.`
       );
     }
+
+    // Issue #437: refuse before any git work while a recorded deviation is
+    // unacknowledged — the same posture as `transition REVIEW`.
+    assertPlanDeviationsAcknowledged(sm, params.issue ?? sm.issue);
 
     // Resolve CommitMessage
     let commitMessage: CommitMessage;
@@ -446,7 +452,8 @@ export class ExecuteCommitUseCase {
         const singleLine = commitMessage.toSingleLine();
         const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine);
 
-        const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
+        const deliveredBody = planDeviationsCommitBody(commitMessage.body ?? null, sm.planDeviations);
+        const rawBody = deliveredBody ? `${deliveredBody}\n\nCloses #${issueId}` : `Closes #${issueId}`;
         const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody);
 
         prCommandCore += ` --title '${escapeShellQuote(sanitizedTitle)}' --body '${escapeShellQuote(sanitizedBody)}'`;

@@ -1246,6 +1246,24 @@ export class GetNextActionUseCase {
 
       case STAGE_COMMIT: {
         const recordedSource = this.lastReviewSource(sm);
+        const unacknowledgedDeviations = sm.planDeviations.filter(isUnacknowledged);
+        if (unacknowledgedDeviations.length > 0) {
+          const message = formatPlanDeviationUnacknowledgedMessage(
+            unacknowledgedDeviations,
+            activeIssue
+          );
+          return {
+            currentStage: STAGE_COMMIT,
+            nextStage: STAGE_COMPLETED,
+            actionType: 'human_gate',
+            title: 'Plan Deviation Unacknowledged',
+            description: `Delivery is blocked. ${message}`,
+            baseBranch,
+            taskBranch,
+            worktreePath,
+            humanSummary: `Delivery is blocked until the recorded plan deviation is acknowledged or the plan is routed back. ${message}`
+          };
+        }
         return {
           currentStage: STAGE_COMMIT,
           nextStage: STAGE_COMPLETED,
