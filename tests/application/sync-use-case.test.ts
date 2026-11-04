@@ -4,15 +4,42 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { SyncUseCase } = require('../../dist/application');
+const { writeBuildStamp } = require('../../bin/stale-dist.js');
+
+/**
+ * Issue #516: a real-filesystem fixture whose `src/` and `dist/` agree. The
+ * default `detectStaleDist` reads it, so the post-pull re-check is measured, not
+ * simulated.
+ */
+function makeFreshnessFixture(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-sync-freshness-'));
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'dist', 'presentation'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'x.ts'), 'export const x = 1;\n');
+  fs.writeFileSync(
+    path.join(dir, 'dist', 'presentation', 'cli.js'),
+    'module.exports = {};\n'
+  );
+  writeBuildStamp(dir);
+  return dir;
+}
 
 class MockCommandExecutor {
   executedCommands: string[] = [];
   responses: Record<string, any> = {};
+  /** Issue #516: runs when the collector branch is fast-forwarded. */
+  pullHook?: () => void;
 
   async execute(command: string, options?: any) {
     this.executedCommands.push(command);
+    if (this.pullHook && command.startsWith('git pull')) {
+      this.pullHook();
+    }
     if (this.responses[command]) {
       return this.responses[command];
     }
@@ -388,5 +415,81 @@ describe('SyncUseCase', () => {
       'Closed by codeloop sync: PR #42 into `phase/123` changed 1 non-test file(s) (Closes #10).'
     );
     assert.strictEqual(result.success, true);
+  });
+
+  test('refuses after a pull that advances src/ past dist/, before any gh write (AC1, AC2, #516)', async () => {
+    const fixtureDir = makeFreshnessFixture();
+    try {
+      const executor = new MockCommandExecutor();
+      const github = new MockGitHubGateway();
+      const state = new MockStateRepo();
+      const worktree = new MockWorktreeManager();
+
+      worktree.baseBranch = 'phase/123';
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
+      executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
+        stdout: JSON.stringify([{ number: 42, body: 'Closes #10' }])
+      };
+      executor.responses["gh pr view 42 --json files --jq '.files[].path'"] = {
+        exitCode: 0,
+        stdout: 'src/app.ts\n'
+      };
+      github.issues.push({ id: 10, state: 'OPEN' });
+      executor.pullHook = () => {
+        fs.writeFileSync(path.join(fixtureDir, 'src', 'x.ts'), 'export const x = 2;\n');
+      };
+
+      const useCase = new SyncUseCase(executor, github, state, worktree);
+      const result = await useCase.execute({ workspaceDir: fixtureDir });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(
+        result.message.includes("pulling 'phase/123'"),
+        `the refusal must name the pull: ${result.message}`
+      );
+      assert.ok(result.message.includes('stale'), `the refusal must say stale: ${result.message}`);
+      assert.ok(
+        result.message.includes('npm run build'),
+        `the refusal must name the rebuild: ${result.message}`
+      );
+      assert.deepStrictEqual(
+        executor.executedCommands.filter((cmd: string) => cmd.startsWith('gh ')),
+        [],
+        'no gh command may run after the pull made the build stale'
+      );
+      assert.deepStrictEqual(github.closedIssues, [], 'no issue may be closed on a pre-pull build');
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  test('completes a sync whose pull leaves src/ unchanged (AC3, #516)', async () => {
+    const fixtureDir = makeFreshnessFixture();
+    try {
+      const executor = new MockCommandExecutor();
+      const github = new MockGitHubGateway();
+      const state = new MockStateRepo();
+      const worktree = new MockWorktreeManager();
+
+      worktree.baseBranch = 'phase/123';
+      executor.responses['git rev-parse --abbrev-ref HEAD'] = { stdout: 'phase/123' };
+      executor.responses["gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"] = {
+        stdout: '[]'
+      };
+
+      const useCase = new SyncUseCase(executor, github, state, worktree);
+      const result = await useCase.execute({ workspaceDir: fixtureDir });
+
+      assert.strictEqual(result.success, true, result.message);
+      assert.ok(result.message.includes('Successfully synced'), result.message);
+      assert.ok(
+        executor.executedCommands.includes(
+          "gh pr list --base 'phase/123' --state merged --limit 100 --json number,title,body"
+        ),
+        `the merged-PR scan must still run: ${JSON.stringify(executor.executedCommands)}`
+      );
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 });

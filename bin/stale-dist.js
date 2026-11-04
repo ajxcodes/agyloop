@@ -4,9 +4,15 @@
  * Shared stale-build guard for the codeloop/agyloop launchers (issue #466).
  *
  * `dist/` is git-ignored, so `git pull` refreshes `src/` but not the build. The
- * release path — the commands `sync`, `release`, `commit` PLUS any invocation
- * carrying `--commit-after` — must not run pre-pull logic: it REFUSES before
- * `dist/` is required. Read-only commands keep the warning.
+ * write path — the release path (`sync`, `release`, `commit`, any
+ * `--commit-after`) PLUS the other git/gh-writing command families (`abort`,
+ * `triage <action>`, `worktree clean|remove|rm`, issue #497) — must not run
+ * pre-pull logic: it REFUSES before `dist/` is required. Read-only commands
+ * keep the warning.
+ *
+ * A missing `dist/presentation/cli.js` on a source checkout is `buildRequired`
+ * (issue #474): nothing can load, so every non-help invocation refuses with the
+ * `npm run build` diagnostic and `--help`/`--version` print `STATIC_USAGE`.
  *
  * Staleness is stamp-first: `npm run build` writes `dist/build-stamp.json`, a
  * SHA-256 of the source tree, and the launcher compares it with the current
@@ -25,6 +31,29 @@ const NOTICE_STALE_DIST =
 
 /** Commands whose body performs git/gh work: a stale build must not run them. */
 const RELEASE_PATH_COMMANDS = Object.freeze(['sync', 'release', 'commit']);
+
+/**
+ * Other command FAMILIES whose body performs git/gh work yet are not on the
+ * delivery path (issue #497). `triage` and `worktree` are only writing for some
+ * sub-actions, so the sets below decide that — the family alone is not enough.
+ */
+const STALE_UNSAFE_WRITE_COMMANDS = Object.freeze(['abort', 'triage', 'worktree']);
+
+/** `triage` actions that route the lifecycle and write to GitHub (issue #497). */
+const TRIAGE_WRITE_ACTIONS = Object.freeze([
+  'implement',
+  'plan',
+  'discovery',
+  'completed',
+  'dismiss'
+]);
+
+/**
+ * `worktree` subcommands that remove or relocate worktrees (issue #497).
+ * `list` and `prune` stay runnable: AC6 names `prune` explicitly, and both
+ * remain read-only enough for a stale build to report what it sees.
+ */
+const WORKTREE_WRITE_SUBCOMMANDS = Object.freeze(['clean', 'remove', 'rm']);
 
 /**
  * `--commit-after` is a FLAG, not a command (src/presentation/cli.ts:810-811).
@@ -150,10 +179,25 @@ function detectStaleDist(baseDir) {
   try {
     const srcDir = path.join(baseDir, 'src');
     const distCliPath = path.join(baseDir, 'dist', 'presentation', 'cli.js');
-    if (!fs.existsSync(srcDir) || !fs.existsSync(distCliPath)) {
+    if (!fs.existsSync(srcDir)) {
       return {
         stale: false,
+        buildRequired: false,
         method: 'absent',
+        newestSrcMtime: 0,
+        distMtime: null,
+        srcHash: null,
+        stampSrcHash: null
+      };
+    }
+    if (!fs.existsSync(distCliPath)) {
+      // Issue #474: a source checkout without a build cannot load anything.
+      // This is a DISTINCT state from staleness: refusing it must say
+      // "build it", not "your build is older than your source".
+      return {
+        stale: false,
+        buildRequired: true,
+        method: 'missing-dist',
         newestSrcMtime: 0,
         distMtime: null,
         srcHash: null,
@@ -184,6 +228,7 @@ function detectStaleDist(baseDir) {
       if (srcHash) {
         return {
           stale: srcHash !== stamp.srcHash,
+          buildRequired: false,
           method: 'stamp',
           newestSrcMtime,
           distMtime: distStat.mtimeMs,
@@ -195,6 +240,7 @@ function detectStaleDist(baseDir) {
 
     return {
       stale: newestSrcMtime > distStat.mtimeMs,
+      buildRequired: false,
       method: 'mtime',
       newestSrcMtime,
       distMtime: distStat.mtimeMs,
@@ -205,6 +251,7 @@ function detectStaleDist(baseDir) {
     // Stat/read errors are not proof of staleness: keep today's graceful ignore.
     return {
       stale: false,
+      buildRequired: false,
       method: 'error',
       newestSrcMtime: 0,
       distMtime: null,
@@ -255,13 +302,12 @@ function consumesValue(flag, next) {
 }
 
 /**
- * The command `parseArguments` would dispatch, without loading `dist/`.
- * Mirrors the positional grammar at src/presentation/cli.ts:1096-1132:
+ * The positional arguments `parseArguments` would see, without loading `dist/`.
+ * Mirrors the positional grammar at src/presentation/cli.ts:1081-1099:
  * `-`-prefixed tokens are flags (skipping a known value, where a literal `-` is
- * a value only for the stdin flags), `--` ends options, a leading `#?<digits>`
- * token is an issue id, the next positional is the command.
+ * a value only for the stdin flags), `--` ends options.
  */
-function commandFromArgv(argv) {
+function positionalsFromArgv(argv) {
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -277,12 +323,51 @@ function commandFromArgv(argv) {
     }
     positional.push(arg);
   }
+  return positional;
+}
+
+/**
+ * The command `parseArguments` would dispatch, without loading `dist/`.
+ * Mirrors the positional grammar at src/presentation/cli.ts:1102-1113:
+ * a leading `#?<digits>` token is an issue id, the next positional is the
+ * command.
+ */
+function commandFromArgv(argv) {
+  const positional = positionalsFromArgv(argv);
   if (positional.length === 0) {
     return null;
   }
   return REGEX_POSITIONAL_ISSUE_ID.test(positional[0])
     ? (positional[1] || null)
     : positional[0];
+}
+
+/**
+ * The sub-action `parseArguments` would record, without loading `dist/`
+ * (src/presentation/cli.ts:1118-1128): the lowercased `triage` action, the
+ * lowercased `worktree` subcommand (`list` when omitted), or `null`.
+ *
+ * Issue #497: the family token alone cannot decide whether an invocation
+ * writes — `triage` list mode and `worktree prune` must stay runnable.
+ */
+function subcommandFromArgv(argv) {
+  const positional = positionalsFromArgv(argv);
+  if (positional.length === 0) {
+    return null;
+  }
+  const cmdIndex = REGEX_POSITIONAL_ISSUE_ID.test(positional[0]) ? 1 : 0;
+  if (cmdIndex >= positional.length) {
+    return null;
+  }
+  const command = positional[cmdIndex];
+  const raw = positional[cmdIndex + 1];
+  if (command === 'triage') {
+    return raw === undefined ? null : raw.toLowerCase();
+  }
+  if (command === 'worktree') {
+    return raw === undefined ? 'list' : raw.toLowerCase();
+  }
+  return null;
 }
 
 /**
@@ -320,10 +405,33 @@ function isReleasePathInvocation(command, commitAfter) {
 }
 
 /**
- * The name the refusal prints. A flag-only invocation has no command, so it
- * names the flag that made it release-path.
+ * True when this FAMILY writes, at this sub-action (issue #497). The family
+ * sets name the commands; the sub-action filter keeps `triage` list mode,
+ * `triage --help`, `worktree list` and `worktree prune` runnable.
  */
-function refusalSubject(command, commitAfter) {
+function isUnsafeWriteInvocation(command, subcommand) {
+  if (!STALE_UNSAFE_WRITE_COMMANDS.includes(command)) {
+    return false;
+  }
+  if (command === 'triage') {
+    return subcommand !== null && TRIAGE_WRITE_ACTIONS.includes(subcommand);
+  }
+  if (command === 'worktree') {
+    return WORKTREE_WRITE_SUBCOMMANDS.includes(subcommand);
+  }
+  // `abort` always halts subagents, clears locks and quarantines worktrees.
+  return true;
+}
+
+/**
+ * The name the refusal prints. A refused sub-action names its action
+ * (`triage dismiss`, `worktree clean`); a flag-only invocation names the flag
+ * that made it release-path.
+ */
+function refusalSubject(command, commitAfter, subcommand) {
+  if (subcommand && isUnsafeWriteInvocation(command, subcommand)) {
+    return `${command} ${subcommand}`;
+  }
   return command || (commitAfter ? FLAG_COMMIT_AFTER : null);
 }
 
@@ -336,58 +444,109 @@ function formatStaleDistRefusal(subject, rerun) {
 }
 
 /**
+ * Issue #474: nothing can load when `dist/presentation/cli.js` is missing, so
+ * the diagnostic says exactly that and names the build command.
+ */
+function formatBuildRequiredRefusal(subject, rerun) {
+  return (
+    "✗ Refusing to run '" + subject + "': dist/presentation/cli.js is missing, so the " +
+    'compiled CLI cannot be loaded.\n' +
+    "  Run 'npm run build' first, then re-run 'codeloop " + (rerun || subject) + "'."
+  );
+}
+
+/**
+ * Issue #474 AC2: `--help`/`--version` must stay useful with no build at all.
+ * This block must not require `dist/` — it is pure text.
+ */
+const STATIC_USAGE = [
+  'Usage: codeloop <command> [options]',
+  '',
+  'The compiled CLI is not built yet: dist/presentation/cli.js is missing.',
+  "  Run 'npm run build' first to enable every command.",
+  '',
+  'Commands: plan, implement, yolo, next, status, sync, release, commit,',
+  '          triage, worktree, abort, resume, transition, reset',
+  '',
+  "Run 'npm run build' and then 'codeloop --help' for the full reference."
+].join('\n');
+
+/**
  * Pure decision. `options.isMain === true` is required: an in-process caller
  * (tests, embedders requiring the launcher for its exports) must never exit.
  */
 function evaluateStaleDist(argv, baseDir, options) {
   const staleness = detectStaleDist(baseDir);
   const command = commandFromArgv(argv);
+  const subcommand = subcommandFromArgv(argv);
   const commitAfter = hasCommitAfter(argv);
   const releasePath = isReleasePathInvocation(command, commitAfter);
+  const unsafeWrite = isUnsafeWriteInvocation(command, subcommand);
+  const writePath = releasePath || unsafeWrite;
   const sourceCheckout = isSourceCheckout(baseDir);
   const helpOrVersion = wantsHelpOrVersion(argv);
   // Issue #492 AC4: `.git` no longer gates the refusal. The build stamp keeps
   // extracted/installed copies usable; a genuinely stale tree is refused either
   // way.
+  //
+  // Issue #474: a missing build refuses EVERY command (nothing can load), while
+  // help/version bypass the refusal and print STATIC_USAGE at the launcher.
+  // Issue #497: `writePath` widens the stale refusal beyond the delivery path.
   const refuse =
     Boolean(options && options.isMain) &&
-    staleness.stale &&
-    releasePath &&
-    !helpOrVersion;
-  const subject = refusalSubject(command, commitAfter);
+    !helpOrVersion &&
+    (staleness.buildRequired === true || (staleness.stale && writePath));
+  const subject = refusalSubject(command, commitAfter, subcommand) || 'codeloop';
+  let message = null;
+  if (refuse) {
+    message = staleness.buildRequired
+      ? formatBuildRequiredRefusal(subject, argv.join(' '))
+      : formatStaleDistRefusal(subject, argv.join(' '));
+  }
   return Object.assign({}, staleness, {
     command,
+    subcommand,
     commitAfter,
     releasePath,
+    unsafeWrite,
+    writePath,
     sourceCheckout,
     helpOrVersion,
     refusalSubject: subject,
     refuse,
-    message: refuse ? formatStaleDistRefusal(subject, argv.join(' ')) : null
+    message
   });
 }
 
 module.exports = {
   NOTICE_STALE_DIST,
   RELEASE_PATH_COMMANDS,
+  STALE_UNSAFE_WRITE_COMMANDS,
+  TRIAGE_WRITE_ACTIONS,
+  WORKTREE_WRITE_SUBCOMMANDS,
   FLAG_COMMIT_AFTER,
   BUILD_STAMP_RELPATH,
   BUILD_STAMP_VERSION,
   VALUE_FLAGS,
   STDIN_VALUE_FLAGS,
+  STATIC_USAGE,
   listSrcFiles,
   computeSrcHash,
   readBuildStamp,
   writeBuildStamp,
   detectStaleDist,
   checkStaleDist,
+  positionalsFromArgv,
   commandFromArgv,
+  subcommandFromArgv,
   hasCommitAfter,
   wantsHelpOrVersion,
   isSourceCheckout,
   isReleasePathCommand,
   isReleasePathInvocation,
+  isUnsafeWriteInvocation,
   refusalSubject,
   formatStaleDistRefusal,
+  formatBuildRequiredRefusal,
   evaluateStaleDist
 };

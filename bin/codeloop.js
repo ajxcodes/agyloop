@@ -6,7 +6,12 @@
  * Thin launcher delegating directly to the compiled presentation dispatcher.
  */
 const path = require('path');
-const { NOTICE_STALE_DIST, checkStaleDist, evaluateStaleDist } = require('./stale-dist');
+const {
+  NOTICE_STALE_DIST,
+  STATIC_USAGE,
+  checkStaleDist,
+  evaluateStaleDist
+} = require('./stale-dist');
 
 const baseDir = path.join(__dirname, '..');
 
@@ -26,6 +31,14 @@ if (staleDist.refuse) {
 // Read-only commands and --help/--version keep the notice (AC3).
 if (staleDist.stale) {
   console.warn(NOTICE_STALE_DIST);
+}
+
+// Issue #474 AC2: with no build at all, help/version print a static block
+// instead of a raw MODULE_NOT_FOUND from the required below. Another refusal
+// (every non-help invocation) already exited above.
+if (staleDist.buildRequired && require.main === module && staleDist.helpOrVersion) {
+  console.log(STATIC_USAGE);
+  process.exit(0);
 }
 
 const { main, parseArguments, runCli } = require('../dist/presentation/cli');

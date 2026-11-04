@@ -51,13 +51,13 @@ function extractedLongFlags(): Set<string> {
 }
 
 describe('flag vocabulary (#248 Wave 1)', () => {
-  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 53 entries and no duplicates', () => {
+  test('T-V1: KNOWN_CLI_FLAGS is frozen, has 54 entries and no duplicates', () => {
     assert.ok(Object.isFrozen(KNOWN_CLI_FLAGS), 'the union must be frozen');
     assert.ok(Object.isFrozen(KNOWN_LONG_FLAGS), 'the long list must be frozen');
     assert.ok(Object.isFrozen(KNOWN_SHORT_FLAGS), 'the short list must be frozen');
-    assert.strictEqual(KNOWN_LONG_FLAGS.length, 47);
+    assert.strictEqual(KNOWN_LONG_FLAGS.length, 48);
     assert.strictEqual(KNOWN_SHORT_FLAGS.length, 6);
-    assert.strictEqual(KNOWN_CLI_FLAGS.length, 53);
+    assert.strictEqual(KNOWN_CLI_FLAGS.length, 54);
     assert.strictEqual(new Set(KNOWN_CLI_FLAGS).size, KNOWN_CLI_FLAGS.length, 'no duplicates');
   });
 
@@ -178,5 +178,15 @@ describe('flag vocabulary (#248 Wave 1)', () => {
     assert.deepStrictEqual(validateRefutationScope({ command: 'review', refuteRequested: false }), []);
     // A bare `codeloop --refute` is not a review either.
     assert.strictEqual(validateRefutationScope({ command: null, refuteRequested: true }).length, 1);
+  });
+
+  test('parses --no-sync and registers it in KNOWN_LONG_FLAGS (AC3, #514)', () => {
+    const parsed = parseArguments(['implement', '--no-sync']);
+    assert.strictEqual(parsed.options.noSync, true);
+    assert.deepStrictEqual([...parsed.unknownFlags], []);
+    assert.ok(
+      KNOWN_LONG_FLAGS.includes('--no-sync'),
+      '--no-sync must be in KNOWN_LONG_FLAGS'
+    );
   });
 });

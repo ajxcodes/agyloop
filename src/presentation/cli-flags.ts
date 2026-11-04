@@ -87,6 +87,7 @@ export const KNOWN_LONG_FLAGS: readonly string[] = Object.freeze([
   '--message-file',
   '--model',
   '--no-quarantine',
+  '--no-sync',
   FLAG_NO_WORKTREE,
   FLAG_PLAN_DIR,
   FLAG_PLAN_PATH,

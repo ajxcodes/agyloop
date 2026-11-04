@@ -197,6 +197,12 @@ export interface RunLifecycleParams {
    * report does not yet carry RCA evidence parks instead of advancing.
    */
   readonly skipDiscovery?: boolean;
+  /**
+   * Issue #514 AC3: skip the best-effort collector sync that precedes
+   * implementation. Threaded to every `StartImplementationUseCase.execute` call
+   * site so `codeloop implement --no-sync` really has an effect.
+   */
+  readonly noSync?: boolean;
   readonly onProgress?: (message: string) => void;
 }
 
@@ -1229,7 +1235,11 @@ export class RunLifecycleUseCase {
         noWorktree: params.worktree === false,
         workspaceDir: activeWorkspace,
         hasMergeConflicts: preflightResult?.hasMergeConflicts,
-        mergeBaseBranch: preflightResult?.candidateBaseBranch
+        mergeBaseBranch: preflightResult?.candidateBaseBranch,
+        // Issue #514: the best-effort sync is now observable and skippable on
+        // every lifecycle leg that can start implementation.
+        noSync: params.noSync,
+        onProgress: params.onProgress
       });
     } catch (err: unknown) {
       // Only a REFUSAL ("this plan/stage cannot start") is torn down. Provisioning
@@ -1453,7 +1463,11 @@ export class RunLifecycleUseCase {
           noWorktree: params.worktree === false,
           workspaceDir: activeWorkspace,
           hasMergeConflicts: preflightResult?.hasMergeConflicts,
-          mergeBaseBranch: preflightResult?.candidateBaseBranch
+          mergeBaseBranch: preflightResult?.candidateBaseBranch,
+          // Issue #514: the best-effort sync is now observable and skippable on
+          // every lifecycle leg that can start implementation.
+          noSync: params.noSync,
+          onProgress: params.onProgress
         });
       } catch (err: unknown) {
         if (!hadDescriptor && worktree) {
@@ -1883,7 +1897,11 @@ export class RunLifecycleUseCase {
           noWorktree: params.worktree === false,
           workspaceDir: activeWorkspace,
           hasMergeConflicts: preflightResult?.hasMergeConflicts,
-          mergeBaseBranch: preflightResult?.candidateBaseBranch
+          mergeBaseBranch: preflightResult?.candidateBaseBranch,
+          // Issue #514: the best-effort sync is now observable and skippable on
+          // every lifecycle leg that can start implementation.
+          noSync: params.noSync,
+          onProgress: params.onProgress
         });
       } catch (err: unknown) {
         if (!hadDescriptor && worktree) {

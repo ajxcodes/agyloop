@@ -79,6 +79,16 @@ export interface StartImplementationParams {
   readonly baseBranch?: string | null;
   readonly hasMergeConflicts?: boolean;
   readonly mergeBaseBranch?: string | null;
+  /**
+   * Issue #514 AC3: skip the best-effort collector sync entirely, so the first
+   * implementation step is never gated on a full merged-PR history walk.
+   */
+  readonly noSync?: boolean;
+  /**
+   * Issue #514 AC2: where the "Syncing … before implementation…" progress line
+   * goes. Omitted falls back to `console.log`.
+   */
+  readonly onProgress?: (message: string) => void;
 }
 
 export interface StartImplementationResult {
@@ -130,25 +140,6 @@ export class StartImplementationUseCase {
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
     const workspace = params.workspaceDir || process.cwd();
-
-    // 0. Best-effort remote sync of the base collector branch
-    if (this.commandExecutor && this.worktreeManager && this.githubGateway && !params.dryRun && !params.noWorktree) {
-      try {
-        const syncUseCase = new SyncUseCase(
-          this.commandExecutor,
-          this.githubGateway,
-          this.stateRepo,
-          this.worktreeManager
-        );
-        const syncResult = await syncUseCase.execute({ workspaceDir: workspace });
-        if (!syncResult.success) {
-          // Best-effort: never abort, but never claim success either (#328).
-          console.warn(`Auto-sync before implementation is incomplete: ${syncResult.message}`);
-        }
-      } catch (e) {
-        console.warn('Auto-sync before implementation failed:', e instanceof Error ? e.message : String(e));
-      }
-    }
 
     // 1. Load active pipeline state checkpoint
     const snapshot = await this.stateRepo.load();
@@ -253,6 +244,44 @@ export class StartImplementationUseCase {
       // two approval entry points cannot drift.
       this.assertPlanTestRegisterContract(sm, params, workspace);
       this.assertPlanEvidenceContract(sm, params, workspace);
+    }
+
+    // 2a. Best-effort remote sync of the base collector branch (issue #514).
+    //     Deliberately AFTER the checkpoint load, the stage transition and every
+    //     plan/approval guard: a wrong-stage refusal costs no history walk, and
+    //     the command that consumes the APPROVAL gate no longer looks hung.
+    //     Sync stays best-effort — it never aborts the run and never claims
+    //     success (#328) — but it is now observable (`onProgress`) and skippable
+    //     (`--no-sync`).
+    if (
+      !params.noSync &&
+      this.commandExecutor &&
+      this.worktreeManager &&
+      this.githubGateway &&
+      !params.dryRun &&
+      !params.noWorktree
+    ) {
+      const report = params.onProgress ?? ((message: string) => console.log(message));
+      const syncBase = sm.baseBranch || params.baseBranch || 'the collector branch';
+      report(`Syncing ${syncBase} before implementation…`);
+      try {
+        const syncUseCase = new SyncUseCase(
+          this.commandExecutor,
+          this.githubGateway,
+          this.stateRepo,
+          this.worktreeManager
+        );
+        const syncResult = await syncUseCase.execute({
+          workspaceDir: workspace,
+          onProgress: report
+        });
+        if (!syncResult.success) {
+          // Best-effort: never abort, but never claim success either (#328).
+          console.warn(`Auto-sync before implementation is incomplete: ${syncResult.message}`);
+        }
+      } catch (e) {
+        console.warn('Auto-sync before implementation failed:', e instanceof Error ? e.message : String(e));
+      }
     }
 
     // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT.

@@ -2,6 +2,57 @@ import { CommandExecutorPort, GitHubGateway, GitHubIssueData, StateRepository, W
 import { shellQuote, SYNC_MERGED_PR_PAGE_SIZE, SYNC_MERGED_PR_SCAN_CEILING } from '../domain';
 
 /**
+ * The subset of `bin/stale-dist.js`'s `detectStaleDist` result `sync` reads
+ * (issue #516). Kept structural so a test can inject a plain object.
+ */
+export interface FreshnessSnapshot {
+  readonly stale: boolean;
+  readonly srcHash: string | null;
+  readonly newestSrcMtime: number;
+}
+
+/**
+ * Reads the launcher-level freshness detector WITHOUT importing `dist/`
+ * (issue #516): `src/application/` and `dist/application/` are both two levels
+ * below the repository root, so the same path resolves in source and compiled
+ * form.
+ */
+function detectBuildFreshness(baseDir: string): FreshnessSnapshot {
+  // `path` is required lazily (not imported): this helper is the one place in
+  // the application layer that locates a sibling module, and a static
+  // `import 'path'` would trip the hexagonal-boundary fitness test.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const nodePath = require('path');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const staleDist = require(nodePath.join(__dirname, '..', '..', 'bin', 'stale-dist.js'));
+  return staleDist.detectStaleDist(baseDir);
+}
+
+/**
+ * A content fingerprint for the checked-out source tree. The stamp hash is
+ * authoritative; the newest mtime is the fallback for a `dist/` that predates
+ * the stamp (issue #516 AC3: an unchanged `src/` must never refuse).
+ */
+function srcFingerprint(snapshot: FreshnessSnapshot): string {
+  return snapshot.srcHash ?? String(snapshot.newestSrcMtime);
+}
+
+/**
+ * Issue #516 AC2: name the pull as the cause and the rebuild as the remedy.
+ * The wording distinguishes a pull that MADE the build stale from one that
+ * widened staleness that was already there.
+ */
+function formatSyncFreshnessRefusal(collectorBranch: string, wasFresh: boolean): string {
+  const cause = wasFresh
+    ? `pulling '${collectorBranch}' advanced src/ past dist/, so the pull itself made the compiled CLI stale`
+    : `pulling '${collectorBranch}' advanced src/ past dist/, so the compiled CLI is stale`;
+  return (
+    `Refusing to process merged PRs: ${cause} and would run pre-change logic.\n` +
+    "  Run 'npm run build' first, then re-run 'codeloop sync'."
+  );
+}
+
+/**
  * Path prefixes that are NOT implementation evidence (issue #240/Defect 3).
  *
  * A PR that only touches these cannot prove an issue was fixed: PR #258 closed
@@ -77,6 +128,11 @@ export interface SyncParams {
    * `fetchIssueStrict`) so the forecast is real (issue #248, #328).
    */
   readonly dryRun?: boolean;
+  /**
+   * Progress reporter for the long steps (issue #514): the caller owns where
+   * the line goes (stdout, stderr, a JSON log). Omitted means silent.
+   */
+  readonly onProgress?: (message: string) => void;
 }
 
 export interface SyncResult {
@@ -95,17 +151,21 @@ export class SyncUseCase {
   private readonly githubGateway: GitHubGateway;
   private readonly stateRepo: StateRepository;
   private readonly worktreeManager: WorktreeManagerPort;
+  /** Issue #516: injected so tests can pin the pull-then-run ordering. */
+  private readonly detectFreshness: (baseDir: string) => FreshnessSnapshot;
 
   constructor(
     commandExecutor: CommandExecutorPort,
     githubGateway: GitHubGateway,
     stateRepo: StateRepository,
-    worktreeManager: WorktreeManagerPort
+    worktreeManager: WorktreeManagerPort,
+    detectFreshness: (baseDir: string) => FreshnessSnapshot = detectBuildFreshness
   ) {
     this.commandExecutor = commandExecutor;
     this.githubGateway = githubGateway;
     this.stateRepo = stateRepo;
     this.worktreeManager = worktreeManager;
+    this.detectFreshness = detectFreshness;
   }
 
   /**
@@ -182,12 +242,23 @@ export class SyncUseCase {
       }
 
       // 2. Fetch and fast-forward
+      //
+      // Issue #516: `sync` is the command that PULLS the commits which can make
+      // its own launch-time freshness check stale. Capture a fingerprint before
+      // the mutation and re-check right after it, so the rest of this run never
+      // processes merged PRs on a pre-pull build.
+      const freshnessBefore = this.detectFreshness(cwd);
+      const fingerprintBefore = srcFingerprint(freshnessBefore);
+      const report = params.onProgress ?? (() => undefined);
+
+      report('Fetching origin…');
       try {
         await this.commandExecutor.execute('git fetch origin', { cwd });
       } catch (e) {
         warnings.push(`Failed to fetch from origin: ${e instanceof Error ? e.message : String(e)}`);
       }
 
+      report(`Fast-forwarding ${collectorBranch}…`);
       try {
         // If we are currently on the collector branch, git pull --ff-only
         const headBranchRes = await this.commandExecutor.execute('git rev-parse --abbrev-ref HEAD', { cwd });
@@ -203,7 +274,23 @@ export class SyncUseCase {
         warnings.push(`Failed to fast-forward collector branch ${collectorBranch}: ${e instanceof Error ? e.message : String(e)}`);
       }
 
+      // Issue #516 AC1/AC2: the pull above may have advanced `src/` past
+      // `dist/`. Refuse BEFORE any merged-PR scan or `gh` write, naming the
+      // pull as the cause and `npm run build` as the remedy. AC3 is exact:
+      // an unchanged fingerprint never refuses.
+      const freshnessAfter = this.detectFreshness(cwd);
+      if (freshnessAfter.stale && fingerprintBefore !== srcFingerprint(freshnessAfter)) {
+        return {
+          success: false,
+          dryRun: false,
+          message: formatSyncFreshnessRefusal(collectorBranch, freshnessBefore.stale === false),
+          warnings: warnings.length > 0 ? warnings : undefined,
+          logs: logs.length > 0 ? logs : undefined
+        };
+      }
+
       // 3. Close issues whose PRs merged into the collector branch
+      report('Scanning merged PRs…');
       const outcome: IssueScanOutcome =
         collectorBranch !== 'main'
           ? await this.processMergedIssues({ cwd, collectorBranch, dryRun: false, logs, warnings })

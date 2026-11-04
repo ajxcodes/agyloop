@@ -301,6 +301,27 @@ class MockWorktreeManager implements WorktreeManagerPort {
   }
 }
 
+/**
+ * Records every command through the port (issue #514): the ordering tests need
+ * to prove a refusal ran NO history walk, not merely that no progress printed.
+ */
+class SpyCommandExecutor {
+  public readonly executedCommands: string[] = [];
+
+  public async execute(command: string): Promise<import('../../src').CommandExecutionResult> {
+    this.executedCommands.push(command);
+    return {
+      command,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      combinedOutput: '',
+      durationMs: 1,
+      timedOut: false
+    };
+  }
+}
+
 describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   let tempDir: string;
   let testPlanDir: string;
@@ -1098,6 +1119,147 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     // Without commandExecutor, no conflict payload should be injected
     assert.strictEqual(result.isSelfCorrection, false);
     assert.ok(!result.taskPrompt.includes('Merge Conflict'));
+  });
+
+  /**
+   * Issue #514: the auto-sync used to run as step 0, BEFORE the checkpoint was
+   * even loaded. These three tests pin the ordering, the progress line and the
+   * opt-out.
+   */
+  test('refuses a wrong-stage checkpoint before the auto-sync runs (AC1, #514)', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_DISCOVERY,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir);
+    const github = new MockGitHubGateway();
+    const worktree = new MockWorktreeManager(tempDir);
+    const executor = new SpyCommandExecutor();
+    const capturedProgress: string[] = [];
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      github,
+      undefined,
+      worktree,
+      undefined,
+      executor
+    );
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({
+          issue: 16,
+          workspaceDir: tempDir,
+          onProgress: (message: string) => capturedProgress.push(message)
+        }),
+      InvalidTransitionError
+    );
+
+    assert.deepStrictEqual(executor.executedCommands, [], 'a refusal must cost no sync work');
+    assert.ok(
+      !capturedProgress.some((message) => message.includes('Syncing')),
+      `a refusal must not announce a sync: ${JSON.stringify(capturedProgress)}`
+    );
+  });
+
+  test('reports a Syncing progress line before the auto-sync on a valid checkpoint (AC2, #514)', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: STAGE_INITIALIZED, timestamp: new Date().toISOString() },
+        { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
+      ]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir);
+    const github = new MockGitHubGateway();
+    const worktree = new MockWorktreeManager(tempDir);
+    const executor = new SpyCommandExecutor();
+    const capturedProgress: string[] = [];
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      github,
+      undefined,
+      worktree,
+      undefined,
+      executor
+    );
+
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir,
+      onProgress: (message: string) => capturedProgress.push(message)
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.match(capturedProgress[0], /Syncing .+ before implementation…/);
+    assert.ok(
+      executor.executedCommands.includes('git fetch origin'),
+      `the sync must actually fetch: ${JSON.stringify(executor.executedCommands)}`
+    );
+  });
+
+  test('skips the auto-sync when noSync is true (AC3, #514)', async () => {
+    const stateRepo = new MockStateRepository({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: STAGE_INITIALIZED, timestamp: new Date().toISOString() },
+        { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
+      ]
+    });
+    const configRepo = new MockConfigRepository();
+    const planGen = new MockPlanGenerator(testPlanDir);
+    const github = new MockGitHubGateway();
+    const worktree = new MockWorktreeManager(tempDir);
+    const executor = new SpyCommandExecutor();
+    const capturedProgress: string[] = [];
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      github,
+      undefined,
+      worktree,
+      undefined,
+      executor
+    );
+
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir,
+      noSync: true,
+      onProgress: (message: string) => capturedProgress.push(message)
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.deepStrictEqual(executor.executedCommands, [], '--no-sync must run no command');
+    assert.ok(
+      !capturedProgress.some((message) => message.includes('Syncing')),
+      `--no-sync must not announce a sync: ${JSON.stringify(capturedProgress)}`
+    );
   });
 });
 
