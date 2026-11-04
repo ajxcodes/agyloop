@@ -12,19 +12,28 @@
  * `IMPLEMENT -> PLAN` is not refused for the tests its own implementation
  * added (issue #489). Only an UNRESOLVABLE base falls back to the worktree.
  *
- * A plan with no `Test Register` section is untouched (legacy plans, AC7).
+ * The same guard also refuses a planned test id that already exists in its
+ * target file, at the same base revision the title dedupe uses (issue #518,
+ * #476).
+ *
+ * A plan with no `Test Register` section is still checked for planned test ids
+ * (a checklist step can plan one); a plan that plans nothing is untouched
+ * (legacy plans, AC7).
  */
 
 import {
   MSG_PLAN_TEST_REGISTER_CONTRADICTION,
+  MSG_PLAN_TEST_REGISTER_DUPLICATE_ID,
   MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW,
   MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE,
   MSG_PLAN_TEST_REGISTER_EMPTY,
   MSG_PLAN_TEST_REGISTER_MISSING_MARKER,
   MSG_PLAN_TEST_REGISTER_UNRESOLVABLE,
   ValidationError,
+  extractPlannedTestIds,
   extractTestBlock,
   findContradiction,
+  findTestIdCollisions,
   readTestRegister,
   type TestRegisterRow
 } from '../domain';
@@ -106,6 +115,55 @@ function readAtRevision(
 }
 
 /**
+ * The target file's content for the id lint: the BASE revision decides
+ * (issue #489), `absent` means nothing can collide, and only an unresolvable
+ * base falls back to the delivered tree — the same order the title dedupe uses.
+ */
+function readTargetSource(
+  reader: SourceFileReaderPort,
+  path: string,
+  workspaceDir: string,
+  baseRef: string
+): string | null {
+  const atBase = readAtRevision(reader, path, workspaceDir, baseRef);
+  if (atBase.status === 'found') return atBase.content;
+  if (atBase.status === 'absent') return null;
+  return reader.read(path, workspaceDir);
+}
+
+/** One refusal per planned id that already exists in its target file (issue #518, #476). */
+function collectPlannedTestIdRefusals(
+  content: string,
+  params: PlanTestRegisterContractParams,
+  reader: SourceFileReaderPort,
+  skippedRowIds: ReadonlySet<string>
+): string[] {
+  const refusals: string[] = [];
+  const baseRef = resolveTestRegisterBaseRef([params.baseRef]);
+  for (const planned of extractPlannedTestIds(content)) {
+    if (planned.rowId !== null && skippedRowIds.has(planned.rowId)) continue;
+    const source = readTargetSource(reader, planned.path, params.workspaceDir, baseRef);
+    if (source === null) continue;
+    const collisions = findTestIdCollisions(source, planned.id);
+    if (collisions.length === 0) continue;
+    refusals.push(
+      format(MSG_PLAN_TEST_REGISTER_DUPLICATE_ID, {
+        id: planned.id,
+        path: planned.path,
+        where:
+          planned.rowId !== null
+            ? `Test Register row ${planned.rowId} at plan line ${planned.line}`
+            : `implementation checklist step at plan line ${planned.line}`,
+        lines: collisions
+          .map((collision) => `${planned.path}:${collision.line}`)
+          .join(', ')
+      })
+    );
+  }
+  return refusals;
+}
+
+/**
  * Throws `ValidationError('testRegister', …)` unless every row pins a real
  * test that restates its literal, or declares a genuinely new test.
  */
@@ -122,113 +180,123 @@ export function assertPlanTestRegisterContract(params: PlanTestRegisterContractP
   }
 
   const section = readTestRegister(content);
-  if (!section.present) return;
 
   const refusals: string[] = [];
-  if (section.rows.length === 0) {
+  if (section.present && section.rows.length === 0) {
     refusals.push(
       format(MSG_PLAN_TEST_REGISTER_EMPTY, {
         line: String(section.headingLine ?? 0)
       })
     );
   }
-  for (const row of section.rows) {
-    if (!row.pins && !row.newTest) {
-      refusals.push(missingMarker(row));
-      continue;
-    }
-
-    if (row.pins && sourceFileReader) {
-      const source = sourceFileReader.read(row.pins.path, params.workspaceDir);
-      if (source === null) {
-        refusals.push(
-          format(MSG_PLAN_TEST_REGISTER_UNRESOLVABLE, {
-            row: row.id,
-            path: row.pins.path,
-            title: row.pins.title,
-            reason: 'the file is missing, unreadable, or outside the workspace'
-          })
-        );
+  // Rows refused for an existing title keep just that refusal: the id pass
+  // would otherwise restate the same row (issue #518).
+  const refusedRows = new Set<string>();
+  if (section.present) {
+    for (const row of section.rows) {
+      if (!row.pins && !row.newTest) {
+        refusals.push(missingMarker(row));
         continue;
       }
-      const block = extractTestBlock(source, row.pins.title);
-      if (block === null) {
-        refusals.push(
-          format(MSG_PLAN_TEST_REGISTER_UNRESOLVABLE, {
-            row: row.id,
-            path: row.pins.path,
-            title: row.pins.title,
-            reason: `no test('${row.pins.title}') was found in the file`
-          })
-        );
-        continue;
-      }
-      const contradiction = findContradiction(row.asserts, block.text, block.line);
-      if (contradiction) {
-        refusals.push(
-          format(MSG_PLAN_TEST_REGISTER_CONTRADICTION, {
-            row: row.id,
-            file: row.pins.path,
-            line: String(contradiction.line),
-            subject: contradiction.subject,
-            rowValue: contradiction.rowValue,
-            pinnedValue: contradiction.pinnedValue
-          })
-        );
-      }
-      continue;
-    }
 
-    if (row.newTest && sourceFileReader) {
-      // Issue #489: the base revision decides whether the title already
-      // exists. Asking the delivered tree made a plan re-approved after
-      // IMPLEMENT -> PLAN refuse the very tests its implementation added.
-      const baseRef = resolveTestRegisterBaseRef([params.baseRef]);
-      const atBase = readAtRevision(
-        sourceFileReader,
-        row.newTest.path,
-        params.workspaceDir,
-        baseRef
-      );
-
-      if (atBase.status === 'found') {
-        const duplicate = extractTestBlock(atBase.content, row.newTest.title);
-        if (duplicate !== null) {
+      if (row.pins && sourceFileReader) {
+        const source = sourceFileReader.read(row.pins.path, params.workspaceDir);
+        if (source === null) {
           refusals.push(
-            format(MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE, {
+            format(MSG_PLAN_TEST_REGISTER_UNRESOLVABLE, {
+              row: row.id,
+              path: row.pins.path,
+              title: row.pins.title,
+              reason: 'the file is missing, unreadable, or outside the workspace'
+            })
+          );
+          continue;
+        }
+        const block = extractTestBlock(source, row.pins.title);
+        if (block === null) {
+          refusals.push(
+            format(MSG_PLAN_TEST_REGISTER_UNRESOLVABLE, {
+              row: row.id,
+              path: row.pins.path,
+              title: row.pins.title,
+              reason: `no test('${row.pins.title}') was found in the file`
+            })
+          );
+          continue;
+        }
+        const contradiction = findContradiction(row.asserts, block.text, block.line);
+        if (contradiction) {
+          refusals.push(
+            format(MSG_PLAN_TEST_REGISTER_CONTRADICTION, {
+              row: row.id,
+              file: row.pins.path,
+              line: String(contradiction.line),
+              subject: contradiction.subject,
+              rowValue: contradiction.rowValue,
+              pinnedValue: contradiction.pinnedValue
+            })
+          );
+        }
+        continue;
+      }
+
+      if (row.newTest && sourceFileReader) {
+        // Issue #489: the base revision decides whether the title already
+        // exists. Asking the delivered tree made a plan re-approved after
+        // IMPLEMENT -> PLAN refuse the very tests its implementation added.
+        const baseRef = resolveTestRegisterBaseRef([params.baseRef]);
+        const atBase = readAtRevision(
+          sourceFileReader,
+          row.newTest.path,
+          params.workspaceDir,
+          baseRef
+        );
+
+        if (atBase.status === 'found') {
+          const duplicate = extractTestBlock(atBase.content, row.newTest.title);
+          if (duplicate !== null) {
+            refusedRows.add(row.id);
+            refusals.push(
+              format(MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW_BASE, {
+                row: row.id,
+                path: row.newTest.path,
+                title: row.newTest.title,
+                base: baseRef,
+                line: String(duplicate.line)
+              })
+            );
+          }
+          // The base answered: the worktree is the implementation's own work.
+          continue;
+        }
+
+        if (atBase.status === 'absent') {
+          // The revision resolved and does not contain the path: genuinely new.
+          continue;
+        }
+
+        // `unavailable`: no honest answer from the base (not a repository, an
+        // unknown ref, an unreadable object). Fail closed on the pre-#489 rule —
+        // the delivered tree decides.
+        const source = sourceFileReader.read(row.newTest.path, params.workspaceDir);
+        const duplicate = source === null ? null : extractTestBlock(source, row.newTest.title);
+        if (duplicate !== null) {
+          refusedRows.add(row.id);
+          refusals.push(
+            format(MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW, {
               row: row.id,
               path: row.newTest.path,
               title: row.newTest.title,
-              base: baseRef,
               line: String(duplicate.line)
             })
           );
         }
-        // The base answered: the worktree is the implementation's own work.
-        continue;
-      }
-
-      if (atBase.status === 'absent') {
-        // The revision resolved and does not contain the path: genuinely new.
-        continue;
-      }
-
-      // `unavailable`: no honest answer from the base (not a repository, an
-      // unknown ref, an unreadable object). Fail closed on the pre-#489 rule —
-      // the delivered tree decides.
-      const source = sourceFileReader.read(row.newTest.path, params.workspaceDir);
-      const duplicate = source === null ? null : extractTestBlock(source, row.newTest.title);
-      if (duplicate !== null) {
-        refusals.push(
-          format(MSG_PLAN_TEST_REGISTER_DUPLICATE_NEW, {
-            row: row.id,
-            path: row.newTest.path,
-            title: row.newTest.title,
-            line: String(duplicate.line)
-          })
-        );
       }
     }
+  }
+
+  if (sourceFileReader) {
+    refusals.push(...collectPlannedTestIdRefusals(content, params, sourceFileReader, refusedRows));
   }
 
   if (refusals.length === 0) return;

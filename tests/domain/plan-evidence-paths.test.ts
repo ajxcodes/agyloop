@@ -8,7 +8,8 @@ const {
   lintPlanEvidencePaths,
   extractPlanTargetPaths,
   extractOutOfScopeDeclarations,
-  isOutsideWorkspace
+  isOutsideWorkspace,
+  isPathDeclaredOutOfScope
 } = require('../../dist/domain');
 
 const ROOT = '/repo';
@@ -152,5 +153,40 @@ describe('Plan evidence paths (issue #432)', () => {
       '- **Out of Scope:** after the fence'
     ].join('\n');
     assert.deepStrictEqual([...extractOutOfScopeDeclarations(text)], ['joined across a wrapped line', 'stopped by a heading', 'an empty marker still joins its continuation', 'after the fence']);
+  });
+
+  test('PEP12 an Out of Scope bullet in the AC region is not an acceptance criterion (#518 AC7)', () => {
+    const text = plan([
+      '- **Acceptance Criteria:**',
+      '- AC1: correct `src/domain/x.ts`',
+      '- **Out of Scope:** `artifacts/plans/425/implementation_plan.md` is not rewritten'
+    ]);
+    assert.deepStrictEqual(extractPlanTargetPaths(text).map((f: any) => f.path), ['src/domain/x.ts']);
+    assert.deepStrictEqual(lintPlanEvidencePaths(text, ROOT), []);
+
+    const declarationOnly = plan([
+      '- **Acceptance Criteria:**',
+      '- **Out of Scope:** `artifacts/plans/425/implementation_plan.md` is not rewritten'
+    ]);
+    assert.deepStrictEqual(lintPlanEvidencePaths(declarationOnly, ROOT), []);
+  });
+
+  test('PEP13 a declaration discount is path-scoped and covers the declared tree (#518 AC8)', () => {
+    const DECLARATION =
+      'regenerating historical summaries. Files in the artifacts/plans tree are never rewritten.';
+    assert.strictEqual(isPathDeclaredOutOfScope('artifacts/plans', [DECLARATION]), true);
+    assert.strictEqual(
+      isPathDeclaredOutOfScope(
+        'artifacts/plans/518-task-plan/implementation_plan.md',
+        [DECLARATION]
+      ),
+      true
+    );
+    assert.strictEqual(
+      isPathDeclaredOutOfScope('artifacts/x', ['Everything under `artifacts/` is out of scope.']),
+      true
+    );
+    assert.strictEqual(isPathDeclaredOutOfScope('src/domain/x.ts', [DECLARATION]), false);
+    assert.strictEqual(isPathDeclaredOutOfScope('artifacts/plans', []), false);
   });
 });

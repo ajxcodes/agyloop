@@ -132,6 +132,52 @@ const FENCED = [
   '```'
 ].join('\n');
 
+const DECLARATION =
+  '- **Out of Scope:** regenerating historical summaries. Files in the artifacts/plans tree are never rewritten.';
+
+const DECLARED_AC = [
+  '# Plan',
+  '',
+  '- **Acceptance Criteria:**',
+  '- AC1: the historical row is regenerated',
+  DECLARATION,
+  '',
+  '## 2. Design',
+  'Nothing else.'
+].join('\n');
+
+const DECLARED_AC_WITH_PATH = [
+  '# Plan',
+  '',
+  '- **Acceptance Criteria:**',
+  '- AC1: correct `artifacts/plans/518-task-plan/implementation_plan.md`',
+  DECLARATION,
+  '',
+  '## 2. Design',
+  'Nothing else.'
+].join('\n');
+
+const UNDECLARED_AC = [
+  '# Plan',
+  '',
+  '- **Acceptance Criteria:**',
+  '- AC1: correct `artifacts/plans/518-task-plan/implementation_plan.md`',
+  '',
+  '## 2. Design',
+  'Nothing else.'
+].join('\n');
+
+const WRONG_DECLARATION = [
+  '# Plan',
+  '',
+  '- **Acceptance Criteria:**',
+  '- AC1: correct `artifacts/plans/518-task-plan/implementation_plan.md`',
+  '- **Out of Scope:** the src/other.ts module is untouched.',
+  '',
+  '## 2. Design',
+  'Nothing else.'
+].join('\n');
+
 describe('Plan evidence contract (issue #432)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-evidence-'));
@@ -228,5 +274,24 @@ describe('Plan evidence contract (issue #432)', () => {
     assert.doesNotThrow(() => guard(FENCED));
     const unfenced = FENCED.replace('```bash\n', '').replace('\n```', '');
     assert.throws(() => guard(unfenced), /implementation checklist/);
+  });
+
+  test('PE10 an Out of Scope bullet naming an excluded path under the ACs is accepted (#518 AC7/AC10)', () => {
+    assert.doesNotThrow(() => guard(DECLARED_AC));
+    assert.doesNotThrow(() => guard(DECLARED_AC_WITH_PATH));
+  });
+
+  test('PE11 an undeclared or differently-declared AC path is still refused (#518 AC8)', () => {
+    assert.throws(
+      () => guard(UNDECLARED_AC),
+      (err: any) =>
+        err.message.includes('artifacts/plans/518-task-plan/implementation_plan.md') &&
+        /plan line 4/.test(err.message) &&
+        /acceptance criteria/.test(err.message) &&
+        /Out of Scope/.test(err.message)
+    );
+    assert.throws(() => guard(WRONG_DECLARATION), /artifacts\/plans\/518-task-plan/);
+
+    assert.doesNotThrow(() => guard(DECLARED_AC_WITH_PATH));
   });
 });

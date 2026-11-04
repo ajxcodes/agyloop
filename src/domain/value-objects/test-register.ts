@@ -120,11 +120,30 @@ function extractRegisterSection(planContent: string): RegisterSection | null {
   return { headingLine, lines: collected };
 }
 
-/** Strips backticks/quotes a marker value may be wrapped in. */
+/** A separator that may sit between a marker value and the next marker (issue #518). */
+const TRAILING_SEPARATOR = /[\s—–:-]+$/;
+
+/**
+ * The wrapper a marker value carries.
+ *
+ * 0. A separator cannot end a value: it may only sit between the value and
+ *    the next marker, so it is dropped first. A wrapped value never matches
+ *    here (its last character is a backtick).
+ * 1. A value that starts AND ends with a backtick is exactly the old shape:
+ *    strip the outer pair, so a title that itself contains a backtick (real
+ *    suites have them) still round-trips.
+ * 2. A value that starts with a backtick but does not end with one had prose
+ *    after its closing backtick: the FIRST span is the value.
+ * 3. Anything else was a bare value and is returned as-is.
+ */
 function unwrap(value: string): string {
-  let text = value.trim();
+  const text = value.replace(TRAILING_SEPARATOR, '').trim();
   if (text.length >= 2 && text.startsWith('`') && text.endsWith('`')) {
-    text = text.slice(1, -1).trim();
+    return text.slice(1, -1).trim();
+  }
+  if (text.startsWith('`')) {
+    const close = text.indexOf('`', 1);
+    if (close > 1) return text.slice(1, close).trim();
   }
   return text;
 }
@@ -615,4 +634,169 @@ export function findContradiction(
 export function findDuplicateNewTest(source: string, title: string): boolean {
   if (!source) return false;
   return declarationPattern(title).test(source);
+}
+
+export interface DeclaredTestId {
+  readonly id: string;
+  readonly title: string;
+  /** 1-based line of the declaration inside the source file. */
+  readonly line: number;
+}
+
+export interface PlannedTestId {
+  readonly id: string;
+  /** The target test file the plan names. */
+  readonly path: string;
+  /** 1-based plan line carrying the row or bullet. */
+  readonly line: number;
+  readonly origin: 'test register' | 'implementation checklist';
+  readonly rowId: string | null;
+}
+
+/** The `<PREFIX><n>` identifier a title opens with, or null. */
+const TEST_ID_PREFIX = /^([A-Za-z][A-Za-z_]*\d+(?:\.\d+)*[A-Za-z]?)(?=$|[\s:.,;)\]"'`—–-])/;
+
+/** Every `test(` / `it(` declaration; quotes and `\` escapes are honoured. */
+const DECLARATION_SCAN =
+  /(?:^|[^\w.$])(?:test|it)(?:\.(?:only|skip|concurrent|concurrently|todo|failing))?\(\s*(['"`])((?:\\[\s\S]|(?!\1)[^\\\n])*)\1/g;
+
+/** A `<path>/<name>.test.ts`-shaped token: the target a checklist step can name. */
+const TEST_FILE_PATH =
+  /(?:[A-Za-z0-9_.~$-]+\/)+[A-Za-z0-9_.~$-]+\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs)/g;
+
+/** A bare id-shaped token in plan prose. */
+const TEST_ID_TOKEN = /\b[A-Za-z][A-Za-z_]*\d+(?:\.\d+)*[A-Za-z]?\b/g;
+
+/** A verb that introduces a new case. Deliberately NOT global (.test is stateless). */
+const ADDITIVE_VERB =
+  /\b(?:add|adds|adding|create|creates|creating|introduce|introduces|introducing|write|writes|writing|new)\b/i;
+
+/** The `<PREFIX><n>` identifier a test title opens with, or null. */
+export function testIdOfTitle(title: string): string | null {
+  const match = TEST_ID_PREFIX.exec(String(title ?? '').trim());
+  return match ? match[1] : null;
+}
+
+/**
+ * Every `<PREFIX><n>`-identified test declaration in `source`.
+ *
+ * A source file is not a plan, so every `test(` / `it(` declaration counts;
+ * only the leading id grammar decides whether it names a case.
+ */
+export function extractDeclaredTestIds(
+  source: string | null | undefined
+): readonly DeclaredTestId[] {
+  if (!source || typeof source !== 'string') return Object.freeze([]);
+  const found: DeclaredTestId[] = [];
+  DECLARATION_SCAN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = DECLARATION_SCAN.exec(source)) !== null) {
+    const title = match[2].trim();
+    const id = testIdOfTitle(title);
+    if (id === null) continue;
+    // The scan may consume the character before the keyword (a newline at the
+    // end of the previous line), so the declaration can open one line later.
+    const before = source.slice(0, match.index).split('\n').length;
+    const line = match[0].startsWith('\n') ? before + 1 : before;
+    found.push({ id, title, line });
+  }
+  return Object.freeze(found);
+}
+
+/** Every declaration in `source` that already carries `id` (issue #518, #476). */
+export function findTestIdCollisions(
+  source: string,
+  id: string
+): readonly DeclaredTestId[] {
+  return extractDeclaredTestIds(source).filter((declared) => declared.id === id);
+}
+
+/**
+ * The test ids the plan itself introduces (issue #518, #476).
+ *
+ * Two channels, both conservative so an ordinary "update the suite" step is
+ * not read as planning an id:
+ *
+ * 1. a `New test:` register row's leading `<PREFIX><n>` id;
+ * 2. a checkbox step that names exactly one test file and introduces an id
+ *    with an additive verb before it (`Add \`PBC15\` to \`tests/…\``).
+ *
+ * A `Pins:` row never plans an id: it names a test that already exists.
+ */
+export function extractPlannedTestIds(
+  planContent: string | null | undefined
+): readonly PlannedTestId[] {
+  if (!planContent || typeof planContent !== 'string') return Object.freeze([]);
+  const planned: PlannedTestId[] = [];
+  const seen = new Set<string>();
+  const push = (entry: PlannedTestId): void => {
+    const key = `${entry.path}\0${entry.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    planned.push(entry);
+  };
+
+  // Channel 1: a `New test:` row plans its title's leading id (issue #476).
+  for (const row of parseTestRegister(planContent)) {
+    if (!row.newTest) continue;
+    const id = testIdOfTitle(row.newTest.title);
+    if (id === null) continue;
+    push({ id, path: row.newTest.path, line: row.line, origin: 'test register', rowId: row.id });
+  }
+
+  // The plan's own criterion labels (`- AC3: ...`) are not test ids.
+  const acLabels = new Set<string>();
+  {
+    let inFence = false;
+    for (const line of planContent.split('\n')) {
+      if (isFence(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      const label = /^\s*[-*+]\s+(AC\d+[a-z]?)\s*:/i.exec(line);
+      if (label) acLabels.add(label[1].toLowerCase());
+    }
+  }
+
+  // Channel 2: a checkbox step that names exactly one test file and
+  // introduces an id for it ("Add `PBC15` to `tests/...`").
+  const lines = planContent.split('\n');
+  let fence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isFence(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    if (!/^\s*[-*+]\s+\[[ xX]\]\s+/.test(line)) continue;
+
+    TEST_FILE_PATH.lastIndex = 0;
+    const paths = new Set<string>();
+    let pathMatch: RegExpExecArray | null;
+    while ((pathMatch = TEST_FILE_PATH.exec(line)) !== null) paths.add(pathMatch[0]);
+    if (paths.size !== 1) continue;
+    const targetPath = [...paths][0];
+
+    const backticked = line.replace(/`[^`]*`/g, (span) => ' '.repeat(span.length));
+    const candidates: Array<{ id: string; index: number }> = [];
+    const spanPattern = /`([^`]+)`/g;
+    let span: RegExpExecArray | null;
+    while ((span = spanPattern.exec(line)) !== null) {
+      const id = testIdOfTitle(span[1]);
+      if (id !== null) candidates.push({ id, index: span.index });
+    }
+    TEST_ID_TOKEN.lastIndex = 0;
+    let token: RegExpExecArray | null;
+    while ((token = TEST_ID_TOKEN.exec(backticked)) !== null) {
+      candidates.push({ id: token[0], index: token.index });
+    }
+    for (const candidate of candidates) {
+      if (acLabels.has(candidate.id.toLowerCase())) continue;
+      if (!ADDITIVE_VERB.test(line.slice(0, candidate.index))) continue;
+      push({
+        id: candidate.id,
+        path: targetPath,
+        line: index + 1,
+        origin: 'implementation checklist',
+        rowId: null
+      });
+    }
+  }
+  return Object.freeze(planned);
 }

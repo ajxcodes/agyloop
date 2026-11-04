@@ -158,6 +158,12 @@ function isAcHeading(heading: HeadingLine): boolean {
   return /Acceptance\s+Criteria/i.test(heading.text);
 }
 
+/** A `- **Out of Scope:**` bullet marker; capture 1 is the declaration body. */
+const OUT_OF_SCOPE_MARKER = /^\s*[-*+]\s+\*\*Out\s+of\s+Scope:?\*\*\s*(.*)$/i;
+const BULLET_START = /^\s*[-*+]\s+/;
+const HEADING_START = /^\s*#{1,6}\s+/;
+const HORIZONTAL_RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
+
 /**
  * Every path-shaped token in the AC region and the checkbox checklist.
  *
@@ -213,7 +219,10 @@ export function extractPlanTargetPaths(
     const isListItem = /^\s*[-*+]\s+/.test(line);
     const isCheckbox = /^\s*[-*+]\s+\[[ xX]\]\s+/.test(line);
 
-    if (inAc && isListItem) {
+    // An `- **Out of Scope:**` bullet is a declaration, not an acceptance
+    // criterion: the planner's documented escape names the excluded tree
+    // (issue #518, #479).
+    if (inAc && isListItem && !OUT_OF_SCOPE_MARKER.test(line)) {
       for (const occurrence of [...backtickedPaths(line), ...barePaths(line)]) {
         const key = `${lineNumber}|${occurrence.path}|acceptance criteria|false`;
         if (seen.has(key)) continue;
@@ -327,12 +336,6 @@ export function lintPlanEvidencePaths(
   return Object.freeze(findings);
 }
 
-/** A `- **Out of Scope:**` bullet marker; capture 1 is the declaration body. */
-const OUT_OF_SCOPE_MARKER = /^\s*[-*+]\s+\*\*Out\s+of\s+Scope:?\*\*\s*(.*)$/i;
-const BULLET_START = /^\s*[-*+]\s+/;
-const HEADING_START = /^\s*#{1,6}\s+/;
-const HORIZONTAL_RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
-
 /**
  * The planner's deliberate non-delivery declarations (`- **Out of Scope:** …`).
  *
@@ -390,4 +393,41 @@ export function extractOutOfScopeDeclarations(
   }
   flush();
   return Object.freeze(declarations);
+}
+
+/** A path-shaped token inside a declaration; a trailing slash is allowed. */
+const DECLARED_PATH_TOKEN = /(?:[A-Za-z0-9_.~$*-]+\/)+[A-Za-z0-9_.~$*-]*/g;
+
+function normaliseDeclaredPath(value: string): string {
+  return stripLineSuffix(String(value ?? '').trim())
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  if (left.length === 0 || right.length === 0) return false;
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+/**
+ * True when a parsed `- **Out of Scope:**` declaration names `path`.
+ *
+ * A declaration names a path, or a tree that contains it, in either
+ * direction: `artifacts/plans` covers a finding for a file under it, and a
+ * declaration for that file covers a finding for the tree (issue #518, #479).
+ */
+export function isPathDeclaredOutOfScope(
+  path: string,
+  declarations: readonly string[]
+): boolean {
+  const target = normaliseDeclaredPath(path);
+  if (target.length === 0) return false;
+  for (const declaration of declarations) {
+    DECLARED_PATH_TOKEN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = DECLARED_PATH_TOKEN.exec(declaration)) !== null) {
+      if (pathsOverlap(target, normaliseDeclaredPath(match[0]))) return true;
+    }
+  }
+  return false;
 }
