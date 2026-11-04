@@ -14,6 +14,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 41;
@@ -90,45 +92,16 @@ function readState(dir: string): any {
   }
 }
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
-function makeSandbox(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-directive-'));
-}
 
 describe('codeloop next stage directives (#292, #267)', () => {
   test('T-292.4: the terminal DISCOVERY directive names codeloop plan and the condition', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const transition = await runIn(dir, ['transition', 'DISCOVERY', '--issue', String(ISSUE), '--title', '[Bug] probe']);
+      const transition = await runCliInSandboxCanonical(['transition', 'DISCOVERY', '--issue', String(ISSUE), '--title', '[Bug] probe'], { dir: dir, stripAnsi: true });
       assert.strictEqual(transition.code, 0, transition.stderr);
 
-      const result = await runIn(dir, ['next', '--issue', String(ISSUE)]);
+      const result = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: dir, stripAnsi: true });
       assert.strictEqual(result.code, 0, result.stderr);
       assert.match(result.stdout, /codeloop plan --issue 41/);
       assert.match(result.stdout, /populated RCA report/);
@@ -139,20 +112,20 @@ describe('codeloop next stage directives (#292, #267)', () => {
   });
 
   test('T-292.2/.4: the terminal PLAN directive names transition APPROVAL and the condition', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      await runIn(dir, ['transition', 'DISCOVERY', '--issue', String(ISSUE), '--title', '[Bug] probe']);
+      await runCliInSandboxCanonical(['transition', 'DISCOVERY', '--issue', String(ISSUE), '--title', '[Bug] probe'], { dir: dir, stripAnsi: true });
       const plansDir = path.join(dir, 'artifacts', 'plans');
       const [planDirName] = fs.readdirSync(plansDir);
       const planDir = path.join(plansDir, planDirName);
       const report = fs.readdirSync(planDir).find((f: string) => f.startsWith('[Discovery] - '));
       fs.writeFileSync(path.join(planDir, report), POPULATED_REPORT, 'utf8');
 
-      const plan = await runIn(dir, ['plan', '--issue', String(ISSUE), '--title', '[Bug] probe']);
+      const plan = await runCliInSandboxCanonical(['plan', '--issue', String(ISSUE), '--title', '[Bug] probe'], { dir: dir, stripAnsi: true });
       assert.strictEqual(plan.code, 0, `${plan.stdout}\n${plan.stderr}`);
       assert.strictEqual(readState(dir)?.currentStage, 'PLAN');
 
-      const result = await runIn(dir, ['next', '--issue', String(ISSUE)]);
+      const result = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: dir, stripAnsi: true });
       assert.strictEqual(result.code, 0, result.stderr);
       assert.match(result.stdout, /codeloop transition APPROVAL --issue 41/);
       assert.match(result.stdout, /plan file is non-blank/);
@@ -164,7 +137,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
   });
 
   test('T-267.A1/A2: a blank plan at IMPLEMENT offers the planner, then the implementer', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       // Seed a blank implementation plan and an IMPLEMENT checkpoint.
       const planDir = path.join(dir, 'artifacts', 'plans', '41-bug-probe');
@@ -199,7 +172,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
       );
 
       const planner = JSON.parse(
-        (await runIn(dir, ['next', '--issue', String(ISSUE), '--json'])).stdout
+        (await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true })).stdout
       );
       assert.strictEqual(planner.role, 'planner');
       assert.strictEqual(planner.nextStage, 'PLAN');
@@ -209,7 +182,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
       fs.writeFileSync(path.join(planDir, 'implementation_plan.md'), REAL_PLAN, 'utf8');
 
       const implementer = JSON.parse(
-        (await runIn(dir, ['next', '--issue', String(ISSUE), '--json'])).stdout
+        (await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true })).stdout
       );
       assert.strictEqual(implementer.role, 'implementer');
       assert.strictEqual(implementer.planBlank, false);
@@ -220,20 +193,20 @@ describe('codeloop next stage directives (#292, #267)', () => {
   });
 
   test('T-320.11: the DISCOVERY directive reports blank then populated, and never advances', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const transition = await runIn(dir, [
+      const transition = await runCliInSandboxCanonical([
         'transition',
         'DISCOVERY',
         '--issue',
         String(ISSUE),
         '--title',
         '[Bug] probe'
-      ]);
+      ], { dir: dir, stripAnsi: true });
       assert.strictEqual(transition.code, 0, transition.stderr);
 
       const read1 = JSON.parse(
-        (await runIn(dir, ['next', '--issue', String(ISSUE), '--json'])).stdout
+        (await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true })).stdout
       );
       assert.strictEqual(read1.discoveryReportPopulated, false);
       assert.ok(
@@ -246,7 +219,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
       fs.writeFileSync(read1.discoveryReportPath, POPULATED_REPORT, 'utf8');
 
       const read2 = JSON.parse(
-        (await runIn(dir, ['next', '--issue', String(ISSUE), '--json'])).stdout
+        (await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true })).stdout
       );
       assert.strictEqual(read2.discoveryReportPopulated, true);
       assert.strictEqual(read2.discoveryReportPath, read1.discoveryReportPath);
@@ -263,7 +236,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
       // `next` is a query: the stage must not have advanced.
       assert.strictEqual(readState(dir)?.currentStage, 'DISCOVERY');
 
-      const plan = await runIn(dir, ['plan', '--issue', String(ISSUE)]);
+      const plan = await runCliInSandboxCanonical(['plan', '--issue', String(ISSUE)], { dir: dir, stripAnsi: true });
       assert.strictEqual(plan.code, 0, `${plan.stdout}\n${plan.stderr}`);
       assert.strictEqual(readState(dir)?.currentStage, 'PLAN');
     } finally {
@@ -272,17 +245,17 @@ describe('codeloop next stage directives (#292, #267)', () => {
   });
 
   test('T-320.12: `plan` parks on a blank RCA beside a substantive implementation plan', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     const issue = 42;
     try {
-      const transition = await runIn(dir, [
+      const transition = await runCliInSandboxCanonical([
         'transition',
         'DISCOVERY',
         '--issue',
         String(issue),
         '--title',
         'probe'
-      ]);
+      ], { dir: dir, stripAnsi: true });
       assert.strictEqual(transition.code, 0, transition.stderr);
 
       const plansDir = path.join(dir, 'artifacts', 'plans');
@@ -294,7 +267,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
         'utf8'
       );
 
-      const plan = await runIn(dir, ['plan', '--issue', String(issue), '--title', 'feature probe']);
+      const plan = await runCliInSandboxCanonical(['plan', '--issue', String(issue), '--title', 'feature probe'], { dir: dir, stripAnsi: true });
       const output = `${plan.stdout}\n${plan.stderr}`;
       assert.strictEqual(plan.code, 0, output);
       assert.match(output, /Parked at DISCOVERY/);
@@ -308,7 +281,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
   });
 
   test('finding 5: `status` surfaces the three new counters through their labels', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
       fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
       const now = new Date().toISOString();
@@ -330,7 +303,7 @@ describe('codeloop next stage directives (#292, #267)', () => {
         'utf8'
       );
 
-      const result = await runIn(dir, ['status', '--issue', String(ISSUE)]);
+      const result = await runCliInSandboxCanonical(['status', '--issue', String(ISSUE)], { dir: dir, stripAnsi: true });
       assert.strictEqual(result.code, 0, result.stderr);
       assert.match(result.stdout, /Discovery Dispatches : 3/);
       assert.match(result.stdout, /Planner Dispatches : 2/);

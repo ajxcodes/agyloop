@@ -31,6 +31,7 @@ const { execFileSync } = require('node:child_process');
 const { runCli } = require('../../dist/presentation/cli');
 const { EXIT_CODE_SUCCESS } = require('../../dist/domain');
 const { CliCritiqueGateway } = require('../../dist/infrastructure');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const CRITIQUE_BINARY = 'critique';
@@ -61,55 +62,6 @@ function readState(dir: string): any {
  * contaminated directories are rebuilt entry-by-entry with real-path symlinks.
  * Returns a PATH string whose entries are the shadow's per-directory mirrors.
  */
-function buildCritiqueFreePathShadow(shadowRoot: string): string {
-  fs.mkdirSync(shadowRoot, { recursive: true });
-  const seen = new Set<string>();
-  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const shadowEntries: string[] = [];
-  let idx = 0;
-
-  for (const dir of parts) {
-    let real: string;
-    try {
-      real = fs.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    if (seen.has(real)) continue;
-    seen.add(real);
-
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(real);
-    } catch {
-      continue;
-    }
-
-    const target = path.join(shadowRoot, `d${idx++}`);
-    if (!entries.includes(CRITIQUE_BINARY)) {
-      try {
-        fs.symlinkSync(real, target, 'dir');
-        shadowEntries.push(target);
-        continue;
-      } catch {
-        // Fall through to entry-by-entry copy on symlink failure
-      }
-    }
-
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of entries) {
-      if (entry === CRITIQUE_BINARY || entry.startsWith(`${CRITIQUE_BINARY}.`)) continue;
-      try {
-        fs.symlinkSync(fs.realpathSync(path.join(real, entry)), path.join(target, entry));
-      } catch {
-        // Skip entries that cannot be resolved
-      }
-    }
-    shadowEntries.push(target);
-  }
-
-  return shadowEntries.join(path.delimiter);
-}
 
 function setupProbeRepo(tempDir: string): void {
   execFileSync('git', ['init', '-q'], { cwd: tempDir, stdio: 'ignore' });

@@ -61,7 +61,7 @@ function planWithSmoke(bodyLines: string[]): string {
   ].join('\n');
 }
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public snapshot: any;
   public saveCallCount = 0;
 
@@ -120,12 +120,12 @@ describe('Smoke protocol approval guard (issue #388)', () => {
     } catch {}
   });
 
-  function stateAtPlan(): MockStateRepository {
+  function stateAtPlan(): StateRepositoryDouble {
     const sm = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
     sm.setPlanDir(planDir);
     sm.transition(STAGE_DISCOVERY);
     sm.transition(STAGE_PLAN);
-    return new MockStateRepository(sm.toSnapshot());
+    return new StateRepositoryDouble(sm.toSnapshot());
   }
 
   test('SPA1: the seed-broken protocol is refused at APPROVAL and nothing is saved', async () => {

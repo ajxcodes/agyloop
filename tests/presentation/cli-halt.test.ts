@@ -21,6 +21,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli, parseArguments } = require('../../dist/presentation/cli');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 const {
   CLI_COMMANDS,
   COMMAND_HALT,
@@ -51,55 +52,24 @@ function readState(dir: string): any {
  * Runs runCli inside a throwaway cwd with captured console streams,
  * restoring cwd/env/console afterwards.
  */
-async function runCliInSandbox(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
-  const prevCwd = process.cwd();
-  const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-'));
-  const originalEnv: any = {};
-  for (const key of Object.keys(env)) {
-    originalEnv[key] = process.env[key];
-    if (env[key] === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = env[key];
+
+/** The canonical harness with this suite's seed + re-read `persisted` shape. */
+async function runHaltSandbox(args: readonly string[], { seed = null, env = {} } = {}): Promise<any> {
+  let persisted: Record<string, unknown> | any = null;
+  const result = await runCliInSandboxCanonical(args, {
+    env,
+    stripAnsi: true,
+    seed: seed === null ? undefined : (dir: string) => {
+      fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
+      fs.writeFileSync(stateFilePath(dir), JSON.stringify(seed));
+    },
+    inspect: (dir: string) => {
+      persisted = readState(dir);
     }
-  }
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    if (seed !== null) {
-      fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
-      fs.writeFileSync(stateFilePath(tempDir), JSON.stringify(seed));
-    }
-    process.chdir(tempDir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, ''),
-      persisted: readState(tempDir)
-    };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    for (const key of Object.keys(env)) {
-      if (originalEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = originalEnv[key];
-      }
-    }
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
+  });
+  return { ...result, persisted };
 }
+
 
 function seedState(overrides: any = {}): any {
   const now = new Date().toISOString();
@@ -130,7 +100,7 @@ describe('codeloop halt (issue #220)', () => {
   });
 
   test('AC1: halt --reason quota checkpoints CIRCUIT_BREAKER and exits 2', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -149,7 +119,7 @@ describe('codeloop halt (issue #220)', () => {
     // start one. Before the fix this created `.agyloop/state.json` at
     // INITIALIZED, paused at CIRCUIT_BREAKER, and exited 2 — so `status` listed
     // a phantom task.
-    const result = await runCliInSandbox(['halt', '--reason', 'quota'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota'], {
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_FAILURE);
@@ -201,7 +171,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC1: second halt preserves the original timestamp (first-wins)', async () => {
     const firstPause = '2026-10-14T12:00:00.000Z';
-    const first = await runCliInSandbox(['halt', '--reason', 'quota'], {
+    const first = await runHaltSandbox(['halt', '--reason', 'quota'], {
       seed: seedState({ pausedAtGate: GATE_CIRCUIT_BREAKER, pausedAtTimestamp: firstPause }),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -236,7 +206,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC2: missing --reason fails exit 1 with no state mutation', async () => {
     const before = seedState();
-    const result = await runCliInSandbox(['halt'], {
+    const result = await runHaltSandbox(['halt'], {
       seed: before,
       env: { AGY_SUBAGENT: undefined }
     });
@@ -247,7 +217,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC2: non-quota --reason fails exit 1 with no state mutation', async () => {
     const before = seedState();
-    const result = await runCliInSandbox(['halt', '--reason', 'exhausted'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'exhausted'], {
       seed: before,
       env: { AGY_SUBAGENT: undefined }
     });
@@ -281,7 +251,7 @@ describe('codeloop halt (issue #220)', () => {
   });
 
   test('AC3: --retry-after drives quotaResetAt in JSON output', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '120', '--json'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota', '--retry-after', '120', '--json'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -294,7 +264,7 @@ describe('codeloop halt (issue #220)', () => {
   });
 
   test('AC3: --retry-after=<n> form is accepted', async () => {
-    const result = await runCliInSandbox(['halt', '--reason=quota', '--retry-after=45', '--json'], {
+    const result = await runHaltSandbox(['halt', '--reason=quota', '--retry-after=45', '--json'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -305,7 +275,7 @@ describe('codeloop halt (issue #220)', () => {
   });
 
   test('AC3: absent --retry-after falls back to the estimated default window', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--json'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota', '--json'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -319,7 +289,7 @@ describe('codeloop halt (issue #220)', () => {
   for (const bad of ['abc', '-5', '1.5', '9999999']) {
     test(`AC3: invalid --retry-after '${bad}' fails exit 1 with no mutation`, async () => {
       const before = seedState();
-      const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', bad], {
+      const result = await runHaltSandbox(['halt', '--reason', 'quota', '--retry-after', bad], {
         seed: before,
         env: { AGY_SUBAGENT: undefined }
       });
@@ -330,7 +300,7 @@ describe('codeloop halt (issue #220)', () => {
   }
 
   test('AC4: --json emits a single machine-readable document on stdout', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--json'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--json'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -344,7 +314,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC4: --dry-run resolves without writing state but still exits 2', async () => {
     const before = seedState();
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--dry-run', '--json'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota', '--dry-run', '--json'], {
       seed: before,
       env: { AGY_SUBAGENT: undefined }
     });
@@ -356,7 +326,7 @@ describe('codeloop halt (issue #220)', () => {
   });
 
   test('AC5: AGY_SUBAGENT=1 permits halt (no Zero Direct Root Mutation block)', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--dry-run'], {
+    const result = await runHaltSandbox(['halt', '--reason', 'quota', '--dry-run'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: '1' }
     });
@@ -472,7 +442,39 @@ describe('codeloop halt --issue (issue #225)', () => {
     }
   }
 
-  async function runCliInSandbox(
+
+  /** The canonical harness with this suite's task-checkpoint re-read shape. */
+  async function runHaltTaskSandbox(
+    args: readonly string[],
+    { seed = null, taskSeed = null, taskIssue = 999, env = {} }: any = {}
+  ): Promise<any> {
+    let rootState: Record<string, unknown> | any = null;
+    let taskState: Record<string, unknown> | any = null;
+    let taskBytes: string | null = null;
+    const result = await runCliInSandboxCanonical(args, {
+      env,
+      stripAnsi: true,
+      seed: (dir: string) => {
+        if (seed !== null) {
+          fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
+          fs.writeFileSync(stateFilePath(dir), JSON.stringify(seed));
+        }
+        if (taskSeed !== null) {
+          fs.mkdirSync(path.dirname(taskFilePath(dir, taskIssue)), { recursive: true });
+          fs.writeFileSync(taskFilePath(dir, taskIssue), JSON.stringify(taskSeed));
+        }
+      },
+      inspect: (dir: string) => {
+        rootState = readState(dir);
+        taskState = readTask(dir, taskIssue);
+        taskBytes = fs.existsSync(taskFilePath(dir, taskIssue))
+          ? fs.readFileSync(taskFilePath(dir, taskIssue), 'utf8')
+          : null;
+      }
+    });
+    return { ...result, rootState, taskState, taskBytes };
+  }
+  async function runCliInSandboxLocal(
     args: readonly string[],
     { seed = null, taskSeed = null, taskIssue = 999, env = {} }: any = {}
   ): Promise<any> {
@@ -533,7 +535,7 @@ describe('codeloop halt --issue (issue #225)', () => {
     }
   }
 
-  function seedTask(overrides: any = {}): any {
+  function seedTaskLocal(overrides: any = {}): any {
     const now = new Date().toISOString();
     return {
       version: '1.0.0',
@@ -549,8 +551,8 @@ describe('codeloop halt --issue (issue #225)', () => {
   }
 
   test('AC1: halt --issue 999 writes tasks/999.json with issue:999', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999'], {
-      taskSeed: seedTask(),
+    const result = await runHaltTaskSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999'], {
+      taskSeed: seedTaskLocal(),
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
@@ -561,8 +563,8 @@ describe('codeloop halt --issue (issue #225)', () => {
   });
 
   test('AC2: halt --issue 999 --json includes issue in output', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999', '--json'], {
-      taskSeed: seedTask(),
+    const result = await runHaltTaskSandbox(['halt', '--reason', 'quota', '--retry-after', '60', '--issue', '999', '--json'], {
+      taskSeed: seedTaskLocal(),
       env: { AGY_SUBAGENT: undefined }
     });
     assert.strictEqual(result.code, EXIT_CODE_QUOTA_EXHAUSTED);
@@ -573,8 +575,8 @@ describe('codeloop halt --issue (issue #225)', () => {
   });
 
   test('AC3: halt --issue 999 --dry-run writes nothing', async () => {
-    const before = seedTask();
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--issue', '999', '--dry-run', '--json'], {
+    const before = seedTaskLocal();
+    const result = await runHaltTaskSandbox(['halt', '--reason', 'quota', '--issue', '999', '--dry-run', '--json'], {
       taskSeed: before,
       env: { AGY_SUBAGENT: undefined }
     });
@@ -588,7 +590,7 @@ describe('codeloop halt --issue (issue #225)', () => {
   });
 
   test('AC4: halt without --issue keeps root checkpoint with issue:null', async () => {
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--json'], {
+    const result = await runHaltTaskSandbox(['halt', '--reason', 'quota', '--json'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });
@@ -648,7 +650,26 @@ describe('codeloop halt --issue (issue #225)', () => {
  * ONE: fail, before anything is read or written.
  */
 describe('codeloop halt rejects a garbage --issue token (#250)', () => {
-  async function runCliInSandbox(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
+
+  /** The canonical harness (garbage --issue variant): env cleanup + raw result. */
+  async function runHaltGarbageSandbox(args: readonly string[], { seed = null, env = {} } = {}): Promise<any> {
+    let rootState: Record<string, unknown> | any = null;
+    let taskExists: boolean | null = null;
+    const result = await runCliInSandboxCanonical(args, {
+      env,
+      stripAnsi: true,
+      seed: seed === null ? undefined : (dir: string) => {
+        fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
+        fs.writeFileSync(stateFilePath(dir), JSON.stringify(seed));
+      },
+      inspect: (dir: string) => {
+        rootState = readState(dir);
+        taskExists = fs.existsSync(path.join(dir, '.agyloop', 'tasks', '999.json'));
+      }
+    });
+    return { ...result, rootState, taskExists };
+  }
+  async function runCliInSandboxLocal(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
     const prevCwd = process.cwd();
     const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-garbage-'));
     const originalEnv: any = {};
@@ -702,7 +723,7 @@ describe('codeloop halt rejects a garbage --issue token (#250)', () => {
 
   test('T-B2: halt --issue 999abc exits 1 and writes nothing at all', async () => {
     const seed = seedState();
-    const result = await runCliInSandbox(['halt', '--reason', 'quota', '--issue', '999abc'], {
+    const result = await runHaltGarbageSandbox(['halt', '--reason', 'quota', '--issue', '999abc'], {
       seed,
       env: { AGY_SUBAGENT: undefined }
     });
@@ -714,7 +735,7 @@ describe('codeloop halt rejects a garbage --issue token (#250)', () => {
   });
 
   test('T-B2: status --issue 999abc exits 1 as well', async () => {
-    const result = await runCliInSandbox(['status', '--issue', '999abc'], {
+    const result = await runHaltGarbageSandbox(['status', '--issue', '999abc'], {
       seed: seedState(),
       env: { AGY_SUBAGENT: undefined }
     });

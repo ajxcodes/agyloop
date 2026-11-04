@@ -53,7 +53,7 @@ class WindowedExecutor {
   }
 }
 
-class RecordingGitHub {
+class GitHubGatewayDouble {
   public closed: number[] = [];
   public comments: { issueId: number; body: string }[] = [];
   public async fetchIssueStrict(issueId: number) {
@@ -69,7 +69,7 @@ class RecordingGitHub {
 
 function makeUseCase(total: number, options: { failPrList?: boolean } = {}) {
   const executor = new WindowedExecutor(total, options);
-  const github = new RecordingGitHub();
+  const github = new GitHubGatewayDouble();
   const useCase = new SyncUseCase(
     executor as any,
     github as any,

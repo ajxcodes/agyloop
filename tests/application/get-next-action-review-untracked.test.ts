@@ -40,7 +40,7 @@ const ACTIONLINT_COMMAND =
 import type { StateRepository } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null;
   public saveCallCount = 0;
 
@@ -66,7 +66,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-class MockConfigRepo {
+class ConfigRepositoryDouble {
   public config: any;
 
   constructor() {
@@ -103,7 +103,7 @@ class MockConfigRepo {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   resolvePlanFile(): any {
     return {
       planDir: `/repo/artifacts/plans/${ISSUE}-task`,
@@ -155,7 +155,7 @@ const UNREADABLE_DIFF: any = {
   rawStatus: ''
 };
 
-class FakeProbe {
+class DetectImplementationDiffDouble {
   public result: any;
   public calls: any[] = [];
 
@@ -195,11 +195,11 @@ function machineAtReview() {
 }
 
 function useCaseFor(snapshot: any, probe: any) {
-  const stateRepo = new MockStateRepo(snapshot);
+  const stateRepo = new StateRepositoryDouble(snapshot);
   const useCase = new GetNextActionUseCase(
     stateRepo,
-    new MockConfigRepo(),
-    new MockPlanGenerator(),
+    new ConfigRepositoryDouble(),
+    new PlanGeneratorDouble(),
     undefined,
     undefined,
     undefined,
@@ -217,7 +217,7 @@ function promptOf(result: any): string {
 
 describe('REVIEW dispatch names the untracked change set (issue #356)', () => {
   test('GU1: an untracked-only change is named, with a command that prints its full content', async () => {
-    const probe = new FakeProbe(UNTRACKED_ONLY_DIFF);
+    const probe = new DetectImplementationDiffDouble(UNTRACKED_ONLY_DIFF);
     const { useCase } = useCaseFor(machineAtReview().toSnapshot(), probe);
 
     const result = await useCase.execute({ workspaceDir: '/repo', issue: ISSUE });
@@ -234,11 +234,11 @@ describe('REVIEW dispatch names the untracked change set (issue #356)', () => {
   });
 
   test('GU2: with no probe the prompt is unchanged and the dispatch still happens', async () => {
-    const stateRepo = new MockStateRepo(machineAtReview().toSnapshot());
+    const stateRepo = new StateRepositoryDouble(machineAtReview().toSnapshot());
     const useCase = new GetNextActionUseCase(
       stateRepo,
-      new MockConfigRepo(),
-      new MockPlanGenerator()
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble()
     );
 
     const result = await useCase.execute({ workspaceDir: '/repo', issue: ISSUE });
@@ -250,7 +250,7 @@ describe('REVIEW dispatch names the untracked change set (issue #356)', () => {
   });
 
   test('GU3: an unreadable tree fails closed — no section, dispatch still happens', async () => {
-    const probe = new FakeProbe(UNREADABLE_DIFF);
+    const probe = new DetectImplementationDiffDouble(UNREADABLE_DIFF);
     const { useCase } = useCaseFor(machineAtReview().toSnapshot(), probe);
 
     const result = await useCase.execute({ workspaceDir: '/repo', issue: ISSUE });
@@ -261,7 +261,7 @@ describe('REVIEW dispatch names the untracked change set (issue #356)', () => {
   });
 
   test('GU4: an empty untracked list with a tracked change renders no section', async () => {
-    const probe = new FakeProbe(TRACKED_ONLY_DIFF);
+    const probe = new DetectImplementationDiffDouble(TRACKED_ONLY_DIFF);
     const { useCase } = useCaseFor(machineAtReview().toSnapshot(), probe);
 
     const result = await useCase.execute({ workspaceDir: '/repo', issue: ISSUE });
@@ -272,9 +272,9 @@ describe('REVIEW dispatch names the untracked change set (issue #356)', () => {
 
   test('GU5: the dispatch measures exactly once and never names a staging command', async () => {
     const cases = [
-      { probe: new FakeProbe(UNTRACKED_ONLY_DIFF), label: 'untracked-only' },
-      { probe: new FakeProbe(TRACKED_ONLY_DIFF), label: 'tracked-only' },
-      { probe: new FakeProbe(UNREADABLE_DIFF), label: 'unreadable' }
+      { probe: new DetectImplementationDiffDouble(UNTRACKED_ONLY_DIFF), label: 'untracked-only' },
+      { probe: new DetectImplementationDiffDouble(TRACKED_ONLY_DIFF), label: 'tracked-only' },
+      { probe: new DetectImplementationDiffDouble(UNREADABLE_DIFF), label: 'unreadable' }
     ];
 
     for (const { probe, label } of cases) {

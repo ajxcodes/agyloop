@@ -63,7 +63,7 @@ import type {
 } from '../../src/ports';
 import type { AiReviewReport as AiReviewReportType } from '../../src/domain';
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: any = null;
 
   constructor(initialSnapshot: any = null) {
@@ -87,7 +87,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public loadConfig(): AgyLoopConfig {
     return DEFAULT_CONFIG;
   }
@@ -101,7 +101,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public updateSummaryLog(): boolean {
     return true;
   }
@@ -136,7 +136,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 }
 
-class MockStandardsRepository implements StandardsRepository {
+class StandardsRepositoryDouble implements StandardsRepository {
   public loadStandards(): string | null {
     return '# Standards';
   }
@@ -211,10 +211,10 @@ AC_EVIDENCE:
 `;
 
 describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () => {
-  let stateRepo: MockStateRepository;
-  let configRepo: MockConfigRepository;
-  let planGenerator: MockPlanGenerator;
-  let standardsRepo: MockStandardsRepository;
+  let stateRepo: StateRepositoryDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
+  let standardsRepo: StandardsRepositoryDouble;
   let critique: CleanCritique;
 
   beforeEach(() => {
@@ -222,10 +222,10 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
       stage: new Stage('REVIEW'),
       issue: new IssueNumber(269)
     });
-    stateRepo = new MockStateRepository(initialSm.toSnapshot());
-    configRepo = new MockConfigRepository();
-    planGenerator = new MockPlanGenerator();
-    standardsRepo = new MockStandardsRepository();
+    stateRepo = new StateRepositoryDouble(initialSm.toSnapshot());
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
+    standardsRepo = new StandardsRepositoryDouble();
     critique = new CleanCritique();
   });
 
@@ -354,7 +354,7 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     sm.transition(STAGE_QUALITY_GATE);
     sm.transition(STAGE_REVIEW);
     sm.transition(STAGE_COMMIT);
-    stateRepo = new MockStateRepository(sm.toSnapshot());
+    stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
 
@@ -377,7 +377,7 @@ describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () =>
     sm.transition(STAGE_QUALITY_GATE);
     sm.transition(STAGE_REVIEW);
     sm.transition(STAGE_COMMIT);
-    stateRepo = new MockStateRepository(sm.toSnapshot());
+    stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await buildUseCase().execute({ reviewOutput: CHANGES_REQUESTED_BLOCK });
 

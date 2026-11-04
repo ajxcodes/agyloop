@@ -25,6 +25,8 @@ const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'codeloop.js');
 const { runCli, formatStageBadge } = require('../../dist/presentation/cli');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 const {
   shouldColorize,
   paint,
@@ -33,14 +35,17 @@ const {
 
 const SEEDED_AT = '2026-10-01T00:00:00.000Z';
 
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-color-policy-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: seed'], { cwd: dir, stdio: 'ignore' });
+function makeColorPolicySandbox(): string {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'codeloop-color-policy-',
+    dirName: '',
+    gitignore: false,
+    initialCommit: 'chore: seed',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
+    }
+  });
+  const dir = sandbox.dir;
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
   return dir;
 }
@@ -94,35 +99,10 @@ function countEsc(text: string): number {
   return (text.match(/\x1b/g) ?? []).length;
 }
 
-async function runCliIn(
-  dir: string,
-  args: readonly string[]
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
 describe('T9.1: a piped human report carries no ESC byte (AC-3.2/3.3)', () => {
   test('status, next and worktree list are escape-free when piped', () => {
-    const dir = makeSandbox();
+    const dir = makeColorPolicySandbox();
     try {
       seedRoot(dir, { currentStage: 'COMPLETED' });
 
@@ -148,7 +128,7 @@ describe('T9.1: a piped human report carries no ESC byte (AC-3.2/3.3)', () => {
 
 describe('T9.3: NO_COLOR and TERM=dumb are honoured (AC-3.1/3.2)', () => {
   test('NO_COLOR=1 status and TERM=dumb status emit zero ESC bytes', () => {
-    const dir = makeSandbox();
+    const dir = makeColorPolicySandbox();
     try {
       seedRoot(dir, { currentStage: 'COMPLETED' });
 
@@ -227,7 +207,7 @@ describe('T9.2: one colour policy decides every render (AC-3.1/3.3)', () => {
   });
 
   test('an in-process TTY-attached render colours; NO_COLOR, TERM=dumb and a pipe go plain', async () => {
-    const dir = makeSandbox();
+    const dir = makeColorPolicySandbox();
     const originalTTY = process.stdout.isTTY;
     const originalTerm = process.env.TERM;
     const originalNoColor = process.env.NO_COLOR;
@@ -239,25 +219,25 @@ describe('T9.2: one colour policy decides every render (AC-3.1/3.3)', () => {
       // TTY-attached → coloured (the control that keeps the plain assertions
       // above from passing vacuously).
       process.stdout.isTTY = true;
-      const ttyRun = await runCliIn(dir, ['status']);
+      const ttyRun = await runCliInSandboxCanonical(['status'], { dir: dir, forceTty: false });
       assert.strictEqual(ttyRun.code, 0, ttyRun.stderr);
       assert.ok(countEsc(ttyRun.stdout) > 0, `a TTY render must colour:\n${ttyRun.stdout}`);
 
       // NO_COLOR present, ANY value, on a TTY → plain.
       process.env.NO_COLOR = '1';
-      const noColorRun = await runCliIn(dir, ['status']);
+      const noColorRun = await runCliInSandboxCanonical(['status'], { dir: dir, forceTty: false });
       assert.strictEqual(countEsc(noColorRun.stdout), 0, 'ESC under NO_COLOR on a TTY');
       delete process.env.NO_COLOR;
 
       // TERM=dumb on a TTY → plain.
       process.env.TERM = 'dumb';
-      const dumbRun = await runCliIn(dir, ['status']);
+      const dumbRun = await runCliInSandboxCanonical(['status'], { dir: dir, forceTty: false });
       assert.strictEqual(countEsc(dumbRun.stdout), 0, 'ESC under TERM=dumb on a TTY');
       process.env.TERM = 'xterm-256color';
 
       // Piped → plain, even with a clean env.
       process.stdout.isTTY = false;
-      const pipeRun = await runCliIn(dir, ['status']);
+      const pipeRun = await runCliInSandboxCanonical(['status'], { dir: dir, forceTty: false });
       assert.strictEqual(countEsc(pipeRun.stdout), 0, 'ESC on a pipe');
       assert.ok(pipeRun.stdout.includes('Current Stage'), pipeRun.stdout);
     } finally {
@@ -279,7 +259,7 @@ describe('T9.2: one colour policy decides every render (AC-3.1/3.3)', () => {
 
 describe('T9.4: the #315 EPIPE contract survives the colour change (AC-3.2)', () => {
   test('status piped into a closed consumer exits 0 with no EPIPE', async () => {
-    const dir = makeSandbox();
+    const dir = makeColorPolicySandbox();
     try {
       seedLongHistory(dir, 2_000);
       const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(

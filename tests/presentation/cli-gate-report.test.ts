@@ -1,3 +1,16 @@
+/** The canonical task seed with this suite's stage shape. */
+function seedStageCheckpoint(sandbox: string, stage: string): string {
+  const now = new Date().toISOString();
+  return seedTask(sandbox, {
+    issue: ISSUE,
+    currentStage: stage,
+    createdAt: now,
+    updatedAt: now,
+    history: [{ stage, timestamp: now }],
+    totalHumanWaitMs: 0
+  });
+}
+
 /**
  * agyloop - `gate-report` is the gate evidence channel (issue #284, AC1)
  *
@@ -14,6 +27,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPathLocal } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -37,79 +53,25 @@ const VALID_BLOCK = `${GATE_REPORT_JSON_MARKER}
 
 interface Sandbox {
   readonly dir: string;
-  readonly checkpointPath: string;
+  readonly checkpointPathLocal: string;
 }
 
-function seedCheckpoint(sandbox: string, stage: string): string {
-  const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const now = new Date().toISOString();
-  const file = path.join(tasksDir, `${ISSUE}.json`);
-  fs.writeFileSync(
-    file,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: stage,
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage, timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        totalHumanWaitMs: 0
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-  return file;
+
+function makeGateReportSandbox(stage: string): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-gate-report-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
+  const checkpointPathLocal = seedStageCheckpoint(dir, stage);
+  return { dir, checkpointPathLocal };
 }
 
-function makeSandbox(stage: string): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-gate-report-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
-  const checkpointPath = seedCheckpoint(dir, stage);
-  return { dir, checkpointPath };
-}
-
-async function runIn(sandbox: Sandbox, args: string[]): Promise<{ code: any; stdout: string; stderr: string }> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalSubagent = process.env.AGY_SUBAGENT;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(sandbox.dir);
-    delete process.env.AGY_SUBAGENT;
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-  }
-}
 
 function evidencePath(sandbox: Sandbox): string {
   return path.join(sandbox.dir, '.agyloop', 'tasks', `${ISSUE}.gate.json`);
@@ -117,18 +79,18 @@ function evidencePath(sandbox: Sandbox): string {
 
 describe('codeloop gate-report (issue #284)', () => {
   test('happy path: records the block, prints exactly what it recorded, and does not advance', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `expected exit 0, got:\n${run.stderr}`);
       assert.strictEqual(
@@ -148,7 +110,7 @@ describe('codeloop gate-report (issue #284)', () => {
       assert.strictEqual(recorded.durationMs, 196000);
 
       // #297 invariant: filing evidence NEVER advances the checkpoint.
-      const after = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const after = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
       assert.strictEqual(after, before, 'gate-report must not modify the checkpoint');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -156,17 +118,17 @@ describe('codeloop gate-report (issue #284)', () => {
   });
 
   test('--json prints one document', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json',
         '--json'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
 
       const payload = JSON.parse(run.stdout);
@@ -181,18 +143,18 @@ describe('codeloop gate-report (issue #284)', () => {
   });
 
   test('refuses when the checkpoint is not at the gate, and writes NO file', async () => {
-    const sandbox = makeSandbox('IMPLEMENT');
+    const sandbox = makeGateReportSandbox('IMPLEMENT');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(
@@ -200,14 +162,14 @@ describe('codeloop gate-report (issue #284)', () => {
         `the refusal must name the stage, got:\n${run.stderr}`
       );
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'nothing may be persisted on refusal');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('refuses a self-contradictory block (PASSED with failing tests) and writes NO file', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(
         path.join(sandbox.dir, 'gate.json'),
@@ -215,13 +177,13 @@ describe('codeloop gate-report (issue #284)', () => {
         'utf8'
       );
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(run.stderr.includes('testsFailed'), `the refusal must name the field, got:\n${run.stderr}`);
@@ -232,7 +194,7 @@ describe('codeloop gate-report (issue #284)', () => {
   });
 
   test('#297 guard: a dispatched subagent may not file its own gate evidence', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     const prevCwd = process.cwd();
     const originalLog = console.log;
     const originalError = console.error;
@@ -259,22 +221,22 @@ describe('codeloop gate-report (issue #284)', () => {
   });
 
   test('--dry-run validates and prints, but writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
-      const run = await runIn(sandbox, [
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json',
         '--dry-run'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(run.stdout.includes('[dry-run] Would record gate evidence'), run.stdout);
       assert.ok(!fs.existsSync(evidencePath(sandbox)));
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
@@ -283,18 +245,18 @@ describe('codeloop gate-report (issue #284)', () => {
 
 describe('gate-report stage guard and Next line (issue #311)', () => {
   test('#311 C1: filing at REVIEW is refused, writes nothing, and prints no Next line', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeGateReportSandbox('REVIEW');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(
@@ -316,7 +278,7 @@ describe('gate-report stage guard and Next line (issue #311)', () => {
         `the walk-back must end with the filing command, got:\n${run.stderr}`
       );
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a refused filing must write no evidence file');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
       assert.ok(!run.stdout.includes('Next:'), `no Next line at REVIEW, got:\n${run.stdout}`);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -324,17 +286,17 @@ describe('gate-report stage guard and Next line (issue #311)', () => {
   });
 
   test('#327: filing at COMMIT is refused with the single direct gate hop', async () => {
-    const sandbox = makeSandbox('COMMIT');
+    const sandbox = makeGateReportSandbox('COMMIT');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(run.stderr.includes('Gate evidence refused'), run.stderr);
@@ -353,21 +315,21 @@ describe('gate-report stage guard and Next line (issue #311)', () => {
   });
 
   test('#311 C2: the Next line printed at QUALITY_GATE is a legal transition that consumes the evidence', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), VALID_BLOCK, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
 
       const line =
-        run.stdout.split('\n').find((entry) => entry.startsWith('  Next: ')) ?? '';
+        run.stdout.split('\n').find((entry: string) => entry.startsWith('  Next: ')) ?? '';
       assert.ok(line.length > 0, `the filing at QUALITY_GATE must advise the next step, got:\n${run.stdout}`);
       assert.strictEqual(line, `  Next: codeloop transition ${STAGE_REVIEW} --issue ${ISSUE}`);
 
@@ -378,13 +340,13 @@ describe('gate-report stage guard and Next line (issue #311)', () => {
         `${target} must be a legal exit from ${STAGE_QUALITY_GATE}`
       );
 
-      const advance = await runIn(sandbox, ['transition', target, '--issue', String(ISSUE)]);
+      const advance = await runCliInSandboxCanonical(['transition', target, '--issue', String(ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(
         advance.code,
         EXIT_CODE_SUCCESS,
         `the printed command must be legal, got:\n${advance.stderr}`
       );
-      const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+      const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'));
       assert.strictEqual(checkpoint.currentStage, STAGE_REVIEW);
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'the ingested evidence must be consumed');
       const last = checkpoint.history[checkpoint.history.length - 1];
@@ -426,17 +388,17 @@ describe('the gate prompt example files through the real CLI (issue #338)', () =
   }
 
   test('#338 T3.1: the documented shape is the ACCEPTED shape', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), filledExample(), 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.txt'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `expected exit 0, got:\n${run.stderr}`);
       assert.ok(
@@ -458,7 +420,7 @@ describe('the gate prompt example files through the real CLI (issue #338)', () =
   });
 
   test('#338 T3.2: the shapes the prompt now forbids still fail, naming the field', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       const naturalButUndocumented = `${GATE_REPORT_JSON_MARKER}
 { "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",
@@ -467,13 +429,13 @@ describe('the gate prompt example files through the real CLI (issue #338)', () =
   "smokeChecks": [{ "check": 1, "planLine": 666, "status": "PASSED" }] }
 `;
       fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), naturalButUndocumented, 'utf8');
-      const rejected = await runIn(sandbox, [
+      const rejected = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.txt'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(rejected.code, EXIT_CODE_FAILURE);
       assert.ok(rejected.stderr.includes('smokeChecks.id'), rejected.stderr);
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a rejected block writes no evidence');
@@ -485,13 +447,13 @@ describe('the gate prompt example files through the real CLI (issue #338)', () =
   "notRun": ["act: no CI-workflow simulation in scope"] }
 `;
       fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), bareStrings, 'utf8');
-      const rejectedNotRun = await runIn(sandbox, [
+      const rejectedNotRun = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.txt'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(rejectedNotRun.code, EXIT_CODE_FAILURE);
       assert.ok(rejectedNotRun.stderr.includes('notRun'), rejectedNotRun.stderr);
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a rejected block writes no evidence');
@@ -521,9 +483,9 @@ describe('gate-report declared-command coverage (issue #408)', () => {
       ),
       'utf8'
     );
-    const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'));
     checkpoint.planDir = PLAN_DIR;
-    fs.writeFileSync(sandbox.checkpointPath, JSON.stringify(checkpoint, null, 2), 'utf8');
+    fs.writeFileSync(sandbox.checkpointPathLocal, JSON.stringify(checkpoint, null, 2), 'utf8');
   }
 
   /** Writes a full valid `GATE_REPORT_JSON` block and returns its path. */
@@ -560,17 +522,17 @@ describe('gate-report declared-command coverage (issue #408)', () => {
   }
 
   test('T-CLI-1: full coverage over four declared targets files the evidence', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithTargets(sandbox, FOUR_TARGETS);
       writeReport(sandbox, { executedCommands: FOUR_TARGETS });
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(run.stdout.includes('✓ Gate evidence recorded'), run.stdout);
@@ -581,44 +543,44 @@ describe('gate-report declared-command coverage (issue #408)', () => {
   });
 
   test('T-CLI-2: one missing command is refused, naming the other three', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithTargets(sandbox, FOUR_TARGETS);
       writeReport(sandbox, { executedCommands: ['npm run build'] });
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       for (const command of ['npm run typecheck', 'npm run lint', 'npm test']) {
         assert.ok(run.stderr.includes(command), `stderr must name ${command}:\n${run.stderr}`);
       }
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a partial report writes no evidence');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('T-CLI-3: empty coverage is refused, naming all four commands', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithTargets(sandbox, FOUR_TARGETS);
       writeReport(sandbox, { executedCommands: [], commandResults: [] });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       for (const command of FOUR_TARGETS) {
@@ -631,16 +593,16 @@ describe('gate-report declared-command coverage (issue #408)', () => {
   });
 
   test('T-CLI-4: a plan with no targets heading keeps today’s behaviour', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeReport(sandbox, { executedCommands: ['npm run build'] });
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(fs.existsSync(evidencePath(sandbox)));
@@ -650,20 +612,20 @@ describe('gate-report declared-command coverage (issue #408)', () => {
   });
 
   test('T-CLI-5: --dry-run reports the same missing commands and writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithTargets(sandbox, FOUR_TARGETS);
       writeReport(sandbox, { executedCommands: ['npm run build'] });
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json',
         '--dry-run'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       const output = `${run.stdout}\n${run.stderr}`;
@@ -672,7 +634,7 @@ describe('gate-report declared-command coverage (issue #408)', () => {
         assert.ok(output.includes(command), `the dry run must name ${command}:\n${output}`);
       }
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a dry run writes no evidence');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
       assert.ok(!output.includes('Next:'), `a refused dry run prints no Next line:\n${output}`);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
@@ -680,18 +642,18 @@ describe('gate-report declared-command coverage (issue #408)', () => {
   });
 
   test('T-CLI-6: a FAILED report is not coverage-checked (only PASSED certifies)', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithTargets(sandbox, FOUR_TARGETS);
       writeReport(sandbox, { verdict: 'FAILED', executedCommands: ['npm run build'] });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(fs.existsSync(evidencePath(sandbox)));
@@ -738,7 +700,7 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
   }
 
   test('F-Z1: the zero-test block is refused, names the command and writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeBlock(sandbox, {
         testsStatus: 'PASSED (0 passed)',
@@ -746,29 +708,29 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
         testsFailed: 0,
         executedCommands: ['npm test']
       });
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(run.stderr.includes('npm test'), run.stderr);
       assert.ok(run.stderr.includes('testsPassed'), run.stderr);
       assert.ok(run.stderr.includes('Nothing was written'), run.stderr);
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a zero-test block writes no evidence');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('F-Z2: the same block on --dry-run reports the refusal and writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeBlock(sandbox, {
         testsStatus: 'PASSED (0 passed)',
@@ -777,14 +739,14 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
         executedCommands: ['npm test']
       });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json',
         '--dry-run'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       const output = `${run.stdout}\n${run.stderr}`;
@@ -797,7 +759,7 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
   });
 
   test('F-Z3: a build-only PASSED block with zero tests is recorded', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeBlock(sandbox, {
         testsStatus: 'PASSED (0 passed)',
@@ -806,13 +768,13 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
         executedCommands: ['npm run build']
       });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(fs.existsSync(evidencePath(sandbox)));
@@ -822,18 +784,18 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
   });
 
   test('F-Z4: a positive aggregate with a zero per-command count is refused', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       const halfFilled = filledExampleBlockWithoutCommandCount();
       fs.writeFileSync(path.join(sandbox.dir, 'gate.txt'), halfFilled, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.txt'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE, run.stderr);
       assert.ok(run.stderr.includes('npm test'), run.stderr);
@@ -859,22 +821,22 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
   }
 
   test('F-Z5: a null-count block is refused, names the command and the token, and writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeBlock(sandbox, {
         testsStatus: 'PASSED',
         testsPassed: null,
         executedCommands: ['npm test']
       });
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(run.stderr.includes('npm test'), run.stderr);
@@ -882,14 +844,14 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
       assert.ok(run.stderr.includes('TEST_METRICS'), run.stderr);
       assert.ok(run.stderr.includes('Nothing was written'), run.stderr);
       assert.ok(!fs.existsSync(evidencePath(sandbox)), 'a null-count block writes no evidence');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('F-Z6: the same null-count block on --dry-run reports the refusal and writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeBlock(sandbox, {
         testsStatus: 'PASSED',
@@ -897,14 +859,14 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
         executedCommands: ['npm test']
       });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json',
         '--dry-run'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       const output = `${run.stdout}\n${run.stderr}`;
@@ -917,7 +879,7 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
   });
 
   test('F-Z7: a build-only PASSED block with a null count is recorded', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       writeBlock(sandbox, {
         testsStatus: 'PASSED',
@@ -925,13 +887,13 @@ describe('gate-report zero-test evidence floor (issue #412)', () => {
         executedCommands: ['npm run build']
       });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(fs.existsSync(evidencePath(sandbox)));
@@ -958,9 +920,9 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
       blocks.push(`#### Check ${n} — check ${n}`, '', '```bash', `echo ok-${n}`, '```', '');
     }
     fs.writeFileSync(path.join(planDir, 'implementation_plan.md'), blocks.join('\n'), 'utf8');
-    const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+    const checkpoint = JSON.parse(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'));
     checkpoint.planDir = PLAN_DIR;
-    fs.writeFileSync(sandbox.checkpointPath, JSON.stringify(checkpoint, null, 2), 'utf8');
+    fs.writeFileSync(sandbox.checkpointPathLocal, JSON.stringify(checkpoint, null, 2), 'utf8');
   }
 
   function writeSmokeReport(
@@ -1002,18 +964,18 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
   }
 
   test('SC-CLI-1: a PASSED NOT_DECLARED zero-check report is refused, naming all four ids', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithSmoke(sandbox);
       writeSmokeReport(sandbox, { smokeProtocol: 'NOT_DECLARED', smokeChecks: [] });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(
@@ -1030,46 +992,46 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
   });
 
   test('SC-CLI-2: a subset report is refused, naming check-2, check-3 and check-4', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithSmoke(sandbox);
       writeSmokeReport(sandbox, {
         smokeProtocol: 'PASSED',
         smokeChecks: [{ id: 'check-1', label: 'check 1', passed: true }]
       });
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       for (const n of [2, 3, 4]) {
         assert.ok(run.stderr.includes(`check-${n}`), `stderr must name check-${n}:\n${run.stderr}`);
       }
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('SC-CLI-3: a fully covering report files the evidence', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithSmoke(sandbox);
       writeSmokeReport(sandbox, { smokeProtocol: 'PASSED', smokeChecks: fourChecks() });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(fs.existsSync(evidencePath(sandbox)));
@@ -1079,19 +1041,19 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
   });
 
   test('SC-CLI-4: --dry-run reports the same smoke refusal and writes nothing', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithSmoke(sandbox);
       writeSmokeReport(sandbox, { smokeProtocol: 'PASSED', smokeChecks: [fourChecks()[0]] });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json',
         '--dry-run'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(run.stderr.includes('[dry-run]'), run.stderr);
@@ -1103,7 +1065,7 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
   });
 
   test('SC-CLI-5: a FAILED report with zero checks still files', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithSmoke(sandbox);
       writeSmokeReport(sandbox, {
@@ -1112,13 +1074,13 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
         smokeChecks: []
       });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, run.stderr);
       assert.ok(fs.existsSync(evidencePath(sandbox)));
@@ -1128,7 +1090,7 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
   });
 
   test('SC-CLI-6: a re-labelled check id is refused as unknown', async () => {
-    const sandbox = makeSandbox('QUALITY_GATE');
+    const sandbox = makeGateReportSandbox('QUALITY_GATE');
     try {
       seedPlanWithSmoke(sandbox);
       writeSmokeReport(sandbox, {
@@ -1141,13 +1103,13 @@ describe('gate-report declared smoke protocol coverage (issue #444)', () => {
         ]
       });
 
-      const run = await runIn(sandbox, [
+      const run = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE);
       assert.ok(run.stderr.includes('smoke-444-check-2'), run.stderr);

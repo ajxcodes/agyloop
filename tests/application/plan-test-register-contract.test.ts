@@ -1,3 +1,7 @@
+function runGit(cwd: string, args: string[]): string {
+  return String(gitIn(cwd, args, { stdio: 'pipe', encoding: 'utf8' })).trim();
+}
+
 /**
  * agyloop - Test Register contract (issue #432, TR-15..TR-20)
  */
@@ -24,6 +28,7 @@ const {
   findTestIdCollisions
 } = require('../../dist/domain');
 const { FileSourceReader } = require('../../dist/infrastructure');
+const { gitIn } = require('../helpers/sandbox.ts');
 
 const SOURCE = [
   "const assert = require('node:assert');",
@@ -153,9 +158,6 @@ function guard(content: string): void {
 
 const GIT_AVAILABLE = spawnSync('git', ['--version']).status === 0;
 
-function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' });
-}
 
 interface GitFixture {
   /** The mkdtemp root; removing it removes the repository and the worktree. */
@@ -179,9 +181,9 @@ function makeGitFixture(): GitFixture {
   const repo = path.join(root, 'repo');
   const wt = path.join(root, 'wt');
   fs.mkdirSync(path.join(repo, 'tests'), { recursive: true });
-  git(repo, ['init', '-q', '-b', 'main']);
-  git(repo, ['config', 'user.email', 'test@example.com']);
-  git(repo, ['config', 'user.name', 'Test']);
+  runGit(repo, ['init', '-q', '-b', 'main']);
+  runGit(repo, ['config', 'user.email', 'test@example.com']);
+  runGit(repo, ['config', 'user.name', 'Test']);
   fs.writeFileSync(
     path.join(repo, 'tests', 'base.test.ts'),
     [
@@ -191,9 +193,9 @@ function makeGitFixture(): GitFixture {
       '});'
     ].join('\n')
   );
-  git(repo, ['add', '-A']);
-  git(repo, ['commit', '-qm', 'base: the pre-change tree']);
-  git(repo, ['worktree', 'add', '-q', '-b', 'task/489', wt, 'main']);
+  runGit(repo, ['add', '-A']);
+  runGit(repo, ['commit', '-qm', 'base: the pre-change tree']);
+  runGit(repo, ['worktree', 'add', '-q', '-b', 'task/489', wt, 'main']);
   fs.writeFileSync(
     path.join(wt, 'tests', 'added.test.ts'),
     [

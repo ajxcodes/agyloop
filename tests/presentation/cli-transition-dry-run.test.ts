@@ -26,6 +26,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const SEEDED_AT = '2026-10-14T12:00:00.000Z';
@@ -36,9 +38,6 @@ interface CaptureResult {
   readonly stderr: string;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 /** Seeds a checkpoint at INITIALIZED, which is where a fresh workspace starts. */
 function seedInitialState(dir: string): void {
@@ -84,79 +83,16 @@ function seedPlanModeState(dir: string): void {
  * `NODE_TEST_CONTEXT` is set by the runner, which is what makes the `/tmp` write
  * guard in `file-state-repository.ts:164-175` permit this sandbox.
  */
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void,
-  inspect?: (dir: string) => void
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-transition-dry-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    if (seed) {
-      seed(tempDir);
-    }
-    process.chdir(tempDir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await Promise.race([
-      runCli(args),
-      // Hang guard: a hung suite is worse than a red one.
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`HANG: runCli(${JSON.stringify(args)}) never settled.`)),
-          20000
-        );
-        if (typeof timer.unref === 'function') {
-          timer.unref();
-        }
-      })
-    ]);
-
-    if (inspect) {
-      // Runs while the sandbox still exists, so on-disk assertions belong here
-      // rather than after `finally` deletes the tree.
-      inspect(tempDir);
-    }
-
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 describe('codeloop transition --dry-run', () => {
   test('writes no checkpoint at all (headline AC)', async () => {
     let stateExists = true;
     let tasksExist = true;
 
-    const result = await runCliInSandbox(
-      ['transition', 'DISCOVERY', '--dry-run'],
-      undefined,
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['transition', 'DISCOVERY', '--dry-run'], { seed: undefined, inspect: (dir: string) => {
         stateExists = fs.existsSync(path.join(dir, '.agyloop', 'state.json'));
         tasksExist = fs.existsSync(path.join(dir, '.agyloop', 'tasks'));
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(!stateExists, 'a dry run must not create .agyloop/state.json');
@@ -168,7 +104,7 @@ describe('codeloop transition --dry-run', () => {
   test('forwards the flag (explicit regression, headline AC)', async () => {
     // Ties the presentation change to the behaviour change: reverting the single
     // `dryRun: options.dryRun` line in cli.ts reddens BOTH this and the test above.
-    const result = await runCliInSandbox(['transition', 'DISCOVERY', '--dry-run']);
+    const result = await runCliInSandboxCanonical(['transition', 'DISCOVERY', '--dry-run'], { stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(result.stdout.includes('[dry-run] Transitioned to'), result.stdout);
@@ -176,15 +112,11 @@ describe('codeloop transition --dry-run', () => {
   });
 
   test('without --dry-run the checkpoint is still written (negative control)', async () => {
-    const result = await runCliInSandbox(
-      ['transition', 'DISCOVERY'],
-      undefined,
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['transition', 'DISCOVERY'], { seed: undefined, inspect: (dir: string) => {
         const statePath = path.join(dir, '.agyloop', 'state.json');
         assert.ok(fs.existsSync(statePath), 'a real transition must persist its checkpoint');
         assert.strictEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).currentStage, 'DISCOVERY');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(result.stdout.includes('✓ Transitioned to'), result.stdout);
@@ -195,16 +127,12 @@ describe('codeloop transition --dry-run', () => {
     let before = '';
     let after: string | null = null;
 
-    const result = await runCliInSandbox(
-      ['transition', 'DISCOVERY', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['transition', 'DISCOVERY', '--dry-run'], { seed: (dir: string) => {
         seedInitialState(dir);
         before = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.strictEqual(after, before, 'a dry run must not rewrite the checkpoint');
@@ -214,14 +142,10 @@ describe('codeloop transition --dry-run', () => {
     let stage = '';
     let worktreesExist = true;
 
-    const result = await runCliInSandbox(
-      ['transition', 'IMPLEMENT'],
-      seedPlanModeState,
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['transition', 'IMPLEMENT'], { seed: seedPlanModeState, inspect: (dir: string) => {
         stage = JSON.parse(fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8')).currentStage;
         worktreesExist = fs.existsSync(path.join(dir, '.worktrees'));
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 1);
     assert.ok(/Invalid lifecycle transition/.test(result.stderr), result.stderr);

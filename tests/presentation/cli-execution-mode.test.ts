@@ -22,20 +22,26 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { StateMachine } = require('../../dist/domain');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+
+function makeExecutionModeSandbox(): string {
+  return makeSandbox({
+    prefix: 'codeloop-execution-mode-',
+    dirName: '',
+    gitignore: false,
+    seed: (d: string) => {
+      fs.writeFileSync(path.join(d, 'README.md'), 'x\n', 'utf8');
+      fs.mkdirSync(path.join(d, '.home'), { recursive: true });
+    },
+    initialCommit: 'chore: seed'
+  }).dir;
+}
+
+
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-execution-mode-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: seed'], { cwd: dir, stdio: 'ignore' });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  return dir;
-}
 
 /**
  * Seeds a task checkpoint whose mode is the one `codeloop plan` sets, walked
@@ -52,47 +58,15 @@ function seedPlanModeWalk(dir: string, issue: number, through: readonly string[]
   fs.writeFileSync(path.join(tasksDir, `${issue}.json`), JSON.stringify(sm.toSnapshot(), null, 2));
 }
 
-async function runCliIn(
-  dir: string,
-  args: readonly string[]
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const { runCli } = require('../../dist/presentation/cli');
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinTTY = process.stdin.isTTY;
-  const originalStdoutTTY = process.stdout.isTTY;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinTTY;
-    process.stdout.isTTY = originalStdoutTTY;
-  }
-}
 
 describe('item 11: the Execution Mode cell is truthful (AC-3.4/3.5)', () => {
   test('T10.2: a plan-started run that reached IMPLEMENT renders `standard`', async () => {
-    const dir = makeSandbox();
+    const dir = makeExecutionModeSandbox();
     try {
       const issue = 33952;
       seedPlanModeWalk(dir, issue, ['DISCOVERY', 'PLAN', 'APPROVAL', 'IMPLEMENT']);
 
-      const run = await runCliIn(dir, ['status', '--issue', String(issue)]);
+      const run = await runCliInSandboxCanonical(['status', '--issue', String(issue)], { dir: dir });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /Execution Mode: standard/, run.stdout);
@@ -103,7 +77,7 @@ describe('item 11: the Execution Mode cell is truthful (AC-3.4/3.5)', () => {
       // The Active Tasks matrix reads the SAME raw field.
       const matrixRow = run.stdout
         .split('\n')
-        .find((line) => line.startsWith(`#${issue} `));
+        .find((line: string) => line.startsWith(`#${issue} `));
       assert.ok(matrixRow, `the matrix must list the task:\n${run.stdout}`);
       assert.match(matrixRow!, /standard/, `the matrix Mode cell must say standard: ${matrixRow}`);
       assert.ok(!/\bplan\b/.test(matrixRow!), `no plan cell in the matrix row: ${matrixRow}`);
@@ -113,18 +87,18 @@ describe('item 11: the Execution Mode cell is truthful (AC-3.4/3.5)', () => {
   });
 
   test('T10.3: a plan-only run halted at APPROVAL still renders `plan` (no over-clear)', async () => {
-    const dir = makeSandbox();
+    const dir = makeExecutionModeSandbox();
     try {
       const issue = 33953;
       seedPlanModeWalk(dir, issue, ['DISCOVERY', 'PLAN', 'APPROVAL']);
 
-      const run = await runCliIn(dir, ['status', '--issue', String(issue)]);
+      const run = await runCliInSandboxCanonical(['status', '--issue', String(issue)], { dir: dir });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /Execution Mode: plan/, run.stdout);
       const matrixRow = run.stdout
         .split('\n')
-        .find((line) => line.startsWith(`#${issue} `));
+        .find((line: string) => line.startsWith(`#${issue} `));
       assert.ok(matrixRow, `the matrix must list the task:\n${run.stdout}`);
       assert.match(matrixRow!, /plan/, `the matrix must keep plan: ${matrixRow}`);
     } finally {

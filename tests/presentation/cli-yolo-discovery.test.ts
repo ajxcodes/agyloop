@@ -1,3 +1,16 @@
+/** The canonical harness with this suite's `persisted` snapshot read. */
+async function runYoloDiscoverySandbox(args: readonly string[], { env = {} } = {}): Promise<any> {
+  let persisted: Record<string, unknown> | null = null;
+  const result = await runCliInSandboxCanonical(args, {
+    env,
+    stripAnsi: true,
+    inspect: (dir: string) => {
+      persisted = readState(dir);
+    }
+  });
+  return { ...result, persisted };
+}
+
 /**
  * agyloop - YOLO DISCOVERY park e2e through runCli (issue #234)
  *
@@ -22,6 +35,7 @@ const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { EXIT_CODE_SUCCESS } = require('../../dist/domain');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
@@ -41,54 +55,9 @@ function readState(dir: string): any {
  * Runs runCli inside a throwaway cwd with captured console streams,
  * restoring cwd/env/console afterwards.
  */
-async function runCliInSandbox(args: readonly string[], { env = {} }: any = {}): Promise<any> {
-  const prevCwd = process.cwd();
-  const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-yolo-discovery-'));
-  const originalEnv: any = {};
-  for (const key of Object.keys(env)) {
-    originalEnv[key] = process.env[key];
-    if (env[key] === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = env[key];
-    }
-  }
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(tempDir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, ''),
-      persisted: readState(tempDir)
-    };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    for (const key of Object.keys(env)) {
-      if (originalEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = originalEnv[key];
-      }
-    }
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 async function runYolo(args: readonly string[]): Promise<any> {
-  return runCliInSandbox(args, { env: { AGY_SUBAGENT: undefined } });
+  return runYoloDiscoverySandbox(args, { env: { AGY_SUBAGENT: undefined } });
 }
 
 function assertParked(result: any): void {

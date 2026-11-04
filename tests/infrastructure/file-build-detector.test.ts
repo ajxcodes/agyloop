@@ -1,3 +1,4 @@
+const { gitStatus } = require('../helpers/sandbox.ts');
 /**
  * agyloop - FileBuildDetector Infrastructure Tests
  */
@@ -1057,12 +1058,13 @@ describe('Workflow lint composition (#369, was #368)', () => {
     }
   });
 
-  function git(args: string[]): any {
-    return spawnSync('git', args, { cwd: tempDir, encoding: 'utf8' });
+
+  function runGit(args: string[]): any {
+    return gitStatus(tempDir, args, { stdio: 'pipe' });
   }
 
-  function gitOk(args: string[]): string {
-    const result = git(args);
+  function runGitOk(args: string[]): string {
+    const result = runGit(args);
     assert.strictEqual(
       result.status,
       0,
@@ -1073,9 +1075,9 @@ describe('Workflow lint composition (#369, was #368)', () => {
 
   /** A real repo whose committed workflow file may be left MODIFIED. */
   function seedRepo(options: { modified?: boolean } = {}): void {
-    gitOk(['init', '-q']);
-    gitOk(['config', 'user.email', 'smoke@example.test']);
-    gitOk(['config', 'user.name', 'smoke']);
+    runGitOk(['init', '-q']);
+    runGitOk(['config', 'user.email', 'smoke@example.test']);
+    runGitOk(['config', 'user.name', 'smoke']);
     fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
     fs.writeFileSync(path.join(tempDir, '.github', 'workflows', 'ci.yml'), 'name: CI\n', 'utf8');
     fs.writeFileSync(
@@ -1083,8 +1085,8 @@ describe('Workflow lint composition (#369, was #368)', () => {
       JSON.stringify({ name: 'probe', scripts: { lint: 'eslint .' } }),
       'utf8'
     );
-    gitOk(['add', '-A']);
-    gitOk(['commit', '-qm', 'seed']);
+    runGitOk(['add', '-A']);
+    runGitOk(['commit', '-qm', 'seed']);
     if (options.modified !== false) {
       fs.appendFileSync(path.join(tempDir, '.github', 'workflows', 'ci.yml'), '# touched\n');
     }

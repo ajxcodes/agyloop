@@ -69,7 +69,7 @@ type ImplementationDiff = import('../../src').ImplementationDiff;
 type GateCommandReport = import('../../src').GateCommandReport;
 
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public current: StateMachineSnapshot | null;
   public saved: StateMachineSnapshot[] = [];
 
@@ -91,7 +91,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public options: Record<string, unknown>;
 
   constructor(options: Record<string, unknown> = {}) {
@@ -132,7 +132,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public updates: Array<{ summaryPath: string; updateData: SummaryUpdateData }> = [];
   public content = '# Test Plan';
   public digests: Array<string | null> = [];
@@ -189,7 +189,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 }
 
-class MockCommandExecutor implements CommandExecutorPort {
+class CommandExecutorDouble implements CommandExecutorPort {
   public responses: CommandExecutionResult[];
   public executed: Array<{ command: string; options?: CommandExecutionOptions }> = [];
 
@@ -217,7 +217,7 @@ type BuildDetectorPort = import('../../src').BuildDetectorPort;
 type DetectedProject = import('../../src').DetectedProject;
 type GateCommandDefinition = import('../../src').GateCommandDefinition;
 
-class MockBuildDetector implements BuildDetectorPort {
+class BuildDetectorDouble implements BuildDetectorPort {
   public detectedProject: DetectedProject;
   public commandsToResolve: readonly GateCommandDefinition[];
 
@@ -316,7 +316,7 @@ class MockBuildDetector implements BuildDetectorPort {
  * A detector whose plan says lint is mandatory while the resolved list omits
  * it: the gate's defence-in-depth preflight must refuse to run anything.
  */
-class LintMissingBuildDetector extends MockBuildDetector {
+class LintMissingBuildDetector extends BuildDetectorDouble {
   public async resolveCommandPlan(
     _workspaceDir: string,
     _config?: AgyLoopConfig,
@@ -338,7 +338,7 @@ class LintMissingBuildDetector extends MockBuildDetector {
  * A detector whose plan-sourced list carries a required workflow-lint
  * composition with no resolved command (#369): the gate must fail closed.
  */
-class CompositionMissingBuildDetector extends MockBuildDetector {
+class CompositionMissingBuildDetector extends BuildDetectorDouble {
   public async resolveCommandPlan(
     workspaceDir: string,
     config?: AgyLoopConfig,
@@ -370,10 +370,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -414,10 +414,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const saved: any[] = [];
     const gateReportRepo = {
@@ -495,10 +495,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor([
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble([
       {
         command: 'npm run typecheck',
         exitCode: 1,
@@ -547,10 +547,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor([
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble([
       {
         command: 'npm run typecheck',
         exitCode: 1,
@@ -588,10 +588,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_PLAN, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -624,10 +624,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -660,10 +660,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_QUALITY_GATE, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -688,10 +688,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_COMMIT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -716,10 +716,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_COMPLETED, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -744,10 +744,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor([
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble([
       {
         command: 'npm test -- --custom',
         exitCode: 0,
@@ -792,11 +792,11 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
-    const buildDetector = new MockBuildDetector();
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
+    const buildDetector = new BuildDetectorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -835,10 +835,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor([
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble([
       {
         command: 'npx playwright test',
         exitCode: 0,
@@ -884,13 +884,13 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository({
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble({
       gateCommands: ['echo from-config-override']
     });
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor();
-    const buildDetector = new MockBuildDetector();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble();
+    const buildDetector = new BuildDetectorDouble();
 
     const useCase = new RunQualityGateUseCase(
       stateRepo,
@@ -918,10 +918,10 @@ describe('RunQualityGateUseCase (Application Layer)', () => {
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     };
 
-    const stateRepo = new MockStateRepository(initialSnapshot);
-    const configRepo = new MockConfigRepository();
-    const planGenerator = new MockPlanGenerator();
-    const commandExecutor = new MockCommandExecutor([
+    const stateRepo = new StateRepositoryDouble(initialSnapshot);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGenerator = new PlanGeneratorDouble();
+    const commandExecutor = new CommandExecutorDouble([
       {
         command: 'npm test',
         exitCode: 1,
@@ -1008,10 +1008,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
         history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
       };
 
-      const stateRepo = new MockStateRepository(initialSnapshot);
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(initialSnapshot);
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1150,10 +1150,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     }
 
     test('V1 (AC3): an injected unchanged-tree diff yields passed === false, vacuous === true, and NO gate command is executed', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1220,10 +1220,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     });
 
     test('V2 (AC3): the VACUOUS summary report says "Overall Verdict : VACUOUS" and never "PASSED"', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1260,10 +1260,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     });
 
     test('V3 (AC3): an injected changed-tree diff runs the gates and the report carries the "Implementation : N file(s) changed" line', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1295,10 +1295,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     });
 
     test('V4 (AC5): the gate reports the merge-base-relative count AND the base-freshness advisory', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1331,10 +1331,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     });
 
     test('V5 (AC6): a stale-but-measured tree still PASSES — staleness is advisory, never a block', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1356,10 +1356,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     });
 
     test('V6 (AC6): a VACUOUS report over a stale tree carries the Base freshness line and runs no gate command', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1386,10 +1386,10 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
     });
 
     test('V7 (AC7, RV4): an unmeasurable branch diff is NOT a VACUOUS refusal — the gates run and the report says why', async () => {
-      const stateRepo = new MockStateRepository(implementSnapshot());
-      const configRepo = new MockConfigRepository();
-      const planGenerator = new MockPlanGenerator();
-      const commandExecutor = new MockCommandExecutor();
+      const stateRepo = new StateRepositoryDouble(implementSnapshot());
+      const configRepo = new ConfigRepositoryDouble();
+      const planGenerator = new PlanGeneratorDouble();
+      const commandExecutor = new CommandExecutorDouble();
 
       const useCase = new RunQualityGateUseCase(
         stateRepo,
@@ -1486,15 +1486,15 @@ describe('Quality Gate execution contract (issue #298)', () => {
   }
 
   test('RQG-P1: the plan commands are executed and the source is reported', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run build', 'npm test']);
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1511,17 +1511,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-L1: a plan-sourced lint failure is a build-class failure', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run lint', 'npm test']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ exitCode: 1, stdout: 'lint error', combinedOutput: 'src/x.ts:1:1 lint error', stderr: 'lint error' })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1532,12 +1532,12 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-L2: a lint-required plan with no lint command fails before execution', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run build']);
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
       new LintMissingBuildDetector()
@@ -1564,17 +1564,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
     // Plan targets carry synthetic ids (`plan-N`), so classification must come
     // from the command text: a probe used to report `testsStatus: PASSED` next
     // to an overall FAILED verdict (issue #298 review round 1).
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ exitCode: 1, stdout: 'not ok 1', combinedOutput: 'not ok 1 - boom', stderr: '' })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1585,17 +1585,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-P3: a failing plan-sourced `npm run build` is a BUILD-class failure', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run build']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ exitCode: 1, stdout: 'tsc error', combinedOutput: 'tsc error', stderr: 'tsc error' })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1611,17 +1611,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
       warning,
       'ℹ tests 0\nℹ pass 0\nℹ fail 0'
     ]) {
-      const planGenerator = new MockPlanGenerator();
+      const planGenerator = new PlanGeneratorDouble();
       planGenerator.content = planWithTargets(['npm test']);
-      const commandExecutor = new MockCommandExecutor([
+      const commandExecutor = new CommandExecutorDouble([
         resultOf({ exitCode: 0, stdout: output, combinedOutput: output, stderr: output })
       ]);
       const result = await new RunQualityGateUseCase(
-        new MockStateRepository(gateSnapshot()),
-        new MockConfigRepository(),
+        new StateRepositoryDouble(gateSnapshot()),
+        new ConfigRepositoryDouble(),
         planGenerator,
         commandExecutor,
-        new MockBuildDetector()
+        new BuildDetectorDouble()
       ).execute({ issue: 20 });
 
       assert.strictEqual(result.passed, false, output);
@@ -1633,18 +1633,18 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-Z2 (#412): a plan-sourced test command that prints a positive total still passes', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     const positive = 'ℹ tests 23\nℹ pass 23\nℹ fail 0';
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ exitCode: 0, stdout: positive, combinedOutput: positive })
     ]);
     const result = await new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     ).execute({ issue: 20 });
 
     assert.strictEqual(result.passed, true);
@@ -1653,17 +1653,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-Z3 (#412): a build-only plan with no test output still passes', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run build']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ exitCode: 0, stdout: 'build ok', combinedOutput: 'build ok' })
     ]);
     const result = await new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     ).execute({ issue: 20 });
 
     assert.strictEqual(result.passed, true);
@@ -1671,17 +1671,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-S1: a static smoke finding fails before any command runs', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithSmoke(['npm test'], [
       'node -e \'const m = require("fixture.js"); console.log(m);\''
     ]);
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1696,15 +1696,15 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-T1 (#348): a committed-tree target fails preflight with no command executed', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['git diff --exit-code -- package-lock.json']);
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1731,12 +1731,12 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-T3 (#369): a required-but-unavailable workflow composition fails preflight', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run lint']);
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
       new CompositionMissingBuildDetector()
@@ -1758,12 +1758,12 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-S2: a runtime smoke failure names the failing check and plan line', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithSmoke(['npm test'], [
       'echo "C1 PASS"',
       'echo "C2 FAIL: broken"\nexit 1'
     ]);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf(),
       resultOf({
         exitCode: 1,
@@ -1772,11 +1772,11 @@ describe('Quality Gate execution contract (issue #298)', () => {
       })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1789,9 +1789,9 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-S3: a printed FAIL line fails the gate even on exit 0', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithSmoke(['npm test'], ['echo "S1 PASS"']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf(),
       resultOf({
         exitCode: 0,
@@ -1800,11 +1800,11 @@ describe('Quality Gate execution contract (issue #298)', () => {
       })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1815,9 +1815,9 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-S4: a smoke timeout fails the gate and is named', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithSmoke(['npm test'], ['echo "S1 PASS"']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf(),
       resultOf({
         exitCode: -1,
@@ -1827,11 +1827,11 @@ describe('Quality Gate execution contract (issue #298)', () => {
       })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1843,9 +1843,9 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-S11: the frozen smoke script executes with the gate smoke signal (#440)', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithSmoke(['npm test'], ['echo "S1 PASS"']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf(),
       resultOf({
         exitCode: 0,
@@ -1854,11 +1854,11 @@ describe('Quality Gate execution contract (issue #298)', () => {
       })
     ]);
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1881,16 +1881,16 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-D1: a digest mismatch before execution fails with no commands and a plan-integrity report', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     planGenerator.digests = ['actual-digest'];
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot({ approvedPlanDigest: 'approved-digest' })),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot({ approvedPlanDigest: 'approved-digest' })),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1904,16 +1904,16 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-D2: a plan changed during the run fails the gate even when every command passes', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     planGenerator.digests = ['before-digest', 'after-digest'];
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -1927,7 +1927,7 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-S5 (#444): an in-process PASSED run records one canonical smoke check per declared check', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = [
       '# Plan',
       '',
@@ -1952,7 +1952,7 @@ describe('Quality Gate execution contract (issue #298)', () => {
       '```',
       ''
     ].join('\n');
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf(),
       resultOf({
         stdout: '__AGYLOOP_SMOKE_CHECK_1__\nC1 PASS\n__AGYLOOP_SMOKE_CHECK_2__\nC2 PASS\n',
@@ -1962,11 +1962,11 @@ describe('Quality Gate execution contract (issue #298)', () => {
     ]);
     const saved: any[] = [];
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector(),
+      new BuildDetectorDouble(),
       undefined,
       {
         load: () => null,
@@ -1993,15 +1993,15 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-N1: a plan with no smoke section reports NOT DECLARED and keeps the pass path', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
-    const commandExecutor = new MockCommandExecutor();
+    const commandExecutor = new CommandExecutorDouble();
     const useCase = new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     );
 
     const result = await useCase.execute({ issue: 20 });
@@ -2030,27 +2030,27 @@ describe('Quality Gate execution contract (issue #298)', () => {
   }
 
   function gateWith(
-    planGenerator: MockPlanGenerator,
-    commandExecutor: MockCommandExecutor,
+    planGenerator: PlanGeneratorDouble,
+    commandExecutor: CommandExecutorDouble,
     gateReportRepo: unknown
   ): any {
     return new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       planGenerator,
       commandExecutor,
-      new MockBuildDetector(),
+      new BuildDetectorDouble(),
       undefined,
       gateReportRepo as any
     );
   }
 
   test('RQG-N1 (#415): a .NET single-line summary files the number its status prints', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['dotnet test app.sln']);
     const summary =
       'Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12, Duration: 1 s';
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ command: 'dotnet test app.sln', exitCode: 0, stdout: summary, combinedOutput: summary })
     ]);
     const capture = capturingRepo();
@@ -2066,11 +2066,11 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-N2 (#415): a multi-line VSTest summary never throws and files the measured count', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['dotnet test app.sln']);
     const summary =
       'Test Run Successful.\nTotal tests: 12\n     Passed: 12\n     Failed: 0\n     Skipped: 0\n';
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ command: 'dotnet test app.sln', exitCode: 0, stdout: summary, combinedOutput: summary })
     ]);
     const capture = capturingRepo();
@@ -2084,10 +2084,10 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-N3 (#415): a Gradle `N tests completed` summary files the measured count', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['./gradlew test']);
     const summary = 'BUILD SUCCESSFUL in 1s\n12 tests completed';
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ command: './gradlew test', exitCode: 0, stdout: summary, combinedOutput: summary })
     ]);
     const capture = capturingRepo();
@@ -2099,9 +2099,9 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-N4 (#415): an exit-0 run that parses as failed tests fails closed with a named conflict', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['dotnet test app.sln']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({
         command: 'dotnet test app.sln',
         exitCode: 0,
@@ -2129,17 +2129,17 @@ describe('Quality Gate execution contract (issue #298)', () => {
   test('RQG-N5 (#415): a count-less `go test` passes only when the run declares its count', async () => {
     const output = 'ok  \texample/pkg\t0.002s\n?   \texample/noop\t[no test files]\n';
 
-    const withoutToken = new MockPlanGenerator();
+    const withoutToken = new PlanGeneratorDouble();
     withoutToken.content = planWithTargets(['go test ./...']);
-    const failingExecutor = new MockCommandExecutor([
+    const failingExecutor = new CommandExecutorDouble([
       resultOf({ command: 'go test ./...', exitCode: 0, stdout: output, combinedOutput: output })
     ]);
     const failing = await new RunQualityGateUseCase(
-      new MockStateRepository(gateSnapshot()),
-      new MockConfigRepository(),
+      new StateRepositoryDouble(gateSnapshot()),
+      new ConfigRepositoryDouble(),
       withoutToken,
       failingExecutor,
-      new MockBuildDetector()
+      new BuildDetectorDouble()
     ).execute({ issue: 20 });
 
     assert.strictEqual(failing.passed, false);
@@ -2148,10 +2148,10 @@ describe('Quality Gate execution contract (issue #298)', () => {
     assert.ok(snippet.includes('TEST_METRICS: <n> passed'), snippet);
     assert.ok(snippet.includes('go test'), snippet);
 
-    const withToken = new MockPlanGenerator();
+    const withToken = new PlanGeneratorDouble();
     withToken.content = planWithTargets(['go test ./...']);
     const tokenOutput = `TEST_METRICS: 12 passed, 0 failed, 0 skipped\n${output}`;
-    const passingExecutor = new MockCommandExecutor([
+    const passingExecutor = new CommandExecutorDouble([
       resultOf({ command: 'go test ./...', exitCode: 0, stdout: tokenOutput, combinedOutput: tokenOutput })
     ]);
     const capture = capturingRepo();
@@ -2163,9 +2163,9 @@ describe('Quality Gate execution contract (issue #298)', () => {
   });
 
   test('RQG-N6 (#415): a build command’s incidental count is never the evidence total', async () => {
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm run build', 'npm test']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ command: 'npm run build', exitCode: 0, stdout: '999 passed', combinedOutput: '999 passed' }),
       resultOf({
         command: 'npm test',
@@ -2186,10 +2186,10 @@ describe('Quality Gate execution contract (issue #298)', () => {
     // Issue #415 review round 1: Mocha's `N passing` is a supported Node runner
     // summary. The widened regexes once stopped parsing it, so this asserts the
     // participle form still measures and still files a positive count.
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['npm test']);
     const summary = '  12 passing (1s)';
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({ command: 'npm test', exitCode: 0, stdout: summary, combinedOutput: summary })
     ]);
     const capture = capturingRepo();
@@ -2208,9 +2208,9 @@ describe('Quality Gate execution contract (issue #298)', () => {
     // Issue #415 review round 1 (AC-5): the conflict guard used to inspect only
     // the LAST test command, so a first exit-0 command that still parsed as
     // failed was overwritten by the later command's numbers and certified.
-    const planGenerator = new MockPlanGenerator();
+    const planGenerator = new PlanGeneratorDouble();
     planGenerator.content = planWithTargets(['dotnet test app.sln', 'npm test']);
-    const commandExecutor = new MockCommandExecutor([
+    const commandExecutor = new CommandExecutorDouble([
       resultOf({
         command: 'dotnet test app.sln',
         exitCode: 0,
@@ -2268,10 +2268,10 @@ describe('in-process gate row names its clock (issue #338)', () => {
 
     try {
       const useCase = new RunQualityGateUseCase(
-        new MockStateRepository(initialSnapshot),
-        new MockConfigRepository(),
+        new StateRepositoryDouble(initialSnapshot),
+        new ConfigRepositoryDouble(),
         new FilePlanGenerator(),
-        new MockCommandExecutor()
+        new CommandExecutorDouble()
       );
 
       const result = await useCase.execute({ issue: 20, workspaceDir: ws, commands: ['true'] });

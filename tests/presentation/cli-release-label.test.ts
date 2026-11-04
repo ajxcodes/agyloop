@@ -22,6 +22,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { RELEASE_LABEL_DEFINITIONS } = require('../../dist/domain');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 
 interface Sandbox {
   readonly dir: string;
@@ -46,22 +47,25 @@ esac
 exit 0
 `;
 
-function makeSandbox(): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-release-label-'));
-  const git = (args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-
-  git(['init', '-q', '-b', 'main']);
-  git(['config', 'user.email', 'smoke@test']);
-  git(['config', 'user.name', 'smoke']);
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'chore: seed']);
+function makeReleaseLabelSandbox(): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'codeloop-release-label-',
+    dirName: '',
+    gitignore: false,
+    initialBranch: 'main',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
+    },
+    initialCommit: 'chore: seed'
+  });
+  const dir = sandbox.dir;
+  const g = (args: string[]) => sandbox.git(args);
 
   const phaseBranch = 'phase/6-smoke';
-  git(['checkout', '-qb', phaseBranch]);
+  g(['checkout', '-qb', phaseBranch]);
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'feature\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'feat(release): add the label precondition']);
+  g(['add', '-A']);
+  g(['commit', '-qm', 'feat(release): add the label precondition']);
 
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
   const binDir = path.join(dir, '.bin');
@@ -102,7 +106,7 @@ function lineNumber(lines: string[], predicate: (line: string) => boolean): numb
 
 describe('release provisions/verifies the release label (#502)', () => {
   test('a dry run with a missing label reports the provisioning command and opens nothing (#502 AC2)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseLabelSandbox();
     try {
       const run = runRelease(
         sandbox,
@@ -124,7 +128,7 @@ describe('release provisions/verifies the release label (#502)', () => {
   });
 
   test('a real run provisions the missing label then opens the PR with it (#502 AC1)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseLabelSandbox();
     try {
       const run = runRelease(sandbox, [sandbox.phaseBranch, '--base-branch', 'main'], {
         GH_LABELS: '[]'
@@ -136,7 +140,7 @@ describe('release provisions/verifies the release label (#502)', () => {
 
       const lines = ghLines(sandbox);
       const labelCreateLine = lineNumber(lines, (line) => line.startsWith('label create release:minor '));
-      const prCreateLine = lines.find((line) => line.startsWith('pr create ')) || '';
+      const prCreateLine = lines.find((line: string) => line.startsWith('pr create ')) || '';
       const prCreateLineNumber = lineNumber(lines, (line) => line.startsWith('pr create '));
       const labelCreateCount = lines.filter((line) => line.startsWith('label create release:minor ')).length;
       assert.strictEqual(labelCreateCount, 1);
@@ -150,7 +154,7 @@ describe('release provisions/verifies the release label (#502)', () => {
   });
 
   test('an unverifiable label refuses before any PR is created (#502 AC1, AC2)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseLabelSandbox();
     try {
       const run = runRelease(
         sandbox,
@@ -226,7 +230,7 @@ describe('release provisions/verifies the release label (#502)', () => {
   });
 
   test('an existing label keeps the PR argv unchanged (#502 AC3)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseLabelSandbox();
     try {
       const run = runRelease(sandbox, [sandbox.phaseBranch, '--base-branch', 'main'], {
         GH_LABELS: '[{"name":"release:minor"}]'
@@ -240,7 +244,7 @@ describe('release provisions/verifies the release label (#502)', () => {
       const labelCreateCount = lines.filter((line) => line.startsWith('label create')).length;
       assert.strictEqual(labelCreateCount, 0);
 
-      const prCreateLine = lines.find((line) => line.startsWith('pr create ')) || '';
+      const prCreateLine = lines.find((line: string) => line.startsWith('pr create ')) || '';
       const labelOccurrences = prCreateLine.split('--label').length - 1;
       assert.strictEqual(labelOccurrences, 1);
       assert.ok(prCreateLine.includes('--label release:minor'));

@@ -77,7 +77,7 @@ const PRODUCTION_BLOCK = [
   `- ${PRODUCTION_SENTINEL}`
 ].join('\n');
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -101,7 +101,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -163,8 +163,8 @@ function recordVerdict(sm: any, verdict: string, round: number): void {
 }
 
 async function runNext(sm: any): Promise<any> {
-  const stateRepo = new MockStateRepo(sm.toSnapshot());
-  const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+  const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+  const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
   return useCase.execute({ workspaceDir: '/repo' });
 }
 
@@ -301,7 +301,7 @@ describe('IMPLEMENT directive review remediation (issue #313)', () => {
         createdAt: new Date().toISOString()
       })
     );
-    const reviewRepo = new MockStateRepo(initialSm.toSnapshot());
+    const reviewRepo = new StateRepositoryDouble(initialSm.toSnapshot());
 
     const review = new RunReviewUseCase(
       reviewRepo,

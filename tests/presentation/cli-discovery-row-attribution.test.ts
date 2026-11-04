@@ -1,3 +1,15 @@
+/** The canonical task seed (plan mode) with this suite's merged snapshot shape. */
+function seedPlanModeCheckpoint(sandbox: string, issue: number, snapshot: Record<string, unknown>): void {
+  const now = new Date().toISOString();
+  seedTask(sandbox, {
+    mode: 'plan',
+    ...snapshot,
+    issue,
+    createdAt: now,
+    updatedAt: now
+  });
+}
+
 /**
  * agyloop - The Discovery row names the discovery subagent and is terminal
  * (issue #284, AC4; #264 stall regression)
@@ -15,114 +27,49 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { EXIT_CODE_SUCCESS } = require('../../dist/domain');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPath } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+
+function makeDiscoveryRowSandbox(): string {
+  return makeSandbox({
+    prefix: 'agyloop-discovery-row-',
+    dirName: '',
+    gitignore: false,
+    seed: (d: string) => {
+      fs.writeFileSync(path.join(d, 'README.md'), 'probe\n', 'utf8');
+      fs.mkdirSync(path.join(d, '.home'), { recursive: true });
+    },
+    initialCommit: 'chore: probe init'
+  }).dir;
+}
+
+
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 /** A PATH shadow that mirrors every entry but omits `gh` (graceful degradation). */
-function buildPathShadowWithout(shadowRoot: string, excluded: string): string {
-  fs.mkdirSync(shadowRoot, { recursive: true });
-  const seen = new Set<string>();
-  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const shadowEntries: string[] = [];
-  let idx = 0;
 
-  for (const dir of parts) {
-    let real: string;
-    try {
-      real = fs.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    if (seen.has(real)) continue;
-    seen.add(real);
 
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(real);
-    } catch {
-      continue;
-    }
 
-    const target = path.join(shadowRoot, `d${idx++}`);
-    if (!entries.includes(excluded)) {
-      try {
-        fs.symlinkSync(real, target, 'dir');
-        shadowEntries.push(target);
-        continue;
-      } catch {
-        // fall through
-      }
-    }
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of entries) {
-      if (entry === excluded || entry.startsWith(`${excluded}.`)) continue;
-      try {
-        fs.symlinkSync(fs.realpathSync(path.join(real, entry)), path.join(target, entry));
-      } catch {
-        // skip
-      }
-    }
-    shadowEntries.push(target);
-  }
-
-  return shadowEntries.join(path.delimiter);
-}
-
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-discovery-row-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  return dir;
-}
-
-async function runIn(
+/** The canonical harness run with this suite's gh-shadowed PATH (and HOME sandbox). */
+async function runInLocal(
   sandbox: string,
   args: string[],
   options: { home?: boolean } = {}
-): Promise<{ code: any; stdout: string; stderr: string }> {
-  const prevCwd = process.cwd();
-  const envBackup: Record<string, string | undefined> = {
-    PATH: process.env.PATH,
-    HOME: process.env.HOME,
-    AGY_SUBAGENT: process.env.AGY_SUBAGENT
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env: Record<string, string | undefined> = {
+    PATH: buildPathShadowWithout(path.join(sandbox, '.shadow-bin'), 'gh'),
+    AGY_SUBAGENT: undefined
   };
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(sandbox);
-    process.env.PATH = buildPathShadowWithout(path.join(sandbox, '.shadow-bin'), 'gh');
-    if (options.home !== false) {
-      process.env.HOME = path.join(sandbox, '.home');
-    }
-    delete process.env.AGY_SUBAGENT;
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    for (const [key, value] of Object.entries(envBackup)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
+  if (options.home !== false) {
+    env.HOME = path.join(sandbox, '.home');
   }
+  const result = await runCliInSandboxCanonical(args, { dir: sandbox, env });
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 }
+
 
 function findSummary(dir: string): string | null {
   const plansDir = path.join(dir, 'artifacts', 'plans');
@@ -140,35 +87,6 @@ function discoveryRow(summary: string): string {
   return line as string;
 }
 
-function seedCheckpoint(
-  sandbox: string,
-  issue: number,
-  snapshot: Record<string, unknown>
-): void {
-  const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const now = new Date().toISOString();
-  fs.writeFileSync(
-    path.join(tasksDir, `${issue}.json`),
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        mode: 'plan',
-        issue,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        totalHumanWaitMs: 0,
-        ...snapshot
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
 
 function seedSummary(planDir: string, discoveryStatus: string): string {
   fs.mkdirSync(planDir, { recursive: true });
@@ -194,9 +112,9 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
   // audited shape — `discovery | model | SKIPPED` — unchanged by the E6 rule
   // (which only rewrites rows for runs that performed no RCA without the flag).
   test('plan --skip-discovery names `discovery` and records SKIPPED (terminal)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeDiscoveryRowSandbox();
     try {
-      const run = await runIn(sandbox, ['plan', '--issue', '284', '--skip-discovery']);
+      const run = await runInLocal(sandbox, ['plan', '--issue', '284', '--skip-discovery']);
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${run.stderr}`);
 
       const summaryPath = findSummary(sandbox);
@@ -214,7 +132,7 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
   });
 
   test('a populated RCA re-entry records COMPLETED, still names `discovery`, and survives a later transition', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeDiscoveryRowSandbox();
     try {
       const planDir = path.join(sandbox, 'artifacts', 'plans', '285-probe');
       seedSummary(planDir, 'IN PROGRESS');
@@ -243,7 +161,7 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
         ].join('\n'),
         'utf8'
       );
-      seedCheckpoint(sandbox, 285, {
+      seedPlanModeCheckpoint(sandbox, 285, {
         currentStage: 'DISCOVERY',
         planDir,
         // Issue #315 (AC-14): the Discovery window is measurable on this path,
@@ -252,20 +170,20 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
         history: [{ stage: 'DISCOVERY', timestamp: new Date(Date.now() - 300_000).toISOString() }]
       });
 
-      const planRun = await runIn(sandbox, ['plan', '--issue', '285']);
+      const planRun = await runInLocal(sandbox, ['plan', '--issue', '285']);
       assert.strictEqual(planRun.code, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${planRun.stderr}`);
 
       let summary = fs.readFileSync(path.join(planDir, 'CodeLoop Summary.md'), 'utf8');
       assert.match(discoveryRow(summary), /^\| 1\. Discovery \| `discovery` \| `[a-z_]+` \| COMPLETED \| 5m \d+s \|$/m);
 
-      const approvalRun = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', '285']);
+      const approvalRun = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', '285']);
       assert.strictEqual(
         approvalRun.code,
         EXIT_CODE_SUCCESS,
         `exit 0 expected, got:\n${approvalRun.stderr}`
       );
 
-      const transitionRun = await runIn(sandbox, ['transition', 'IMPLEMENT', '--issue', '285', '--no-worktree']);
+      const transitionRun = await runInLocal(sandbox, ['transition', 'IMPLEMENT', '--issue', '285', '--no-worktree']);
       assert.strictEqual(
         transitionRun.code,
         EXIT_CODE_SUCCESS,
@@ -280,17 +198,17 @@ describe('Discovery row attribution (issue #284, AC4)', () => {
   });
 
   test('a checkpoint stalled with an IN PROGRESS Discovery row is advanced, not left stalled (#264)', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeDiscoveryRowSandbox();
     try {
       const planDir = path.join(sandbox, 'artifacts', 'plans', '286-probe');
       seedSummary(planDir, 'IN PROGRESS');
-      seedCheckpoint(sandbox, 286, {
+      seedPlanModeCheckpoint(sandbox, 286, {
         currentStage: 'DISCOVERY',
         planDir,
         history: [{ stage: 'DISCOVERY', timestamp: new Date().toISOString() }]
       });
 
-      const run = await runIn(sandbox, ['plan', '--issue', '286', '--skip-discovery']);
+      const run = await runInLocal(sandbox, ['plan', '--issue', '286', '--skip-discovery']);
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${run.stderr}`);
 
       const summary = fs.readFileSync(path.join(planDir, 'CodeLoop Summary.md'), 'utf8');

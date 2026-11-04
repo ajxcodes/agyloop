@@ -43,7 +43,7 @@ describe('FileStateRepository', () => {
       const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
       process.cwd = () => dummyWorktreePath;
 
-      const repo = new FileStateRepository({
+      const repo = createStateRepository({
         stateFilePath: stateFile,
         allowWorktreeIssueMismatch: false
       });
@@ -67,7 +67,7 @@ describe('FileStateRepository', () => {
       const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
       process.cwd = () => dummyWorktreePath;
 
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
 
       const snapshot = {
         issue: 169,
@@ -123,7 +123,7 @@ describe('FileStateRepository', () => {
       try {
         withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
           process.cwd = () => sandbox;
-          const repo = new FileStateRepository({
+          const repo = createStateRepository({
             stateFilePath: path.join(sandbox, '.agyloop', 'state.json')
           });
           assert.doesNotThrow(() =>
@@ -137,7 +137,7 @@ describe('FileStateRepository', () => {
 
     test('SR2: refuses a /tmp state path outside test mode (unchanged)', () => {
       process.cwd = () => path.join('/tmp', 'foo');
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
 
       withSmokeEnv({ NODE_ENV: 'production' }, () => {
         assert.throws(() => {
@@ -148,7 +148,7 @@ describe('FileStateRepository', () => {
 
     test('SR3a: refuses artifacts/smoke outside test mode', () => {
       process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
 
       withSmokeEnv({ NODE_ENV: 'production' }, () => {
         assert.throws(() => {
@@ -163,7 +163,7 @@ describe('FileStateRepository', () => {
 
     test('SR3b: permits artifacts/smoke inside test mode under the same rule as /tmp (N3)', () => {
       process.cwd = () => path.join('/path/to', 'artifacts', 'smoke-123');
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
 
       withSmokeEnv({ NODE_ENV: 'test' }, () => {
         assert.doesNotThrow(() => {
@@ -175,7 +175,7 @@ describe('FileStateRepository', () => {
     test('SR4: refuses a /tmp target even when cwd is outside /tmp (target-keyed)', () => {
       process.cwd = () => path.join('/home', 'user', 'project');
       const tmpSandboxState = path.join(os.tmpdir(), 'smoke-241', '.agyloop', 'state.json');
-      const repo = new FileStateRepository({ stateFilePath: tmpSandboxState });
+      const repo = createStateRepository({ stateFilePath: tmpSandboxState });
 
       withSmokeEnv({ NODE_ENV: 'production' }, () => {
         assert.throws(() => {
@@ -193,7 +193,7 @@ describe('FileStateRepository', () => {
       try {
         withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
           process.cwd = () => sandbox;
-          const repo = new FileStateRepository({ stateFilePath: external });
+          const repo = createStateRepository({ stateFilePath: external });
           assert.throws(() => {
             repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
           }, isSmokeError);
@@ -205,7 +205,7 @@ describe('FileStateRepository', () => {
 
     test('SR6: still refuses the real root state under test mode', () => {
       withSmokeEnv({ NODE_ENV: 'test' }, () => {
-        const repo = new FileStateRepository({
+        const repo = createStateRepository({
           workspaceDir: REPO_ROOT,
           stateFilePath: path.join(REPO_ROOT, '.agyloop', 'state.json')
         });
@@ -225,7 +225,7 @@ describe('FileStateRepository', () => {
       try {
         withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
           process.cwd = () => alias;
-          const repo = new FileStateRepository({
+          const repo = createStateRepository({
             stateFilePath: path.join(alias, '.agyloop', 'state.json')
           });
           assert.doesNotThrow(() =>
@@ -243,7 +243,7 @@ describe('FileStateRepository', () => {
       try {
         withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production', AGYLOOP_SMOKE: '1' }, () => {
           process.cwd = () => path.join(fakeHome, 'project');
-          const repo = new FileStateRepository({ stateFilePath: outside });
+          const repo = createStateRepository({ stateFilePath: outside });
           const save = (): void => {
             repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
           };
@@ -262,7 +262,7 @@ describe('FileStateRepository', () => {
       try {
         withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production', AGYLOOP_SMOKE: '1' }, () => {
           process.cwd = () => sandbox;
-          const repo = new FileStateRepository({
+          const repo = createStateRepository({
             stateFilePath: path.join(sandbox, '.agyloop', 'state.json')
           });
           const save = (): void => {
@@ -281,7 +281,7 @@ describe('FileStateRepository', () => {
       try {
         withSmokeEnv({ HOME: fakeHome, NODE_ENV: 'production' }, () => {
           process.cwd = () => path.join(fakeHome, 'project');
-          const repo = new FileStateRepository({ stateFilePath: outside });
+          const repo = createStateRepository({ stateFilePath: outside });
           const save = (): void => {
             repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
           };
@@ -294,7 +294,7 @@ describe('FileStateRepository', () => {
 
     test('SR11: the gate smoke signal is inert in a test run (#440)', () => {
       withSmokeEnv({ NODE_ENV: 'test', AGYLOOP_SMOKE: '1' }, () => {
-        const repo = new FileStateRepository({ stateFilePath: stateFile });
+        const repo = createStateRepository({ stateFilePath: stateFile });
         const save = (): void => {
           repo.save({ issue: 440, currentStage: 'DISCOVERY', history: [] });
         };
@@ -304,7 +304,7 @@ describe('FileStateRepository', () => {
 
     test('allows save when cwd is normal path', () => {
       process.cwd = () => path.join('/home/user/project');
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
 
       assert.doesNotThrow(() => {
         repo.save({ issue: 123, currentStage: 'PLAN', history: [] });
@@ -315,7 +315,7 @@ describe('FileStateRepository', () => {
   describe('test environment isolation', () => {
     test('throws StateStorageError on reset and save when touching real root repo in test env', () => {
       // Explicit root: the probe must not depend on the process cwd (#298).
-      const repo = new FileStateRepository({
+      const repo = createStateRepository({
         workspaceDir: REPO_ROOT,
         stateFilePath: path.join(REPO_ROOT, '.agyloop', 'state.json')
       });
@@ -341,7 +341,7 @@ describe('FileStateRepository', () => {
     });
 
     test('throws StateStorageError on reset and save when NODE_TEST_CONTEXT is set and NODE_ENV is undefined', () => {
-      const repo = new FileStateRepository({
+      const repo = createStateRepository({
         workspaceDir: REPO_ROOT,
         stateFilePath: path.join(REPO_ROOT, '.agyloop', 'state.json')
       });
@@ -374,7 +374,7 @@ describe('FileStateRepository', () => {
     });
 
     test('allows reset and save with a mock temp path even if NODE_ENV === "test"', () => {
-      const repo = new FileStateRepository({ stateFilePath: stateFile });
+      const repo = createStateRepository({ stateFilePath: stateFile });
       const prevEnv = process.env.NODE_ENV;
       process.env.NODE_ENV = 'test';
       process.cwd = () => '/';
@@ -429,7 +429,7 @@ describe('FileStateRepository', () => {
 
       test('refuses a non-temp state path when NODE_ENV === "test"', () => {
         withEnv({ NODE_ENV: 'test' }, () => {
-          const repo = new FileStateRepository({ stateFilePath: REAL_STATE_FILE });
+          const repo = createStateRepository({ stateFilePath: REAL_STATE_FILE });
           assert.throws(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] }), isRootStateError);
           assert.throws(() => repo.reset(), isRootStateError);
         });
@@ -437,7 +437,7 @@ describe('FileStateRepository', () => {
 
       test('refuses a non-temp state path when only NODE_TEST_CONTEXT is set', () => {
         withEnv({ NODE_TEST_CONTEXT: 'child-v8' }, () => {
-          const repo = new FileStateRepository({ stateFilePath: REAL_STATE_FILE });
+          const repo = createStateRepository({ stateFilePath: REAL_STATE_FILE });
           assert.throws(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] }), isRootStateError);
           assert.throws(() => repo.reset(), isRootStateError);
         });
@@ -447,7 +447,7 @@ describe('FileStateRepository', () => {
         withEnv({ NODE_TEST_CONTEXT: 'child-v8' }, () => {
           // Neutral cwd so the unrelated worktree-issue guard stays out of the way.
           process.cwd = () => path.join('/mock', 'repo', 'root');
-          const repo = new FileStateRepository({ stateFilePath: stateFile });
+          const repo = createStateRepository({ stateFilePath: stateFile });
           assert.strictEqual(path.resolve(stateFile).startsWith(path.resolve(os.tmpdir()) + path.sep), true);
           assert.doesNotThrow(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] }));
           assert.strictEqual(fs.existsSync(stateFile), true);
@@ -471,7 +471,7 @@ describe('FileStateRepository', () => {
           withEnv({ NODE_ENV: 'test' }, () => {
             process.cwd = () => REAL_ROOT;
             FileStateRepository.clearWorkspaceRootCache();
-            const repo = new FileStateRepository({ stateFilePath: REAL_STATE_FILE });
+            const repo = createStateRepository({ stateFilePath: REAL_STATE_FILE });
             assert.throws(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] }), isRootStateError);
             assert.throws(() => repo.reset(), isRootStateError);
           });
@@ -487,7 +487,7 @@ describe('FileStateRepository', () => {
         withEnv({ NODE_ENV: 'test' }, () => {
           process.cwd = () => REAL_ROOT;
           FileStateRepository.clearWorkspaceRootCache();
-          const repo = new FileStateRepository({ stateFilePath: stateFile });
+          const repo = createStateRepository({ stateFilePath: stateFile });
           assert.throws(() => repo.resetAll(), isRootStateError);
           assert.throws(() => repo.resetTask(123), isRootStateError);
         });
@@ -495,7 +495,7 @@ describe('FileStateRepository', () => {
 
       test('resetAll and resetTask remain allowed when the whole workspace is temp-isolated', () => {
         withEnv({ NODE_ENV: 'test' }, () => {
-          const repo = new FileStateRepository({ workspaceDir: tempDir });
+          const repo = createStateRepository({ workspaceDir: tempDir });
           fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
           fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
           assert.doesNotThrow(() => repo.resetTask(10));
@@ -529,13 +529,13 @@ describe('FileStateRepository', () => {
         try {
           withEnv({ NODE_ENV: 'test' }, () => {
             FileStateRepository.clearWorkspaceRootCache();
-            const repo = new FileStateRepository({ stateFilePath: repoStateFile });
+            const repo = createStateRepository({ stateFilePath: repoStateFile });
             assert.throws(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] }), isRootStateError);
             assert.throws(() => repo.reset(), isRootStateError);
 
             // The workspace root itself is protected too, not just its state file:
             // resetAll()/resetTask() delete targets derived from workspaceRoot.
-            const rootedRepo = new FileStateRepository({
+            const rootedRepo = createStateRepository({
               workspaceDir: repoRoot,
               stateFilePath: path.join(repoRoot, 'unrelated.json')
             });
@@ -552,7 +552,7 @@ describe('FileStateRepository', () => {
         // still writable, so ordinary temp-based tests are unaffected by it.
         withEnv({ NODE_TEST_CONTEXT: 'child-v8' }, () => {
           process.cwd = () => path.join('/mock', 'repo', 'root');
-          const repo = new FileStateRepository({ stateFilePath: stateFile });
+          const repo = createStateRepository({ stateFilePath: stateFile });
           assert.doesNotThrow(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] }));
           assert.strictEqual(fs.existsSync(stateFile), true);
         });
@@ -563,7 +563,7 @@ describe('FileStateRepository', () => {
   describe('task scoping and multi-state management', () => {
     test('routes to .agyloop/tasks/<issue>.json when issue is provided', () => {
       process.cwd = () => path.join('/home/user/project');
-      const repo = new FileStateRepository({ workspaceDir: tempDir, issue: 56 });
+      const repo = createStateRepository({ workspaceDir: tempDir, issue: 56 });
       const expectedPath = path.join(tempDir, '.agyloop', 'tasks', '56.json');
       assert.strictEqual(repo.getStateFilePath(), expectedPath);
 
@@ -577,7 +577,7 @@ describe('FileStateRepository', () => {
 
     test('a snapshot carrying a triageDisposition survives save -> load byte-for-byte (issue #269)', () => {
       process.cwd = () => path.join('/home/user/project');
-      const repo = new FileStateRepository({ workspaceDir: tempDir, issue: 269 });
+      const repo = createStateRepository({ workspaceDir: tempDir, issue: 269 });
 
       const disposition = {
         prNumber: 7,
@@ -603,7 +603,7 @@ describe('FileStateRepository', () => {
     });
 
     test('listAllStates reads root state and multiple task states, ignoring corrupt JSON and non-JSON files', () => {
-      const repo = new FileStateRepository({ workspaceDir: tempDir });
+      const repo = createStateRepository({ workspaceDir: tempDir });
 
       // Save root state
       fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
@@ -634,7 +634,7 @@ describe('FileStateRepository', () => {
     });
 
     test('resetTask removes specific task state file without touching root or other tasks', () => {
-      const repo = new FileStateRepository({ workspaceDir: tempDir });
+      const repo = createStateRepository({ workspaceDir: tempDir });
       fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
       fs.writeFileSync(path.join(tempDir, '.agyloop', 'state.json'), JSON.stringify({ issue: null }));
       fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
@@ -647,7 +647,7 @@ describe('FileStateRepository', () => {
     });
 
     test('forIssue returns a repository bound to the task checkpoint', () => {
-      const repo = new FileStateRepository({ workspaceDir: tempDir });
+      const repo = createStateRepository({ workspaceDir: tempDir });
 
       const scoped = repo.forIssue(226);
 
@@ -660,7 +660,7 @@ describe('FileStateRepository', () => {
       // checkpoint a caller is reading cannot move because the process changed
       // directory between the read and the write (#226 D6).
       process.cwd = () => path.join('/home/user/project');
-      const repo = new FileStateRepository({ workspaceDir: tempDir, issue: 9 });
+      const repo = createStateRepository({ workspaceDir: tempDir, issue: 9 });
 
       const scoped = repo.forIssue('226');
 
@@ -671,7 +671,7 @@ describe('FileStateRepository', () => {
       // The resolver calls this before it knows whether anything will be written,
       // so a resolver call must never be able to create a workspace.
       const virgin = path.join(os.tmpdir(), `agyloop-fsrepo-forthissue-${process.pid}-${Date.now()}`);
-      const repo = new FileStateRepository({ workspaceDir: virgin });
+      const repo = createStateRepository({ workspaceDir: virgin });
 
       const scoped = repo.forIssue(226);
 
@@ -680,7 +680,7 @@ describe('FileStateRepository', () => {
     });
 
     test('resetAll purges all task files and resets root state', () => {
-      const repo = new FileStateRepository({ workspaceDir: tempDir });
+      const repo = createStateRepository({ workspaceDir: tempDir });
       fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
       fs.writeFileSync(path.join(tempDir, '.agyloop', 'state.json'), JSON.stringify({ issue: null }));
       fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
@@ -699,7 +699,7 @@ describe('FileStateRepository', () => {
      */
     describe('issue #250: strict issue tokens and honest removal', () => {
       test('forIssue rejects a non-numeric argument instead of producing tasks/NaN.json', () => {
-        const repo = new FileStateRepository({ workspaceDir: tempDir });
+        const repo = createStateRepository({ workspaceDir: tempDir });
 
         assert.throws(() => repo.forIssue('abc'), ValidationError);
         assert.throws(() => repo.forIssue('999abc'), ValidationError);
@@ -709,7 +709,7 @@ describe('FileStateRepository', () => {
       });
 
       test('forIssue still accepts a numeric string (the port keeps number | string)', () => {
-        const repo = new FileStateRepository({ workspaceDir: tempDir });
+        const repo = createStateRepository({ workspaceDir: tempDir });
 
         const scoped = repo.forIssue('226');
 
@@ -717,7 +717,7 @@ describe('FileStateRepository', () => {
       });
 
       test('resetTask reports true when a checkpoint was actually removed', () => {
-        const repo = new FileStateRepository({ workspaceDir: tempDir });
+        const repo = createStateRepository({ workspaceDir: tempDir });
         fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
         fs.writeFileSync(path.join(tempDir, '.agyloop', 'tasks', '10.json'), JSON.stringify({ issue: 10 }));
 
@@ -726,7 +726,7 @@ describe('FileStateRepository', () => {
       });
 
       test('resetTask reports false when there was nothing to remove', () => {
-        const repo = new FileStateRepository({ workspaceDir: tempDir });
+        const repo = createStateRepository({ workspaceDir: tempDir });
 
         assert.strictEqual(repo.resetTask(10), false);
       });
@@ -822,7 +822,7 @@ describe('FileStateRepository', () => {
       assert.strictEqual(fs.lstatSync(path.join(worktreePath, '.agyloop')).isSymbolicLink(), false);
 
       withWorktreeCwd(worktreePath, () => {
-        const repo = new FileStateRepository({ issue: 236 });
+        const repo = createStateRepository({ issue: 236 });
         assert.strictEqual(repo.getStateFilePath(), path.join(worktreePath, '.agyloop', 'tasks', '236.json'));
         assert.notStrictEqual(repo.getStateFilePath(), path.join(mainPath, '.agyloop', 'tasks', '236.json'));
 
@@ -867,7 +867,7 @@ describe('FileStateRepository', () => {
         process.cwd = () => localRoot;
         FileStateRepository.clearWorkspaceRootCache();
         try {
-          const repo = new FileStateRepository({ issue: 7 });
+          const repo = createStateRepository({ issue: 7 });
           assert.strictEqual(repo.getStateFilePath(), path.join(localRoot, '.agyloop', 'tasks', '7.json'));
           // AC2, strongest form: nothing that decides where state lands may read
           // the worktree list at all -- which makes the answer independent of
@@ -905,7 +905,7 @@ describe('FileStateRepository', () => {
       process.env.NODE_TEST_CONTEXT = 'child-v8';
       try {
         withWorktreeCwd(worktreePath, () => {
-          const repo = new FileStateRepository();
+          const repo = createStateRepository();
           assert.strictEqual(repo.getStateFilePath(), wtState);
           assert.doesNotThrow(() =>
             repo.save({ issue: null, currentStage: 'INITIALIZED', history: [] } as any)
@@ -938,7 +938,7 @@ describe('FileStateRepository', () => {
       process.env.NODE_TEST_CONTEXT = 'child-v8';
       try {
         withWorktreeCwd(worktreePath, () => {
-          const repo = new FileStateRepository();
+          const repo = createStateRepository();
           assert.doesNotThrow(() => repo.resetAll());
           assert.doesNotThrow(() => repo.resetTask(236));
           // The worktree's own checkpoint is the only thing that may be removed.
@@ -978,7 +978,7 @@ describe('FileStateRepository', () => {
       process.env.NODE_TEST_CONTEXT = 'child-v8';
       try {
         FileStateRepository.clearWorkspaceRootCache();
-        const repo = new FileStateRepository({ stateFilePath: mainStateFile });
+        const repo = createStateRepository({ stateFilePath: mainStateFile });
         assert.throws(() => repo.save({ issue: 123, currentStage: 'PLAN', history: [] } as any), isRootStateError);
         assert.throws(() => repo.reset(), isRootStateError);
       } finally {
@@ -1039,13 +1039,13 @@ describe('FileStateRepository', () => {
       try {
         FileStateRepository.clearWorkspaceRootCache();
         // The garbage root is NOT vetoed: nothing was learned from the probe.
-        const repo = new FileStateRepository({ stateFilePath: garbageStateFile });
+        const repo = createStateRepository({ stateFilePath: garbageStateFile });
         assert.doesNotThrow(() => repo.save({ issue: null, currentStage: 'PLAN', history: [] } as any));
         assert.strictEqual(fs.existsSync(garbageStateFile), true);
 
         // ...and the `__dirname` fallback is not cached either: a second save
         // must re-probe rather than reuse the unusable result (#221 posture).
-        const unrelated = new FileStateRepository({ stateFilePath: unrelatedStateFile });
+        const unrelated = createStateRepository({ stateFilePath: unrelatedStateFile });
         assert.doesNotThrow(() => unrelated.save({ issue: null, currentStage: 'PLAN', history: [] } as any));
         assert.ok(
           commonDirProbes >= 2,
@@ -1053,7 +1053,7 @@ describe('FileStateRepository', () => {
         );
 
         // Control: the guard itself is still live -- a real veto target is refused.
-        const vetoed = new FileStateRepository({ stateFilePath: path.join(narrowedRoot, '.agyloop', 'state.json') });
+        const vetoed = createStateRepository({ stateFilePath: path.join(narrowedRoot, '.agyloop', 'state.json') });
         assert.throws(
           () => vetoed.save({ issue: null, currentStage: 'PLAN', history: [] } as any),
           (err: any) => err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_ROOT_STATE
@@ -1075,7 +1075,7 @@ describe('FileStateRepository', () => {
       FileStateRepository.clearWorkspaceRootCache();
       try {
         assert.strictEqual(
-          new FileStateRepository({ issue: 7 }).getStateFilePath(),
+          createStateRepository({ issue: 7 }).getStateFilePath(),
           path.join(plain, '.agyloop', 'tasks', '7.json')
         );
         // The fallback must NOT be cached (#221): a second instantiation has to re-probe
@@ -1094,9 +1094,9 @@ describe('FileStateRepository', () => {
         };
         try {
           FileStateRepository.clearWorkspaceRootCache();
-          new FileStateRepository({ issue: 7 });
+          createStateRepository({ issue: 7 });
           const afterFirst = execCallCount;
-          new FileStateRepository({ issue: 7 });
+          createStateRepository({ issue: 7 });
           assert.ok(
             execCallCount > afterFirst,
             'the cwd fallback must not be cached -- a second instantiation must re-probe (#221)'
@@ -1142,7 +1142,7 @@ describe('FileStateRepository', () => {
       FileStateRepository.clearWorkspaceRootCache();
       try {
         assert.strictEqual(
-          new FileStateRepository({ issue: 7 }).getStateFilePath(),
+          createStateRepository({ issue: 7 }).getStateFilePath(),
           path.join(bare, '.agyloop', 'tasks', '7.json')
         );
       } finally {
@@ -1220,28 +1220,28 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
 
   test('FSR-B1: NODE_ENV=test bypasses the cross-worktree guard', () => {
     withGuardEnv({ NODE_ENV: 'test' }, () => {
-      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      const repo = createStateRepository({ stateFilePath: sandboxStateFile() });
       assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
     });
   });
 
   test('FSR-B2: NODE_TEST_CONTEXT bypasses the cross-worktree guard', () => {
     withGuardEnv({ NODE_TEST_CONTEXT: 'child-v8' }, () => {
-      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      const repo = createStateRepository({ stateFilePath: sandboxStateFile() });
       assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
     });
   });
 
   test('FSR-B3: the explicit env flag bypasses the guard in production', () => {
     withGuardEnv({ NODE_ENV: 'production', AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH: '1' }, () => {
-      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      const repo = createStateRepository({ stateFilePath: sandboxStateFile() });
       assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
     });
   });
 
   test('FSR-B4: a production operator run from a mismatched worktree is still refused', () => {
     withGuardEnv({ NODE_ENV: 'production' }, () => {
-      const strictRepo = new FileStateRepository({
+      const strictRepo = createStateRepository({
         stateFilePath: sandboxStateFile(),
         allowWorktreeIssueMismatch: false
       });
@@ -1250,7 +1250,7 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
         (err: any) => err instanceof StateStorageError && err.message === mismatchMessage
       );
 
-      const defaultRepo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      const defaultRepo = createStateRepository({ stateFilePath: sandboxStateFile() });
       assert.throws(
         () => defaultRepo.save(snapshotWithIssue(999)),
         (err: any) => err instanceof StateStorageError && err.message === mismatchMessage
@@ -1260,7 +1260,7 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
 
   test('FSR-B5: an explicit allowWorktreeIssueMismatch:true bypasses in production', () => {
     withGuardEnv({ NODE_ENV: 'production' }, () => {
-      const repo = new FileStateRepository({
+      const repo = createStateRepository({
         stateFilePath: sandboxStateFile(),
         allowWorktreeIssueMismatch: true
       });
@@ -1270,8 +1270,10 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
 
   test('FSR-B6: the documented signal bypasses the cross-worktree guard', () => {
     withGuardEnv({ [WORKTREE_GUARD_SIGNAL]: '1' }, () => {
-      const repo = new FileStateRepository({ stateFilePath: sandboxStateFile() });
+      const repo = createStateRepository({ stateFilePath: sandboxStateFile() });
       assert.doesNotThrow(() => repo.save(snapshotWithIssue(999)));
     });
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

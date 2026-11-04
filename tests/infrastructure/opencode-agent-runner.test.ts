@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { OpenCodeAgentRunner } = require('../../dist/infrastructure/opencode-agent-runner');
 const { QuotaExhaustedError } = require('../../dist/domain');
 
-class MockCommandExecutor {
+class CommandExecutorDouble {
   public executedCommands: Array<{ command: string; options?: any }> = [];
   public mockExitCode: number = 0;
   public mockStdout: string = 'Mock output';
@@ -25,7 +25,7 @@ class MockCommandExecutor {
 
 describe('OpenCodeAgentRunner', () => {
   test('formats the command correctly and executes the opencode CLI via the mock executor', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     const runner = new OpenCodeAgentRunner({
       commandExecutor: mockExecutor,
       defaultModel: 'ollama/ornith:9b-128k'
@@ -52,7 +52,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('overrides default model if specified in invocation payload', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     const runner = new OpenCodeAgentRunner({
       commandExecutor: mockExecutor,
       defaultModel: 'ollama/ornith:9b-128k'
@@ -77,7 +77,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('normalizes model name without provider prefix to ollama/ provider', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     const runner = new OpenCodeAgentRunner({
       commandExecutor: mockExecutor,
       defaultModel: 'ornith:9b-128k'
@@ -101,7 +101,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('passes prompt verbatim as argument array without shell escaping', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     const runner = new OpenCodeAgentRunner({
       commandExecutor: mockExecutor
     });
@@ -125,7 +125,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('throws error if opencode CLI returns non-zero exit code', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     mockExecutor.mockExitCode = 1;
     mockExecutor.mockStderr = 'Model not found';
 
@@ -145,7 +145,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('throws QuotaExhaustedError when opencode CLI reports RESOURCE_EXHAUSTED', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     mockExecutor.mockExitCode = 1;
     mockExecutor.mockStderr = 'RESOURCE_EXHAUSTED: quota exceeded; retry-after: 3600';
 
@@ -165,7 +165,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('parses Retry-After header into the quota signal', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     mockExecutor.mockExitCode = 1;
     mockExecutor.mockStderr = 'HTTP 429 Too Many Requests\nretry-after: 120';
 
@@ -184,7 +184,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('throws QuotaExhaustedError on HTTP 429 reported only on stdout', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     mockExecutor.mockExitCode = 1;
     mockExecutor.mockStderr = '';
     mockExecutor.mockStdout = 'HTTP 429 Too Many Requests';
@@ -204,7 +204,7 @@ describe('OpenCodeAgentRunner', () => {
   });
 
   test('keeps the plain Error shape for non-quota failures with empty stderr', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     mockExecutor.mockExitCode = 2;
     mockExecutor.mockStderr = '';
     mockExecutor.mockStdout = 'network unreachable';

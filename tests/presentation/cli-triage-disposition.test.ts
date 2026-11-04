@@ -22,6 +22,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 const {
   EXIT_CODE_SUCCESS,
   NOTE_TRIAGE_GATE_EXIT_CONDITION,
@@ -72,22 +73,24 @@ interface Sandbox {
   readonly binDir: string;
 }
 
-function makeSandbox(comments: unknown[] | null): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-disposition-'));
+function makeTriageDispositionSandbox(comments: unknown[] | null): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-triage-disposition-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/owner/repo.git'], {
+        cwd: dir,
+        stdio: 'ignore'
+      });
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
   const binDir = path.join(dir, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/owner/repo.git'], {
-    cwd: dir,
-    stdio: 'ignore'
-  });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
 
   // The fake `gh` is only installed when the case needs one.
   if (comments !== null) {
@@ -172,7 +175,7 @@ async function runTriage(
 
 describe('codeloop triage disposition output (issue #269)', () => {
   test('P1/P2: the output names the recorded disposition and the exit condition', async () => {
-    const sandbox = makeSandbox([ACTIONABLE_COMMENT, SUMMARY_COMMENT]);
+    const sandbox = makeTriageDispositionSandbox([ACTIONABLE_COMMENT, SUMMARY_COMMENT]);
     try {
       const run = await runTriage(sandbox, ['triage', 'completed', '--issue', String(ISSUE)]);
       const output = `${run.stdout}\n${run.stderr}`;
@@ -219,7 +222,7 @@ describe('codeloop triage disposition output (issue #269)', () => {
 
   test('P3: with no feedback readable the output says the disposition was NOT recorded', async () => {
     // No fake `gh` at all: the PR (and therefore the feedback) cannot be read.
-    const sandbox = makeSandbox(null);
+    const sandbox = makeTriageDispositionSandbox(null);
     try {
       const run = await runTriage(sandbox, ['triage', 'completed', '--issue', String(ISSUE)]);
       const output = `${run.stdout}\n${run.stderr}`;

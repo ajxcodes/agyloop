@@ -23,7 +23,10 @@ const {
   parseArguments,
   runCli
 } = require('../../dist/presentation');
+const { seedTask: seedTaskCanonical } = require('../helpers/state-seed.ts');
 const { NOTE_RESTARTED_FROM_COMPLETED } = require('../../dist/domain');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const EARLY = '2026-10-19T09:00:00.000Z';
@@ -37,51 +40,22 @@ const LATE = '2026-10-19T11:00:00.000Z';
  * these tests are about, and leaving the environment to chance would make them
  * pass for the wrong reason.
  */
-async function runCliInSandbox(
+
+/** The canonical harness with this suite's clean-env AGY_SUBAGENT delete + stripped output. */
+async function runCliInSandboxLocal(
   args: readonly string[],
   seed?: (dir: string) => void,
   inspect?: (dir: string) => void
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalSubagent = process.env.AGY_SUBAGENT;
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-scope-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    if (seed) {
-      seed(tempDir);
-    }
-    process.chdir(tempDir);
-    delete process.env.AGY_SUBAGENT;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-
-    if (inspect) {
-      inspect(tempDir);
-    }
-
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
+  const result = await runCliInSandboxCanonical(args, {
+    seed,
+    inspect,
+    stripAnsi: true,
+    env: { AGY_SUBAGENT: undefined }
+  });
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 }
+
 
 /** The root checkpoint (`.agyloop/state.json`). */
 function seedRoot(dir: string, overrides: Record<string, unknown> = {}): string {
@@ -106,29 +80,21 @@ function seedRoot(dir: string, overrides: Record<string, unknown> = {}): string 
 }
 
 /** A task checkpoint (`.agyloop/tasks/<issue>.json`). */
-function seedTask(
+/** The canonical task seed with this suite's REVIEW-over-feature/task-base shape. */
+function seedFeatureTask(
   dir: string,
   issue: number,
   overrides: Record<string, unknown> = {}
 ): string {
-  const tasksDir = path.join(dir, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const taskPath = path.join(tasksDir, `${issue}.json`);
-  fs.writeFileSync(
-    taskPath,
-    JSON.stringify({
-      version: '1.0.0',
-      currentStage: 'REVIEW',
-      mode: 'standard',
-      issue,
-      baseBranch: 'feature/task-base',
-      createdAt: EARLY,
-      updatedAt: LATE,
-      history: [{ stage: 'REVIEW', timestamp: LATE }],
-      ...overrides
-    })
-  );
-  return taskPath;
+  return seedTaskCanonical(dir, {
+    currentStage: 'REVIEW',
+    issue,
+    baseBranch: 'feature/task-base',
+    createdAt: EARLY,
+    updatedAt: LATE,
+    history: [{ stage: 'REVIEW', timestamp: LATE }],
+    ...overrides
+  });
 }
 
 /**
@@ -140,7 +106,7 @@ function seedMultiCheckpoint(dir: string): void {
   // #282: the descriptor must point at a REAL directory, otherwise the truthful
   // staleness rule would (correctly) report it stale and null the path.
   fs.mkdirSync(path.join(dir, '.worktrees', '999'), { recursive: true });
-  seedTask(dir, 999, {
+  seedFeatureTask(dir, 999, {
     worktree: {
       taskId: '999',
       worktreePath: path.join(dir, '.worktrees', '999'),
@@ -155,10 +121,6 @@ function readJson(file: string): Record<string, any> {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-function checkpointLine(stdout: string): string {
-  const line = stdout.split('\n').find((l) => l.startsWith('Checkpoint'));
-  return line === undefined ? '' : line.slice('Checkpoint'.length).trim();
-}
 
 describe('CLI Next & Branch-Info Subcommands', () => {
   describe('Argument Parsing', () => {
@@ -573,7 +535,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
  */
 describe('branch-info reads the authoritative checkpoint and writes nothing (#250)', () => {
   test('T-A1: reports the task branch/base, not the root’s (AC A1)', async () => {
-    const result = await runCliInSandbox(['branch-info', '--json'], seedMultiCheckpoint);
+    const result = await runCliInSandboxLocal(['branch-info', '--json'], seedMultiCheckpoint);
 
     assert.strictEqual(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
@@ -590,7 +552,7 @@ describe('branch-info reads the authoritative checkpoint and writes nothing (#25
   });
 
   test('T-A1: the JSON payload names the resolved checkpoint', async () => {
-    const result = await runCliInSandbox(['branch-info', '--json'], seedMultiCheckpoint);
+    const result = await runCliInSandboxLocal(['branch-info', '--json'], seedMultiCheckpoint);
 
     const parsed = JSON.parse(result.stdout);
     assert.ok(
@@ -603,7 +565,7 @@ describe('branch-info reads the authoritative checkpoint and writes nothing (#25
     let rootBefore = '';
     let taskBefore = '';
 
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['branch-info', '--json'],
       (dir) => {
         seedMultiCheckpoint(dir);
@@ -634,7 +596,7 @@ describe('branch-info reads the authoritative checkpoint and writes nothing (#25
     // worktree, so the branch inference had a base branch to persist.
     let rootBefore = '';
 
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['branch-info', '--json'],
       (dir) => {
         seedRoot(dir, {
@@ -667,7 +629,7 @@ describe('branch-info reads the authoritative checkpoint and writes nothing (#25
  */
 describe('next agrees with status about the authoritative checkpoint (#250)', () => {
   test('T-A2: both commands report the task checkpoint', async () => {
-    const status = await runCliInSandbox(['status'], seedMultiCheckpoint);
+    const status = await runCliInSandboxLocal(['status'], seedMultiCheckpoint);
     assert.strictEqual(status.code, 0, status.stderr);
     assert.ok(status.stdout.includes('[REVIEW]'), status.stdout);
     assert.ok(
@@ -675,7 +637,7 @@ describe('next agrees with status about the authoritative checkpoint (#250)', ()
       `unexpected checkpoint: ${checkpointLine(status.stdout)}`
     );
 
-    const next = await runCliInSandbox(['next', '--json'], seedMultiCheckpoint);
+    const next = await runCliInSandboxLocal(['next', '--json'], seedMultiCheckpoint);
     assert.strictEqual(next.code, 0, next.stderr);
     const parsed = JSON.parse(next.stdout);
     assert.strictEqual(parsed.currentStage, 'REVIEW', 'next must not report the root stage');
@@ -684,13 +646,13 @@ describe('next agrees with status about the authoritative checkpoint (#250)', ()
   test('T-A2: both commands agree about the pause', async () => {
     const seed = (dir: string) => {
       seedRoot(dir);
-      seedTask(dir, 999, { pausedAtGate: 'COMMIT', pausedAtTimestamp: EARLY });
+      seedFeatureTask(dir, 999, { pausedAtGate: 'COMMIT', pausedAtTimestamp: EARLY });
     };
 
-    const status = await runCliInSandbox(['status'], seed);
+    const status = await runCliInSandboxLocal(['status'], seed);
     assert.ok(status.stdout.includes('Paused At Gate: COMMIT'), status.stdout);
 
-    const next = await runCliInSandbox(['next', '--json'], seed);
+    const next = await runCliInSandboxLocal(['next', '--json'], seed);
     const parsed = JSON.parse(next.stdout);
     assert.strictEqual(parsed.pause.gate, 'COMMIT');
     assert.strictEqual(parsed.actionable, false);
@@ -699,7 +661,7 @@ describe('next agrees with status about the authoritative checkpoint (#250)', ()
   test('T-A2: next never writes the root checkpoint', async () => {
     let rootBefore = '';
 
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['next', '--json'],
       (dir) => {
         seedMultiCheckpoint(dir);
@@ -722,11 +684,11 @@ describe('next agrees with status about the authoritative checkpoint (#250)', ()
     // The pause block therefore RE-READS the resolved checkpoint after the use
     // case ran. Reading the root instead would report "no pause" for a pause
     // that is sitting in `tasks/999.json`.
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['next', '--json'],
       (dir) => {
         seedRoot(dir);
-        seedTask(dir, 999, { pausedAtGate: 'TRIAGE', pausedAtTimestamp: EARLY });
+        seedFeatureTask(dir, 999, { pausedAtGate: 'TRIAGE', pausedAtTimestamp: EARLY });
       }
     );
 
@@ -744,11 +706,11 @@ describe('transition acts on the authoritative checkpoint (#250)', () => {
   test('T-A3: the task checkpoint advances and the root is untouched', async () => {
     let rootBefore = '';
 
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['transition', 'APPROVAL'],
       (dir) => {
         seedRoot(dir);
-        seedTask(dir, 999, { currentStage: 'PLAN' });
+        seedFeatureTask(dir, 999, { currentStage: 'PLAN' });
         rootBefore = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
       },
       (dir) => {
@@ -768,11 +730,11 @@ describe('transition acts on the authoritative checkpoint (#250)', () => {
   });
 
   test('T-A3: the task checkpoint really advanced to APPROVAL', async () => {
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['transition', 'APPROVAL'],
       (dir) => {
         seedRoot(dir);
-        seedTask(dir, 999, { currentStage: 'PLAN' });
+        seedFeatureTask(dir, 999, { currentStage: 'PLAN' });
       },
       (dir) => {
         const task = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
@@ -787,11 +749,11 @@ describe('transition acts on the authoritative checkpoint (#250)', () => {
   });
 
   test('T-A3: the task checkpoint’s MODE is used, not the root’s', async () => {
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['transition', 'APPROVAL'],
       (dir) => {
         seedRoot(dir, { mode: 'standard' });
-        seedTask(dir, 999, { currentStage: 'PLAN', mode: 'yolo' });
+        seedFeatureTask(dir, 999, { currentStage: 'PLAN', mode: 'yolo' });
       }
     );
 
@@ -808,7 +770,7 @@ describe('transition acts on the authoritative checkpoint (#250)', () => {
  */
 describe('reset is honest about what it cleared (#250)', () => {
   test('T-B4: an existing task checkpoint is cleared and named', async () => {
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['reset', '--issue', '999'],
       seedMultiCheckpoint,
       (dir) => {
@@ -828,7 +790,7 @@ describe('reset is honest about what it cleared (#250)', () => {
   });
 
   test('T-B4: a missing task checkpoint fails and claims nothing', async () => {
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['reset', '--issue', '999'],
       (dir) => {
         seedRoot(dir);
@@ -850,7 +812,7 @@ describe('reset is honest about what it cleared (#250)', () => {
   });
 
   test('T-B4: reset --all keeps purging the root and every task', async () => {
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['reset', '--all'],
       seedMultiCheckpoint,
       (dir) => {
@@ -883,7 +845,7 @@ describe('a garbage --issue token is rejected by every command (#250)', () => {
     test(`T-B5: \`${command.join(' ')} --issue 999abc\` exits 1 and touches nothing`, async () => {
       const label = command.join(' ');
 
-      const result = await runCliInSandbox(
+      const result = await runCliInSandboxLocal(
         [...command, '--issue', '999abc'],
         seedMultiCheckpoint,
         (dir) => {
@@ -913,7 +875,7 @@ describe('a garbage --issue token is rejected by every command (#250)', () => {
   }
 
   test('T-B5: a VALID token still addresses tasks/999.json', async () => {
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['status', '--issue', '999'],
       seedMultiCheckpoint,
       (dir) => {
@@ -944,7 +906,7 @@ describe('worktree truth in read-only reporting (#282)', () => {
     liveWorktreePath = path.join(dir, '.worktrees', '77');
     fs.mkdirSync(liveWorktreePath, { recursive: true });
     seedRoot(dir);
-    seedTask(dir, 77, {
+    seedFeatureTask(dir, 77, {
       currentStage: 'IMPLEMENT',
       worktree: {
         taskId: '77',
@@ -957,7 +919,7 @@ describe('worktree truth in read-only reporting (#282)', () => {
   }
 
   test('T-P8a: next --json with a live worktree keeps worktreePath', async () => {
-    const result = await runCliInSandbox(['next', '--issue', '77', '--json'], seedLiveWorktree);
+    const result = await runCliInSandboxLocal(['next', '--issue', '77', '--json'], seedLiveWorktree);
 
     assert.strictEqual(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
@@ -974,7 +936,7 @@ describe('worktree truth in read-only reporting (#282)', () => {
     const seed = (dir: string): void => {
       stalePath = path.join(dir, '.worktrees', '42');
       seedRoot(dir);
-      seedTask(dir, 42, {
+      seedFeatureTask(dir, 42, {
         currentStage: 'IMPLEMENT',
         worktree: {
           taskId: '42',
@@ -987,7 +949,7 @@ describe('worktree truth in read-only reporting (#282)', () => {
       taskBefore = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '42.json'), 'utf8');
     };
 
-    const text = await runCliInSandbox(['branch-info', '--issue', '42'], seed);
+    const text = await runCliInSandboxLocal(['branch-info', '--issue', '42'], seed);
     assert.strictEqual(text.code, 0, text.stderr);
     assert.ok(/MISSING|stale/i.test(text.stdout), text.stdout);
     assert.ok(
@@ -995,7 +957,7 @@ describe('worktree truth in read-only reporting (#282)', () => {
       `the remediation must be executable: ${text.stdout}`
     );
 
-    const json = await runCliInSandbox(
+    const json = await runCliInSandboxLocal(
       ['branch-info', '--issue', '42', '--json'],
       seed,
       (dir) => {
@@ -1016,11 +978,11 @@ describe('worktree truth in read-only reporting (#282)', () => {
   test('T-P8: next reports a stale descriptor truthfully without writing (AC-9)', async () => {
     let taskBefore = '';
 
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['next', '--issue', '42', '--json'],
       (dir) => {
         seedRoot(dir);
-        seedTask(dir, 42, {
+        seedFeatureTask(dir, 42, {
           currentStage: 'IMPLEMENT',
           worktree: {
             taskId: '42',
@@ -1099,7 +1061,7 @@ describe('next is a declared query (#301)', () => {
 
   test('N-25 / AC-5: next --issue 900 in an empty sandbox creates no task file', async () => {
     let exists = true;
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['next', '--issue', '900', '--json'],
       undefined,
       (dir) => {
@@ -1116,11 +1078,11 @@ describe('next is a declared query (#301)', () => {
   test('N-26 / AC-5: next --dry-run --json writes nothing and declares its writes', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
+    const result = await runCliInSandboxLocal(
       ['next', '--issue', '905', '--dry-run', '--json'],
       (dir) => {
         seedRoot(dir);
-        seedTask(dir, 905, DISCOVERY);
+        seedFeatureTask(dir, 905, DISCOVERY);
         before = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '905.json'), 'utf8');
       },
       (dir) => {
@@ -1136,7 +1098,7 @@ describe('next is a declared query (#301)', () => {
   });
 
   test('N-27 / AC-5: the help text names the real write set and no longer claims read-only', async () => {
-    const result = await runCliInSandbox(['--help']);
+    const result = await runCliInSandboxLocal(['--help']);
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /next\s+.*(writes|--dry-run)/);
@@ -1159,15 +1121,15 @@ describe('next is a declared query (#301)', () => {
         stdio: 'ignore'
       });
       seedRoot(dir);
-      seedTask(dir, 88, { currentStage: 'IMPLEMENT', worktree: null, baseBranch: 'main' });
+      seedFeatureTask(dir, 88, { currentStage: 'IMPLEMENT', worktree: null, baseBranch: 'main' });
     };
 
-    const first = await runCliInSandbox(['next', '--issue', '88', '--json'], seed);
+    const first = await runCliInSandboxLocal(['next', '--issue', '88', '--json'], seed);
     assert.strictEqual(first.code, 0, first.stderr);
     const parsed = JSON.parse(first.stdout);
     assert.strictEqual(parsed.worktreePath, null, 'no descriptor means no worktree path');
 
-    const listed = await runCliInSandbox(['worktree', 'list'], seed);
+    const listed = await runCliInSandboxLocal(['worktree', 'list'], seed);
     assert.strictEqual(listed.code, 0, listed.stderr);
     assert.ok(listed.stdout.includes(path.join('.worktrees', '88')), listed.stdout);
   });

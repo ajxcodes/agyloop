@@ -63,7 +63,7 @@ describe('Structured Quality Gate Summary Protocol & Value Objects', () => {
       );
     });
 
-    test('validates equality across instances', () => {
+    test('validates TestMetrics equality across instances', () => {
       const a = new TestMetrics({ passed: 5, failed: 1, skipped: 0, total: 6 });
       const b = new TestMetrics({ passed: 5, failed: 1, skipped: 0, total: 6 });
       const c = new TestMetrics({ passed: 4, failed: 2, skipped: 0, total: 6 });

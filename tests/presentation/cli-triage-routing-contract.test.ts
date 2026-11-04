@@ -16,6 +16,25 @@ const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { ResolveSubagentUseCase } = require('../../dist/application');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+
+/** The canonical harness run with this suite's optional shadow-bin PATH and env overrides. */
+async function runInLocal(
+  dir: string,
+  args: string[],
+  options: { readonly binDir?: string; readonly env?: Record<string, string | undefined> } = {}
+): Promise<CliRun> {
+  const env: Record<string, string | undefined> = {
+    AGY_SUBAGENT: undefined,
+    ...(options.env ?? {})
+  };
+  if (options.binDir) {
+    env.PATH = `${options.binDir}${path.delimiter}${process.env.PATH ?? ''}`;
+  }
+  const result = await runCliInSandboxCanonical(args, { dir, env });
+  return { ...result };
+}
+
 const {
   TRIAGE_DISPOSITION_ACTIONS,
   MSG_TRIAGE_ROUTING_REQUIRES_GATE
@@ -67,59 +86,10 @@ interface CliRun {
   readonly stderr: string;
 }
 
-async function runIn(
-  dir: string,
-  args: string[],
-  options: { readonly binDir?: string; readonly env?: Record<string, string | undefined> } = {}
-): Promise<CliRun> {
-  const previousCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalPath = process.env.PATH;
-  const originalSubagent = process.env.AGY_SUBAGENT;
-  let stdout = '';
-  let stderr = '';
 
-  try {
-    process.chdir(dir);
-    if (options.binDir) {
-      process.env.PATH = `${options.binDir}${path.delimiter}${originalPath ?? ''}`;
-    }
-    if (options.env && 'AGY_SUBAGENT' in options.env) {
-      if (options.env.AGY_SUBAGENT === undefined) {
-        delete process.env.AGY_SUBAGENT;
-      } else {
-        process.env.AGY_SUBAGENT = options.env.AGY_SUBAGENT;
-      }
-    } else {
-      delete process.env.AGY_SUBAGENT;
-    }
+/** The canonical harness run with this suite's optional shadow-bin PATH and env overrides. */
 
-    console.log = (...argsOut: any[]) => {
-      stdout += argsOut.map(String).join(' ') + '\n';
-    };
-    console.error = (...argsOut: any[]) => {
-      stderr += argsOut.map(String).join(' ') + '\n';
-    };
 
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(previousCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
-    }
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-  }
-}
 
 describe('Triage routing command contract (issue #241)', () => {
   let sandboxes: string[] = [];
@@ -152,7 +122,7 @@ describe('Triage routing command contract (issue #241)', () => {
 
     const command = `${match[0]}`.replace('<action>', 'completed');
     const args = command.split(/\s+/).slice(1);
-    const run = await runIn(dir, args, { binDir });
+    const run = await runInLocal(dir, args, { binDir });
 
     assert.strictEqual(run.code, 0, `the named command must succeed as written:\n${run.stdout}\n${run.stderr}`);
     assert.strictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).currentStage, 'COMPLETED');
@@ -168,7 +138,7 @@ describe('Triage routing command contract (issue #241)', () => {
       // a stage-refused action; the error text is what distinguishes them.
       const { dir } = seedSandbox('COMPLETED');
       sandboxes.push(dir);
-      const run = await runIn(dir, ['triage', action, '--issue', String(ISSUE)]);
+      const run = await runInLocal(dir, ['triage', action, '--issue', String(ISSUE)]);
 
       assert.strictEqual(
         run.stderr.includes('Unrecognized triage action'),
@@ -208,7 +178,7 @@ describe('Triage routing command contract (issue #241)', () => {
     for (const marker of [undefined, '1']) {
       const triage = seedSandbox('TRIAGE');
       sandboxes.push(triage.dir);
-      const triageRun = await runIn(
+      const triageRun = await runInLocal(
         triage.dir,
         ['triage', 'completed', '--issue', String(ISSUE)],
         { env: { AGY_SUBAGENT: marker } }
@@ -223,7 +193,7 @@ describe('Triage routing command contract (issue #241)', () => {
     // A subagent-marked `review` is refused by the root-mutation guard.
     const marked = seedSandbox('REVIEW');
     sandboxes.push(marked.dir);
-    const markedRun = await runIn(
+    const markedRun = await runInLocal(
       marked.dir,
       ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(marked.dir), '--critique-report', critiquePath(marked.dir)],
       { env: { AGY_SUBAGENT: '1' } }
@@ -242,7 +212,7 @@ describe('Triage routing command contract (issue #241)', () => {
     // The orchestrator (no marker) files the same verdict successfully.
     const open = seedSandbox('REVIEW');
     sandboxes.push(open.dir);
-    const openRun = await runIn(
+    const openRun = await runInLocal(
       open.dir,
       ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(open.dir), '--critique-report', critiquePath(open.dir)],
       { env: { AGY_SUBAGENT: undefined } }
@@ -261,7 +231,7 @@ describe('Triage routing command contract (issue #241)', () => {
     const binDir = path.join(dir, 'bin');
     installGhStub(binDir);
 
-    const run = await runIn(dir, ['next', '--issue', String(ISSUE), '--json'], { binDir });
+    const run = await runInLocal(dir, ['next', '--issue', String(ISSUE), '--json'], { binDir });
     assert.strictEqual(run.code, 0, run.stderr);
 
     const payload = JSON.parse(run.stdout);
@@ -280,7 +250,7 @@ describe('Triage routing command contract (issue #241)', () => {
       sandboxes.push(dir);
       const before = fs.readFileSync(stateFile);
 
-      const run = await runIn(dir, ['triage', 'implement', '--issue', String(ISSUE)]);
+      const run = await runInLocal(dir, ['triage', 'implement', '--issue', String(ISSUE)]);
 
       assert.strictEqual(run.code, 1, `routing from ${stage} must fail:\n${run.stdout}\n${run.stderr}`);
       assert.ok(run.stderr.includes(MSG_TRIAGE_ROUTING_REQUIRES_GATE), run.stderr);

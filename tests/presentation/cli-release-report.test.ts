@@ -20,6 +20,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 
 interface Sandbox {
   readonly dir: string;
@@ -39,25 +40,28 @@ esac
 exit 0
 `;
 
-function makeSandbox(): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-release-report-'));
-  const git = (args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
-
-  git(['init', '-q', '-b', 'main']);
-  git(['config', 'user.email', 'smoke@test']);
-  git(['config', 'user.name', 'smoke']);
-  fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'chore: seed']);
+function makeReleaseReportSandbox(): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'codeloop-release-report-',
+    dirName: '',
+    gitignore: false,
+    initialBranch: 'main',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'x\n', 'utf8');
+    },
+    initialCommit: 'chore: seed'
+  });
+  const dir = sandbox.dir;
+  const g = (args: string[]) => sandbox.git(args);
 
   const phaseBranch = 'phase/6-smoke';
-  git(['checkout', '-qb', phaseBranch]);
+  g(['checkout', '-qb', phaseBranch]);
   fs.writeFileSync(path.join(dir, 'feature.txt'), 'feature\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'feat(release): add the thing']);
+  g(['add', '-A']);
+  g(['commit', '-qm', 'feat(release): add the thing']);
   fs.writeFileSync(path.join(dir, 'fix.txt'), 'fix\n', 'utf8');
-  git(['add', '-A']);
-  git(['commit', '-qm', 'fix(release): handle the thing']);
+  g(['add', '-A']);
+  g(['commit', '-qm', 'fix(release): handle the thing']);
 
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
   const binDir = path.join(dir, '.bin');
@@ -81,7 +85,7 @@ function runRelease(sandbox: Sandbox, args: string[]) {
 
 describe('release --dry-run reports the validated range (AC-30)', () => {
   test('a piped report is plain text and names the range it computed', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseReportSandbox();
     try {
       const run = runRelease(sandbox, [
         sandbox.phaseBranch,
@@ -108,7 +112,7 @@ describe('release --dry-run reports the validated range (AC-30)', () => {
   });
 
   test('the dry run names the cross-repo Release-notes dependency (AC-32)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseReportSandbox();
     try {
       const run = runRelease(sandbox, [
         sandbox.phaseBranch,
@@ -126,7 +130,7 @@ describe('release --dry-run reports the validated range (AC-30)', () => {
   });
 
   test('an unresolvable base ref exits non-zero and is never "nothing to release" (AC-28, AC-31)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReleaseReportSandbox();
     try {
       const run = runRelease(sandbox, [
         sandbox.phaseBranch,

@@ -1,3 +1,7 @@
+function readApprovalPauseCheckpoint(sandbox: Sandbox): any {
+  return readCheckpointPath(sandbox.stateFile);
+}
+
 /**
  * agyloop - `implement` consumes the APPROVAL pause end-to-end (issue #367)
  *
@@ -20,6 +24,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { readCheckpoint: readCheckpointPath } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 354;
@@ -116,53 +122,20 @@ interface CliRun {
 }
 
 /** Runs `runCli` inside the sandbox with a stubbed `gh` on PATH. */
-async function runIn(sandbox: Sandbox, args: string[]): Promise<CliRun> {
-  const previousCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalPath = process.env.PATH;
-  const originalSubagent = process.env.AGY_SUBAGENT;
-  let stdout = '';
-  let stderr = '';
 
-  try {
-    process.chdir(sandbox.dir);
-    process.env.PATH = `${sandbox.binDir}${path.delimiter}${originalPath ?? ''}`;
-    delete process.env.AGY_SUBAGENT;
-
-    console.log = (...argsOut: any[]) => {
-      stdout += argsOut.map(String).join(' ') + '\n';
-    };
-    console.error = (...argsOut: any[]) => {
-      stderr += argsOut.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(previousCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
+/** The canonical harness run with this suite's shadow-bin PATH and clean env. */
+async function runInLocal(sandbox: Sandbox, args: string[]): Promise<CliRun> {
+  const result = await runCliInSandboxCanonical(args, {
+    dir: sandbox.dir,
+    stripAnsi: true,
+    env: {
+      AGY_SUBAGENT: undefined,
+      PATH: `${sandbox.binDir}${path.delimiter}${process.env.PATH ?? ''}`
     }
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-  }
+  });
+  return { ...result };
 }
 
-function readCheckpoint(sandbox: Sandbox): any {
-  return JSON.parse(fs.readFileSync(sandbox.stateFile, 'utf8'));
-}
 
 describe('`implement` consumes the APPROVAL pause end-to-end (issue #367)', () => {
   let sandboxes: string[] = [];
@@ -181,12 +154,12 @@ describe('`implement` consumes the APPROVAL pause end-to-end (issue #367)', () =
     const sandbox = seedSandbox();
     sandboxes.push(sandbox.dir);
 
-    const implement = await runIn(sandbox, ['implement', '--issue', String(ISSUE)]);
+    const implement = await runInLocal(sandbox, ['implement', '--issue', String(ISSUE)]);
     assert.strictEqual(implement.code, 0, `${implement.stdout}\n${implement.stderr}`);
     assert.match(implement.stdout, /Advanced to/);
     assert.ok(!implement.stdout.includes('[dry-run]'), implement.stdout);
 
-    const persisted = readCheckpoint(sandbox);
+    const persisted = readApprovalPauseCheckpoint(sandbox);
     assert.strictEqual(persisted.currentStage, 'IMPLEMENT');
     assert.strictEqual(persisted.pausedAtGate, null, 'the APPROVAL pause must be consumed');
     assert.strictEqual(persisted.pausedAtTimestamp, null);
@@ -195,7 +168,7 @@ describe('`implement` consumes the APPROVAL pause end-to-end (issue #367)', () =
       `the wait must be banked, got ${persisted.totalHumanWaitMs}`
     );
 
-    const next = await runIn(sandbox, ['next', '--issue', String(ISSUE), '--json']);
+    const next = await runInLocal(sandbox, ['next', '--issue', String(ISSUE), '--json']);
     assert.strictEqual(next.code, 0, `${next.stdout}\n${next.stderr}`);
     const payload = JSON.parse(next.stdout);
     assert.strictEqual(payload.currentStage, 'IMPLEMENT');
@@ -214,12 +187,12 @@ describe('`implement` consumes the APPROVAL pause end-to-end (issue #367)', () =
     sandboxes.push(sandbox.dir);
 
     const before = fs.readFileSync(sandbox.stateFile, 'utf8');
-    const run = await runIn(sandbox, ['implement', '--issue', String(ISSUE), '--dry-run']);
+    const run = await runInLocal(sandbox, ['implement', '--issue', String(ISSUE), '--dry-run']);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
     const after = fs.readFileSync(sandbox.stateFile, 'utf8');
 
     assert.strictEqual(after, before, '--dry-run must not rewrite the checkpoint');
-    const persisted = readCheckpoint(sandbox);
+    const persisted = readApprovalPauseCheckpoint(sandbox);
     assert.strictEqual(persisted.currentStage, 'APPROVAL');
     assert.strictEqual(persisted.pausedAtGate, 'APPROVAL');
     assert.strictEqual(persisted.totalHumanWaitMs, 7);

@@ -22,6 +22,32 @@ const path = require('node:path');
 
 const { GetNextActionUseCase, critiqueReportPathFor } = require('../../dist/application');
 const { FileStateRepository } = require('../../dist/infrastructure');
+const { readCheckpoint } = require('../helpers/state-seed.ts');
+
+/** Canonical task-seed writer pinned to the caller-owned checkpoint file. */
+function seedCheckpointFile(stateFile: string, extra: Record<string, unknown> = {}): string {
+  const now = new Date().toISOString();
+  return helpersStateSeed.seedCheckpoint(
+    path.dirname(path.dirname(path.dirname(stateFile))),
+    {
+      version: '1.0.0',
+      currentStage: 'REVIEW',
+      mode: 'standard',
+      issue: ISSUE,
+      baseBranch: 'main',
+      createdAt: now,
+      updatedAt: now,
+      history: [{ stage: 'REVIEW', timestamp: now }],
+      pausedAtGate: null,
+      pausedAtTimestamp: null,
+      reviewDispatchCount: 0,
+      ...extra
+    },
+    { file: stateFile }
+  );
+}
+
+const helpersStateSeed = require('../helpers/state-seed.ts');
 const {
   NOTE_REVIEW_GATE_EXIT_CONDITION,
   MAX_REVIEW_DISPATCH_LOOPS,
@@ -40,37 +66,6 @@ const configRepo = {
   }),
   mapModelToTier: () => 'flash'
 };
-
-function seedCheckpoint(stateFile: string, extra: Record<string, unknown> = {}): void {
-  const now = new Date().toISOString();
-  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-  fs.writeFileSync(
-    stateFile,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: 'REVIEW',
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage: 'REVIEW', timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        reviewDispatchCount: 0,
-        ...extra
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
-
-function readCheckpoint(stateFile: string): any {
-  return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-}
 
 describe('REVIEW directive names its verdict channel (issue #272)', () => {
   let sandbox: string;
@@ -94,8 +89,8 @@ describe('REVIEW directive names its verdict channel (issue #272)', () => {
   beforeEach(() => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-channel-'));
     stateFile = path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
-    seedCheckpoint(stateFile);
-    const stateRepo = new FileStateRepository({ stateFilePath: stateFile });
+    seedCheckpointFile(stateFile);
+    const stateRepo = createStateRepository({ stateFilePath: stateFile });
     useCase = new GetNextActionUseCase(stateRepo, configRepo);
   });
 
@@ -141,7 +136,7 @@ describe('REVIEW directive names its verdict channel (issue #272)', () => {
   });
 
   test('RV4: a paused read does not increment the counter', async () => {
-    seedCheckpoint(stateFile, { pausedAtGate: 'APPROVAL', pausedAtTimestamp: new Date().toISOString() });
+    seedCheckpointFile(stateFile, { pausedAtGate: 'APPROVAL', pausedAtTimestamp: new Date().toISOString() });
 
     const result = await executeRead();
 
@@ -321,3 +316,5 @@ describe('REVIEW read degrades on an unwritable counter save (issue #291 F1)', (
     assert.strictEqual(repo.saveCalls, 2);
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

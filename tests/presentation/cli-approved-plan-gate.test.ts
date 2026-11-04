@@ -1,3 +1,7 @@
+function readApprovedPlanGateCheckpoint(sandbox: Sandbox): any {
+  return readCheckpointPath(sandbox.stateFile);
+}
+
 /**
  * agyloop - the approved-plan identity is frozen at the APPROVAL gate (#421)
  *
@@ -22,6 +26,8 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { FilePlanGenerator } = require('../../dist/infrastructure');
+const { readCheckpoint: readCheckpointPath } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 421;
@@ -114,47 +120,19 @@ function seedSandbox(currentStage: string = 'PLAN', mode: string = 'standard'): 
 }
 
 /** Runs `runCli` inside the sandbox with a stubbed `gh` on PATH. */
-async function runIn(sandbox: Sandbox, args: string[]): Promise<CliRun> {
-  const previousCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalPath = process.env.PATH;
 
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    process.chdir(sandbox.dir);
-    process.env.PATH = `${sandbox.binDir}${path.delimiter}${originalPath ?? ''}`;
-
-    console.log = (...argsOut: any[]) => {
-      stdout += argsOut.map(String).join(' ') + '\n';
-    };
-    console.error = (...argsOut: any[]) => {
-      stderr += argsOut.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(previousCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
+/** The canonical harness run with this suite's shadow-bin PATH and clean env. */
+async function runInLocal(sandbox: Sandbox, args: string[]): Promise<CliRun> {
+  const result = await runCliInSandboxCanonical(args, {
+    dir: sandbox.dir,
+    stripAnsi: true,
+    env: {
+      PATH: `${sandbox.binDir}${path.delimiter}${process.env.PATH ?? ''}`
     }
-  }
+  });
+  return { ...result };
 }
 
-function readCheckpoint(sandbox: Sandbox): any {
-  return JSON.parse(fs.readFileSync(sandbox.stateFile, 'utf8'));
-}
 
 function hashOf(planPath: string): string {
   return new FilePlanGenerator().hashPlanDocument(planPath) as string;
@@ -180,10 +158,10 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     const sandbox = sandboxAtPlan();
     const expected = hashOf(sandbox.planPath);
 
-    const run = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    const run = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
-    const checkpoint = readCheckpoint(sandbox);
+    const checkpoint = readApprovedPlanGateCheckpoint(sandbox);
     assert.strictEqual(checkpoint.currentStage, 'APPROVAL');
     assert.strictEqual(checkpoint.approvedPlanDigest, expected);
     assert.strictEqual(checkpoint.approvedPlanPath, sandbox.planPath);
@@ -191,10 +169,10 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
 
   test('CLI-2: implement refuses a plan edited after approval', async () => {
     const sandbox = sandboxAtPlan();
-    const approve = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    const approve = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
     assert.strictEqual(approve.code, 0, `${approve.stdout}\n${approve.stderr}`);
 
-    const before = readCheckpoint(sandbox);
+    const before = readApprovedPlanGateCheckpoint(sandbox);
     const approved = before.approvedPlanDigest;
     assert.ok(approved, 'the gate must have recorded a digest');
 
@@ -202,7 +180,7 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     const edited = hashOf(sandbox.planPath);
     assert.notStrictEqual(edited, approved);
 
-    const run = await runIn(sandbox, ['implement', '--issue', String(ISSUE), '--no-worktree']);
+    const run = await runInLocal(sandbox, ['implement', '--issue', String(ISSUE), '--no-worktree']);
     assert.notStrictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
     const output = `${run.stdout}\n${run.stderr}`;
     assert.ok(output.includes("Validation failed for field 'approvedPlanDigest'"), output);
@@ -211,7 +189,7 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     assert.ok(output.includes(sandbox.planPath), output);
     assert.match(output, /changed after approval/);
 
-    const after = readCheckpoint(sandbox);
+    const after = readApprovedPlanGateCheckpoint(sandbox);
     assert.strictEqual(after.currentStage, 'APPROVAL');
     assert.strictEqual(after.approvedPlanDigest, approved);
     assert.strictEqual(after.approvedPlanPath, before.approvedPlanPath);
@@ -227,7 +205,7 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
 
   test('CLI-3: transition IMPLEMENT refuses identically and writes nothing', async () => {
     const sandbox = sandboxAtPlan();
-    const approve = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    const approve = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
     assert.strictEqual(approve.code, 0, `${approve.stdout}\n${approve.stderr}`);
 
     const beforeText = fs.readFileSync(sandbox.stateFile, 'utf8');
@@ -236,7 +214,7 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     fs.appendFileSync(sandbox.planPath, EDITED_MARKER, 'utf8');
     const edited = hashOf(sandbox.planPath);
 
-    const run = await runIn(sandbox, [
+    const run = await runInLocal(sandbox, [
       'transition',
       'IMPLEMENT',
       '--issue',
@@ -260,11 +238,11 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
 
   test('CLI-4: the PLAN -> APPROVAL -> IMPLEMENT recovery records the corrected bytes', async () => {
     const sandbox = sandboxAtPlan();
-    const approve = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    const approve = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
     assert.strictEqual(approve.code, 0, `${approve.stdout}\n${approve.stderr}`);
 
     fs.appendFileSync(sandbox.planPath, EDITED_MARKER, 'utf8');
-    const refused = await runIn(sandbox, [
+    const refused = await runInLocal(sandbox, [
       'implement',
       '--issue',
       String(ISSUE),
@@ -273,13 +251,13 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     assert.notStrictEqual(refused.code, 0, `${refused.stdout}\n${refused.stderr}`);
 
     // The documented recovery: re-plan, re-approve, implement.
-    const replan = await runIn(sandbox, ['transition', 'PLAN', '--issue', String(ISSUE)]);
+    const replan = await runInLocal(sandbox, ['transition', 'PLAN', '--issue', String(ISSUE)]);
     assert.strictEqual(replan.code, 0, `${replan.stdout}\n${replan.stderr}`);
-    const reapprove = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    const reapprove = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
     assert.strictEqual(reapprove.code, 0, `${reapprove.stdout}\n${reapprove.stderr}`);
 
     const corrected = hashOf(sandbox.planPath);
-    const implemented = await runIn(sandbox, [
+    const implemented = await runInLocal(sandbox, [
       'implement',
       '--issue',
       String(ISSUE),
@@ -287,7 +265,7 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     ]);
     assert.strictEqual(implemented.code, 0, `${implemented.stdout}\n${implemented.stderr}`);
 
-    const checkpoint = readCheckpoint(sandbox);
+    const checkpoint = readApprovedPlanGateCheckpoint(sandbox);
     assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
     assert.strictEqual(checkpoint.approvedPlanDigest, corrected);
     assert.strictEqual(checkpoint.approvedPlanPath, sandbox.planPath);
@@ -297,10 +275,10 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
     const sandbox = sandboxAtPlan();
     const expected = hashOf(sandbox.planPath);
 
-    const run = await runIn(sandbox, ['implement', '--issue', String(ISSUE), '--no-worktree']);
+    const run = await runInLocal(sandbox, ['implement', '--issue', String(ISSUE), '--no-worktree']);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
-    const checkpoint = readCheckpoint(sandbox);
+    const checkpoint = readApprovedPlanGateCheckpoint(sandbox);
     assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
     assert.strictEqual(checkpoint.approvedPlanDigest, expected);
     assert.strictEqual(checkpoint.approvedPlanPath, sandbox.planPath);
@@ -308,16 +286,16 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
 
   test('CLI-6: a real refusal without --no-worktree leaves no worktree, no branch and the APPROVAL checkpoint (#420)', async () => {
     const sandbox = sandboxAtPlan();
-    const approve = await runIn(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
+    const approve = await runInLocal(sandbox, ['transition', 'APPROVAL', '--issue', String(ISSUE)]);
     assert.strictEqual(approve.code, 0, `${approve.stdout}\n${approve.stderr}`);
 
-    const approved = readCheckpoint(sandbox);
+    const approved = readApprovedPlanGateCheckpoint(sandbox);
     assert.ok(approved.approvedPlanDigest, 'the gate must have recorded a digest');
 
     fs.appendFileSync(sandbox.planPath, EDITED_MARKER, 'utf8');
 
     // No `--no-worktree`: implement provisions first, then the guard refuses.
-    const run = await runIn(sandbox, ['implement', '--issue', String(ISSUE)]);
+    const run = await runInLocal(sandbox, ['implement', '--issue', String(ISSUE)]);
     assert.notStrictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
     const output = `${run.stdout}\n${run.stderr}`;
     assert.ok(output.includes("Validation failed for field 'approvedPlanDigest'"), output);
@@ -341,7 +319,7 @@ describe('approved-plan identity at the APPROVAL gate (#421)', () => {
       `only the root worktree may remain:\n${worktreeList}`
     );
 
-    const after = readCheckpoint(sandbox);
+    const after = readApprovedPlanGateCheckpoint(sandbox);
     assert.strictEqual(after.currentStage, 'APPROVAL');
     assert.strictEqual(after.worktree, null);
     assert.strictEqual(after.approvedPlanDigest, approved.approvedPlanDigest);

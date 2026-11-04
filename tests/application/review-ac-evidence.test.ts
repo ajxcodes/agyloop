@@ -1,3 +1,7 @@
+function runGit(cwd: string, args: string[]) {
+  return gitStatus(cwd, args, { stdio: 'pipe' });
+}
+
 /**
  * agyloop - Review AC evidence (issue #432, TR-27..TR-31)
  */
@@ -20,13 +24,11 @@ const {
   REVIEWER_AC_EVIDENCE_STATUS_CONTRACT
 } = require('../../dist/domain');
 const { ProcessCommandExecutor } = require('../../dist/infrastructure');
+const { gitStatus } = require('../helpers/sandbox.ts');
 
-function git(cwd: string, args: string[]) {
-  return spawnSync('git', args, { cwd, encoding: 'utf8' });
-}
 
-function gitOk(cwd: string, args: string[]) {
-  const result = git(cwd, args);
+function runGitOk(cwd: string, args: string[]) {
+  const result = runGit(cwd, args);
   assert.strictEqual(
     result.status,
     0,
@@ -159,14 +161,14 @@ function writeInScopeMentionPlan(): void {
 describe('Review AC evidence (issue #432)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-evidence-'));
-    gitOk(root, ['init', '-q', '-b', 'main']);
-    gitOk(root, ['config', 'user.email', 'smoke@example.com']);
-    gitOk(root, ['config', 'user.name', 'smoke']);
+    runGitOk(root, ['init', '-q', '-b', 'main']);
+    runGitOk(root, ['config', 'user.email', 'smoke@example.com']);
+    runGitOk(root, ['config', 'user.name', 'smoke']);
     planPath = path.join(root, 'implementation_plan.md');
     writePlan(['- AC1: verified']);
     fs.writeFileSync(path.join(root, 'base.txt'), 'base\n');
-    gitOk(root, ['add', '-A']);
-    gitOk(root, ['commit', '-qm', 'init']);
+    runGitOk(root, ['add', '-A']);
+    runGitOk(root, ['commit', '-qm', 'init']);
   });
 
   afterEach(() => {
@@ -650,10 +652,10 @@ describe('Review AC evidence (issue #432)', () => {
   });
 
   function commitDeliveredOnBranch(): void {
-    gitOk(root, ['checkout', '-qb', 'phase/6-codeloop']);
+    runGitOk(root, ['checkout', '-qb', 'phase/6-codeloop']);
     fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const delivered = 1;\n');
-    gitOk(root, ['add', '-A']);
-    gitOk(root, ['commit', '-qm', 'feat: delivered']);
+    runGitOk(root, ['add', '-A']);
+    runGitOk(root, ['commit', '-qm', 'feat: delivered']);
   }
 
   test('RAE23 a committed change in a checkpoint with no baseBranch is recognised as delivered (#450 AC2)', async () => {
@@ -696,7 +698,7 @@ describe('Review AC evidence (issue #432)', () => {
   });
 
   test('RAE25 a verdict citing the reviewed base in backticks beside a delivered path stays APPROVED (#473 AC4)', async () => {
-    gitOk(root, ['checkout', '-qb', 'phase/6-codeloop']);
+    runGitOk(root, ['checkout', '-qb', 'phase/6-codeloop']);
     fs.writeFileSync(path.join(root, 'delivered.ts'), 'export const delivered = 1;\n');
     const { useCase } = makeUseCase({
       commandExecutor: executor(),

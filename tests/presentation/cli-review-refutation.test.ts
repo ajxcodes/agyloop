@@ -1,3 +1,16 @@
+/** The canonical task seed with this suite's REVIEW checkpoint shape. */
+function seedStageCheckpoint(sandbox: string, stage = 'REVIEW'): void {
+  const now = new Date().toISOString();
+  seedTaskCanonical(sandbox, {
+    issue: ISSUE,
+    currentStage: stage,
+    createdAt: now,
+    updatedAt: now,
+    history: [{ stage, timestamp: now }],
+    reviewDispatchCount: 0
+  });
+}
+
 /**
  * agyloop - `codeloop review --refute` (issue #349 AC4, end to end)
  *
@@ -25,7 +38,11 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE } = require('../../dist/domain');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
+const { seedTask: seedTaskCanonical, checkpointPath, readCheckpoint } = require('../helpers/state-seed.ts');
 
 const CRITIQUE_BINARY = 'critique';
 const ISSUE = 349;
@@ -35,61 +52,9 @@ const V7_BODY = 'actions/checkout@v7 does not exist. Revert to @v4.';
 const V7_REFUTATION = 'src/app.ts:10=actions/checkout@v7 exists (v7.0.1, published 2026-07-20); verified with gh api';
 const V7_REASON = 'actions/checkout@v7 exists (v7.0.1, published 2026-07-20); verified with gh api';
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 let sharedShadow: any = null;
 
-function buildCritiqueFreePathShadow(shadowRoot: string): string {
-  fs.mkdirSync(shadowRoot, { recursive: true });
-  const seen = new Set();
-  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const shadowEntries = [];
-  let idx = 0;
-
-  for (const dir of parts) {
-    let real;
-    try {
-      real = fs.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    if (seen.has(real)) continue;
-    seen.add(real);
-
-    let entries;
-    try {
-      entries = fs.readdirSync(real);
-    } catch {
-      continue;
-    }
-
-    const target = path.join(shadowRoot, `d${idx++}`);
-    if (!entries.includes(CRITIQUE_BINARY)) {
-      try {
-        fs.symlinkSync(real, target, 'dir');
-        shadowEntries.push(target);
-        continue;
-      } catch {
-        // Fall through to entry-by-entry copies.
-      }
-    }
-
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of entries) {
-      if (entry === CRITIQUE_BINARY || entry.startsWith(`${CRITIQUE_BINARY}.`)) continue;
-      try {
-        fs.symlinkSync(fs.realpathSync(path.join(real, entry)), path.join(target, entry));
-      } catch {
-        // Skip entries that cannot be resolved.
-      }
-    }
-    shadowEntries.push(target);
-  }
-
-  return shadowEntries.join(path.delimiter);
-}
 
 function sharedShadowPath() {
   if (sharedShadow === null) {
@@ -105,44 +70,8 @@ after(() => {
   }
 });
 
-function checkpointPath(sandbox: string): string {
-  return path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
-}
 
-function seedCheckpoint(sandbox: string, stage = 'REVIEW'): void {
-  const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const now = new Date().toISOString();
-  fs.writeFileSync(
-    checkpointPath(sandbox),
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: stage,
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage, timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        reviewDispatchCount: 0
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
 
-function readCheckpoint(sandbox: string): any {
-  try {
-    return JSON.parse(fs.readFileSync(checkpointPath(sandbox), 'utf8'));
-  } catch {
-    return null;
-  }
-}
 
 function readCheckpointBytes(sandbox: string): string | null {
   try {
@@ -153,7 +82,7 @@ function readCheckpointBytes(sandbox: string): string | null {
 }
 
 function lastMetadata(sandbox: string): any {
-  const checkpoint = readCheckpoint(sandbox);
+  const checkpoint = readCheckpoint(checkpointPath(sandbox, ISSUE));
   const history = checkpoint.history;
   return history[history.length - 1].metadata;
 }
@@ -166,14 +95,17 @@ REMEDIATION_GUIDANCE:
 - None
 `;
 
-function makeSandbox(comments: any): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-349-refute-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+function makeRefutationSandbox(comments: any): string {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-349-refute-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'verdict.md'), APPROVED_BLOCK, 'utf8');
   fs.writeFileSync(
@@ -186,7 +118,7 @@ function makeSandbox(comments: any): string {
     }),
     'utf8'
   );
-  seedCheckpoint(dir);
+  seedStageCheckpoint(dir);
   return dir;
 }
 
@@ -262,7 +194,7 @@ const TWO_AT_ONE_LINE = [
 
 describe('codeloop review --refute (issue #349)', () => {
   test('CR1: a valid refutation records APPROVED and is audited (AC4-S1/S5)', async () => {
-    const sandbox = makeSandbox(V7_COMMENTS);
+    const sandbox = makeRefutationSandbox(V7_COMMENTS);
     try {
       const run = await review(sandbox, ['--refute', V7_REFUTATION]);
 
@@ -289,7 +221,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR2: without a refutation the same fixture still reverts (AC4-S2)', async () => {
-    const sandbox = makeSandbox(V7_COMMENTS);
+    const sandbox = makeRefutationSandbox(V7_COMMENTS);
     try {
       const run = await review(sandbox);
 
@@ -307,7 +239,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR3: a refutation without a reason is refused and writes nothing (AC4-S3)', async () => {
-    const sandbox = makeSandbox(V7_COMMENTS);
+    const sandbox = makeRefutationSandbox(V7_COMMENTS);
     try {
       const before = readCheckpointBytes(sandbox);
 
@@ -331,7 +263,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR4: a target matching no blocking finding is refused (AC4-S4)', async () => {
-    const sandbox = makeSandbox(V7_COMMENTS);
+    const sandbox = makeRefutationSandbox(V7_COMMENTS);
     try {
       const before = readCheckpointBytes(sandbox);
 
@@ -346,14 +278,14 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR5: an ambiguous target is refused, then #severity narrows it (AC4-S4)', async () => {
-    const sandbox = makeSandbox(TWO_AT_ONE_LINE);
+    const sandbox = makeRefutationSandbox(TWO_AT_ONE_LINE);
     try {
       const ambiguous = await review(sandbox, ['--refute', 'src/db.ts:42=v7 exists']);
       assert.strictEqual(ambiguous.value, EXIT_CODE_FAILURE, ambiguous.stdout);
       assert.ok(ambiguous.stderr.includes('2 blocking findings'), ambiguous.stderr);
       assert.ok(!(lastMetadata(sandbox) || {}).reviewRefutations);
 
-      seedCheckpoint(sandbox);
+      seedStageCheckpoint(sandbox);
       const narrowed = await review(sandbox, [
         '--refute',
         'src/db.ts:42#error=the retry loop is bounded'
@@ -379,7 +311,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR6: --json carries the refutation audit in one document (AC4.4)', async () => {
-    const sandbox = makeSandbox(V7_COMMENTS);
+    const sandbox = makeRefutationSandbox(V7_COMMENTS);
     try {
       const run = await review(sandbox, ['--json', '--refute', V7_REFUTATION]);
 
@@ -409,7 +341,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR7: a genuine defect beside a refuted claim still reverts (AC4-S6)', async () => {
-    const sandbox = makeSandbox([
+    const sandbox = makeRefutationSandbox([
       ...V7_COMMENTS,
       {
         path: 'src/db.ts',
@@ -441,7 +373,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR8: --refute is scoped to review (AC4.3)', async () => {
-    const sandbox = makeSandbox(V7_COMMENTS);
+    const sandbox = makeRefutationSandbox(V7_COMMENTS);
     try {
       const before = readCheckpointBytes(sandbox);
       const run = await withSanitizedEnv(sandbox, async () =>
@@ -457,7 +389,7 @@ describe('codeloop review --refute (issue #349)', () => {
   });
 
   test('CR9: refutations are repeatable, and a dry run records nothing', async () => {
-    const sandbox = makeSandbox([
+    const sandbox = makeRefutationSandbox([
       ...V7_COMMENTS,
       { path: 'src/db.ts', line: 42, severity: 'error', body: 'The retry loop leaks a timer.' }
     ]);
@@ -477,7 +409,7 @@ describe('codeloop review --refute (issue #349)', () => {
       assert.strictEqual(lastMetadata(sandbox).reviewRefutations.length, 2);
 
       // A dry run reports the prediction and writes nothing.
-      seedCheckpoint(sandbox);
+      seedStageCheckpoint(sandbox);
       const before = readCheckpointBytes(sandbox);
       const dry = await review(sandbox, [
         '--json',

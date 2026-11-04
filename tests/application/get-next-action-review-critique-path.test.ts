@@ -23,6 +23,31 @@ const path = require('node:path');
 const { GetNextActionUseCase } = require('../../dist/application');
 const { FileStateRepository } = require('../../dist/infrastructure');
 
+/** Canonical task-seed writer pinned to the caller-owned checkpoint file. */
+function seedCheckpointFile(stateFile: string, extra: Record<string, unknown> = {}): string {
+  const now = new Date().toISOString();
+  return helpersStateSeed.seedCheckpoint(
+    path.dirname(path.dirname(path.dirname(stateFile))),
+    {
+      version: '1.0.0',
+      currentStage: 'REVIEW',
+      mode: 'standard',
+      issue: ISSUE,
+      baseBranch: 'main',
+      createdAt: now,
+      updatedAt: now,
+      history: [{ stage: 'REVIEW', timestamp: now }],
+      pausedAtGate: null,
+      pausedAtTimestamp: null,
+      reviewDispatchCount: 0,
+      ...extra
+    },
+    { file: stateFile }
+  );
+}
+
+const helpersStateSeed = require('../helpers/state-seed.ts');
+
 const ISSUE = 314;
 const RESOLVED = '/home/reviewer/.local/share/critique/bin/critique.js';
 
@@ -47,38 +72,13 @@ const configRepo = {
   mapModelToTier: () => 'flash'
 };
 
-function seedCheckpoint(stateFile: string): void {
-  const now = new Date().toISOString();
-  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-  fs.writeFileSync(
-    stateFile,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: 'REVIEW',
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage: 'REVIEW', timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        reviewDispatchCount: 0
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
 
 describe('REVIEW directive Tier 1 quotes the critique path it resolved (issue #314)', () => {
   let sandbox: string;
   let stateFile: string;
 
   const readDirective = async (critiquePort: any) => {
-    const stateRepo = new FileStateRepository({ stateFilePath: stateFile });
+    const stateRepo = createStateRepository({ stateFilePath: stateFile });
     const useCase = new GetNextActionUseCase(
       stateRepo,
       configRepo,
@@ -104,7 +104,7 @@ describe('REVIEW directive Tier 1 quotes the critique path it resolved (issue #3
   beforeEach(() => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-critique-path-'));
     stateFile = path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
-    seedCheckpoint(stateFile);
+    seedCheckpointFile(stateFile);
   });
 
   afterEach(() => {
@@ -145,3 +145,5 @@ describe('REVIEW directive Tier 1 quotes the critique path it resolved (issue #3
     assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

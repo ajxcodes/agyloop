@@ -1,3 +1,12 @@
+/** The canonical seedTask composed with this suite's snapshot() default shape. */
+function seedTaskAt(
+  dir: string,
+  issue: number,
+  overrides: Record<string, unknown> = {}
+): void {
+  seedTaskCanonical(dir, snapshot({ issue, ...overrides }));
+}
+
 /**
  * agyloop - `--dry-run` forwarding contract (#248 Wave 2)
  *
@@ -22,6 +31,9 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+const { seedTask: seedTaskCanonical } = require('../helpers/state-seed.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const SEEDED_AT = '2026-10-01T00:00:00.000Z';
@@ -32,9 +44,6 @@ interface CaptureResult {
   readonly stderr: string;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 function snapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -66,13 +75,6 @@ function seedRoot(dir: string, overrides: Record<string, unknown> = {}): void {
   fs.writeFileSync(path.join(dir, '.agyloop', 'state.json'), JSON.stringify(snapshot(overrides)));
 }
 
-function seedTask(dir: string, issue: number, overrides: Record<string, unknown> = {}): void {
-  fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.agyloop', 'tasks', `${issue}.json`),
-    JSON.stringify(snapshot({ issue, ...overrides }))
-  );
-}
 
 function treeHash(root: string): string {
   if (!fs.existsSync(root)) return 'absent';
@@ -93,7 +95,7 @@ function treeHash(root: string): string {
   return crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
-function git(cwd: string, args: string[]): string {
+function gitRun(cwd: string, args: string[]): string {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
@@ -102,69 +104,26 @@ function git(cwd: string, args: string[]): string {
 }
 
 function initGitWorkspace(dir: string): void {
-  git(dir, ['init', '-q', '-b', 'main']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
-  git(dir, ['config', 'user.name', 'Test']);
+  gitRun(dir, ['init', '-q', '-b', 'main']);
+  gitRun(dir, ['config', 'user.email', 'test@example.com']);
+  gitRun(dir, ['config', 'user.name', 'Test']);
   fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
-  git(dir, ['add', '-A']);
-  git(dir, ['commit', '-qm', 'init']);
+  gitRun(dir, ['add', '-A']);
+  gitRun(dir, ['commit', '-qm', 'init']);
 }
 
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void,
-  inspect?: (dir: string) => void
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-dryrun-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    seed?.(tempDir);
-    process.chdir(tempDir);
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-    inspect?.(tempDir);
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 describe('reset --dry-run (#248 AC-248.1/2)', () => {
   test('task scope clears nothing and leaves the tree byte-identical', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['reset', '--issue', '888', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['reset', '--issue', '888', '--dry-run'], { seed: (dir: string) => {
         seedRoot(dir);
-        seedTask(dir, 888);
+        seedTaskAt(dir, 888);
         before = treeHash(path.join(dir, '.agyloop'));
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = treeHash(path.join(dir, '.agyloop'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Would clear the checkpoint for issue #888/);
     assert.ok(!result.stdout.includes('✓'), result.stdout);
@@ -172,32 +131,24 @@ describe('reset --dry-run (#248 AC-248.1/2)', () => {
   });
 
   test('task scope with no checkpoint predicts the real exit code (1)', async () => {
-    const result = await runCliInSandbox(['reset', '--issue', '888', '--dry-run'], seedRoot);
+    const result = await runCliInSandboxCanonical(['reset', '--issue', '888', '--dry-run'], { seed: seedRoot, stripAnsi: true });
     assert.strictEqual(result.code, 1);
     assert.match(result.stderr, /\[dry-run\] Nothing to clear for issue #888/);
   });
 
   test('root scope clears nothing (negative control: the real reset deletes it)', async () => {
     let stateAfterDryRunExists = true;
-    const dry = await runCliInSandbox(
-      ['reset', '--dry-run'],
-      seedRoot,
-      (dir) => {
+    const dry = await runCliInSandboxCanonical(['reset', '--dry-run'], { seed: seedRoot, inspect: (dir: string) => {
         stateAfterDryRunExists = fs.existsSync(path.join(dir, '.agyloop', 'state.json'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(dry.code, 0, dry.stderr);
     assert.match(dry.stdout, /\[dry-run\] Would clear/);
     assert.ok(stateAfterDryRunExists, 'the root checkpoint must survive a dry run');
 
     let stateAfterRealExists = true;
-    const real = await runCliInSandbox(
-      ['reset'],
-      seedRoot,
-      (dir) => {
+    const real = await runCliInSandboxCanonical(['reset'], { seed: seedRoot, inspect: (dir: string) => {
         stateAfterRealExists = fs.existsSync(path.join(dir, '.agyloop', 'state.json'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(real.code, 0, real.stderr);
     assert.ok(!stateAfterRealExists, 'the real reset must delete the root checkpoint');
   });
@@ -205,18 +156,14 @@ describe('reset --dry-run (#248 AC-248.1/2)', () => {
   test('--all purges nothing', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['reset', '--all', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['reset', '--all', '--dry-run'], { seed: (dir: string) => {
         seedRoot(dir);
-        seedTask(dir, 1);
-        seedTask(dir, 2);
+        seedTaskAt(dir, 1);
+        seedTaskAt(dir, 2);
         before = treeHash(path.join(dir, '.agyloop'));
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = treeHash(path.join(dir, '.agyloop'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Would purge \.agyloop\/state\.json and all task checkpoints\./);
     assert.strictEqual(after, before);
@@ -226,16 +173,12 @@ describe('reset --dry-run (#248 AC-248.1/2)', () => {
 describe('sync --dry-run (#248 AC-248.3)', () => {
   test('performs no fetch and prints a proposal', async () => {
     let fetchHeadExists = true;
-    const result = await runCliInSandbox(
-      ['sync', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['sync', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
         seedRoot(dir, { currentStage: 'IMPLEMENT' });
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         fetchHeadExists = fs.existsSync(path.join(dir, '.git', 'FETCH_HEAD'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Would fetch origin/);
     assert.ok(!result.stdout.includes('✓ Successfully synced'), result.stdout);
@@ -246,19 +189,15 @@ describe('sync --dry-run (#248 AC-248.3)', () => {
 describe('abort --dry-run (#248 AC-248.4)', () => {
   test('terminates nothing, clears no lock, and never claims completion', async () => {
     let lockStillExists = false;
-    const result = await runCliInSandbox(
-      ['abort', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['abort', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
         seedRoot(dir, { currentStage: 'IMPLEMENT' });
         fs.writeFileSync(path.join(dir, '.git', 'index.lock'), 'seed');
         fs.writeFileSync(path.join(dir, 'dirty.txt'), 'dirty\n');
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         lockStillExists = fs.existsSync(path.join(dir, '.git', 'index.lock'));
         assert.strictEqual(fs.readFileSync(path.join(dir, 'dirty.txt'), 'utf8'), 'dirty\n');
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Emergency abort simulated/);
     assert.ok(!result.stdout.includes('✓ Emergency Abort completed'), result.stdout);
@@ -271,18 +210,14 @@ describe('triage --dry-run (#248 AC-248.5)', () => {
     let hashBefore = '';
     let hashAfter = '';
     let worktreeExists = true;
-    const result = await runCliInSandbox(
-      ['triage', 'implement', '--issue', '901', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['triage', 'implement', '--issue', '901', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
-        seedTask(dir, 901, { currentStage: 'TRIAGE', mode: 'standard' });
+        seedTaskAt(dir, 901, { currentStage: 'TRIAGE', mode: 'standard' });
         hashBefore = treeHash(path.join(dir, '.agyloop'));
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         hashAfter = treeHash(path.join(dir, '.agyloop'));
         worktreeExists = fs.existsSync(path.join(dir, '.worktrees', '901'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Triage Action : IMPLEMENT/);
     assert.match(result.stdout, /\[dry-run\] Would transition to .*IMPLEMENT/);
@@ -296,17 +231,13 @@ describe('triage --dry-run (#248 AC-248.5)', () => {
 describe('worktree --dry-run (#248 AC-248.6)', () => {
   test('clean leaves an orphaned directory in place', async () => {
     let orphanExists = true;
-    const result = await runCliInSandbox(
-      ['worktree', 'clean', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['worktree', 'clean', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
         fs.mkdirSync(path.join(dir, '.worktrees', '4242-orphan'), { recursive: true });
         fs.writeFileSync(path.join(dir, '.worktrees', '4242-orphan', 'file.txt'), 'x\n');
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         orphanExists = fs.existsSync(path.join(dir, '.worktrees', '4242-orphan'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Would remove \d+ orphaned worktree/);
     assert.ok(!result.stdout.includes('✓ Cleaned'), result.stdout);
@@ -315,15 +246,11 @@ describe('worktree --dry-run (#248 AC-248.6)', () => {
 
   test('prune leaves the registration count unchanged (negative control prunes it)', async () => {
     let dryCount = 0;
-    const dry = await runCliInSandbox(
-      ['worktree', 'prune', '--dry-run'],
-      (dir) => {
+    const dry = await runCliInSandboxCanonical(['worktree', 'prune', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
-      },
-      (dir) => {
-        dryCount = git(dir, ['worktree', 'list']).split('\n').filter(Boolean).length;
-      }
-    );
+      }, inspect: (dir: string) => {
+        dryCount = gitRun(dir, ['worktree', 'list']).split('\n').filter(Boolean).length;
+      }, stripAnsi: true });
     assert.strictEqual(dry.code, 0, dry.stderr);
     assert.match(dry.stdout, /\[dry-run\] Would remove/);
     assert.strictEqual(dryCount, 1, 'no registration may be pruned');
@@ -332,17 +259,13 @@ describe('worktree --dry-run (#248 AC-248.6)', () => {
   test('remove keeps the directory and its registration', async () => {
     let mitExistsAfter = true;
     let registrationCount = 0;
-    const result = await runCliInSandbox(
-      ['worktree', 'remove', '902', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['worktree', 'remove', '902', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
-        git(dir, ['worktree', 'add', '-q', '--detach', path.join('.worktrees', '902')]);
-      },
-      (dir) => {
+        gitRun(dir, ['worktree', 'add', '-q', '--detach', path.join('.worktrees', '902')]);
+      }, inspect: (dir: string) => {
         mitExistsAfter = fs.existsSync(path.join(dir, '.worktrees', '902'));
-        registrationCount = git(dir, ['worktree', 'list']).split('\n').filter(Boolean).length;
-      }
-    );
+        registrationCount = gitRun(dir, ['worktree', 'list']).split('\n').filter(Boolean).length;
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Would remove/);
     assert.ok(!result.stdout.includes('✓'), result.stdout);
@@ -389,19 +312,15 @@ describe('critique --dry-run (#248 AC-248.6)', () => {
       let after = '';
       let cacheExists = true;
       try {
-        const result = await runCliInSandbox(
-          ['critique', sub, '--dry-run'],
-          (dir) => {
+        const result = await runCliInSandboxCanonical(['critique', sub, '--dry-run'], { seed: (dir: string) => {
             // The cache path is resolved against the cwd at construction, so a
             // `.agyloop` here makes any cache write land in the sandbox.
             fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
             before = treeHash(path.join(dir, '.agyloop'));
-          },
-          (dir) => {
+          }, inspect: (dir: string) => {
             after = treeHash(path.join(dir, '.agyloop'));
             cacheExists = fs.existsSync(path.join(dir, '.agyloop', 'critique-update-cache.json'));
-          }
-        );
+          }, stripAnsi: true });
 
         assert.strictEqual(result.code, 0, result.stderr);
         assert.match(result.stdout, new RegExp(`\\[dry-run\\] Would ${sub}`));
@@ -424,11 +343,9 @@ describe('review --dry-run (#248 AC-248.7)', () => {
   test('never says "recorded" and reports the on-disk stage', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
-        seedTask(dir, 905, { currentStage: 'REVIEW' });
+        seedTaskAt(dir, 905, { currentStage: 'REVIEW' });
         fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
         // Issue #297: hermetic Tier 1 evidence — never shell out to a host
         // `critique`, and never let the machine's install state decide.
@@ -443,10 +360,9 @@ describe('review --dry-run (#248 AC-248.7)', () => {
         );
         before = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '905.json'), 'utf8');
       },
-      (dir) => {
+      inspect: (dir: string) => {
         after = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '905.json'), 'utf8');
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /Current Stage\s+: .*REVIEW/);
     assert.match(result.stdout, /\[dry-run\] Would set stage/);
@@ -461,22 +377,18 @@ describe('implement --dry-run (#248 AC-248.8)', () => {
   test('every success line carries the [dry-run] prefix', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['implement', '--issue', '907', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['implement', '--issue', '907', '--dry-run'], { seed: (dir: string) => {
         initGitWorkspace(dir);
-        seedTask(dir, 907, { currentStage: 'APPROVAL' });
+        seedTaskAt(dir, 907, { currentStage: 'APPROVAL' });
         fs.mkdirSync(path.join(dir, 'artifacts', 'plans', '907-smoke'), { recursive: true });
         fs.writeFileSync(
           path.join(dir, 'artifacts', 'plans', '907-smoke', 'implementation-plan.md'),
           '# Plan\n\n- do the thing\n'
         );
         before = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '907.json'), 'utf8');
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '907.json'), 'utf8');
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[dry-run\] (Advanced to|Already at)/);
     assert.ok(!result.stdout.includes('✓ Advanced to'), result.stdout);
@@ -489,16 +401,12 @@ describe('halt --dry-run (#248)', () => {
   test('records nothing and never claims a recorded halt', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['halt', '--reason', 'quota', '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['halt', '--reason', 'quota', '--dry-run'], { seed: (dir: string) => {
         seedRoot(dir, { currentStage: 'IMPLEMENT' });
         before = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8');
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(result.code, 2, result.stderr);
     assert.match(result.stdout, /\[dry-run\] Would record a quota halt/);
     assert.ok(!result.stdout.includes('✓ Quota halt recorded'), result.stdout);
@@ -526,22 +434,18 @@ describe('plan --dry-run (#339 AC-1.2, T2.5)', () => {
       'utf8'
     );
     fs.writeFileSync(path.join(planDir, 'CodeLoop Summary.md'), 'summary\n', 'utf8');
-    seedTask(dir, PLAN_ISSUE, { planDir, ...overrides });
+    seedTaskAt(dir, PLAN_ISSUE, { planDir, ...overrides });
   }
 
   test('a park path (DISCOVERY checkpoint) writes nothing', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['plan', '--issue', String(PLAN_ISSUE), '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['plan', '--issue', String(PLAN_ISSUE), '--dry-run'], { seed: (dir: string) => {
         seedPlanTree(dir, { currentStage: 'DISCOVERY' });
         before = combinedHash(dir);
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = combinedHash(dir);
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[DRY RUN\]/);
@@ -553,16 +457,12 @@ describe('plan --dry-run (#339 AC-1.2, T2.5)', () => {
   test('a non-park path (PLAN checkpoint) writes nothing', async () => {
     let before = '';
     let after = '';
-    const result = await runCliInSandbox(
-      ['plan', '--issue', String(PLAN_ISSUE), '--dry-run'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['plan', '--issue', String(PLAN_ISSUE), '--dry-run'], { seed: (dir: string) => {
         seedPlanTree(dir, { currentStage: 'PLAN' });
         before = combinedHash(dir);
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         after = combinedHash(dir);
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[DRY RUN\]/);
@@ -578,13 +478,9 @@ describe('plan --dry-run derives bounded names (#364 AC-7)', () => {
     const title = 'q'.repeat(372);
     let artifactsExist = true;
 
-    const result = await runCliInSandbox(
-      ['plan', '--dry-run', '--title', title, '--type', 'implementation'],
-      undefined,
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['plan', '--dry-run', '--title', title, '--type', 'implementation'], { inspect: (dir: string) => {
         artifactsExist = fs.existsSync(path.join(dir, 'artifacts'));
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.match(result.stdout, /\[DRY RUN\] Would scaffold/);
@@ -611,25 +507,18 @@ describe('plan --dry-run derives bounded names (#364 AC-7)', () => {
         '# [Implementation] - legacy folder\n\n## 3. Implementation Steps\n- [ ] Step 1: hold the line\n',
         'utf8'
       );
-      seedTask(dir, issue, { currentStage: 'PLAN', planDir });
+      seedTaskAt(dir, issue, { currentStage: 'PLAN', planDir });
     };
 
-    const dry = await runCliInSandbox(
-      ['plan', '--issue', String(issue), '--title', 'legacy folder', '--dry-run'],
-      seed
-    );
+    const dry = await runCliInSandboxCanonical(['plan', '--issue', String(issue), '--title', 'legacy folder', '--dry-run'], { seed: seed, stripAnsi: true });
     assert.strictEqual(dry.code, 0, dry.stderr);
     assert.match(dry.stdout, /Would reuse existing plan directory/, dry.stdout);
     assert.ok(!/Would scaffold/.test(dry.stdout), dry.stdout);
 
     let planDirs: string[] = [];
-    const real = await runCliInSandbox(
-      ['plan', '--issue', String(issue), '--title', 'legacy folder'],
-      seed,
-      (dir) => {
+    const real = await runCliInSandboxCanonical(['plan', '--issue', String(issue), '--title', 'legacy folder'], { seed: seed, inspect: (dir: string) => {
         planDirs = fs.readdirSync(path.join(dir, 'artifacts', 'plans'));
-      }
-    );
+      }, stripAnsi: true });
     assert.strictEqual(real.code, 0, real.stderr);
     assert.deepStrictEqual(planDirs, [legacy], 'the real run adopts the legacy folder');
   });

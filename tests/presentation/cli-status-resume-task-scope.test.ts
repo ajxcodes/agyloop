@@ -1,3 +1,25 @@
+
+/** The canonical task seed exactly as `RunLifecycleUseCase` persists scenarios. */
+function seedScenarioTask(dir: string, options: {
+  readonly issue: number;
+  readonly stage: string;
+  readonly updatedAt: string;
+  readonly pausedAtGate?: string;
+  readonly pausedAtTimestamp?: string;
+}): string {
+  return seedTaskCanonical(dir, {
+    issue: options.issue,
+    currentStage: options.stage,
+    baseBranch: 'phase/6-codeloop',
+    createdAt: EARLY,
+    updatedAt: options.updatedAt,
+    history: [{ stage: options.stage, timestamp: options.updatedAt }],
+    ...(options.pausedAtGate
+      ? { pausedAtGate: options.pausedAtGate, pausedAtTimestamp: options.pausedAtTimestamp ?? LONG_AGO }
+      : {})
+  });
+}
+
 /**
  * agyloop - `status` and `resume` must name — and act on — the checkpoint that holds the work (#226 D5/D6)
  *
@@ -26,6 +48,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { seedTask: seedTaskCanonical } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const EARLY = '2026-10-14T09:00:00.000Z';
@@ -39,9 +64,6 @@ interface CaptureResult {
   readonly stderr: string;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 /** A task checkpoint exactly as `RunLifecycleUseCase` persists it. */
 function taskSnapshot(options: {
@@ -66,19 +88,6 @@ function taskSnapshot(options: {
   };
 }
 
-function seedTask(dir: string, options: {
-  readonly issue: number;
-  readonly stage: string;
-  readonly updatedAt: string;
-  readonly pausedAtGate?: string;
-  readonly pausedAtTimestamp?: string;
-}): string {
-  const tasksDir = path.join(dir, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const taskPath = path.join(tasksDir, `${options.issue}.json`);
-  fs.writeFileSync(taskPath, JSON.stringify(taskSnapshot(options)));
-  return taskPath;
-}
 
 function seedRoot(dir: string, options: {
   readonly stage: string;
@@ -109,11 +118,7 @@ function readJson(file: string): Record<string, any> {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-/** The value printed on the `Checkpoint` line of `codeloop status`. */
-function checkpointLine(stdout: string): string {
-  const line = stdout.split('\n').find((l) => l.startsWith('Checkpoint'));
-  return line === undefined ? '' : line.slice('Checkpoint'.length).trim();
-}
+const { checkpointLine } = require('../helpers/render.ts');
 
 /**
  * Runs `runCli` in a throwaway cwd with both console streams captured, restoring
@@ -126,77 +131,16 @@ function checkpointLine(stdout: string): string {
  * worktree (`.worktrees/<n>`) makes `FileStateRepository` infer the issue from
  * the cwd, which is how the CLI's own checkpoint becomes `tasks/<n>.json`.
  */
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void,
-  inspect?: (dir: string) => void,
-  cwdSubdir?: string
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalStdinIsTTY = process.stdin.isTTY;
-  const originalStdoutIsTTY = process.stdout.isTTY;
-
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-task-scope-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    if (seed) {
-      seed(tempDir);
-    }
-    process.chdir(cwdSubdir === undefined ? tempDir : path.join(tempDir, cwdSubdir));
-    process.stdin.isTTY = false;
-    process.stdout.isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const code = await Promise.race([
-      runCli(args),
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`HANG: runCli(${JSON.stringify(args)}) never settled.`)),
-          20000
-        );
-        if (typeof timer.unref === 'function') {
-          timer.unref();
-        }
-      })
-    ]);
-
-    if (inspect) {
-      inspect(tempDir);
-    }
-
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    process.stdin.isTTY = originalStdinIsTTY;
-    process.stdout.isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 describe('codeloop status resolves the authoritative checkpoint (#226 D5)', () => {
   test('advertises the task checkpoint, not the root (headline AC)', async () => {
     let rootStatePath = '';
 
-    const result = await runCliInSandbox(
-      ['status'],
-      (dir) => {
-        seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+        seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         rootStatePath = path.join(dir, '.agyloop', 'state.json');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(
@@ -210,22 +154,22 @@ describe('codeloop status resolves the authoritative checkpoint (#226 D5)', () =
   });
 
   test('no longer synthesises a header that contradicts the task matrix', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-    });
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+    }, stripAnsi: true });
 
-    const stageLine = result.stdout.split('\n').find((l) => l.startsWith('Current Stage')) ?? '';
+    const stageLine = result.stdout.split('\n').find((l: string) => l.startsWith('Current Stage')) ?? '';
     assert.ok(stageLine.includes('[COMMIT]'), `header must read [COMMIT], got: ${stageLine}`);
     assert.ok(!result.stdout.includes('[INITIALIZED]'), result.stdout);
     assert.ok(result.stdout.includes('Active Issue  : #999'), result.stdout);
   });
 
   test('status and the Active Tasks matrix agree', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-    });
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+    }, stripAnsi: true });
 
-    const matrixRow = result.stdout.split('\n').find((l) => l.trim().startsWith('#999')) ?? '';
+    const matrixRow = result.stdout.split('\n').find((l: string) => l.trim().startsWith('#999')) ?? '';
     assert.ok(matrixRow.includes('[COMMIT]'), `matrix row disagrees with the header: ${matrixRow}`);
   });
 
@@ -233,17 +177,17 @@ describe('codeloop status resolves the authoritative checkpoint (#226 D5)', () =
     // This is the D5/D6 coupling: `readPersistedGatePause` used to re-load the
     // UNSCOPED repository, so the pause block could describe a different file than
     // the header did.
-    const result = await runCliInSandbox(['status'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-    });
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+    }, stripAnsi: true });
 
     assert.ok(result.stdout.includes('Paused At Gate: COMMIT'), result.stdout);
   });
 
   test('a root-only repository still reports the root checkpoint (no regression)', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
       seedRoot(dir, { stage: 'IMPLEMENT', updatedAt: LATE, issue: 99, pausedAtGate: 'CIRCUIT_BREAKER' });
-    });
+    }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(result.stdout.includes(path.join('.agyloop', 'state.json')), result.stdout);
@@ -254,10 +198,10 @@ describe('codeloop status resolves the authoritative checkpoint (#226 D5)', () =
   });
 
   test('a COMPLETED task does not outrank an in-flight one', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'COMPLETED', updatedAt: LATE });
-      seedTask(dir, { issue: 1000, stage: 'IMPLEMENT', updatedAt: EARLY });
-    });
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'COMPLETED', updatedAt: LATE });
+      seedScenarioTask(dir, { issue: 1000, stage: 'IMPLEMENT', updatedAt: EARLY });
+    }, stripAnsi: true });
 
     assert.ok(
       checkpointLine(result.stdout).endsWith(path.join('.agyloop', 'tasks', '1000.json')),
@@ -266,10 +210,10 @@ describe('codeloop status resolves the authoritative checkpoint (#226 D5)', () =
   });
 
   test('two in-flight tasks resolve to the newest, deterministically', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'IMPLEMENT', updatedAt: EARLY });
-      seedTask(dir, { issue: 1000, stage: 'REVIEW', updatedAt: LATE });
-    });
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'IMPLEMENT', updatedAt: EARLY });
+      seedScenarioTask(dir, { issue: 1000, stage: 'REVIEW', updatedAt: LATE });
+    }, stripAnsi: true });
 
     assert.ok(
       checkpointLine(result.stdout).endsWith(path.join('.agyloop', 'tasks', '1000.json')),
@@ -280,12 +224,9 @@ describe('codeloop status resolves the authoritative checkpoint (#226 D5)', () =
 
 describe('codeloop resume resolves the authoritative checkpoint (#226 D6)', () => {
   test('a bare resume clears the task checkpoint and never creates the root file (headline AC)', async () => {
-    const result = await runCliInSandbox(
-      ['resume'],
-      (dir) => {
-        seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
+        seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         const persisted = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
 
         assert.strictEqual(persisted.pausedAtGate, null, 'the persisted shape must have no pause');
@@ -295,44 +236,36 @@ describe('codeloop resume resolves the authoritative checkpoint (#226 D6)', () =
           !fs.existsSync(path.join(dir, '.agyloop', 'state.json')),
           'the cleared pause must NOT have been written back to the root file'
         );
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(!/nothing to resume/i.test(result.stdout), `resume must not report nothing to do:\n${result.stdout}`);
   });
 
   test('a bare resume banks the elapsed human wait', async () => {
-    const result = await runCliInSandbox(
-      ['resume'],
-      (dir) => {
-        seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
+        seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         const persisted = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
         assert.ok(persisted.totalHumanWaitMs > 0, `expected a banked wait, got ${persisted.totalHumanWaitMs}`);
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
   });
 
   test('the report names the task it inspected', async () => {
-    const result = await runCliInSandbox(['resume'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-    });
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+    }, stripAnsi: true });
 
     assert.ok(/Task\s+: #999/.test(result.stdout), result.stdout);
   });
 
   test('`resume --issue 999` still works (no regression)', async () => {
-    const result = await runCliInSandbox(
-      ['resume', '--issue', '999'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume', '--issue', '999'], { seed: (dir: string) => {
         seedRoot(dir, { stage: 'IMPLEMENT', updatedAt: LATE, pausedAtGate: 'CIRCUIT_BREAKER' });
-        seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+        seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         const task = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
         const root = readJson(path.join(dir, '.agyloop', 'state.json'));
 
@@ -342,23 +275,18 @@ describe('codeloop resume resolves the authoritative checkpoint (#226 D6)', () =
           'CIRCUIT_BREAKER',
           'an explicit --issue must leave an unrelated checkpoint untouched'
         );
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
   });
 
   test('`resume --dry-run` writes nothing', async () => {
-    const result = await runCliInSandbox(
-      ['resume', '--dry-run'],
-      (dir) => {
-        seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume', '--dry-run'], { seed: (dir: string) => {
+        seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         const persisted = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
         assert.strictEqual(persisted.pausedAtGate, 'COMMIT', 'a dry run must leave the pause in place');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(result.stdout.includes('[dry-run]'), result.stdout);
@@ -368,46 +296,38 @@ describe('codeloop resume resolves the authoritative checkpoint (#226 D6)', () =
     // #999 is the newest in-flight checkpoint and holds no pause; #1000, older,
     // is the one waiting on a human. Without the note the run reads as
     // "nothing to resume" and the operator never learns #1000 exists.
-    const result = await runCliInSandbox(['resume'], (dir) => {
-      seedTask(dir, { issue: 999, stage: 'IMPLEMENT', updatedAt: LATE });
-      seedTask(dir, { issue: 1000, stage: 'COMMIT', updatedAt: EARLY, pausedAtGate: 'COMMIT' });
-    });
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
+      seedScenarioTask(dir, { issue: 999, stage: 'IMPLEMENT', updatedAt: LATE });
+      seedScenarioTask(dir, { issue: 1000, stage: 'COMMIT', updatedAt: EARLY, pausedAtGate: 'COMMIT' });
+    }, stripAnsi: true });
 
     assert.ok(/nothing to resume/i.test(result.stdout), result.stdout);
     assert.ok(result.stdout.includes('codeloop resume --issue 1000'), result.stdout);
   });
 
   test('a completed task never outranks the paused one', async () => {
-    const result = await runCliInSandbox(
-      ['resume'],
-      (dir) => {
-        seedTask(dir, { issue: 999, stage: 'COMPLETED', updatedAt: LATE });
-        seedTask(dir, { issue: 1000, stage: 'COMMIT', updatedAt: EARLY, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
+        seedScenarioTask(dir, { issue: 999, stage: 'COMPLETED', updatedAt: LATE });
+        seedScenarioTask(dir, { issue: 1000, stage: 'COMMIT', updatedAt: EARLY, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         const task999 = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
         const task1000 = readJson(path.join(dir, '.agyloop', 'tasks', '1000.json'));
 
         assert.strictEqual(task1000.pausedAtGate, null, 'the paused task is the one that must be cleared');
         assert.ok(!task999.pausedAtGate, 'a COMPLETED task must not have been chosen or rewritten');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
   });
 
   test('a root-only paused repository is cleared by a bare resume (no regression)', async () => {
-    const result = await runCliInSandbox(
-      ['resume'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
         seedRoot(dir, { stage: 'IMPLEMENT', updatedAt: LATE, issue: 99, pausedAtGate: 'CIRCUIT_BREAKER' });
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         const persisted = readJson(path.join(dir, '.agyloop', 'state.json'));
         assert.strictEqual(persisted.pausedAtGate, null);
         assert.strictEqual(persisted.currentStage, 'IMPLEMENT');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
   });
@@ -422,7 +342,7 @@ describe('codeloop resume resolves the authoritative checkpoint (#226 D6)', () =
  */
 describe('one corrupt checkpoint file does not defeat status or resume (#226 regression)', () => {
   /** Seeds a truncated (crash-mid-write) task file: JSON prefix, no usable snapshot. */
-  function seedCorruptTask(dir: string, issue: number): string {
+  function seedCorruptTaskLocal(dir: string, issue: number): string {
     const tasksDir = path.join(dir, '.agyloop', 'tasks');
     fs.mkdirSync(tasksDir, { recursive: true });
     const taskPath = path.join(tasksDir, `${issue}.json`);
@@ -431,10 +351,10 @@ describe('one corrupt checkpoint file does not defeat status or resume (#226 reg
   }
 
   test('status still resolves the good task next to a corrupt one', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
-      seedCorruptTask(dir, 888);
-      seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-    });
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
+      seedCorruptTaskLocal(dir, 888);
+      seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+    }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(
@@ -445,13 +365,10 @@ describe('one corrupt checkpoint file does not defeat status or resume (#226 reg
   });
 
   test('a bare resume still exits 0 and clears the good task', async () => {
-    const result = await runCliInSandbox(
-      ['resume'],
-      (dir) => {
-        seedCorruptTask(dir, 888);
-        seedTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
-      },
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
+        seedCorruptTaskLocal(dir, 888);
+        seedScenarioTask(dir, { issue: 999, stage: 'COMMIT', updatedAt: LATE, pausedAtGate: 'COMMIT' });
+      }, inspect: (dir: string) => {
         const cleared = readJson(path.join(dir, '.agyloop', 'tasks', '999.json'));
         assert.strictEqual(cleared.pausedAtGate, null, 'the good task must still be resumed');
         assert.ok(
@@ -460,8 +377,7 @@ describe('one corrupt checkpoint file does not defeat status or resume (#226 reg
         );
         const corrupt = fs.readFileSync(path.join(dir, '.agyloop', 'tasks', '888.json'), 'utf8');
         assert.strictEqual(corrupt, '{"currentStage":', 'the corrupt neighbour must be left untouched');
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(!/nothing to resume/i.test(result.stdout), result.stdout);
@@ -473,20 +389,16 @@ describe('one corrupt checkpoint file does not defeat status or resume (#226 reg
     // the worst behaviour for a recovery command, but the file EXISTS — reporting
     // "No pipeline checkpoint found" would be a false statement about reality,
     // and nothing may be persisted for a checkpoint that cannot be read.
-    const result = await runCliInSandbox(
-      ['resume'],
-      (dir) => {
+    const result = await runCliInSandboxCanonical(['resume'], { seed: (dir: string) => {
         fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
         fs.writeFileSync(path.join(dir, '.agyloop', 'state.json'), '{"currentStage":');
-      },
-      (dir) => {
+      }, inspect: (dir: string) => {
         assert.strictEqual(
           fs.readFileSync(path.join(dir, '.agyloop', 'state.json'), 'utf8'),
           '{"currentStage":',
           'resume must not persist anything when it cannot read the checkpoint'
         );
-      }
-    );
+      }, stripAnsi: true });
 
     assert.strictEqual(result.code, 1, `${result.stdout}\n${result.stderr}`);
     assert.ok(
@@ -516,7 +428,7 @@ describe('every command resolves one token to one checkpoint (#250)', () => {
   /** The mandated multi-checkpoint fixture. */
   function seedScopeFixture(dir: string): void {
     seedRoot(dir, { stage: 'INITIALIZED', updatedAt: EARLY });
-    seedTask(dir, { issue: 999, stage: 'REVIEW', updatedAt: LATE });
+    seedScenarioTask(dir, { issue: 999, stage: 'REVIEW', updatedAt: LATE });
   }
 
   /**
@@ -533,7 +445,7 @@ describe('every command resolves one token to one checkpoint (#250)', () => {
     const prevSubagent = process.env.AGY_SUBAGENT;
     delete process.env.AGY_SUBAGENT;
     try {
-      return await runCliInSandbox(args, seed, inspect, cwdSubdir);
+      return await runCliInSandboxCanonical(args, { seed: seed, inspect: inspect, cwdSubdir: cwdSubdir, stripAnsi: true });
     } finally {
       if (prevSubagent === undefined) {
         delete process.env.AGY_SUBAGENT;

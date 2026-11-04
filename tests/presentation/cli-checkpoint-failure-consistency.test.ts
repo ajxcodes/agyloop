@@ -19,6 +19,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const SEEDED_AT = '2026-10-01T00:00:00.000Z';
@@ -29,9 +31,6 @@ interface CaptureResult {
   readonly stderr: string;
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE, '');
-}
 
 function validSnapshot(issue: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -51,35 +50,6 @@ function seedTaskFile(dir: string, issue: number, contents: string): void {
   fs.writeFileSync(path.join(dir, '.agyloop', 'tasks', `${issue}.json`), contents);
 }
 
-async function runCliInSandbox(
-  args: readonly string[],
-  seed?: (dir: string) => void
-): Promise<CaptureResult> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-corrupt-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    seed?.(tempDir);
-    process.chdir(tempDir);
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stripAnsi(stdout), stderr: stripAnsi(stderr) };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 function assertRendered(result: CaptureResult, label: string): void {
   assert.strictEqual(result.code, 1, `${label} must exit 1`);
@@ -90,18 +60,17 @@ function assertRendered(result: CaptureResult, label: string): void {
 
 describe('corrupt checkpoints (#251)', () => {
   test('T-C1: status --issue on a GARBAGE stage renders, never crashes', async () => {
-    const result = await runCliInSandbox(['status', '--issue', '999'], (dir) =>
-      seedTaskFile(dir, 999, JSON.stringify({ currentStage: 'GARBAGE' }))
-    );
+    const result = await runCliInSandboxCanonical(['status', '--issue', '999'], { seed: (dir: string) =>
+      seedTaskFile(dir, 999, JSON.stringify({ currentStage: 'GARBAGE' })), stripAnsi: true });
     assertRendered(result, 'status --issue 999');
     assert.match(result.stderr, /✗ Status failed:/);
   });
 
   test('T-C2: one bad file does not brick the active-task matrix', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
       seedTaskFile(dir, 998, JSON.stringify(validSnapshot(998, { updatedAt: '2026-10-02T00:00:00.000Z' })));
       seedTaskFile(dir, 999, JSON.stringify({ currentStage: 'GARBAGE' }));
-    });
+    }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(!result.stderr.includes('Fatal:'), result.stderr);
     assert.ok(result.stdout.includes('#998'), result.stdout);
@@ -110,10 +79,10 @@ describe('corrupt checkpoints (#251)', () => {
   });
 
   test('T-C2b: status --json reports skippedCorrupt without failing', async () => {
-    const result = await runCliInSandbox(['status', '--json'], (dir) => {
+    const result = await runCliInSandboxCanonical(['status', '--json'], { seed: (dir: string) => {
       seedTaskFile(dir, 998, JSON.stringify(validSnapshot(998, { updatedAt: '2026-10-02T00:00:00.000Z' })));
       seedTaskFile(dir, 999, JSON.stringify({ currentStage: 'GARBAGE' }));
-    });
+    }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.ok(Array.isArray(payload.skippedCorrupt));
@@ -134,18 +103,17 @@ describe('corrupt checkpoints (#251)', () => {
     ];
 
     for (const [label, args] of invocations) {
-      const result = await runCliInSandbox(args, (dir) =>
-        seedTaskFile(dir, 999, JSON.stringify({ currentStage: 'GARBAGE' }))
-      );
+      const result = await runCliInSandboxCanonical(args, { seed: (dir: string) =>
+        seedTaskFile(dir, 999, JSON.stringify({ currentStage: 'GARBAGE' })), stripAnsi: true });
       assertRendered(result, label);
     }
   });
 
   test('T-C4: an unparseable task file is still dropped from the scan', async () => {
-    const result = await runCliInSandbox(['status'], (dir) => {
+    const result = await runCliInSandboxCanonical(['status'], { seed: (dir: string) => {
       seedTaskFile(dir, 998, JSON.stringify(validSnapshot(998)));
       seedTaskFile(dir, 997, '{"currentStage": "PLAN"');
-    });
+    }, stripAnsi: true });
     assert.strictEqual(result.code, 0, result.stderr);
     assert.ok(!result.stderr.includes('Fatal:'), result.stderr);
     assert.ok(!result.stdout.includes('#997'), result.stdout);

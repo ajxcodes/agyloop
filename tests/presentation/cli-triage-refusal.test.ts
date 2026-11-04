@@ -21,6 +21,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+
+interface Sandbox {
+  readonly dir: string;
+  readonly binDir: string;
+  readonly checkpointPathLocal: string;
+}
 
 const { runCli } = require('../../dist/presentation/cli');
 const { EXIT_CODE_SUCCESS, DISMISS_OUTCOME_REFUSED } = require('../../dist/domain');
@@ -68,22 +75,24 @@ JSON
 esac
 `;
 
-function makeSandbox() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-refusal-'));
+function makeTriageRefusalSandbox(): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-triage-refusal-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/owner/repo.git'], {
+        cwd: dir,
+        stdio: 'ignore'
+      });
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
   const binDir = path.join(dir, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/owner/repo.git'], {
-    cwd: dir,
-    stdio: 'ignore'
-  });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
 
   fs.writeFileSync(path.join(binDir, 'gh'), FAKE_GH, 'utf8');
   fs.chmodSync(path.join(binDir, 'gh'), 0o755);
@@ -94,9 +103,9 @@ function makeSandbox() {
   const tasksDir = path.join(dir, '.agyloop', 'tasks');
   fs.mkdirSync(tasksDir, { recursive: true });
   const now = new Date().toISOString();
-  const checkpointPath = path.join(tasksDir, `${ISSUE}.json`);
+  const checkpointPathLocal = path.join(tasksDir, `${ISSUE}.json`);
   fs.writeFileSync(
-    checkpointPath,
+    checkpointPathLocal,
     JSON.stringify(
       {
         version: '1.0.0',
@@ -115,13 +124,13 @@ function makeSandbox() {
     ),
     'utf8'
   );
-  fs.writeFileSync(path.join(dir, 'checkpoint.before.json'), fs.readFileSync(checkpointPath));
+  fs.writeFileSync(path.join(dir, 'checkpoint.before.json'), fs.readFileSync(checkpointPathLocal));
 
-  return { dir, binDir, checkpointPath };
+  return { dir, binDir, checkpointPathLocal };
 }
 
 async function runTriage(
-  sandbox: ReturnType<typeof makeSandbox>,
+  sandbox: Sandbox,
   args: readonly string[],
   env: Record<string, string> = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -174,18 +183,18 @@ async function runTriage(
   }
 }
 
-function ghLog(sandbox: ReturnType<typeof makeSandbox>): string {
+function ghLog(sandbox: Sandbox): string {
   return fs.readFileSync(path.join(sandbox.dir, 'gh.log'), 'utf8');
 }
 
-function checkpoint(sandbox: ReturnType<typeof makeSandbox>): any {
-  return JSON.parse(fs.readFileSync(sandbox.checkpointPath, 'utf8'));
+function checkpoint(sandbox: Sandbox): any {
+  return JSON.parse(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'));
 }
 
 describe('codeloop triage dismissal refusal (issue #336)', () => {
   test('R1 (AC-1): a bare dismiss exits 1, posts nothing and writes no checkpoint', async () => {
-    const sandbox = makeSandbox();
-    const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+    const sandbox = makeTriageRefusalSandbox();
+    const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
     try {
       const run = await runTriage(sandbox, ['triage', 'dismiss', '--issue', String(ISSUE)]);
       const output = `${run.stdout}\n${run.stderr}`;
@@ -204,7 +213,7 @@ describe('codeloop triage dismissal refusal (issue #336)', () => {
       assert.strictEqual(ghLog(sandbox), '', 'no reply/resolve POST may be attempted');
 
       assert.strictEqual(
-        fs.readFileSync(sandbox.checkpointPath, 'utf8'),
+        fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'),
         before,
         'the checkpoint must be byte-identical'
       );
@@ -217,7 +226,7 @@ describe('codeloop triage dismissal refusal (issue #336)', () => {
   });
 
   test('R2 (AC-1): the refusal --json document reports failure and no write', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTriageRefusalSandbox();
     try {
       const run = await runTriage(sandbox, [
         'triage',
@@ -242,8 +251,8 @@ describe('codeloop triage dismissal refusal (issue #336)', () => {
   });
 
   test('R3 (AC-3): a dry run without notes predicts the refusal', async () => {
-    const sandbox = makeSandbox();
-    const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+    const sandbox = makeTriageRefusalSandbox();
+    const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
     try {
       const run = await runTriage(sandbox, [
         'triage',
@@ -263,14 +272,14 @@ describe('codeloop triage dismissal refusal (issue #336)', () => {
         `a refused prediction must not promise an attempt:\n${output}`
       );
       assert.strictEqual(ghLog(sandbox), '', 'a dry run never posts');
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });
     }
   });
 
   test('R4 (AC-3): the dry-run --json document carries the refusal', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTriageRefusalSandbox();
     try {
       const run = await runTriage(sandbox, [
         'triage',
@@ -294,7 +303,7 @@ describe('codeloop triage dismissal refusal (issue #336)', () => {
   });
 
   test('R5 (AC-2/AC-3 control): triage completed still advances and records', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTriageRefusalSandbox();
     try {
       const run = await runTriage(sandbox, ['triage', 'completed', '--issue', String(ISSUE)]);
       const output = `${run.stdout}\n${run.stderr}`;
@@ -309,7 +318,7 @@ describe('codeloop triage dismissal refusal (issue #336)', () => {
   });
 
   test('R6 (AC-2): a failed dismissal write records nothing and stays at TRIAGE', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeTriageRefusalSandbox();
     try {
       const run = await runTriage(
         sandbox,

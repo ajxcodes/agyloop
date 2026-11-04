@@ -88,7 +88,7 @@ function head(constant: string): string {
   return constant.split('{')[0];
 }
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any;
   public saveCalls: number;
 
@@ -115,7 +115,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   loadConfig(): any {
     return DEFAULT_CONFIG;
   }
@@ -129,7 +129,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   updateSummaryLog(): boolean {
     return true;
   }
@@ -160,15 +160,15 @@ class MockPlanGenerator {
 }
 
 describe('RunReviewUseCase - operator refutations (issue #349)', () => {
-  let stateRepo: MockStateRepository;
+  let stateRepo: StateRepositoryDouble;
 
   beforeEach(() => {
     const sm = new StateMachine({ stage: new Stage(STAGE_REVIEW), issue: new IssueNumber(349) });
-    stateRepo = new MockStateRepository(sm.toSnapshot());
+    stateRepo = new StateRepositoryDouble(sm.toSnapshot());
   });
 
   function buildUseCase() {
-    return new RunReviewUseCase(stateRepo, new MockConfigRepository(), new MockPlanGenerator());
+    return new RunReviewUseCase(stateRepo, new ConfigRepositoryDouble(), new PlanGeneratorDouble());
   }
 
   function lastMetadata() {

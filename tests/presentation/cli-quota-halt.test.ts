@@ -19,6 +19,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli, lifecycleHaltExitCode, persistedHaltExitCode } = require('../../dist/presentation/cli');
+const { readRootState } = require('../helpers/state-seed.ts');
 const {
   QuotaExhaustedError,
   CircuitBreakerTrippedError,
@@ -29,6 +30,7 @@ const {
   QUOTA_RESUME_COMMAND
 } = require('../../dist/domain');
 const { EXIT_CODE_FAILURE, EXIT_CODE_QUOTA_EXHAUSTED } = require('../../dist/domain/constants');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const FIXED_NOW = new Date('2026-10-14T12:00:00.000Z');
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
@@ -203,55 +205,6 @@ interface SandboxResult {
  * Runs `runCli` inside a throwaway cwd, restoring cwd/TTY/console in `finally` and
  * failing loudly instead of hanging if a prompt is ever opened.
  */
-async function runCliInSandbox(args: readonly string[]): Promise<SandboxResult> {
-  const prevCwd = process.cwd();
-  const originalStdinIsTTY = (process.stdin as any).isTTY;
-  const originalStdoutIsTTY = (process.stdout as any).isTTY;
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-quota-halt-'));
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    seedBreakerState(tempDir);
-    process.chdir(tempDir);
-    (process.stdin as any).isTTY = false;
-    (process.stdout as any).isTTY = false;
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-
-    const timeoutMs = 30000;
-    const code = await Promise.race([
-      runCli(args),
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error(`HANG: runCli(${JSON.stringify(args)}) never settled.`)),
-          timeoutMs
-        );
-        if (typeof timer.unref === 'function') {
-          timer.unref();
-        }
-      })
-    ]);
-
-    let persisted: Record<string, unknown> | null = null;
-    try {
-      persisted = JSON.parse(fs.readFileSync(path.join(tempDir, '.agyloop', 'state.json'), 'utf8'));
-    } catch {
-      persisted = null;
-    }
-
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, ''), persisted };
-  } finally {
-    process.chdir(prevCwd);
-    (process.stdin as any).isTTY = originalStdinIsTTY;
-    (process.stdout as any).isTTY = originalStdoutIsTTY;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-}
 
 describe('runCli reports a circuit-breaker pause as a failure', () => {
   let originalLog: typeof console.log;
@@ -268,7 +221,14 @@ describe('runCli reports a circuit-breaker pause as a failure', () => {
   });
 
   test('default lifecycle exits non-zero, banners on stderr and checkpoints the gate', async () => {
-    const result = await runCliInSandbox(['--no-worktree']);
+    let persisted: Record<string, unknown> | any = null;
+    const result = await runCliInSandboxCanonical(['--no-worktree'], {
+      seed: (dir: string) => seedBreakerState(dir),
+      inspect: (dir: string) => {
+        persisted = readRootState(dir);
+      },
+      stripAnsi: true
+    });
 
     assert.notStrictEqual(result.code, 0, 'a breaker pause is a failure, not a success');
     assert.strictEqual(result.code, EXIT_CODE_FAILURE);
@@ -278,21 +238,35 @@ describe('runCli reports a circuit-breaker pause as a failure', () => {
 
     // AC4 round trip through the CLI: the pause must survive on disk, otherwise the
     // operator loses the context and has to restart the stage from scratch.
-    assert.strictEqual(result.persisted?.pausedAtGate, GATE_CIRCUIT_BREAKER);
-    assert.ok(result.persisted?.pausedAtTimestamp, 'the checkpoint must carry a timestamp');
+    assert.strictEqual(persisted?.pausedAtGate, GATE_CIRCUIT_BREAKER);
+    assert.ok(persisted?.pausedAtTimestamp, 'the checkpoint must carry a timestamp');
   });
 
   test('yolo exits non-zero and banners on stderr', async () => {
-    const result = await runCliInSandbox(['yolo', '--no-worktree']);
+    let persisted: Record<string, unknown> | any = null;
+    const result = await runCliInSandboxCanonical(['yolo', '--no-worktree'], {
+      seed: (dir: string) => seedBreakerState(dir),
+      inspect: (dir: string) => {
+        persisted = readRootState(dir);
+      },
+      stripAnsi: true
+    });
 
     assert.strictEqual(result.code, EXIT_CODE_FAILURE);
     assert.ok(result.stderr.includes('qualityGateRetries'), result.stderr);
     assert.ok(result.stderr.includes(QUOTA_RESUME_COMMAND), result.stderr);
-    assert.strictEqual(result.persisted?.pausedAtGate, GATE_CIRCUIT_BREAKER);
+    assert.strictEqual(persisted?.pausedAtGate, GATE_CIRCUIT_BREAKER);
   });
 
   test('a halted run writes its banner to stderr, never to stdout', async () => {
-    const result = await runCliInSandbox(['yolo', '--no-worktree']);
+    let persisted: Record<string, unknown> | any = null;
+    const result = await runCliInSandboxCanonical(['yolo', '--no-worktree'], {
+      seed: (dir: string) => seedBreakerState(dir),
+      inspect: (dir: string) => {
+        persisted = readRootState(dir);
+      },
+      stripAnsi: true
+    });
 
     assert.ok(!result.stdout.includes('Circuit breaker'), result.stdout);
     assert.ok(!result.stdout.includes('State is checkpointed'), result.stdout);

@@ -42,7 +42,7 @@ import type {
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -66,7 +66,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(overrides: Partial<AgyLoopConfig> = {}): ConfigRepository {
+function makeMockConfigLocal(overrides: Partial<AgyLoopConfig> = {}): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -311,8 +311,8 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('next --issue <n> on COMPLETED is non-destructive even when a plan document exists', async () => {
       const seed = seedCompleted();
-      const stateRepo = new MockStateRepo(seed);
-      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), resolvingPlanGen);
+      const stateRepo = new StateRepositoryDouble(seed);
+      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), resolvingPlanGen);
 
       const result = await useCase.execute({ workspaceDir: '/repo', issue: 51 });
 
@@ -331,8 +331,8 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
       // and must be inferred from the cwd — the exact shape that used to trip the
       // destructive `reset()` branch.
       const seed = seedCompleted({ issue: null, worktree: null });
-      const stateRepo = new MockStateRepo(seed);
-      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), resolvingPlanGen);
+      const stateRepo = new StateRepositoryDouble(seed);
+      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), resolvingPlanGen);
 
       const result = await useCase.execute({ workspaceDir: '/repo/.worktrees/51' });
 
@@ -349,8 +349,8 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('--restart re-opens at DISCOVERY and never PLAN', async () => {
       const seed = seedCompleted();
-      const stateRepo = new MockStateRepo(seed);
-      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig(), resolvingPlanGen);
+      const stateRepo = new StateRepositoryDouble(seed);
+      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal(), resolvingPlanGen);
 
       const result = await useCase.execute({ workspaceDir: '/repo', issue: 51, restart: true });
 
@@ -373,10 +373,10 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('--restart yields to open review feedback', async () => {
       const seed = seedCompleted();
-      const stateRepo = new MockStateRepo(seed);
+      const stateRepo = new StateRepositoryDouble(seed);
       const useCase = new GetNextActionUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         undefined,
         gatewayWithFeedback()
       );
@@ -400,10 +400,10 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('next on COMPLETED with open PR review comments routes to TRIAGE without a restart', async () => {
       const seed = seedCompleted();
-      const stateRepo = new MockStateRepo(seed);
+      const stateRepo = new StateRepositoryDouble(seed);
       const useCase = new GetNextActionUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         undefined,
         gatewayWithFeedback()
       );
@@ -427,7 +427,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('offline next on COMPLETED is non-destructive even with a githubGateway injected', async () => {
       const seed = seedCompleted();
-      const stateRepo = new MockStateRepo(seed);
+      const stateRepo = new StateRepositoryDouble(seed);
       const offlineGateway: any = {
         getCurrentRepo: () => 'owner/repo',
         fetchIssue: async () => null,
@@ -438,7 +438,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
       };
       const useCase = new GetNextActionUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         resolvingPlanGen,
         offlineGateway
       );
@@ -453,10 +453,10 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('an OPEN PR with no review comments does not authorise any mutation', async () => {
       const seed = seedCompleted();
-      const stateRepo = new MockStateRepo(seed);
+      const stateRepo = new StateRepositoryDouble(seed);
       const useCase = new GetNextActionUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         resolvingPlanGen,
         gatewayWithoutFeedback()
       );
@@ -476,10 +476,10 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
           for (const restart of [false, true]) {
             for (const gateway of [undefined, gatewayWithFeedback(), gatewayWithoutFeedback()]) {
               const seed = seedCompleted({ currentStage: baseStage, issue: 51 });
-              const stateRepo = new MockStateRepo(seed);
+              const stateRepo = new StateRepositoryDouble(seed);
               const useCase = new GetNextActionUseCase(
                 stateRepo,
-                makeMockConfig(),
+                makeMockConfigLocal(),
                 planGen,
                 gateway as any
               );
@@ -502,8 +502,8 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
     test('auto-infers issue context from worktree cwd when state.issue is null', async () => {
       const sm = StateMachine.createInitial();
       sm.transition(STAGE_DISCOVERY);
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
-      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfig());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+      const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
 
       const result = await useCase.execute({
         workspaceDir: '/repo/.worktrees/51'
@@ -520,7 +520,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
     test('auto-infers issue context from active task branch via WorktreeManager', async () => {
       const sm = StateMachine.createInitial();
       sm.transition(STAGE_DISCOVERY);
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
       const mockWorktreeManager: WorktreeManagerPort = {
         resolveBaseBranch: async () => 'task/51-feature-branch',
@@ -533,7 +533,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
       const useCase = new GetNextActionUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         undefined,
         undefined,
         undefined,
@@ -553,7 +553,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
   describe('RunPreFlightCheckUseCase Auto-Inference', () => {
     test('auto-infers issue from worktree path and persists back to stateRepo', async () => {
       const sm = StateMachine.createInitial(); // issue is null
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
       const preflight = new RunPreFlightCheckUseCase(
         undefined,
@@ -574,7 +574,7 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
 
     test('auto-infers issue from active branch when cwd has no worktree pattern', async () => {
       const sm = StateMachine.createInitial();
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
       const mockWorktreeManager: WorktreeManagerPort = {
         resolveBaseBranch: async () => 'fix/42-fix-timeout',
@@ -657,7 +657,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
 
   function countedRepo(stateFile: string): any {
     const { FileStateRepository } = require('../../dist/infrastructure');
-    const real = new FileStateRepository({ stateFilePath: stateFile });
+    const real = createStateRepository({ stateFilePath: stateFile });
     let saves = 0;
     return {
       repo: {
@@ -681,7 +681,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
   test('N-20 / AC-5: an absent checkpoint is never manufactured', async () => {
     const { dir, stateFile } = tempStateFile(null);
     const { repo, saves } = countedRepo(stateFile);
-    const useCase = new GetNextActionUseCase(repo, makeMockConfig());
+    const useCase = new GetNextActionUseCase(repo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: dir, issue: 900 });
 
@@ -698,7 +698,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
   test('N-21 / AC-5: an absent checkpoint with --dry-run still writes nothing', async () => {
     const { dir, stateFile } = tempStateFile(null);
     const { repo, saves } = countedRepo(stateFile);
-    const useCase = new GetNextActionUseCase(repo, makeMockConfig());
+    const useCase = new GetNextActionUseCase(repo, makeMockConfigLocal());
 
     const result = await useCase.execute({ workspaceDir: dir, issue: 900, dryRun: true });
 
@@ -714,7 +714,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
     const { repo, saves } = countedRepo(stateFile);
     const useCase = new GetNextActionUseCase(
       repo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       undefined,
       undefined,
@@ -745,7 +745,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
     const { repo } = countedRepo(stateFile);
     const useCase = new GetNextActionUseCase(
       repo,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       undefined,
       undefined,
       undefined,
@@ -784,7 +784,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
   test('N-24 / AC-5: a second real read changes only the counter and updatedAt', async () => {
     const { dir, stateFile } = tempStateFile(discoverySeed({ baseBranch: 'main' }));
     const { repo } = countedRepo(stateFile);
-    const useCase = new GetNextActionUseCase(repo, makeMockConfig());
+    const useCase = new GetNextActionUseCase(repo, makeMockConfigLocal());
     await useCase.execute({ workspaceDir: dir, issue: 905 });
     const before = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 
@@ -803,3 +803,5 @@ describe('#301: next is a declared, non-fabricating query', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

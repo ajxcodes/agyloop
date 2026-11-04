@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const { runCli, printHelp } = require('../../dist/presentation/cli');
 const { ResolveSubagentUseCase } = require('../../dist/application');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 const {
   TRIAGE_DISPOSITION_ACTIONS,
   buildDefaultTriageSystemPrompt
@@ -41,28 +42,6 @@ function captureConsole(fn: () => void): string {
   return output;
 }
 
-async function runIn(dir: string, args: string[]): Promise<{ code: number; output: string }> {
-  const previousCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let output = '';
-
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      output += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      output += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, output };
-  } finally {
-    process.chdir(previousCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
 function seedTriage(dir: string): void {
   const stateFile = path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
@@ -97,7 +76,8 @@ describe('Triage action-list contract (issue #277)', () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-actions-'));
     try {
       seedTriage(sandbox);
-      const hint = (await runIn(sandbox, ['triage'])).output;
+      const hintRun = await runCliInSandboxCanonical(['triage'], { dir: sandbox.dir });
+      const hint = hintRun.stdout + hintRun.stderr;
 
       for (const action of TRIAGE_DISPOSITION_ACTIONS) {
         assert.ok(help.includes(action), `--help must name '${action}'`);
@@ -118,9 +98,9 @@ describe('Triage action-list contract (issue #277)', () => {
   test('TA2: the parser rejects an action outside the list', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-actions-'));
     try {
-      const run = await runIn(sandbox, ['triage', 'archive', '--issue', String(ISSUE)]);
+      const run = await runCliInSandboxCanonical(['triage', 'archive', '--issue', String(ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(run.code, 1);
-      assert.match(run.output, /Unrecognized triage action/);
+      assert.match(run.stdout + run.stderr, /Unrecognized triage action/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -143,10 +123,10 @@ describe('Triage action-list contract (issue #277)', () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-actions-'));
     try {
       seedTriage(sandbox);
-      const run = await runIn(sandbox, ['next', '--issue', String(ISSUE)]);
-      assert.strictEqual(run.code, 0, run.output);
-      assert.ok(run.output.includes('completed'), run.output);
-      assert.ok(run.output.includes('dismiss'), run.output);
+      const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: sandbox.dir });
+      assert.strictEqual(run.code, 0, run.stdout + run.stderr);
+      assert.ok(run.stdout + run.stderr.includes('completed'), run.stdout + run.stderr);
+      assert.ok(run.stdout + run.stderr.includes('dismiss'), run.stdout + run.stderr);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

@@ -25,7 +25,7 @@ import type {
   CritiqueResolution
 } from '../../src/ports';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: any = null;
 
   constructor(initialStage: string = STAGE_QUALITY_GATE) {
@@ -57,7 +57,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-class MockConfigRepo implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   loadConfig(): any {
     return {};
   }
@@ -74,7 +74,7 @@ class MockConfigRepo implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   resolvePlanFile(): any {
     return null;
   }
@@ -175,9 +175,9 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
@@ -237,9 +237,9 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
@@ -303,9 +303,9 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
@@ -367,9 +367,9 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
@@ -424,9 +424,9 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
@@ -493,9 +493,9 @@ describe('RunReviewUseCase --dry-run never installs or checks for updates (#248)
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,

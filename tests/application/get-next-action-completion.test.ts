@@ -132,7 +132,7 @@ const FAILED_BLOCK = [
   '  "smokeProtocol": "NOT_DECLARED", "notRun": [] }'
 ].join('\n');
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null;
   public saveCallCount = 0;
 
@@ -158,7 +158,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-function makeMockConfig(): ConfigRepository {
+function makeMockConfigLocal(): ConfigRepository {
   const config: AgyLoopConfig = {
     models: {
       planner: 'pro',
@@ -201,7 +201,7 @@ function makeMockConfig(): ConfigRepository {
 }
 
 /** Resolves the discovery document at DISCOVERY and the plan document at PLAN. */
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   private readonly planContent: string;
   private readonly discoveryContent: string;
 
@@ -232,7 +232,7 @@ class MockPlanGenerator {
   }
 }
 
-class FakeProbe {
+class DetectImplementationDiffDouble {
   public calls: any[] = [];
   private readonly result: any;
 
@@ -341,7 +341,7 @@ function makeUseCase(
 ): any {
   return new GetNextActionUseCase(
     stateRepo,
-    makeMockConfig(),
+    makeMockConfigLocal(),
     options.planGenerator,
     undefined,
     undefined,
@@ -362,11 +362,11 @@ function reportFor(sm: any, block: string, roundOverride?: number): GateResultRe
 describe('a met completion condition is not dispatchable (issue #337)', () => {
   test('C1: DISCOVERY with a populated report advances and writes nothing', async () => {
     const sm = discoveryMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const before = JSON.stringify(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN, DISCOVERY_POPULATED)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN, DISCOVERY_POPULATED)
     }).execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.actionType, 'advance');
@@ -383,11 +383,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 
   test('C2: PLAN with a non-blank plan advances and writes nothing', async () => {
     const sm = planMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const before = JSON.stringify(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN)
     }).execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.actionType, 'advance');
@@ -406,12 +406,12 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 
   test('C3: IMPLEMENT with a present diff advances without a payload or a counter', async () => {
     const sm = implementMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const before = JSON.stringify(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN),
-      probe: new FakeProbe(PRESENT_DIFF)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN),
+      probe: new DetectImplementationDiffDouble(PRESENT_DIFF)
     }).execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.actionType, 'advance');
@@ -438,11 +438,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
       reviewTokens: '### Review Remediation - Round 2\n- fix the probe',
       reviewRound: 2
     });
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN),
-      probe: new FakeProbe(PRESENT_DIFF)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN),
+      probe: new DetectImplementationDiffDouble(PRESENT_DIFF)
     }).execute({ workspaceDir: '/repo' });
 
     const text = `${result.description}\n${result.humanSummary}`;
@@ -470,11 +470,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
       failureSnippet: 'AssertionError: expected 1 to equal 2',
       selfCorrectionPayload: 'Fix the failing assertion in src/probe.ts.'
     });
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN),
-      probe: new FakeProbe(PRESENT_DIFF)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN),
+      probe: new DetectImplementationDiffDouble(PRESENT_DIFF)
     }).execute({ workspaceDir: '/repo' });
 
     const text = `${result.description}\n${result.humanSummary}`;
@@ -498,11 +498,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
     // in-process counter survives the round) must not read as done either.
     const sm = implementMachine();
     sm.incrementImplementGateLoop();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN),
-      probe: new FakeProbe(PRESENT_DIFF)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN),
+      probe: new DetectImplementationDiffDouble(PRESENT_DIFF)
     }).execute({ workspaceDir: '/repo' });
 
     const text = `${result.description}\n${result.humanSummary}`;
@@ -520,11 +520,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
     const sm = implementMachine();
     sm.transition(STAGE_QUALITY_GATE);
     sm.transition(STAGE_IMPLEMENT, { gateVerdict: 'FAILED' });
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN),
-      probe: new FakeProbe(PRESENT_DIFF)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN),
+      probe: new DetectImplementationDiffDouble(PRESENT_DIFF)
     }).execute({ workspaceDir: '/repo' });
 
     const text = `${result.description}\n${result.humanSummary}`;
@@ -538,11 +538,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 
   test('C5: IMPLEMENT with a clean tree stays dispatchable (control)', async () => {
     const sm = implementMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN),
-      probe: new FakeProbe(CLEAN_DIFF)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN),
+      probe: new DetectImplementationDiffDouble(CLEAN_DIFF)
     }).execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.actionType, 'subagent');
@@ -554,10 +554,10 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 
   test('C6: DISCOVERY with a blank report stays dispatchable (control)', async () => {
     const sm = discoveryMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN, DISCOVERY_BLANK)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN, DISCOVERY_BLANK)
     }).execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.actionType, 'subagent');
@@ -568,10 +568,10 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 
   test('C7: PLAN with a blank plan stays dispatchable (control)', async () => {
     const sm = planMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(BLANK_PLAN)
+      planGenerator: new PlanGeneratorDouble(BLANK_PLAN)
     }).execute({ workspaceDir: '/repo' });
 
     assert.strictEqual(result.actionType, 'subagent');
@@ -582,11 +582,11 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 
   test('C13: a met read under --dry-run declares NO write', async () => {
     const sm = discoveryMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const before = JSON.stringify(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo, {
-      planGenerator: new MockPlanGenerator(REAL_PLAN, DISCOVERY_POPULATED)
+      planGenerator: new PlanGeneratorDouble(REAL_PLAN, DISCOVERY_POPULATED)
     }).execute({ workspaceDir: '/repo', dryRun: true });
 
     assert.strictEqual(result.actionType, 'advance');
@@ -599,7 +599,7 @@ describe('a met completion condition is not dispatchable (issue #337)', () => {
 describe('the gate directive reads the evidence it tells you to file (issue #337)', () => {
   test('C8: a same-round PASSED block is a met condition — advance, no filing note', async () => {
     const sm = gateMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const before = JSON.stringify(sm.toSnapshot());
     const gateRepo = new MockGateReportRepo(reportFor(sm, PASSED_BLOCK));
 
@@ -622,7 +622,7 @@ describe('the gate directive reads the evidence it tells you to file (issue #337
 
   test('C8b: a same-round FAILED block still advances and names the retry command', async () => {
     const sm = gateMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const gateRepo = new MockGateReportRepo(reportFor(sm, FAILED_BLOCK));
 
     const result = await makeUseCase(stateRepo, { gateRepo }).execute({ workspaceDir: '/repo' });
@@ -638,7 +638,7 @@ describe('the gate directive reads the evidence it tells you to file (issue #337
 
   test('C9: a PREVIOUS round block cannot certify this round', async () => {
     const sm = gateMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     // Resolves to the checkpoint's round, then stamp it one round EARLIER.
     const staleRound = Math.max(0, resolveGateRound(sm.history) - 1);
     const gateRepo = new MockGateReportRepo(reportFor(sm, PASSED_BLOCK, staleRound));
@@ -655,7 +655,7 @@ describe('the gate directive reads the evidence it tells you to file (issue #337
 
   test('C10: with nothing filed the directive still asks for the block', async () => {
     const sm = gateMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
     const gateRepo = new MockGateReportRepo(null);
 
     const result = await makeUseCase(stateRepo, { gateRepo }).execute({ workspaceDir: '/repo' });
@@ -670,7 +670,7 @@ describe('the gate directive reads the evidence it tells you to file (issue #337
 
   test('with no repository injected the evidence is UNVERIFIED and no claim is made', async () => {
     const sm = gateMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo).execute({ workspaceDir: '/repo' });
 
@@ -683,7 +683,7 @@ describe('the gate directive reads the evidence it tells you to file (issue #337
 describe('idle and pre-flight reports are not actionable (issue #337)', () => {
   test('C11: COMPLETED is `completed`, carries no payload and names real commands', async () => {
     const sm = completedMachine();
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo).execute({ workspaceDir: '/repo' });
 
@@ -697,7 +697,7 @@ describe('idle and pre-flight reports are not actionable (issue #337)', () => {
 
   test('C12: INITIALIZED is `preflight` with no payload', async () => {
     const sm = StateMachine.createInitial({ issue: ISSUE, mode: MODE_STANDARD });
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const result = await makeUseCase(stateRepo).execute({ workspaceDir: '/repo' });
 

@@ -54,7 +54,7 @@ function report(findings: any) {
   });
 }
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any;
   public saveCalls: number;
 
@@ -81,7 +81,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   loadConfig(): any {
     return DEFAULT_CONFIG;
   }
@@ -95,7 +95,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   updateSummaryLog(): boolean {
     return true;
   }
@@ -126,15 +126,15 @@ class MockPlanGenerator {
 }
 
 describe('RunReviewUseCase - content-aware blocking (issue #349)', () => {
-  let stateRepo: MockStateRepository;
+  let stateRepo: StateRepositoryDouble;
 
   beforeEach(() => {
     const sm = new StateMachine({ stage: new Stage(STAGE_REVIEW), issue: new IssueNumber(349) });
-    stateRepo = new MockStateRepository(sm.toSnapshot());
+    stateRepo = new StateRepositoryDouble(sm.toSnapshot());
   });
 
   function buildUseCase() {
-    return new RunReviewUseCase(stateRepo, new MockConfigRepository(), new MockPlanGenerator());
+    return new RunReviewUseCase(stateRepo, new ConfigRepositoryDouble(), new PlanGeneratorDouble());
   }
 
   test('R1: one critical affirmation beside APPROVED records APPROVED at COMMIT (AC2)', async () => {

@@ -33,7 +33,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
 
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-'));
     stateFile = path.join(tempDir, '.agyloop', 'state.json');
-    repo = new FileStateRepository({ stateFilePath: stateFile });
+    repo = createStateRepository({ stateFilePath: stateFile });
   });
 
   afterEach(() => {
@@ -365,12 +365,12 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   });
 
   test('resolves state file path relative to explicit workspaceDir', () => {
-    const explicitRepo = new FileStateRepository({ workspaceDir: tempDir });
+    const explicitRepo = createStateRepository({ workspaceDir: tempDir });
     assert.strictEqual(explicitRepo.getStateFilePath(), path.join(tempDir, '.agyloop', 'state.json'));
   });
 
   test('resolves a worktree-local state file when instantiated without options (#244)', () => {
-    const defaultRepo = new FileStateRepository();
+    const defaultRepo = createStateRepository();
     // A repo built with no options resolves to an absolute <worktree-root>/.agyloop/state.json path
     assert.ok(defaultRepo.getStateFilePath().endsWith(path.join('.agyloop', 'state.json')));
     // The root IS the caller's own worktree: state must never be redirected to another checkout (#244).
@@ -399,12 +399,12 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     };
 
     try {
-      const repo1 = new FileStateRepository();
+      const repo1 = createStateRepository();
       const initialExecCalls = execCallCount;
       assert.ok(initialExecCalls > 0, 'First instantiation should invoke execSync');
 
       // Second instantiation should reuse cached root without spawning child processes
-      const repo2 = new FileStateRepository();
+      const repo2 = createStateRepository();
       assert.strictEqual(execCallCount, initialExecCalls, 'Second instantiation should reuse cached workspace root');
       assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
     } finally {
@@ -426,13 +426,13 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     };
 
     try {
-      const repo1 = new FileStateRepository();
+      const repo1 = createStateRepository();
       const afterFirst = execCallCount;
       assert.ok(afterFirst > 0, 'First instantiation should attempt git');
 
       // A failed resolution must NOT be memoized, otherwise a transient git failure would
       // permanently pin workspaceRoot to the cwd for the process lifetime.
-      const repo2 = new FileStateRepository();
+      const repo2 = createStateRepository();
       assert.ok(
         execCallCount > afterFirst,
         'Second instantiation must re-attempt git when the first resolution was unproven'
@@ -445,10 +445,10 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   });
 
   test('clearWorkspaceRootCache invalidates cached workspace root', () => {
-    const repo1 = new FileStateRepository();
+    const repo1 = createStateRepository();
     assert.ok(repo1.getStateFilePath());
     FileStateRepository.clearWorkspaceRootCache();
-    const repo2 = new FileStateRepository();
+    const repo2 = createStateRepository();
     assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
   });
 
@@ -572,3 +572,5 @@ describe('plan mode clears on the first transition out of the plan phase (#339 i
     assert.strictEqual(plan.mode, 'plan', 'setMode must not be second-guessed here');
   });
 });
+
+const { createStateRepository } = require('./helpers/state-repo.ts');

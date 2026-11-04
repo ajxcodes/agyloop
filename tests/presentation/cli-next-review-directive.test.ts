@@ -20,36 +20,23 @@ const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
 const { NOTE_REVIEW_GATE_EXIT_CONDITION } = require('../../dist/domain');
+const { seedTask } = require('../helpers/state-seed.ts');
 
 const ISSUE = 912;
 
-function seedCheckpoint(dir: string, extra: Record<string, unknown> = {}): string {
-  const stateFile = path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
-  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+function seedReviewCheckpoint(dir: string, extra: Record<string, unknown> = {}): string {
   const now = new Date().toISOString();
-  fs.writeFileSync(
-    stateFile,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: 'REVIEW',
-        mode: 'standard',
-        issue: ISSUE,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage: 'REVIEW', timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null,
-        reviewDispatchCount: 0,
-        ...extra
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-  return stateFile;
+  return seedTask(dir, {
+    issue: ISSUE,
+    currentStage: 'REVIEW',
+    createdAt: now,
+    updatedAt: now,
+    history: [{ stage: 'REVIEW', timestamp: now }],
+    pausedAtGate: null,
+    pausedAtTimestamp: null,
+    reviewDispatchCount: 0,
+    ...extra
+  });
 }
 
 async function runNextIn(dir: string): Promise<{ code: number; output: string }> {
@@ -107,7 +94,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV5a: the terminal render names the channel and the exit condition', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-'));
     try {
-      const stateFile = seedCheckpoint(sandbox);
+      const stateFile = seedReviewCheckpoint(sandbox);
       const run = await runNextIn(sandbox);
 
       assert.strictEqual(run.code, 0, run.output);
@@ -138,7 +125,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV5b (issue #397): the terminal render names the Tier 1 evidence path and --critique-report', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-397-'));
     try {
-      seedCheckpoint(sandbox);
+      seedReviewCheckpoint(sandbox);
       const run = await runNextIn(sandbox);
       const expected = path.join(sandbox, '.agyloop', 'critique', `${ISSUE}.json`);
 
@@ -159,7 +146,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV5b: a paused read does not record a dispatch', async () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-'));
     try {
-      const stateFile = seedCheckpoint(sandbox, {
+      const stateFile = seedReviewCheckpoint(sandbox, {
         pausedAtGate: 'APPROVAL',
         pausedAtTimestamp: new Date().toISOString()
       });
@@ -185,7 +172,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
       fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
       const critiquePath = path.join(sandbox, 'bin', 'critique.js');
       fs.writeFileSync(critiquePath, '#!/usr/bin/env node\n');
-      seedCheckpoint(sandbox);
+      seedReviewCheckpoint(sandbox);
 
       const run = await runNextJsonIn(sandbox);
 
@@ -213,7 +200,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
     try {
       fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
       fs.writeFileSync(path.join(sandbox, 'bin', 'critique.js'), '#!/usr/bin/env node\n');
-      seedCheckpoint(sandbox);
+      seedReviewCheckpoint(sandbox);
 
       const run = await runNextJsonIn(sandbox);
 
@@ -230,7 +217,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV7: the live dispatch names a real untracked file and stages nothing (issue #356)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-356-'));
     const sandbox = path.join(root, 'worktree');
-    const git = (args: string[]) =>
+    const gitRun = (args: string[]) =>
       execFileSync('git', args, { cwd: sandbox, stdio: ['ignore', 'pipe', 'ignore'] })
         .toString()
         .trim();
@@ -244,8 +231,8 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
       // from collapsing the untracked entry to `?? .github/`.
       fs.writeFileSync(path.join(sandbox, '.github', 'workflows', 'ci.yml'), 'name: CI\n', 'utf8');
       fs.writeFileSync(path.join(sandbox, 'README.md'), 'probe\n', 'utf8');
-      git(['add', '-A']);
-      git(['commit', '-qm', 'chore: base with a tracked .github directory']);
+      gitRun(['add', '-A']);
+      gitRun(['commit', '-qm', 'chore: base with a tracked .github directory']);
 
       // The load-bearing part of the change set, and invisible to `git diff`.
       fs.writeFileSync(
@@ -253,7 +240,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
         'self-hosted-runner:\n  labels:\n    - ubuntu-26.04\n',
         'utf8'
       );
-      seedCheckpoint(sandbox);
+      seedReviewCheckpoint(sandbox);
 
       const run = await runNextJsonIn(sandbox);
 
@@ -286,8 +273,8 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
 
       // The dispatch is READ-ONLY evidence: the path is still untracked AND the
       // index is untouched (staging changes what the commit draft sees, #240).
-      assert.strictEqual(git(['status', '--porcelain', '--', '.github']), '?? .github/actionlint.yaml');
-      assert.strictEqual(git(['diff', '--cached', '--name-only']), '');
+      assert.strictEqual(gitRun(['status', '--porcelain', '--', '.github']), '?? .github/actionlint.yaml');
+      assert.strictEqual(gitRun(['diff', '--cached', '--name-only']), '');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

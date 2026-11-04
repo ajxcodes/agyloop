@@ -51,7 +51,7 @@ const {
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
 
-class MockConfigRepo implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public loadConfig(): any {
     return DEFAULT_CONFIG;
   }
@@ -68,7 +68,7 @@ class MockConfigRepo implements ConfigRepository {
   }
 }
 
-class MockCritiquePort implements CritiquePort {
+class CritiqueDouble implements CritiquePort {
   private readonly resolution: CritiqueResolution;
 
   constructor(resolution?: CritiqueResolution) {
@@ -89,7 +89,7 @@ class MockCritiquePort implements CritiquePort {
 }
 
 describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () => {
-  const configRepo = new MockConfigRepo();
+  const configRepo = new ConfigRepositoryDouble();
 
   test('injects explicitly provided params.critiquePath and two-tier instructions into reviewer prompt', () => {
     const useCase = new ResolveSubagentUseCase(configRepo);
@@ -110,7 +110,7 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
   });
 
   test('resolves critique path from injected ManageCritiqueUseCase', () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_USER_DATA,
       path: '/home/user/.local/share/agyloop/tools/critique',
       isAvailable: true
@@ -130,7 +130,7 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
   });
 
   test('resolves critique path from injected CritiquePort', () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_USER_DATA,
       path: '/usr/bin/critique',
       isAvailable: true
@@ -144,7 +144,7 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
   });
 
   test('names the resolver, not a hardcoded path, when critique is unresolvable (issue #314)', () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_NONE,
       path: null,
       isAvailable: false
@@ -167,7 +167,7 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
   });
 
   test('runs a resolved .js critique binary through node (issue #314)', () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_USER_DATA,
       path: '/home/user/.local/share/critique/bin/critique.js',
       isAvailable: true
@@ -944,7 +944,7 @@ index 1111111..2222222 100644
 });
 
 describe('State-guard escape hatch parity (issue #405, D1)', () => {
-  const configRepo = new MockConfigRepo();
+  const configRepo = new ConfigRepositoryDouble();
   const WORKTREE = '/repo/.worktrees/405';
 
   const signalOf = (text: string): string => {
@@ -1031,7 +1031,7 @@ describe('Gate prompt evidence contract (issue #298)', () => {
   ].join('\n');
 
   function useCase(): any {
-    return new ResolveSubagentUseCase(new MockConfigRepo());
+    return new ResolveSubagentUseCase(new ConfigRepositoryDouble());
   }
 
   test('RS-G1: the prompt states cwd, source, frozen checks and the edit ban', () => {
@@ -1193,7 +1193,7 @@ describe('Gate prompt evidence contract (issue #298)', () => {
       resolveContainerSocket: () => null
     };
     const selection = new ResolveSubagentUseCase(
-      new MockConfigRepo(),
+      new ConfigRepositoryDouble(),
       undefined,
       undefined,
       undefined,
@@ -1225,7 +1225,7 @@ describe('Gate prompt evidence contract (issue #298)', () => {
 
 describe('Discovery evidence contract (issue #306)', () => {
   test('T14: the discovery prompt states the same contract the predicate enforces', () => {
-    const useCase = new ResolveSubagentUseCase(new MockConfigRepo());
+    const useCase = new ResolveSubagentUseCase(new ConfigRepositoryDouble());
     const prompt = useCase.buildDiscoveryTaskPrompt({ issueNumber: 306 });
     const contract = formatDiscoveryReportContract();
 
@@ -1313,7 +1313,7 @@ describe('Gate prompt → parser vocabulary contract (issue #311)', () => {
   ].join('\n');
 
   function gatePrompt(params: any = {}): string {
-    return new ResolveSubagentUseCase(new MockConfigRepo()).buildGateTaskPrompt({
+    return new ResolveSubagentUseCase(new ConfigRepositoryDouble()).buildGateTaskPrompt({
       issueNumber: 311,
       commands: ['npm test'],
       cwd: '/repo/.worktrees/311',

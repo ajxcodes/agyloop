@@ -1,3 +1,15 @@
+/** The canonical makeSandbox composed for makeRefusedCwdSandbox (issue #544). */
+function makeRefusedCwdSandbox(): string {
+  return makeSandbox({
+    prefix: 'agyloop-349-refused-cwd-',
+    dirName: '',
+    initGit: false,
+    seed: (dir: string) => {
+      fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
+      seedReviewCheckpoint(dir);
+    }
+  }).dir;
+}
 /**
  * agyloop - AC16 (#309.3): a REVIEW checkpoint in a REFUSED cwd (issue #349)
  *
@@ -33,21 +45,20 @@ const {
   ENV_NODE_TEST_CONTEXT
 } = require('../../dist/domain');
 const { FileStateRepository } = require('../../dist/infrastructure');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { readCheckpoint, checkpointPath } = require('../helpers/state-seed.ts');
 
 const ISSUE = 349;
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'codeloop.js');
 
-function checkpointPath(sandbox: string): string {
-  return path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
-}
 
 function seedReviewCheckpoint(sandbox: string): void {
   const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
   fs.mkdirSync(tasksDir, { recursive: true });
   const now = new Date().toISOString();
   fs.writeFileSync(
-    checkpointPath(sandbox),
+    checkpointPath(sandbox, ISSUE),
     JSON.stringify(
       {
         version: '1.0.0',
@@ -69,16 +80,7 @@ function seedReviewCheckpoint(sandbox: string): void {
   );
 }
 
-function makeSandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-349-refused-cwd-'));
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
-  seedReviewCheckpoint(dir);
-  return dir;
-}
 
-function readCheckpoint(sandbox: string): any {
-  return JSON.parse(fs.readFileSync(checkpointPath(sandbox), 'utf8'));
-}
 
 /**
  * The child environment: PATH, HOME inside the sandbox, and the SAME temp root
@@ -106,15 +108,15 @@ function runNext(sandbox: string, extraEnv: any = {}) {
 
 describe('REVIEW checkpoint in a refused cwd (issue #349 / AC16)', () => {
   test('F1: the real FileStateRepository refuses the write (guard liveness)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeRefusedCwdSandbox();
     const previousNodeEnv: string | undefined = process.env[ENV_NODE_ENV];
     const previousTestContext: string | undefined = process.env[ENV_NODE_TEST_CONTEXT];
     try {
       delete process.env[ENV_NODE_ENV];
       delete process.env[ENV_NODE_TEST_CONTEXT];
 
-      const repo = new FileStateRepository({ workspaceDir: sandbox, issue: ISSUE });
-      const snapshot = readCheckpoint(sandbox);
+      const repo = createStateRepository({ workspaceDir: sandbox, issue: ISSUE });
+      const snapshot = readCheckpoint(checkpointPath(sandbox, ISSUE));
 
       assert.throws(
         () => repo.save(snapshot),
@@ -126,7 +128,7 @@ describe('REVIEW checkpoint in a refused cwd (issue #349 / AC16)', () => {
       );
 
       // The refusal really wrote nothing.
-      assert.deepStrictEqual(readCheckpoint(sandbox), snapshot);
+      assert.deepStrictEqual(readCheckpoint(checkpointPath(sandbox, ISSUE)), snapshot);
     } finally {
       if (previousNodeEnv === undefined) {
         delete process.env[ENV_NODE_ENV];
@@ -143,7 +145,7 @@ describe('REVIEW checkpoint in a refused cwd (issue #349 / AC16)', () => {
   });
 
   test('F2: the CLI exits 0 with the directive and warns on stderr (AC5)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeRefusedCwdSandbox();
     try {
       const result = runNext(sandbox);
       const output = `${result.stdout}\n${result.stderr}`;
@@ -156,17 +158,17 @@ describe('REVIEW checkpoint in a refused cwd (issue #349 / AC16)', () => {
         result.stderr.includes('could not record the review dispatch counter'),
         `the refusal must be visible on stderr, got:\n${result.stderr}`
       );
-      assert.ok(result.stderr.includes(checkpointPath(sandbox)), result.stderr);
+      assert.ok(result.stderr.includes(checkpointPath(sandbox, ISSUE)), result.stderr);
 
       // The counter was NOT persisted: the checkpoint is untouched.
-      assert.strictEqual(readCheckpoint(sandbox).reviewDispatchCount, 0);
+      assert.strictEqual(readCheckpoint(checkpointPath(sandbox, ISSUE)).reviewDispatchCount, 0);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });
 
   test('F3: control - the test signal restores the write (the refusal is the guard)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeRefusedCwdSandbox();
     try {
       const result = runNext(sandbox, { [ENV_NODE_TEST_CONTEXT]: '1' });
       const output = `${result.stdout}\n${result.stderr}`;
@@ -176,17 +178,17 @@ describe('REVIEW checkpoint in a refused cwd (issue #349 / AC16)', () => {
         !result.stderr.includes('could not record the review dispatch counter'),
         `no warning is expected under a test signal, got:\n${result.stderr}`
       );
-      assert.strictEqual(readCheckpoint(sandbox).reviewDispatchCount, 1);
+      assert.strictEqual(readCheckpoint(checkpointPath(sandbox, ISSUE)).reviewDispatchCount, 1);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });
 
   test('F4: the warning names the exact checkpoint path', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeRefusedCwdSandbox();
     try {
       const result = runNext(sandbox);
-      const repo = new FileStateRepository({ workspaceDir: sandbox, issue: ISSUE });
+      const repo = createStateRepository({ workspaceDir: sandbox, issue: ISSUE });
       const expected = formatDispatchCounterUnrecorded('review', repo.getStateFilePath());
 
       assert.ok(result.stderr.includes(expected), `expected ${JSON.stringify(expected)} in:\n${result.stderr}`);
@@ -196,3 +198,5 @@ describe('REVIEW checkpoint in a refused cwd (issue #349 / AC16)', () => {
     }
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

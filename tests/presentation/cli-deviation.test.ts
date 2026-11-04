@@ -1,3 +1,14 @@
+/** The canonical task seed with this suite's SEEDED_AT shape. */
+function seedStageCheckpoint(dir: string, stage: string): string {
+  return seedTask(dir, {
+    issue: 432,
+    currentStage: stage,
+    createdAt: SEEDED_AT,
+    updatedAt: SEEDED_AT,
+    history: [{ stage, timestamp: SEEDED_AT, metadata: {} }]
+  });
+}
+
 /**
  * agyloop - `codeloop deviation` CLI channel (issue #432, TR-36..TR-38)
  */
@@ -8,6 +19,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runCli } = require('../../dist/presentation/cli');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPath } = require('../helpers/state-seed.ts');
 const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -21,29 +33,9 @@ const BLOCK = [
 
 const SEEDED_AT = '2026-11-01T00:00:00.000Z';
 
-function seedCheckpoint(dir: string, stage: string): string {
-  const tasks = path.join(dir, '.agyloop', 'tasks');
-  fs.mkdirSync(tasks, { recursive: true });
-  const statePath = path.join(tasks, '432.json');
-  fs.writeFileSync(
-    statePath,
-    JSON.stringify({
-      version: '1.0.0',
-      currentStage: stage,
-      mode: 'standard',
-      issue: 432,
-      planDir: null,
-      planPath: null,
-      createdAt: SEEDED_AT,
-      updatedAt: SEEDED_AT,
-      history: [{ stage, timestamp: SEEDED_AT, metadata: {} }]
-    })
-  );
-  return statePath;
-}
 
 function seedImplementCheckpoint(dir: string): string {
-  return seedCheckpoint(dir, 'IMPLEMENT');
+  return seedStageCheckpoint(dir, 'IMPLEMENT');
 }
 
 describe('codeloop deviation (issue #432)', () => {
@@ -142,7 +134,7 @@ describe('codeloop deviation (issue #432)', () => {
   });
 
   test('CD4 files a prose deviation at REVIEW end to end (#437)', async () => {
-    statePath = seedCheckpoint(root, 'REVIEW');
+    statePath = seedStageCheckpoint(root, 'REVIEW');
     const prosePath = path.join(root, 'tr15.txt');
     fs.writeFileSync(
       prosePath,

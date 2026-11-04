@@ -25,7 +25,7 @@ interface ExecCall {
 
 type ExecHandler = (command: string, options?: unknown) => unknown;
 
-class MockCommandExecutor {
+class CommandExecutorDouble {
   public handler?: ExecHandler;
   public calls: ExecCall[];
 
@@ -60,7 +60,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
       const critiqueJs = path.join(binDir, 'critique.js');
       fs.writeFileSync(critiqueJs, '// critique in workspace');
 
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(tempDir);
 
       assert.strictEqual(resolution.isAvailable, true);
@@ -81,7 +81,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
       const critiqueJs = path.join(siblingCritique, 'bin', 'critique.js');
       fs.writeFileSync(critiqueJs, '// critique binary');
 
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(workspace);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_SIBLING);
@@ -100,7 +100,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
       const critiqueJs = path.join(binDir, 'critique.js');
       fs.writeFileSync(critiqueJs, '// bundled critique');
 
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(tempDir);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_BUNDLED);
@@ -128,7 +128,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
 
       os.homedir = () => path.join(tempDir, 'home');
 
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(isolatedWorkspace);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_DATA);
@@ -165,7 +165,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
 
       os.homedir = () => fakeHome;
 
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(isolatedWorkspace);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_DATA);
@@ -190,7 +190,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
       fs.writeFileSync(critiqueExec, '#!/usr/bin/env node');
 
       os.homedir = () => fakeHome;
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(path.join(tempDir, 'workspace'));
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_USER_LOCAL);
@@ -215,7 +215,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
       os.homedir = () => path.join(tempDir, 'emptyhome');
       process.env.PATH = binDir;
 
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(path.join(tempDir, 'workspace'));
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_SYSTEM_PATH);
@@ -235,7 +235,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
     try {
       os.homedir = () => path.join(tempDir, 'home');
       process.env.PATH = '';
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const resolution = gateway.resolveReviewer(tempDir);
 
       assert.strictEqual(resolution.source, RESOLVER_SOURCE_NONE);
@@ -251,7 +251,7 @@ describe('CliCritiqueGateway Resolution Hierarchy', () => {
 
 describe('CliCritiqueGateway Execution & Diagnostics', () => {
   test('handles explicit bypass gracefully without querying external services', async () => {
-    const mockExecutor = new MockCommandExecutor();
+    const mockExecutor = new CommandExecutorDouble();
     const gateway = new CliCritiqueGateway(mockExecutor);
 
     const report = await gateway.review({ bypass: true });
@@ -267,7 +267,7 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
     try {
       os.homedir = () => path.join(tempDir, 'home');
       process.env.PATH = '';
-      const gateway = new CliCritiqueGateway(new MockCommandExecutor());
+      const gateway = new CliCritiqueGateway(new CommandExecutorDouble());
       const report = await gateway.review({ cwd: tempDir });
 
       assert.strictEqual(report.bypassed, true);
@@ -294,7 +294,7 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
         comments: []
       });
 
-      const mockExecutor = new MockCommandExecutor((cmd: string) => {
+      const mockExecutor = new CommandExecutorDouble((cmd: string) => {
         return {
           command: cmd,
           exitCode: 0,
@@ -343,7 +343,7 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
         comments: []
       });
 
-      const mockExecutor = new MockCommandExecutor((cmd: string) => {
+      const mockExecutor = new CommandExecutorDouble((cmd: string) => {
         return {
           command: cmd,
           exitCode: 0,
@@ -395,7 +395,7 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
         comments: []
       });
 
-      const mockExecutor = new MockCommandExecutor((cmd: string) => {
+      const mockExecutor = new CommandExecutorDouble((cmd: string) => {
         if (cmd === 'npm run build') {
           fs.writeFileSync(critiqueJs, '// newly built');
           return { command: cmd, exitCode: 0, stdout: 'Build OK', stderr: '', combinedOutput: '', durationMs: 20, timedOut: false };
@@ -430,7 +430,7 @@ describe('CliCritiqueGateway Execution & Diagnostics', () => {
       fs.mkdirSync(binDir, { recursive: true });
       fs.writeFileSync(path.join(binDir, 'critique.js'), '// broken critique');
 
-      const mockExecutor = new MockCommandExecutor((cmd: string) => {
+      const mockExecutor = new CommandExecutorDouble((cmd: string) => {
         return {
           command: cmd,
           exitCode: 1,

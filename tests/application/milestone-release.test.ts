@@ -25,7 +25,7 @@ import type {
   GitHubIssueData
 } from '../../src/ports';
 
-function makeMockConfig(config: AgyLoopConfig = DEFAULT_CONFIG): ConfigRepository {
+function makeMockConfigLocal(config: AgyLoopConfig = DEFAULT_CONFIG): ConfigRepository {
   return {
     loadConfig: () => config,
     resolveModel: () => ({ configured: 'inherit', tier: 'inherit' as const, apiModel: 'gemini-2.5-flash' }),
@@ -76,7 +76,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       {} as any,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -101,7 +101,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       {} as any,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -151,7 +151,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -213,7 +213,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -257,7 +257,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       {} as any,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       failingProbe
     );
 
@@ -304,7 +304,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       {} as any,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       executor
     );
     const result = await useCase.execute({ phaseBranch: 'phase/1-bridge', dryRun: true });
@@ -337,7 +337,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       {} as any,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       executor
     );
 
@@ -410,7 +410,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -467,7 +467,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -521,7 +521,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -575,7 +575,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -637,7 +637,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -696,7 +696,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 
@@ -767,7 +767,7 @@ describe('MilestoneReleaseUseCase', () => {
     const useCase = new MilestoneReleaseUseCase(
       mockWorktree,
       mockGithub,
-      makeMockConfig(),
+      makeMockConfigLocal(),
       makeMockExecutor()
     );
 

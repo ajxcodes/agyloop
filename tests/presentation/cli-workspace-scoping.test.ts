@@ -30,6 +30,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli, printHelp } = require('../../dist/presentation/cli');
+const { readCheckpoint } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 425;
@@ -147,54 +149,21 @@ function ghStub(dir: string): string {
  * Runs `runCli` from `cwd` with a stubbed `gh` on PATH and no AGY_SUBAGENT
  * marker (the subagent guard would mask the behaviour under test).
  */
-async function runIn(cwd: string, args: string[], binDir: string): Promise<CliRun> {
-  const previousCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalPath = process.env.PATH;
-  const originalSubagent = process.env.AGY_SUBAGENT;
 
-  let stdout = '';
-  let stderr = '';
-
-  try {
-    process.chdir(cwd);
-    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
-    delete process.env.AGY_SUBAGENT;
-
-    console.log = (...argsOut: unknown[]) => {
-      stdout += argsOut.map(String).join(' ') + '\n';
-    };
-    console.error = (...argsOut: unknown[]) => {
-      stderr += argsOut.map(String).join(' ') + '\n';
-    };
-
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(previousCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
+/** The canonical harness run with this suite's per-call shadow-bin PATH and clean env. */
+async function runInLocal(cwd: string, args: string[], binDir: string): Promise<CliRun> {
+  const result = await runCliInSandboxCanonical(args, {
+    dir: cwd,
+    stripAnsi: true,
+    env: {
+      AGY_SUBAGENT: undefined,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`
     }
-    if (originalSubagent === undefined) {
-      delete process.env.AGY_SUBAGENT;
-    } else {
-      process.env.AGY_SUBAGENT = originalSubagent;
-    }
-  }
+  });
+  return { ...result };
 }
 
-function readCheckpoint(stateFile: string): any {
-  return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-}
+
 
 function gitBranches(repo: string): string {
   return execFileSync('git', ['branch', '--format=%(refname:short)'], {
@@ -238,7 +207,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     const otherStatusBefore = gitStatus(other);
     const binDir = ghStub(base);
 
-    const run = await runIn(other, ['implement', '--issue', TASK, '--workspace', ws], binDir);
+    const run = await runInLocal(other, ['implement', '--issue', TASK, '--workspace', ws], binDir);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
     assert.ok(
@@ -276,7 +245,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     const otherStatusBefore = gitStatus(other);
     const binDir = ghStub(base);
 
-    const run = await runIn(
+    const run = await runInLocal(
       other,
       [
         'plan',
@@ -320,7 +289,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     const otherStatusBefore = gitStatus(other);
     const binDir = ghStub(base);
 
-    const run = await runIn(
+    const run = await runInLocal(
       other,
       [
         '--issue',
@@ -367,7 +336,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
 
     const binDir = ghStub(base);
 
-    const run = await runIn(nowhere, ['implement', '--issue', TASK, '--workspace', ws], binDir);
+    const run = await runInLocal(nowhere, ['implement', '--issue', TASK, '--workspace', ws], binDir);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
 
     assert.ok(
@@ -392,7 +361,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     const otherStatusBefore = gitStatus(other);
     const binDir = ghStub(base);
 
-    const run = await runIn(other, ['implement', '--issue', TASK, '--workspace', plain], binDir);
+    const run = await runInLocal(other, ['implement', '--issue', TASK, '--workspace', plain], binDir);
     assert.notStrictEqual(run.code, 0, `a non-git workspace must be refused: ${run.stdout}\n${run.stderr}`);
 
     const output = `${run.stdout}\n${run.stderr}`;
@@ -418,7 +387,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     const otherStatusBefore = gitStatus(other);
     const binDir = ghStub(base);
 
-    const run = await runIn(other, ['implement', '--issue', TASK, '--workspace', bare], binDir);
+    const run = await runInLocal(other, ['implement', '--issue', TASK, '--workspace', bare], binDir);
     assert.notStrictEqual(run.code, 0, `a bare workspace must be refused: ${run.stdout}\n${run.stderr}`);
 
     const output = `${run.stdout}\n${run.stderr}`;
@@ -445,7 +414,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
     fs.mkdirSync(plain, { recursive: true });
 
     const binDir = ghStub(base);
-    const run = await runIn(other, ['implement', '--issue', TASK, '--workspace', plain], binDir);
+    const run = await runInLocal(other, ['implement', '--issue', TASK, '--workspace', plain], binDir);
     assert.notStrictEqual(run.code, 0, `a plain non-git workspace must be refused: ${run.stdout}\n${run.stderr}`);
 
     const output = `${run.stdout}\n${run.stderr}`;
@@ -474,12 +443,12 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
 
     const binDir = ghStub(base);
 
-    const run = await runIn(other, ['config', '--workspace', ws], binDir);
+    const run = await runInLocal(other, ['config', '--workspace', ws], binDir);
     assert.strictEqual(run.code, 0, `${run.stdout}\n${run.stderr}`);
     assert.match(run.stdout, /^planner\s+flash\s/m);
     assert.doesNotMatch(run.stdout, /^planner\s+pro\s/m);
 
-    const promptRun = await runIn(other, ['prompt', 'planner', '--workspace', ws], binDir);
+    const promptRun = await runInLocal(other, ['prompt', 'planner', '--workspace', ws], binDir);
     assert.strictEqual(promptRun.code, 0, `${promptRun.stdout}\n${promptRun.stderr}`);
     assert.match(promptRun.stdout, /Resolved Tier : flash/);
   });

@@ -1,3 +1,7 @@
+function runGit(cwd: string, args: string[]): string {
+  return String(gitIn(cwd, args, { stdio: 'pipe', encoding: 'utf8' })).trim();
+}
+
 /**
  * agyloop - FileSourceReader revision reads (issue #489)
  *
@@ -16,6 +20,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const { FileSourceReader } = require('../../dist/infrastructure');
+const { gitIn } = require('../helpers/sandbox.ts');
 
 const GIT_AVAILABLE = spawnSync('git', ['--version']).status === 0;
 const roots: string[] = [];
@@ -26,18 +31,15 @@ after(() => {
   }
 });
 
-function git(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' });
-}
 
 /** A repo whose base commit holds `tests/base.test.ts`, plus a dirty new file. */
 function makeRepo(): string {
   if (!GIT_AVAILABLE) return '';
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-489-reader-'));
   roots.push(repo);
-  git(repo, ['init', '-q', '-b', 'main']);
-  git(repo, ['config', 'user.email', 'test@example.com']);
-  git(repo, ['config', 'user.name', 'Test']);
+  runGit(repo, ['init', '-q', '-b', 'main']);
+  runGit(repo, ['config', 'user.email', 'test@example.com']);
+  runGit(repo, ['config', 'user.name', 'Test']);
   fs.mkdirSync(path.join(repo, 'tests'), { recursive: true });
   fs.writeFileSync(
     path.join(repo, 'tests', 'base.test.ts'),
@@ -48,8 +50,8 @@ function makeRepo(): string {
       '});'
     ].join('\n')
   );
-  git(repo, ['add', '-A']);
-  git(repo, ['commit', '-qm', 'base: the pre-change tree']);
+  runGit(repo, ['add', '-A']);
+  runGit(repo, ['commit', '-qm', 'base: the pre-change tree']);
   fs.writeFileSync(
     path.join(repo, 'tests', 'added.test.ts'),
     [
@@ -114,8 +116,8 @@ test('FR5 reads from a workspace root that is a subdirectory of the repository (
   const sub = path.join(repo, 'packages', 'app');
   fs.mkdirSync(path.join(sub, 'tests'), { recursive: true });
   fs.writeFileSync(path.join(sub, 'tests', 'sub.test.ts'), "test('in sub', () => {});\n");
-  git(repo, ['add', '-A']);
-  git(repo, ['commit', '-qm', 'base: the package']);
+  runGit(repo, ['add', '-A']);
+  runGit(repo, ['commit', '-qm', 'base: the package']);
   const reader = new FileSourceReader();
   const result = reader.readAtRevision('tests/sub.test.ts', sub, 'main');
   assert.strictEqual(result.status, 'found');

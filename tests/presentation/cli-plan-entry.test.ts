@@ -17,12 +17,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
-function makeSandbox(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-entry-'));
-}
 
 function taskStatePath(dir: string, issue: number): string {
   return path.join(dir, '.agyloop', 'tasks', `${issue}.json`);
@@ -36,34 +35,12 @@ function readTaskState(dir: string, issue: number): any {
   }
 }
 
-async function runCliIn(dir: string, args: readonly string[]) {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: unknown[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: unknown[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout: stdout.replace(ANSI_ESCAPE, ''), stderr: stderr.replace(ANSI_ESCAPE, '') };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
 describe('plan entry stage through the CLI (issue #379)', () => {
   test('PE-CLI1: a bug title parks at DISCOVERY with a discovery dispatch', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const run = await runCliIn(dir, ['plan', '--issue', '381', '--title', '[Bug] login crash']);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', '381', '--title', '[Bug] login crash'], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /Parked at DISCOVERY/, run.stdout);
@@ -77,7 +54,7 @@ describe('plan entry stage through the CLI (issue #379)', () => {
         'a bug entry must record no PLAN transition'
       );
 
-      const next = await runCliIn(dir, ['next', '--json']);
+      const next = await runCliInSandboxCanonical(['next', '--json'], { dir: dir, stripAnsi: true });
       assert.strictEqual(next.code, 0, next.stderr);
       const directive = JSON.parse(next.stdout.trim());
       assert.strictEqual(directive.currentStage, 'DISCOVERY');
@@ -88,9 +65,9 @@ describe('plan entry stage through the CLI (issue #379)', () => {
   });
 
   test('PE-CLI2: a feature title still advances to PLAN', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const run = await runCliIn(dir, ['plan', '--issue', '383', '--title', 'Feature Plan']);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', '383', '--title', 'Feature Plan'], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /Pipeline advanced to \[PLAN\]/, run.stdout);
@@ -103,9 +80,9 @@ describe('plan entry stage through the CLI (issue #379)', () => {
   });
 
   test('PE-CLI3: an explicit --type selects the entry stage on either side', async () => {
-    const discoveryDir = makeSandbox();
+    const discoveryDir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const discovery = await runCliIn(discoveryDir, [
+      const discovery = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '384',
@@ -113,7 +90,7 @@ describe('plan entry stage through the CLI (issue #379)', () => {
         'discovery',
         '--title',
         'Feature but explicit RCA'
-      ]);
+      ], { dir: discoveryDir, stripAnsi: true });
       assert.strictEqual(discovery.code, 0, discovery.stderr);
       assert.match(discovery.stdout, /Parked at DISCOVERY/, discovery.stdout);
       assert.strictEqual(readTaskState(discoveryDir, 384)?.currentStage, 'DISCOVERY');
@@ -121,9 +98,9 @@ describe('plan entry stage through the CLI (issue #379)', () => {
       fs.rmSync(discoveryDir, { recursive: true, force: true });
     }
 
-    const implementationDir = makeSandbox();
+    const implementationDir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const implementation = await runCliIn(implementationDir, [
+      const implementation = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '382',
@@ -131,7 +108,7 @@ describe('plan entry stage through the CLI (issue #379)', () => {
         'implementation',
         '--title',
         '[Bug] but explicit plan'
-      ]);
+      ], { dir: implementationDir, stripAnsi: true });
       assert.strictEqual(implementation.code, 0, implementation.stderr);
       assert.match(implementation.stdout, /Pipeline advanced to \[PLAN\]/, implementation.stdout);
       assert.strictEqual(readTaskState(implementationDir, 382)?.currentStage, 'PLAN');
@@ -141,16 +118,16 @@ describe('plan entry stage through the CLI (issue #379)', () => {
   });
 
   test('PE-CLI4: --dry-run promises the park and writes nothing', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const run = await runCliIn(dir, [
+      const run = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '385',
         '--title',
         '[Bug] dry run probe',
         '--dry-run'
-      ]);
+      ], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /\[DRY RUN\] Would park at DISCOVERY/, run.stdout);
@@ -174,16 +151,16 @@ describe('plan entry stage through the CLI (issue #379)', () => {
  */
 describe('first-run park names the command (issue #382)', () => {
   test('PE-CLI5: the dry-run park literal names `codeloop plan --issue <n>` and writes nothing', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const run = await runCliIn(dir, [
+      const run = await runCliInSandboxCanonical([
         'plan',
         '--issue',
         '385',
         '--title',
         '[Bug] park probe',
         '--dry-run'
-      ]);
+      ], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /codeloop plan --issue <n>/, run.stdout);
@@ -197,9 +174,9 @@ describe('first-run park names the command (issue #382)', () => {
   });
 
   test('PE-CLI6: the real park note names the same command', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      const run = await runCliIn(dir, ['plan', '--issue', '386', '--title', '[Bug] park note probe']);
+      const run = await runCliInSandboxCanonical(['plan', '--issue', '386', '--title', '[Bug] park note probe'], { dir: dir, stripAnsi: true });
 
       assert.strictEqual(run.code, 0, run.stderr);
       assert.match(run.stdout, /Parked at DISCOVERY/, run.stdout);

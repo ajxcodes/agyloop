@@ -15,6 +15,7 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const { CliGitHubGateway } = require('../../dist/infrastructure');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
 const { EXIT_CODE_SUCCESS } = require('../../dist/domain');
 
 const ISSUE_PAYLOAD = JSON.stringify({
@@ -35,15 +36,18 @@ interface Sandbox {
   readonly logPath: string;
 }
 
-function makeSandbox(): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gh-milestone-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
-  fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
+function makeMilestoneSandbox(): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-gh-milestone-',
+    dirName: '',
+    gitignore: false,
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+      fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
 
   const binDir = path.join(dir, '.bin');
   fs.mkdirSync(binDir, { recursive: true });
@@ -99,7 +103,7 @@ function calledArgv(sandbox: Sandbox): string[] {
 
 describe('fetchIssue milestone and comments (issue #284, AC7)', () => {
   test('requests the exact field list the parser reads', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeMilestoneSandbox();
     try {
       const issue = withFakeGh(sandbox, () =>
         new CliGitHubGateway().fetchIssue(284, { cwd: sandbox.dir })
@@ -129,7 +133,7 @@ describe('fetchIssue milestone and comments (issue #284, AC7)', () => {
   });
 
   test('maps the milestone title and the comments payload', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeMilestoneSandbox();
     try {
       const issue = withFakeGh(sandbox, () =>
         new CliGitHubGateway().fetchIssue(284, { cwd: sandbox.dir })
@@ -146,7 +150,7 @@ describe('fetchIssue milestone and comments (issue #284, AC7)', () => {
   });
 
   test('plan persists milestoneTitle on the checkpoint (on-disk assertion)', () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeMilestoneSandbox();
     const prevCwd = process.cwd();
     const originalLog = console.log;
     const originalError = console.error;
@@ -169,9 +173,9 @@ describe('fetchIssue milestone and comments (issue #284, AC7)', () => {
       );
       assert.strictEqual(result.status, EXIT_CODE_SUCCESS, `plan must succeed, got:\n${result.stderr}`);
 
-      const checkpointPath = path.join(sandbox.dir, '.agyloop', 'tasks', '284.json');
-      assert.ok(fs.existsSync(checkpointPath), 'the task checkpoint must exist');
-      const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+      const checkpointPathLocal = path.join(sandbox.dir, '.agyloop', 'tasks', '284.json');
+      assert.ok(fs.existsSync(checkpointPathLocal), 'the task checkpoint must exist');
+      const checkpoint = JSON.parse(fs.readFileSync(checkpointPathLocal, 'utf8'));
       assert.strictEqual(
         checkpoint.milestoneTitle,
         'Phase 6: CodeLoop',

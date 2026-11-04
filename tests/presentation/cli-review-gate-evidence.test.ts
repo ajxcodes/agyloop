@@ -18,6 +18,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { readCheckpoint } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE,
@@ -73,22 +76,26 @@ function seedPlanDir(dir: string): void {
   );
 }
 
-function makeSandbox(): any {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-review-gate-evidence-'));
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
-  execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: base'], { cwd: dir, stdio: 'ignore' });
+function makeReviewGateEvidenceSandbox(): any {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-review-gate-evidence-',
+    dirName: '',
+    gitignore: false,
+    initialBranch: 'main',
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'base\n', 'utf8');
+    },
+    initialCommit: 'chore: base'
+  });
+  const dir = sandbox.dir;
 
   seedPlanDir(dir);
 
   const now = new Date().toISOString();
   fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
-  const checkpointPath = path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
+  const checkpointPathLocal = path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
   fs.writeFileSync(
-    checkpointPath,
+    checkpointPathLocal,
     JSON.stringify(
       {
         version: '1.0.0',
@@ -118,50 +125,20 @@ function makeSandbox(): any {
 
   return {
     dir,
-    checkpointPath,
+    checkpointPathLocal,
     evidencePath: path.join(dir, '.agyloop', 'tasks', `${ISSUE}.gate.json`)
   };
 }
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    console.warn = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return { code, stdout, stderr };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-    console.warn = originalWarn;
-  }
-}
 
-function readCheckpoint(file: string): any {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
-}
 
 describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
   test('RGC1 review at QUALITY_GATE with no evidence exits non-zero and leaves the checkpoint byte-identical', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewGateEvidenceSandbox();
     try {
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox.dir, [
+      const run = await runCliInSandboxCanonical([
         'review',
         '--issue',
         String(ISSUE),
@@ -169,14 +146,14 @@ describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
         'verdict.md',
         '--critique-report',
         'critique.json'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_FAILURE, `${run.stdout}\n${run.stderr}`);
       assert.ok(run.stderr.includes('Gate evidence refused'), run.stderr);
       assert.ok(run.stderr.includes('gate round 1'), run.stderr);
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
 
-      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      const checkpoint = readCheckpoint(sandbox.checkpointPathLocal);
       assert.strictEqual(checkpoint.currentStage, STAGE_QUALITY_GATE);
       assert.ok(!checkpoint.history.some((entry: any) => entry.stage === STAGE_REVIEW));
       assert.ok(!fs.existsSync(sandbox.evidencePath), 'a refusal creates no evidence');
@@ -186,20 +163,20 @@ describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
   });
 
   test('RGC2 a filed report lets review certify the round, record the verdict and consume the evidence', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewGateEvidenceSandbox();
     try {
       fs.writeFileSync(path.join(sandbox.dir, 'gate.json'), GATE_BLOCK, 'utf8');
-      const filed = await runIn(sandbox.dir, [
+      const filed = await runCliInSandboxCanonical([
         'gate-report',
         '--issue',
         String(ISSUE),
         '--report-file',
         'gate.json'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(filed.code, EXIT_CODE_SUCCESS, filed.stderr);
       assert.ok(fs.existsSync(sandbox.evidencePath));
 
-      const run = await runIn(sandbox.dir, [
+      const run = await runCliInSandboxCanonical([
         'review',
         '--issue',
         String(ISSUE),
@@ -207,10 +184,10 @@ describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
         'verdict.md',
         '--critique-report',
         'critique.json'
-      ]);
+      ], { dir: sandbox.dir });
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `${run.stdout}\n${run.stderr}`);
 
-      const checkpoint = readCheckpoint(sandbox.checkpointPath);
+      const checkpoint = readCheckpoint(sandbox.checkpointPathLocal);
       assert.strictEqual(checkpoint.currentStage, STAGE_COMMIT);
       const reviewEntry = [...checkpoint.history]
         .reverse()
@@ -229,11 +206,11 @@ describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
   });
 
   test('RGC3 --dry-run warns and writes nothing', async () => {
-    const sandbox = makeSandbox();
+    const sandbox = makeReviewGateEvidenceSandbox();
     try {
-      const before = fs.readFileSync(sandbox.checkpointPath, 'utf8');
+      const before = fs.readFileSync(sandbox.checkpointPathLocal, 'utf8');
 
-      const run = await runIn(sandbox.dir, [
+      const run = await runCliInSandboxCanonical([
         'review',
         '--issue',
         String(ISSUE),
@@ -242,12 +219,12 @@ describe('review certifies the QUALITY_GATE exit (issue #455)', () => {
         '--critique-report',
         'critique.json',
         '--dry-run'
-      ]);
+      ], { dir: sandbox.dir });
 
       assert.strictEqual(run.code, EXIT_CODE_SUCCESS, `${run.stdout}\n${run.stderr}`);
       assert.ok(run.stderr.includes('Gate evidence refused'), run.stderr);
       assert.ok(run.stderr.includes('gate round 1'), run.stderr);
-      assert.strictEqual(fs.readFileSync(sandbox.checkpointPath, 'utf8'), before);
+      assert.strictEqual(fs.readFileSync(sandbox.checkpointPathLocal, 'utf8'), before);
       assert.ok(!fs.existsSync(sandbox.evidencePath), 'a dry run creates no evidence');
     } finally {
       fs.rmSync(sandbox.dir, { recursive: true, force: true });

@@ -66,7 +66,7 @@ function makeMockWorktree(overrides: Partial<WorktreeManagerPort> = {}): Worktre
   };
 }
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -146,7 +146,7 @@ describe('Dual-Branch Lifecycle & Remote Push Inference', () => {
 
   test('persists inferred baseBranch into state repository if provided', async () => {
     const sm = StateMachine.createInitial({ issue: 5 });
-    const stateRepo = new MockStateRepo(sm.toSnapshot());
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
 
     const mockWorktree = makeMockWorktree({
       listBranches: async () => ['main', 'phase/1-bridge-arch']

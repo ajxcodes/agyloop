@@ -221,7 +221,7 @@ describe('smoke sandbox: static and runtime agree (#364 AC-17)', () => {
         fs.mkdirSync(resolved, { recursive: true });
       }
       const stateFilePath = path.join(resolved, '.agyloop', 'state.json');
-      const repository = new FileStateRepository({ stateFilePath });
+      const repository = createStateRepository({ stateFilePath });
 
       withRuntime({ home: fakeHome, cwd: runtimeCwd }, () => {
         const save = (): void => {
@@ -242,7 +242,7 @@ describe('smoke sandbox: static and runtime agree (#364 AC-17)', () => {
     const outsideCwd = path.join(fakeHome, 'project');
     const escaped = path.resolve(outsideCwd, '../.cache/agyloop/shared/smoke-364-escape');
     fs.mkdirSync(path.join(escaped, '.agyloop'), { recursive: true });
-    const repository = new FileStateRepository({
+    const repository = createStateRepository({
       stateFilePath: path.join(escaped, '.agyloop', 'state.json')
     });
     withRuntime({ home: fakeHome, cwd: outsideCwd }, () => {
@@ -253,3 +253,5 @@ describe('smoke sandbox: static and runtime agree (#364 AC-17)', () => {
     });
   });
 });
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

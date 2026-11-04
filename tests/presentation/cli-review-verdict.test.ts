@@ -1,3 +1,15 @@
+/** The canonical task seed with this suite's per-issue stage shape. */
+function seedStageCheckpoint(sandbox: string, issue: number, stage: string): string {
+  const now = new Date().toISOString();
+  return seedTask(sandbox, {
+    issue,
+    currentStage: stage,
+    createdAt: now,
+    updatedAt: now,
+    history: [{ stage, timestamp: now }]
+  });
+}
+
 /**
  * agyloop - `codeloop review` CLI Tests (issue #269, Defect 2)
  *
@@ -37,6 +49,10 @@ const { runCli } = require('../../dist/presentation/cli');
 const { buildChangeSetDigestCommand } = require('../../dist/application');
 const { EXIT_CODE_SUCCESS, EXIT_CODE_FAILURE } = require('../../dist/domain');
 const { CliCritiqueGateway } = require('../../dist/infrastructure');
+const { makeSandbox: makeSandboxCanonical } = require('../helpers/sandbox.ts');
+const { buildCritiqueFreePathShadow, buildPathShadowWithout, checkpointLine } = require('../helpers/render.ts');
+const { readTaskCheckpoint } = require('../helpers/state-seed.ts');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPath } = require('../helpers/state-seed.ts');
 
 const CRITIQUE_BINARY = 'critique';
 const ISSUE = 901;
@@ -46,93 +62,9 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
  * Builds a shadow directory mirroring every PATH entry, excluding any file named
  * `critique` (CliCritiqueGateway.findInSystemPath resolves it by existence).
  */
-function buildCritiqueFreePathShadow(shadowRoot: string): string {
-  fs.mkdirSync(shadowRoot, { recursive: true });
-  const seen = new Set<string>();
-  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const shadowEntries: string[] = [];
-  let idx = 0;
-
-  for (const dir of parts) {
-    let real: string;
-    try {
-      real = fs.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    if (seen.has(real)) continue;
-    seen.add(real);
-
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(real);
-    } catch {
-      continue;
-    }
-
-    const target = path.join(shadowRoot, `d${idx++}`);
-    if (!entries.includes(CRITIQUE_BINARY)) {
-      try {
-        fs.symlinkSync(real, target, 'dir');
-        shadowEntries.push(target);
-        continue;
-      } catch {
-        // Fall through to entry-by-entry copy on symlink failure
-      }
-    }
-
-    fs.mkdirSync(target, { recursive: true });
-    for (const entry of entries) {
-      if (entry === CRITIQUE_BINARY || entry.startsWith(`${CRITIQUE_BINARY}.`)) continue;
-      try {
-        fs.symlinkSync(fs.realpathSync(path.join(real, entry)), path.join(target, entry));
-      } catch {
-        // Skip entries that cannot be resolved
-      }
-    }
-    shadowEntries.push(target);
-  }
-
-  return shadowEntries.join(path.delimiter);
-}
 
 /** Seeds a task checkpoint resting at the given stage. */
-function seedCheckpoint(sandbox: string, issue: number, stage: string): string {
-  const tasksDir = path.join(sandbox, '.agyloop', 'tasks');
-  fs.mkdirSync(tasksDir, { recursive: true });
-  const file = path.join(tasksDir, `${issue}.json`);
-  const now = new Date().toISOString();
-  fs.writeFileSync(
-    file,
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: stage,
-        mode: 'standard',
-        issue,
-        baseBranch: 'main',
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage, timestamp: now }],
-        pausedAtGate: null,
-        pausedAtTimestamp: null
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-  return file;
-}
 
-function readCheckpoint(sandbox: string, issue: number): any {
-  const file = path.join(sandbox, '.agyloop', 'tasks', `${issue}.json`);
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
-}
 
 /** Runs `fn` with the sanitized environment applied, capturing both streams. */
 async function withSanitizedEnv(
@@ -193,20 +125,22 @@ interface Sandbox {
   readonly shadowPath: string;
 }
 
-function makeSandbox(stage: string): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-review-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
-  // Issue #452: the provenance sidecar is written AFTER its digest is read, so
-  // it must not itself become part of the change set it describes.
-  fs.writeFileSync(path.join(dir, '.gitignore'), '*.provenance.json\n', 'utf8');
-  fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-qm', 'chore: probe init'], { cwd: dir, stdio: 'ignore' });
+function makeReviewVerdictSandbox(stage: string): Sandbox {
+  const sandbox = makeSandboxCanonical({
+    prefix: 'agyloop-cli-review-',
+    dirName: '',
+    gitignore: ['*.provenance.json'],
+    // Issue #452: the provenance sidecar (*.provenance.json) is ignored globally,
+    // so the sidecar written after its digest is read never joins the change set.
+    seed: (dir: string) => {
+      fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
+    },
+    initialCommit: 'chore: probe init'
+  });
+  const dir = sandbox.dir;
   fs.mkdirSync(path.join(dir, '.home'), { recursive: true });
   fs.mkdirSync(path.join(dir, '.xdg'), { recursive: true });
-  seedCheckpoint(dir, ISSUE, stage);
+  seedStageCheckpoint(dir, ISSUE, stage);
   return { dir, shadowPath: buildCritiqueFreePathShadow(path.join(dir, '.shadow-bin')) };
 }
 
@@ -241,7 +175,7 @@ REMEDIATION_GUIDANCE:
 
 describe('codeloop review (issue #269, Defect 2)', () => {
   test('P1/P2: a verdict file is recorded and the checkpoint lands at COMMIT', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -266,7 +200,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(run.value, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${output}`);
       assert.ok(output.includes('APPROVED'), `the verdict must be reported, got:\n${output}`);
 
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.ok(checkpoint, 'the checkpoint must exist');
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
       const last = checkpoint.history[checkpoint.history.length - 1];
@@ -277,7 +211,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P3: a CHANGES_REQUESTED verdict exits 1 and reverts the checkpoint to IMPLEMENT', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -301,7 +235,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the failure must be reported, got:\n${output}`
       );
 
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');
@@ -315,7 +249,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P4: after recording, `codeloop next --json` reports "Review passed." at the COMMIT gate', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -354,7 +288,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P15: the reviewer\'s natural none phrasing records APPROVED and advances to COMMIT (issue #356)', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -383,7 +317,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the reviewer's APPROVED was rewritten to CHANGES_REQUESTED, got:\n${output}`
       );
 
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'APPROVED');
@@ -394,12 +328,12 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P5: a SKIPPED verdict block exits 1 and writes NO verdict', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const verdictFile = path.join(sandbox.dir, 'verdict.md');
       fs.writeFileSync(verdictFile, 'REVIEW_STATUS: SKIPPED\nREVIEW_SUMMARY: nope\n', 'utf8');
 
-      const before = readCheckpoint(sandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(sandbox.dir, ISSUE);
 
       const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         runCli(['review', '--issue', String(ISSUE), '--verdict-file', verdictFile])
@@ -412,7 +346,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the parse failure must be reported, got:\n${output}`
       );
 
-      const after = readCheckpoint(sandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage, 'the checkpoint must be unchanged');
       assert.strictEqual(
         after.history.length,
@@ -430,14 +364,14 @@ describe('codeloop review (issue #269, Defect 2)', () => {
 
   test('P6: --review-output and --verdict-stdin feed the same seam', async () => {
     // --review-output (in-process).
-    const inlineSandbox = makeSandbox('REVIEW');
+    const inlineSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const run = await withSanitizedEnv(inlineSandbox.dir, inlineSandbox.shadowPath, async () =>
         runCli(['review', '--issue', String(ISSUE), '--review-output', APPROVED_BLOCK])
       );
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.value, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${output}`);
-      const checkpoint = readCheckpoint(inlineSandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(inlineSandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'APPROVED');
@@ -446,7 +380,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     }
 
     // --verdict-stdin (a child process, so the verdict really arrives on fd 0).
-    const stdinSandbox = makeSandbox('REVIEW');
+    const stdinSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const result = spawnSync(
         process.execPath,
@@ -465,7 +399,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       );
       const output = `${result.stdout}\n${result.stderr}`;
       assert.strictEqual(result.status, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
-      const checkpoint = readCheckpoint(stdinSandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(stdinSandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');
@@ -474,7 +408,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     }
   });
 
-  test('P7: `codeloop review` with no verdict runs the critique path and does not crash', async (t: any) => {    const sandbox = makeSandbox('REVIEW');
+  test('P7: `codeloop review` with no verdict runs the critique path and does not crash', async (t: any) => {    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -497,7 +431,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
 
       // With no critique and no reviewer output the #236 advisory fail-open
       // applies: SKIPPED -> COMMIT.
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'SKIPPED');
@@ -510,7 +444,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     // The LIVE case (issue #269): the commit gate reported "No AI review verdict
     // is recorded for this task" while the reviewer held a genuine APPROVED
     // verdict that had no channel to the checkpoint.
-    const sandbox = makeSandbox('COMMIT');
+    const sandbox = makeReviewVerdictSandbox('COMMIT');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -530,7 +464,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.value, EXIT_CODE_SUCCESS, `exit 0 expected, got:\n${output}`);
 
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'APPROVED');
@@ -550,7 +484,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P9: --json emits a single JSON document describing the recorded verdict', async (t: any) => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const probe = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         new CliCritiqueGateway().resolveReviewer(sandbox.dir)
@@ -589,9 +523,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   // ---------------------------------------------------------------------------
 
   test('P10: `--verdict-file` with no value fails loudly and records NO verdict', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(sandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(sandbox.dir, ISSUE);
 
       const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         runCli(['review', '--issue', String(ISSUE), '--verdict-file'])
@@ -608,7 +542,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the failure must not report a SKIPPED verdict, got:\n${output}`
       );
 
-      const after = readCheckpoint(sandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage, 'the checkpoint must be unchanged');
       assert.strictEqual(
         after.history.length,
@@ -625,9 +559,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P11: `--review-output` with no value fails loudly and records NO verdict', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(sandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(sandbox.dir, ISSUE);
 
       const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
         runCli(['review', '--issue', String(ISSUE), '--review-output'])
@@ -644,7 +578,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the failure must not report a SKIPPED verdict, got:\n${output}`
       );
 
-      const after = readCheckpoint(sandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage, 'the checkpoint must be unchanged');
       assert.strictEqual(
         after.history.length,
@@ -662,7 +596,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
 
   test('P12: the empty `=` form and a flag-following value fail just as loudly', async () => {
     // `--verdict-file=` — the value is present but EMPTY.
-    const equalsSandbox = makeSandbox('REVIEW');
+    const equalsSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const run = await withSanitizedEnv(equalsSandbox.dir, equalsSandbox.shadowPath, async () =>
         runCli(['review', '--issue', String(ISSUE), '--verdict-file='])
@@ -671,7 +605,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
       assert.ok(output.includes('--verdict-file'), `the failure must name the flag, got:\n${output}`);
 
-      const after = readCheckpoint(equalsSandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(equalsSandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, 'REVIEW', 'the checkpoint must be unchanged');
       assert.ok(
         !after.history.some((h: any) => h.metadata?.reviewVerdict),
@@ -683,7 +617,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
 
     // `--verdict-file --json` — the next token is another flag, so the value
     // was omitted.
-    const followedSandbox = makeSandbox('REVIEW');
+    const followedSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const run = await withSanitizedEnv(followedSandbox.dir, followedSandbox.shadowPath, async () =>
         runCli(['review', '--issue', String(ISSUE), '--verdict-file', '--json'])
@@ -692,7 +626,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
       assert.ok(output.includes('--verdict-file'), `the failure must name the flag, got:\n${output}`);
 
-      const after = readCheckpoint(followedSandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(followedSandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, 'REVIEW', 'the checkpoint must be unchanged');
       assert.ok(
         !after.history.some((h: any) => h.metadata?.reviewVerdict),
@@ -704,9 +638,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('P13: `--verdict-file` pointing at a nonexistent path still fails loudly', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(sandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(sandbox.dir, ISSUE);
 
       const missing = path.join(sandbox.dir, 'no-such-verdict.md');
       const run = await withSanitizedEnv(sandbox.dir, sandbox.shadowPath, async () =>
@@ -724,7 +658,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the failure must not report a SKIPPED verdict, got:\n${output}`
       );
 
-      const after = readCheckpoint(sandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage, 'the checkpoint must be unchanged');
       assert.strictEqual(
         after.history.length,
@@ -743,7 +677,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   test('P14: `--verdict-stdin` with an EMPTY stdin fails loudly and records NO verdict', async () => {
     // A verdict was requested on stdin and NONE arrived — the same silent
     // SKIPPED hole as a present-but-valueless flag, so it fails loudly too.
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const result = spawnSync(
         process.execPath,
@@ -771,7 +705,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
         `the failure must not report a SKIPPED verdict, got:\n${output}`
       );
 
-      const after = readCheckpoint(sandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, 'REVIEW', 'the checkpoint must be unchanged');
       assert.ok(
         !after.history.some((h: any) => h.metadata?.reviewVerdict),
@@ -845,7 +779,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   };
 
   test('CV1: `--verdict-file APPROVED` beside an error finding exits non-zero and records CHANGES_REQUESTED', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(sandbox.dir, ERROR_CRITIQUE);
@@ -867,7 +801,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
       assert.ok(output.includes('CHANGES_REQUESTED'), output);
 
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');
@@ -880,7 +814,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('CV2: a clean `--critique-report` records APPROVED with critiqueVerified=true', async () => {
-    const humanSandbox = makeSandbox('REVIEW');
+    const humanSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const verdictFile = writeVerdict(humanSandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(humanSandbox.dir, CLEAN_CRITIQUE);
@@ -900,12 +834,12 @@ describe('codeloop review (issue #269, Defect 2)', () => {
 
       assert.strictEqual(run.value, EXIT_CODE_SUCCESS, run.stderr);
       assert.match(run.stdout, /Critique Verified\s*:\s*true/);
-      assert.strictEqual(readCheckpoint(humanSandbox.dir, ISSUE).currentStage, 'COMMIT');
+      assert.strictEqual(readTaskCheckpoint(humanSandbox.dir, ISSUE).currentStage, 'COMMIT');
     } finally {
       fs.rmSync(humanSandbox.dir, { recursive: true, force: true });
     }
 
-    const jsonSandbox = makeSandbox('REVIEW');
+    const jsonSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const verdictFile = writeVerdict(jsonSandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(jsonSandbox.dir, CLEAN_CRITIQUE);
@@ -934,7 +868,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('CV5: a report whose sidecar names another base is recorded unverified, never dropped (issue #445)', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
       const critiqueFile = writeCritique(sandbox.dir, CLEAN_CRITIQUE);
@@ -950,7 +884,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(payload.reviewVerdict, 'APPROVED');
       assert.ok(run.stderr.includes('phase/6-codeloop'), run.stderr);
       assert.ok(run.stderr.includes('.provenance.json'), run.stderr);
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.critiqueVerified, false);
       assert.strictEqual(checkpoint.currentStage, 'COMMIT');
@@ -961,9 +895,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
 
   test('CV3: a missing, unreadable, or unparseable `--critique-report` records nothing', async () => {
     // A present-but-valueless flag.
-    const missingValueSandbox = makeSandbox('REVIEW');
+    const missingValueSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(missingValueSandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(missingValueSandbox.dir, ISSUE);
       const verdictFile = writeVerdict(missingValueSandbox.dir, APPROVED_BLOCK);
       const run = await withSanitizedEnv(missingValueSandbox.dir, missingValueSandbox.shadowPath, async () =>
         runCli([
@@ -978,7 +912,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
       assert.ok(output.includes('--critique-report'), output);
-      const after = readCheckpoint(missingValueSandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(missingValueSandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage);
       assert.strictEqual(after.history.length, before.history.length);
     } finally {
@@ -986,9 +920,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     }
 
     // A path that does not exist.
-    const nonexistentSandbox = makeSandbox('REVIEW');
+    const nonexistentSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(nonexistentSandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(nonexistentSandbox.dir, ISSUE);
       const verdictFile = writeVerdict(nonexistentSandbox.dir, APPROVED_BLOCK);
       const run = await withSanitizedEnv(nonexistentSandbox.dir, nonexistentSandbox.shadowPath, async () =>
         runCli([
@@ -1008,7 +942,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.ok(output.includes('could not be read'), output);
       assert.ok(output.includes('--critique-report'), output);
       assert.ok(!output.includes('could not be parsed'), output);
-      const after = readCheckpoint(nonexistentSandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(nonexistentSandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage);
       assert.strictEqual(after.history.length, before.history.length);
     } finally {
@@ -1016,9 +950,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     }
 
     // A file that exists but carries no evidence at all.
-    const emptySandbox = makeSandbox('REVIEW');
+    const emptySandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(emptySandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(emptySandbox.dir, ISSUE);
       const verdictFile = writeVerdict(emptySandbox.dir, APPROVED_BLOCK);
       const empty = path.join(emptySandbox.dir, 'critique.json');
       fs.writeFileSync(empty, '', 'utf8');
@@ -1038,7 +972,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
       assert.ok(output.includes('is empty'), output);
       assert.ok(!output.includes('could not be parsed'), output);
-      const after = readCheckpoint(emptySandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(emptySandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage);
       assert.strictEqual(after.history.length, before.history.length);
     } finally {
@@ -1046,9 +980,9 @@ describe('codeloop review (issue #269, Defect 2)', () => {
     }
 
     // A file that is not JSON.
-    const garbageSandbox = makeSandbox('REVIEW');
+    const garbageSandbox = makeReviewVerdictSandbox('REVIEW');
     try {
-      const before = readCheckpoint(garbageSandbox.dir, ISSUE);
+      const before = readTaskCheckpoint(garbageSandbox.dir, ISSUE);
       const verdictFile = writeVerdict(garbageSandbox.dir, APPROVED_BLOCK);
       const garbage = path.join(garbageSandbox.dir, 'critique.json');
       fs.writeFileSync(garbage, 'this is not a critique report', 'utf8');
@@ -1067,7 +1001,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       const output = `${run.stdout}\n${run.stderr}`;
       assert.strictEqual(run.value, EXIT_CODE_FAILURE, output);
       assert.ok(output.includes('could not be parsed'), output);
-      const after = readCheckpoint(garbageSandbox.dir, ISSUE);
+      const after = readTaskCheckpoint(garbageSandbox.dir, ISSUE);
       assert.strictEqual(after.currentStage, before.currentStage);
       assert.strictEqual(after.history.length, before.history.length);
       assert.ok(!after.history.some((h: any) => h.metadata?.reviewVerdict));
@@ -1077,7 +1011,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
   });
 
   test('CV4: `--critique-report -` reads the same evidence from stdin', async () => {
-    const sandbox = makeSandbox('REVIEW');
+    const sandbox = makeReviewVerdictSandbox('REVIEW');
     try {
       const verdictFile = writeVerdict(sandbox.dir, APPROVED_BLOCK);
 
@@ -1110,7 +1044,7 @@ describe('codeloop review (issue #269, Defect 2)', () => {
       assert.strictEqual(result.status, EXIT_CODE_FAILURE, `exit 1 expected, got:\n${output}`);
       assert.ok(output.includes('CHANGES_REQUESTED'), output);
 
-      const checkpoint = readCheckpoint(sandbox.dir, ISSUE);
+      const checkpoint = readTaskCheckpoint(sandbox.dir, ISSUE);
       assert.strictEqual(checkpoint.currentStage, 'IMPLEMENT');
       const last = checkpoint.history[checkpoint.history.length - 1];
       assert.strictEqual(last.metadata.reviewVerdict, 'CHANGES_REQUESTED');

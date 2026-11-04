@@ -1,3 +1,30 @@
+/** The canonical task seed at IMPLEMENT with the review entries appended. */
+function seedImplementCheckpoint(dir: string, reviewEntries: readonly Record<string, unknown>[]): void {
+  const now = new Date().toISOString();
+  seedTask(dir, {
+    issue: ISSUE,
+    currentStage: 'IMPLEMENT',
+    planDir: path.join(dir, 'artifacts', 'plans', `${ISSUE}-task`),
+    worktree: {
+      taskId: String(ISSUE),
+      worktreePath: path.join(dir, '.worktrees', String(ISSUE)),
+      branch: `fix/${ISSUE}`,
+      baseBranch: 'main',
+      isIsolated: true
+    },
+    createdAt: now,
+    updatedAt: now,
+    history: [{ stage: 'IMPLEMENT', timestamp: now }, ...reviewEntries]
+  });
+  fs.mkdirSync(path.join(dir, 'artifacts', 'plans', `${ISSUE}-task`), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'artifacts', 'plans', `${ISSUE}-task`, 'implementation_plan.md'),
+    REAL_PLAN,
+    'utf8'
+  );
+  fs.mkdirSync(path.join(dir, '.worktrees', String(ISSUE)), { recursive: true });
+}
+
 /**
  * agyloop - `next --json` IMPLEMENT review remediation (issue #313, AC1-AC4)
  *
@@ -17,6 +44,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runCli } = require('../../dist/presentation/cli');
+const { makeSandbox } = require('../helpers/sandbox.ts');
+const { seedTask, seedCheckpoint, seedRootState, seedCorruptTask, checkpointPath } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 const ISSUE = 313;
@@ -53,90 +83,24 @@ function taskStateFile(dir: string): string {
   return path.join(dir, '.agyloop', 'tasks', `${ISSUE}.json`);
 }
 
-async function runIn(dir: string, args: readonly string[]): Promise<any> {
-  const prevCwd = process.cwd();
-  const originalLog = console.log;
-  const originalError = console.error;
-  let stdout = '';
-  let stderr = '';
-  try {
-    process.chdir(dir);
-    console.log = (...a: any[]) => {
-      stdout += a.map(String).join(' ') + '\n';
-    };
-    console.error = (...a: any[]) => {
-      stderr += a.map(String).join(' ') + '\n';
-    };
-    const code = await runCli(args);
-    return {
-      code,
-      stdout: stdout.replace(ANSI_ESCAPE, ''),
-      stderr: stderr.replace(ANSI_ESCAPE, '')
-    };
-  } finally {
-    process.chdir(prevCwd);
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
 
-function makeSandbox(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-remediation-'));
-}
 
 /**
  * Seeds a checkpoint resting at IMPLEMENT whose history ends with the given
  * review entries — exactly the shape `RunReviewUseCase` persists.
  */
-function seedCheckpoint(dir: string, reviewEntries: readonly Record<string, unknown>[]): void {
-  const planDir = path.join(dir, 'artifacts', 'plans', `${ISSUE}-task`);
-  fs.mkdirSync(planDir, { recursive: true });
-  fs.writeFileSync(path.join(planDir, 'implementation_plan.md'), REAL_PLAN, 'utf8');
-
-  const worktreePath = path.join(dir, '.worktrees', String(ISSUE));
-  fs.mkdirSync(worktreePath, { recursive: true });
-
-  const now = new Date().toISOString();
-  fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
-  fs.writeFileSync(
-    taskStateFile(dir),
-    JSON.stringify(
-      {
-        version: '1.0.0',
-        currentStage: 'IMPLEMENT',
-        mode: 'standard',
-        issue: ISSUE,
-        planDir,
-        baseBranch: 'main',
-        worktree: {
-          taskId: String(ISSUE),
-          worktreePath,
-          branch: `fix/${ISSUE}`,
-          baseBranch: 'main',
-          isIsolated: true
-        },
-        createdAt: now,
-        updatedAt: now,
-        history: [{ stage: 'IMPLEMENT', timestamp: now }, ...reviewEntries]
-      },
-      null,
-      2
-    ),
-    'utf8'
-  );
-}
 
 async function nextJson(dir: string): Promise<any> {
-  const result = await runIn(dir, ['next', '--issue', String(ISSUE), '--json']);
+  const result = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE), '--json'], { dir: dir, stripAnsi: true });
   assert.strictEqual(result.code, 0, `next failed: ${result.stderr}`);
   return JSON.parse(result.stdout);
 }
 
 describe('codeloop next --json review remediation (issue #313)', () => {
   test('CR1 (AC4/AC3): a seeded CHANGES_REQUESTED round reaches the implementer prompt', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      seedCheckpoint(dir, [
+      seedImplementCheckpoint(dir, [
         {
           stage: 'IMPLEMENT',
           timestamp: new Date().toISOString(),
@@ -179,9 +143,9 @@ describe('codeloop next --json review remediation (issue #313)', () => {
   });
 
   test('CR2 (AC4/AC2): an APPROVED latest round carries no stale remediation', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      seedCheckpoint(dir, [
+      seedImplementCheckpoint(dir, [
         {
           stage: 'IMPLEMENT',
           timestamp: new Date().toISOString(),
@@ -225,9 +189,9 @@ describe('codeloop next --json review remediation (issue #313)', () => {
   });
 
   test('CR3 (AC3): the checkpoint still records the review and a second next still carries it', async () => {
-    const dir = makeSandbox();
+    const dir = makeSandbox({ initGit: false, dirName: '' }).dir;
     try {
-      seedCheckpoint(dir, [
+      seedImplementCheckpoint(dir, [
         {
           stage: 'IMPLEMENT',
           timestamp: new Date().toISOString(),

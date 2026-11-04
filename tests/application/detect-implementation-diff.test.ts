@@ -499,7 +499,7 @@ describe('DetectImplementationDiffUseCase — merge-base-relative measurement (i
  * run for real — with every external dependency mocked.
  * ------------------------------------------------------------------------- */
 
-class MockStateRepository {
+class StateRepositoryDouble {
   public savedSnapshot: any = null;
 
   public async load(): Promise<any> {
@@ -519,7 +519,7 @@ class MockStateRepository {
   }
 }
 
-class MockConfigRepository {
+class ConfigRepositoryDouble {
   public config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
   public loadConfig(): any {
@@ -535,7 +535,7 @@ class MockConfigRepository {
   }
 }
 
-class MockPlanGenerator {
+class PlanGeneratorDouble {
   public planContent = '# Test Plan\n\n## Acceptance Criteria\n- [ ] Code compiles\n- [ ] Tests pass\n';
 
   public scaffoldPlanDirectory(params: any): any {
@@ -569,7 +569,7 @@ class MockPlanGenerator {
   }
 }
 
-class MockGitHubGateway {
+class GitHubGatewayDouble {
   public async getCurrentRepo(): Promise<string> {
     return 'ajxcodes/agyloop';
   }
@@ -597,7 +597,7 @@ class UnreadableTreeCommandExecutor implements CommandExecutorPort {
   }
 }
 
-class MockBuildDetector {
+class BuildDetectorDouble {
   public detect(): any {
     return {
       ecosystem: 'node',
@@ -614,7 +614,7 @@ class MockBuildDetector {
   }
 }
 
-class MockStandardsRepository {
+class StandardsRepositoryDouble {
   public loadStandards(): string {
     return '# Repository Coding Standards\n';
   }
@@ -624,7 +624,7 @@ class MockStandardsRepository {
   }
 }
 
-class MockCritique {
+class CritiqueDouble {
   public reviewResult: any = AiReviewReport.parse(
     JSON.stringify({
       summary: 'All code meets requirements and standards.',
@@ -640,13 +640,13 @@ class MockCritique {
   }
 }
 
-class MockConfirmationPrompt {
+class ConfirmationPromptDouble {
   public async confirm(): Promise<boolean> {
     return true;
   }
 }
 
-class MockWorktreeManager {
+class WorktreeManagerDouble {
   public async createWorktree(params: any): Promise<any> {
     return WorktreeDescriptor.create({
       taskId: params.issueNumber || 999,
@@ -669,21 +669,21 @@ class MockWorktreeManager {
 }
 
 /** Builds a YOLO lifecycle whose tree can NEVER be read by the probe. */
-function buildLifecycleHarness(): { lifecycle: any; stateRepo: MockStateRepository } {
-  const stateRepo = new MockStateRepository();
+function buildLifecycleHarness(): { lifecycle: any; stateRepo: StateRepositoryDouble } {
+  const stateRepo = new StateRepositoryDouble();
   const commandExecutor = new UnreadableTreeCommandExecutor();
 
   const lifecycle = new RunLifecycleUseCase({
     stateRepo,
-    configRepo: new MockConfigRepository(),
-    planGenerator: new MockPlanGenerator(),
-    githubGateway: new MockGitHubGateway(),
+    configRepo: new ConfigRepositoryDouble(),
+    planGenerator: new PlanGeneratorDouble(),
+    githubGateway: new GitHubGatewayDouble(),
     commandExecutor,
-    buildDetector: new MockBuildDetector(),
-    standardsRepo: new MockStandardsRepository(),
-    critique: new MockCritique(),
-    confirmationPrompt: new MockConfirmationPrompt(),
-    worktreeManager: new MockWorktreeManager()
+    buildDetector: new BuildDetectorDouble(),
+    standardsRepo: new StandardsRepositoryDouble(),
+    critique: new CritiqueDouble(),
+    confirmationPrompt: new ConfirmationPromptDouble(),
+    worktreeManager: new WorktreeManagerDouble()
   });
 
   return { lifecycle, stateRepo };
