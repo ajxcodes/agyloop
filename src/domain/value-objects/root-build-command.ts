@@ -39,6 +39,9 @@
  * No imports, no I/O.
  */
 
+
+import { truncate as truncateImpl } from "./markdown";
+
 export interface RootBuildMatch {
   /** The construct that triggered the refusal, e.g. `npm run build`. */
   readonly label: string;
@@ -51,7 +54,6 @@ export interface DetectRootBuildOptions {
   readonly workspaceDir?: string;
 }
 
-const MAX_EXCERPT_LENGTH = 160;
 
 /** `npm run build`, `npm test`, `npm run build:docs`, `npm run prepare`. */
 const NPM_SCRIPT = /^(?:build(?::[\w-]+)?|compile|prepare|test)$/;
@@ -331,9 +333,6 @@ function detectSegment(segment: string): string | null {
   }
 }
 
-function truncate(text: string): string {
-  return text.length > MAX_EXCERPT_LENGTH ? `${text.slice(0, MAX_EXCERPT_LENGTH)}…` : text;
-}
 
 /** True when `outDir` is absolute AND (with a known root) outside it. */
 function isOutDirOutsideWorkspace(outDir: string, workspaceDir?: string): boolean {
@@ -387,12 +386,12 @@ export function detectRootBuildCommand(
 
   for (const segment of segments) {
     if (isRootBuildTsc(segment, options.workspaceDir)) {
-      return { label: 'tsc', excerpt: truncate(normalised) };
+      return { label: 'tsc', excerpt: truncateImpl(normalised, { trim: false }) };
     }
   }
   for (const segment of segments) {
     const label = detectSegment(segment);
-    if (label) return { label, excerpt: truncate(normalised) };
+    if (label) return { label, excerpt: truncateImpl(normalised, { trim: false }) };
   }
   return null;
 }

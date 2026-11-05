@@ -27,7 +27,7 @@
  * (`tests/architecture/hexagonal-boundaries.test.ts`).
  */
 
-import { ISSUE_TOKEN_INVALID_MESSAGE } from '../constants';
+import { ISSUE_TOKEN_INVALID_MESSAGE } from '../vocabulary';
 
 /**
  * The outcome of parsing an explicit `--issue` token.
@@ -44,7 +44,7 @@ export type IssueTokenResult =
 /**
  * Builds the canonical rejection message.
  *
- * The template lives in `src/domain/constants.ts` so the CLI, the resolver and
+ * The template lives in `src/domain/vocabulary.ts` so the CLI, the resolver and
  * the adapters all quote the operator the SAME sentence — a hand-typed copy per
  * call site is how the four parsers drifted apart in the first place.
  */
@@ -59,7 +59,7 @@ export function invalidIssueTokenMessage(raw: unknown): string {
  *             nothing, which routes the caller into the scan-based resolution.
  * - valid   : `/^\d+$/` after trimming, optionally with a leading `#`. The
  *             positional form `codeloop #250` already accepted that shape
- *             (`REGEX_POSITIONAL_ISSUE_ID`, `src/domain/constants.ts`), so the
+ *             (`REGEX_POSITIONAL_ISSUE_ID`, `src/domain/regexes.ts`), so the
  *             flag form accepts it too and the two entry points agree.
  * - invalid : everything else — `999abc`, `abc`, `25 0`, `2.5`, `-1`, `0`,
  *             `1e3`, `NaN`, `Infinity`.

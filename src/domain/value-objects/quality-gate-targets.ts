@@ -19,17 +19,11 @@
  * No I/O, no external imports: regex and string operations only.
  */
 
-import {
-  GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION,
-  GATE_TARGET_RULE_UNEXECUTABLE_TARGET,
-  GATE_TARGET_RULE_WORKFLOW_LINT_MISSING,
-  MAX_SHELL_WRAPPER_DEPTH,
-  MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION,
-  MSG_GATE_TARGET_UNEXECUTABLE_ENTRY,
-  MSG_GATE_TARGET_WORKFLOW_LINT_MISSING,
-  PLAN_TARGET_HEADING_CANDIDATES
-} from '../constants';
+import { GATE_TARGET_RULE_COMMITTED_TREE_ASSERTION, GATE_TARGET_RULE_UNEXECUTABLE_TARGET, GATE_TARGET_RULE_WORKFLOW_LINT_MISSING } from '../gate-verdicts';
+import { MAX_SHELL_WRAPPER_DEPTH, HEADING_QUALITY_GATE_TARGETS, HEADING_QUALITY_GATE_VERIFICATION, HEADING_AUTOMATED_TEST_TARGETS, HEADING_BUILD_LINT_COMMANDS } from '../vocabulary';
+import { MSG_GATE_TARGET_COMMITTED_TREE_ASSERTION, MSG_GATE_TARGET_UNEXECUTABLE_ENTRY, MSG_GATE_TARGET_WORKFLOW_LINT_MISSING } from '../messages';
 import { isManualSmokeTestProtocolTitle } from './smoke-heading';
+import { HEADING_NUMBER_PREFIX, detectHeading as detectHeadingImpl } from './markdown';
 
 /** One executable target: the command and the plan line it was written on. */
 export interface QualityGateTarget {
@@ -218,8 +212,6 @@ const COMMAND_FENCE_LANGUAGES: ReadonlySet<string> = new Set([
 ]);
 
 const FENCE_PREFIX = '```';
-const HEADING_PATTERN = /^(#{1,6})\s+(.*)$/;
-const HEADING_NUMBER_PREFIX = /^\d+[.)]\s*/;
 const BULLET_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const BOLD_LABEL = /^\*\*[^*]+\*\*\s*:?\s*/;
 const TRAILING_COMMENT = /\s+#.*$/;
@@ -263,26 +255,15 @@ const PROSE_CUE_WORDS: ReadonlySet<string> = new Set([
   'skipped'
 ]);
 
-interface Heading {
-  readonly level: number;
-  readonly title: string;
-}
-
 function normalizeTitle(raw: string): string {
   const withoutClosingHashes = raw.replace(/#+\s*$/, '').trim();
   const withoutNumbering = withoutClosingHashes.replace(HEADING_NUMBER_PREFIX, '').trim();
   return withoutNumbering.replace(/:\s*$/, '').trim().toLowerCase();
 }
 
-function detectHeading(line: string): Heading | null {
-  const match = HEADING_PATTERN.exec(line.trim());
-  if (!match) return null;
-  return { level: match[1].length, title: normalizeTitle(match[2]) };
+function getTargetHeadings(): ReadonlySet<string> {
+  return new Set([HEADING_QUALITY_GATE_TARGETS, HEADING_QUALITY_GATE_VERIFICATION, HEADING_AUTOMATED_TEST_TARGETS, HEADING_BUILD_LINT_COMMANDS].map((heading) => normalizeTitle(heading)));
 }
-
-const TARGET_HEADINGS: ReadonlySet<string> = new Set(
-  PLAN_TARGET_HEADING_CANDIDATES.map((heading) => normalizeTitle(heading))
-);
 
 // The heading predicate is shared with `smoke-protocol.ts` since #364: this
 // module uses the LEVEL-AGNOSTIC title form and supplies its own level rule at
@@ -692,10 +673,10 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
       continue;
     }
 
-    const heading = detectHeading(line);
+    const heading = detectHeadingImpl(line, normalizeTitle);
 
     if (!inSection) {
-      if (heading && TARGET_HEADINGS.has(heading.title)) {
+      if (heading && getTargetHeadings().has(heading.title)) {
         inSection = true;
         sectionLine = index + 1;
         sectionLevel = heading.level;
@@ -710,7 +691,7 @@ export function parseQualityGateTargets(markdown: string): QualityGateTargetsRes
       // #369: a deeper heading that is ITSELF a target heading re-anchors the
       // section, so the most specific declaration wins and a following
       // same-level subheading ends collection instead of swallowing the rest.
-      if (TARGET_HEADINGS.has(heading.title) && heading.level > sectionLevel) {
+      if (getTargetHeadings().has(heading.title) && heading.level > sectionLevel) {
         sectionLine = index + 1;
         sectionLevel = heading.level;
         continue;

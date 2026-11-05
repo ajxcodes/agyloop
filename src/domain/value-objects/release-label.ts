@@ -10,12 +10,7 @@
  * Pure: no I/O, no ports.
  */
 
-import {
-  RELEASE_LABEL_MAJOR,
-  RELEASE_LABEL_MINOR,
-  RELEASE_LABEL_PATCH,
-  type ReleaseLabelName
-} from '../constants';
+import { RELEASE_LABEL_MAJOR, RELEASE_LABEL_MINOR, RELEASE_LABEL_PATCH, type ReleaseLabelName } from '../vocabulary';
 
 export interface ReleaseLabelDefinition {
   readonly name: ReleaseLabelName;

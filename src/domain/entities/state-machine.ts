@@ -7,22 +7,9 @@
  * Pure domain entity: 100% free of filesystem, child processes, or network I/O.
  */
 
-import {
-  StageName,
-  ExecutionMode,
-  STAGE_INITIALIZED,
-  STAGE_APPROVAL,
-  STAGE_COMPLETED,
-  STAGE_DISCOVERY,
-  STAGE_PLAN,
-  STAGE_IMPLEMENT,
-  STAGE_REVIEW,
-  MODE_PLAN,
-  MODE_STANDARD,
-  STATE_SCHEMA_VERSION,
-  EXECUTION_MODES,
-  HUMAN_WAIT_GATES
-} from '../constants';
+import { StageName, STAGE_INITIALIZED, STAGE_APPROVAL, STAGE_COMPLETED, STAGE_DISCOVERY, STAGE_PLAN, STAGE_IMPLEMENT, STAGE_REVIEW } from '../lifecycle-stages';
+import { ExecutionMode, MODE_PLAN, MODE_STANDARD, EXECUTION_MODES } from '../execution-modes';
+import { STATE_SCHEMA_VERSION, HUMAN_WAIT_GATES } from '../vocabulary';
 import { Stage } from '../value-objects/stage';
 import { IssueNumber } from '../value-objects/issue-number';
 import { WorktreeDescriptor } from '../value-objects/worktree-descriptor';

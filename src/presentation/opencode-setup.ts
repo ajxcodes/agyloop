@@ -13,25 +13,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { isPlainObject } from '../domain/value-objects/markdown';
 import * as child_process from 'child_process';
-import {
-  DEFAULT_WORKTREES_DIR,
-  OPENCODE_APP_DIR_NAME,
-  OPENCODE_COMMAND_ASSET_RELATIVE_PATH,
-  OPENCODE_COMMAND_DESCRIPTION,
-  OPENCODE_COMMAND_NAME,
-  OPENCODE_COMMAND_TEMPLATE,
-  OPENCODE_CONFIG_BACKUP_SUFFIX,
-  OPENCODE_CONFIG_CREATE_FILENAME,
-  OPENCODE_CONFIG_DIR_NAME,
-  OPENCODE_CONFIG_FILENAMES,
-  OPENCODE_LEGACY_DIR_NAME,
-  OPENCODE_LEGACY_SKILL_FILENAME,
-  OPENCODE_SKILL_ASSET_RELATIVE_PATH,
-  OPENCODE_SKILL_FILENAME,
-  OPENCODE_SKILL_NAME,
-  OPENCODE_SYMLINK_FALLBACK_CODES
-} from '../domain/constants';
+import { DEFAULT_WORKTREES_DIR } from '../domain/defaults';
+import { OPENCODE_APP_DIR_NAME, OPENCODE_COMMAND_ASSET_RELATIVE_PATH, OPENCODE_COMMAND_DESCRIPTION, OPENCODE_COMMAND_NAME, OPENCODE_COMMAND_TEMPLATE, OPENCODE_CONFIG_BACKUP_SUFFIX, OPENCODE_CONFIG_CREATE_FILENAME, OPENCODE_CONFIG_DIR_NAME, OPENCODE_CONFIG_FILENAMES, OPENCODE_LEGACY_DIR_NAME, OPENCODE_LEGACY_SKILL_FILENAME, OPENCODE_SKILL_ASSET_RELATIVE_PATH, OPENCODE_SKILL_FILENAME, OPENCODE_SKILL_NAME, OPENCODE_SYMLINK_FALLBACK_CODES } from '../domain/opencode';
 
 /** How the workspace root was resolved away from an ephemeral `.worktrees/<id>` checkout. */
 export type OpenCodeCanonicalizationMethod =
@@ -215,9 +200,6 @@ function writeFileAtomic(target: string, body: string): void {
 // JSONC helpers (hand-rolled: the repository has zero runtime dependencies)
 // ---------------------------------------------------------------------------
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * Blank out line and block comment bodies while preserving every other character (and

@@ -5,19 +5,8 @@
  * Pure domain value object: 100% free of filesystem, child processes, or external I/O.
  */
 
-import {
-  TOKEN_TEST_METRICS,
-  REGEX_ANSI_ESCAPE,
-  REGEX_TEST_METRICS_TOKEN,
-  REGEX_METRIC_PASSED,
-  REGEX_METRIC_FAILED,
-  REGEX_METRIC_SKIPPED,
-  REGEX_METRIC_TOTAL,
-  REGEX_TAP_TESTS,
-  REGEX_TAP_PASS,
-  REGEX_TAP_FAIL,
-  REGEX_TAP_SKIPPED
-} from '../constants';
+import { TOKEN_TEST_METRICS } from '../cli-contract';
+import { REGEX_ANSI_ESCAPE, REGEX_TEST_METRICS_TOKEN, REGEX_METRIC_PASSED, REGEX_METRIC_FAILED, REGEX_METRIC_SKIPPED, REGEX_METRIC_TOTAL, REGEX_TAP_TESTS, REGEX_TAP_PASS, REGEX_TAP_FAIL, REGEX_TAP_SKIPPED } from '../regexes';
 import { ValidationError } from '../errors';
 
 export interface TestMetricsProps {

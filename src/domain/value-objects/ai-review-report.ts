@@ -6,14 +6,9 @@
  * Pure domain value object: 100% free of external I/O or child processes.
  */
 
-import {
-  BANNER_REVIEW_TITLE,
-  BANNER_SUMMARY,
-  BANNER_CODE_COMMENTS,
-  MSG_NO_ISSUES_FOUND,
-  MSG_CLEAN_DIFF_REVIEW,
-  REGEX_JSON_CODE_BLOCK
-} from '../constants';
+import { BANNER_REVIEW_TITLE, BANNER_SUMMARY, BANNER_CODE_COMMENTS } from '../vocabulary';
+import { MSG_NO_ISSUES_FOUND, MSG_CLEAN_DIFF_REVIEW } from '../messages';
+import { REGEX_JSON_CODE_BLOCK } from '../regexes';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { ValidationError, CritiqueError, AiReviewerError } from '../errors';
 import { ReviewConfidence } from './review-confidence';

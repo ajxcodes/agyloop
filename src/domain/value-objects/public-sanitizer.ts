@@ -7,7 +7,7 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import { DEFAULT_TRACKER_REPO } from '../constants';
+import { DEFAULT_TRACKER_REPO } from '../defaults';
 
 export interface PublicSanitizerOptions {
   readonly trackerRepo?: string; // e.g. 'ajxcodes/projects'

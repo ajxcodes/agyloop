@@ -8,38 +8,11 @@
  * Pure domain value object: 100% free of filesystem, child processes, or external I/O.
  */
 
-import {
-  STATUS_PASSED,
-  STATUS_FAILED,
-  STATUS_TIMED_OUT,
-  STATUS_DISPLAY_TIMED_OUT,
-  TOKEN_GATE_STATUS,
-  TOKEN_BUILD_STATUS,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  TOKEN_TEST_METRICS,
-  TOKEN_FAILURE_FILE,
-  TOKEN_FAILING_ASSERTION,
-  HEADER_QUALITY_GATE_REPORT,
-  LABEL_OVERALL_VERDICT,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  LABEL_BUILD_STATUS,
-  LABEL_BUILD_SYSTEM,
-  LABEL_TOTAL_DURATION,
-  LABEL_NEXT_STAGE,
-  LABEL_EXECUTION_MATRIX,
-  LABEL_DIAGNOSTIC_FAILURE_DETAILS,
-  LABEL_EXECUTION_LOG,
-  SECTION_SELF_CORRECTION_TITLE,
-  DIVIDER_DASHED,
-  MS_PER_SECOND,
-  REGEX_GATE_STATUS_TOKEN,
-  REGEX_BUILD_STATUS_TOKEN,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  REGEX_TEST_METRICS_TOKEN,
-  REGEX_FAILURE_FILE_TOKEN,
-  REGEX_FAILING_ASSERTION_TOKEN,
-  REGEX_MD_TABLE_ROW
-} from '../constants';
+import { STATUS_PASSED, STATUS_FAILED, STATUS_TIMED_OUT, STATUS_DISPLAY_TIMED_OUT } from '../gate-verdicts';
+import { TOKEN_GATE_STATUS, TOKEN_BUILD_STATUS, TOKEN_FAILURE_FILE, TOKEN_FAILING_ASSERTION } from '../cli-contract';
+import { HEADER_QUALITY_GATE_REPORT, SECTION_SELF_CORRECTION_TITLE, DIVIDER_DASHED, MS_PER_SECOND } from '../vocabulary';
+import { LABEL_OVERALL_VERDICT, LABEL_BUILD_SYSTEM, LABEL_TOTAL_DURATION, LABEL_NEXT_STAGE, LABEL_EXECUTION_MATRIX, LABEL_DIAGNOSTIC_FAILURE_DETAILS, LABEL_EXECUTION_LOG } from '../output-labels';
+import { REGEX_GATE_STATUS_TOKEN, REGEX_BUILD_STATUS_TOKEN, REGEX_FAILURE_FILE_TOKEN, REGEX_FAILING_ASSERTION_TOKEN, REGEX_MD_TABLE_ROW } from '../regexes';
 import { QualityGateSummaryParseError, ValidationError } from '../errors';
 import { TestMetrics, TestMetricsProps } from './test-metrics';
 import { DiagnosticSnippet, DiagnosticSnippetProps } from './diagnostic-snippet';

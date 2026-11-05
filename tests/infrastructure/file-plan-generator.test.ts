@@ -7,7 +7,7 @@ const {
   FilePlanGenerator,
   LEGACY_SUMMARY_FILENAME
 } = require('../../dist/infrastructure/file-plan-generator');
-const { DEFAULT_SUMMARY_FILENAME } = require('../../dist/domain/constants');
+const { DEFAULT_SUMMARY_FILENAME } = require('../../dist/domain');
 
 describe('FilePlanGenerator - Summary Naming & Backward Compatibility', () => {
   let tempDir: string;

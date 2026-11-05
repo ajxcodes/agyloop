@@ -25,7 +25,7 @@ const {
   QUOTA_DEFAULT_RETRY_AFTER_SECONDS,
   CB_ACTION_FAILOVER,
   CB_FAILOVER_BREAKER_NAME
-} = require('../../dist/domain/constants');
+} = require('../../dist/domain');
 
 const FIXED_NOW = new Date('2026-10-14T12:00:00.000Z');
 

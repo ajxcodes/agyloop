@@ -12,7 +12,8 @@
  * contradiction. Pure domain: no I/O.
  */
 
-import { HEADING_TEST_REGISTER, REGEX_MD_HEADING_NUMBERING } from '../constants';
+import { HEADING_TEST_REGISTER } from '../vocabulary';
+import { parseHeading as parseHeadingImpl, isFence as isFenceImpl, escapeRegExp as escapeRegExpImpl } from './markdown';
 
 export interface TestRegisterReference {
   readonly path: string;
@@ -44,24 +45,6 @@ export interface TestRegisterContradiction {
   readonly line: number;
 }
 
-/** A heading line: level and text (numbering stripped). */
-interface HeadingLine {
-  readonly level: number;
-  readonly text: string;
-}
-
-function parseHeading(line: string): HeadingLine | null {
-  const match = /^(#{1,6})\s+(.*)$/.exec(line.trim());
-  if (!match) return null;
-  return {
-    level: match[1].length,
-    text: match[2].replace(REGEX_MD_HEADING_NUMBERING, '').trim()
-  };
-}
-
-function isFence(line: string): boolean {
-  return line.trim().startsWith('```');
-}
 
 /** A Test Register section: its heading line and every body line. */
 interface RegisterSection {
@@ -86,7 +69,7 @@ function extractRegisterSection(planContent: string): RegisterSection | null {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (isFence(line)) {
+    if (isFenceImpl(line)) {
       fence = !fence;
       if (inRegister) collected.push({ text: line, line: index + 1 });
       continue;
@@ -96,7 +79,7 @@ function extractRegisterSection(planContent: string): RegisterSection | null {
       continue;
     }
 
-    const heading = parseHeading(line);
+    const heading = parseHeadingImpl(line);
     if (heading) {
       if (inRegister && heading.level <= openLevel) {
         inRegister = false;
@@ -276,7 +259,7 @@ function parseRows(
 
   for (let index = 0; index < lines.length; index += 1) {
     const { text, line } = lines[index];
-    if (isFence(text)) {
+    if (isFenceImpl(text)) {
       fence = !fence;
       continue;
     }
@@ -388,9 +371,6 @@ export function parseTestRegister(planContent: string | null | undefined): reado
   return readTestRegister(planContent).rows;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * The project's test declaration grammar: `test(` or its `it(` alias, with the
@@ -401,7 +381,7 @@ const TEST_DECLARATION =
 
 function declarationPattern(title: string): RegExp {
   return new RegExp(
-    `(?:^|[^\\w.$])(${TEST_DECLARATION})\\(\\s*['"\`]${escapeRegExp(title)}['"\`]`
+    `(?:^|[^\\w.$])(${TEST_DECLARATION})\\(\\s*['"\`]${escapeRegExpImpl(title)}['"\`]`
   );
 }
 
@@ -749,7 +729,7 @@ export function extractPlannedTestIds(
   {
     let inFence = false;
     for (const line of planContent.split('\n')) {
-      if (isFence(line)) { inFence = !inFence; continue; }
+      if (isFenceImpl(line)) { inFence = !inFence; continue; }
       if (inFence) continue;
       const label = /^\s*[-*+]\s+(AC\d+[a-z]?)\s*:/i.exec(line);
       if (label) acLabels.add(label[1].toLowerCase());
@@ -762,7 +742,7 @@ export function extractPlannedTestIds(
   let fence = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (isFence(line)) { fence = !fence; continue; }
+    if (isFenceImpl(line)) { fence = !fence; continue; }
     if (fence) continue;
     if (!/^\s*[-*+]\s+\[[ xX]\]\s+/.test(line)) continue;
 

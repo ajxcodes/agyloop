@@ -7,7 +7,7 @@
 
 import * as readline from 'readline';
 import { ConfirmationPromptPort } from '../ports/confirmation-prompt';
-import { CONFIRMATION_AFFIRMATIVE_RESPONSES } from '../domain/constants';
+import { CONFIRMATION_AFFIRMATIVE_RESPONSES } from '../domain/vocabulary';
 
 export interface ReadlineConfirmationPromptOptions {
   readonly input?: NodeJS.ReadableStream;

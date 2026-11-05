@@ -9,15 +9,8 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import {
-  PREFLIGHT_ACTION_PROCEED,
-  PREFLIGHT_ACTION_RESUME,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  PREFLIGHT_ACTION_HALT,
-  PREFLIGHT_ACTION_HALT_CLOSED,
-  PREFLIGHT_ACTION_HALT_PR_MERGED,
-  PreFlightActionType
-} from '../constants';
+import { PREFLIGHT_ACTION_PROCEED, PREFLIGHT_ACTION_RESUME, // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  PREFLIGHT_ACTION_HALT, PREFLIGHT_ACTION_HALT_CLOSED, PREFLIGHT_ACTION_HALT_PR_MERGED, PreFlightActionType } from '../vocabulary';
 
 export interface PreFlightPrSummary {
   readonly number?: number | null;

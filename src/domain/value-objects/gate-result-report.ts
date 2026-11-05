@@ -13,18 +13,11 @@
  */
 
 import { ValidationError } from '../errors';
-import {
-  GATE_REPORT_JSON_MARKER,
-  STAGE_QUALITY_GATE,
-  STATUS_PASSED,
-  STATUS_FAILED,
-  SMOKE_PROTOCOL_VALUES,
-  SMOKE_PROTOCOL_VOCABULARY,
-  GATE_TEST_EVIDENCE_GAP_ZERO,
-  GATE_TEST_EVIDENCE_GAP_UNMEASURED,
-  type GateTestEvidenceGap,
-  type SmokeProtocolWireValue
-} from '../constants';
+import { isPlainObject } from './markdown';
+import { GATE_REPORT_JSON_MARKER } from '../gate-verdicts';
+import { STAGE_QUALITY_GATE } from '../lifecycle-stages';
+import { STATUS_PASSED, STATUS_FAILED, GATE_TEST_EVIDENCE_GAP_ZERO, GATE_TEST_EVIDENCE_GAP_UNMEASURED, type GateTestEvidenceGap } from '../gate-verdicts';
+import { SMOKE_PROTOCOL_VALUES, SMOKE_PROTOCOL_VOCABULARY, type SmokeProtocolWireValue } from './smoke-protocol';
 import { formatStageDuration } from './run-evidence';
 import { sliceBalancedObject } from './json-block';
 
@@ -137,10 +130,6 @@ export interface GateResultReportProps {
   readonly gateRound: number;
   /** ISO timestamp of the report. */
   readonly reportedAt: string;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export class GateResultReport {

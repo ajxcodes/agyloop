@@ -12,13 +12,9 @@
  */
 
 import { ValidationError } from '../errors';
-import {
-  MSG_PLAN_DEVIATION_SHAPE,
-  PLAN_DEVIATION_MARKER,
-  PLAN_DEVIATION_PROSE_LABEL_ALIASES,
-  PLAN_DEVIATION_PROSE_LABEL_ENTRIES,
-  PLAN_DEVIATION_REQUIRED_KEYS
-} from '../constants';
+import { isCommentLine as isCommentLineBase, isPlainObject } from './markdown';
+import { MSG_PLAN_DEVIATION_SHAPE } from '../messages';
+import { PLAN_DEVIATION_MARKER, PLAN_DEVIATION_PROSE_LABEL_ALIASES, PLAN_DEVIATION_PROSE_LABEL_ENTRIES, PLAN_DEVIATION_REQUIRED_KEYS } from '../plan-contract';
 import { jsObjectLiteralToJson, sliceBalancedObject } from './json-block';
 
 /** One changed plan literal, as the implementer emitted it. */
@@ -62,20 +58,6 @@ const PROSE_LABELS: ReadonlyArray<{ readonly pattern: RegExp; readonly field: Pr
   field: entry.field
 }));
 
-/** True when the line is prose/comment rather than a real block marker. */
-function isCommentLine(line: string): boolean {
-  const trimmed = line.trim();
-  return (
-    trimmed.length === 0 ||
-    trimmed.startsWith('#') ||
-    trimmed.startsWith('//') ||
-    trimmed.startsWith('<!--')
-  );
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function readNonEmptyString(value: unknown, field: string, index: number): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -218,7 +200,7 @@ export function parseBlocks(text: string): readonly PlanDeviationProps[] {
     const lineStart = text.lastIndexOf('\n', markerOffset - 1) + 1;
     const lineEnd = text.indexOf('\n', markerOffset);
     const markerLine = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
-    if (isCommentLine(markerLine)) {
+    if (isCommentLineBase(markerLine, ['#', '//', '<!--'])) {
       searchFrom = markerOffset + PLAN_DEVIATION_MARKER.length;
       continue;
     }

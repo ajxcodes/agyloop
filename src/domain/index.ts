@@ -2,8 +2,24 @@
  * agyloop - Domain Layer Public API
  */
 
-export * from './constants';
 export * from './errors';
+export * from './lifecycle-stages';
+export * from './execution-modes';
+export * from './subagent-roles';
+export * from './model-tiers';
+export * from './tools';
+export * from './cli-contract';
+export * from './messages';
+export * from './regexes';
+export * from './defaults';
+export * from './output-labels';
+export * from './gate-verdicts';
+export * from './critique';
+export * from './plan-contract';
+export * from './opencode';
+export * from './run-summary';
+export * from './discovery';
+export * from './vocabulary';
 export * from './quota-exhaustion';
 export * from './value-objects/stage';
 export * from './value-objects/issue-number';
@@ -64,6 +80,7 @@ export * from './value-objects/json-block';
 export * from './value-objects/plan-deviation';
 export * from './value-objects/test-register';
 export * from './value-objects/plan-evidence-paths';
+export * from './value-objects/markdown';
 export * from './value-objects/ac-evidence';
 export * from './value-objects/workspace-mutation';
 export * from './entities/state-machine';

@@ -31,7 +31,7 @@
  * import inside `src/domain`.
  */
 
-import { VALIDATION_FIELD_PLAN_TITLE } from '../constants';
+import { VALIDATION_FIELD_PLAN_TITLE } from '../vocabulary';
 import { ValidationError } from '../errors';
 import { trimDanglingTail } from './subject-truncation';
 

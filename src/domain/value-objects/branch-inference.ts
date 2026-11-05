@@ -10,12 +10,7 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import {
-  DEFAULT_TASK_BRANCH_PREFIX,
-  DEFAULT_FIX_BRANCH_PREFIX,
-  DEFAULT_PHASE_BRANCH_PREFIX,
-  DEFAULT_FEATURE_BRANCH_PREFIX
-} from '../constants';
+import { DEFAULT_TASK_BRANCH_PREFIX, DEFAULT_FIX_BRANCH_PREFIX, DEFAULT_PHASE_BRANCH_PREFIX, DEFAULT_FEATURE_BRANCH_PREFIX } from '../defaults';
 import { MilestoneSealedError } from '../errors';
 import { WorktreeDescriptor } from './worktree-descriptor';
 

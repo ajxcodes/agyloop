@@ -37,24 +37,6 @@
  * No I/O, no external imports.
  */
 
-import {
-  HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
-  SMOKE_CHECK_MARKER_PREFIX,
-  SMOKE_CHECK_MARKER_SUFFIX,
-  SMOKE_RULE_BARE_MODULE_PATH,
-  SMOKE_RULE_EMPTY_CHECK,
-  SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
-  SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
-  SMOKE_RULE_MISSING_PARENT_DIRECTORY,
-  SMOKE_RULE_NESTED_SINGLE_QUOTE,
-  SMOKE_RULE_NO_EXECUTABLE_CHECK,
-  SMOKE_RULE_QUOTED_JSON_COMPARISON,
-  SMOKE_RULE_SANDBOX_CWD,
-  SMOKE_RULE_SANDBOX_MISSING,
-  SMOKE_RULE_SANDBOX_PATH,
-  SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
-  SMOKE_SANDBOX_RECOMMENDED_PATH
-} from '../constants';
 import { normaliseGateTests } from './gate-result-report';
 import {
   assertsGateReportMarkerRefusal,
@@ -68,11 +50,14 @@ import {
   producesGateReportMarker
 } from './gate-report-fixture';
 import { isSmokeSectionHeading } from './smoke-heading';
+import { HEADING_NUMBER_PREFIX, detectHeading as detectHeadingImpl, isCommentLine as isCommentLineImpl, truncate as truncateImpl } from './markdown';
 import {
   isAnchoredPath,
   isWithinSmokeSandbox,
   normaliseLexicalPath,
-  resolvePathAgainstCwd
+  resolvePathAgainstCwd,
+  SMOKE_SANDBOX_ROOT_DISPLAY,
+  SMOKE_SANDBOX_DIR_PREFIX
 } from './smoke-sandbox';
 
 export interface SmokeCheck {
@@ -103,8 +88,6 @@ export interface SmokeFailure {
   readonly failLine: string | null;
 }
 
-const HEADING_PATTERN = /^(#{1,6})\s+(.*)$/;
-const HEADING_NUMBER_PREFIX = /^\d+[.)]\s*/;
 const FENCE_PREFIX = '```';
 const NUMBERED_LABEL = /^\s*\d+[.)]\s+(.*)$/;
 const BOLD_LABEL = /^\s*\*\*([^*]+)\*\*\s*:?\s*$/;
@@ -116,8 +99,6 @@ const BOLD_LABEL = /^\s*\*\*([^*]+)\*\*\s*:?\s*$/;
  * protocol, so it must read as NOT DECLARED rather than as a broken protocol.
  */
 const PLACEHOLDER_BULLET = /^\s*[-*]\s+\*\*[^*]+\*\*\s*:?\s*$/;
-const COMMENT_PREFIX = '#';
-const MAX_EXCERPT_LENGTH = 160;
 
 const SHELL_FENCE_LANGUAGES: ReadonlySet<string> = new Set(['', 'bash', 'sh', 'shell', 'console']);
 
@@ -191,31 +172,8 @@ const NODE_BUILTINS: ReadonlySet<string> = new Set([
   'zlib'
 ]);
 
-interface Heading {
-  readonly level: number;
-  readonly title: string;
-}
-
-function detectHeading(line: string): Heading | null {
-  const match = HEADING_PATTERN.exec(line.trim());
-  if (!match) return null;
-  return { level: match[1].length, title: match[2].replace(/#+\s*$/, '').trim() };
-}
-
 function stripNumbering(title: string): string {
   return title.replace(HEADING_NUMBER_PREFIX, '').trim();
-}
-
-function isCommentLine(line: string): boolean {
-  const trimmed = line.trim();
-  return trimmed.length === 0 || trimmed.startsWith(COMMENT_PREFIX);
-}
-
-function truncate(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length > MAX_EXCERPT_LENGTH
-    ? `${trimmed.slice(0, MAX_EXCERPT_LENGTH)}…`
-    : trimmed;
 }
 
 function isRelativeOrBuiltinSpecifier(specifier: string): boolean {
@@ -321,7 +279,7 @@ export class SmokeProtocol {
         continue;
       }
 
-      const heading = detectHeading(line);
+      const heading = detectHeadingImpl(line);
 
       if (!inSection) {
         if (heading && isSmokeSectionHeading(heading)) {
@@ -359,7 +317,7 @@ export class SmokeProtocol {
         continue;
       }
 
-      if (!isCommentLine(line) && !PLACEHOLDER_BULLET.test(line)) {
+      if (!isCommentLineImpl(line) && !PLACEHOLDER_BULLET.test(line)) {
         sawContent = true;
       }
     }
@@ -389,9 +347,9 @@ export class SmokeProtocol {
       findings.push({
         rule: SMOKE_RULE_NO_EXECUTABLE_CHECK,
         checkIndex: 0,
-        label: HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+        label: 'Manual Smoke Test Protocol',
         line: headingLine,
-        excerpt: HEADING_MANUAL_SMOKE_TEST_PROTOCOL
+        excerpt: 'Manual Smoke Test Protocol'
       });
     }
 
@@ -866,7 +824,7 @@ function scanCodeloopInvocation(text: string): number | null {
  * recursively and its inner offset mapped back onto the statement (issue #503).
  */
 function codeloopInvocationOffset(line: string): number | null {
-  if (isCommentLine(line)) return null;
+  if (isCommentLineImpl(line)) return null;
 
   const direct = scanCodeloopInvocation(line);
   if (direct !== null) return direct;
@@ -1082,7 +1040,7 @@ function assignmentsByLine(
   const visible = new Map<string, string>();
 
   bodyLines.forEach((line, offset) => {
-    if (!isCommentLine(line)) {
+    if (!isCommentLineImpl(line)) {
       for (const statement of splitStatements(line)) {
         const match = ASSIGNMENT_PATTERN.exec(statement);
         if (!match) continue;
@@ -1152,7 +1110,7 @@ function cwdByStatement(
   let cwd: string | null = null;
 
   bodyLines.forEach((line, offset) => {
-    if (isCommentLine(line)) return;
+    if (isCommentLineImpl(line)) return;
     splitStatements(line).forEach((statement, index) => {
       byStatement.set(statementKey(offset, index), cwd);
       const target = cdTarget(statement, assignments.get(offset) ?? new Map<string, string>());
@@ -1192,7 +1150,7 @@ function resolveVariables(text: string, assignments: ReadonlyMap<string, string>
 function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
   const candidates: SandboxCandidate[] = [];
   bodyLines.forEach((line, offset) => {
-    if (isCommentLine(line)) return;
+    if (isCommentLineImpl(line)) return;
     // Statement granularity (issue #364 review): the cwd a creation is judged
     // against is the one in effect BEFORE its own statement, so a trailing
     // `&& cd "$SBX"` can no longer launder a mkdir that ran elsewhere.
@@ -1551,7 +1509,7 @@ function collectSandboxCwdFindings(
     state.declaredSandbox = null;
 
     bodyLines.forEach((line, offset) => {
-      if (isCommentLine(line) || heredocData.has(offset) || quotedContinuation.has(offset)) {
+      if (isCommentLineImpl(line) || heredocData.has(offset) || quotedContinuation.has(offset)) {
         return;
       }
 
@@ -1617,7 +1575,7 @@ function collectSandboxCwdFindings(
         checkIndex: check.index,
         label: check.label,
         line: check.planLine + 1 + offending.offset,
-        excerpt: `${truncate(bodyLines[offending.offset] ?? '')} — declares no sandbox but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; create and cd into ${SMOKE_SANDBOX_RECOMMENDED_PATH} first`
+        excerpt: `${truncateImpl(bodyLines[offending.offset] ?? '')} — declares no sandbox but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; create and cd into ${SMOKE_SANDBOX_RECOMMENDED_PATH} first`
       });
       continue;
     }
@@ -1627,7 +1585,7 @@ function collectSandboxCwdFindings(
       checkIndex: check.index,
       label: check.label,
       line: check.planLine + 1 + offending.offset,
-      excerpt: `${truncate(bodyLines[offending.offset] ?? '')} — declares ${state.declaredSandbox ?? SMOKE_SANDBOX_RECOMMENDED_PATH} but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; cd into the sandbox first`
+      excerpt: `${truncateImpl(bodyLines[offending.offset] ?? '')} — declares ${state.declaredSandbox ?? SMOKE_SANDBOX_RECOMMENDED_PATH} but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; cd into the sandbox first`
     });
   }
 }
@@ -1757,7 +1715,7 @@ function quotedContinuationLines(bodyLines: readonly string[]): ReadonlySet<numb
 
   bodyLines.forEach((line, offset) => {
     if (quote !== null) continuation.add(offset);
-    if (isCommentLine(line)) return;
+    if (isCommentLineImpl(line)) return;
 
     let index = 0;
     while (index < line.length) {
@@ -2267,7 +2225,7 @@ function collectMissingParentFindings(
     const reportedOffsets = new Set<number>();
 
     bodyLines.forEach((line, offset) => {
-      if (isCommentLine(line) || heredocData.has(offset) || quotedContinuation.has(offset)) return;
+      if (isCommentLineImpl(line) || heredocData.has(offset) || quotedContinuation.has(offset)) return;
       const lineAssignments = assignments.get(offset) ?? new Map<string, string>();
 
       splitStatements(line).forEach((statement, statementIndex) => {
@@ -2296,7 +2254,7 @@ function collectMissingParentFindings(
             checkIndex: check.index,
             label: check.label,
             line: check.planLine + 1 + offset,
-            excerpt: `${truncate(line)} — required parent: ${parent}`
+            excerpt: `${truncateImpl(line)} — required parent: ${parent}`
           });
         }
 
@@ -2349,7 +2307,7 @@ function collectFixtureFindings(
         .split('\n')
         .some(
           (line) =>
-            !isCommentLine(line) && line.includes(fixture.report.testsStatus)
+            !isCommentLineImpl(line) && line.includes(fixture.report.testsStatus)
         );
       if (!asserted) continue;
       findings.push({
@@ -2357,7 +2315,7 @@ function collectFixtureFindings(
         checkIndex: check.index,
         label: check.label,
         line: check.planLine + 1 + lineOffsetOf(body, fixture.markerOffset),
-        excerpt: truncate(
+        excerpt: truncateImpl(
           `declared "${fixture.report.testsStatus}" but normaliseGateTests records "${normalisation.testsStatus}"`
         )
       });
@@ -2372,7 +2330,7 @@ function collectFixtureFindings(
           checkIndex: check.index,
           label: check.label,
           line: check.planLine + 1 + first.lineOffset,
-          excerpt: truncate(
+          excerpt: truncateImpl(
             `${first.literal} — IssueNumber.inferFromPath matches .worktrees/<n>/ only, so the mismatch guard never fires`
           )
         });
@@ -2436,7 +2394,7 @@ function collectNestedSingleQuoteFindings(
     const openingLine = maskedLines[openingOffset] ?? '';
     const lineStart = match.index === 0 ? 0 : masked.lastIndexOf('\n', match.index - 1) + 1;
 
-    if (isCommentLine(openingLine) || isProseAt(openingLine, match.index - lineStart)) {
+    if (isCommentLineImpl(openingLine) || isProseAt(openingLine, match.index - lineStart)) {
       SHELL_PROGRAM_WRAPPER.lastIndex = openIndex + 1;
       continue;
     }
@@ -2451,7 +2409,7 @@ function collectNestedSingleQuoteFindings(
         label,
         line: fenceStartLine + 1 + offset,
         // The remedy rides AFTER truncation, so the 160-char cap cannot cut it.
-        excerpt: `${truncate(bodyLines[offset] ?? '')} — a raw ' inside the single-quoted program ends it early; use '"'"', '\\'' or a heredoc`
+        excerpt: `${truncateImpl(bodyLines[offset] ?? '')} — a raw ' inside the single-quoted program ends it early; use '"'"', '\\'' or a heredoc`
       });
     } else if (program.unterminated) {
       findings.push({
@@ -2459,7 +2417,7 @@ function collectNestedSingleQuoteFindings(
         checkIndex,
         label,
         line: fenceStartLine + 1 + openingOffset,
-        excerpt: `${truncate(bodyLines[openingOffset] ?? '')} — the single-quoted program never closes; close it with ' or use a heredoc`
+        excerpt: `${truncateImpl(bodyLines[openingOffset] ?? '')} — the single-quoted program never closes; close it with ' or use a heredoc`
       });
     }
 
@@ -2476,14 +2434,14 @@ function collectFindings(
   bodyLines: readonly string[],
   findings: SmokeFinding[]
 ): void {
-  const hasExecutableLine = bodyLines.some((line) => !isCommentLine(line));
+  const hasExecutableLine = bodyLines.some((line) => !isCommentLineImpl(line));
   if (!hasExecutableLine) {
     findings.push({
       rule: SMOKE_RULE_EMPTY_CHECK,
       checkIndex,
       label,
       line: fenceStartLine,
-      excerpt: truncate(label)
+      excerpt: truncateImpl(label)
     });
     return;
   }
@@ -2498,7 +2456,7 @@ function collectFindings(
   bodyLines.forEach((line, offset) => {
     const lineNumber = fenceStartLine + 1 + offset;
     const trimmed = line.trim();
-    if (isCommentLine(line)) return;
+    if (isCommentLineImpl(line)) return;
 
     if (isQuotedJsonComparison(line, jsonFunctions)) {
       findings.push({
@@ -2506,7 +2464,7 @@ function collectFindings(
         checkIndex,
         label,
         line: lineNumber,
-        excerpt: truncate(trimmed)
+        excerpt: truncateImpl(trimmed)
       });
     }
 
@@ -2517,7 +2475,7 @@ function collectFindings(
         checkIndex,
         label,
         line: lineNumber,
-        excerpt: truncate(trimmed)
+        excerpt: truncateImpl(trimmed)
       });
     }
   });
@@ -2560,8 +2518,214 @@ function collectFindings(
         checkIndex,
         label,
         line: fenceStartLine + 1 + candidate.offset,
-        excerpt: `${truncate(bodyLines[candidate.offset])} — required sandbox: ${SMOKE_SANDBOX_RECOMMENDED_PATH}`
+        excerpt: `${truncateImpl(bodyLines[candidate.offset])} — required sandbox: ${SMOKE_SANDBOX_RECOMMENDED_PATH}`
       });
     }
   }
+}
+
+import { GateSmokeCoverageRefusalParams, STATUS_FAILED, STATUS_PASSED, formatGateReportChannelCommand, GATE_COVERAGE_INGEST_REFILE, GATE_COVERAGE_FILING_REFILE, GATE_COVERAGE_INGEST_TAIL, GATE_COVERAGE_FILING_TAIL } from '../gate-verdicts';
+// lazy: avoid module-load cycle with messages.ts
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const _msg = () => require('../messages');
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+
+/** Runtime smoke attribution markers (issue #298). */
+export const SMOKE_CHECK_MARKER_PREFIX = '__AGYLOOP_SMOKE_CHECK_' as const;
+
+export const SMOKE_CHECK_MARKER_SUFFIX = '__' as const;
+
+export const SMOKE_SCRIPT_SHELL = 'bash' as const;
+
+
+export const SMOKE_STATUS_PASSED = 'PASSED' as const;
+
+export const SMOKE_STATUS_FAILED = 'FAILED' as const;
+
+/**
+ * The RENDERED summary phrase only (issue #311).
+ *
+ * It is never emitted in a prompt and never accepted on the wire: a prompt that
+ * asked for this spelling produced a block `GateResultReport` rejected
+ * wholesale, losing the verdict, test counts and command list of a gate that
+ * did run. Every prompt and wire surface uses `SMOKE_PROTOCOL_VALUES` below.
+ */
+export const SMOKE_STATUS_NOT_DECLARED = 'NOT DECLARED' as const;
+
+export const SMOKE_STATUS_TIMED_OUT = 'TIMED_OUT' as const;
+
+
+/** Wire token for "the plan declares no smoke protocol" (issue #298, #311). */
+export const SMOKE_PROTOCOL_NOT_DECLARED = 'NOT_DECLARED' as const;
+
+
+/**
+ * The RENDERED summary value for "an evidence block was filed without a
+ * `smokeProtocol`" (issue #338). Lower case on purpose: it is never a wire
+ * token and must never be accepted by the parser.
+ */
+export const SMOKE_PROTOCOL_NOT_REPORTED = 'not reported' as const;
+
+
+/**
+ * The ONE smoke-protocol vocabulary (issue #311).
+ *
+ * `GateResultReport.readSmokeProtocol` validates against this list and the gate
+ * prompt names the same list, so the prompt can no longer ask for a token the
+ * parser rejects (the `NOT DECLARED` / `NOT_DECLARED` divergence).
+ */
+export type SmokeProtocolWireValue =
+  | typeof STATUS_PASSED
+  | typeof STATUS_FAILED
+  | typeof SMOKE_PROTOCOL_NOT_DECLARED;
+
+
+/** The ONLY values the gate prompt may name and the parser may accept (issue #311). */
+export const SMOKE_PROTOCOL_VALUES: readonly SmokeProtocolWireValue[] = Object.freeze([
+  STATUS_PASSED,
+  STATUS_FAILED,
+  SMOKE_PROTOCOL_NOT_DECLARED
+]);
+
+
+/** The rendered verdict list, e.g. `PASSED | FAILED | NOT_DECLARED` (issue #311). */
+export const SMOKE_PROTOCOL_VOCABULARY = SMOKE_PROTOCOL_VALUES.join(' | ');
+
+
+/** Static smoke-protocol findings (issue #298). */
+export const SMOKE_RULE_QUOTED_JSON_COMPARISON = 'quoted-json-comparison' as const;
+
+export const SMOKE_RULE_BARE_MODULE_PATH = 'bare-module-path' as const;
+
+export const SMOKE_RULE_NO_EXECUTABLE_CHECK = 'no-executable-check' as const;
+
+export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
+
+/** Static smoke-protocol findings (issue #359). */
+export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
+
+/**
+ * A check that DECLARES a recognised smoke sandbox but invokes the `codeloop`
+ * CLI from outside it (issue #440). `sandbox-path` only asks where the sandbox
+ * is created; naming one is not entering it, and the #370 reproduction cd'd
+ * back to the worktree before the transition, mutating the live checkpoint.
+ */
+export const SMOKE_RULE_SANDBOX_CWD = 'sandbox-cwd' as const;
+
+/**
+ * A check that invokes the `codeloop` CLI outside every recognised sandbox and
+ * never declares one (issue #498). `sandbox-cwd` (#440) only judges a check
+ * that NAMES a sandbox; before #498, declaring nothing skipped the rule
+ * entirely, so a CLI invocation from the worktree root — whose `.agyloop`
+ * symlinks the live checkpoint — certified `executable: true`.
+ */
+export const SMOKE_RULE_SANDBOX_MISSING = 'sandbox-missing' as const;
+
+/**
+ * A check writes a path whose parent directory no earlier statement creates
+ * (issue #388). The #382 Smoke 6/7 blocks seeded `.agyloop/tasks/382.json`
+ * without `mkdir -p .agyloop/tasks`, so they died before any product code ran
+ * while the validator still reported `executable: true`.
+ */
+export const SMOKE_RULE_MISSING_PARENT_DIRECTORY = 'missing-parent-directory' as const;
+
+/**
+ * A check nests a raw `'` inside a single-quoted interpreter program
+ * (`node -e '…'`, `bash -c '…'`, issue #467). Bash closes the quoted word at
+ * that apostrophe and re-glues the remainder by concatenation, so the program
+ * the interpreter receives is NOT the program the plan displays — the #447
+ * fence lost the quotes around `'phase/447'` and its needle stopped matching.
+ * `bash -n` cannot see this: the mutated script is still syntactically valid,
+ * which is why the rule walks the shell word instead of asking bash.
+ */
+export const SMOKE_RULE_NESTED_SINGLE_QUOTE = 'nested-single-quote' as const;
+
+/**
+ * Fixture-consistency findings (issue #413). Each rule is a documented textual
+ * mirror of the runtime contract it protects; every filed reproduction was a
+ * check whose OWN fixture made the assertion impossible, certified executable
+ * until the implementer or gate executed it after the plan digest was pinned.
+ */
+
+/**
+ * The check's `GATE_REPORT_JSON` fixture declares a `testsStatus` that
+ * `normaliseGateTests` rewrites at ingest, yet the check asserts the declared
+ * (pre-rewrite) value outside the fixture. Mirrors `normaliseGateTests`.
+ */
+export const SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION =
+  'gate-report-fixture-contradiction' as const;
+
+/**
+ * The check seeds a `.worktrees/<n>-suffix` directory while asserting the
+ * worktree-mismatch message. `IssueNumber.inferFromPath` requires
+ * `.worktrees/<n>/`, so the guard never fires and the message never prints.
+ */
+export const SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED = 'worktree-fixture-unmatched' as const;
+
+/**
+ * The check invokes `gate-report --report-file` with no `GATE_REPORT_JSON:`
+ * marker anywhere earlier in the protocol. `GateResultReport.parseBlock`
+ * refuses it as `missing GATE_REPORT_JSON: block`, so the asserted literal is
+ * never printed. Mirrors `parseBlock`.
+ */
+export const SMOKE_RULE_GATE_REPORT_MARKER_MISSING = 'gate-report-marker-missing' as const;
+
+
+/**
+ * The tool's OWN smoke sandbox (issue #279).
+ *
+ * The role prompts used to mandate `/tmp/smoke-<issue>` — the one directory the
+ * storage-layer guard refuses EVERY state mutation in. The permitted path is the
+ * per-user cache directory below: outside the workspace (so `discoverWorkspaceRoot`
+ * cannot climb to the real `.agyloop`), outside the OS temp directory (so the
+ * `/tmp` rule does not apply), and positively recognisable as this tool's own
+ * sandbox by the guard.
+ *
+ * ONE source: the prompt prose, the recommended path in the refusal message and
+ * the guard's sandbox root all derive from these segments.
+ */
+export { SMOKE_SANDBOX_HOME_SEGMENTS, SMOKE_SANDBOX_DIR_PREFIX, SMOKE_SANDBOX_HOME_ANCHOR, SMOKE_SANDBOX_ROOT_DISPLAY } from './smoke-sandbox';
+
+export const SMOKE_SANDBOX_RECOMMENDED_PATH = `${SMOKE_SANDBOX_ROOT_DISPLAY}/${SMOKE_SANDBOX_DIR_PREFIX}<issue>`;
+
+export const SMOKE_SANDBOX_MANDATE =
+  `If you must execute state-mutating commands (e.g. \`codeloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely at \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`. If it is placed anywhere inside the workspace (e.g. \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.` as const;
+
+export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
+  'If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT` so the root-mutation guard does not block them.' as const;
+
+
+/**
+ * The in-repo smoke isolation directory the guard refuses outside a test run
+ * (issue #279). Composed from segments so the guard carries no magic path.
+ */
+export const SMOKE_ISOLATION_ARTIFACTS_DIR = 'artifacts' as const;
+
+export const SMOKE_ISOLATION_ARTIFACTS_PREFIX = 'smoke' as const;
+
+
+
+
+export function formatGateSmokeCoverageRefusal(
+  params: GateSmokeCoverageRefusalParams
+): string {
+  const missing = Array.isArray(params.missing) ? params.missing : [];
+  const renderedMissing = missing.map((id) => `\`${id}\``).join(', ');
+  const clauses = [
+    _msg().smokeClause('Unknown id(s)', params.unknown),
+    _msg().smokeClause('Duplicate id(s)', params.duplicate),
+    _msg().smokeClause('Skipped', params.skipped),
+    _msg().smokeClause('Not passed', params.failed)
+  ].join('');
+  const ingest = params.channel === 'ingest';
+  return _msg().MSG_GATE_SMOKE_COVERAGE_MISSING
+    .replace('{reason}', () => _msg().smokeReasonClause(params))
+    .replace('{missingCount}', String(missing.length))
+    .replace('{declaredCount}', String(params.declaredCount))
+    .replace('{missing}', () => renderedMissing)
+    .replace('{clauses}', () => clauses)
+    .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
+    .replace('{command}', formatGateReportChannelCommand(params.issue))
+    .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);
 }

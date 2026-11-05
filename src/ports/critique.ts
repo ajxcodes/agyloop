@@ -6,7 +6,7 @@
  */
 
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
-import { ResolverSource } from '../domain/constants';
+import { ResolverSource } from '../domain/vocabulary';
 
 export interface CritiqueOptions {
   readonly cwd?: string;

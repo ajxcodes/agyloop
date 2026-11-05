@@ -20,12 +20,8 @@
 
 import { StateHistoryEntry } from '../entities/state-machine';
 import {
-  DURATION_NOT_RECORDED,
-  HUMAN_WAIT_GATES,
-  MS_PER_SECOND,
-  SECONDS_PER_MINUTE,
-  StageName
-} from '../constants';
+  DURATION_NOT_RECORDED, HUMAN_WAIT_GATES, MS_PER_SECOND, SECONDS_PER_MINUTE } from '../vocabulary';
+import { StageName } from '../lifecycle-stages';
 /**
  * Formats a measured millisecond duration as the summary's `1m 24s` / `16s`
  * shape.

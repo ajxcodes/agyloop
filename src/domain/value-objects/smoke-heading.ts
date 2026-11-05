@@ -18,9 +18,7 @@
  * No I/O, no external imports.
  */
 
-import { HEADING_MANUAL_SMOKE_TEST_PROTOCOL } from '../constants';
-
-const SMOKE_TITLE_PHRASE = HEADING_MANUAL_SMOKE_TEST_PROTOCOL.toLowerCase();
+import { HEADING_MANUAL_SMOKE_TEST_PROTOCOL } from '../vocabulary';
 
 /**
  * LEVEL-AGNOSTIC: is this heading title the smoke section?
@@ -36,9 +34,10 @@ const SMOKE_TITLE_PHRASE = HEADING_MANUAL_SMOKE_TEST_PROTOCOL.toLowerCase();
  * @param title - The heading title (already normalised by the consumer).
  */
 export function isManualSmokeTestProtocolTitle(title: string): boolean {
+  const phrase = HEADING_MANUAL_SMOKE_TEST_PROTOCOL.toLowerCase();
   return String(title ?? '')
     .toLowerCase()
-    .includes(SMOKE_TITLE_PHRASE);
+    .includes(phrase);
 }
 
 /**
