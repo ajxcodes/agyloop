@@ -1,6 +1,6 @@
 {
   "name": "codeloop",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ajxcodes/agyloop.git"
+    "url": "git+https://github.com/ajxcodes/codeloop.git"
   },
   "keywords": [
     "antigravity",

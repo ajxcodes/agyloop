@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET_DIR="${HOME}/.gemini/config/plugins"
-TARGET_LINK="${TARGET_DIR}/agyloop"
+TARGET_LINK="${TARGET_DIR}/codeloop"
 PLUGIN_MANIFEST="${TARGET_LINK}/plugin.json"
 
 FAILED=0

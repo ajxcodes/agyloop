@@ -41,7 +41,7 @@ describe('CLI Launchers and Rebranding', () => {
       cwd: rootDir,
     });
     assert.strictEqual(res.status, 0, `Process failed with stderr: ${res.stderr}`);
-    assert.ok(res.stdout.includes('0.6.0'), 'Expected stdout to contain the version string');
+    assert.ok(res.stdout.includes('0.7.0'), 'Expected stdout to contain the version string');
     assert.ok(
       res.stderr.includes("Warning: The 'agyloop' command is deprecated. Please use 'codeloop' instead."),
       'Expected stderr to contain deprecation notice'
@@ -176,7 +176,7 @@ describe('POSIX Shell Compatibility', () => {
       });
       assert.strictEqual(setup.status, 0, `setup-symlink.sh failed:\n${setup.stdout}\n${setup.stderr}`);
 
-      const linked = path.join(sandboxHome, '.gemini', 'config', 'plugins', 'agyloop');
+      const linked = path.join(sandboxHome, '.gemini', 'config', 'plugins', 'codeloop');
       assert.ok(fs.lstatSync(linked).isSymbolicLink(), `Expected a symlink at ${linked}`);
       // Compare physical paths on both sides: on macOS a checkout under /tmp
       // lives at /private/tmp, and `resolve_path` in setup-symlink.sh returns the

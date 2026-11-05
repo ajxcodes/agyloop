@@ -1,9 +1,9 @@
 #!/bin/sh
 # ==============================================================================
-# agyloop - Antigravity Plugin Symlink Setup
+# codeloop - Antigravity Plugin Symlink Setup
 # ==============================================================================
-# Symlinks the current agyloop repository root into the global Antigravity
-# plugins directory (~/.gemini/config/plugins/agyloop).
+# Symlinks the current codeloop repository root into the global Antigravity
+# plugins directory (~/.gemini/config/plugins/codeloop).
 # ==============================================================================
 
 # NOTE: `pipefail` is deliberately absent. It is not POSIX (dash < 0.5.12, BusyBox
@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET_DIR="${HOME}/.gemini/config/plugins"
-TARGET_LINK="${TARGET_DIR}/agyloop"
+TARGET_LINK="${TARGET_DIR}/codeloop"
 
 resolve_path() {
   local target="$1"
@@ -27,7 +27,7 @@ resolve_path() {
   fi
 }
 
-echo "=== AgyLoop: Plugin Symlink Setup ==="
+echo "=== CodeLoop: Plugin Symlink Setup ==="
 echo "Source repository : ${REPO_ROOT}"
 echo "Target symlink    : ${TARGET_LINK}"
 echo ""
@@ -67,7 +67,7 @@ fi
 # Verify resolution
 RESOLVED="$(resolve_path "${TARGET_LINK}")"
 if [ "${RESOLVED}" = "${REPO_ROOT}" ]; then
-  echo "✓ Successfully symlinked agyloop plugin!"
+  echo "✓ Successfully symlinked codeloop plugin!"
   echo "  ${TARGET_LINK} -> ${RESOLVED}"
   echo ""
   echo "Run './bin/verify-install.sh' to validate plugin registration."

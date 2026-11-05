@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-export const CLI_VERSION = '0.6.0' as const;
+export const CLI_VERSION = '0.7.0' as const;
 
 
 /** Plan-sourced command definitions (issue #298). */

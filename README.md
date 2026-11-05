@@ -1,233 +1,319 @@
 # CodeLoop (`codeloop`)
 
+[![Release](https://img.shields.io/github/v/release/ajxcodes/codeloop?label=Release&color=0e8a16)](https://github.com/ajxcodes/codeloop/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Google Antigravity Plugin](https://img.shields.io/badge/Antigravity-Plugin%20v2-purple.svg)](https://github.com/ajxcodes/agyloop)
+[![Google Antigravity Plugin](https://img.shields.io/badge/Antigravity-Plugin%20v2-purple.svg)](https://github.com/ajxcodes/codeloop)
+[![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Skill%20%2B%20CLI-00ADD8.svg)](integrations/opencode/codeloop-skill.md)
 [![Project Tracking](https://img.shields.io/badge/Roadmap-ajxcodes%2Fprojects%2347-brightgreen.svg)](https://github.com/ajxcodes/projects/issues/47)
 
-> **Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity (`agy`)**
+> **Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity (`agy`) and OpenCode (`opencode`)**
 
-`codeloop` transforms autonomous coding agents from single-prompt chat assistants into a disciplined, context-isolated pair-programming pipeline:
+`codeloop` (formerly `agyloop`) transforms autonomous coding agents from single-prompt chat assistants into a governed, context-isolated software delivery pipeline with isolated Git worktrees, cryptographic plan locking, two-tier code review, and resilient circuit breakers:
 
-$$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \longrightarrow \text{Implement} \longrightarrow \text{Quality Gate} \longrightarrow \text{AI Review} \longrightarrow \text{Commit}$$
+$$\text{Discovery (Bugs)} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \longrightarrow \text{Implement} \longrightarrow \text{Quality Gate} \longrightarrow \text{Two-Tier Review} \longrightarrow \text{Commit \& PR} \longleftrightarrow \text{Triage}$$
 
 ---
 
-## 🎯 The Problem
+## 🎯 Why CodeLoop?
 
-1. **Context Saturation & Token Degradation**: Cramming deep repository exploration, file editing, build logs, and unit test runs into one conversational context bloats tokens, degrades reasoning, and risks hallucinations.
-2. **Ephemeral Memory**: Native agent planning files live in session-ephemeral directories (`brain/`) and are discarded across branch switches, IDE reloads, or multi-day tasks.
-3. **One-Size-Fits-All Models**: Running high-reasoning flagship models for simple test log parsing wastes quota, while underpowered models fail at architectural design.
-4. **Unverified & Silent Commits**: Autonomous agents frequently commit modifications without executing local test suites, static analysis, or seeking explicit user sign-off.
+1. **Context Saturation & Token Degradation**: Cramming deep repository exploration, multi-file edits, compiler output, test logs, and code review into one conversational context bloats tokens, degrades reasoning, and causes agent drift. `codeloop` dispatches single-turn, role-scoped leaf subagents with fresh context windows at every stage.
+2. **Ephemeral Planning & Unpinned Specs**: Chat-only plans vanish across IDE reloads or branch switches, and agents silently rewrite requirements mid-flight. `codeloop` persists artifacts in `artifacts/plans/<issue>-<slug>/`, freezes approved plans by SHA-256 digest, and requires explicit `PLAN_DEVIATION` records if an approved literal must change.
+3. **One-Size-Fits-All Model Spend**: Running frontier reasoning models to parse test logs wastes quota, while lightweight models underperform on architectural design. `codeloop` routes each lifecycle stage (`discovery`, `planner`, `implementer`, `gate`, `reviewer`, `triage`) to its optimal model tier, with automatic quota failover and checkpointed `429` pauses.
+4. **Ungoverned Verdicts & Silent Commits**: Autonomous agents frequently claim tests passed without running them, edit the root workspace directly, or commit without review. `codeloop` isolates every task in `.worktrees/<issue>`, enforces orchestrator-only `gate-report` and `review` channels backed by measured evidence, and gates delivery on two-tier verification.
+
+---
+
+## ✨ Core Capabilities (v0.7.0)
+
+- **Dual-Host Agent Orchestration**: Native plugin and subagent directives for **Google Antigravity (`agy`)** and first-class skill + slash-command integration for **OpenCode (`opencode`)**, emitting host-aware tool vocabularies per role.
+- **Polyglot & Monorepo Project Scaffolder (`codeloop init`)**: Detects Node (`npm`/`pnpm`/`yarn`/`bun` workspaces), TypeScript, Python (`uv`/`pytest`), Go, Rust (`cargo`), Java/Kotlin (Gradle/Maven), .NET, Docker Compose, Playwright/Cypress E2E, and `nektos/act` GitHub Actions workflows to generate `.codeloop/config.json` and symlink-safe `.gitignore` rules.
+- **Multi-Task State Machine & Worktree Isolation**: Concurrent per-issue checkpoints (`.agyloop/tasks/<issue>.json`), dual-branch collector routing (`main` $\rightarrow$ `phase/*` or `feature/*` $\rightarrow$ `task/<id>-<slug>` / `fix/<id>-<slug>`), and mandatory `.worktrees/<id>` isolation.
+- **Governed Verification Evidence**:
+  - **Approved Plan Locking**: SHA-256 digest verification, pre-approval `### Baseline Evidence` execution, static sandboxing checks for `### Manual Smoke Test Protocol`, and audited `PLAN_DEVIATION` tracking.
+  - **Measured Quality Gates**: Plan-derived `### Quality Gate Targets`, vacuous-diff refusal, workflow lint composition (`act` / `actionlint`), and mandatory `GATE_REPORT_JSON` filing.
+  - **Two-Tier Code Review**: Automated **Critique CLI** static/AI diff diagnostics pinned via `<report>.provenance.json` sidecars + read-only **Reviewer Subagent** Acceptance Criteria verification (`AC_EVIDENCE:`), with audited false-positive refutation (`--refute`).
+- **Closed-Loop PR Triage & Milestone Releases**: Inspects inline review threads and PR conversation comments (`codeloop triage`), reconciles collector-branch merges (`codeloop sync`), and compiles SemVer-labeled milestone release PRs (`codeloop release`).
+- **Operational Safety & Resilience**: Configurable circuit breakers, HTTP `429` / `RESOURCE_EXHAUSTED` quota halting (`exit 2`) with lossless `codeloop resume`, stale-build execution guards (`bin/stale-dist.js`), and emergency quarantine (`codeloop abort`).
 
 ---
 
 ## 🏗️ Architecture & Lifecycle Contract
 
-`codeloop` introduces a phased state machine coordinated across specialized, context-isolated subagents:
+`codeloop` coordinates specialized, context-isolated leaf subagents across an 8-stage state machine:
 
 ```text
-[Issue / Task Context]
-       │
-       ▼
-┌────────────────────────────────────────────────────────┐
-│ 1. Context & Standards Discovery                       │
-│    • Queries GitHub issue context via `gh`             │
-│    • Detects repository standards & configurations     │
-└────────────────────────┬───────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│ 2. Planning Subagent (Read-Only)                       │
-│    • Strict read-only inspection (zero edits)          │
-│    • Generates persistent artifacts in:                │
-│      `artifacts/plans/[Discovery] - {Title}.md`        │
-│      `artifacts/plans/[Implementation] - {Title}.md`   │
-│      `artifacts/plans/CodeLoop Summary.md`              │
-└────────────────────────┬───────────────────────────────┘
-                         │
-                         ▼
-          [🛑 Human Approval Gate: Proceed?]
-                         │ (Approved / Bypassed in YOLO)
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│ 3. Implementation Subagent                             │
-│    • Fresh context loaded strictly with approved plan  │
-│    • Executes clean code changes and refactorings      │
-└────────────────────────┬───────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│ 4. Quality Gate Subagent (Isolated Shell)              │
-│    • Executes builds, tests, and linters               │
-│    • Auto-detects Gradle, npm, dotnet, Go, Cargo, etc. │
-│    • Returns compact structured summary:               │
-│      `GATE_STATUS: PASSED | FAILED`                    │
-│      `TEST_METRICS: X passed, 0 failed, 0 skipped`     │
-└────────────────────────┬───────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│ 5. Two-Tier Reviewer Subagent                          │
-│    • Executes CLI diagnostics: `critique`              │
-│    • Cross-references diff against criteria & rules    │
-│    • Structured verdict: `REVIEW_STATUS: APPROVED`     │
-└────────────────────────┬───────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│ 6. Conventional Commit Gate                            │
-│    • Formats semantic commit message (`feat:`, etc.)   │
-│    • Hard gate: Draft -> Interactive user confirmation │
-└────────────────────────────────────────────────────────┘
+[GitHub Issue / Task Context]
+              │
+              ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 1. Pre-Flight & Conditional Discovery (`DISCOVERY`)          │
+│    • Halts cleanly on CLOSED issues or MERGED PRs            │
+│    • Routes OPEN PRs with feedback directly to `TRIAGE`      │
+│    • Bug issues park for empirical RCA (`[Discovery] - ...`) │
+│    • Feature/chore issues advance straight to `PLAN`         │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 2. Planning Subagent (`PLAN` — Scoped Read-Only)             │
+│    • Inspects codebase without mutating tracked files        │
+│    • Writes persistent spec to `artifacts/plans/<id>-<slug>` │
+│      - `[Discovery] - {Title}.md` (for defects)              │
+│      - `implementation_plan.md`                              │
+│      - `CodeLoop Summary.md`                                 │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+       [🛑 Human Approval Gate (`APPROVAL`) + Digest Lock]
+                               │ (Interactive or auto in `yolo`)
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 3. Implementation Subagent (`IMPLEMENT` — Isolated Worktree) │
+│    • Provisions `.worktrees/<id>` off collector branch       │
+│    • Executes approved plan with syntax-only local checks    │
+│    • Files explicit `PLAN_DEVIATION` if a literal must shift │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 4. Quality Gate Subagent (`QUALITY_GATE` — Isolated Shell)   │
+│    • Runs plan's `Quality Gate Targets` or detected suite    │
+│    • Refuses vacuous (zero-diff) or unmeasured test runs     │
+│    • Emits `GATE_STATUS: PASSED | FAILED`,                   │
+│      `TEST_METRICS: X passed, 0 failed, 0 skipped`,          │
+│      and `GATE_REPORT_JSON` filed via `codeloop gate-report` │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 5. Two-Tier Review (`REVIEW` — Critique + AI Audit)          │
+│    • Tier 1: `critique --commit <base>` + provenance sidecar │
+│    • Tier 2: Read-only Reviewer audits ACs (`AC_EVIDENCE:`)  │
+│    • Verdict filed by orchestrator via `codeloop review`     │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 6. Conventional Commit & PR Delivery (`COMMIT`)              │
+│    • Drafts semantic commit (`feat:`, `fix:`) & strips URLs  │
+│    • `codeloop commit --create-pr` pushes, opens collector   │
+│      PR with `Closes #<id>`, and tears down `.worktrees/<id>`│
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 7. PR Review Triage (`TRIAGE`) ──► `COMPLETED`               │
+│    • Routes open PR review threads (`implement`, `plan`,     │
+│      `discovery`, `completed`, or `dismiss -m "<notes>"`)    │
+│    • Automatically exits to `COMPLETED` once PR merges       │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-A gate report may declare the test count its runner does not print: append `TEST_METRICS: <n> passed, <n> failed, <n> skipped` to the command output. A `PASSED` report whose executed test command has no measured total (`"testsPassed": null` or `0`) is refused at filing and again at `transition REVIEW`.
+### Governed Verification Invariants
 
-An approved plan literal that cannot be satisfied as written is a **deviation**, not a silent edit. The implementer emits a `PLAN_DEVIATION:` block, either as a JSON object carrying `planSection`, `planLiteral`, `implementedAssertion` and `reason` (optional `files: ["path:line"]`) or with the prose labels `Plan section:`, `Plan literal:`, `Implemented:` and `Reason:`; the orchestrator files it with `codeloop deviation --issue <n> --deviation-file <path>` (or `--deviation-stdin`). The record lands in the checkpoint. `codeloop deviation` files at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT; `codeloop transition REVIEW` and `codeloop commit` refuse while one is unacknowledged — acknowledge it with `codeloop deviation --issue <n> --ack PD-1 --reason "<why the new literal is right>"`, or route the plan back with `codeloop transition PLAN`. If a deviation is discovered after implementation, file it at REVIEW, or route back with `codeloop transition IMPLEMENT`, file it there, and re-run the gate. At APPROVAL the pipeline also refuses a Test Register literal that contradicts the test it pins (naming `file:line`) and an acceptance criterion or checklist step that targets a commit-excluded path (`artifacts/`, `.agyloop/`, `node_modules/`); deliver such a correction as a tracked document or declare it `**Out of Scope:**`. A `New test:` row is judged against the **base revision** — `--base-branch`, else the checkpoint's recorded `baseBranch`, else `main` — because a plan revised through `codeloop transition PLAN` is re-approved while the implementation's own tests are already in the worktree; a `Pins:` row keeps resolving against the delivered worktree, so a pinned test that was deleted there is still refused. In the verdict, `AC_EVIDENCE:` names the path that proves each criterion — evidence outside the delivered change set makes the criterion `unverifiable` and the round cannot be certified; a filed `APPROVED` verdict that omits the block, or whose block parses to nothing, is refused and records nothing.
-
----
-
-## ⚡ Configurable Model Routing
-
-Optimize latency, reasoning capability, and quota usage by assigning appropriate models per stage in `config.json`:
-
-| Subagent Role | Default Model Tier | Primary Purpose |
-|---|---|---|
-| **`planner`** | `pro` / `inherit` | Architectural reasoning, deep inspection, edge-case analysis |
-| **`implementer`** | `inherit` / `flash` | Focused code generation and refactoring from plan inside isolated worktree |
-| **`gate`** | `flash_lite` | Fast build/test execution, containerized `act` gates, and log parsing |
-| **`reviewer`** | `flash` / `pro` | Two-tier critique diagnostics and acceptance criteria audit |
-| **`triage`** | `inherit` | Categorizes PR review comments and routes pipeline lifecycle stages |
+- **Measured Test Evidence (`TEST_METRICS`)**: A gate report may declare the test count its runner does not print (such as `go test ./...` or `ctest`): append `TEST_METRICS: <n> passed, <n> failed, <n> skipped` to the command output. A `PASSED` report whose executed test command has no measured positive total (`"testsPassed": null` or `0`) is refused at `codeloop gate-report` filing and again at `codeloop transition REVIEW`.
+- **Plan Integrity & `PLAN_DEVIATION` Governance**: At `APPROVAL`, `codeloop` locks the plan's SHA-256 digest, verifies `### Baseline Evidence`, lints `### Manual Smoke Test Protocol` fences for temp-sandbox isolation, and validates `### Quality Gate Targets` (rejecting committed-tree-only assertions like `git diff --exit-code` that cannot pass pre-commit). If an approved plan literal cannot be satisfied as written, the implementer emits a `PLAN_DEVIATION:` block (`planSection`, `planLiteral`, `implementedAssertion`, `reason`, optional `files`), which the orchestrator files via `codeloop deviation --issue <n> --deviation-file <path>`. Both `transition REVIEW` and `codeloop commit` refuse while any deviation remains unacknowledged (`codeloop deviation --issue <n> --ack PD-1 --reason "<why>"`).
+- **Two-Tier Review, `AC_EVIDENCE`, & Audited Refutations**: Tier 1 runs `critique` in the task worktree against `--commit <base>` and verifies its `<report>.provenance.json` sidecar against the active base and `HEAD`. Tier 2 requires every `APPROVED` verdict to include an `AC_EVIDENCE:` block citing delivered files; citations outside the delivered change set mark criteria `unverifiable` and block certification. Non-actionable critique affirmations are separated from blocking findings automatically, and factually false findings verified by the operator can be refuted on the audit trail via `codeloop review --refute '<path>:<line>[#<severity>]=<reason>'`.
+- **Subagent Session Boundary**: Dispatched leaf subagents (`planner`, `implementer`, `gate`, `reviewer`, `triage`) are prohibited from mutating pipeline state or spawning nested subagents; `codeloop gate-report` and `codeloop review` reject invocations from inside a worker subagent environment.
 
 ---
 
-## 🚀 Operational Modes & Commands
+## 📦 Installation & Host Setup
 
+### Prerequisites
+- **Node.js** `>= 18.0.0` (Node 22/24 LTS recommended)
+- **Git** `>= 2.38+` (for isolated `git worktree` management)
+- **GitHub CLI (`gh`)** `>= 2.40.0` (authenticated via `gh auth status`)
+- **`jq`** (recommended for POSIX shell verification scripts)
+
+### 1. Clone & Build CodeLoop
 ```bash
-# Full lifecycle with human approval gates (Plan -> Stop -> Implement -> Gate -> Review -> Commit)
-/codeloop [issue]
+git clone https://github.com/ajxcodes/codeloop.git ~/code/codeloop
+cd ~/code/codeloop
+npm ci
+npm run build
 
-# Plan-only mode: generates persistent tech spec in artifacts/plans/ and hard-stops for review
-/codeloop plan [--issue <id>]
-
-# Resumes implementation directly from an approved plan inside isolated worktree
-/codeloop implement [--issue <id>]
-
-# Fast-path / unattended mode: auto-approves plan gate & infers defaults while keeping quality gates
-/codeloop yolo [--issue <id>]
-
-# Automatically commit if all quality gates and reviews pass green
-/codeloop --commit-after
-
-# Commit and open the PR from the tool (base = the collector branch) instead of
-# printing the `gh pr create …` command for you to run. Without it the branch is
-# pushed but the run is NOT delivered until the PR is merged.
-# `--commit-after` (and `yolo --commit-after`) implies `--create-pr`: an
-# unattended run opens the PR itself rather than stopping one step short.
-codeloop commit --create-pr
-
-# PR Review comment triage: inspect and route review feedback
-/codeloop triage [implement | plan | discovery | dismiss]
-
-# Worktree management: list, clean, prune isolated worktrees
-codeloop worktree [list | clean | prune]
+# Link the CLI into ~/.local/bin (ensure ~/.local/bin is on your PATH)
+mkdir -p ~/.local/bin
+ln -sfn ~/code/codeloop/bin/codeloop.js ~/.local/bin/codeloop
+codeloop --version # 0.7.0
 ```
+*(Cross-platform launchers are included in `bin/`: POSIX `/bin/sh` scripts `bin/codeloop` & deprecated shim `bin/agyloop`, Node entrypoints `.js`, plus Windows `.cmd` and `.ps1` wrappers.)*
 
-### Collector-branch PRs and the closing keyword
-
-A PR that targets a collector branch (`phase/*` / `feature/*`) is not a
-default-branch PR. GitHub's documented **closing keyword** rule (`Closes #N`)
-covers the default branch only, but delivery here has not been consistent: some
-collector-branch merges auto-close the issue (#369 closed 12 s after the merge,
-before any `sync`), and some leave it open until `codeloop sync` closes it
-(#401). A pre-merge `closingIssuesReferences` read does not discriminate — it is
-`0` on both shapes. `codeloop commit` therefore states the measured base — a
-collector branch, not the default branch — and prints conditional advice: if
-`Closes #N` does not close the issue on merge, run `codeloop sync` to close it.
-The advice is printed only when a PR exists.
-
-Likewise, the TRIAGE gate ends on its own: once the pull request is merged or
-closed, `codeloop next` records `COMPLETED` and reports idle, with no
-`codeloop resume` needed. An open PR keeps the gate.
-
-### ⚠️ Behaviour change (issue #250): `--issue` is strict
-
-`--issue <num>` accepts **digits only** (an optional leading `#` is allowed, so
-`--issue 250` and `--issue #250` are the same thing). A token with trailing
-garbage is **rejected** — the command exits 1 and reads or writes nothing:
-
-```
-✗ Invalid --issue '999abc'. Expected a positive integer (digits only), e.g. --issue 250.
-```
-
-**Deliberately changed behaviour.** `codeloop status --issue 999abc` and
-`codeloop resume --issue 999abc` previously *clamped* the token to issue 999
-and silently addressed `tasks/999.json`, while their sibling `halt` wrote the
-ROOT checkpoint `.agyloop/state.json`. Four parsers read the same token and
-disagreed about what it meant (clamp / root / literal file / silently ignored).
-They now all fail the same way, before any checkpoint is touched.
-
-Related, also deliberate: `codeloop reset --issue <n>` now exits **1** when
-there is no checkpoint for that issue (it used to print an unconditional
-success line for a reset it never performed), and `codeloop branch-info` is now
-read-only with respect to checkpoints — it performs **zero** checkpoint writes
-(it can still touch git, e.g. to materialise a missing base branch).
-
-Every checkpoint-touching command (`status`, `next`, `resume`, `transition`,
-`branch-info`, `halt`, `reset --issue <n>`, `commit`, `implement`, `plan`,
-`yolo`, `abort`, `triage`, `sync`) now resolves the SAME authoritative
-checkpoint, so a command that reads a task checkpoint writes that same
-checkpoint — never the root. (`reset` without `--issue` is the one exception:
-it clears the repository's OWN checkpoint — the root outside a task worktree,
-`tasks/<n>.json` inside one — and now names the file it actually cleared.)
-
----
-
-## 📂 Persistent `artifacts/plans/`
-
-All plans and run summaries live in a gitignored `{project-root}/artifacts/plans/` directory:
-- `[Discovery] - {Title}.md`: Root-cause investigation and reproduction commands for bugs.
-- `[Implementation] - {Title}.md`: Detailed design specification and step-by-step technical plan.
-- `CodeLoop Summary.md`: Cumulative execution log tracking subagent runtimes, quality gate verdicts, and model tiers.
-
-Plans remain persistent across IDE reloads, branch changes, and multi-day tasks without polluting your Git commit history.
-
----
-
-## 📦 Installation & Symlink Setup
-
-To register `codeloop` with your local Antigravity installation, symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/agyloop`):
-
-### 1. Run Setup Script
+### 2. Register with Google Antigravity (`agy`)
+Symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/codeloop`) and validate the Plugin V2 manifest contract:
 ```bash
 ./bin/setup-symlink.sh
-```
-*This idempotently links `{project-root}` to `~/.gemini/config/plugins/agyloop`.*
-
-### 2. Verify Plugin Registration
-```bash
 ./bin/verify-install.sh
 ```
-*This validates symlink resolution, `plugin.json` schema structure, subagent declarations, and Antigravity environment readiness.*
+*`setup-symlink.sh` idempotently links `{project-root}` to `~/.gemini/config/plugins/codeloop`.*
+
+### 3. Register with OpenCode (`opencode`)
+Install the OpenCode skill (`~/.config/opencode/skills/codeloop/SKILL.md`) and idempotently register the `/codeloop` slash command in `opencode.json` / `opencode.jsonc`:
+```bash
+codeloop opencode install
+```
+
+### 4. Install or Update the Critique CLI (Tier 1 Review)
+```bash
+codeloop critique install
+codeloop critique status
+```
 
 ---
 
-## 🛠️ Troubleshooting & Plugin Resolution
+## 🚀 Operational Modes & CLI Reference
 
-If Antigravity does not immediately discover the `/codeloop` command or subagents:
+### Initialize Any Target Repository
+```bash
+# Interactive setup: detects ecosystems, workspaces, test/lint/smoke profiles, and updates .gitignore
+codeloop init
 
-1. **Check Symlink Resolution**:
-   Ensure `~/.gemini/config/plugins/agyloop` points directly to your repository root:
+# Non-interactive / preview modes
+codeloop init --yes
+codeloop init --dry-run --json
+```
+
+### End-to-End Lifecycle Commands
+```bash
+# Standard interactive lifecycle (pauses at [APPROVAL] and [COMMIT] human gates)
+codeloop --issue 320
+
+# Plan-only mode: scaffolds artifacts/plans/<id>-<slug>/ and parks at [PLAN] (or [DISCOVERY] for bugs)
+codeloop plan --issue 320
+
+# Resume implementation from an approved plan inside an isolated .worktrees/<id> checkout
+codeloop implement --issue 320
+
+# Unattended fast-path: auto-approves plan gate and runs quality gates + Tier 1 review
+codeloop yolo --issue 320
+
+# Full hands-off delivery: plan -> implement -> gates -> review -> commit -> open PR
+codeloop yolo --issue 320 --commit-after
+
+# Commit, push task branch, and open PR targeting the collector/base branch
+codeloop commit --issue 320 --create-pr
+```
+*(Inside Antigravity or OpenCode chat sessions, invoke `/codeloop`, `/codeloop plan`, `/codeloop implement`, or `/codeloop yolo`.)*
+
+### Subagent Orchestration & Governance Commands
+
+| Command | Purpose |
+|---|---|
+| `codeloop next [--issue <n>] [--json]` | Inspect state and emit the next `invoke_subagent` payload (`actionable`, `actionType`, `pause`) |
+| `codeloop status [--issue <n>] [--json]` | Render multi-task status matrix, active worktrees, PR delivery state, and gate pauses |
+| `codeloop branch-info [--issue <n>] [--json]` | Read-only inspection of base collector branch, task branch, and PR target |
+| `codeloop transition <STAGE> [--issue <n>]` | Advance or walk back the state machine across legal stage transitions |
+| `codeloop gate-report --issue <n> --report-file <f>` | File a Quality Gate subagent's `GATE_REPORT_JSON` evidence block (`--report-stdin` supported) |
+| `codeloop review --issue <n> [--verdict-file <f>]` | File Reviewer `AC_EVIDENCE` verdict, cross-check `--critique-report`, or `--refute` false positives |
+| `codeloop deviation --issue <n> [...]` | File (`--deviation-file`), list, or acknowledge (`--ack <id> --reason <text>`) plan deviations |
+| `codeloop triage [action] [--issue <n>]` | Inspect PR comments or route via `implement`, `plan`, `discovery`, `completed`, or `dismiss -m "<notes>"` |
+| `codeloop sync [--dry-run]` | Fast-forward collector branch and reconcile/auto-close issues for merged collector PRs |
+| `codeloop release [branch] [--dry-run]` | Compile deliverable changelog and open a SemVer-labeled (`release:*`) PR to `main` |
+| `codeloop worktree [list\|clean\|prune\|remove <id>]` | Manage isolated `.worktrees/<id>` checkouts (`--prune-stale`, `--subagents`, `--all`) |
+| `codeloop resume [--issue <n>]` | Clear a persisted gate pause (e.g. `CIRCUIT_BREAKER`) and bank human/quota wait duration |
+| `codeloop halt --reason quota [--issue <n>]` | Record an external HTTP `429` / quota exhaustion at `CIRCUIT_BREAKER` and exit with code `2` |
+| `codeloop abort [--issue <n>] [--quarantine]` | Emergency stop: terminate subagents, clear locks, and quarantine dirty task worktrees |
+| `codeloop reset [--issue <n> \| --all]` | Reset a specific task checkpoint or clear workspace checkpoints |
+| `codeloop config` / `codeloop models` / `codeloop prompt [role]` | Inspect resolved configuration, Gemini/OpenCode model mappings, and role tool whitelists |
+
+### Dual-Branch Collector PRs & Closing Keyword Semantics
+
+`codeloop` routes phase and feature work through a two-tier branch topology (`main` $\leftarrow$ `phase/*` or `feature/*` collector $\leftarrow$ `task/<id>-<slug>` or `fix/<id>-<slug>`).
+
+- **Delivery Requires a Merged PR**: Running `codeloop commit` without `--create-pr` pushes the branch and prints the exact `gh pr create …` command, leaving the run undelivered until that PR is opened and merged. Passing `--create-pr` (implied automatically by `--commit-after`) opens the PR directly with sanitized descriptions, milestone metadata, and `Closes #<id>`.
+- **Collector-Branch `Closes #N` Behavior**: A PR that targets a collector branch (`phase/*` / `feature/*`) is not a default-branch PR. GitHub's documented **closing keyword** rule (`Closes #N`) covers the default branch only, and collector-branch merges do not consistently auto-close issues across GitHub workflows (some collector merges auto-close immediately, while others remain open). `codeloop commit` therefore states the measured base — a collector branch, not the default branch — and prints conditional guidance: if `Closes #N` does not close the issue on merge, run `codeloop sync` to close it.
+- **Automatic `TRIAGE` Exit**: Once an associated PR is merged or closed on GitHub, `codeloop next` automatically transitions `TRIAGE` $\rightarrow$ `COMPLETED` and reports idle without requiring a manual `codeloop resume`.
+
+### Strict `--issue` Resolution & Exit Codes
+
+- **Strict Positive-Integer `--issue`**: `--issue <num>` accepts digits only (with an optional `#` prefix, e.g. `--issue 250` or `--issue #250`). Malformed tokens such as `--issue 999abc` fail closed with exit code `1` before reading or mutating any checkpoint. Every stateful command resolves the same authoritative task checkpoint (`.agyloop/tasks/<n>.json`), preventing cross-task or root-checkpoint bleed; use `--workspace <dir>` to target another repository root explicitly.
+- **Process Exit Codes**:
+  - `0` — Success.
+  - `1` — Gate failure, review `CHANGES_REQUESTED`, validation refusal, or usage error.
+  - `2` — Recoverable provider quota exhaustion (`HTTP 429` / `RESOURCE_EXHAUSTED`). State is safely checkpointed at `CIRCUIT_BREAKER`; run `codeloop resume` once the quota window resets.
+
+---
+
+## ⚡ Configuration, Model Routing & Circuit Breakers
+
+Running `codeloop init` scaffolds `.codeloop/config.json` (and seamlessly migrates legacy `.agyloop/config.json` or `.agyloop.json` files):
+
+```json
+{
+  "$schema": "https://antigravity.google/schemas/v1/agyloop.json",
+  "runner": "auto",
+  "opencode": {
+    "model": "ollama/ornith:9b-128k"
+  },
+  "models": {
+    "planner": "pro",
+    "implementer": "inherit",
+    "gate": "flash_lite",
+    "reviewer": "flash"
+  },
+  "options": {
+    "commitAfter": false,
+    "gateTimeoutSeconds": 300,
+    "autoApproveInYolo": true,
+    "enableMcpInPlanner": true
+  },
+  "circuitBreakers": {
+    "maxTurnsPerSubagent": 15,
+    "maxGateRetries": 3,
+    "maxConcurrentSubagents": 4,
+    "maxWallClockDurationSeconds": 900,
+    "tokenBudgetThreshold": 150000,
+    "actionOnTrip": "pause_for_human"
+  }
+}
+```
+
+| Subagent Role | Default Model Tier | Primary Responsibility |
+|---|---|---|
+| **`discovery`** | `pro` / `inherit` | Empirical bug reproduction and structured Root Cause Analysis (RCA) |
+| **`planner`** | `pro` / `inherit` | Read-only architectural design, Test Register authoring, and smoke protocol specs |
+| **`implementer`** | `inherit` / `flash` | Scoped code changes and refactoring inside isolated `.worktrees/<id>` |
+| **`gate`** | `flash_lite` | Fast build, lint, typecheck, test suite, and containerized `act` execution |
+| **`reviewer`** | `flash` / `pro` | Two-tier `critique` correlation and `AC_EVIDENCE` acceptance criteria verification |
+| **`triage`** | `inherit` | PR review thread & conversation comment classification and lifecycle routing |
+
+---
+
+## 📂 Persistent Workspace Layout
+
+```text
+<project-root>/
+├── .codeloop/
+│   └── config.json                         # Tracked project & verification profile (from `codeloop init`)
+├── .agyloop/                               # Gitignored runtime checkpoints (symlinked safely in worktrees)
+│   ├── state.json                          # Root workspace checkpoint
+│   └── tasks/<issue>.json                  # Isolated per-issue state machine checkpoints
+├── .worktrees/
+│   └── <issue>/                            # Isolated task branch checkout (`task/<id>-*` or `fix/<id>-*`)
+└── artifacts/plans/<issue>-<slug>/         # Gitignored persistent task specifications & telemetry
+    ├── [Discovery] - {Title}.md            # Empirical RCA report (bug/defect workflows)
+    ├── implementation_plan.md              # Approved technical plan (frozen by SHA-256 digest)
+    └── CodeLoop Summary.md                 # Cumulative stage timings, dispatch counts, and gate metrics
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+1. **Check Antigravity Plugin Symlink**:
+   Ensure `~/.gemini/config/plugins/codeloop` resolves to your `codeloop` checkout and passes verification:
    ```bash
-   ls -la ~/.gemini/config/plugins/agyloop
-   ```
-2. **Validate Manifest Syntax**:
-   Verify that `plugin.json` has valid JSON and required fields:
-   ```bash
+   ls -la ~/.gemini/config/plugins/codeloop
    ./bin/verify-install.sh
    ```
-3. **Check Plugin State in `config.json`**:
-   Ensure the plugin is not disabled in your Antigravity configuration (`~/.gemini/antigravity-cli/config.json` or project settings):
+2. **Stale Build Refusal (`stale-dist`)**:
+   If `codeloop` refuses to run after pulling new TypeScript commits in a development checkout of `codeloop` itself, rebuild `dist/` and refresh the build stamp:
+   ```bash
+   npm run build
+   ```
+3. **Plugin Enabled State**:
+   Confirm `codeloop` is enabled in `~/.gemini/antigravity-cli/config.json` (and reload your Antigravity window or OpenCode session after first install):
    ```json
    {
      "plugins": {
@@ -235,19 +321,17 @@ If Antigravity does not immediately discover the `/codeloop` command or subagent
      }
    }
    ```
-4. **Reload Workspace / App**:
-   Reload the Antigravity window or restart the CLI session so the plugin manager rescans `~/.gemini/config/plugins/`.
 
 ---
 
 ## 🗺️ Roadmap & Tracking
 
-Track the development of `codeloop` in the central [ajxcodes/projects](https://github.com/ajxcodes/projects) management board:
-- **Parent Epic**: [#47 - [Epic] CodeLoop: Multi-Subagent Development Lifecycle Orchestrator for Antigravity](https://github.com/ajxcodes/projects/issues/47)
+Track ongoing development in [ajxcodes/projects](https://github.com/ajxcodes/projects):
+- **Parent Epic**: [#47 — CodeLoop: Multi-Subagent Development Lifecycle Orchestrator](https://github.com/ajxcodes/projects/issues/47)
 - **Project Board**: [GitHub Project #9 (CodeLoop)](https://github.com/users/ajxcodes/projects/9)
 
 ---
 
 ## 📄 License
 
-Distributed under the [MIT License](LICENSE). Copyright (c) 2026 ajxcodes.
+Distributed under the [MIT License](LICENSE). Copyright (c) 2026 Alvin Jorrel Pascual ([ajxcodes](https://github.com/ajxcodes)).
