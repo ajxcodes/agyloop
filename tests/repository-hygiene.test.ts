@@ -18,7 +18,7 @@ const SCRATCH_ARTIFACTS = ['issue-pr-injection.md', 'new-issue.md', 'next1.json'
 
 describe('repository hygiene (#333 AC6)', () => {
   test('HYG-333-1 the scratch artifacts are untracked (#333 AC6)', () => {
-    const output = execFileSync('git', ['ls-files', '--', ...SCRATCH_ARTIFACTS], {
+    const output = execFileSync('git', ['-c', 'safe.directory=*', 'ls-files', '--', ...SCRATCH_ARTIFACTS], {
       cwd: REPO_ROOT,
       encoding: 'utf8'
     });
