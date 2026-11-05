@@ -31,12 +31,34 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 
 function collectTestFiles(dir: string): string[] {
   const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
+    // Skip temporary/build directories created under tests/ (e.g. test-build-critique-*).
+    if (entry.isDirectory() && entry.name.startsWith('test-')) continue;
+    try {
+      if (fs.lstatSync(fullPath).isSymbolicLink()) continue;
+    } catch {
+      continue;
+    }
     if (entry.isDirectory()) {
-      files.push(...collectTestFiles(fullPath));
+      try {
+        files.push(...collectTestFiles(fullPath));
+      } catch {
+        // skip unreadable directories
+      }
     } else if (entry.isFile() && entry.name.endsWith('.test.ts')) {
-      files.push(fullPath);
+      try {
+        fs.statSync(fullPath);
+        files.push(fullPath);
+      } catch {
+        // skip unreadable files
+      }
     }
   }
   return files;
@@ -126,3 +148,18 @@ test(
     }
   }
 );
+
+test('collectTestFiles ignores temporary directories under tests/', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-collect-test-files-'));
+  const tempDir = path.join(tmpRoot, 'test-temporary');
+  fs.mkdirSync(tempDir, { recursive: true });
+  fs.writeFileSync(path.join(tempDir, 'test-foo.test.ts'), '');
+  fs.writeFileSync(path.join(tmpRoot, 'keep.test.ts'), '');
+  try {
+    const files = collectTestFiles(tmpRoot);
+    assert.ok(files.every((file) => !path.basename(file).startsWith('test-')));
+    assert.ok(!files.some((file) => file.includes('test-foo.test.ts')));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

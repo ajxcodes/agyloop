@@ -6,20 +6,50 @@ const path = require('node:path');
 const TESTS_ROOT = path.resolve(__dirname, '..');
 
 function collectFiles(dir: string): string[] {
-  const out = [];
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+  const out: string[] = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
     const full = path.join(dir, e.name);
-    if (e.isDirectory()) out.push(...collectFiles(full));
-    else if (e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.d.ts')) out.push(full);
+    if (e.isDirectory() && e.name.startsWith('test-')) continue;
+    try {
+      if (fs.lstatSync(full).isSymbolicLink()) continue;
+    } catch {
+      continue;
+    }
+    if (e.isDirectory()) {
+      try {
+        out.push(...collectFiles(full));
+      } catch {
+        // skip unreadable directories
+      }
+    } else if (e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.d.ts')) {
+      try {
+        fs.readFileSync(full, 'utf8');
+        out.push(full);
+      } catch {
+        // skip unreadable files
+      }
+    }
   }
   return out;
 }
 
 function scan(pattern: RegExp): { file: string; line: string }[] {
   const files = collectFiles(TESTS_ROOT);
-  const hits = [];
+  const hits: { file: string; line: string }[] = [];
   for (const f of files) {
-    const lines = fs.readFileSync(f, 'utf8').split('\n');
+    let content: string;
+    try {
+      content = fs.readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    const lines = content.split('\n');
     for (const line of lines) {
       if (pattern.test(line)) hits.push({ file: path.relative(TESTS_ROOT, f), line });
     }
@@ -67,7 +97,13 @@ test('helpers import no other tests/ module (import direction)', () => {
   const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
   const importRe = /(?:require|from)\s*\(?['"]([^'"]+)['"]/g;
   for (const f of helperFiles) {
-    const src = stripComments(fs.readFileSync(f, 'utf8'));
+    let raw: string;
+    try {
+      raw = fs.readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    const src = stripComments(raw);
     let m;
     while ((m = importRe.exec(src)) !== null) {
       const spec = m[1];
@@ -93,7 +129,12 @@ test('real test titles are unique across the suite (four named fixture artifacts
   const titleRe = /\b(test|it)\s*\(\s*(['"`])((?:\\.|(?!\2).)*)\2/g;
   const groups = new Map();
   for (const f of collectFiles(TESTS_ROOT)) {
-    const src = fs.readFileSync(f, 'utf8');
+    let src: string;
+    try {
+      src = fs.readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
     let m;
     while ((m = titleRe.exec(src)) !== null) {
       const title = m[3];
@@ -106,4 +147,26 @@ test('real test titles are unique across the suite (four named fixture artifacts
     if (files.length > 1 && !keepList.has(title)) dups.push({ title, files });
   }
   assert.deepStrictEqual(dups, [], `duplicate real test titles: ${JSON.stringify(dups)}`);
+});
+
+test('leftover temp directories under tests/ do not break the scan', () => {
+  const leftover = path.join(TESTS_ROOT, 'test-build-critique-smoke-leftover-tr3');
+  fs.rmSync(leftover, { recursive: true, force: true });
+  fs.mkdirSync(path.join(leftover, 'critique', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(leftover, 'critique', 'src', 'index.ts'), '// stale leftover\n');
+  try {
+    fs.symlinkSync('/no/such/file', path.join(leftover, 'critique', 'src', 'broken.ts'));
+  } catch {
+    // ignore if symlink creation unsupported
+  }
+  try {
+    assert.doesNotThrow(() => collectFiles(TESTS_ROOT));
+  } finally {
+    fs.rmSync(leftover, { recursive: true, force: true });
+  }
+});
+
+test('unreadable entries are skipped during collection', () => {
+  const collected = collectFiles(TESTS_ROOT);
+  assert.ok(collected.every((file) => fs.existsSync(file)));
 });
