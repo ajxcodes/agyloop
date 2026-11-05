@@ -1,7 +1,7 @@
 /**
- * agyloop - MilestoneReleaseUseCase (Application Layer)
+ * codeloop - MilestoneReleaseUseCase (Application Layer)
  *
- * Orchestrates the /agyloop release pipeline:
+ * Orchestrates the /codeloop release pipeline:
  * 1. Validates phase/feature collector branch against main
  * 2. Checks for unmerged in-flight PRs targeting the collector branch
  * 3. Extracts commits and computes SemVer bump (MAJOR > MINOR > PATCH)

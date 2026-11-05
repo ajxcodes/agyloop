@@ -1,5 +1,5 @@
 /**
- * agyloop - StartImplementationUseCase
+ * codeloop - StartImplementationUseCase
  *
  * Coordinates implementation phase execution:
  * 1. Validates lifecycle stage rules (must be APPROVAL, or YOLO bypass, or resuming IMPLEMENT)
@@ -7,7 +7,7 @@
  * 3. Resolves and reads approved plan document from artifacts/plans/<target>/
  * 4. Resolves implementer subagent configuration with write permissions
  * 5. Generates focused, token-minimized handoff prompt
- * 6. Checkpoints state to StateRepository and updates AgyLoop Summary.md
+ * 6. Checkpoints state to StateRepository and updates CodeLoop Summary.md
  */
 
 import {

@@ -1,5 +1,5 @@
 /**
- * agyloop - FileBuildDetector Adapter
+ * codeloop - FileBuildDetector Adapter
  *
  * Concrete filesystem inspection adapter implementing BuildDetectorPort.
  * Inspects repository marker files, lockfiles, and package manifests to dynamically
@@ -165,7 +165,7 @@ import {
 import {
   BuildDetectorPort,
   DetectedProject,
-  AgyLoopConfig,
+  CodeLoopConfig,
   GateCommandResolutionOptions,
   ContainerRuntimeProbe
 } from '../ports';
@@ -323,7 +323,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    * emit `gradle test`. A subproject's Node pass fabricates no fallback test
    * command: a nested package with no recognised script emits no gate.
    */
-  public async detect(workspaceDir: string, config?: AgyLoopConfig): Promise<DetectedProject> {
+  public async detect(workspaceDir: string, config?: CodeLoopConfig): Promise<DetectedProject> {
     const resolvedDir = path.resolve(workspaceDir || process.cwd());
 
     try {
@@ -538,7 +538,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    */
   public async resolveCommands(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]> {
     const plan = await this.resolveCommandPlan(workspaceDir, config, { explicitCommands });
@@ -554,7 +554,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    */
   public async resolveCommandPlan(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     options: GateCommandResolutionOptions = {}
   ): Promise<GateCommandPlan> {
     const detected = await this.detectBestEffort(workspaceDir, config);
@@ -641,7 +641,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    */
   private async detectBestEffort(
     workspaceDir: string,
-    config?: AgyLoopConfig
+    config?: CodeLoopConfig
   ): Promise<DetectedProject | null> {
     try {
       return await this.detect(workspaceDir, config);
@@ -728,7 +728,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    */
   private composeWorkflowLint(
     workspaceDir: string,
-    config: AgyLoopConfig | undefined,
+    config: CodeLoopConfig | undefined,
     commands: readonly GateCommandDefinition[]
   ): WorkflowLintComposition | null {
     const files = this.detectChangedWorkflowFiles(workspaceDir);
@@ -1106,7 +1106,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    * truthful rather than a generic "config override".
    */
   private extractConfiguredCommands(
-    config?: AgyLoopConfig
+    config?: CodeLoopConfig
   ): { commands: readonly unknown[]; detail: string } | null {
     if (!config) return null;
 
@@ -1363,7 +1363,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    * Inspects configuration and repository to resolve an `act` verification command if applicable.
    * Returns null if container gates are disabled, workflows are missing, act is missing, or no socket is found.
    */
-  public resolveActCommand(workspaceDir: string, config?: AgyLoopConfig): GateCommandDefinition | null {
+  public resolveActCommand(workspaceDir: string, config?: CodeLoopConfig): GateCommandDefinition | null {
     const options = config?.options;
 
     // Check if containerGates is explicitly disabled

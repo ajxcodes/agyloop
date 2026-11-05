@@ -1,5 +1,5 @@
 /**
- * agyloop - COMMIT-Gate Description Tests (issue #259, AC4, C1-C3)
+ * codeloop - COMMIT-Gate Description Tests (issue #259, AC4, C1-C3)
  *
  * The COMMIT gate used to hard-code "Review passed." regardless of what the
  * AI review actually did. A SKIPPED review (#236's deliberate advisory
@@ -31,7 +31,7 @@ const {
 type StateRepository = import('../../src').StateRepository;
 type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 
 class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
@@ -58,7 +58,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',

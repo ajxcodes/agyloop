@@ -1,5 +1,5 @@
 /**
- * agyloop - the unified CLI command context (issue #441 Step 2)
+ * codeloop - the unified CLI command context (issue #441 Step 2)
  *
  * TR-13 (AC3): the export surface of `src/presentation/cli.ts` is unchanged by
  * the command-context refactor — every value export that existed before must
@@ -106,7 +106,7 @@ async function runCliInSandboxLocal(
   args: readonly string[]
 ): Promise<{ code: number; stdout: string; stderr: string; dir: string }> {
   const sandbox = makeSandbox({
-    prefix: 'agyloop-cli-command-context-',
+    prefix: 'codeloop-cli-command-context-',
     dirName: '',
     gitignore: false,
     userConfig: { email: 'smoke@example.com', name: 'Smoke' },

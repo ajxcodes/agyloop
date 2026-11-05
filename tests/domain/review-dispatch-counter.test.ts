@@ -1,5 +1,5 @@
 /**
- * agyloop - REVIEW re-dispatch counter domain tests (issue #272)
+ * codeloop - REVIEW re-dispatch counter domain tests (issue #272)
  *
  * RC1 - default 0; `recordReviewDispatch()` increments and bumps `updatedAt`
  * RC2 - snapshot round-trip preserves the count; a legacy snapshot loads as 0

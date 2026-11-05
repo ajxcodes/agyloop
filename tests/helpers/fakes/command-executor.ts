@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical CommandExecutorPort double (issue #544 / AC2)
+ * codeloop - ONE canonical CommandExecutorPort double (issue #544 / AC2)
  *
  * Retires `CommandExecutorDouble` / `CommandExecutorDouble` / `CommandExecutorDouble`.
  * The one class records every execution AND carries the scripted-response

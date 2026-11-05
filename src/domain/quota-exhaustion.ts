@@ -1,5 +1,5 @@
 /**
- * agyloop - Provider Quota Exhaustion Classification (Domain)
+ * codeloop - Provider Quota Exhaustion Classification (Domain)
  *
  * Pure detection of provider quota exhaustion (HTTP 429 / RESOURCE_EXHAUSTED /
  * insufficient_quota / rate-limit rejections) plus the sealed domain error that
@@ -13,7 +13,7 @@
 import { CB_ACTION_FAILOVER, CB_ACTION_PAUSE_FOR_HUMAN, CB_FAILOVER_BREAKER_NAME, QUOTA_DEFAULT_RETRY_AFTER_SECONDS, QUOTA_EVIDENCE_MAX_CHARS, QUOTA_RESUME_COMMAND, QUOTA_STATUS } from './vocabulary';
 import { ERR_QUOTA_EXHAUSTED } from './errors';
 import { GATE_CIRCUIT_BREAKER } from './gate-verdicts';
-import { AgyLoopError } from './errors';
+import { CodeLoopError } from './errors';
 
 /** Structured result of inspecting raw provider output for a quota rejection. */
 export interface QuotaExhaustionSignal {
@@ -209,7 +209,7 @@ export function formatQuotaDiagnostic(
  * treat both halts uniformly: structured fields on the instance, a single
  * diagnostic string on `message`, everything machine-readable in `details`.
  */
-export class QuotaExhaustedError extends AgyLoopError {
+export class QuotaExhaustedError extends CodeLoopError {
   public readonly code = ERR_QUOTA_EXHAUSTED;
   public readonly signal: QuotaExhaustionSignal;
   public readonly subject: string;

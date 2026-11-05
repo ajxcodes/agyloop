@@ -1,5 +1,5 @@
 /**
- * agyloop - TRIAGE Disposition Tests (issue #269, Defect 1)
+ * codeloop - TRIAGE Disposition Tests (issue #269, Defect 1)
  *
  * The livelock: `codeloop next` routed a COMPLETED checkpoint into the TRIAGE
  * gate whenever the task's pull request was OPEN and carried ANY comment. The
@@ -41,7 +41,7 @@ const {
   DISMISS_CONVERSATION_REPLY_FOOTER
 } = require('../../dist/domain');
 
-import type { StateRepository, ConfigRepository, AgyLoopConfig } from '../../src/ports';
+import type { StateRepository, ConfigRepository, CodeLoopConfig } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
 class StateRepositoryDouble implements StateRepository {
@@ -69,7 +69,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',

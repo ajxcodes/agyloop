@@ -1,5 +1,5 @@
 /**
- * agyloop - canonical presentation render fixtures (issue #544)
+ * codeloop - canonical presentation render fixtures (issue #544)
  *
  * ONE definition of the presentation fixture families this phase measured:
  *

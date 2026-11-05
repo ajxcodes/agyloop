@@ -1,5 +1,5 @@
 /**
- * agyloop - Lifecycle Re-Entry Policy (Application Layer)
+ * codeloop - Lifecycle Re-Entry Policy (Application Layer)
  *
  * The single chokepoint for every "a checkpoint is already at a stage, what now?"
  * decision (issue #237).

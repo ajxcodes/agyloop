@@ -1,6 +1,6 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
-  "name": "agyloop",
+  "name": "codeloop",
   "version": "0.6.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "author": {

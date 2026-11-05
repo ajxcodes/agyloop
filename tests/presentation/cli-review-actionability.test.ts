@@ -12,7 +12,7 @@ function seedStageCheckpoint(sandbox: string, stage: string): string {
 }
 
 /**
- * agyloop - `codeloop review`: content-aware blocking (issue #349 AC2/AC3)
+ * codeloop - `codeloop review`: content-aware blocking (issue #349 AC2/AC3)
  *
  * The live regression (#242): a critique report with a `critical` finding whose
  * body AFFIRMED the change ("Correctly pins actions/checkout@v7") reverted a
@@ -58,7 +58,7 @@ let sharedShadowRoot: any = null;
 
 function sharedShadowPath() {
   if (sharedShadowRoot === null) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-349-shadow-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-349-shadow-'));
     sharedShadowRoot = { dir, path: buildCritiqueFreePathShadow(path.join(dir, 'bin')) };
   }
   return sharedShadowRoot.path;
@@ -76,7 +76,7 @@ function makeReviewActionabilitySandbox(): string {
   const sandbox = makeSandboxCanonical({
     // Issue #452: the provenance sidecar is written AFTER its digest is read, so
     // it must not itself become part of the change set it describes.
-    prefix: 'agyloop-349-review-',
+    prefix: 'codeloop-349-review-',
     dirName: '',
     gitignore: ['*.provenance.json'],
     seed: (dir: string) => {

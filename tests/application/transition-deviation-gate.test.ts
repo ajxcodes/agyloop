@@ -1,5 +1,5 @@
 /**
- * agyloop - The REVIEW deviation gate (issue #432, TR-11..TR-14)
+ * codeloop - The REVIEW deviation gate (issue #432, TR-11..TR-14)
  */
 
 const { test, describe } = require('node:test');

@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Operational Modes, Flags & Help Presentation Tests
+ * codeloop - CLI Operational Modes, Flags & Help Presentation Tests
  */
 
 const { test, describe } = require('node:test');
@@ -106,31 +106,31 @@ describe('CLI Operational Modes & Flag Parsing', () => {
       assert.strictEqual(parsed.options.issue, '32');
     });
 
-    test('parses positional issue number: agyloop 77', () => {
+    test('parses positional issue number: codeloop 77', () => {
       const parsed = parseArguments(['77']);
       assert.strictEqual(parsed.command, null);
       assert.strictEqual(parsed.options.issue, '77');
     });
 
-    test('parses positional issue number with hash: agyloop #77', () => {
+    test('parses positional issue number with hash: codeloop #77', () => {
       const parsed = parseArguments(['#77']);
       assert.strictEqual(parsed.command, null);
       assert.strictEqual(parsed.options.issue, '77');
     });
 
-    test('parses positional issue number after command: agyloop plan 77', () => {
+    test('parses positional issue number after command: codeloop plan 77', () => {
       const parsed = parseArguments(['plan', '77']);
       assert.strictEqual(parsed.command, 'plan');
       assert.strictEqual(parsed.options.issue, '77');
     });
 
-    test('parses positional issue number after command: agyloop yolo 77', () => {
+    test('parses positional issue number after command: codeloop yolo 77', () => {
       const parsed = parseArguments(['yolo', '77']);
       assert.strictEqual(parsed.command, 'yolo');
       assert.strictEqual(parsed.options.issue, '77');
     });
 
-    test('parses positional issue number before command: agyloop 77 plan', () => {
+    test('parses positional issue number before command: codeloop 77 plan', () => {
       const parsed = parseArguments(['77', 'plan']);
       assert.strictEqual(parsed.command, 'plan');
       assert.strictEqual(parsed.options.issue, '77');
@@ -276,7 +276,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
     test('runCli commit --dry-run outputs preview and exits 0 without prompting', async () => {
       const prevCwd = process.cwd();
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-commit-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-commit-test-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(
@@ -312,7 +312,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
     test('runCli commit without -y in non-interactive environment exits 1 with helpful message', async () => {
       const prevCwd = process.cwd();
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-noninteractive-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-noninteractive-test-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(
@@ -353,7 +353,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
     test('runCli plan prints pipeline advanced when stage reaches PLAN', async () => {
       const prevCwd = process.cwd();
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-plan-test-'));
       let output = '';
       const originalLog = console.log;
       console.log = (msg) => {
@@ -374,7 +374,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
     test('runCli plan parks at DISCOVERY for a bug discovery entry', async () => {
       const prevCwd = process.cwd();
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-discovery-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-plan-discovery-test-'));
       let output = '';
       const originalLog = console.log;
       console.log = (msg) => {
@@ -399,7 +399,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
     test('runCli triage without action runs read-only list mode and exits 0', async () => {
       const prevCwd = process.cwd();
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-no-action-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-triage-no-action-test-'));
       let output = '';
       const originalLog = console.log;
       console.log = (msg) => {
@@ -423,7 +423,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
 
     test('runCli triage with invalid action fails', async () => {
       const prevCwd = process.cwd();
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-triage-invalid-action-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-triage-invalid-action-test-'));
       let errorOutput = '';
       const originalError = console.error;
       console.error = (msg) => {
@@ -447,7 +447,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
     const { checkStaleDist } = require('../../bin/agyloop.js');
 
     test('warns when src/ .ts files are newer than dist/', () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-stale-dist-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-stale-dist-test-'));
       let warnMessage = '';
       const originalWarn = console.warn;
       console.warn = (msg) => {
@@ -480,7 +480,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
     });
 
     test('does not warn when dist/ is newer than src/', () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-fresh-dist-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-fresh-dist-test-'));
       let warnMessage = '';
       const originalWarn = console.warn;
       console.warn = (msg) => {
@@ -513,7 +513,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
     });
 
     test('gracefully ignores when src/ directory is missing (e.g. production pack)', () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-no-src-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-no-src-test-'));
       let warnMessage = '';
       const originalWarn = console.warn;
       console.warn = (msg) => {
@@ -534,7 +534,7 @@ describe('CLI Operational Modes & Flag Parsing', () => {
     });
 
     test('gracefully ignores when dist/ is missing', () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-no-dist-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-no-dist-test-'));
       let warnMessage = '';
       const originalWarn = console.warn;
       console.warn = (msg) => {

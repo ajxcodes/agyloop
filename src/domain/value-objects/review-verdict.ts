@@ -1,5 +1,5 @@
 /**
- * agyloop - ReviewVerdict Value Object
+ * codeloop - ReviewVerdict Value Object
  *
  * Immutable, self-validating value object representing the outcome of the AI Review stage.
  * Emits and parses machine-readable REVIEW_* tokens, Markdown self-correction context,

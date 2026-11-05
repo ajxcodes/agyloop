@@ -1,5 +1,5 @@
 /**
- * agyloop - ModelTier Value Object
+ * codeloop - ModelTier Value Object
  *
  * Self-validating value object representing Antigravity subagent model tiers.
  */

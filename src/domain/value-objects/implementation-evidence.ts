@@ -1,5 +1,5 @@
 /**
- * agyloop - Implementation Evidence Predicate (Domain Layer)
+ * codeloop - Implementation Evidence Predicate (Domain Layer)
  *
  * ONE definition of "does this path count as evidence that an implementation
  * happened?" — shared by the YOLO implementation probe (issue #259) and by any

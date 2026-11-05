@@ -1,5 +1,5 @@
 /**
- * agyloop - `next` at IMPLEMENT, terminal render + real worktree (issue #327)
+ * codeloop - `next` at IMPLEMENT, terminal render + real worktree (issue #327)
  *
  * CB1 - `codeloop next` (NOT --json) names the advancing command and the
  *       completion condition, so an operator reading the terminal can act.
@@ -37,7 +37,7 @@ const CONDITION = 'This stage ends when an implementation diff exists in the tas
 /** A real repository whose task worktree is a real linked git worktree. */
 function makeImplBoundarySandbox() {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-next-implement-',
+    prefix: 'codeloop-cli-next-implement-',
     dirName: '',
     gitignore: false,
     initialBranch: 'main',

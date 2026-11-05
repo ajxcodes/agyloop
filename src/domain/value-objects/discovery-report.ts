@@ -1,5 +1,5 @@
 /**
- * agyloop - DiscoveryReport Value Object
+ * codeloop - DiscoveryReport Value Object
  *
  * Content-based evidence that a root-cause analysis report actually exists.
  *

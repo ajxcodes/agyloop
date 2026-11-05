@@ -1,5 +1,5 @@
 /**
- * agyloop - CritiqueProvenance Value Objects (Domain Layer)
+ * codeloop - CritiqueProvenance Value Objects (Domain Layer)
  *
  * Issue #445: a Tier 1 critique report is evidence only when the tool can tell
  * WHICH change set produced it. The Tier 1 command publishes a

@@ -1,5 +1,5 @@
 /**
- * agyloop - CliGitHubGateway Infrastructure Tests
+ * codeloop - CliGitHubGateway Infrastructure Tests
  */
 
 const { describe, test } = require('node:test');

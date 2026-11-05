@@ -1,5 +1,5 @@
 /**
- * agyloop - WorktreeDescriptor Value Object Unit Tests
+ * codeloop - WorktreeDescriptor Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -91,8 +91,8 @@ describe('WorktreeDescriptor Value Object', () => {
 
   test('slugify transforms title strings into URL and branch-safe slugs', () => {
     assert.strictEqual(
-      WorktreeDescriptor.slugify('[Feature] agyloop: Git Worktree Isolation for Parallel Multi-Agent Task Execution'),
-      'agyloop-git-worktree-isolation-for-parallel-multi-agent-task-execution'
+      WorktreeDescriptor.slugify('[Feature] codeloop: Git Worktree Isolation for Parallel Multi-Agent Task Execution'),
+      'codeloop-git-worktree-isolation-for-parallel-multi-agent-task-execution'
     );
     assert.strictEqual(
       WorktreeDescriptor.slugify('Fix: Broken .git/index.lock contention!'),

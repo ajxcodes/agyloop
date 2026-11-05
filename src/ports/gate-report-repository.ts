@@ -1,5 +1,5 @@
 /**
- * agyloop - GateReportRepositoryPort (issue #284)
+ * codeloop - GateReportRepositoryPort (issue #284)
  *
  * Persists the dispatched gate subagent's evidence block beside the checkpoint,
  * so `codeloop transition REVIEW` can ingest a record produced by the stage

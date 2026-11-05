@@ -1,5 +1,5 @@
 /**
- * agyloop - gate target coverage (issue #408, D2)
+ * codeloop - gate target coverage (issue #408, D2)
  *
  * A `PASSED` gate report certifies the plan's declared `### Quality Gate
  * Targets`: this matcher is the ONE place that decides whether the report's

@@ -1,5 +1,5 @@
 /**
- * agyloop - GitHubGateway Port Interface
+ * codeloop - GitHubGateway Port Interface
  *
  * Inversion of control interface for discovering repository and issue context via GitHub CLI.
  */

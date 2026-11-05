@@ -1,5 +1,5 @@
 /**
- * agyloop - PlanDeviation value object (issue #432, TR-1..TR-3)
+ * codeloop - PlanDeviation value object (issue #432, TR-1..TR-3)
  */
 
 const { test, describe } = require('node:test');

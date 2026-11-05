@@ -1,5 +1,5 @@
 /**
- * agyloop - canonical checkpoint seeding / reading (issue #544)
+ * codeloop - canonical checkpoint seeding / reading (issue #544)
  *
  * ONE definition of the state-seed family. The write/read pair round-trips
  * through the REAL `FileStateRepository` shape — a seeded checkpoint is a

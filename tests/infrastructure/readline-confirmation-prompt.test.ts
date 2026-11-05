@@ -1,5 +1,5 @@
 /**
- * agyloop - ReadlineConfirmationPrompt Infrastructure Tests
+ * codeloop - ReadlineConfirmationPrompt Infrastructure Tests
  */
 
 const { test, describe } = require('node:test');

@@ -1,5 +1,5 @@
 /**
- * agyloop - QualityGateTargets parser (issue #298, revised by #369)
+ * codeloop - QualityGateTargets parser (issue #298, revised by #369)
  *
  * Pure parser for the approved plan's verification section. It extracts the
  * commands the gate MUST execute, in plan order, and returns everything that
@@ -119,7 +119,7 @@ const COMMAND_FIRST_TOKENS: ReadonlySet<string> = new Set([
   'tsc',
   'bin/agyloop',
   'codeloop',
-  'agyloop',
+  'codeloop',
   // Polyglot runners (#369, was #372): a declared target outside the old
   // allowlist is now executed, not silently dropped into auto-detect.
   'uv',

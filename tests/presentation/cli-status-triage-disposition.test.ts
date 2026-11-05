@@ -1,5 +1,5 @@
 /**
- * agyloop - `status` renders the triage disposition (issue #336, Defect 2)
+ * codeloop - `status` renders the triage disposition (issue #336, Defect 2)
  *
  * The same checkpoint used to be reported two ways: `next` named the PR
  * recorded in `triageDisposition`, while `status` dropped the field and said
@@ -28,7 +28,7 @@ const ISSUE = 336;
 const RECORDED_AT = '2026-10-28T05:16:20.604Z';
 
 function seedDispositionSandbox(snapshot: Record<string, any>): { dir: string; file: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-status-disposition-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-status-disposition-'));
   const now = new Date().toISOString();
   const file = seedTask(dir, {
     ...snapshot,

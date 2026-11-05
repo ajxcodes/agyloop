@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop transition --dry-run` is a real no-write contract (#226 D4)
+ * codeloop - `codeloop transition --dry-run` is a real no-write contract (#226 D4)
  *
  * `TransitionStageUseCase` gates its checkpoint write AND its worktree
  * provisioning on `params.dryRun` (`transition-stage.ts:131`, `:190`), but the CLI

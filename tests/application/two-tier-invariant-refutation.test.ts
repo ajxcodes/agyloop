@@ -1,5 +1,5 @@
 /**
- * agyloop - Two-tier invariant: operator refutations (issue #349 AC4.5)
+ * codeloop - Two-tier invariant: operator refutations (issue #349 AC4.5)
  *
  * A refutation may suppress ONLY the Tier 1 escalation of the finding it names.
  * It never touches the reviewer's verdict, the recorded source, another

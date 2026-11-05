@@ -1,5 +1,5 @@
 /**
- * agyloop - deviation & plan docs contract (issue #487, AC1-AC3)
+ * codeloop - deviation & plan docs contract (issue #487, AC1-AC3)
  *
  * DDC1 - `deviation --help` states the accepted wire format and the plan row
  *        names the stage `codeloop plan` actually leaves.

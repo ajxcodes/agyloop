@@ -1,5 +1,5 @@
 /**
- * agyloop - ManagePlanDeviationsUseCase (issue #432, AC1/AC2)
+ * codeloop - ManagePlanDeviationsUseCase (issue #432, AC1/AC2)
  *
  * The implementer (or the read-only reviewer, reporting to the orchestrator)
  * emits `PLAN_DEVIATION:` blocks; the orchestrator files them here. Filing and

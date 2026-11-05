@@ -1,5 +1,5 @@
 /**
- * agyloop - ResumePipelineUseCase (Application Layer)
+ * codeloop - ResumePipelineUseCase (Application Layer)
  *
  * Clears a *persisted* gate pause (CIRCUIT_BREAKER after an exhausted retry
  * budget or a provider quota rejection) so the checkpoint stops claiming that a

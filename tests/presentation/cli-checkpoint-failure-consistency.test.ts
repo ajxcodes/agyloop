@@ -1,5 +1,5 @@
 /**
- * agyloop - corrupt-checkpoint failure consistency (#251, absorbed by #248)
+ * codeloop - corrupt-checkpoint failure consistency (#251, absorbed by #248)
  *
  * Two contracts:
  *

@@ -3,7 +3,7 @@ function readCommitTaskCheckpoint(sandbox: Sandbox): any {
 }
 
 /**
- * agyloop - `commit` reports what it did (issue #284: #240 Defect 1/2/3, AC2)
+ * codeloop - `commit` reports what it did (issue #284: #240 Defect 1/2/3, AC2)
  *
  * The commit gate is the last thing an operator reads before publishing, and
  * every defect here is a message that is WRONG about work that was done:
@@ -43,7 +43,7 @@ interface Sandbox {
 
 function makeCommitOutputSandbox(baseBranch: string, options: { gitignore?: boolean } = {}): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-commit-output-',
+    prefix: 'codeloop-cli-commit-output-',
     dirName: '',
     gitignore: options.gitignore === false ? false : ['.agyloop/', 'artifacts/', '.bin/', '.plan-tmp/'],
     seed: (dir: string) => {
@@ -219,7 +219,7 @@ const CLEAN_CRITIQUE = {
  * checkpoint at COMMIT **with a recorded pause** — no seeded precondition.
  */
 function runReviewToCommit(sandbox: Sandbox) {
-  const inputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-commit-review-input-'));
+  const inputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-commit-review-input-'));
   try {
     const verdictPath = path.join(inputDir, 'verdict.md');
     const critiquePath = path.join(inputDir, 'critique.json');
@@ -258,7 +258,7 @@ function runReviewToCommit(sandbox: Sandbox) {
 
 /** Moves the fake `gh` outside the repo so it is never an untracked change. */
 function externaliseBin(sandbox: Sandbox): { sandbox: Sandbox; binDir: string } {
-  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-commit-bin-'));
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-commit-bin-'));
   fs.copyFileSync(path.join(sandbox.binDir, 'gh'), path.join(binDir, 'gh'));
   fs.chmodSync(path.join(binDir, 'gh'), 0o755);
   fs.rmSync(path.join(sandbox.dir, '.bin'), { recursive: true, force: true });
@@ -640,7 +640,7 @@ describe('commit exclusions and root-scoped execution (#301)', () => {
       const output = `${run.stdout}\n${run.stderr}`;
 
       assert.strictEqual(run.status, 1, output);
-      assert.match(output, /only paths agyloop excludes/);
+      assert.match(output, /only paths codeloop excludes/);
       assert.ok(output.includes('.agyloop'), output);
       assert.strictEqual(gitOut(sandbox.dir, ['rev-parse', 'HEAD']).trim(), before, 'HEAD must not move');
     } finally {

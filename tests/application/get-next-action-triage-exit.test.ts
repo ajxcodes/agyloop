@@ -1,5 +1,5 @@
 /**
- * agyloop - TRIAGE gate exit on a terminal PR (issue #351, AC-1/AC-2)
+ * codeloop - TRIAGE gate exit on a terminal PR (issue #351, AC-1/AC-2)
  *
  * `NOTE_TRIAGE_GATE_EXIT_CONDITION` promises TWO endings — a recorded
  * disposition, or the PR being merged/closed — but only the first was
@@ -37,7 +37,7 @@ const {
   formatTriageGateEndedNote
 } = require('../../dist/domain');
 
-import type { StateRepository, ConfigRepository, AgyLoopConfig } from '../../src/ports';
+import type { StateRepository, ConfigRepository, CodeLoopConfig } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
 class StateRepositoryDouble implements StateRepository {
@@ -67,7 +67,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',

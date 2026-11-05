@@ -12,7 +12,7 @@ async function runYoloDiscoverySandbox(args: readonly string[], { env = {} } = {
 }
 
 /**
- * agyloop - YOLO DISCOVERY park e2e through runCli (issue #234)
+ * codeloop - YOLO DISCOVERY park e2e through runCli (issue #234)
  *
  * `codeloop yolo --title "Bug: probe" --type discovery` must end in a
  * checkpointed DISCOVERY park instead of crashing with

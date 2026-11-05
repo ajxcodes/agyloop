@@ -11,7 +11,7 @@ function seedPlanModeCheckpoint(sandbox: string, issue: number, snapshot: Record
 }
 
 /**
- * agyloop - `plan` output names what actually happened (issue #339, items 1/2/3
+ * codeloop - `plan` output names what actually happened (issue #339, items 1/2/3
  * + audit extras E1/E4)
  *
  * T1.1  `--skip-discovery` never names the Discovery subagent (the attribution

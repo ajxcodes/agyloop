@@ -1,5 +1,5 @@
 /**
- * agyloop - Two-tier invariant: delivered AC evidence (issue #464)
+ * codeloop - Two-tier invariant: delivered AC evidence (issue #464)
  *
  * A backticked literal in an AC_EVIDENCE entry is note text, not evidence, so
  * the list `applyTwoTierInvariant` receives stays empty and an APPROVED verdict

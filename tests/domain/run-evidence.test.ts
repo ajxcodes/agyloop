@@ -1,5 +1,5 @@
 /**
- * agyloop - Run evidence primitives (issue #284, AC5/AC9)
+ * codeloop - Run evidence primitives (issue #284, AC5/AC9)
  *
  * The defect: a duration was recomputed from a transition gap and the
  * CUMULATIVE human wait was subtracted from it, so an hour of human idle time

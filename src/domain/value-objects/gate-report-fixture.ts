@@ -1,5 +1,5 @@
 /**
- * agyloop - Gate-report fixture parser (issue #413)
+ * codeloop - Gate-report fixture parser (issue #413)
  *
  * Pure, static readers for the `GATE_REPORT_JSON:` fixtures a smoke check
  * seeds, so `SmokeProtocol.fromPlan` can mirror the runtime contracts that

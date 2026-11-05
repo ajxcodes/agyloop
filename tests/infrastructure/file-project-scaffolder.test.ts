@@ -1,5 +1,5 @@
 /**
- * agyloop - FileProjectScaffolder Infrastructure Tests
+ * codeloop - FileProjectScaffolder Infrastructure Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -71,7 +71,7 @@ describe('FileProjectScaffolder', () => {
     assert.ok(added.includes('.worktrees/'));
     const content = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
     assert.ok(content.startsWith('node_modules/\n.codeloop/state.json\n'));
-    assert.ok(content.includes('# codeloop / agyloop ephemeral runtime state'));
+    assert.ok(content.includes('# codeloop / codeloop ephemeral runtime state'));
     assert.ok(!/config\.json/.test(content));
 
     const again = scaffolder.updateGitIgnore(dir, INIT_GITIGNORE_RULES);
@@ -197,16 +197,16 @@ describe('FileProjectScaffolder', () => {
     const content = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
     const lines = content.split(/\r?\n/).map((l: string) => l.trim());
     const codeloopNegIdx = lines.indexOf('!.codeloop/');
-    const agyloopNegIdx = lines.indexOf('!.agyloop/');
+    const legacyNegIdx = lines.indexOf('!.agyloop/');
     const codeloopStateIdx = lines.indexOf('.codeloop/state.json');
-    const agyloopStateIdx = lines.indexOf('.agyloop/state.json');
+    const legacyStateIdx = lines.indexOf('.agyloop/state.json');
 
-    assert.ok(codeloopNegIdx !== -1 && agyloopNegIdx !== -1);
+    assert.ok(codeloopNegIdx !== -1 && legacyNegIdx !== -1);
     // Issue #315 (AC-12): the `.codeloop/*` STATE rules are gone — the tool
     // writes no state there — so only the `.agyloop/` granular rule is emitted.
     assert.strictEqual(codeloopStateIdx, -1, 'no dead `.codeloop/state.json` rule may be emitted');
-    assert.ok(agyloopStateIdx !== -1);
-    assert.ok(agyloopNegIdx < agyloopStateIdx);
+    assert.ok(legacyStateIdx !== -1);
+    assert.ok(legacyNegIdx < legacyStateIdx);
 
     // Verify git check-ignore behaves as expected
     assert.strictEqual(runGit('check-ignore', '.codeloop/config.json'), null);
@@ -234,7 +234,7 @@ describe('FileProjectScaffolder - monorepo markers (#334)', () => {
 
   // The portfolio layout (smoke S1): a thin root manifest over apps/web + apps/api.
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-scaffold-334-'));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-scaffold-334-'));
     write(
       'package.json',
       JSON.stringify({

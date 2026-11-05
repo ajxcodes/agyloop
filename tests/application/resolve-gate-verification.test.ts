@@ -1,5 +1,5 @@
 /**
- * agyloop - resolveGateVerification tests (issue #298, AC1/AC3/AC7/AC9/AC10)
+ * codeloop - resolveGateVerification tests (issue #298, AC1/AC3/AC7/AC9/AC10)
  *
  * RGV1 - plan targets become the executed list; the ambient list is ignored
  * RGV2 - plan omits lint + detector finds it => appended / lintRequired / last
@@ -455,7 +455,7 @@ describe('resolveGateVerification (issue #298)', () => {
       ''
     ].join('\n');
 
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-rgv-362-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-rgv-362-'));
     try {
       const planDir = path.join(tempDir, 'artifacts', 'plans', '362-h1-phrase');
       fs.mkdirSync(planDir, { recursive: true });

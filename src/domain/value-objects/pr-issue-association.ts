@@ -1,5 +1,5 @@
 /**
- * agyloop - Pull-request ↔ issue association rules (Domain Layer)
+ * codeloop - Pull-request ↔ issue association rules (Domain Layer)
  *
  * Pure: no I/O. Decides whether a merged PR is evidence that it DELIVERED an
  * issue, as opposed to merely having been *developed on a branch named after* it.

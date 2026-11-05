@@ -1,5 +1,5 @@
 /**
- * agyloop - AntigravityAgentRunner Infrastructure Adapter
+ * codeloop - AntigravityAgentRunner Infrastructure Adapter
  *
  * Implements AgentRunnerPort for the Google Antigravity runtime environment.
  */

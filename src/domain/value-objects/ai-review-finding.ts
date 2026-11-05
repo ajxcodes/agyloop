@@ -1,5 +1,5 @@
 /**
- * agyloop - AiReviewFinding Value Object
+ * codeloop - AiReviewFinding Value Object
  *
  * Immutable representation of an individual AI PR Review finding/comment.
  * Categorizes comments by severity (critical, error, warning, suggestion, info).

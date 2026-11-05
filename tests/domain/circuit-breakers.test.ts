@@ -1,5 +1,5 @@
 /**
- * agyloop - Circuit Breakers & Safety Protocol Tests
+ * codeloop - Circuit Breakers & Safety Protocol Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');

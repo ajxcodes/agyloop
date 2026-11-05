@@ -1,5 +1,5 @@
 /**
- * agyloop - Ecosystem Value Object
+ * codeloop - Ecosystem Value Object
  *
  * Immutable, self-validating value object representing a detected software ecosystem.
  */

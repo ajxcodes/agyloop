@@ -1,5 +1,5 @@
 /**
- * agyloop - AC evidence against the delivered change set (issue #432, AC5)
+ * codeloop - AC evidence against the delivered change set (issue #432, AC5)
  *
  * The reviewer's verdict gains an `AC_EVIDENCE:` block naming, per criterion,
  * the paths that prove it. This module parses the block and classifies the

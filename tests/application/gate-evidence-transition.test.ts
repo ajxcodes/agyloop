@@ -1,5 +1,5 @@
 /**
- * agyloop - Gate evidence is ingested on gate exit (issue #284, AC1/AC2)
+ * codeloop - Gate evidence is ingested on gate exit (issue #284, AC1/AC2)
  *
  * The defect: a gate that reported PASSED with 1408 tests left the summary at
  * `Build Status: PENDING` forever, because the dispatched gate's result had no
@@ -70,7 +70,7 @@ function scaffoldWorkspace(
   history: Array<Record<string, unknown>>,
   planContent = '# [Implementation] - Smoke\n\n- [ ] Step 1: probe\n'
 ) {
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gate-evidence-'));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-gate-evidence-'));
   const dir = path.join(ws, 'artifacts', 'plans', `${ISSUE}-smoke`);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'implementation_plan.md'), planContent, 'utf8');

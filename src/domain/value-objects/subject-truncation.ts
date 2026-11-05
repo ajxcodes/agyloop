@@ -1,5 +1,5 @@
 /**
- * agyloop - Subject truncation grammar (issue #376, Defect 2)
+ * codeloop - Subject truncation grammar (issue #376, Defect 2)
  *
  * ONE pure trim helper for every bounded head the tool derives from a title:
  * the conventional-commit SUBJECT (`CommitMessage.toSingleLine()`) and the plan

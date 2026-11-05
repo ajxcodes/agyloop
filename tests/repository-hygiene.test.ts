@@ -1,5 +1,5 @@
 /**
- * agyloop - repository hygiene (#333 AC6)
+ * codeloop - repository hygiene (#333 AC6)
  *
  * The four scratch artifacts that were tracked at the repository root are one
  * `git rm` each. Removing them from the INDEX is what keeps the commit gate

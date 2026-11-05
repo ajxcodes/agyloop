@@ -49,7 +49,7 @@ const {
 type StateRepository = import('../../src').StateRepository;
 type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 type PlanGeneratorPort = import('../../src').PlanGeneratorPort;
 type ScaffoldParams = import('../../src').ScaffoldParams;
 type ScaffoldResult = import('../../src').ScaffoldResult;
@@ -103,7 +103,7 @@ class ConfigRepositoryDouble implements ConfigRepository {
       ...options
     };
   }
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return {
       models: {
         planner: 'pro',
@@ -144,7 +144,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
       type: 'implementation',
       planPath: 'artifacts/plans/20-test/implementation-plan.md',
       mirrorPath: 'artifacts/plans/20-test/implementation_plan.md',
-      summaryPath: 'artifacts/plans/20-test/AgyLoop Summary.md',
+      summaryPath: 'artifacts/plans/20-test/CodeLoop Summary.md',
       directoryCreated: false,
       filesCreated: false,
       adoptedExisting: true
@@ -175,7 +175,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
       planDir: 'artifacts/plans/20-test',
       planPath: 'artifacts/plans/20-test/implementation-plan.md',
       planFileName: 'implementation-plan.md',
-      summaryPath: 'artifacts/plans/20-test/AgyLoop Summary.md'
+      summaryPath: 'artifacts/plans/20-test/CodeLoop Summary.md'
     };
   }
   public readPlanDocument(planPath: string): string {
@@ -244,7 +244,7 @@ class BuildDetectorDouble implements BuildDetectorPort {
 
   public async resolveCommands(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]> {
     const plan = await this.resolveCommandPlan(workspaceDir, config, { explicitCommands });
@@ -253,7 +253,7 @@ class BuildDetectorDouble implements BuildDetectorPort {
 
   public async resolveCommandPlan(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     options?: import('../../src/ports').GateCommandResolutionOptions
   ): Promise<import('../../src/domain').GateCommandPlan> {
     const base = {
@@ -319,7 +319,7 @@ class BuildDetectorDouble implements BuildDetectorPort {
 class LintMissingBuildDetector extends BuildDetectorDouble {
   public async resolveCommandPlan(
     _workspaceDir: string,
-    _config?: AgyLoopConfig,
+    _config?: CodeLoopConfig,
     _options?: import('../../src/ports').GateCommandResolutionOptions
   ): Promise<import('../../src/domain').GateCommandPlan> {
     return {
@@ -341,7 +341,7 @@ class LintMissingBuildDetector extends BuildDetectorDouble {
 class CompositionMissingBuildDetector extends BuildDetectorDouble {
   public async resolveCommandPlan(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     options?: import('../../src/ports').GateCommandResolutionOptions
   ): Promise<import('../../src/domain').GateCommandPlan> {
     const plan = await super.resolveCommandPlan(workspaceDir, config, options);
@@ -980,7 +980,7 @@ AssertionError [ERR_ASSERTION]: Expected 42 to equal 99
   });
 
   test('T7: dead DOCKER_HOST skips the act gate and the pipeline advances to REVIEW (Issue #232)', async () => {
-    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gate-232-'));
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-gate-232-'));
     const savedEnv = { DOCKER_HOST: process.env.DOCKER_HOST, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR };
     const originalExistsSync = fs.existsSync;
     try {
@@ -2244,7 +2244,7 @@ describe('Quality Gate execution contract (issue #298)', () => {
 
 describe('in-process gate row names its clock (issue #338)', () => {
   test('#338 T6: the REAL summary writer renders a labelled in-process gate row', async () => {
-    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-in-process-gate-'));
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-in-process-gate-'));
     const planDirRel = 'artifacts/plans/20-test';
     const planDir = path.join(ws, planDirRel);
     fs.mkdirSync(planDir, { recursive: true });

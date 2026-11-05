@@ -1,5 +1,5 @@
 /**
- * agyloop - ResolveSubagentUseCase
+ * codeloop - ResolveSubagentUseCase
  *
  * Resolves subagent configuration, model routing, whitelisted tools,
  * and system prompts with strict physical write suppression guarantees.
@@ -134,7 +134,7 @@ export {
 };
 import {
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   GitHubGateway,
   GitHubIssueData,
   PromptRepository,
@@ -242,7 +242,7 @@ export interface SubagentDescriptor {
 
 export interface ResolveSubagentOptions {
   readonly role?: string;
-  readonly customConfig?: AgyLoopConfig;
+  readonly customConfig?: CodeLoopConfig;
   readonly promptPath?: string;
   readonly workspaceDir?: string;
 }
@@ -265,7 +265,7 @@ export interface PlanningTaskPromptParams {
   readonly issueData?: GitHubIssueData | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly userFeedback?: string | null;
   readonly previousPlanContent?: string | null;
   readonly iterationCount?: number | null;
@@ -292,7 +292,7 @@ export interface ImplementationTaskPromptParams {
   readonly repo?: string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly failureDiagnostics?: string | DiagnosticSnippet | null;
   readonly selfCorrectionPayload?: string | null;
   readonly critiqueFailureSnippet?: string | null;
@@ -304,7 +304,7 @@ export interface GateTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly planContent?: string | null;
   readonly planPath?: string | null;
   /** The cwd every gate command must run from (issue #298). */
@@ -359,7 +359,7 @@ export interface ReviewerTaskPromptParams {
   readonly reviewCwd?: string;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   /**
    * Deviations filed by the implementer (issue #432). Rendered so the verdict
    * is made with them in view; absent/empty keeps the pre-#432 prompt.
@@ -372,7 +372,7 @@ export interface ReviewerTaskPromptParams {
 export interface TriageTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly triagePayload?: string | null;
 }
 
@@ -681,7 +681,7 @@ export class ResolveSubagentUseCase {
    * A builder that is handed no config resolves `null`, which is the identity:
    * the host-neutral #241 prose and the Antigravity asset stay the default.
    */
-  private vocabularyFor(config?: AgyLoopConfig): HostToolVocabulary | null {
+  private vocabularyFor(config?: CodeLoopConfig): HostToolVocabulary | null {
     return resolveHostToolVocabulary(config?.runner);
   }
 
@@ -864,7 +864,7 @@ export class ResolveSubagentUseCase {
     }
 
     let prompt = `# Task: Defect Discovery & Root Cause Analysis\n\n`;
-    prompt += `You are executing the **DISCOVERY** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **DISCOVERY** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the codebase, perform root-cause analysis (RCA), manually smoke test the bug, and produce an actionable discovery report.\n\n`;
 
     // Resolve container runtime and daemon availability
@@ -996,7 +996,7 @@ export class ResolveSubagentUseCase {
     }
 
     let prompt = `# Task: Architectural Investigation & Plan Generation\n\n`;
-    prompt += `You are executing the **PLAN** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **PLAN** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the codebase, perform architectural design, and produce an actionable specification.\n\n`;
 
     const targetDir = params.planDir || 'artifacts/plans/';
@@ -1047,7 +1047,7 @@ export class ResolveSubagentUseCase {
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
     prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
     prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE} ${NOTE_SMOKE_FIXTURE_ISSUE_RULE}\n`;
-    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} ${BASELINE_COMMAND_CWD_CONTRACT} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\`) and require() the module from there.\n`;
+    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} ${BASELINE_COMMAND_CWD_CONTRACT} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/codeloop/baseline-<issue>/dist"\`) and require() the module from there.\n`;
     prompt += `- **\`### ${HEADING_TEST_REGISTER}\`** (issue #432): one \`- **<row-id>**\` bullet per pinned assertion, with EITHER \`**Pins:** \`path\` :: \`test title\`\` (an existing test) OR \`**New test:** \`path\` :: \`test title\`\` (a genuinely new case), plus at least one \`**Asserts:** \`assertion\`\`. A row that pins an existing test MUST restate its literal exactly: the approval guard refuses a row whose expected value contradicts the pinned subject, naming \`file:line\`. Run the existing suite before you declare a literal — a plan literal that contradicts a pinned test cannot be approved.\n`;
     prompt += `- **Delivered-evidence rule** (issue #432, AC4/AC6): an Acceptance Criterion or checklist step must not target a commit-excluded path (\`artifacts/\`, \`.agyloop/\`, \`node_modules/\`) or a path outside the workspace. The approval gate refuses such a plan and names the path. If a correction is deliberately NOT delivered, say so with a \`- **Out of Scope:** <reason>\` bullet under Context & Objectives instead of instructing an edit to a gitignored file.\n`;
     prompt += `- **Acceptance Criteria bullets** (issue #432): write each criterion as a PLAIN \`- AC<n>: …\` bullet. A bold-labelled bullet (\`- **AC1:** …\`) stops the reviewer's extractor, so the criterion would never reach the verdict.\n\n`;
@@ -1060,7 +1060,7 @@ export class ResolveSubagentUseCase {
   public buildImplementationTaskPrompt(params: ImplementationTaskPromptParams): string {
     const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Implementation Execution\n\n`;
-    prompt += `You are executing the **IMPLEMENT** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **IMPLEMENT** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to surgically implement the changes specified in the approved plan, run verification tests, and ensure all quality criteria are met.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
@@ -1188,7 +1188,7 @@ export class ResolveSubagentUseCase {
   public buildGateTaskPrompt(params: GateTaskPromptParams = {}): string {
     const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Quality Gate Verification\n\n`;
-    prompt += `You are executing the **QUALITY_GATE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **QUALITY_GATE** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to execute automated build, typecheck, and test suites, isolate diagnostics, and report an objective quality verdict.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
@@ -1347,7 +1347,7 @@ export class ResolveSubagentUseCase {
         : ManageCritiqueUseCase.resolveCritiquePath(this.critiquePort, params.workspaceDir));
 
     let prompt = `# Task: Code Review & Standards Verification\n\n`;
-    prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **REVIEW** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
 
     const critiqueReportPath = params.critiqueReportPath || null;
@@ -1555,7 +1555,7 @@ export class ResolveSubagentUseCase {
   public buildTriageTaskPrompt(params: TriageTaskPromptParams = {}): string {
     const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Triage PR Review Comments\n\n`;
-    prompt += `You are executing the **TRIAGE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **TRIAGE** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to categorize review comments and route the pipeline to the appropriate next stage.\n\n`;
 
     const effectiveIssue =

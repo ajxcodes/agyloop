@@ -1,5 +1,5 @@
 /**
- * agyloop - Test Register parsing (issue #432, TR-33 / TR-44)
+ * codeloop - Test Register parsing (issue #432, TR-33 / TR-44)
  */
 
 const { test, describe } = require('node:test');

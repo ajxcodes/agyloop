@@ -1,5 +1,5 @@
 /**
- * agyloop - Dual-Branch Inference & Remote Push Tests
+ * codeloop - Dual-Branch Inference & Remote Push Tests
  */
 
 const { test, describe } = require('node:test');

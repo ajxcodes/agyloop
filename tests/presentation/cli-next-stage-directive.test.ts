@@ -1,5 +1,5 @@
 /**
- * agyloop - `next` stage directives (issues #292, #267)
+ * codeloop - `next` stage directives (issues #292, #267)
  *
  * T-292.1/.2/.4: the terminal render names the ADVANCING command and the
  *                completion condition at DISCOVERY and PLAN.

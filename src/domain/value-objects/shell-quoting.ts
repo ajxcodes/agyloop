@@ -1,5 +1,5 @@
 /**
- * agyloop - Shell Quoting (Domain Layer)
+ * codeloop - Shell Quoting (Domain Layer)
  *
  * ONE escaper for every value that reaches a shell command string.
  *

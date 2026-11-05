@@ -1,5 +1,5 @@
 /**
- * agyloop - InitProjectUseCase
+ * codeloop - InitProjectUseCase
  *
  * Scaffolds `.codeloop/config.json` with detected git, verification and
  * default runtime settings, migrating legacy `.agyloop` configuration.
@@ -12,7 +12,7 @@ import {
   ProjectScaffolderPort,
   ConfirmationPromptPort,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   GitConfig
 } from '../ports';
 import {
@@ -60,7 +60,7 @@ export interface InitProjectInput {
 
 export interface InitProjectResult {
   readonly configPath: string;
-  readonly config: AgyLoopConfig | null;
+  readonly config: CodeLoopConfig | null;
   readonly gitignoreAdded: string[];
   readonly gitignoreReplaced: string[];
   readonly migratedFrom: string | null;
@@ -195,7 +195,7 @@ export class InitProjectUseCase {
       }
     }
 
-    const config = generated as unknown as AgyLoopConfig;
+    const config = generated as unknown as CodeLoopConfig;
     if (dryRun) {
       const preview = scaffolder.previewGitIgnore(workspaceDir, INIT_GITIGNORE_RULES);
       return {

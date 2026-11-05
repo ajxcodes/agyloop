@@ -1,5 +1,5 @@
 /**
- * agyloop - Two-tier invariant and the reviewer's natural "none" wording (issue #356)
+ * codeloop - Two-tier invariant and the reviewer's natural "none" wording (issue #356)
  *
  * Defect 1 was recorded at the REVIEW channel: `ReviewVerdict.parse` captured
  * `- None in the reviewed in-repo scope (deferred to post-commit).` as an

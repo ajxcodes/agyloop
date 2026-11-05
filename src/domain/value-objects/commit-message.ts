@@ -1,5 +1,5 @@
 /**
- * agyloop - CommitMessage Value Object
+ * codeloop - CommitMessage Value Object
  *
  * Immutable, self-validating value object adhering strictly to the
  * Conventional Commits 1.0.0 specification:

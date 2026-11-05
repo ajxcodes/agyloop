@@ -1,5 +1,5 @@
 /**
- * agyloop - Bounded Workspace & Subproject Discovery (issue #334)
+ * codeloop - Bounded Workspace & Subproject Discovery (issue #334)
  *
  * ONE discovery implementation shared by `FileBuildDetector` (which needs the
  * subproject gate commands) and `FileProjectScaffolder` (which needs the

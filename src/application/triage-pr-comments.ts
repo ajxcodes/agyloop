@@ -1,5 +1,5 @@
 /**
- * agyloop - TriagePrCommentsUseCase (Application Layer)
+ * codeloop - TriagePrCommentsUseCase (Application Layer)
  *
  * Implements interactive and programmatic PR review comment triage and routing.
  * When PR review comments exist (or are fetched from GitHub), developers can inspect

@@ -1,5 +1,5 @@
 /**
- * agyloop - gate evidence coverage at the application seam (issue #408, D2)
+ * codeloop - gate evidence coverage at the application seam (issue #408, D2)
  *
  * `assessGateEvidenceCoverage` resolves the plan through `PlanGeneratorPort`
  * and delegates to the pure domain matcher. It is the ONE assessment both

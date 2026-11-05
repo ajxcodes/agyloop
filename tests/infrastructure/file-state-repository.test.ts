@@ -25,7 +25,7 @@ describe('FileStateRepository', () => {
   });
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-'));
     stateFile = path.join(tempDir, '.agyloop', 'state.json');
     FileStateRepository.clearWorkspaceRootCache();
   });
@@ -40,7 +40,7 @@ describe('FileStateRepository', () => {
   describe('cross-issue state initialization from within worktrees', () => {
     test('throws StateStorageError when trying to save a mismatched issue inside a worktree', () => {
       // Stub process.cwd() to simulate being inside a worktree for issue 169
-      const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
+      const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'codeloop', '.worktrees', '169');
       process.cwd = () => dummyWorktreePath;
 
       const repo = createStateRepository({
@@ -64,7 +64,7 @@ describe('FileStateRepository', () => {
 
     test('allows legitimate save when issue matches inferred worktree issue', () => {
       // Stub process.cwd() to simulate being inside a worktree for issue 169
-      const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
+      const dummyWorktreePath = path.join('/', 'home', 'ajxcodes', 'code', 'codeloop', '.worktrees', '169');
       process.cwd = () => dummyWorktreePath;
 
       const repo = createStateRepository({ stateFilePath: stateFile });
@@ -116,8 +116,8 @@ describe('FileStateRepository', () => {
       err instanceof StateStorageError && err.message === MSG_STATE_MUTATION_FORBIDDEN_SMOKE_TEST;
 
     test('SR1: permits the tool\'s own sandbox path', () => {
-      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
-      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'codeloop', 'smoke-241');
       fs.mkdirSync(sandbox, { recursive: true });
 
       try {
@@ -185,8 +185,8 @@ describe('FileStateRepository', () => {
     });
 
     test('SR5: a sandbox cwd cannot reach a target outside the sandbox', () => {
-      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
-      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'codeloop', 'smoke-241');
       fs.mkdirSync(sandbox, { recursive: true });
       const external = path.join(fakeHome, 'project', '.agyloop', 'state.json');
 
@@ -216,8 +216,8 @@ describe('FileStateRepository', () => {
     });
 
     test('SR7: a symlinked alias of the sandbox is still recognised', () => {
-      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
-      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'codeloop', 'smoke-241');
       const alias = path.join(fakeHome, 'sandbox-alias');
       fs.mkdirSync(sandbox, { recursive: true });
       fs.symlinkSync(sandbox, alias, 'dir');
@@ -255,8 +255,8 @@ describe('FileStateRepository', () => {
     });
 
     test('SR9: the gate smoke signal permits a checkpoint inside the sandbox (#440)', () => {
-      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-home-'));
-      const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-440');
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-home-'));
+      const sandbox = path.join(fakeHome, '.cache', 'codeloop', 'smoke-440');
       fs.mkdirSync(sandbox, { recursive: true });
 
       try {
@@ -398,7 +398,7 @@ describe('FileStateRepository', () => {
     // fail, because tmpdir membership alone certified the real state file).
     describe('fail-closed isolation proof', () => {
       // A root that is intentionally outside os.tmpdir() and does not exist on disk.
-      const REAL_ROOT = path.join(path.sep, 'agyloop-unprovable-workspace-root');
+      const REAL_ROOT = path.join(path.sep, 'codeloop-unprovable-workspace-root');
       const REAL_STATE_FILE = path.join(REAL_ROOT, '.agyloop', 'state.json');
 
       const withEnv = (env: Record<string, string | undefined>, fn: () => void): void => {
@@ -510,7 +510,7 @@ describe('FileStateRepository', () => {
         // ancestor of it), its own .agyloop/state.json satisfies the tmpdir test and
         // would re-open the guard -- the exact failure this predicate exists to kill.
         // Here git is made to report a temp sandbox as this package's workspace root.
-        const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-temp-repo-'));
+        const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-temp-repo-'));
         const repoStateFile = path.join(repoRoot, '.agyloop', 'state.json');
         const childProcess = require('child_process');
         const originalExecSync = childProcess.execSync;
@@ -670,7 +670,7 @@ describe('FileStateRepository', () => {
     test('forIssue writes nothing to disk merely by being called', () => {
       // The resolver calls this before it knows whether anything will be written,
       // so a resolver call must never be able to create a workspace.
-      const virgin = path.join(os.tmpdir(), `agyloop-fsrepo-forthissue-${process.pid}-${Date.now()}`);
+      const virgin = path.join(os.tmpdir(), `codeloop-fsrepo-forthissue-${process.pid}-${Date.now()}`);
       const repo = createStateRepository({ workspaceDir: virgin });
 
       const scoped = repo.forIssue(226);
@@ -736,7 +736,7 @@ describe('FileStateRepository', () => {
   describe('worktree-local workspace root resolution (#244)', () => {
     // Scratch roots created by buildWorktreeFixture. Removing them in afterEach
     // (rather than in each caller's finally) means a failing assertion still
-    // cannot leave an `agyloop-wt-244-*` tree behind in the temp sandbox.
+    // cannot leave an `codeloop-wt-244-*` tree behind in the temp sandbox.
     const fixtureDirs: string[] = [];
 
     afterEach(() => {
@@ -766,7 +766,7 @@ describe('FileStateRepository', () => {
         return null;
       }
 
-      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-'));
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-wt-244-'));
       fixtureDirs.push(base);
       const mainPath = path.join(base, 'repo');
       const worktreePath = path.join(base, 'wt-236');
@@ -833,7 +833,7 @@ describe('FileStateRepository', () => {
 
     test('never consults `git worktree list` when resolving the local workspace root (AC2)', () => {
       const childProcess = require('child_process');
-      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-order-'));
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-wt-244-order-'));
       const localRoot = path.join(base, 'wt-236');
       const mainRoot = path.join(base, 'repo');
       const originalExecSync = childProcess.execSync;
@@ -953,10 +953,10 @@ describe('FileStateRepository', () => {
     });
 
     test('still refuses the main root when local resolution narrows to a task worktree', () => {
-      // Simulates agyloop being installed *inside* a task worktree: the primary
+      // Simulates codeloop being installed *inside* a task worktree: the primary
       // probe now narrows to <base>/wt, while the canonical main root is only
       // discoverable via `git rev-parse --path-format=absolute --git-common-dir`.
-      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-veto-'));
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-wt-244-veto-'));
       const narrowedRoot = path.join(base, 'wt');
       const mainRoot = path.join(base, 'repo');
       const mainStateFile = path.join(mainRoot, '.agyloop', 'state.json');
@@ -1003,7 +1003,7 @@ describe('FileStateRepository', () => {
       // not the `cwd:` option -- and would cache that garbage root for the
       // process lifetime, silently deleting the main-worktree-root veto.
       const childProcess = require('child_process');
-      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-wt-244-echo-'));
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-wt-244-echo-'));
       fixtureDirs.push(base);
       const narrowedRoot = path.join(base, 'wt');
       const commonDir = path.join(base, 'repo', '.git');
@@ -1069,7 +1069,7 @@ describe('FileStateRepository', () => {
     });
 
     test('degrades to the cwd fallback, uncached, in a non-git directory', () => {
-      const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-nogit-244-'));
+      const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-nogit-244-'));
       const originalCwd = process.cwd;
       process.cwd = () => plain;
       FileStateRepository.clearWorkspaceRootCache();
@@ -1134,7 +1134,7 @@ describe('FileStateRepository', () => {
         t.skip('git is unavailable in this environment');
         return;
       }
-      const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-bare-244-'));
+      const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-bare-244-'));
       fixtureDirs.push(bare);
       childProcess.execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'ignore' });
       const originalCwd = process.cwd;
@@ -1155,7 +1155,7 @@ describe('FileStateRepository', () => {
 });
 
 describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)', () => {
-  const DUMMY_WORKTREE = path.join('/', 'home', 'ajxcodes', 'code', 'agyloop', '.worktrees', '169');
+  const DUMMY_WORKTREE = path.join('/', 'home', 'ajxcodes', 'code', 'codeloop', '.worktrees', '169');
   let originalCwd: () => string;
   let sandbox: string;
 
@@ -1169,7 +1169,7 @@ describe('FileStateRepository - test-run-aware cross-worktree guard (issue #298)
 
   beforeEach(() => {
     process.cwd = () => DUMMY_WORKTREE;
-    const homeCache = path.join(os.homedir(), '.cache', 'agyloop');
+    const homeCache = path.join(os.homedir(), '.cache', 'codeloop');
     fs.mkdirSync(homeCache, { recursive: true });
     sandbox = fs.mkdtempSync(path.join(homeCache, 'smoke-298-'));
     FileStateRepository.clearWorkspaceRootCache();

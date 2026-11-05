@@ -1,5 +1,5 @@
 /**
- * agyloop - the ONE gate-target contract guard (issue #369)
+ * codeloop - the ONE gate-target contract guard (issue #369)
  *
  * Two approval entry points (`codeloop implement` and
  * `codeloop transition APPROVAL`) must refuse the same plans for the same

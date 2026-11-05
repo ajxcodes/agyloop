@@ -1,5 +1,5 @@
 /**
- * agyloop - Root-Invariant Value Object (Domain Layer)
+ * codeloop - Root-Invariant Value Object (Domain Layer)
  *
  * The ONE shared predicate guarding the Zero Direct Root Mutation invariant
  * (issue #247): a task's "worktree" path is never allowed to be — or to contain —

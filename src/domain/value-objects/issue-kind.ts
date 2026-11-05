@@ -1,5 +1,5 @@
 /**
- * agyloop - Issue Kind Value Object (Domain Layer)
+ * codeloop - Issue Kind Value Object (Domain Layer)
  *
  * The single definition of "is this issue a bug or a feature?" (issue #379).
  *

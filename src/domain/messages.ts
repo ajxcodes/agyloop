@@ -112,10 +112,10 @@ export const MSG_PLAN_BASELINE_OUTPUT_MISMATCH =
   `Plan baseline claim "{claim}" at plan line {line} declares {declared} and attests Output {output}, but the command measured {measured} with cwd={cwd}: \`{command}\`. ${BASELINE_DECLARED_SHAPE_SENTENCE} Copy the measured stdout into both labels and re-run approval.` as const;
 
 export const MSG_PLAN_BASELINE_ROOT_BUILD =
-  `Plan baseline claim "{claim}" at plan line {line} runs a build-like command \`{command}\` (matched: {match}). ${ROOT_BUILD_PROHIBITION_SENTENCE} Baseline commands are refused before anything runs; measure the same value without rebuilding the root, for example compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\` and require() the compiled module from there.` as const;
+  `Plan baseline claim "{claim}" at plan line {line} runs a build-like command \`{command}\` (matched: {match}). ${ROOT_BUILD_PROHIBITION_SENTENCE} Baseline commands are refused before anything runs; measure the same value without rebuilding the root, for example compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/codeloop/baseline-<issue>/dist"\` and require() the compiled module from there.` as const;
 
 export const MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT =
-  `Plan baseline claim "{claim}" at plan line {line} resolves the workspace's build output ({match}) in \`{command}\` (cwd={cwd}; nothing was executed). ${BASELINE_COMMAND_CWD_CONTRACT} Measure the same value without workspace build output — compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/agyloop/baseline-<issue>/dist"\` and require() the compiled module from there — then re-run approval.` as const;
+  `Plan baseline claim "{claim}" at plan line {line} resolves the workspace's build output ({match}) in \`{command}\` (cwd={cwd}; nothing was executed). ${BASELINE_COMMAND_CWD_CONTRACT} Measure the same value without workspace build output — compile into a scratch out-dir outside the workspace with \`npx tsc --outDir "$HOME/.cache/codeloop/baseline-<issue>/dist"\` and require() the compiled module from there — then re-run approval.` as const;
 
 export const MSG_PLAN_BASELINE_BODY_MISMATCH =
   'Plan baseline claim "{claim}" at plan line {line} is restated in the plan body as {restated}, but its evidence declares {declared}: {excerpt}. The body and the evidence must state the same value; correct one of them and re-run approval.' as const;
@@ -458,7 +458,7 @@ export const NOTE_IMPLEMENTATION_EVIDENCE_MISSING =
  * substituted with the reference the probe actually compared against.
  */
 export const NOTE_YOLO_NO_IMPLEMENTATION =
-  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The YOLO fast-path prepares the implementation but cannot execute the plan (agyloop dispatches subagents, it does not run them): run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
+  "Implementation produced no changes — refusing to advance to quality gates. The working tree is unchanged relative to '{baseRef}', so no implementation was detected. The YOLO fast-path prepares the implementation but cannot execute the plan (codeloop dispatches subagents, it does not run them): run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`. State is checkpointed at IMPLEMENT; nothing is lost." as const;
 
 
 /**
@@ -468,7 +468,7 @@ export const NOTE_IMPLEMENTATION_PARK_UNCHANGED =
   "Working tree is unchanged relative to '{baseRef}' — no implementation was detected." as const;
 
 export const NOTE_IMPLEMENTATION_PARK_DISPATCH =
-  'The YOLO fast-path prepares the implementation but cannot execute the plan (agyloop dispatches subagents, it does not run them).' as const;
+  'The YOLO fast-path prepares the implementation but cannot execute the plan (codeloop dispatches subagents, it does not run them).' as const;
 
 export const NOTE_IMPLEMENTATION_PARK_NEXT =
   'Next: run `codeloop next` to dispatch the Code Implementation Subagent, then re-run `codeloop yolo`.' as const;
@@ -993,7 +993,7 @@ export const NOTE_IMPLEMENT_PRESENT_REMEDIATION_PENDING =
  * the worktree is therefore the diff that FAILED, so the completion condition is
  * NOT met even though the probe reports a present implementation: the operator
  * must get a fresh implementer carrying the gate's diagnostics, exactly as
- * `skills/agyloop/SKILL.md` promises for the gate-failure loop.
+ * `skills/codeloop/SKILL.md` promises for the gate-failure loop.
  */
 export const NOTE_IMPLEMENT_GATE_FAILED =
   'The quality gate FAILED for this IMPLEMENT round: the completion condition is NOT met until its failures are fixed. Dispatch the implementer with the recorded gate diagnostics below; do not treat any existing diff as complete.' as const;

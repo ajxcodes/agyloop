@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop next` with a missing worktree descriptor (issue #266,
+ * codeloop - `codeloop next` with a missing worktree descriptor (issue #266,
  * absorbs #287 B).
  *
  * A checkpoint at IMPLEMENT whose `worktree` is null (the state left behind by
@@ -29,7 +29,7 @@ interface Sandbox {
 
 function makeMissingWorktreeSandbox(): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-next-missing-wt-',
+    prefix: 'codeloop-cli-next-missing-wt-',
     dirName: 'repo',
     seed: (dir: string) => {
       fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');

@@ -1,5 +1,5 @@
 /**
- * agyloop - VersionAnchor Value Object (Domain Layer)
+ * codeloop - VersionAnchor Value Object (Domain Layer)
  *
  * Models the versioning strategy and configuration for the repository:
  * 1. Strategy: 'package_json' (default) | 'git_tag_only' | 'none'
@@ -44,7 +44,7 @@ export class VersionAnchor {
     return this.strategy === VERSIONING_STRATEGY_PACKAGE_JSON && this.autoCreate && !exists;
   }
 
-  public generateMinimalPackageJson(repoName: string = 'agyloop-project'): string {
+  public generateMinimalPackageJson(repoName: string = 'codeloop-project'): string {
     const manifest = {
       name: repoName,
       version: this.initialVersion,

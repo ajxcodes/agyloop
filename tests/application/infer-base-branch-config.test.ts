@@ -1,5 +1,5 @@
 /**
- * agyloop - `config.git.baseBranch` is the configured default base (#333 AC4)
+ * codeloop - `config.git.baseBranch` is the configured default base (#333 AC4)
  *
  * Base-branch precedence: explicit caller base → `config.git.baseBranch` →
  * attached HEAD / well-known candidates (`resolveBaseBranch`) → `main`.

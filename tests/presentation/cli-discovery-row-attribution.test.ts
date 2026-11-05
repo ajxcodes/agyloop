@@ -11,7 +11,7 @@ function seedPlanModeCheckpoint(sandbox: string, issue: number, snapshot: Record
 }
 
 /**
- * agyloop - The Discovery row names the discovery subagent and is terminal
+ * codeloop - The Discovery row names the discovery subagent and is terminal
  * (issue #284, AC4; #264 stall regression)
  *
  * The defect: the row was written from the PLANNER's descriptor (so it claimed
@@ -34,7 +34,7 @@ const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-ha
 
 function makeDiscoveryRowSandbox(): string {
   return makeSandbox({
-    prefix: 'agyloop-discovery-row-',
+    prefix: 'codeloop-discovery-row-',
     dirName: '',
     gitignore: false,
     seed: (d: string) => {

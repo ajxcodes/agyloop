@@ -1,5 +1,5 @@
 /**
- * agyloop - ResolveSubagentUseCase Unit Tests
+ * codeloop - ResolveSubagentUseCase Unit Tests
  *
  * Tests for critique path resolution and two-tier reviewer prompt generation.
  */
@@ -112,7 +112,7 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
   test('resolves critique path from injected ManageCritiqueUseCase', () => {
     const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_USER_DATA,
-      path: '/home/user/.local/share/agyloop/tools/critique',
+      path: '/home/user/.local/share/codeloop/tools/critique',
       isAvailable: true
     });
     const mockInstaller: any = {
@@ -125,7 +125,7 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
       issueNumber: 52
     });
 
-    assert.ok(prompt.includes("'/home/user/.local/share/agyloop/tools/critique' --json"));
+    assert.ok(prompt.includes("'/home/user/.local/share/codeloop/tools/critique' --json"));
     assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
   });
 
@@ -910,7 +910,7 @@ index 1111111..2222222 100644
     });
 
     test('T8: real detector with a dead DOCKER_HOST dispatches the fallback prompt (AC-5 / Issue #232)', () => {
-      const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-sub-232-'));
+      const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-sub-232-'));
       const savedEnv = { DOCKER_HOST: process.env.DOCKER_HOST, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR };
       const originalExistsSync = fs.existsSync;
       try {
@@ -1217,7 +1217,7 @@ describe('Gate prompt evidence contract (issue #298)', () => {
     });
     // The requirement lives in the TASK prompt (dispatch payload), not only in
     // the self-directed system-prompt mandate.
-    assert.ok(prompt.includes('.cache/agyloop/smoke-'), 'the required sandbox path must be named');
+    assert.ok(prompt.includes('.cache/codeloop/smoke-'), 'the required sandbox path must be named');
     assert.ok(prompt.includes('mktemp'), 'the refusal rule must name mktemp');
     assert.ok(prompt.includes('rejected at dispatch'), 'the consequence must be stated');
   });

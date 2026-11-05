@@ -1322,7 +1322,7 @@ export function formatTriageRoutingCommand(
  */
 export function buildDefaultTriageSystemPrompt(): string {
   return [
-    '# AgyLoop Triage Subagent System Prompt',
+    '# CodeLoop Triage Subagent System Prompt',
     'You are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.',
     `Route with \`${formatTriageRoutingCommand()}\`, where \`<action>\` is one of: ${formatTriageActionList()}.`,
     `${formatTriageActionSideEffects()}.`,

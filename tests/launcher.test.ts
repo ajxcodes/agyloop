@@ -8,9 +8,9 @@ const path = require('path');
 describe('CLI Launchers and Rebranding', () => {
   const rootDir = path.resolve(__dirname, '..');
   const codeloopJs = path.join(rootDir, 'bin', 'codeloop.js');
-  const agyloopJs = path.join(rootDir, 'bin', 'agyloop.js');
+  const legacyJs = path.join(rootDir, 'bin', 'agyloop.js');
   const codeloopSh = path.join(rootDir, 'bin', 'codeloop');
-  const agyloopSh = path.join(rootDir, 'bin', 'agyloop');
+  const legacySh = path.join(rootDir, 'bin', 'agyloop');
 
   test('bin/codeloop.js runs --help successfully without deprecation notice', () => {
     const res = spawnSync(process.execPath, [codeloopJs, '--help'], {
@@ -23,12 +23,25 @@ describe('CLI Launchers and Rebranding', () => {
   });
 
   test('bin/agyloop.js runs --help with deprecation notice in stderr', () => {
-    const res = spawnSync(process.execPath, [agyloopJs, '--help'], {
+    const res = spawnSync(process.execPath, [legacyJs, '--help'], {
       encoding: 'utf-8',
       cwd: rootDir,
     });
     assert.strictEqual(res.status, 0, `Process failed with stderr: ${res.stderr}`);
     assert.ok(res.stdout.includes('Usage:'), 'Expected stdout to contain "Usage:"');
+    assert.ok(
+      res.stderr.includes("Warning: The 'agyloop' command is deprecated. Please use 'codeloop' instead."),
+      'Expected stderr to contain deprecation notice'
+    );
+  });
+
+  test('bin/agyloop.js runs --version with deprecation notice in stderr', () => {
+    const res = spawnSync(process.execPath, [legacyJs, '--version'], {
+      encoding: 'utf-8',
+      cwd: rootDir,
+    });
+    assert.strictEqual(res.status, 0, `Process failed with stderr: ${res.stderr}`);
+    assert.ok(res.stdout.includes('0.6.0'), 'Expected stdout to contain the version string');
     assert.ok(
       res.stderr.includes("Warning: The 'agyloop' command is deprecated. Please use 'codeloop' instead."),
       'Expected stderr to contain deprecation notice'
@@ -46,7 +59,7 @@ describe('CLI Launchers and Rebranding', () => {
   });
 
   test('bin/agyloop shell launcher runs --help with deprecation notice in stderr', () => {
-    const res = spawnSync(agyloopSh, ['--help'], {
+    const res = spawnSync(legacySh, ['--help'], {
       encoding: 'utf-8',
       cwd: rootDir,
     });
@@ -153,7 +166,7 @@ describe('POSIX Shell Compatibility', () => {
   // stronger coverage than a bare `sh -n`: it is the only way to catch
   // `${BASH_SOURCE[0]}`, `&>` and `[[ ]]`, which parse fine but fail at runtime.
   test('bin/setup-symlink.sh and bin/verify-install.sh execute correctly under POSIX sh', () => {
-    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-shell-'));
     try {
       const env = { ...process.env, HOME: sandboxHome };
 
@@ -214,7 +227,7 @@ describe('POSIX Shell Compatibility', () => {
   }
 
   test('bin/verify-install.sh exits 1, not jq exit 2, when the manifest is missing', () => {
-    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-shell-'));
     try {
       const verify = runVerifyInstallWithHome(sandboxHome);
       // jq exits 2 for "no such file"; the script must translate that (and any
@@ -239,7 +252,7 @@ describe('POSIX Shell Compatibility', () => {
   });
 
   test('bin/verify-install.sh leaks no raw jq error and claims no syntax error for an absent manifest', () => {
-    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-shell-'));
     try {
       const verify = runVerifyInstallWithHome(sandboxHome);
       assert.ok(
@@ -258,7 +271,7 @@ describe('POSIX Shell Compatibility', () => {
   });
 
   test('bin/verify-install.sh prints the actionable symlink hint when the manifest is missing', () => {
-    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-shell-'));
+    const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-shell-'));
     try {
       const verify = runVerifyInstallWithHome(sandboxHome);
       assert.ok(

@@ -5,7 +5,7 @@
 
 **Issue:** #{IssueNumber}  
 **Date:** {Date}  
-**Author:** AgyLoop Planning Subagent (Read-Only)  
+**Author:** CodeLoop Planning Subagent (Read-Only)  
 
 ---
 

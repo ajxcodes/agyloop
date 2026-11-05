@@ -1,5 +1,5 @@
 /**
- * agyloop - Dispatch-counter warning vocabulary (issue #242, absorbs #309.2)
+ * codeloop - Dispatch-counter warning vocabulary (issue #242, absorbs #309.2)
  *
  * The counter label union and the warning sentence used to be inline in
  * `get-next-action.ts`. They now live in `src/domain/constants.ts` so all four

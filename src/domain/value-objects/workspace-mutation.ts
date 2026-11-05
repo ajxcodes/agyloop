@@ -1,5 +1,5 @@
 /**
- * agyloop - Workspace Mutation Value Objects (Domain Layer)
+ * codeloop - Workspace Mutation Value Objects (Domain Layer)
  *
  * The DISCOVERY scoped-write boundary (issue #389) is an invariant, not prose:
  * a discovery stage may READ anything but may only WRITE inside its plan

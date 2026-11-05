@@ -1,7 +1,7 @@
 /** The canonical makeSandbox composed for makeRefusedCwdSandbox (issue #544). */
 function makeRefusedCwdSandbox(): string {
   return makeSandbox({
-    prefix: 'agyloop-349-refused-cwd-',
+    prefix: 'codeloop-349-refused-cwd-',
     dirName: '',
     initGit: false,
     seed: (dir: string) => {
@@ -11,7 +11,7 @@ function makeRefusedCwdSandbox(): string {
   }).dir;
 }
 /**
- * agyloop - AC16 (#309.3): a REVIEW checkpoint in a REFUSED cwd (issue #349)
+ * codeloop - AC16 (#309.3): a REVIEW checkpoint in a REFUSED cwd (issue #349)
  *
  * The degrade path was pinned only at unit level (a fake `StateRepository`
  * whose `save()` throws). This fixture uses the REAL `FileStateRepository` and

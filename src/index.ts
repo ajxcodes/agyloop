@@ -1,5 +1,5 @@
 /**
- * agyloop - Antigravity Development Lifecycle Orchestrator
+ * codeloop - Antigravity Development Lifecycle Orchestrator
  *
  * Clean Hexagonal Architecture foundation:
  * - Domain: Pure StateMachine entity, Value Objects, Sealed Domain Errors
@@ -21,7 +21,7 @@ import { CliGitHubGateway } from './infrastructure/cli-github-gateway';
 import { FilePlanGenerator } from './infrastructure/file-plan-generator';
 import {
   ConfigLoadOptions,
-  AgyLoopConfig,
+  CodeLoopConfig,
   FetchModelsOptions,
   DiscoveredModel,
   GitHubGatewayOptions,
@@ -41,13 +41,13 @@ const defaultModelCatalog = new GeminiModelCatalog({ configRepo: defaultConfigFi
 const defaultGitHubGateway = new CliGitHubGateway();
 const defaultPlanGenerator = new FilePlanGenerator();
 
-export function loadConfig(options: ConfigLoadOptions & { workspaceDir?: string } = {}): AgyLoopConfig {
+export function loadConfig(options: ConfigLoadOptions & { workspaceDir?: string } = {}): CodeLoopConfig {
   return defaultConfigFileRepo.loadConfig(options);
 }
 
 export function resolveModel(
   role: SubagentRoleName | string,
-  config: AgyLoopConfig
+  config: CodeLoopConfig
 ): {
   role: string;
   configured: string;

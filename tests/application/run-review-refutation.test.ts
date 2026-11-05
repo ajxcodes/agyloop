@@ -1,5 +1,5 @@
 /**
- * agyloop - RunReviewUseCase: operator refutations (issue #349 AC4)
+ * codeloop - RunReviewUseCase: operator refutations (issue #349 AC4)
  *
  * The six scenarios the operator named, at use-case level, plus the
  * fail-closed scope limits. Every refusal is raised BEFORE `stateRepo.save()`,

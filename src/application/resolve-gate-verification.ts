@@ -1,5 +1,5 @@
 /**
- * agyloop - ResolveGateVerificationUseCase (Application Layer, issue #298)
+ * codeloop - ResolveGateVerificationUseCase (Application Layer, issue #298)
  *
  * ONE place that turns the approved plan + config + filesystem into the gate's
  * execution contract:
@@ -47,7 +47,7 @@ import {
   parseQualityGateTargets
 } from '../domain';
 import {
-  AgyLoopConfig,
+  CodeLoopConfig,
   BuildDetectorPort,
   PlanGeneratorPort
 } from '../ports';
@@ -64,7 +64,7 @@ export interface GateVerificationParams {
   readonly projectRoot: string;
   /** Execution root: the worktree the gate runs in. */
   readonly workspaceDir: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly issue?: number | string | null;
   readonly planPath?: string | null;
   readonly planDir?: string | null;
@@ -291,7 +291,7 @@ function withDetectedLint(
 async function detectLintBestEffort(
   detector: BuildDetectorPort,
   workspaceDir: string,
-  config?: AgyLoopConfig
+  config?: CodeLoopConfig
 ): Promise<GateCommandDefinition | null> {
   if (typeof detector.detect !== 'function') return null;
   try {
@@ -406,7 +406,7 @@ function resolveCommandPlanWithoutDetector(
  * degrade to the safe default.
  */
 function configuredGateCommands(
-  config?: AgyLoopConfig
+  config?: CodeLoopConfig
 ): readonly (string | GateCommandDefinition)[] | null {
   if (!config) return null;
 
@@ -424,7 +424,7 @@ function configuredGateCommands(
 }
 
 /** Names the config key that supplied the commands. */
-function configuredGateCommandDetail(config?: AgyLoopConfig): string {
+function configuredGateCommandDetail(config?: CodeLoopConfig): string {
   const gateCommands = config?.options?.gateCommands;
   if (Array.isArray(gateCommands) && gateCommands.length > 0) {
     return 'configuration gateCommands override';

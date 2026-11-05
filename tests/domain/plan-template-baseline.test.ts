@@ -1,5 +1,5 @@
 /**
- * agyloop - Template <-> BaselineEvidence pin (issue #392)
+ * codeloop - Template <-> BaselineEvidence pin (issue #392)
  *
  * `templates/implementation-plan.md` used to seed `- **Claim:**`, a shape
  * `BaselineEvidence.fromPlan` cannot read. A plan authored from the template

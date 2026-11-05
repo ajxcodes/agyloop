@@ -1,5 +1,5 @@
 /**
- * agyloop - summary deviations line (issue #432, TR-39/TR-40)
+ * codeloop - summary deviations line (issue #432, TR-39/TR-40)
  */
 
 const { test, describe } = require('node:test');
@@ -13,7 +13,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(REPO_ROOT, 'templates', 'summary-log.md');
 
 function tempSummary(): { dir: string; summaryPath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-deviations-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-summary-deviations-'));
   const summaryPath = path.join(dir, 'CodeLoop Summary.md');
   fs.copyFileSync(TEMPLATE, summaryPath);
   return { dir, summaryPath };

@@ -1,12 +1,12 @@
 /**
- * agyloop - Lifecycle exit documentation contract (issue #351, AC-4)
+ * codeloop - Lifecycle exit documentation contract (issue #351, AC-4)
  *
  * Two contracts the tool STATED but did not implement are now real, and every
  * operator-facing surface must say the same thing:
  *
  * DOC1 - `--help` states the TRIAGE exit on the `next` row
  * DOC2 - `--help` states the collector caveat on `--create-pr`
- * DOC3 - `skills/agyloop/SKILL.md` states the TRIAGE exit condition and qualifies
+ * DOC3 - `skills/codeloop/SKILL.md` states the TRIAGE exit condition and qualifies
  *        its read-only / pause-clearing claims with that one exception
  * DOC4 - the OpenCode skill states the same exit condition and qualification
  * DOC5 - both skills state the collector caveat for the operator
@@ -42,7 +42,7 @@ function readDoc(relativePath: string): string {
   return fs.readFileSync(path.join(PROJECT_ROOT, relativePath), 'utf8');
 }
 
-const SKILL = path.join('skills', 'agyloop', 'SKILL.md');
+const SKILL = path.join('skills', 'codeloop', 'SKILL.md');
 const OPENCODE_SKILL = path.join('integrations', 'opencode', 'codeloop-skill.md');
 
 describe('lifecycle exit documentation contract (issue #351)', () => {
@@ -70,7 +70,7 @@ describe('lifecycle exit documentation contract (issue #351)', () => {
     assert.doesNotMatch(help, /will not auto-close|does NOT auto-close/);
   });
 
-  test('DOC3: skills/agyloop/SKILL.md states the TRIAGE exit condition', () => {
+  test('DOC3: skills/codeloop/SKILL.md states the TRIAGE exit condition', () => {
     const doc = readDoc(SKILL);
     assert.match(doc, /merged or closed/i, `${SKILL} must document the terminal PR exit`);
     assert.match(doc, /records? `?COMPLETED/, `${SKILL} must say the gate records COMPLETED`);

@@ -47,7 +47,7 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
   test('getPlannerSystemPrompt returns comprehensive guidance with key architectural invariants', () => {
     const prompt = resolveUseCase.getPlannerSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 500);
-    assert.ok(prompt.includes('AgyLoop Architectural Planning Subagent'));
+    assert.ok(prompt.includes('CodeLoop Architectural Planning Subagent'));
     assert.ok(prompt.includes('Scoped File Modifications (Plans Only)'));
     assert.ok(prompt.includes('Root-Cause Analysis (RCA)'));
     assert.ok(prompt.includes('templates/discovery-plan.md'));
@@ -129,7 +129,7 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
   test('getImplementerSystemPrompt returns detailed instructions with write capabilities', () => {
     const prompt = resolveUseCase.getImplementerSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 300);
-    assert.ok(prompt.includes('AgyLoop Code Implementation Subagent'));
+    assert.ok(prompt.includes('CodeLoop Code Implementation Subagent'));
     assert.ok(prompt.includes('Strict Plan Adherence') || prompt.includes('strictly adhering'));
     assert.ok(prompt.includes('replace_file_content'));
     assert.ok(prompt.includes('write_to_file'));
@@ -181,7 +181,7 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
   test('getGateSystemPrompt returns comprehensive guidance with log shielding mandate', () => {
     const prompt = resolveUseCase.getGateSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 500);
-    assert.ok(prompt.includes('AgyLoop Quality Gate Verification Subagent'));
+    assert.ok(prompt.includes('CodeLoop Quality Gate Verification Subagent'));
     assert.ok(prompt.includes('Verification-Only Mandate'));
     assert.ok(prompt.includes('Log Isolation & Shielding Mandate'));
     assert.ok(prompt.includes('run_command'));
@@ -258,7 +258,7 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
 
   test('getReviewerSystemPrompt returns comprehensive guidance with verdict tokens', () => {
     const prompt = resolveUseCase.getReviewerSystemPrompt();
-    assert.ok(prompt.includes('# AgyLoop AI Reviewer Subagent System Prompt'));
+    assert.ok(prompt.includes('# CodeLoop AI Reviewer Subagent System Prompt'));
     assert.ok(prompt.includes('REVIEW_STATUS: APPROVED | CHANGES_REQUESTED'));
     assert.ok(prompt.includes('UNFULFILLED_AC:'));
     assert.ok(prompt.includes('REMEDIATION_GUIDANCE:'));

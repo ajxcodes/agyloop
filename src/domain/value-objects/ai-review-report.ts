@@ -1,5 +1,5 @@
 /**
- * agyloop - AiReviewReport Value Object
+ * codeloop - AiReviewReport Value Object
  *
  * Immutable representation of a complete AI PR Review report.
  * Provides structured diagnostic parsing, severity queries, and markdown formatting.

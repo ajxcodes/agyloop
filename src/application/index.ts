@@ -1,5 +1,5 @@
 /**
- * agyloop - Application Layer Public API
+ * codeloop - Application Layer Public API
  */
 
 export * from './resolve-subagent';

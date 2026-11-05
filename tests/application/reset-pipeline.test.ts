@@ -1,5 +1,5 @@
 /**
- * agyloop - ResetPipelineUseCase Tests
+ * codeloop - ResetPipelineUseCase Tests
  *
  * Issue #250 (AC B4): a reset must REPORT what it actually did. The use case
  * used to return a bare `StateMachine`, so the caller had no way to tell

@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan evidence contract (issue #432, TR-21..TR-26b)
+ * codeloop - Plan evidence contract (issue #432, TR-21..TR-26b)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -180,7 +180,7 @@ const WRONG_DECLARATION = [
 
 describe('Plan evidence contract (issue #432)', () => {
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-evidence-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-evidence-'));
   });
 
   afterEach(() => {

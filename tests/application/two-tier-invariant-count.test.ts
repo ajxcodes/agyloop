@@ -1,5 +1,5 @@
 /**
- * agyloop - Two-tier invariant escalation count (issue #242 / NEW-1)
+ * codeloop - Two-tier invariant escalation count (issue #242 / NEW-1)
  *
  * `applyTwoTierInvariant` used to compute
  * `errorCount() + (hasBlockingIssues() ? 1 : 0)`, but `isBlocking()` and

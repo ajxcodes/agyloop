@@ -27,7 +27,7 @@ type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type GitHubGateway = import('../../src').GitHubGateway;
 type GitHubIssueData = import('../../src').GitHubIssueData;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 type PlanGeneratorPort = import('../../src').PlanGeneratorPort;
 type ScaffoldParams = import('../../src').ScaffoldParams;
 type ScaffoldResult = import('../../src').ScaffoldResult;
@@ -79,7 +79,7 @@ class GitHubGatewayDouble implements GitHubGateway {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  public config: AgyLoopConfig = {
+  public config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -94,7 +94,7 @@ class ConfigRepositoryDouble implements ConfigRepository {
     }
   };
 
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return this.config;
   }
 
@@ -127,7 +127,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
       type: 'implementation',
       planPath: '/mock/plans/1-test/[Implementation] - Test.md',
       mirrorPath: '/mock/plans/1-test/implementation_plan.md',
-      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md',
+      summaryPath: '/mock/plans/1-test/CodeLoop Summary.md',
       directoryCreated: false,
       filesCreated: false,
       adoptedExisting: true
@@ -163,7 +163,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
       planDir: '/mock/plans/1-test',
       planPath: '/mock/plans/1-test/[Implementation] - Test.md',
       planFileName: '[Implementation] - Test.md',
-      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md'
+      summaryPath: '/mock/plans/1-test/CodeLoop Summary.md'
     };
   }
 
@@ -296,7 +296,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     );
   });
 
-  test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in AgyLoop Summary.md', async () => {
+  test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in CodeLoop Summary.md', async () => {
     const stateRepo = new StateRepositoryDouble();
     const planGen = new PlanGeneratorDouble();
     const transitionUseCase = new TransitionStageUseCase(

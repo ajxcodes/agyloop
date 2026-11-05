@@ -12,7 +12,7 @@ function seedStageCheckpoint(sandbox: string, stage = 'REVIEW'): void {
 }
 
 /**
- * agyloop - `codeloop review --refute` (issue #349 AC4, end to end)
+ * codeloop - `codeloop review --refute` (issue #349 AC4, end to end)
  *
  * The incident: critique claimed `actions/checkout@v7` does not exist and
  * demanded a revert to `@v4`. The tag exists, and the sentence genuinely
@@ -58,7 +58,7 @@ let sharedShadow: any = null;
 
 function sharedShadowPath() {
   if (sharedShadow === null) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-349-refute-shadow-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-349-refute-shadow-'));
     sharedShadow = { dir, path: buildCritiqueFreePathShadow(path.join(dir, 'bin')) };
   }
   return sharedShadow.path;
@@ -97,7 +97,7 @@ REMEDIATION_GUIDANCE:
 
 function makeRefutationSandbox(comments: any): string {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-349-refute-',
+    prefix: 'codeloop-349-refute-',
     dirName: '',
     gitignore: false,
     seed: (dir: string) => {

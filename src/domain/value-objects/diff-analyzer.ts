@@ -1,5 +1,5 @@
 /**
- * agyloop - DiffAnalyzer & Commit Drafter Engine
+ * codeloop - DiffAnalyzer & Commit Drafter Engine
  *
  * Pure domain analysis engine for git working diffs and issue contexts.
  * Extracts modified files, computes change metrics, detects contract breaking changes,

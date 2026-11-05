@@ -1,5 +1,5 @@
 /**
- * agyloop - FileSourceReader (issue #432, revision reads from issue #489)
+ * codeloop - FileSourceReader (issue #432, revision reads from issue #489)
  *
  * Filesystem adapter for `SourceFileReaderPort`: fs + path, traversal-guarded,
  * plus a git-backed revision read so the Test Register can ask the BASE

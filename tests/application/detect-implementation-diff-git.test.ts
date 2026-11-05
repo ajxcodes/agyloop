@@ -3,7 +3,7 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 /**
- * agyloop - DetectImplementationDiffUseCase against REAL git histories
+ * codeloop - DetectImplementationDiffUseCase against REAL git histories
  * (issue #263, R1-R5)
  *
  * The unit suite (detect-implementation-diff.test.ts) pins the probe's command
@@ -64,7 +64,7 @@ function buildFixture(
 ): Fixture {
   const { ownCommit = false, dirtyTrackedEdit = false, baseAdvance = 3 } = options;
 
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-263-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-263-'));
   fixtureRoots.push(root);
   const repo = path.join(root, 'repo');
   const wt = path.join(root, 'wt');

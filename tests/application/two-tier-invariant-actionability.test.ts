@@ -1,5 +1,5 @@
 /**
- * agyloop - Two-tier invariant: content-aware blocking (issue #349 AC1/AC3)
+ * codeloop - Two-tier invariant: content-aware blocking (issue #349 AC1/AC3)
  *
  * The invariant escalated whenever `blockingCount() > 0`, and a finding was
  * blocking iff its severity was `critical`/`error`. A model that mislabelled an

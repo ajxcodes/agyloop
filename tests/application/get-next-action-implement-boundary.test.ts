@@ -1,5 +1,5 @@
 /**
- * agyloop - IMPLEMENT boundary contract tests (issue #327, Defect 4 / #330)
+ * codeloop - IMPLEMENT boundary contract tests (issue #327, Defect 4 / #330)
  *
  * The defect: `next` at IMPLEMENT returned a byte-identical implementer
  * directive whether the worktree was untouched or already carried the whole

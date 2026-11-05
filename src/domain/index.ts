@@ -1,5 +1,5 @@
 /**
- * agyloop - Domain Layer Public API
+ * codeloop - Domain Layer Public API
  */
 
 export * from './errors';

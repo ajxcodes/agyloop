@@ -22,7 +22,7 @@ async function runRestartSandbox(
 }
 
 /**
- * agyloop - `next --restart` / `--skip-discovery` e2e through runCli (issue #237)
+ * codeloop - `next --restart` / `--skip-discovery` e2e through runCli (issue #237)
  *
  * Pins the two new explicit-intent flags end to end, from `parseArguments`
  * through the CLI dispatcher into the persisted checkpoint.

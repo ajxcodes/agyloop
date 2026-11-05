@@ -12,7 +12,7 @@ function seedReviewStageCheckpoint(sandbox: string, stage: string, history: Arra
 }
 
 /**
- * agyloop - `review --json` reports THIS round's verdict (issue #284, D7/AC8)
+ * codeloop - `review --json` reports THIS round's verdict (issue #284, D7/AC8)
  *
  * The defect: `lastRecordedReviewerVerdict()` scanned history backwards for
  * ANY `reviewerVerdict`, so a round that supplied no reviewer block reported
@@ -50,7 +50,7 @@ interface Sandbox {
 
 function makeReviewJsonSandbox(stage: string, history: Array<Record<string, unknown>>): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-review-json-',
+    prefix: 'codeloop-cli-review-json-',
     dirName: '',
     gitignore: false,
     seed: (dir: string) => {

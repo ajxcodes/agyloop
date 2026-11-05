@@ -1,5 +1,5 @@
 /**
- * agyloop - Gate target coverage (issue #408, D2)
+ * codeloop - Gate target coverage (issue #408, D2)
  *
  * Compares a filed gate report's executed commands with the plan's declared
  * `### Quality Gate Targets`.

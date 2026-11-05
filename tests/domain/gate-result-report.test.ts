@@ -1,5 +1,5 @@
 /**
- * agyloop - GateResultReport value object (issue #284, AC1/AC9)
+ * codeloop - GateResultReport value object (issue #284, AC1/AC9)
  *
  * The gate's evidence block is the ONLY record of a gate run. It fails closed:
  * a block that claims PASSED with failing tests, carries an unmeasurable

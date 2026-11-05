@@ -1,5 +1,5 @@
 /**
- * agyloop - DISCOVERY scoped-write boundary, application layer (issue #389)
+ * codeloop - DISCOVERY scoped-write boundary, application layer (issue #389)
  *
  * The boundary prose had no reader: a blank and a polluted discovery run
  * produced byte-identical `next` output. These cases drive the use case with a
@@ -27,7 +27,7 @@ const {
   TITLE_DISCOVERY_BOUNDARY_VIOLATION
 } = require('../../dist/domain');
 
-import type { StateRepository, ConfigRepository, AgyLoopConfig } from '../../src/ports';
+import type { StateRepository, ConfigRepository, CodeLoopConfig } from '../../src/ports';
 import type { StateMachineSnapshot, WorkspaceMutationBaseline } from '../../src/domain';
 
 const ISSUE = 41;
@@ -93,7 +93,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
     options: {
       commitAfter: false,

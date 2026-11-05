@@ -1,5 +1,5 @@
 /**
- * agyloop - CritiquePort Inversion of Control Interface
+ * codeloop - CritiquePort Inversion of Control Interface
  *
  * Contract for resolving the critique CLI executable and conducting pre-commit/PR reviews.
  * Depends strictly on src/domain/ with zero direct I/O modules.

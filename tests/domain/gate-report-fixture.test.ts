@@ -1,5 +1,5 @@
 /**
- * agyloop - Gate-report fixture parser tests (issue #413)
+ * codeloop - Gate-report fixture parser tests (issue #413)
  *
  * GRF1 - a marker + JSON.stringify({ … }) parses to a GateResultReport; the
  *        span starts at `{` and ends after the balanced `}`

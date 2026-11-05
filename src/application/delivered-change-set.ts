@@ -1,5 +1,5 @@
 /**
- * agyloop - The delivered change set (issue #432, AC5)
+ * codeloop - The delivered change set (issue #432, AC5)
  *
  * The review may only certify an AC whose evidence is in the PR that ships.
  * This module MEASURES that set in the reviewed worktree: tracked changes
@@ -50,7 +50,7 @@ function parseNameOnly(stdout: string | undefined): string[] {
  */
 export function buildChangeSetDigestCommand(): string {
   return (
-    'digest_idx=$(git rev-parse --git-path agyloop-digest-index.$$) && ' +
+    'digest_idx=$(git rev-parse --git-path codeloop-digest-index.$$) && ' +
     'GIT_INDEX_FILE="$digest_idx" git read-tree HEAD && ' +
     'GIT_INDEX_FILE="$digest_idx" git add -A -- . && ' +
     'GIT_INDEX_FILE="$digest_idx" git rm -r -q --cached --ignore-unmatch -- .agyloop .codeloop artifacts node_modules && ' +

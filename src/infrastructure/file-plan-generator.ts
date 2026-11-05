@@ -1,5 +1,5 @@
 /**
- * agyloop - FilePlanGenerator Infrastructure Adapter
+ * codeloop - FilePlanGenerator Infrastructure Adapter
  *
  * Implements PlanGeneratorPort to manage artifacts/plans/ directory initialization,
  * .gitignore safety enforcement, template compilation, and execution run logs.
@@ -78,7 +78,7 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 
 **Issue:** #{IssueNumber}  
 **Date:** {Date}  
-**Author:** AgyLoop Planning Subagent (Read-Only)  
+**Author:** CodeLoop Planning Subagent (Read-Only)  
 
 ---
 
@@ -108,7 +108,7 @@ export const FALLBACK_TEMPLATES: Readonly<Record<string, string>> = Object.freez
 
 **Issue:** #{IssueNumber}  
 **Date:** {Date}  
-**Author:** AgyLoop Planning Subagent  
+**Author:** CodeLoop Planning Subagent  
 **Status:** DRAFT | APPROVED  
 
 ---
@@ -461,7 +461,7 @@ export class FilePlanGenerator implements PlanGeneratorPort {
   public generateSummaryLog(options: GenerateSummaryLogOptions): GenerateSummaryLogResult {
     const {
       targetDir,
-      projectName = 'AgyLoop Project',
+      projectName = 'CodeLoop Project',
       issueNumber = '',
       timestamp = new Date().toISOString(),
       variables = {},

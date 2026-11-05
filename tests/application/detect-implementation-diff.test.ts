@@ -1,5 +1,5 @@
 /**
- * agyloop - DetectImplementationDiffUseCase Unit Tests (issue #259, D1-D10;
+ * codeloop - DetectImplementationDiffUseCase Unit Tests (issue #259, D1-D10;
  * issue #263, P1-P8)
  *
  * The ONE implementation-evidence probe. It answers a single question before

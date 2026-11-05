@@ -1,11 +1,11 @@
 /**
- * agyloop - CLI visibility of a persisted gate pause (issue #218 AC4, defects A/B/C)
+ * codeloop - CLI visibility of a persisted gate pause (issue #218 AC4, defects A/B/C)
  *
  * A circuit-breaker pause is persisted in `.agyloop/state.json` as `pausedAtGate`, but
  * before these fixes only the human `codeloop next` banner ever mentioned it:
  *
  *   - `codeloop next --json` returned before that banner, so the command the agent
- *     harness is told to run (skills/agyloop/SKILL.md) could not see the pause at all.
+ *     harness is told to run (skills/codeloop/SKILL.md) could not see the pause at all.
  *   - `codeloop status` never rendered it, so a human had no way to know the run was
  *     waiting on them.
  *   - `--help` told users to run `codeloop next` to clear the pause, which never
@@ -227,7 +227,7 @@ describe('an APPROVAL pause presents one next step (issue #362, Finding 3)', () 
     assert.ok(parsed.pause, `expected a pause block, got: ${result.stdout}`);
     assert.strictEqual(parsed.pause.gate, 'APPROVAL');
     assert.strictEqual(parsed.pause.pausedAt, PAUSED_AT);
-    // The documented human-gate contract (skills/agyloop/SKILL.md): there is
+    // The documented human-gate contract (skills/codeloop/SKILL.md): there is
     // nothing to resume at a gate.
     assert.strictEqual(parsed.pause.resumeCommand, null);
     assert.ok(parsed.pause.message.includes(APPROVAL_GATE_COMMAND), parsed.pause.message);
@@ -342,7 +342,7 @@ describe('codeloop resume', () => {
   });
 
   test('--dry-run reports the clear without writing the checkpoint', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-resume-dry-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-resume-dry-'));
     const statePath = path.join(tempDir, '.agyloop', 'state.json');
     const prevCwd = process.cwd();
     const originalLog = console.log;
@@ -381,7 +381,7 @@ describe('codeloop resume', () => {
   });
 
   test('--issue routes the resume at the matching task checkpoint only', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-resume-issue-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-resume-issue-'));
     const rootState = path.join(tempDir, '.agyloop', 'state.json');
     const taskState = path.join(tempDir, '.agyloop', 'tasks', '99.json');
     fs.mkdirSync(path.join(tempDir, '.agyloop', 'tasks'), { recursive: true });
@@ -419,7 +419,7 @@ describe('codeloop resume', () => {
   });
 
   test('resuming a paused pipeline clears the pause and prints pure JSON', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-resume-json-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-resume-json-'));
     const statePath = path.join(tempDir, '.agyloop', 'state.json');
     const prevCwd = process.cwd();
     const originalLog = console.log;

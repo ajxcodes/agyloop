@@ -1,5 +1,5 @@
 /**
- * agyloop - `implement` consumes the APPROVAL pause it answers (issue #367)
+ * codeloop - `implement` consumes the APPROVAL pause it answers (issue #367)
  *
  * `codeloop implement` advanced APPROVAL -> IMPLEMENT but left
  * `pausedAtGate: 'APPROVAL'` on the saved checkpoint, because
@@ -36,7 +36,7 @@ const {
 import type {
   StateRepository,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   PlanGeneratorPort
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
@@ -84,7 +84,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  private readonly config: AgyLoopConfig = {
+  private readonly config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -99,7 +99,7 @@ class ConfigRepositoryDouble implements ConfigRepository {
     }
   };
 
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return this.config;
   }
 
@@ -146,7 +146,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
       planDir: PLAN_DIR,
       planPath: PLAN_PATH,
       planFileName: 'implementation_plan.md',
-      summaryPath: `${PLAN_DIR}/AgyLoop Summary.md`
+      summaryPath: `${PLAN_DIR}/CodeLoop Summary.md`
     };
   }
 

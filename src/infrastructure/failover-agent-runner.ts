@@ -1,5 +1,5 @@
 /**
- * agyloop - FailoverAgentRunner Infrastructure Adapter (Decorator)
+ * codeloop - FailoverAgentRunner Infrastructure Adapter (Decorator)
  *
  * Wraps a primary AgentRunnerPort and, on `QuotaExhaustedError` only, re-invokes
  * a configured fallback runner exactly once. Pure quota-awareness: any other

@@ -1,5 +1,5 @@
 /**
- * agyloop - StateMachine Gate-Pause Consumption Tests
+ * codeloop - StateMachine Gate-Pause Consumption Tests
  *
  * THE BUG guarded here: `pauseAtGate()` set `pausedAtGate`/`pausedAtTimestamp`
  * and `transition()` never cleared them, so a CIRCUIT_BREAKER halt (exhausted

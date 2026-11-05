@@ -392,7 +392,7 @@ export type CliCommandName = typeof CLI_COMMANDS[keyof typeof CLI_COMMANDS];
  * a plain string.
  *
  * `gate` / `gates` are deliberately ABSENT: they were removed commands whose
- * case only prints "use `agyloop next` instead", and they are not documented
+ * case only prints "use `codeloop next` instead", and they are not documented
  * commands.
  */
 export const CLI_DOCUMENTED_COMMANDS: readonly string[] = Object.freeze(

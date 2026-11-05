@@ -1,5 +1,5 @@
 /**
- * agyloop - PR Feedback Classification Tests (issue #269, Defect 1)
+ * codeloop - PR Feedback Classification Tests (issue #269, Defect 1)
  *
  * The classifier is what tells ACTIONABLE review feedback apart from the
  * repository's own automated summaries and from the TOOL's own replies.

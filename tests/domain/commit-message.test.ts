@@ -1,5 +1,5 @@
 /**
- * agyloop - CommitMessage Value Object Unit Tests
+ * codeloop - CommitMessage Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');

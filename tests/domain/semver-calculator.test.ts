@@ -1,5 +1,5 @@
 /**
- * agyloop - SemVerCalculator Value Object Unit Tests
+ * codeloop - SemVerCalculator Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');

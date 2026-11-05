@@ -1,5 +1,5 @@
 /**
- * agyloop - `implement` wires the lifecycle warning channel (issue #426, AC7)
+ * codeloop - `implement` wires the lifecycle warning channel (issue #426, AC7)
  *
  * `RunLifecycleParams.onProgress` is the ONLY channel the #420 refusal teardown
  * writes to, and before this change no call site passed a callback: a retained

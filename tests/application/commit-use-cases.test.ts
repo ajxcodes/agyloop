@@ -1,5 +1,5 @@
 /**
- * agyloop - DraftCommitUseCase & ExecuteCommitUseCase Unit Tests
+ * codeloop - DraftCommitUseCase & ExecuteCommitUseCase Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -124,7 +124,7 @@ class PlanGeneratorDouble implements Partial<PlanGeneratorPort> {
       planDir: '/mock/artifacts/plans/30-task',
       planPath: '/mock/artifacts/plans/30-task/implementation-plan.md',
       planFileName: 'implementation-plan.md',
-      summaryPath: '/mock/artifacts/plans/30-task/AgyLoop Summary.md'
+      summaryPath: '/mock/artifacts/plans/30-task/CodeLoop Summary.md'
     };
   }
 
@@ -794,7 +794,7 @@ diff --git a/src/app.ts b/src/app.ts
         (err: any) => {
           assert.ok(err instanceof CommitExecutionError);
           assert.strictEqual(err.operation, 'git status');
-          assert.match(err.message, /only paths agyloop excludes/);
+          assert.match(err.message, /only paths codeloop excludes/);
           assert.match(err.message, /\.agyloop/);
           return true;
         }

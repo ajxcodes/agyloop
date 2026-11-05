@@ -1,5 +1,5 @@
 /**
- * agyloop - approved-plan digest contract (issue #421)
+ * codeloop - approved-plan digest contract (issue #421)
  *
  * APD1 - a matching digest returns
  * APD2 - a mismatch refuses with field, path and BOTH digests

@@ -40,7 +40,7 @@ interface Fixture {
 }
 
 function makeFixture(options: FixtureOptions = {}): Fixture {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-stale-guard-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-stale-guard-'));
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'stub'), { recursive: true });
@@ -656,7 +656,7 @@ describe('Stale build refusal', () => {
   });
 
   test("every bin/*.ps1 launcher propagates node's exit code", () => {
-    for (const name of ['codeloop.ps1', 'agyloop.ps1']) {
+    for (const name of ['codeloop.ps1', 'codeloop.ps1']) {
       const source = fs.readFileSync(path.join(ROOT, 'bin', name), 'utf-8');
       assert.match(source, /&\s+node\b[\s\S]*exit \$LASTEXITCODE/, `bin/${name} must propagate node's exit code`);
     }

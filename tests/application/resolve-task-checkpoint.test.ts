@@ -1,5 +1,5 @@
 /**
- * agyloop - The one shared task-checkpoint resolver's ranking rule (#226 D5/D6)
+ * codeloop - The one shared task-checkpoint resolver's ranking rule (#226 D5/D6)
  *
  * `selectAuthoritativeCheckpoint` is pure: no I/O, no mocks, no clock. That is the
  * whole point of splitting it out of `resolveAuthoritativeCheckpoint` — if the

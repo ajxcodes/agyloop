@@ -1,6 +1,6 @@
 const { gitStatus } = require('../helpers/sandbox.ts');
 /**
- * agyloop - FileBuildDetector Infrastructure Tests
+ * codeloop - FileBuildDetector Infrastructure Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -32,7 +32,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-build-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-build-test-'));
   });
 
   afterEach(() => {
@@ -926,7 +926,7 @@ describe('FileBuildDetector - lint and command-plan provenance (issue #298)', ()
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-build-lint-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-build-lint-'));
   });
 
   afterEach(() => {
@@ -1049,7 +1049,7 @@ describe('Workflow lint composition (#369, was #368)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-workflow-lint-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-workflow-lint-'));
   });
 
   afterEach(() => {
@@ -1249,7 +1249,7 @@ describe('FileBuildDetector - polyglot subproject discovery (#334)', () => {
     detected.commands.map((command: any) => command.command);
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-build-334-'));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-build-334-'));
   });
 
   afterEach(() => {

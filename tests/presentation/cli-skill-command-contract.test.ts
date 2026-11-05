@@ -1,8 +1,8 @@
 /**
- * agyloop - Skill <-> CLI Command Contract Tests (issue #269, AC2.2)
+ * codeloop - Skill <-> CLI Command Contract Tests (issue #269, AC2.2)
  *
  * The OpenCode skill documented `codeloop review`, but the command did not
- * exist: `Error: Unknown command "review". Run "agyloop --help" for available
+ * exist: `Error: Unknown command "review". Run "codeloop --help" for available
  * commands.` The skill and the CLI disagreed, and an agent following the skill
  * got an "Unknown command" at the moment it mattered.
  *
@@ -105,7 +105,7 @@ describe('Skill <-> CLI command contract (issue #269)', () => {
   });
 
   test('SK3: AGY_SUBAGENT=1 may run `triage` and `halt`, but `review` is blocked like any other mutating command', async () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-skill-contract-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-skill-contract-'));
     const prevCwd = process.cwd();
     const originalSubagent = process.env.AGY_SUBAGENT;
     const originalLog = console.log;
@@ -224,7 +224,7 @@ describe('Skill flag rows <-> capability table (issue #339, AC-2.3/AC-2.4)', () 
   const { COMMAND_CAPABILITIES } = require('../../dist/presentation/cli-flags');
   // The SHIPPED operator skill (the plan's fix site) — not the OpenCode
   // `integrations/opencode` asset, which is a different, shorter document.
-  const AGYLOOP_SKILL_FILE = path.join(PROJECT_ROOT, 'skills', 'agyloop', 'SKILL.md');
+  const AGYLOOP_SKILL_FILE = path.join(PROJECT_ROOT, 'skills', 'codeloop', 'SKILL.md');
 
   function skillRows(): string[] {
     return fs.readFileSync(AGYLOOP_SKILL_FILE, 'utf8').split('\n');

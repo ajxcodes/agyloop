@@ -3,7 +3,7 @@ function readApprovedPlanGateCheckpoint(sandbox: Sandbox): any {
 }
 
 /**
- * agyloop - the approved-plan identity is frozen at the APPROVAL gate (#421)
+ * codeloop - the approved-plan identity is frozen at the APPROVAL gate (#421)
  *
  * CLI-1: a real `transition APPROVAL` records the plan digest and path
  * CLI-2: a real `implement` refuses a plan edited after approval
@@ -58,7 +58,7 @@ interface CliRun {
 
 /** A real git repo parked at PLAN for issue #421 with a readable plan. */
 function seedSandbox(currentStage: string = 'PLAN', mode: string = 'standard'): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-approved-plan-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-approved-plan-'));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });

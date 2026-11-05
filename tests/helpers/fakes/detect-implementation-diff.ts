@@ -1,5 +1,5 @@
 /**
- * agyloop - the TWO canonical probe doubles (issue #544 / AC2)
+ * codeloop - the TWO canonical probe doubles (issue #544 / AC2)
  *
  * Retires the spellings `DetectImplementationDiffDouble` (4 of 5 copies) and
  * `DetectImplementationDiffDouble` for the implementation-evidence probe,

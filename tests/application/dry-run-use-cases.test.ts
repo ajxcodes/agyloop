@@ -1,5 +1,5 @@
 /**
- * agyloop - use-case `dryRun` contracts (#248 Wave 2)
+ * codeloop - use-case `dryRun` contracts (#248 Wave 2)
  *
  * The CLI tests prove the FLAG is forwarded and the output is truthful; these
  * tests prove the USE CASE actually performs no mutation, and every one has a

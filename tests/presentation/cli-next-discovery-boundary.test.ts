@@ -3,7 +3,7 @@ function runGit(dir: string, args: readonly string[]): void {
 }
 
 /**
- * agyloop - `next` reports a DISCOVERY boundary violation (issue #389, AC3a/c)
+ * codeloop - `next` reports a DISCOVERY boundary violation (issue #389, AC3a/c)
  *
  * End-to-end through the CLI: a real git sandbox at DISCOVERY, a real `next`
  * dispatch (which captures the baseline), an ignored `dist/polluted.js` write,
@@ -52,7 +52,7 @@ const GIT_AVAILABLE = (() => {
 
 
 function seedSandbox(): { dir: string; planDir: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-boundary-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-next-boundary-'));
   runGit(dir, ['init', '-q', '-b', 'main']);
   runGit(dir, ['config', 'user.email', 'smoke@test']);
   runGit(dir, ['config', 'user.name', 'smoke']);

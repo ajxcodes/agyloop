@@ -1,5 +1,5 @@
 /**
- * agyloop - FileGateReportRepository (issue #284)
+ * codeloop - FileGateReportRepository (issue #284)
  *
  * Persists the gate subagent's evidence beside the checkpoint it certifies:
  * `<workspace>/.agyloop/tasks/<issue>.gate.json`.

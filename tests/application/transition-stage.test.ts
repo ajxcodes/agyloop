@@ -1,5 +1,5 @@
 /**
- * agyloop - TransitionStageUseCase Side-Effect Ordering Tests
+ * codeloop - TransitionStageUseCase Side-Effect Ordering Tests
  *
  * THE BUG guarded here (#226): the IMPLEMENT worktree guardrail ran BEFORE
  * `sm.transition(...)`, which is the single thrower of `InvalidTransitionError`
@@ -138,7 +138,7 @@ describe('TransitionStageUseCase side-effect ordering (#226)', () => {
   let recorder: WorktreeRecorder;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-transition-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-transition-test-'));
     recorder = { createWorktreeCalls: 0, branches: [] };
   });
 
@@ -285,7 +285,7 @@ describe('TransitionStageUseCase - approved plan immutability (issue #298)', () 
   let planPath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-transition-digest-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-transition-digest-'));
     planDir = path.join(tempDir, 'artifacts/plans/16-task');
     fs.mkdirSync(planDir, { recursive: true });
     planPath = path.join(planDir, 'implementation_plan.md');
@@ -1188,7 +1188,7 @@ describe('TransitionStageUseCase save-before-scaffold (#301)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-transition-301-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-transition-301-'));
   });
 
   afterEach(() => {

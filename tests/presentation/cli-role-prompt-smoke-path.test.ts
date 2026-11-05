@@ -1,5 +1,5 @@
 /**
- * agyloop - Role prompt smoke path contract (issue #279, absorbed into #241)
+ * codeloop - Role prompt smoke path contract (issue #279, absorbed into #241)
  *
  * The role prompts used to mandate `/tmp/smoke-<issue>` — the one directory the
  * storage layer refuses every state mutation in.
@@ -28,7 +28,7 @@ const {
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const CLI_BIN = path.join(PROJECT_ROOT, 'bin', 'codeloop.js');
-const PATH_TOKEN = /\$HOME\/\.cache\/agyloop\/smoke-<issue>/;
+const PATH_TOKEN = /\$HOME\/\.cache\/codeloop\/smoke-<issue>/;
 
 function rolePrompts(): string[] {
   const resolveSubagent = new ResolveSubagentUseCase({});
@@ -44,7 +44,7 @@ function rolePrompts(): string[] {
 }
 
 function makeFakeHome(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-smoke-home-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-smoke-home-'));
 }
 
 function makeGitDir(dir: string): void {
@@ -85,7 +85,7 @@ function runTransition(cwd: string, env: NodeJS.ProcessEnv, extraArgs: string[] 
 describe('Role prompt smoke path contract (issue #279)', () => {
   test('SP1: the mandated path is permitted and a state mutation succeeds there', () => {
     const fakeHome = makeFakeHome();
-    const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
+    const sandbox = path.join(fakeHome, '.cache', 'codeloop', 'smoke-241');
     try {
       makeGitDir(sandbox);
 
@@ -134,8 +134,8 @@ describe('Role prompt smoke path contract (issue #279)', () => {
 
   test('SP4: a sandbox cwd cannot reach the real workspace', () => {
     const fakeHome = makeFakeHome();
-    const sandbox = path.join(fakeHome, '.cache', 'agyloop', 'smoke-241');
-    const externalWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-real-workspace-'));
+    const sandbox = path.join(fakeHome, '.cache', 'codeloop', 'smoke-241');
+    const externalWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-real-workspace-'));
     try {
       makeGitDir(sandbox);
       const run = runTransition(sandbox, productionEnv(fakeHome), ['--workspace', externalWorkspace]);

@@ -1,5 +1,5 @@
 /**
- * agyloop - ResolveTaskCheckpoint (Application Layer)
+ * codeloop - ResolveTaskCheckpoint (Application Layer)
  *
  * ONE rule for the question every lifecycle command used to answer differently:
  * *which checkpoint on disk is authoritative right now?*

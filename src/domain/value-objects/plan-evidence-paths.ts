@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan evidence paths (issue #432, AC4/AC6)
+ * codeloop - Plan evidence paths (issue #432, AC4/AC6)
  *
  * A plan that instructs work on a path the commit can never contain certifies
  * evidence the delivered PR cannot hold (#433). This module extracts the

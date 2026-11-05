@@ -1,5 +1,5 @@
 /**
- * agyloop - GitWorktreeManager Infrastructure Adapter
+ * codeloop - GitWorktreeManager Infrastructure Adapter
  *
  * Implements WorktreeManagerPort using Git CLI and Node.js filesystem APIs.
  * Enforces strict worktree isolation for parallel subagent task executions.
@@ -290,7 +290,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       if (!fs.existsSync(gitignorePath)) {
         fs.writeFileSync(
           gitignorePath,
-          `# AgyLoop Git Worktrees\n${targetEntry}\n`,
+          `# CodeLoop Git Worktrees\n${targetEntry}\n`,
           'utf8'
         );
         return true;
@@ -298,7 +298,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
 
       const content = fs.readFileSync(gitignorePath, 'utf8');
 
-      // Granular state rules (agyloop/codeloop init) supersede the blanket state-dir ignore,
+      // Granular state rules (codeloop/codeloop init) supersede the blanket state-dir ignore,
       // which would otherwise hide the tracked config.json again.
       if (targetEntry === DEFAULT_STATE_DIR || targetEntry === CODELOOP_STATE_DIR) {
         const lines = content.split(/\r?\n/).map((l) => l.trim().replace(/^\//, '').replace(/\/$/, ''));
@@ -317,7 +317,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
       }
 
       const separator = content.endsWith('\n') ? '' : '\n';
-      const updated = `${content}${separator}\n# AgyLoop Git Worktrees\n${targetEntry}\n`;
+      const updated = `${content}${separator}\n# CodeLoop Git Worktrees\n${targetEntry}\n`;
       fs.writeFileSync(gitignorePath, updated, 'utf8');
       return true;
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -514,7 +514,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         // Already registered worktree, ensure node_modules, artifacts, and .agyloop, then return
         this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
         this.linkArtifactsIfPresent(workspace, worktreePath);
-        this.linkAgyloopStateIfPresent(workspace, worktreePath);
+        this.linkCodeloopStateIfPresent(workspace, worktreePath);
         return found;
       }
 
@@ -699,7 +699,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     // 9. Build Cache Optimization, Artifacts & State Checkpoint Mirroring
     this.linkNodeModulesIfPresent(workspace, worktreePath, options.linkNodeModules);
     this.linkArtifactsIfPresent(workspace, worktreePath);
-    this.linkAgyloopStateIfPresent(workspace, worktreePath);
+    this.linkCodeloopStateIfPresent(workspace, worktreePath);
 
     return new WorktreeDescriptor({
       taskId,
@@ -846,7 +846,7 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     this.linkNodeModulesIfPresent(workspace, worktreePath, fields.linkNodeModules);
 
     this.linkArtifactsIfPresent(workspace, worktreePath);
-    this.linkAgyloopStateIfPresent(workspace, worktreePath);
+    this.linkCodeloopStateIfPresent(workspace, worktreePath);
 
     return new WorktreeDescriptor({
       taskId: fields.taskId,
@@ -1840,14 +1840,14 @@ export class GitWorktreeManager implements WorktreeManagerPort {
     }
   }
 
-  private linkAgyloopStateIfPresent(workspace: string, worktreePath: string): void {
+  private linkCodeloopStateIfPresent(workspace: string, worktreePath: string): void {
     try {
-      const rootAgyloop = path.join(workspace, DEFAULT_STATE_DIR);
-      const targetAgyloop = path.join(worktreePath, DEFAULT_STATE_DIR);
+      const rootCodeloop = path.join(workspace, DEFAULT_STATE_DIR);
+      const targetCodeloop = path.join(worktreePath, DEFAULT_STATE_DIR);
 
       // AFTER: Guard self-referential symlinks when root and target are identical
-      const resolvedRoot = path.resolve(rootAgyloop);
-      const resolvedTarget = path.resolve(targetAgyloop);
+      const resolvedRoot = path.resolve(rootCodeloop);
+      const resolvedTarget = path.resolve(targetCodeloop);
 
       if (resolvedRoot === resolvedTarget) {
         // We are at root / no worktree active: ensure it's a real directory
@@ -1871,23 +1871,23 @@ export class GitWorktreeManager implements WorktreeManagerPort {
         }
 
         // In a worktree: safely link target -> root
-        if (!fs.existsSync(targetAgyloop)) {
+        if (!fs.existsSync(targetCodeloop)) {
           // If a broken or leftover symlink exists, unlink it first
           try {
-            if (fs.lstatSync(targetAgyloop).isSymbolicLink()) {
-              fs.unlinkSync(targetAgyloop);
+            if (fs.lstatSync(targetCodeloop).isSymbolicLink()) {
+              fs.unlinkSync(targetCodeloop);
             }
           } catch {
             // Path doesn't exist, proceed
           }
 
           // Ensure parent directory exists before symlinking
-          const parentDir = path.dirname(targetAgyloop);
+          const parentDir = path.dirname(targetCodeloop);
           if (!fs.existsSync(parentDir)) {
             fs.mkdirSync(parentDir, { recursive: true });
           }
 
-          fs.symlinkSync(rootAgyloop, targetAgyloop, process.platform === 'win32' ? 'junction' : 'dir');
+          fs.symlinkSync(rootCodeloop, targetCodeloop, process.platform === 'win32' ? 'junction' : 'dir');
         }
       }
     } catch {

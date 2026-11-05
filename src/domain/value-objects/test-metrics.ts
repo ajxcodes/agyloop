@@ -1,5 +1,5 @@
 /**
- * agyloop - TestMetrics Value Object
+ * codeloop - TestMetrics Value Object
  *
  * Immutable representation of test execution metrics (passed, failed, skipped, total).
  * Pure domain value object: 100% free of filesystem, child processes, or external I/O.

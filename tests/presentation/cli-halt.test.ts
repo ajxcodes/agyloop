@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI halt inbound channel tests (issue #220)
+ * codeloop - CLI halt inbound channel tests (issue #220)
  *
  * `codeloop halt --reason quota [--retry-after <s>] [--json] [--dry-run]`
  * persists a CIRCUIT_BREAKER pause and exits 2, restoring reachability of the
@@ -130,7 +130,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC-293: empty workspace + halt --issue 777 creates no task and no phantom', async () => {
     const prevCwd = process.cwd();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-phantom-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-phantom-'));
     const origLog = console.log;
     const origErr = console.error;
     let stdout = '';
@@ -181,7 +181,7 @@ describe('codeloop halt (issue #220)', () => {
     // Double-halt on a SEEDED root checkpoint also keeps the first timestamp
     // (issue #293: a halt with no checkpoint is a refusal, not a fresh start).
     const prevCwd = process.cwd();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-firstwins-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-firstwins-'));
     const origLog = console.log;
     const origErr = console.error;
     try {
@@ -228,7 +228,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC2: missing --reason on empty workspace writes no state file', async () => {
     const prevCwd = process.cwd();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-nomut-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-nomut-'));
     const origLog = console.log;
     const origErr = console.error;
     let stderr = '';
@@ -337,7 +337,7 @@ describe('codeloop halt (issue #220)', () => {
 
   test('AC6: halt -> resume round-trip clears the pause', async () => {
     const prevCwd = process.cwd();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-roundtrip-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-roundtrip-'));
     const origLog = console.log;
     const origErr = console.error;
     let stdout = '';
@@ -388,7 +388,7 @@ describe('codeloop halt (issue #220)', () => {
     );
 
     const prevCwd = process.cwd();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-help-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-help-'));
     const origLog = console.log;
     const origErr = console.error;
     let stdout = '';
@@ -479,7 +479,7 @@ describe('codeloop halt --issue (issue #225)', () => {
     { seed = null, taskSeed = null, taskIssue = 999, env = {} }: any = {}
   ): Promise<any> {
     const prevCwd = process.cwd();
-    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-issue-'));
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-issue-'));
     const originalEnv: any = {};
     for (const key of Object.keys(env)) {
       originalEnv[key] = process.env[key];
@@ -604,7 +604,7 @@ describe('codeloop halt --issue (issue #225)', () => {
   test('AC5: halt --issue 999 preserves first-wins pausedAtTimestamp', async () => {
     const firstPause = '2026-10-14T12:00:00.000Z';
     const prevCwd = process.cwd();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-issue-firstwins-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-issue-firstwins-'));
     const origLog = console.log;
     const origErr = console.error;
     try {
@@ -671,7 +671,7 @@ describe('codeloop halt rejects a garbage --issue token (#250)', () => {
   }
   async function runCliInSandboxLocal(args: readonly string[], { seed = null, env = {} }: any = {}): Promise<any> {
     const prevCwd = process.cwd();
-    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-garbage-'));
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-garbage-'));
     const originalEnv: any = {};
     for (const key of Object.keys(env)) {
       originalEnv[key] = process.env[key];
@@ -746,7 +746,7 @@ describe('codeloop halt rejects a garbage --issue token (#250)', () => {
 
   test('T-B2: a valid --issue 999 addresses tasks/999.json, never the root', async () => {
     const prevCwd = process.cwd();
-    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-halt-valid-'));
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-halt-valid-'));
     const origLog = console.log;
     const origErr = console.error;
     try {

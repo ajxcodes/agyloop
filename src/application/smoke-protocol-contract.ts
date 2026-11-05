@@ -1,5 +1,5 @@
 /**
- * agyloop - Smoke protocol approval guard (issue #388, Defect 2)
+ * codeloop - Smoke protocol approval guard (issue #388, Defect 2)
  *
  * `SmokeProtocol.fromPlan` is the static validator the gate relies on. Before
  * #388 it had no rule for a block that WRITES a path without creating the

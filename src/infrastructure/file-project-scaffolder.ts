@@ -1,5 +1,5 @@
 /**
- * agyloop - FileProjectScaffolder Infrastructure Adapter
+ * codeloop - FileProjectScaffolder Infrastructure Adapter
  *
  * Implements ProjectScaffolderPort using the local filesystem.
  */
@@ -70,7 +70,7 @@ const E2E_TOOLS: readonly { name: string; markers: readonly string[] }[] = [
 const E2E_SCRIPT_CANDIDATES = ['test:e2e', 'e2e:smoke', 'e2e'];
 const BACKEND_MARKERS = ['backend', 'server', 'api', 'apps/api', 'apps/server', 'services'];
 const FRONTEND_MARKERS = ['frontend', 'client', 'web', 'apps/web', 'apps/frontend'];
-const IGNORE_HEADER = '# codeloop / agyloop ephemeral runtime state';
+const IGNORE_HEADER = '# codeloop / codeloop ephemeral runtime state';
 
 /** Ecosystem types present in one directory, in canonical priority order (#334). */
 function ecosystemTypesFor(fileNames: ReadonlySet<string>): string[] {

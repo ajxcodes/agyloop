@@ -1,5 +1,5 @@
 /**
- * agyloop - YOLO implementation park e2e through runCli (issue #259, P1-P6)
+ * codeloop - YOLO implementation park e2e through runCli (issue #259, P1-P6)
  *
  * The canonical repro of the issue: `codeloop yolo` prepares an implementation
  * but never dispatches the implementer, so the gates used to certify the
@@ -211,8 +211,8 @@ async function withSanitizedEnv(
  * environment description used by every run.
  */
 function createSandbox(): { sandbox: string; supportDir: string; shadowPath: string } {
-  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-yolo-implementation-park-'));
-  const supportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-yolo-implementation-park-support-'));
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-yolo-implementation-park-'));
+  const supportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-yolo-implementation-park-support-'));
 
   setupRepo(sandbox);
 

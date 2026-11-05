@@ -1,5 +1,5 @@
 /**
- * agyloop - WorktreeManager Port Interface (Ports Layer)
+ * codeloop - WorktreeManager Port Interface (Ports Layer)
  *
  * Inversion of control contract for git worktree provisioning, isolation,
  * and automated lifecycle teardown.

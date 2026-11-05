@@ -1,5 +1,5 @@
 /**
- * agyloop - canonical mock config (issue #544)
+ * codeloop - canonical mock config (issue #544)
  *
  * ONE definition of the `makeMockConfig` family (10 measured local copies in
  * tests/application). The defaults are the dominant variant's config:
@@ -17,7 +17,7 @@
  * Erasable-TS-only: no parameter properties, no enum, no namespace.
  */
 
-import type { AgyLoopConfig, ConfigRepository } from '../../src/ports';
+import type { CodeLoopConfig, ConfigRepository } from '../../src/ports';
 
 const DEFAULT_MODELS = {
   planner: 'pro',
@@ -35,13 +35,13 @@ const DEFAULT_OPTIONS = {
 
 interface MockConfigOverrides {
   /** Overrides merged over the default config (models/options deep-merged). */
-  config?: Partial<AgyLoopConfig>;
+  config?: Partial<CodeLoopConfig>;
   /** Override the tier resolution behaviour. Default: real port semantics. */
   mapModelToTier?: (inputModel: string) => string;
 }
 
 function makeMockConfig(overrides?: MockConfigOverrides): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: { ...(overrides?.config?.models ?? DEFAULT_MODELS) } as never,
     options: { ...(overrides?.config?.options ?? DEFAULT_OPTIONS) } as never,
     ...(overrides?.config as Record<string, unknown> | undefined)
@@ -58,10 +58,10 @@ function makeMockConfig(overrides?: MockConfigOverrides): ConfigRepository {
     });
 
   const repo: ConfigRepository = {
-    loadConfig(): AgyLoopConfig {
+    loadConfig(): CodeLoopConfig {
       return config;
     },
-    resolveModel(role: string, provided?: AgyLoopConfig) {
+    resolveModel(role: string, provided?: CodeLoopConfig) {
       const source = provided ?? config;
       const models = source.models as Record<string, string | undefined>;
       const configured = models[String(role)] ?? 'inherit';

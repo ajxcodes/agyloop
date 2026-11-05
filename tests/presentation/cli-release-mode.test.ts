@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Release Mode & Parsing Tests
+ * codeloop - CLI Release Mode & Parsing Tests
  */
 
 const { test, describe } = require('node:test');

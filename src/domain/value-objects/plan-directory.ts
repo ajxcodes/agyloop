@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan Directory Grammar (Domain Layer)
+ * codeloop - Plan Directory Grammar (Domain Layer)
  *
  * The ONE slug/directory/filename grammar shared by every producer of a plan
  * artifact (issue #283, bounded by #364): the scaffold

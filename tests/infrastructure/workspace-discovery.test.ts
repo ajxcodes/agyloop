@@ -1,5 +1,5 @@
 /**
- * agyloop - Bounded Workspace & Subproject Discovery Tests (issue #334)
+ * codeloop - Bounded Workspace & Subproject Discovery Tests (issue #334)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -32,7 +32,7 @@ describe('workspace-discovery (#334)', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-discovery-'));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-discovery-'));
   });
 
   afterEach(() => {
@@ -110,7 +110,7 @@ describe('workspace-discovery (#334)', () => {
   test('WD6 skips a symlinked candidate and never throws', () => {
     write(dir, 'apps/web/package.json', '{}');
 
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-discovery-link-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-discovery-link-'));
     try {
       fs.writeFileSync(path.join(outside, 'package.json'), '{}');
       fs.mkdirSync(path.join(dir, 'apps'), { recursive: true });

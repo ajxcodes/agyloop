@@ -1,5 +1,5 @@
 /**
- * agyloop - DiagnosticSnippet Value Object
+ * codeloop - DiagnosticSnippet Value Object
  *
  * Immutable representation of an actionable failure diagnostic snippet.
  * Surgically extracts root-cause error lines, failing assertions, and file locations

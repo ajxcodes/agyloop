@@ -1,5 +1,5 @@
 /**
- * agyloop - Ports Layer Public API
+ * codeloop - Ports Layer Public API
  */
 
 export * from './state-repository';

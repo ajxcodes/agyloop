@@ -1,5 +1,5 @@
 /**
- * agyloop - BranchInferenceEngine Value Object Unit Tests
+ * codeloop - BranchInferenceEngine Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');

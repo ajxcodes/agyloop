@@ -1,4 +1,4 @@
-# AgyLoop (`agyloop`)
+# CodeLoop (`codeloop`)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Google Antigravity Plugin](https://img.shields.io/badge/Antigravity-Plugin%20v2-purple.svg)](https://github.com/ajxcodes/agyloop)
@@ -6,7 +6,7 @@
 
 > **Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity (`agy`)**
 
-`agyloop` transforms autonomous coding agents from single-prompt chat assistants into a disciplined, context-isolated pair-programming pipeline:
+`codeloop` transforms autonomous coding agents from single-prompt chat assistants into a disciplined, context-isolated pair-programming pipeline:
 
 $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \longrightarrow \text{Implement} \longrightarrow \text{Quality Gate} \longrightarrow \text{AI Review} \longrightarrow \text{Commit}$$
 
@@ -23,7 +23,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 
 ## 🏗️ Architecture & Lifecycle Contract
 
-`agyloop` introduces a phased state machine coordinated across specialized, context-isolated subagents:
+`codeloop` introduces a phased state machine coordinated across specialized, context-isolated subagents:
 
 ```text
 [Issue / Task Context]
@@ -42,7 +42,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 │    • Generates persistent artifacts in:                │
 │      `artifacts/plans/[Discovery] - {Title}.md`        │
 │      `artifacts/plans/[Implementation] - {Title}.md`   │
-│      `artifacts/plans/AgyLoop Summary.md`              │
+│      `artifacts/plans/CodeLoop Summary.md`              │
 └────────────────────────┬───────────────────────────────┘
                          │
                          ▼
@@ -105,19 +105,19 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 
 ```bash
 # Full lifecycle with human approval gates (Plan -> Stop -> Implement -> Gate -> Review -> Commit)
-/agyloop [issue]
+/codeloop [issue]
 
 # Plan-only mode: generates persistent tech spec in artifacts/plans/ and hard-stops for review
-/agyloop plan [--issue <id>]
+/codeloop plan [--issue <id>]
 
 # Resumes implementation directly from an approved plan inside isolated worktree
-/agyloop implement [--issue <id>]
+/codeloop implement [--issue <id>]
 
 # Fast-path / unattended mode: auto-approves plan gate & infers defaults while keeping quality gates
-/agyloop yolo [--issue <id>]
+/codeloop yolo [--issue <id>]
 
 # Automatically commit if all quality gates and reviews pass green
-/agyloop --commit-after
+/codeloop --commit-after
 
 # Commit and open the PR from the tool (base = the collector branch) instead of
 # printing the `gh pr create …` command for you to run. Without it the branch is
@@ -127,7 +127,7 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 codeloop commit --create-pr
 
 # PR Review comment triage: inspect and route review feedback
-/agyloop triage [implement | plan | discovery | dismiss]
+/codeloop triage [implement | plan | discovery | dismiss]
 
 # Worktree management: list, clean, prune isolated worktrees
 codeloop worktree [list | clean | prune]
@@ -188,7 +188,7 @@ it clears the repository's OWN checkpoint — the root outside a task worktree,
 All plans and run summaries live in a gitignored `{project-root}/artifacts/plans/` directory:
 - `[Discovery] - {Title}.md`: Root-cause investigation and reproduction commands for bugs.
 - `[Implementation] - {Title}.md`: Detailed design specification and step-by-step technical plan.
-- `AgyLoop Summary.md`: Cumulative execution log tracking subagent runtimes, quality gate verdicts, and model tiers.
+- `CodeLoop Summary.md`: Cumulative execution log tracking subagent runtimes, quality gate verdicts, and model tiers.
 
 Plans remain persistent across IDE reloads, branch changes, and multi-day tasks without polluting your Git commit history.
 
@@ -196,7 +196,7 @@ Plans remain persistent across IDE reloads, branch changes, and multi-day tasks 
 
 ## 📦 Installation & Symlink Setup
 
-To register `agyloop` with your local Antigravity installation, symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/agyloop`):
+To register `codeloop` with your local Antigravity installation, symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/agyloop`):
 
 ### 1. Run Setup Script
 ```bash
@@ -214,7 +214,7 @@ To register `agyloop` with your local Antigravity installation, symlink the repo
 
 ## 🛠️ Troubleshooting & Plugin Resolution
 
-If Antigravity does not immediately discover the `/agyloop` command or subagents:
+If Antigravity does not immediately discover the `/codeloop` command or subagents:
 
 1. **Check Symlink Resolution**:
    Ensure `~/.gemini/config/plugins/agyloop` points directly to your repository root:
@@ -231,7 +231,7 @@ If Antigravity does not immediately discover the `/agyloop` command or subagents
    ```json
    {
      "plugins": {
-       "agyloop": { "enabled": true }
+       "codeloop": { "enabled": true }
      }
    }
    ```
@@ -242,9 +242,9 @@ If Antigravity does not immediately discover the `/agyloop` command or subagents
 
 ## 🗺️ Roadmap & Tracking
 
-Track the development of `agyloop` in the central [ajxcodes/projects](https://github.com/ajxcodes/projects) management board:
-- **Parent Epic**: [#47 - [Epic] AgyLoop: Multi-Subagent Development Lifecycle Orchestrator for Antigravity](https://github.com/ajxcodes/projects/issues/47)
-- **Project Board**: [GitHub Project #9 (AgyLoop)](https://github.com/users/ajxcodes/projects/9)
+Track the development of `codeloop` in the central [ajxcodes/projects](https://github.com/ajxcodes/projects) management board:
+- **Parent Epic**: [#47 - [Epic] CodeLoop: Multi-Subagent Development Lifecycle Orchestrator for Antigravity](https://github.com/ajxcodes/projects/issues/47)
+- **Project Board**: [GitHub Project #9 (CodeLoop)](https://github.com/users/ajxcodes/projects/9)
 
 ---
 

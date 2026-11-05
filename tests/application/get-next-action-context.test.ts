@@ -1,5 +1,5 @@
 /**
- * agyloop - Comprehensive Issue Context Resolution Unit Tests (Issue #51)
+ * codeloop - Comprehensive Issue Context Resolution Unit Tests (Issue #51)
  *
  * Validates:
  * 1. Explicit --issue flag ingestion across COMPLETED and INITIALIZED lifecycle states.
@@ -38,7 +38,7 @@ import type {
   ConfigRepository,
   PlanGeneratorPort,
   WorktreeManagerPort,
-  AgyLoopConfig
+  CodeLoopConfig
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
@@ -66,8 +66,8 @@ class StateRepositoryDouble implements StateRepository {
   }
 }
 
-function makeMockConfigLocal(overrides: Partial<AgyLoopConfig> = {}): ConfigRepository {
-  const config: AgyLoopConfig = {
+function makeMockConfigLocal(overrides: Partial<CodeLoopConfig> = {}): ConfigRepository {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -113,8 +113,8 @@ describe('Issue #51: Issue Context Resolution & Auto-Inference', () => {
   describe('IssueNumber Value Object Auto-Inference', () => {
     test('infers issue number from unix and windows worktree paths', () => {
       assert.strictEqual(IssueNumber.inferFromPath('.worktrees/51'), 51);
-      assert.strictEqual(IssueNumber.inferFromPath('/home/user/code/agyloop/.worktrees/51'), 51);
-      assert.strictEqual(IssueNumber.inferFromPath('/home/user/code/agyloop/.worktrees/51/src/domain'), 51);
+      assert.strictEqual(IssueNumber.inferFromPath('/home/user/code/codeloop/.worktrees/51'), 51);
+      assert.strictEqual(IssueNumber.inferFromPath('/home/user/code/codeloop/.worktrees/51/src/domain'), 51);
       assert.strictEqual(IssueNumber.inferFromPath('C:\\code\\.worktrees\\51\\src'), 51);
       assert.strictEqual(IssueNumber.inferFromPath('/repo/src/domain'), null);
       assert.strictEqual(IssueNumber.inferFromPath(null), null);
@@ -646,7 +646,7 @@ describe('#301: next is a declared, non-fabricating query', () => {
   }
 
   function tempStateFile(seed: any | null): { dir: string; stateFile: string } {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-301-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-301-'));
     fs.mkdirSync(path.join(dir, '.agyloop', 'tasks'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'tasks', '905.json');
     if (seed) {

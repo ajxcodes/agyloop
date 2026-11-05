@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical PlanGeneratorPort double (issue #544 / AC2)
+ * codeloop - ONE canonical PlanGeneratorPort double (issue #544 / AC2)
  *
  * Retires `PlanGeneratorDouble` / `PlanGeneratorDouble`. Recording is always on:
  * `scaffoldCalls`, `generateCalls`, `summaryCalls`, `updateSummaryCalls` —

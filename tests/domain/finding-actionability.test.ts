@@ -1,5 +1,5 @@
 /**
- * agyloop - Finding actionability (issue #349 / #242 Defect A, local half)
+ * codeloop - Finding actionability (issue #349 / #242 Defect A, local half)
  *
  * The local two-tier invariant used to be content-blind: a `critical` finding
  * escalated an `APPROVED` verdict even when its body ASSERTED the code was

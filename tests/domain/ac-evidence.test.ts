@@ -1,5 +1,5 @@
 /**
- * agyloop - AC evidence value object (issue #432, TR-32)
+ * codeloop - AC evidence value object (issue #432, TR-32)
  *
  * AE17-AE19 pin issue #473: a backticked git ref (the reviewed base,
  * `origin/main`, a revision range) is prose, never evidence, while a genuine

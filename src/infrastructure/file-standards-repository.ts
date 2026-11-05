@@ -1,5 +1,5 @@
 /**
- * agyloop - FileStandardsRepository Infrastructure Adapter
+ * codeloop - FileStandardsRepository Infrastructure Adapter
  *
  * Implements StandardsRepository port to discover and load repository-level
  * standards, guidelines, and quality rules from disk.

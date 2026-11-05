@@ -1,5 +1,5 @@
 /**
- * agyloop - PromptRepository Port Interface
+ * codeloop - PromptRepository Port Interface
  *
  * Inversion of control contract for resolving and reading subagent system prompts.
  */

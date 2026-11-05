@@ -1,5 +1,5 @@
 /**
- * agyloop - `next` reports actionability from EVIDENCE (issue #337)
+ * codeloop - `next` reports actionability from EVIDENCE (issue #337)
  *
  * The defect: `next` computed each stage's completion state and fed it only to
  * prose, then still emitted `actionType: 'subagent'` + an invocation payload and
@@ -55,7 +55,7 @@ const {
 import type {
   StateRepository,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   GateReportRepositoryPort
 } from '../../src/ports';
 import type { StateMachineSnapshot, GateResultReport as GateResultReportType } from '../../src/domain';
@@ -159,7 +159,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',

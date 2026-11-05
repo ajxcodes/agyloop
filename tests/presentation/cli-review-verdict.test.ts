@@ -11,7 +11,7 @@ function seedStageCheckpoint(sandbox: string, issue: number, stage: string): str
 }
 
 /**
- * agyloop - `codeloop review` CLI Tests (issue #269, Defect 2)
+ * codeloop - `codeloop review` CLI Tests (issue #269, Defect 2)
  *
  * The shipped OpenCode skill documented `codeloop review`, but the command did
  * not exist: `Error: Unknown command "review"`. The reviewer subagent's
@@ -127,7 +127,7 @@ interface Sandbox {
 
 function makeReviewVerdictSandbox(stage: string): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-review-',
+    prefix: 'codeloop-cli-review-',
     dirName: '',
     gitignore: ['*.provenance.json'],
     // Issue #452: the provenance sidecar (*.provenance.json) is ignored globally,

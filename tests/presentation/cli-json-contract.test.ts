@@ -8,7 +8,7 @@ function seedTaskAt(
 }
 
 /**
- * agyloop - `--json` surface contract (#275, absorbed by #248 Wave 3)
+ * codeloop - `--json` surface contract (#275, absorbed by #248 Wave 3)
  *
  * Two defects are pinned here:
  *

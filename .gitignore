@@ -2,7 +2,7 @@
 artifacts
 artifacts/
 artifacts/plans/
-# codeloop / agyloop ephemeral runtime state
+# codeloop / codeloop ephemeral runtime state
 # Bare `.agyloop` (restored in #102, dropped by #216/#217) is the only rule that matches the state
 # dir when it is a SYMLINK: git stores it as mode 120000 -- a file -- so every `.agyloop/...` rule
 # below silently misses it. No trailing slash on purpose: a trailing slash matches directories only

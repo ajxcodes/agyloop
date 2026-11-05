@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Presentation Controller & Dispatcher
+ * codeloop - CLI Presentation Controller & Dispatcher
  *
  * Formats terminal output and dispatches commands to application use cases.
  */
@@ -2161,7 +2161,7 @@ export async function runCli(rawArgs: readonly string[] = process.argv.slice(2))
 
       // A persisted gate pause (quota exhaustion, exhausted retries) must never be
       // mistaken for a runnable directive. It is read BEFORE the `--json` branch
-      // because that command is what the agent harness runs (skills/agyloop/SKILL.md),
+      // because that command is what the agent harness runs (skills/codeloop/SKILL.md),
       // and a pause it cannot see is a pause it will happily execute through.
       //
       // The pause is RE-READ from `ctx.repo` AFTER the use case ran (no

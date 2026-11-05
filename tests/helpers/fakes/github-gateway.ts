@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical GitHubGateway double (issue #544 / AC2)
+ * codeloop - ONE canonical GitHubGateway double (issue #544 / AC2)
  *
  * Retires `GitHubGatewayDouble` / `GitHubGatewayDouble`. Recording is always on:
  * every port method records into `calls[method]`, and the returned values are

@@ -5,7 +5,7 @@ function runGit(dir: string, ...args: string[]): void {
 /** The canonical makeSandbox composed for makePlanInputSandbox (issue #544). */
 function makePlanInputSandbox(): string {
   return makeSandbox({
-    prefix: 'agyloop-cli-plan-input-',
+    prefix: 'codeloop-cli-plan-input-',
     dirName: '',
     initGit: false,
     seed: (dir: string) => {
@@ -16,7 +16,7 @@ function makePlanInputSandbox(): string {
   }).dir;
 }
 /**
- * agyloop - `--plan-path` / `--plan-dir` CLI contract (issue #267)
+ * codeloop - `--plan-path` / `--plan-dir` CLI contract (issue #267)
  *
  * T-267.B1: accepted by plan/implement/yolo, refused with an explanatory line by
  *           every other command, and a missing value is a loud error.
@@ -234,7 +234,7 @@ describe('supplied plan end to end with the real generator (#267)', () => {
 
   test('finding 4: --plan-dir prints the ACTUAL target directory', async () => {
     const dir = makePlanInputSandbox();
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-dir-outside-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-dir-outside-'));
     try {
       const result = await runCliInSandboxCanonical([
         'plan',

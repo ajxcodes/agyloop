@@ -1,5 +1,5 @@
 /**
- * agyloop - Subject truncation grammar (issue #376, Defect 2)
+ * codeloop - Subject truncation grammar (issue #376, Defect 2)
  *
  * ONE shared pure trimmer drives both the conventional-commit subject and the
  * derived plan artifact filename. The cases below are the real deliveries the

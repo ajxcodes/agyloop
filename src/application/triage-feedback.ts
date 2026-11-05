@@ -1,5 +1,5 @@
 /**
- * agyloop - PR Feedback Classification (Application Layer)
+ * codeloop - PR Feedback Classification (Application Layer)
  *
  * The pure classifier that tells ACTIONABLE review feedback apart from the
  * repository's own automated summaries and from the TOOL's own replies.

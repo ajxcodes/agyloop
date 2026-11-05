@@ -1,5 +1,5 @@
 /**
- * agyloop - YOLO Implementation Park Lifecycle Tests (issue #259, AC1/AC2/AC5/AC6, Y1-Y7)
+ * codeloop - YOLO Implementation Park Lifecycle Tests (issue #259, AC1/AC2/AC5/AC6, Y1-Y7)
  *
  * `codeloop yolo` PREPARES an implementation but never dispatches the
  * implementer subagent, so the quality gates used to certify the untouched
@@ -652,7 +652,7 @@ describe('YOLO implementation park — the empty-plan guard (issue #259, S10)', 
     '',
     '**Issue:** #adhoc  ',
     '**Date:** 2026-10-19  ',
-    '**Author:** AgyLoop Planning Subagent  ',
+    '**Author:** CodeLoop Planning Subagent  ',
     '**Status:** DRAFT | APPROVED  ',
     '',
     '---',

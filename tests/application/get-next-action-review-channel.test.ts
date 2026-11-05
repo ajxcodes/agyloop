@@ -1,5 +1,5 @@
 /**
- * agyloop - REVIEW directive channel tests (issue #272)
+ * codeloop - REVIEW directive channel tests (issue #272)
  *
  * The gap: `codeloop next` at REVIEW returned the same directive forever and
  * never named the channel that records the verdict. These tests pin the
@@ -87,7 +87,7 @@ describe('REVIEW directive names its verdict channel (issue #272)', () => {
   };
 
   beforeEach(() => {
-    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-channel-'));
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-channel-'));
     stateFile = path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
     seedCheckpointFile(stateFile);
     const stateRepo = createStateRepository({ stateFilePath: stateFile });

@@ -1,5 +1,5 @@
 /**
- * agyloop - the canonical fake barrel (issue #544): one require for a migrated
+ * codeloop - the canonical fake barrel (issue #544): one require for a migrated
  * suite: `const { FakeStateRepository, FakePlanGenerator } = require('../helpers/fakes/index.ts');`
  */
 

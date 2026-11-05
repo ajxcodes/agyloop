@@ -1,5 +1,5 @@
 /**
- * agyloop - FileConfigRepository Infrastructure Adapter
+ * codeloop - FileConfigRepository Infrastructure Adapter
  *
  * Implements ConfigRepository with hierarchical configuration resolution and model routing.
  */
@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   ConfigLoadOptions
 } from '../ports';
 import {
@@ -39,7 +39,7 @@ import {
   isRunnerType
 } from '../domain';
 
-export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
+export const DEFAULT_CONFIG: CodeLoopConfig = Object.freeze({
   runner: 'auto',
   opencode: Object.freeze({
     model: DEFAULT_OPENCODE_MODEL
@@ -106,8 +106,8 @@ export class FileConfigRepository implements ConfigRepository {
       path.resolve(__dirname, '..', '..', 'config.default.json');
   }
 
-  public loadConfig(options: ConfigLoadOptions & { workspaceDir?: string } = {}): AgyLoopConfig {
-    let resolved: AgyLoopConfig = {
+  public loadConfig(options: ConfigLoadOptions & { workspaceDir?: string } = {}): CodeLoopConfig {
+    let resolved: CodeLoopConfig = {
       models: { ...DEFAULT_CONFIG.models },
       options: { ...DEFAULT_CONFIG.options }
     };
@@ -117,7 +117,7 @@ export class FileConfigRepository implements ConfigRepository {
       try {
         const raw = fs.readFileSync(this.defaultPluginConfigPath, 'utf8');
         const parsed = JSON.parse(raw);
-        resolved = deepMerge(resolved as unknown as Record<string, unknown>, parsed) as unknown as AgyLoopConfig;
+        resolved = deepMerge(resolved as unknown as Record<string, unknown>, parsed) as unknown as CodeLoopConfig;
       } catch {
         // Fall back to embedded DEFAULT_CONFIG
       }
@@ -132,7 +132,7 @@ export class FileConfigRepository implements ConfigRepository {
       if (fs.existsSync(globalPath)) {
         try {
           const raw = fs.readFileSync(globalPath, 'utf8');
-          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
+          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as CodeLoopConfig;
           break;
         } catch {
           // Ignore read error
@@ -152,7 +152,7 @@ export class FileConfigRepository implements ConfigRepository {
       if (fs.existsSync(wsPath)) {
         try {
           const raw = fs.readFileSync(wsPath, 'utf8');
-          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
+          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as CodeLoopConfig;
           break;
         } catch {
           // Ignore read error
@@ -175,7 +175,7 @@ export class FileConfigRepository implements ConfigRepository {
 
       try {
         const raw = fs.readFileSync(resolvedCustomPath, 'utf8');
-        resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
+        resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as CodeLoopConfig;
       } catch (err: unknown) {
         if (err instanceof ConfigResolutionError || err instanceof ValidationError) {
           throw err;
@@ -309,7 +309,7 @@ export class FileConfigRepository implements ConfigRepository {
     }
   }
 
-  private validateCircuitBreakers(cb?: AgyLoopConfig['circuitBreakers']): void {
+  private validateCircuitBreakers(cb?: CodeLoopConfig['circuitBreakers']): void {
     if (!cb) return;
 
     if (cb.maxTurnsPerSubagent !== undefined && (typeof cb.maxTurnsPerSubagent !== 'number' || cb.maxTurnsPerSubagent <= 0)) {
@@ -368,7 +368,7 @@ export class FileConfigRepository implements ConfigRepository {
 
   public resolveModel(
     role: SubagentRoleName | string,
-    config: AgyLoopConfig
+    config: CodeLoopConfig
   ): {
     role: string;
     configured: string;

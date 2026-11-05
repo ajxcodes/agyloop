@@ -1,5 +1,5 @@
 /**
- * agyloop - GitWorktreeManager Branch & Release Methods Unit Tests
+ * codeloop - GitWorktreeManager Branch & Release Methods Unit Tests
  */
 
 const { test, describe } = require('node:test');

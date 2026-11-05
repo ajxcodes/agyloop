@@ -26,7 +26,7 @@ function seedImplementCheckpoint(dir: string, reviewEntries: readonly Record<str
 }
 
 /**
- * agyloop - `next --json` IMPLEMENT review remediation (issue #313, AC1-AC4)
+ * codeloop - `next --json` IMPLEMENT review remediation (issue #313, AC1-AC4)
  *
  * This is the issue's own reproduction, at the CLI boundary: seed a real
  * `.agyloop/tasks/<n>.json` checkpoint whose latest history entry holds a

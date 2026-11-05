@@ -1,5 +1,5 @@
 /**
- * agyloop - the ONE approved-plan digest guard (issue #421)
+ * codeloop - the ONE approved-plan digest guard (issue #421)
  *
  * The approval gate is the only surface where a plan becomes normative. Before
  * #421 the digest was recorded at IMPLEMENT, so a plan edited between the human

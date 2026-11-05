@@ -1,5 +1,5 @@
 /**
- * agyloop - Shell Quoting Value Object Tests (Domain Layer)
+ * codeloop - Shell Quoting Value Object Tests (Domain Layer)
  *
  * The escaper is the ONE place where a value that reaches a shell command
  * string is made safe. These tests pin its semantics and — more importantly —
@@ -50,7 +50,7 @@ describe('shellQuote round-trip through a real /bin/sh', () => {
     'semicolon ; id',
     'and && id',
     'pipe | id',
-    'redirect > /tmp/agyloop-should-not-exist',
+    'redirect > /tmp/codeloop-should-not-exist',
     'double "quote"',
     "single 'quote'",
     'backslash \\ and $HOME',
@@ -75,7 +75,7 @@ describe('shellQuote round-trip through a real /bin/sh', () => {
   });
 
   test('executes nothing while round-tripping the metacharacter battery', POSIX_ONLY, () => {
-    const marker = `/tmp/agyloop-shell-quoting-marker-${process.pid}`;
+    const marker = `/tmp/codeloop-shell-quoting-marker-${process.pid}`;
     require('node:fs').rmSync(marker, { force: true });
 
     for (const value of [`touch ${marker}`, `$(touch ${marker})`, `; touch ${marker}`, `&& touch ${marker}`, `| touch ${marker}`]) {

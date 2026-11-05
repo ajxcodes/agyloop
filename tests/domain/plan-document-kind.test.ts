@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan document kind tests (issue #299)
+ * codeloop - Plan document kind tests (issue #299)
  *
  * The discriminator looks at the TITLE LINE only: a real implementation plan may
  * legitimately carry a "Root Cause Analysis" section, so headings alone cannot

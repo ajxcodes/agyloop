@@ -1,5 +1,5 @@
 /**
- * agyloop - Gate evidence coverage (issue #408, D2)
+ * codeloop - Gate evidence coverage (issue #408, D2)
  *
  * The application seam between a filed report and the plan's declared
  * verification targets. It resolves the plan through `PlanGeneratorPort` (no

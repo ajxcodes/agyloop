@@ -1,5 +1,5 @@
 /**
- * agyloop - FilePromptRepository Infrastructure Adapter
+ * codeloop - FilePromptRepository Infrastructure Adapter
  *
  * Implements PromptRepository to resolve and load subagent system prompts from disk
  * with fallback to immutable domain default prompts.

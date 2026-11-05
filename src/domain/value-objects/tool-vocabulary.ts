@@ -1,5 +1,5 @@
 /**
- * agyloop - Tool Vocabulary Value Object
+ * codeloop - Tool Vocabulary Value Object
  *
  * Renders a dispatched subagent directive's tool prose from host-neutral
  * CAPABILITIES rather than from one harness's tool identifiers (issue #241,

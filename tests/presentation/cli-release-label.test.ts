@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop release` provisions/verifies the release label (#502)
+ * codeloop - `codeloop release` provisions/verifies the release label (#502)
  *
  * The defect this file pins: `release` passed `--label release:minor` to
  * `gh pr create` without ever provisioning the label, so `gh` refused the

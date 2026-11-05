@@ -1,5 +1,5 @@
 /**
- * agyloop - Root-build command detector (issue #402, Defect 2)
+ * codeloop - Root-build command detector (issue #402, Defect 2)
  *
  * The APPROVAL baseline guard used to execute every plan-authored command with
  * `cwd` set to the repository root. Every #383 claim started with

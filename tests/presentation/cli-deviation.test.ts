@@ -10,7 +10,7 @@ function seedStageCheckpoint(dir: string, stage: string): string {
 }
 
 /**
- * agyloop - `codeloop deviation` CLI channel (issue #432, TR-36..TR-38)
+ * codeloop - `codeloop deviation` CLI channel (issue #432, TR-36..TR-38)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -49,7 +49,7 @@ describe('codeloop deviation (issue #432)', () => {
   let originalEnvSubagent: string | undefined;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-deviation-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-deviation-'));
     statePath = seedImplementCheckpoint(root);
     deviationPath = path.join(root, 'deviation.txt');
     fs.writeFileSync(deviationPath, BLOCK);

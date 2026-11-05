@@ -1,5 +1,5 @@
 /**
- * agyloop - GateSummaryReport Value Object
+ * codeloop - GateSummaryReport Value Object
  *
  * Immutable representation of a structured Quality Gate report with dual-format capability:
  * - Emits and parses machine-readable GATE_* tokens and Markdown execution matrices.

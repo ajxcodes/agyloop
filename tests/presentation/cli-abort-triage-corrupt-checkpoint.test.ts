@@ -1,5 +1,5 @@
 /**
- * agyloop - An unreadable NAMED checkpoint must never take down the commands
+ * codeloop - An unreadable NAMED checkpoint must never take down the commands
  * that report on, or clean up after, a broken state (issue #250, review B1/N1).
  *
  * The resolver deliberately lets an unreadable NAMED checkpoint throw

@@ -8,7 +8,7 @@ function seedTaskAt(
 }
 
 /**
- * agyloop - `--dry-run` forwarding contract (#248 Wave 2)
+ * codeloop - `--dry-run` forwarding contract (#248 Wave 2)
  *
  * Every command that accepts `--dry-run` must MUTATE NOTHING. Each case is
  * asserted twice:

@@ -1,5 +1,5 @@
 /**
- * agyloop - Shell Injection Fitness Guards (#262)
+ * codeloop - Shell Injection Fitness Guards (#262)
  *
  * Three coarse, deliberately structural rules that keep the SHAPE of issue
  * #262 from coming back:

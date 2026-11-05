@@ -1,5 +1,5 @@
 /**
- * agyloop - GateCommandPlan Value Object (issue #298)
+ * codeloop - GateCommandPlan Value Object (issue #298)
  *
  * The resolved verification command list WITH its provenance. The source is a
  * fact produced by the resolver, never inferred by a consumer: a dispatched

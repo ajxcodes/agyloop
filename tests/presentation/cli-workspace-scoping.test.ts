@@ -1,5 +1,5 @@
 /**
- * agyloop - `--workspace` rebinds the WHOLE run, at every lifecycle entry point (#425)
+ * codeloop - `--workspace` rebinds the WHOLE run, at every lifecycle entry point (#425)
  *
  * The defect: `--workspace` rebound the checkpoint (`FileStateRepository` got
  * `workspaceDir`), but every lifecycle entry point called
@@ -187,7 +187,7 @@ describe('`--workspace` scoping of lifecycle entry points (#425)', () => {
   });
 
   function sandbox(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-workspace-scoping-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-workspace-scoping-'));
     sandboxes.push(dir);
     return dir;
   }

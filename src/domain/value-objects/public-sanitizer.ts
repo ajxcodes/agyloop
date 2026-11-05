@@ -1,5 +1,5 @@
 /**
- * agyloop - PublicSanitizer (Domain Layer)
+ * codeloop - PublicSanitizer (Domain Layer)
  *
  * Pure domain sanitizer ensuring public commit messages, diff summaries,
  * and PR descriptions never leak internal/private tracker URLs or cross-repo references.

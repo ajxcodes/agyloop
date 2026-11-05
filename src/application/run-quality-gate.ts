@@ -1,5 +1,5 @@
 /**
- * agyloop - RunQualityGateUseCase
+ * codeloop - RunQualityGateUseCase
  *
  * Coordinates Quality Gate phase execution:
  * 1. Validates lifecycle stage rules (current stage must be IMPLEMENT or QUALITY_GATE).
@@ -10,7 +10,7 @@
  * 6. Evaluates overall verdict:
  *    - All pass: transitions to STAGE_REVIEW.
  *    - Any fail: falls back to STAGE_IMPLEMENT.
- * 7. Updates AgyLoop Summary.md with build and test metrics.
+ * 7. Updates CodeLoop Summary.md with build and test metrics.
  * 8. Checkpoints pipeline state to StateRepository.
  */
 
@@ -596,7 +596,7 @@ export class RunQualityGateUseCase {
       sm.incrementImplementGateLoop();
     }
 
-    // 7. Update AgyLoop Summary.md via PlanGeneratorPort
+    // 7. Update CodeLoop Summary.md via PlanGeneratorPort
     const resolvedPlan = this.planGenerator.resolvePlanFile({
       projectRoot: workspace,
       issue: activeIssue,

@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop review` certifies the QUALITY_GATE exit (issue #455)
+ * codeloop - `codeloop review` certifies the QUALITY_GATE exit (issue #455)
  *
  * RG1 - no filed report: the review entry refuses, writes nothing
  * RG2 - a usable round-1 report certifies, records provenance and is consumed

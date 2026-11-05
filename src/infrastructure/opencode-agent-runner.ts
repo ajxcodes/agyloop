@@ -1,5 +1,5 @@
 /**
- * agyloop - OpenCodeAgentRunner Infrastructure Adapter
+ * codeloop - OpenCodeAgentRunner Infrastructure Adapter
  *
  * Implements AgentRunnerPort by dispatching subagent requests to the OpenCode CLI.
  */

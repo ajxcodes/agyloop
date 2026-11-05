@@ -1,5 +1,5 @@
 /**
- * agyloop - the commit exclusion list (issue #301, absorbing #319)
+ * codeloop - the commit exclusion list (issue #301, absorbing #319)
  *
  * ONE predicate decides both what the draft PRINTS and what the commit
  * UNTRACKS, so `Files to commit (N)` can never disagree with the committed

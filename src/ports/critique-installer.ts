@@ -1,5 +1,5 @@
 /**
- * agyloop - CritiqueInstallerPort Interface
+ * codeloop - CritiqueInstallerPort Interface
  *
  * Inversion of Control contract for checking critique releases,
  * detecting version updates, caching release metadata, and installing/updating

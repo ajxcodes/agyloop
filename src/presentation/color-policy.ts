@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE colour policy for the whole process (issue #341 in #339)
+ * codeloop - ONE colour policy for the whole process (issue #341 in #339)
  *
  * Before this module every renderer built its own escapes: `formatStageBadge`
  * hard-coded them, the release renderer checked `isTTY` alone, and the commit

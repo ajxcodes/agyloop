@@ -1,5 +1,5 @@
 /**
- * agyloop - PlanDeviation value object (issue #432)
+ * codeloop - PlanDeviation value object (issue #432)
  *
  * The implementer's structured channel for "the approved plan literal is
  * wrong". Before this existed the correction lived only in the implementer's

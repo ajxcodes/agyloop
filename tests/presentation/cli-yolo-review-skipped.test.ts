@@ -1,5 +1,5 @@
 /**
- * agyloop - yolo AI-review SKIPPED e2e through runCli (issue #236, AC1/AC2)
+ * codeloop - yolo AI-review SKIPPED e2e through runCli (issue #236, AC1/AC2)
  *
  * A clean yolo run with passing gates and NO reviewer output + NO critique
  * report must:
@@ -148,7 +148,7 @@ async function withSanitizedEnv(
 
 describe('codeloop yolo with absent critique => SKIPPED advisory (issue #236)', () => {
   test('exits 0, prints the SKIPPED advisory, and checkpoints at COMMIT without reverting', async (t: any) => {
-    const sandbox: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-yolo-review-skipped-'));
+    const sandbox: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-yolo-review-skipped-'));
 
     try {
       setupProbeRepo(sandbox);
@@ -230,7 +230,7 @@ describe('codeloop yolo with absent critique => SKIPPED advisory (issue #236)', 
     // `### Manual Smoke Test Protocol`; if the parser treats it as a broken
     // protocol the gate refuses and every auto-scaffolded yolo reverts to
     // IMPLEMENT (issue #298 review round 1). No plan is pre-written here.
-    const sandbox: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-yolo-scaffolded-plan-'));
+    const sandbox: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-yolo-scaffolded-plan-'));
 
     try {
       setupProbeRepo(sandbox);

@@ -1,5 +1,5 @@
 /**
- * agyloop - DiffAnalyzer Pure Domain Unit Tests
+ * codeloop - DiffAnalyzer Pure Domain Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -287,7 +287,7 @@ describe('commit draft truthfulness (issue #345 in #339: scope, tags, length)', 
   /** The #336 delivery shape: 3 source files, 9 test files, 2 markdown files. */
   const SET_336 = [
     'docs/commit-guidelines.md',
-    'skills/agyloop/SKILL.md',
+    'skills/codeloop/SKILL.md',
     'src/application/triage-pr-comments.ts',
     'src/domain/constants.ts',
     'src/presentation/cli.ts',
@@ -325,11 +325,11 @@ describe('commit draft truthfulness (issue #345 in #339: scope, tags, length)', 
   });
 
   test('T11.2 (AC-4.1/4.5): a two-.md-only diff still resolves to docs', () => {
-    assert.strictEqual(DiffAnalyzer.inferScope(['skills/agyloop/SKILL.md', 'docs/x.md']), 'docs');
+    assert.strictEqual(DiffAnalyzer.inferScope(['skills/codeloop/SKILL.md', 'docs/x.md']), 'docs');
   });
 
   test('T11.3 (AC-4.1/4.5): two .md files plus one src/ file resolve to the module scope in both orders', () => {
-    const files = ['skills/agyloop/SKILL.md', 'docs/x.md', 'src/application/x.ts'];
+    const files = ['skills/codeloop/SKILL.md', 'docs/x.md', 'src/application/x.ts'];
     assert.strictEqual(DiffAnalyzer.inferScope(files), 'app');
     assert.strictEqual(DiffAnalyzer.inferScope([...files].reverse()), 'app');
     assert.notStrictEqual(DiffAnalyzer.inferScope(files), 'docs');

@@ -1,5 +1,5 @@
 /**
- * agyloop - CliGitHubGateway Infrastructure Adapter
+ * codeloop - CliGitHubGateway Infrastructure Adapter
  *
  * Implements GitHubGateway by invoking the GitHub CLI (`gh`).
  * Strictly prefixes all invocations with `env GITHUB_TOKEN=''` to use the authenticated local keyring.

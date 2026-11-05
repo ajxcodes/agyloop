@@ -1,5 +1,5 @@
 /**
- * agyloop - RunLifecycleUseCase shared pipeline tests (issue #441)
+ * codeloop - RunLifecycleUseCase shared pipeline tests (issue #441)
  *
  * The YOLO and standard modes historically carried two copies of every
  * stage-gate block. The refactor (issue #441, Steps 1-5) extracts those blocks

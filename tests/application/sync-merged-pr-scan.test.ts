@@ -1,5 +1,5 @@
 /**
- * agyloop - `sync` reads EVERY merged PR into the collector (#447)
+ * codeloop - `sync` reads EVERY merged PR into the collector (#447)
  *
  * The defect this file pins: `gh pr list` returns at most `--limit` items and
  * defaults to 30, so `sync` closed issues for the 30 most recent merges and

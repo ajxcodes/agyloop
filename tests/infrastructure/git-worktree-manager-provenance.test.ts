@@ -1,5 +1,5 @@
 /**
- * agyloop - GitWorktreeManager provisioning-state probe (issue #426)
+ * codeloop - GitWorktreeManager provisioning-state probe (issue #426)
  *
  * The refusal teardown turns "nothing existed before provisioning" into "this
  * invocation created it" and DELETES. That decision may only be taken on a
@@ -33,7 +33,7 @@ function makeResult(cmd: string, partial: Partial<CommandExecutionResult> = {}):
 const tmpDirs: string[] = [];
 
 function makeTmpDir(): string {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-provenance-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-provenance-'));
   tmpDirs.push(tmpDir);
   return tmpDir;
 }

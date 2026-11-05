@@ -1,5 +1,5 @@
 /**
- * agyloop - `worktree prune --dry-run` predicts what it removes and `list`
+ * codeloop - `worktree prune --dry-run` predicts what it removes and `list`
  * labels a prunable registration (issue #339, item 5, absorbing #340 / AC-2.2)
  *
  * T5.2  a real dead registration (directory deleted behind git's back) is

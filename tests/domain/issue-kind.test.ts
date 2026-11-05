@@ -1,5 +1,5 @@
 /**
- * agyloop - Issue kind predicate tests (issue #379)
+ * codeloop - Issue kind predicate tests (issue #379)
  *
  * One definition decides whether an issue is a bug. It selects the plan entry
  * stage, so the two halves that matter are:

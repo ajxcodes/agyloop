@@ -28,7 +28,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
   let generator: any;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gen-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-gen-test-'));
     generator = new FilePlanGenerator();
   });
 
@@ -292,7 +292,7 @@ describe('Persistent Plans Generator & Templating Engine (TypeScript)', () => {
   });
 
   describe('generateSummaryLog() & updateSummaryLog()', () => {
-    test('generates AgyLoop Summary.md with initial metadata', () => {
+    test('generates CodeLoop Summary.md with initial metadata', () => {
       const result = generator.generateSummaryLog({
         targetDir: tempDir,
         projectName: 'TestApp',
@@ -913,7 +913,7 @@ describe('Plan artifact resolution & mirror content (#283, #299, #240/5)', () =>
   let generator: any;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-artifacts-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-artifacts-test-'));
     generator = new FilePlanGenerator();
   });
 

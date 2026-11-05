@@ -1,5 +1,5 @@
 /**
- * agyloop - RunReviewUseCase
+ * codeloop - RunReviewUseCase
  *
  * Coordinates AI Review phase execution:
  * 1. Validates lifecycle stage rules (current stage must be QUALITY_GATE or REVIEW).
@@ -15,7 +15,7 @@
  *    - APPROVED: transitions to STAGE_COMMIT.
  *    - CHANGES_REQUESTED: loops back to STAGE_IMPLEMENT with self-correction guidance.
  *    - SKIPPED: transitions to STAGE_COMMIT as an advisory (no reviewer/critique available).
- * 8. Updates AgyLoop Summary.md with review verdict and duration.
+ * 8. Updates CodeLoop Summary.md with review verdict and duration.
  * 9. Checkpoints pipeline state to StateRepository.
  */
 
@@ -1200,7 +1200,7 @@ export class RunReviewUseCase {
       sm.pauseAtGate(GATE_COMMIT);
     }
 
-    // 9. Update AgyLoop Summary.md & State Checkpoint
+    // 9. Update CodeLoop Summary.md & State Checkpoint
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
 

@@ -1,5 +1,5 @@
 /**
- * agyloop - Quality Gate Targets parser tests (issue #298, AC1/AC6)
+ * codeloop - Quality Gate Targets parser tests (issue #298, AC1/AC6)
  *
  * QGT1 - every supported heading variant parses
  * QGT2 - plan order is preserved and `&&` chains split in order

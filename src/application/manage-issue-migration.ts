@@ -1,5 +1,5 @@
 /**
- * agyloop - ManageIssueMigrationUseCase (Application Layer)
+ * codeloop - ManageIssueMigrationUseCase (Application Layer)
  *
  * Coordinates private vs public issue tracking and migration hooks:
  * 1. Background Issue Management: updates/closes private tracker issues (ajxcodes/projects#ID)
