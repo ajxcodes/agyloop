@@ -1,10 +1,12 @@
 /**
- * agyloop - ConfigRepository Port Interface
+ * codeloop - ConfigRepository Port Interface
  *
  * Inversion of control contract for multi-source hierarchical configuration loading.
  */
 
-import { ModelTierName, SubagentRoleName } from '../domain';
+import { ModelTierName, RunnerType, SubagentRoleName } from '../domain';
+
+export type { RunnerType };
 
 export interface ModelRoutingConfig {
   readonly planner: string;
@@ -38,6 +40,15 @@ export interface IssueMigrationConfig {
   readonly hookCommand?: string;
 }
 
+export interface CircuitBreakersConfig {
+  readonly maxTurnsPerSubagent?: number;
+  readonly maxGateRetries?: number;
+  readonly maxConcurrentSubagents?: number;
+  readonly maxWallClockDurationSeconds?: number;
+  readonly tokenBudgetThreshold?: number;
+  readonly actionOnTrip?: 'pause_for_human' | 'abort' | 'warn' | string;
+}
+
 export interface VersioningConfig {
   readonly strategy?: 'package_json' | 'git_tag_only' | 'none' | string;
   readonly file?: string;
@@ -45,30 +56,85 @@ export interface VersioningConfig {
   readonly initialVersion?: string;
 }
 
-export interface AgyLoopConfig {
+export interface OpenCodeConfig {
+  readonly model?: string;
+  readonly [key: string]: unknown;
+}
+
+export interface GitConfig {
+  readonly remote?: string;
+  readonly baseBranch?: string;
+  // Branch prefixes (`phase/`, `feature/`, `task/`, `fix/`) are domain
+  // constants, not configuration (#333 AC5): see `src/domain/defaults.ts`.
+  readonly forge?: 'github' | 'gitlab' | 'generic' | string;
+}
+
+export interface VerificationCommandConfig {
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly timeoutSeconds?: number;
+}
+
+export interface SmokeSuiteConfig {
+  readonly setup?: string;
+  readonly teardown?: string;
+  readonly timeoutSeconds?: number;
+  readonly steps: readonly VerificationCommandConfig[];
+}
+
+export interface VerificationSubprojectConfig {
+  readonly path: string;
+  readonly ecosystems: readonly string[];
+}
+
+export interface VerificationMarkersConfig {
+  readonly dockerCompose: boolean;
+  readonly migrationTool: string | null;
+  readonly e2eTool: string | null;
+}
+
+export interface VerificationConfig {
+  /** May be a composite label such as 'node+dotnet' (#334). */
+  readonly ecosystem?: string;
+  readonly monorepo?: boolean;
+  readonly markers?: VerificationMarkersConfig;
+  readonly subprojects?: readonly VerificationSubprojectConfig[];
+  readonly fastCheck?: readonly VerificationCommandConfig[];
+  readonly smoke?: SmokeSuiteConfig;
+  readonly gates?: readonly VerificationCommandConfig[];
+}
+
+export interface CodeLoopConfig {
+  readonly runner?: RunnerType;
+  readonly opencode?: OpenCodeConfig;
   readonly models: ModelRoutingConfig;
   readonly options: PipelineOptionsConfig;
+  readonly circuitBreakers?: CircuitBreakersConfig;
   readonly migration?: IssueMigrationConfig;
   readonly versioning?: VersioningConfig;
+  readonly git?: GitConfig;
+  readonly verification?: VerificationConfig;
 }
 
 export interface ConfigLoadOptions {
   readonly customPath?: string | null;
   readonly cwd?: string;
+  readonly model?: string;
 }
 
 export interface ConfigRepository {
   /**
    * Loads hierarchical configuration.
    */
-  loadConfig(options?: ConfigLoadOptions): AgyLoopConfig;
+  loadConfig(options?: ConfigLoadOptions): CodeLoopConfig;
 
   /**
    * Resolves model tier and API model for a specific role.
    */
   resolveModel(
     role: SubagentRoleName | string,
-    config: AgyLoopConfig
+    config: CodeLoopConfig
   ): {
     configured: string;
     tier: ModelTierName;

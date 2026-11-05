@@ -1,5 +1,5 @@
 /**
- * agyloop - FileStandardsRepository Infrastructure Adapter Tests
+ * codeloop - FileStandardsRepository Infrastructure Adapter Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -14,7 +14,7 @@ describe('FileStandardsRepository (Infrastructure Layer)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-standards-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-standards-test-'));
   });
 
   afterEach(() => {

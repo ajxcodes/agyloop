@@ -1,5 +1,5 @@
 /**
- * agyloop - ConfirmationPromptPort Interface
+ * codeloop - ConfirmationPromptPort Interface
  *
  * Inversion of control contract for human-in-the-loop confirmation gates.
  * Application use cases must never depend directly on readline, stdin, or tty.

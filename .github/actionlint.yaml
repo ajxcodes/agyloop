@@ -1,0 +1,8 @@
+# actionlint's compiled-in runner-label allowlist predates `ubuntu-26.04`, so the
+# pinned rhysd/actionlint@v1.7.12 reports `label "ubuntu-26.04" is unknown` for the
+# `lint`, `posix-shell` and `tag` jobs. Declaring the label here is actionlint's
+# documented way to teach it a runner it does not know yet (#352). Deliberately not
+# `-ignore runner-label`: that would also hide genuine typos such as `ubuntu-26.26`.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

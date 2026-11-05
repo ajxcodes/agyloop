@@ -1,5 +1,9 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/agyloop.json",
+  "runner": "auto",
+  "opencode": {
+    "model": "ollama/ornith:9b-128k"
+  },
   "models": {
     "planner": "pro",
     "implementer": "inherit",
@@ -11,5 +15,13 @@
     "gateTimeoutSeconds": 300,
     "autoApproveInYolo": true,
     "enableMcpInPlanner": true
+  },
+  "circuitBreakers": {
+    "maxTurnsPerSubagent": 15,
+    "maxGateRetries": 3,
+    "maxConcurrentSubagents": 4,
+    "maxWallClockDurationSeconds": 900,
+    "tokenBudgetThreshold": 150000,
+    "actionOnTrip": "pause_for_human"
   }
 }

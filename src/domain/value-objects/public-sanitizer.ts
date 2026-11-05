@@ -1,5 +1,5 @@
 /**
- * agyloop - PublicSanitizer (Domain Layer)
+ * codeloop - PublicSanitizer (Domain Layer)
  *
  * Pure domain sanitizer ensuring public commit messages, diff summaries,
  * and PR descriptions never leak internal/private tracker URLs or cross-repo references.
@@ -7,7 +7,7 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import { DEFAULT_TRACKER_REPO } from '../constants';
+import { DEFAULT_TRACKER_REPO } from '../defaults';
 
 export interface PublicSanitizerOptions {
   readonly trackerRepo?: string; // e.g. 'ajxcodes/projects'

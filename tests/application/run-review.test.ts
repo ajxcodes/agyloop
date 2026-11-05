@@ -1,5 +1,5 @@
 /**
- * agyloop - RunReviewUseCase Unit Tests
+ * codeloop - RunReviewUseCase Unit Tests
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -18,11 +18,14 @@ const {
   MODE_STANDARD,
   VERDICT_APPROVED,
   VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED,
+  NOTE_REVIEW_SKIPPED,
   ROLE_REVIEWER,
   InvalidTransitionError,
   AiReviewReport,
   AiReviewFinding,
-  ReviewConfidence
+  ReviewConfidence,
+  GateResultReport
 } = require('../../dist/domain');
 const {
   RunReviewUseCase,
@@ -39,11 +42,11 @@ import type {
   CritiquePort,
   CritiqueOptions,
   CritiqueResolution,
-  AgyLoopConfig,
+  CodeLoopConfig,
   ResolvedPlanLocation
 } from '../../src/ports';
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: any = null;
   public initialSnapshot: any = null;
 
@@ -69,12 +72,12 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
-  public loadConfig(): AgyLoopConfig {
+class ConfigRepositoryDouble implements ConfigRepository {
+  public loadConfig(): CodeLoopConfig {
     return DEFAULT_CONFIG;
   }
 
-  public resolveModel(role: string, config?: AgyLoopConfig): any {
+  public resolveModel(role: string, config?: CodeLoopConfig): any {
     return {
       role,
       configured: 'flash',
@@ -88,7 +91,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public summaryUpdates: any[] = [];
   public planContent: string = '';
 
@@ -127,7 +130,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 }
 
-class MockStandardsRepository implements StandardsRepository {
+class StandardsRepositoryDouble implements StandardsRepository {
   public standardsText: string | null = null;
 
   public loadStandards(): string | null {
@@ -139,7 +142,72 @@ class MockStandardsRepository implements StandardsRepository {
   }
 }
 
-class MockCritique implements CritiquePort {
+/**
+ * Issue #455: the `QUALITY_GATE -> REVIEW` exit now certifies through the
+ * shared chokepoint, so a fixture that reaches review from the gate must inject
+ * a usable same-round report (fail-closed: a test double may not certify by
+ * omission).
+ */
+class MockGateReportRepository {
+  public report: any;
+
+  constructor(report: any) {
+    this.report = report;
+  }
+
+  public load(): any {
+    return this.report;
+  }
+
+  public save(): string {
+    return '/fake/gate.json';
+  }
+
+  public clear(): void {
+    this.report = null;
+  }
+}
+
+const GATE_REPORT = {
+  verdict: 'PASSED',
+  buildSystem: 'node',
+  buildStatus: 'PASSED',
+  testsStatus: 'PASSED (2 passed)',
+  testsPassed: 2,
+  testsFailed: 0,
+  durationMs: 1000,
+  executedCommands: ['npm test'],
+  smokeChecks: [],
+  smokeProtocol: 'NOT_DECLARED',
+  notRun: [],
+  gateRound: 1
+};
+
+/** Issue #455: the per-test gate evidence fixture, injected via the wrapper. */
+let activeGateRepo: MockGateReportRepository | null = null;
+
+function newReviewUseCase(
+  stateRepo: any,
+  configRepo: any,
+  planGenerator: any,
+  standardsRepo?: any,
+  critiquePort?: any
+): any {
+  return new RunReviewUseCase(
+    stateRepo,
+    configRepo,
+    planGenerator,
+    standardsRepo,
+    critiquePort,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    activeGateRepo as any
+  );
+}
+
+class CritiqueDouble implements CritiquePort {
   public reportToReturn: AiReviewReportType | null = null;
 
   public resolveReviewer(): CritiqueResolution {
@@ -212,11 +280,11 @@ Other content...
 });
 
 describe('RunReviewUseCase (Application Layer)', () => {
-  let stateRepo: MockStateRepository;
-  let configRepo: MockConfigRepository;
-  let planGenerator: MockPlanGenerator;
-  let standardsRepo: MockStandardsRepository;
-  let critique: MockCritique;
+  let stateRepo: StateRepositoryDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
+  let standardsRepo: StandardsRepositoryDouble;
+  let critique: CritiqueDouble;
 
   beforeEach(() => {
     const initialSm = new StateMachine({
@@ -224,22 +292,25 @@ describe('RunReviewUseCase (Application Layer)', () => {
       issue: new IssueNumber(28)
     });
 
-    stateRepo = new MockStateRepository(initialSm.toSnapshot());
-    configRepo = new MockConfigRepository();
-    planGenerator = new MockPlanGenerator();
+    stateRepo = new StateRepositoryDouble(initialSm.toSnapshot());
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
     planGenerator.planContent = `
 ## Acceptance Criteria
 - AC 1: Reviewer subagent definition created
 - AC 2: Standards ingestion supported
 `;
-    standardsRepo = new MockStandardsRepository();
+    standardsRepo = new StandardsRepositoryDouble();
     standardsRepo.standardsText = '# Standards\nRule: Pure domain only.';
-    critique = new MockCritique();
+    critique = new CritiqueDouble();
+    activeGateRepo = new MockGateReportRepository(
+      GateResultReport.fromJSON(GATE_REPORT as any)
+    );
   });
 
   test('rejects execution when no pipeline state exists', async () => {
     stateRepo.savedSnapshot = null;
-    const useCase = new RunReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
+    const useCase = newReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
 
     await assert.rejects(
       () => useCase.execute(),
@@ -254,7 +325,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
     });
     stateRepo.savedSnapshot = sm.toSnapshot();
 
-    const useCase = new RunReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
+    const useCase = newReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
     await assert.rejects(
       () => useCase.execute(),
       (err: any) => err instanceof InvalidTransitionError && err.fromStage === 'PLAN'
@@ -262,7 +333,7 @@ describe('RunReviewUseCase (Application Layer)', () => {
   });
 
   test('transitions QUALITY_GATE -> REVIEW -> COMMIT when review is APPROVED', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -277,6 +348,9 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
     const result = await useCase.execute({ reviewOutput });
@@ -288,12 +362,14 @@ REMEDIATION_GUIDANCE:
     assert.strictEqual(result.reviewerDef.name, ROLE_REVIEWER);
     assert.strictEqual(result.acceptanceCriteria.length, 2);
 
-    // Verify summary log was updated
+    // Verify summary log was updated (issue #284: one reviewRecord, not prose)
     assert.strictEqual(planGenerator.summaryUpdates.length, 1);
     const update = planGenerator.summaryUpdates[0].updateData;
     assert.strictEqual(update.stage, 'AI Review');
     assert.strictEqual(update.status, VERDICT_APPROVED);
-    assert.ok(update.reviewNote.includes('All acceptance criteria fulfilled'));
+    assert.strictEqual(update.reviewRecord.verdict, VERDICT_APPROVED);
+    assert.strictEqual(update.reviewRecord.round, 1);
+    assert.ok(update.reviewRecord.summary.includes('All acceptance criteria fulfilled'));
 
     // Verify checkpoint persisted
     const saved = await stateRepo.load();
@@ -307,7 +383,7 @@ REMEDIATION_GUIDANCE:
     });
     stateRepo.savedSnapshot = sm.toSnapshot();
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -322,6 +398,9 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
     const result = await useCase.execute({ reviewOutput });
@@ -330,7 +409,7 @@ REMEDIATION_GUIDANCE:
   });
 
   test('transitions QUALITY_GATE -> REVIEW -> IMPLEMENT when review requests changes', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -363,11 +442,12 @@ REMEDIATION_GUIDANCE:
       String(lastEntry.metadata?.selfCorrectionPayload).includes('Standards ingestion missing fallback')
     );
 
-    // Verify summary log update
+    // Verify summary log update (issue #284: one reviewRecord, not prose)
     assert.strictEqual(planGenerator.summaryUpdates.length, 1);
     const update = planGenerator.summaryUpdates[0].updateData;
     assert.strictEqual(update.status, VERDICT_CHANGES_REQUESTED);
-    assert.ok(update.reviewNote.includes('Pipeline reverted to IMPLEMENT'));
+    assert.strictEqual(update.reviewRecord.verdict, VERDICT_CHANGES_REQUESTED);
+    assert.ok(update.reviewRecord.summary.includes('Acceptance criteria AC 2 unfulfilled'));
   });
 
   test('uses injected CritiquePort when reviewOutput is not provided', async () => {
@@ -377,7 +457,7 @@ REMEDIATION_GUIDANCE:
       findings: []
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -393,7 +473,7 @@ REMEDIATION_GUIDANCE:
   });
 
   test('assembles prompt with standards, criteria, and directives', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -415,7 +495,7 @@ REMEDIATION_GUIDANCE:
   });
 
   test('respects dryRun flag by avoiding state and summary writes', async () => {
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -446,7 +526,7 @@ REMEDIATION_GUIDANCE:
       ]
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -463,6 +543,12 @@ REMEDIATION_GUIDANCE:
   });
 
   test('enforces CHANGES_REQUESTED when critique reports critical/error findings even if reviewer LLM outputs APPROVED', async () => {
+    // Issue #269 (R2): the recording path does NOT EXECUTE the critique CLI
+    // when the reviewer's verdict is supplied — that is a network round-trip,
+    // a latency cost and an interactive install prompt on a path that must
+    // never block. The critique REPORT the reviewer already saw is still
+    // honoured when it is SUPPLIED (`priorCritiqueReport`), and the TWO-TIER
+    // INVARIANT still escalates the verdict from it.
     critique.reportToReturn = new AiReviewReport({
       summary: 'Automated critique found critical flaw',
       confidence: ReviewConfidence.high('Security scan'),
@@ -477,7 +563,7 @@ REMEDIATION_GUIDANCE:
       ]
     });
 
-    const useCase = new RunReviewUseCase(
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -492,18 +578,29 @@ UNFULFILLED_AC:
 - None
 REMEDIATION_GUIDANCE:
 - None
+AC_EVIDENCE:
+- AC1: met — \`src/security.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
 `;
 
-    const result = await useCase.execute({ reviewOutput });
+    const result = await useCase.execute({
+      reviewOutput,
+      priorCritiqueReport: critique.reportToReturn
+    });
 
     assert.strictEqual(result.passed, false);
     assert.strictEqual(result.verdict.isChangesRequested(), true);
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    // Issue #269 (R3): the source must NOT claim the reviewer requested the
+    // changes — the critique report escalated the verdict, not the reviewer.
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
   });
 
-  test('fails closed with CHANGES_REQUESTED when neither review output nor critique report was generated', async () => {
-    // RunReviewUseCase without CritiquePort and without reviewOutput
-    const useCase = new RunReviewUseCase(
+  test('returns SKIPPED advisory when neither review output nor critique report was generated', async () => {
+    // Path A (issue #236 / AC1, AC2, AC4a): RunReviewUseCase without CritiquePort
+    // and without reviewOutput. The verdict must be a SKIPPED advisory — never a
+    // fabricated CHANGES_REQUESTED — and the pipeline must advance to COMMIT.
+    const useCase = newReviewUseCase(
       stateRepo,
       configRepo,
       planGenerator,
@@ -513,19 +610,252 @@ REMEDIATION_GUIDANCE:
 
     const result = await useCase.execute();
 
-    assert.strictEqual(result.passed, false);
-    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
-    assert.strictEqual(result.verdict.isChangesRequested(), true);
-    assert.strictEqual(
-      result.verdict.summary,
-      'Review failed: Neither Reviewer subagent output nor critique report was generated.'
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.verdict.isChangesRequested(), false);
+    assert.strictEqual(result.verdict.isSkipped(), true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.notStrictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    // History records the advisory without any self-correction payload
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.stage, STAGE_COMMIT);
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual(lastEntry.metadata?.note, NOTE_REVIEW_SKIPPED);
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+
+    // Summary.md update: SKIPPED status + "Review skipped:" note
+    assert.strictEqual(planGenerator.summaryUpdates.length, 1);
+    const update = planGenerator.summaryUpdates[0].updateData;
+    assert.strictEqual(update.status, VERDICT_SKIPPED);
+    assert.strictEqual(update.reviewRecord.verdict, VERDICT_SKIPPED);
+    assert.strictEqual(update.reviewRecord.round, 1);
+
+    // Checkpoint persisted at COMMIT
+    const saved = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+  });
+
+  test('bypassed critique report maps to SKIPPED, not CHANGES_REQUESTED (Path B)', async () => {
+    // Path B (production path): CliCritiqueGateway normalizes every absence
+    // condition to AiReviewReport.bypassed(...) — must map to SKIPPED (AC1, AC2).
+    critique.reportToReturn = AiReviewReport.bypassed('Critique CLI binary not found.');
+
+    const useCase = newReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
     );
-    assert.deepStrictEqual(result.verdict.unfulfilledCriteria, [
-      'Review inspection not performed: neither subagent output nor critique report was provided'
-    ]);
-    assert.deepStrictEqual(result.verdict.remediationGuidance, [
-      'Execute critique CLI or invoke Reviewer subagent to inspect diff against base branch and provide structured review output.'
-    ]);
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.verdict.isSkipped(), true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    // Actionable summary carries the exact absent-setup reason (AC2)
+    assert.ok(result.verdict.summary.includes('Critique CLI binary not found'));
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+  });
+
+  test('RR1: a PARSED bypass payload maps to SKIPPED with provenance (#303)', async () => {
+    // The factory case above proves the mapping; this case proves the PARSER
+    // preserves the signal the CLI actually emits. Before #303 the flag was
+    // dropped and this exact payload recorded CHANGES_REQUESTED.
+    critique.reportToReturn = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed: Error: GEMINI_API_KEY is not set.',
+        confidenceLevel: 'Low',
+        confidenceExplanation: 'bypassed',
+        comments: []
+      })
+    );
+
+    const useCase = newReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.strictEqual(result.reviewSource, 'skipped');
+    assert.strictEqual(result.critiqueVerified, false);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual(lastEntry.metadata?.reviewSource, 'skipped');
+    assert.strictEqual(lastEntry.metadata?.critiqueVerified, false);
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+  });
+
+  test('RR2: a finding on a BYPASSED report still cannot overwrite SKIPPED (#303 AC11)', async () => {
+    critique.reportToReturn = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed.',
+        comments: [
+          {
+            path: 'src/index.ts',
+            line: 1,
+            severity: 'error',
+            body: 'Stray finding on a bypassed report'
+          }
+        ]
+      })
+    );
+
+    const useCase = newReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'SKIPPED');
+    assert.strictEqual('selfCorrectionPayload' in (lastEntry.metadata ?? {}), false);
+  });
+
+  test('RR3: a real critique report records its provenance as critique-report (#297 AC10)', async () => {
+    critique.reportToReturn = new AiReviewReport({
+      summary: 'Clean automated review',
+      confidence: ReviewConfidence.high('Diff verified.'),
+      findings: []
+    });
+
+    const useCase = newReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.reviewSource, 'critique-report');
+    assert.strictEqual(result.critiqueVerified, true);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewSource, 'critique-report');
+    assert.strictEqual(lastEntry.metadata?.critiqueVerified, true);
+  });
+
+  test('real blocking critique findings still mandate CHANGES_REQUESTED (critique-only, no reviewer output)', async () => {
+    // AC3/AC4b regression: a genuine blocking critique (Tier 1 only, no reviewer
+    // output) must still revert to IMPLEMENT with a self-correction payload.
+    critique.reportToReturn = new AiReviewReport({
+      summary: 'Automated critique found a blocking defect',
+      confidence: ReviewConfidence.high('Deep static scan'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/index.ts',
+          line: 1,
+          rule: 'blocking-defect',
+          message: 'Injected blocking defect',
+          severity: 'error'
+        })
+      ]
+    });
+
+    const useCase = newReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+
+    const result = await useCase.execute();
+
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.verdict.isChangesRequested(), true);
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
     assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    const history = result.stateMachine.history;
+    const lastEntry = history[history.length - 1];
+    assert.strictEqual(lastEntry.metadata?.reviewVerdict, 'CHANGES_REQUESTED');
+    assert.ok(lastEntry.metadata?.selfCorrectionPayload);
+    assert.ok(
+      String(lastEntry.metadata?.selfCorrectionPayload).includes('Injected blocking defect')
+    );
+  });
+
+  test('reviewer APPROVED output wins when critique is absent (Tier 2 precedence)', async () => {
+    // T13: reviewOutput present + no CritiquePort => APPROVED, stage COMMIT.
+    const useCase = newReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      undefined // No CritiquePort
+    );
+
+    const reviewOutput = `
+REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: Reviewer subagent approved the diff.
+UNFULFILLED_AC:
+- None
+REMEDIATION_GUIDANCE:
+- None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+- AC2: met — \`tests/application/run-review.test.ts\`
+`;
+
+    const result = await useCase.execute({ reviewOutput });
+
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+  });
+});
+
+describe('extractAcceptanceCriteria (issue #432, TR-43)', () => {
+  test('extractAcceptanceCriteria ignores fixture criteria inside a fenced block', () => {
+    const planText = [
+      '# Plan',
+      '',
+      '## 1. Context & Objectives',
+      '- **Acceptance Criteria:**',
+      '- AC1: the real criterion',
+      '',
+      '### Manual Smoke Test Protocol',
+      '```bash',
+      '- **Acceptance Criteria:**',
+      '- AC9: a fixture criterion, not this plan\'s',
+      '```'
+    ].join('\n');
+
+    const criteria = extractAcceptanceCriteria(planText);
+    assert.ok(criteria.some((criterion: string) => criterion.includes('the real criterion')));
+    assert.ok(!criteria.some((criterion: string) => criterion.includes('fixture criterion')));
   });
 });

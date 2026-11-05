@@ -1,5 +1,5 @@
 /**
- * agyloop - CommitMessage Value Object
+ * codeloop - CommitMessage Value Object
  *
  * Immutable, self-validating value object adhering strictly to the
  * Conventional Commits 1.0.0 specification:
@@ -10,16 +10,11 @@
  * [optional footer(s)]
  */
 
-import {
-  ConventionalCommitType,
-  CONVENTIONAL_COMMIT_TYPES,
-  REGEX_CONVENTIONAL_HEADER,
-  REGEX_BREAKING_CHANGE_FOOTER,
-  REGEX_ISSUE_NUMBER_REF,
-  TOKEN_BREAKING_CHANGE,
-  TOKEN_BREAKING_EXCLAMATION
-} from '../constants';
+import { ConventionalCommitType, CONVENTIONAL_COMMIT_TYPES, COMMIT_SUBJECT_MAX_LENGTH } from '../vocabulary';
+import { REGEX_CONVENTIONAL_HEADER, REGEX_BREAKING_CHANGE_FOOTER, REGEX_ISSUE_NUMBER_REF } from '../regexes';
+import { TOKEN_BREAKING_CHANGE, TOKEN_BREAKING_EXCLAMATION } from '../cli-contract';
 import { ValidationError } from '../errors';
+import { stripOwnIssueToken, truncateSubjectDescription } from './subject-truncation';
 
 export interface CommitMessageProps {
   readonly type: ConventionalCommitType | string;
@@ -119,20 +114,46 @@ export class CommitMessage {
     Object.freeze(this);
   }
 
+  /**
+   * The conventional-commit SUBJECT (`type(scope): description (#N)`).
+   *
+   * #345 in #339 (AC-4.4): never longer than `COMMIT_SUBJECT_MAX_LENGTH` (72).
+   * The bound lives HERE — not in the drafter — so the drafted subject and the
+   * committed subject agree by construction: `toFullMessage()` headers with
+   * this method. An explicit `-m` message IS parsed into this value object
+   * (`draft-commit.ts:181-193`, `execute-commit.ts:172-173`) and is bounded
+   * here too — which is exactly why the `(#N)` token must be reserved rather
+   * than left inside the description where the cut can slice it off (#400).
+   *
+   * The cut is boundary-aware (issue #376, Defect 2): this issue's own token is
+   * normalised out of the description first, ` (#N)` is always appended as the
+   * suffix when an issue is associated (so its budget is always reserved), and
+   * an over-long description is bounded by `truncateSubjectDescription` — exact
+   * boundary → clause separator → last space — then trimmed of a dangling
+   * article/preposition/conjunction/possessive/adverb, trailing label
+   * punctuation and an unmatched opening quote or bracket.
+   */
   public toSingleLine(): string {
     const scopePart = this.scope ? `(${this.scope})` : '';
     const breakingMark = this.isBreaking ? TOKEN_BREAKING_EXCLAMATION : '';
-    let desc = this.description;
+    const baseDescription = stripOwnIssueToken(this.description, this.issueNumber);
+    const issueSuffix = this.issueNumber !== null ? ` (#${this.issueNumber})` : '';
 
-    if (this.issueNumber !== null) {
-      const issueTokenParen = `(#${this.issueNumber})`;
-      const issueTokenHash = `#${this.issueNumber}`;
-      if (!desc.includes(issueTokenParen) && !desc.includes(issueTokenHash)) {
-        desc = `${desc} ${issueTokenParen}`;
-      }
+    const prefix = `${this.type}${scopePart}${breakingMark}: `;
+    const budget = COMMIT_SUBJECT_MAX_LENGTH - prefix.length - issueSuffix.length;
+
+    // budget < 1 is only reachable with a pathological (near-72-char) explicit
+    // scope; refusing to truncate there keeps the tail tokens intact rather
+    // than emitting a malformed empty description.
+    let boundedDesc = baseDescription;
+    if (
+      budget > 0 &&
+      prefix.length + baseDescription.length + issueSuffix.length > COMMIT_SUBJECT_MAX_LENGTH
+    ) {
+      boundedDesc = truncateSubjectDescription(baseDescription, budget);
     }
 
-    return `${this.type}${scopePart}${breakingMark}: ${desc}`;
+    return `${prefix}${boundedDesc}${issueSuffix}`;
   }
 
   public toFullMessage(): string {

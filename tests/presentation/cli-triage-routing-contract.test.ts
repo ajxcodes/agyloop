@@ -1,0 +1,260 @@
+/**
+ * codeloop - Triage routing command contract (issue #241, D1)
+ *
+ * TR1 - the command the DISPATCHED prompt names runs verbatim (from dist/)
+ * TR2 - every parser-accepted action appears in the prompt and is accepted
+ * TR3 - `triage` needs no marker; `review` DOES (a subagent cannot file)
+ * TR4 - the payload schema carries no phantom Env field
+ * TR5 - routing requires the checkpoint to be at TRIAGE
+ */
+
+const { describe, test, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const { runCli } = require('../../dist/presentation/cli');
+const { ResolveSubagentUseCase } = require('../../dist/application');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+
+/** The canonical harness run with this suite's optional shadow-bin PATH and env overrides. */
+async function runInLocal(
+  dir: string,
+  args: string[],
+  options: { readonly binDir?: string; readonly env?: Record<string, string | undefined> } = {}
+): Promise<CliRun> {
+  const env: Record<string, string | undefined> = {
+    AGY_SUBAGENT: undefined,
+    ...(options.env ?? {})
+  };
+  if (options.binDir) {
+    env.PATH = `${options.binDir}${path.delimiter}${process.env.PATH ?? ''}`;
+  }
+  const result = await runCliInSandboxCanonical(args, { dir, env });
+  return { ...result };
+}
+
+const {
+  TRIAGE_DISPOSITION_ACTIONS,
+  MSG_TRIAGE_ROUTING_REQUIRES_GATE
+} = require('../../dist/domain');
+
+const ISSUE = 241;
+
+const resolveSubagent = new ResolveSubagentUseCase({});
+
+/** A `gh` stub that answers "no pull request" so nothing reaches the network. */
+function installGhStub(binDir: string): void {
+  fs.mkdirSync(binDir, { recursive: true });
+  const file = path.join(binDir, 'gh');
+  fs.writeFileSync(file, '#!/bin/sh\necho "[]"\n', 'utf8');
+  fs.chmodSync(file, 0o755);
+}
+
+function seedSandbox(stage: string, issue = ISSUE): { dir: string; stateFile: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-routing-'));
+  const stateFile = path.join(dir, '.agyloop', 'tasks', `${issue}.json`);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  const now = new Date().toISOString();
+  fs.writeFileSync(
+    stateFile,
+    JSON.stringify(
+      {
+        version: '1.0.0',
+        currentStage: stage,
+        mode: 'standard',
+        issue,
+        baseBranch: 'main',
+        createdAt: now,
+        updatedAt: now,
+        history: [{ stage, timestamp: now }],
+        pausedAtGate: null,
+        pausedAtTimestamp: null
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+  return { dir, stateFile };
+}
+
+interface CliRun {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+
+/** The canonical harness run with this suite's optional shadow-bin PATH and env overrides. */
+
+
+
+describe('Triage routing command contract (issue #241)', () => {
+  let sandboxes: string[] = [];
+
+  beforeEach(() => {
+    sandboxes = [];
+  });
+
+  afterEach(() => {
+    for (const dir of sandboxes) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('TR1: the rendered command runs verbatim without an environment marker', async () => {
+    const prompt = resolveSubagent.buildTriageTaskPrompt({ issueNumber: ISSUE });
+    assert.strictEqual(
+      prompt.includes('AGY_SUBAGENT'),
+      false,
+      'the dispatched prompt must not require an invisible marker'
+    );
+
+    const match = prompt.match(/codeloop triage <action> --issue 241/);
+    assert.ok(match, `the prompt must name the exact command, got:\n${prompt}`);
+
+    const { dir, stateFile } = seedSandbox('TRIAGE');
+    sandboxes.push(dir);
+    const binDir = path.join(dir, 'bin');
+    installGhStub(binDir);
+
+    const command = `${match[0]}`.replace('<action>', 'completed');
+    const args = command.split(/\s+/).slice(1);
+    const run = await runInLocal(dir, args, { binDir });
+
+    assert.strictEqual(run.code, 0, `the named command must succeed as written:\n${run.stdout}\n${run.stderr}`);
+    assert.strictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).currentStage, 'COMPLETED');
+  });
+
+  test('TR2: every accepted action appears in the prompt and is accepted by the parser', async () => {
+    const prompt = resolveSubagent.buildTriageTaskPrompt({ issueNumber: ISSUE });
+
+    for (const action of TRIAGE_DISPOSITION_ACTIONS) {
+      assert.ok(prompt.includes(action), `the prompt must name '${action}'`);
+
+      // A COMPLETED checkpoint turns a parser-rejected action into parity with
+      // a stage-refused action; the error text is what distinguishes them.
+      const { dir } = seedSandbox('COMPLETED');
+      sandboxes.push(dir);
+      const run = await runInLocal(dir, ['triage', action, '--issue', String(ISSUE)]);
+
+      assert.strictEqual(
+        run.stderr.includes('Unrecognized triage action'),
+        false,
+        `the parser must accept '${action}', got:\n${run.stderr}`
+      );
+      assert.ok(run.stderr.includes(MSG_TRIAGE_ROUTING_REQUIRES_GATE), run.stderr);
+    }
+  });
+
+  test('TR3: triage needs no marker, review is refused to a subagent (issue #297)', async () => {
+    const verdictPath = (dir: string): string => {
+      const file = path.join(dir, 'verdict.md');
+      fs.writeFileSync(
+        file,
+        'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: smoke\nUNFULFILLED_AC:\n- None\nREMEDIATION_GUIDANCE:\n- None\n',
+        'utf8'
+      );
+      return file;
+    };
+    const critiquePath = (dir: string): string => {
+      const file = path.join(dir, 'critique.json');
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          summary: 'Clean automated review',
+          confidenceLevel: 'High',
+          confidenceExplanation: 'diff verified',
+          comments: []
+        }),
+        'utf8'
+      );
+      return file;
+    };
+
+    // `triage` keeps its no-marker requirement.
+    for (const marker of [undefined, '1']) {
+      const triage = seedSandbox('TRIAGE');
+      sandboxes.push(triage.dir);
+      const triageRun = await runInLocal(
+        triage.dir,
+        ['triage', 'completed', '--issue', String(ISSUE)],
+        { env: { AGY_SUBAGENT: marker } }
+      );
+      assert.strictEqual(
+        triageRun.code,
+        0,
+        `triage must not depend on a marker (AGY_SUBAGENT=${marker}):\n${triageRun.stderr}`
+      );
+    }
+
+    // A subagent-marked `review` is refused by the root-mutation guard.
+    const marked = seedSandbox('REVIEW');
+    sandboxes.push(marked.dir);
+    const markedRun = await runInLocal(
+      marked.dir,
+      ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(marked.dir), '--critique-report', critiquePath(marked.dir)],
+      { env: { AGY_SUBAGENT: '1' } }
+    );
+    assert.strictEqual(markedRun.code, 1, `a subagent must not file:\n${markedRun.stderr}`);
+    assert.ok(
+      markedRun.stderr.includes('Subagents are not permitted'),
+      `the failure must be the root-mutation guard:\n${markedRun.stderr}`
+    );
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(marked.stateFile, 'utf8')).currentStage,
+      'REVIEW',
+      'a refused filing must not move the checkpoint'
+    );
+
+    // The orchestrator (no marker) files the same verdict successfully.
+    const open = seedSandbox('REVIEW');
+    sandboxes.push(open.dir);
+    const openRun = await runInLocal(
+      open.dir,
+      ['review', '--issue', String(ISSUE), '--verdict-file', verdictPath(open.dir), '--critique-report', critiquePath(open.dir)],
+      { env: { AGY_SUBAGENT: undefined } }
+    );
+    assert.strictEqual(openRun.code, 0, `the orchestrator must file:\n${openRun.stderr}`);
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(open.stateFile, 'utf8')).currentStage,
+      'COMMIT',
+      'the orchestrator filing advances to COMMIT'
+    );
+  });
+
+  test('TR4: the payload subagent carries no Env field', async () => {
+    const { dir } = seedSandbox('TRIAGE');
+    sandboxes.push(dir);
+    const binDir = path.join(dir, 'bin');
+    installGhStub(binDir);
+
+    const run = await runInLocal(dir, ['next', '--issue', String(ISSUE), '--json'], { binDir });
+    assert.strictEqual(run.code, 0, run.stderr);
+
+    const payload = JSON.parse(run.stdout);
+    const subagent = payload.invocationPayload?.Subagents?.[0];
+    assert.ok(subagent, `the directive must carry a subagent payload:\n${run.stdout}`);
+    assert.deepStrictEqual(
+      Object.keys(subagent).sort(),
+      ['Model', 'Prompt', 'Role', 'TypeName', 'Workspace'],
+      'no phantom Env field may be added to the harness payload'
+    );
+  });
+
+  test('TR5: a routing action from a non-TRIAGE checkpoint fails without mutating it', async () => {
+    for (const stage of ['DISCOVERY', 'COMPLETED']) {
+      const { dir, stateFile } = seedSandbox(stage);
+      sandboxes.push(dir);
+      const before = fs.readFileSync(stateFile);
+
+      const run = await runInLocal(dir, ['triage', 'implement', '--issue', String(ISSUE)]);
+
+      assert.strictEqual(run.code, 1, `routing from ${stage} must fail:\n${run.stdout}\n${run.stderr}`);
+      assert.ok(run.stderr.includes(MSG_TRIAGE_ROUTING_REQUIRES_GATE), run.stderr);
+      assert.deepStrictEqual(fs.readFileSync(stateFile), before, 'the checkpoint must be byte-identical');
+    }
+  });
+});

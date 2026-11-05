@@ -1,26 +1,11 @@
 /**
- * agyloop - Ecosystem Value Object
+ * codeloop - Ecosystem Value Object
  *
  * Immutable, self-validating value object representing a detected software ecosystem.
  */
 
-import {
-  SUPPORTED_ECOSYSTEMS,
-  EcosystemType,
-  ECOSYSTEM_NODE,
-  ECOSYSTEM_PYTHON,
-  ECOSYSTEM_GO,
-  ECOSYSTEM_RUST,
-  ECOSYSTEM_GRADLE,
-  ECOSYSTEM_MAVEN,
-  ECOSYSTEM_DOTNET,
-  ECOSYSTEM_UNKNOWN,
-  PackageManagerName,
-  DEFAULT_ECOSYSTEM_PRIORITY,
-  FALLBACK_ECOSYSTEM_PRIORITY,
-  CONFIDENCE_CERTAIN,
-  CONFIDENCE_NONE
-} from '../constants';
+import { SUPPORTED_ECOSYSTEMS, EcosystemType, ECOSYSTEM_NODE, ECOSYSTEM_PYTHON, ECOSYSTEM_GO, ECOSYSTEM_RUST, ECOSYSTEM_GRADLE, ECOSYSTEM_MAVEN, ECOSYSTEM_DOTNET, ECOSYSTEM_UNKNOWN, PackageManagerName, FALLBACK_ECOSYSTEM_PRIORITY, CONFIDENCE_CERTAIN, CONFIDENCE_NONE } from '../vocabulary';
+import { DEFAULT_ECOSYSTEM_PRIORITY } from '../defaults';
 import { ValidationError } from '../errors';
 
 export interface EcosystemProps {

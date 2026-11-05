@@ -1,5 +1,5 @@
 /**
- * agyloop - FileConfigRepository Infrastructure Adapter
+ * codeloop - FileConfigRepository Infrastructure Adapter
  *
  * Implements ConfigRepository with hierarchical configuration resolution and model routing.
  */
@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   ConfigLoadOptions
 } from '../ports';
 import {
@@ -26,10 +26,24 @@ import {
   TIER_FLASH,
   STATIC_MODELS,
   DEFAULT_GATE_TIMEOUT_SECONDS,
-  ConfigResolutionError
+  ConfigResolutionError,
+  DEFAULT_CB_MAX_TURNS_PER_SUBAGENT,
+  DEFAULT_CB_MAX_GATE_RETRIES,
+  DEFAULT_CB_MAX_CONCURRENT_SUBAGENTS,
+  DEFAULT_CB_MAX_WALL_CLOCK_DURATION_SECONDS,
+  DEFAULT_CB_TOKEN_BUDGET_THRESHOLD,
+  CB_ACTION_PAUSE_FOR_HUMAN,
+  CB_ACTIONS,
+  ValidationError,
+  DEFAULT_OPENCODE_MODEL,
+  isRunnerType
 } from '../domain';
 
-export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
+export const DEFAULT_CONFIG: CodeLoopConfig = Object.freeze({
+  runner: 'auto',
+  opencode: Object.freeze({
+    model: DEFAULT_OPENCODE_MODEL
+  }),
   models: Object.freeze({
     [ROLE_PLANNER]: TIER_PRO,
     [ROLE_IMPLEMENTER]: TIER_INHERIT,
@@ -41,6 +55,14 @@ export const DEFAULT_CONFIG: AgyLoopConfig = Object.freeze({
     gateTimeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS,
     autoApproveInYolo: true,
     enableMcpInPlanner: true
+  }),
+  circuitBreakers: Object.freeze({
+    maxTurnsPerSubagent: DEFAULT_CB_MAX_TURNS_PER_SUBAGENT,
+    maxGateRetries: DEFAULT_CB_MAX_GATE_RETRIES,
+    maxConcurrentSubagents: DEFAULT_CB_MAX_CONCURRENT_SUBAGENTS,
+    maxWallClockDurationSeconds: DEFAULT_CB_MAX_WALL_CLOCK_DURATION_SECONDS,
+    tokenBudgetThreshold: DEFAULT_CB_TOKEN_BUDGET_THRESHOLD,
+    actionOnTrip: CB_ACTION_PAUSE_FOR_HUMAN
   })
 });
 
@@ -84,8 +106,8 @@ export class FileConfigRepository implements ConfigRepository {
       path.resolve(__dirname, '..', '..', 'config.default.json');
   }
 
-  public loadConfig(options: ConfigLoadOptions & { workspaceDir?: string } = {}): AgyLoopConfig {
-    let resolved: AgyLoopConfig = {
+  public loadConfig(options: ConfigLoadOptions & { workspaceDir?: string } = {}): CodeLoopConfig {
+    let resolved: CodeLoopConfig = {
       models: { ...DEFAULT_CONFIG.models },
       options: { ...DEFAULT_CONFIG.options }
     };
@@ -95,35 +117,42 @@ export class FileConfigRepository implements ConfigRepository {
       try {
         const raw = fs.readFileSync(this.defaultPluginConfigPath, 'utf8');
         const parsed = JSON.parse(raw);
-        resolved = deepMerge(resolved as unknown as Record<string, unknown>, parsed) as unknown as AgyLoopConfig;
+        resolved = deepMerge(resolved as unknown as Record<string, unknown>, parsed) as unknown as CodeLoopConfig;
       } catch {
         // Fall back to embedded DEFAULT_CONFIG
       }
     }
 
-    // 2. Global user configuration (~/.gemini/config/agyloop.json)
-    const globalPath = path.join(os.homedir(), '.gemini', 'config', 'agyloop.json');
-    if (fs.existsSync(globalPath)) {
-      try {
-        const raw = fs.readFileSync(globalPath, 'utf8');
-        resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
-      } catch {
-        // Ignore read error
+    // 2. Global user configuration (~/.gemini/config/agyloop.json or ~/.gemini/config/codeloop.json)
+    const globalCandidates = [
+      path.join(os.homedir(), '.gemini', 'config', 'agyloop.json'),
+      path.join(os.homedir(), '.gemini', 'config', 'codeloop.json')
+    ];
+    for (const globalPath of globalCandidates) {
+      if (fs.existsSync(globalPath)) {
+        try {
+          const raw = fs.readFileSync(globalPath, 'utf8');
+          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as CodeLoopConfig;
+          break;
+        } catch {
+          // Ignore read error
+        }
       }
     }
 
-    // 3. Workspace configuration (.agyloop.json or .agyloop/config.json)
+    // 3. Workspace configuration (.agyloop.json, .codeloop.json, .agyloop/config.json, .codeloop/config.json)
+    // #333: resolve from anywhere inside the checkout — a nested subdirectory or
+    // a linked worktree must see the same workspace config the root does. The
+    // walk is bounded by the checkout root, so a config in `/tmp` or `$HOME` can
+    // never leak into a run.
     const cwd = options.workspaceDir || options.cwd || process.cwd();
-    const wsCandidates = [
-      path.join(cwd, '.agyloop.json'),
-      path.join(cwd, '.agyloop', 'config.json')
-    ];
+    const wsCandidates = this.workspaceConfigCandidates(cwd);
 
     for (const wsPath of wsCandidates) {
       if (fs.existsSync(wsPath)) {
         try {
           const raw = fs.readFileSync(wsPath, 'utf8');
-          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
+          resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as CodeLoopConfig;
           break;
         } catch {
           // Ignore read error
@@ -146,8 +175,11 @@ export class FileConfigRepository implements ConfigRepository {
 
       try {
         const raw = fs.readFileSync(resolvedCustomPath, 'utf8');
-        resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as AgyLoopConfig;
+        resolved = deepMerge(resolved as unknown as Record<string, unknown>, JSON.parse(raw)) as unknown as CodeLoopConfig;
       } catch (err: unknown) {
+        if (err instanceof ConfigResolutionError || err instanceof ValidationError) {
+          throw err;
+        }
         throw new ConfigResolutionError(
           options.customPath,
           `Failed to parse custom config file: ${resolvedCustomPath}`,
@@ -156,7 +188,151 @@ export class FileConfigRepository implements ConfigRepository {
       }
     }
 
+    // Apply environment variable and option overrides
+    let runner = resolved.runner || DEFAULT_CONFIG.runner || 'auto';
+    const envRunner = process.env.CODELOOP_RUNNER;
+    if (envRunner) {
+      const normalizedEnv = envRunner.toLowerCase().trim();
+      if (isRunnerType(normalizedEnv)) {
+        runner = normalizedEnv;
+      }
+    }
+
+    const opencodeModel =
+      options.model ||
+      process.env.OPENCODE_MODEL ||
+      resolved.opencode?.model ||
+      DEFAULT_CONFIG.opencode?.model ||
+      DEFAULT_OPENCODE_MODEL;
+
+    resolved = {
+      ...resolved,
+      runner,
+      opencode: {
+        ...(resolved.opencode || {}),
+        model: opencodeModel
+      },
+      circuitBreakers: {
+        ...DEFAULT_CONFIG.circuitBreakers,
+        ...(resolved.circuitBreakers || {})
+      }
+    };
+
+    this.validateCircuitBreakers(resolved.circuitBreakers);
+
     return resolved;
+  }
+
+  /**
+   * Ordered workspace-config candidates for `startDir` (#333 AC2).
+   *
+   * Walks upward from `startDir`, testing the four recognised workspace config
+   * locations per directory. The walk is bounded by the checkout root:
+   *
+   * - a `.git` **directory** is the checkout boundary: its directory is
+   *   checked, then the walk stops;
+   * - a `.git` **file** marks a linked worktree (or submodule): after checking
+   *   the worktree directory, the main checkout root — resolved from the
+   *   file's `gitdir:` line and its `commondir` sibling — is appended, then the
+   *   walk stops.
+   *
+   * Nearest wins because callers merge the FIRST readable candidate. The
+   * boundary rule is what stops an ancestor repository (or `/tmp`, `$HOME`)
+   * from leaking a config into this run.
+   */
+  private workspaceConfigCandidates(startDir: string): string[] {
+    const candidates: string[] = [];
+    const pushFor = (dir: string): void => {
+      candidates.push(
+        path.join(dir, '.codeloop', 'config.json'),
+        path.join(dir, '.codeloop.json'),
+        path.join(dir, '.agyloop', 'config.json'),
+        path.join(dir, '.agyloop.json')
+      );
+    };
+
+    let dir = path.resolve(startDir);
+    for (;;) {
+      pushFor(dir);
+
+      const dotGit = path.join(dir, '.git');
+      let dotGitStat: fs.Stats | null;
+      try {
+        dotGitStat = fs.statSync(dotGit);
+      } catch {
+        dotGitStat = null;
+      }
+
+      if (dotGitStat) {
+        if (dotGitStat.isFile()) {
+          const mainRoot = this.mainCheckoutRoot(dir, dotGit);
+          if (mainRoot) {
+            pushFor(mainRoot);
+          }
+        }
+        break;
+      }
+
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+
+    return candidates;
+  }
+
+  /**
+   * Resolves the main checkout root of a linked worktree from its `.git` file.
+   *
+   * `gitdir` is `<root>/.git/worktrees/<name>` (or `<super>/.git/modules/<name>`
+   * for a submodule). `commondir` sits beside it and points at the shared git
+   * directory; otherwise `dirname(dirname(gitdir))` is that directory.
+   */
+  private mainCheckoutRoot(worktreeDir: string, dotGitFile: string): string | null {
+    try {
+      const content = fs.readFileSync(dotGitFile, 'utf8');
+      const match = content.match(/^gitdir:\s*(.+)$/m);
+      if (!match) return null;
+
+      const gitdir = path.resolve(worktreeDir, match[1].trim());
+      const commonDirFile = path.join(gitdir, 'commondir');
+      let commonDir: string;
+      if (fs.existsSync(commonDirFile)) {
+        commonDir = path.resolve(gitdir, fs.readFileSync(commonDirFile, 'utf8').trim());
+      } else {
+        commonDir = path.dirname(path.dirname(gitdir));
+      }
+
+      return path.dirname(commonDir);
+    } catch {
+      return null;
+    }
+  }
+
+  private validateCircuitBreakers(cb?: CodeLoopConfig['circuitBreakers']): void {
+    if (!cb) return;
+
+    if (cb.maxTurnsPerSubagent !== undefined && (typeof cb.maxTurnsPerSubagent !== 'number' || cb.maxTurnsPerSubagent <= 0)) {
+      throw new ValidationError('circuitBreakers.maxTurnsPerSubagent', cb.maxTurnsPerSubagent, 'Must be a positive number');
+    }
+    if (cb.maxGateRetries !== undefined && (typeof cb.maxGateRetries !== 'number' || cb.maxGateRetries < 0)) {
+      throw new ValidationError('circuitBreakers.maxGateRetries', cb.maxGateRetries, 'Must be a non-negative number');
+    }
+    if (cb.maxConcurrentSubagents !== undefined && (typeof cb.maxConcurrentSubagents !== 'number' || cb.maxConcurrentSubagents <= 0)) {
+      throw new ValidationError('circuitBreakers.maxConcurrentSubagents', cb.maxConcurrentSubagents, 'Must be a positive number');
+    }
+    if (cb.maxWallClockDurationSeconds !== undefined && (typeof cb.maxWallClockDurationSeconds !== 'number' || cb.maxWallClockDurationSeconds <= 0)) {
+      throw new ValidationError('circuitBreakers.maxWallClockDurationSeconds', cb.maxWallClockDurationSeconds, 'Must be a positive number');
+    }
+    if (cb.tokenBudgetThreshold !== undefined && (typeof cb.tokenBudgetThreshold !== 'number' || cb.tokenBudgetThreshold <= 0)) {
+      throw new ValidationError('circuitBreakers.tokenBudgetThreshold', cb.tokenBudgetThreshold, 'Must be a positive number');
+    }
+    if (cb.actionOnTrip !== undefined) {
+      const allowedActions = Object.values(CB_ACTIONS);
+      if (!(allowedActions as readonly string[]).includes(cb.actionOnTrip)) {
+        throw new ValidationError('circuitBreakers.actionOnTrip', cb.actionOnTrip, `Must be one of: ${allowedActions.join(', ')}`);
+      }
+    }
   }
 
   public mapModelToTier(inputModel: string): ModelTierName {
@@ -192,7 +368,7 @@ export class FileConfigRepository implements ConfigRepository {
 
   public resolveModel(
     role: SubagentRoleName | string,
-    config: AgyLoopConfig
+    config: CodeLoopConfig
   ): {
     role: string;
     configured: string;

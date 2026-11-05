@@ -1,5 +1,5 @@
 /**
- * agyloop - PreFlightCheckEngine (Domain Layer)
+ * codeloop - PreFlightCheckEngine (Domain Layer)
  *
  * Pure domain engine evaluating task status prior to worktree provisioning:
  * 1. Anti-Duplicate: halts if task issue is CLOSED on GitHub
@@ -9,15 +9,8 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import {
-  PREFLIGHT_ACTION_PROCEED,
-  PREFLIGHT_ACTION_RESUME,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  PREFLIGHT_ACTION_HALT,
-  PREFLIGHT_ACTION_HALT_CLOSED,
-  PREFLIGHT_ACTION_HALT_PR_MERGED,
-  PreFlightActionType
-} from '../constants';
+import { PREFLIGHT_ACTION_PROCEED, PREFLIGHT_ACTION_RESUME, // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  PREFLIGHT_ACTION_HALT, PREFLIGHT_ACTION_HALT_CLOSED, PREFLIGHT_ACTION_HALT_PR_MERGED, PreFlightActionType } from '../vocabulary';
 
 export interface PreFlightPrSummary {
   readonly number?: number | null;

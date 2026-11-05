@@ -1,5 +1,5 @@
 /**
- * agyloop - InferBaseBranchUseCase (Application Layer)
+ * codeloop - InferBaseBranchUseCase (Application Layer)
  *
  * Coordinates dynamic base branch inference and collector branch lifecycle:
  * 1. Discovers candidate branches and checks ancestor merged status.
@@ -7,6 +7,11 @@
  * 3. Enforces in-flight bug routing (fix/* -> active phase/*) vs production hotfix (fix/* -> main).
  * 4. Enforces milestone sealed protection if collector branch is already merged into main.
  * 5. Auto-creates collector branch from main if missing.
+ *
+ * Base-branch precedence (#333 AC4): explicit caller base → `config.git.baseBranch`
+ * → attached HEAD / well-known candidates (`resolveBaseBranch`) → `main`. The
+ * configured value only replaces the generic default; an absent config keeps the
+ * probe behaviour byte-identical.
  *
  * Strict Hexagonal Architecture: Zero direct I/O, depends only on Domain and Ports.
  */
@@ -19,7 +24,13 @@ import {
   WorktreeDescriptor,
   StateMachine
 } from '../domain';
-import { WorktreeManagerPort, GitHubGateway, GitHubIssueData, StateRepository } from '../ports';
+import {
+  WorktreeManagerPort,
+  GitHubGateway,
+  GitHubIssueData,
+  StateRepository,
+  ConfigRepository
+} from '../ports';
 
 export interface InferBaseBranchParams {
   readonly issueNumber?: number | string | null;
@@ -29,25 +40,57 @@ export interface InferBaseBranchParams {
   readonly workspaceDir?: string;
   readonly trackerRepo?: string;
   readonly milestoneTitle?: string | null;
+  /**
+   * When false, the inference is computed but NOT persisted to the checkpoint.
+   *
+   * `branch-info` is a diagnostic and must be strictly read-only (issue #250,
+   * AC A4): this use case persists the inferred base branch (and the issue) in
+   * two places, so a read-only caller has to be able to switch that off. The
+   * default is `true`, so every existing caller keeps its behaviour.
+   */
+  readonly persist?: boolean;
 }
 
 export class InferBaseBranchUseCase {
   private readonly worktreeManager: WorktreeManagerPort;
   private readonly githubGateway?: GitHubGateway;
   private readonly stateRepo?: StateRepository;
+  private readonly configRepo?: ConfigRepository;
 
   constructor(
     worktreeManager: WorktreeManagerPort,
     githubGateway?: GitHubGateway,
-    stateRepo?: StateRepository
+    stateRepo?: StateRepository,
+    configRepo?: ConfigRepository
   ) {
     this.worktreeManager = worktreeManager;
     this.githubGateway = githubGateway;
     this.stateRepo = stateRepo;
+    this.configRepo = configRepo;
+  }
+
+  /**
+   * The configured default base branch (#333 AC4), or null when there is none.
+   *
+   * A config load failure is non-fatal — the caller keeps today's
+   * `resolveBaseBranch` probe, exactly as before this option existed.
+   */
+  private configuredBaseBranch(workspaceDir: string): string | null {
+    if (!this.configRepo) return null;
+    try {
+      const configured = this.configRepo.loadConfig({ cwd: workspaceDir }).git?.baseBranch;
+      const trimmed = configured?.trim();
+      return trimmed ? trimmed : null;
+    } catch {
+      return null;
+    }
   }
 
   public async execute(params: InferBaseBranchParams = {}): Promise<BranchInferenceResult> {
     const cwd = params.workspaceDir || process.cwd();
+    // A read-only caller (`branch-info`, issue #250) gets the INFERENCE without
+    // any checkpoint write: no load, no save.
+    const persist = params.persist !== false;
 
     // 1. If explicit base branch is supplied, honor it directly
     if (params.explicitBaseBranch && params.explicitBaseBranch.trim()) {
@@ -102,7 +145,7 @@ export class InferBaseBranchUseCase {
         rationale: `Using explicit base branch '${explicit}'.`
       };
 
-      if (this.stateRepo) {
+      if (this.stateRepo && persist) {
         try {
           const snapshot = await this.stateRepo.load();
           if (snapshot) {
@@ -122,7 +165,7 @@ export class InferBaseBranchUseCase {
       return result;
     }
 
-    const defaultBranch = await this.worktreeManager.resolveBaseBranch(cwd);
+    const defaultBranch = this.configuredBaseBranch(cwd) ?? await this.worktreeManager.resolveBaseBranch(cwd);
 
     // 2. Discover available local and remote branches
     let availableBranches: readonly string[] = [];
@@ -238,7 +281,7 @@ export class InferBaseBranchUseCase {
     }
 
     // 8. Persist inferred base branch in pipeline state checkpoint if stateRepo is available
-    if (this.stateRepo) {
+    if (this.stateRepo && persist) {
       try {
         const snapshot = await this.stateRepo.load();
         if (snapshot) {

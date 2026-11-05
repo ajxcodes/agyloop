@@ -1,5 +1,5 @@
 /**
- * agyloop - ReviewVerdict Value Object
+ * codeloop - ReviewVerdict Value Object
  *
  * Immutable, self-validating value object representing the outcome of the AI Review stage.
  * Emits and parses machine-readable REVIEW_* tokens, Markdown self-correction context,
@@ -8,27 +8,11 @@
  * Pure domain value object: 100% free of filesystem, child processes, or network I/O.
  */
 
-import {
-  VERDICT_APPROVED,
-  VERDICT_CHANGES_REQUESTED,
-  ReviewVerdictState,
-  TOKEN_REVIEW_STATUS,
-  TOKEN_REVIEW_SUMMARY,
-  TOKEN_UNFULFILLED_AC,
-  TOKEN_REMEDIATION_GUIDANCE,
-  HEADER_REVIEW_VERDICT_REPORT,
-  LABEL_REVIEW_STATUS,
-  LABEL_REVIEW_SUMMARY,
-  LABEL_UNFULFILLED_AC,
-  LABEL_REMEDIATION_GUIDANCE,
-  SECTION_REVIEW_SELF_CORRECTION_TITLE,
-  REGEX_REVIEW_STATUS_TOKEN,
-  REGEX_REVIEW_SUMMARY_TOKEN,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  REGEX_UNFULFILLED_AC_TOKEN,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  REGEX_REMEDIATION_GUIDANCE_TOKEN
-} from '../constants';
+import { VERDICT_APPROVED, VERDICT_CHANGES_REQUESTED, VERDICT_SKIPPED } from '../gate-verdicts';
+import { ReviewVerdictState, HEADER_REVIEW_VERDICT_REPORT, SECTION_REVIEW_SELF_CORRECTION_TITLE } from '../vocabulary';
+import { TOKEN_REVIEW_STATUS, TOKEN_REVIEW_SUMMARY, TOKEN_UNFULFILLED_AC, TOKEN_REMEDIATION_GUIDANCE } from '../cli-contract';
+import { LABEL_REVIEW_STATUS, LABEL_REVIEW_SUMMARY, LABEL_UNFULFILLED_AC, LABEL_REMEDIATION_GUIDANCE } from '../output-labels';
+import { REGEX_REVIEW_STATUS_TOKEN, REGEX_REVIEW_SUMMARY_TOKEN } from '../regexes';
 import { ReviewerSubagentError, ValidationError } from '../errors';
 import { AiReviewReport } from './ai-review-report';
 import { AiReviewFinding } from './ai-review-finding';
@@ -51,16 +35,32 @@ export interface ReviewVerdictSerialized {
   readonly findingsCount: number;
 }
 
+/**
+ * Whole-bullet sentinels (#382 D2). `none of …` is EXCLUDED: it is a quantified
+ * statement about a set, i.e. a real criterion (#373). The discriminator is the
+ * PREPOSITION, not the first word (amended AC A1).
+ *
+ * `NONE_SCOPE` is deliberately a heuristic: the AC names `None in the reviewed
+ * scope` as a marker, so `none in <scope>` stays a marker even though a
+ * hypothetical `None in the retry tests are bounded` would be swallowed. Pin the
+ * exact #356 string; do not "improve" it into a verb detector (follow-up F-4).
+ */
+const NONE_EXACT = new Set(['none', 'none required', 'nil', 'n/a', 'no unfulfilled criteria']);
+const NONE_PAREN = /^none\s*\([^)]*\)$/; // None (deferred to post-commit)
+const NONE_SCOPE = /^none\s+in\b[^.!?]*$/; // None in the reviewed in-repo scope
+const NONE_OF = /^none\s+of\b/; // a criterion, never a sentinel
+
 function isNoneOrEmpty(value: string | undefined | null): boolean {
   if (!value) return true;
-  const trimmed = value.trim().toLowerCase();
+  const raw = value.trim().toLowerCase();
+  if (raw === '') return true;
+  const normalised = raw.replace(/[.!]+$/, '').trim();
+  // #382 D2: match the WHOLE bullet, never a prefix. `none of the retries are
+  // bounded` leads with the word "none" but states a set of unmet conditions —
+  // dropping it falsified an APPROVED verdict (the opposite direction of #356).
+  if (NONE_OF.test(raw)) return false;
   return (
-    trimmed === '' ||
-    trimmed === 'none' ||
-    trimmed === 'none.' ||
-    trimmed === 'n/a' ||
-    trimmed === 'nil' ||
-    trimmed === 'no unfulfilled criteria'
+    NONE_EXACT.has(normalised) || NONE_PAREN.test(normalised) || NONE_SCOPE.test(normalised)
   );
 }
 
@@ -84,11 +84,15 @@ export class ReviewVerdict {
       throw new ValidationError('props', props, 'ReviewVerdict props must be an object.');
     }
 
-    if (props.status !== VERDICT_APPROVED && props.status !== VERDICT_CHANGES_REQUESTED) {
+    if (
+      props.status !== VERDICT_APPROVED &&
+      props.status !== VERDICT_CHANGES_REQUESTED &&
+      props.status !== VERDICT_SKIPPED
+    ) {
       throw new ValidationError(
         'status',
         props.status,
-        `Invalid review verdict status '${props.status}'. Must be '${VERDICT_APPROVED}' or '${VERDICT_CHANGES_REQUESTED}'.`
+        `Invalid review verdict status '${props.status}'. Must be '${VERDICT_APPROVED}', '${VERDICT_CHANGES_REQUESTED}', or '${VERDICT_SKIPPED}'.`
       );
     }
 
@@ -121,6 +125,14 @@ export class ReviewVerdict {
 
   public isChangesRequested(): boolean {
     return this.status === VERDICT_CHANGES_REQUESTED;
+  }
+
+  /**
+   * True when the review never ran (no reviewer output, no critique report).
+   * Advisory fail-open state (issue #236): does not block the pipeline.
+   */
+  public isSkipped(): boolean {
+    return this.status === VERDICT_SKIPPED;
   }
 
   public formatStructuredTokens(): string {
@@ -177,7 +189,8 @@ export class ReviewVerdict {
   }
 
   public formatSelfCorrectionPayload(): string {
-    if (this.isApproved()) {
+    // Nothing to self-correct for an approval or for a review that never ran.
+    if (this.isApproved() || this.isSkipped()) {
       return '';
     }
 
@@ -219,6 +232,28 @@ export class ReviewVerdict {
     return new ReviewVerdict(props);
   }
 
+  /**
+   * System-origin-only factory for the "review did not run" advisory (issue #236).
+   * Used by RunReviewUseCase when neither Reviewer-subagent output nor a critique
+   * report is produced. Never constructed from parsed reviewer text.
+   */
+  public static skipped(
+    summary?: string | null,
+    remediationGuidance?: readonly string[]
+  ): ReviewVerdict {
+    return new ReviewVerdict({
+      status: VERDICT_SKIPPED,
+      summary:
+        summary && summary.trim().length > 0
+          ? summary
+          : 'Review not performed: no Reviewer subagent output and no critique report was generated.',
+      remediationGuidance:
+        remediationGuidance && remediationGuidance.length > 0
+          ? remediationGuidance
+          : ['Configure critique (`codeloop critique install`) or dispatch the Reviewer subagent (`codeloop next`), then re-run the review.']
+    });
+  }
+
   public static parse(text: string | null | undefined): ReviewVerdict {
     if (!text || typeof text !== 'string') {
       throw new ReviewerSubagentError(
@@ -228,6 +263,9 @@ export class ReviewVerdict {
     }
 
     // 1. Extract status token
+    // System-origin-only invariant (issue #236): even though VERDICT_SKIPPED exists
+    // in REVIEW_VERDICTS, parse() only accepts APPROVED | CHANGES_REQUESTED so a
+    // Reviewer subagent can never emit `REVIEW_STATUS: SKIPPED` to bypass review.
     let status: ReviewVerdictState | undefined;
     const statusMatch = text.match(REGEX_REVIEW_STATUS_TOKEN);
     if (statusMatch) {
@@ -341,7 +379,7 @@ export class ReviewVerdict {
     const unfulfilledCriteria: string[] = [];
     const remediationGuidance: string[] = [];
 
-    const blockingFindings = report.findings.filter((f) => f.isBlocking());
+    const blockingFindings = report.blockingFindings();
     for (const finding of blockingFindings) {
       unfulfilledCriteria.push(`[${finding.path}:${finding.line}] ${finding.body}`);
       remediationGuidance.push(`Fix [${finding.path}:${finding.line}]: Address ${finding.severity} finding`);

@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const {
   StateMachine,
+  Stage,
   FileStateRepository,
   STAGES,
   STAGE_INITIALIZED,
@@ -16,6 +17,7 @@ const {
   STAGE_REVIEW,
   STAGE_COMMIT,
   STAGE_COMPLETED,
+  GATE_APPROVAL,
   parseArguments
 } = require('../dist');
 
@@ -29,9 +31,9 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     originalCwd = process.cwd;
     process.cwd = () => '/mock/repo/root'; // Prevent IssueNumber.inferFromPath from seeing we're in .worktrees/174
 
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-'));
     stateFile = path.join(tempDir, '.agyloop', 'state.json');
-    repo = new FileStateRepository({ stateFilePath: stateFile });
+    repo = createStateRepository({ stateFilePath: stateFile });
   });
 
   afterEach(() => {
@@ -129,6 +131,26 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     assert.strictEqual(sm.currentStage, STAGE_PLAN);
   });
 
+  test('allows QUALITY_GATE -> PLAN recovery but keeps QUALITY_GATE -> APPROVAL illegal (#327)', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+
+    assert.strictEqual(sm.canTransition(STAGE_PLAN), true, 're-planning is the documented recovery');
+    assert.strictEqual(
+      sm.canTransition(STAGE_APPROVAL),
+      false,
+      're-approving without a planning pass would approve the broken bytes'
+    );
+    assert.strictEqual(sm.canTransition(STAGE_REVIEW), true);
+
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.currentStage, STAGE_PLAN);
+  });
+
   test('allows direct transition from INITIALIZED to PLAN (bypassing DISCOVERY for features)', () => {
     const sm = StateMachine.createInitial({ mode: 'standard' });
     assert.strictEqual(sm.canTransition(STAGE_PLAN), true);
@@ -152,18 +174,42 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   });
 
   test('tracks gate pause and resume duration cleanly', () => {
-    const sm = StateMachine.createInitial({ mode: 'standard' });
-    assert.strictEqual(sm.totalHumanWaitMs, 0);
+    // Issue #223/Defect 2: the old version called `pauseAtGate()` with NO
+    // argument, so no pause was ever set, `resumeFromGate()` operated on an
+    // empty pause, and `>= 0` was trivially true. It could not fail. A real
+    // gate name plus an exact banked-milliseconds assertion fixes that.
+    const sm = new StateMachine({
+      stage: new Stage(STAGE_APPROVAL),
+      pausedAtGate: GATE_APPROVAL,
+      pausedAtTimestamp: new Date(Date.now() - 1234).toISOString()
+    });
 
-    sm.pauseAtGate();
-    // Simulating paused state
     sm.resumeFromGate();
-    assert.strictEqual(typeof sm.totalHumanWaitMs, 'number');
-    assert.ok(sm.totalHumanWaitMs >= 0);
+    assert.ok(sm.totalHumanWaitMs >= 1234, `expected >= 1234ms, got ${sm.totalHumanWaitMs}`);
+    assert.ok(sm.totalHumanWaitMs < 10_000);
+    assert.strictEqual(sm.pausedAtGate, null);
 
-    const activeDuration = sm.activeExecutionDurationMs();
-    assert.strictEqual(typeof activeDuration, 'number');
-    assert.ok(activeDuration >= 0);
+    // A second resume on an already-resumed machine is a NO-OP — the property
+    // the old test could not express.
+    const banked = sm.totalHumanWaitMs;
+    sm.resumeFromGate();
+    assert.strictEqual(sm.totalHumanWaitMs, banked);
+  });
+
+  test('a pause timestamp WITHOUT a gate name still banks the wait', () => {
+    // Issue #284: this is the second pause shape, and the shape divergence the
+    // duration policy has to converge on. `resumeFromGate()` must bank a
+    // timestamp-only pause exactly like a named one.
+    const sm = new StateMachine({
+      stage: new Stage(STAGE_APPROVAL),
+      pausedAtGate: null,
+      pausedAtTimestamp: new Date(Date.now() - 2000).toISOString()
+    });
+
+    sm.resumeFromGate();
+    assert.ok(sm.totalHumanWaitMs >= 2000, `expected >= 2000ms, got ${sm.totalHumanWaitMs}`);
+    assert.ok(sm.totalHumanWaitMs < 10_000);
+    assert.strictEqual(sm.pausedAtTimestamp, null);
   });
 
   test('allows transition from STAGE_COMPLETED to STAGE_IMPLEMENT, STAGE_QUALITY_GATE, STAGE_REVIEW, STAGE_PLAN, and STAGE_DISCOVERY', () => {
@@ -319,21 +365,31 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   });
 
   test('resolves state file path relative to explicit workspaceDir', () => {
-    const explicitRepo = new FileStateRepository({ workspaceDir: tempDir });
+    const explicitRepo = createStateRepository({ workspaceDir: tempDir });
     assert.strictEqual(explicitRepo.getStateFilePath(), path.join(tempDir, '.agyloop', 'state.json'));
   });
 
-  test('resolves canonical root repo state file when instantiated without options inside worktree', () => {
-    const defaultRepo = new FileStateRepository();
-    // Default repo when run in git repo / worktree should resolve to a valid .agyloop/state.json path
+  test('resolves a worktree-local state file when instantiated without options (#244)', () => {
+    const defaultRepo = createStateRepository();
+    // A repo built with no options resolves to an absolute <worktree-root>/.agyloop/state.json path
     assert.ok(defaultRepo.getStateFilePath().endsWith(path.join('.agyloop', 'state.json')));
-    // It should not point to an isolated task worktree folder when root discovery succeeds
+    // The root IS the caller's own worktree: state must never be redirected to another checkout (#244).
+    // NOTE: this runs under the `beforeEach` cwd stub ('/mock/repo/root', a non-git path), so it
+    // exercises the cwd-fallback branch; worktree-locality itself is proven in
+    // tests/infrastructure/file-state-repository.test.ts (#244).
     assert.ok(path.isAbsolute(defaultRepo.getStateFilePath()));
   });
 
-  test('memoizes workspace root resolution avoiding duplicate child processes for identical cwd', () => {
+  test('memoizes successful workspace root resolution avoiding duplicate child processes for identical cwd', () => {
     const childProcess = require('child_process');
     FileStateRepository.clearWorkspaceRootCache();
+
+    // Use a dedicated git workspace owned by the current user so the probe succeeds
+    // regardless of host/container ownership quirks (e.g. CI containers mount the
+    // checkout as a different owner, which makes git refuse the real repo).
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-root-'));
+    childProcess.execFileSync('git', ['init', '-q'], { cwd: repoDir });
+    process.cwd = () => repoDir;
 
     let execCallCount = 0;
     const originalExecSync = childProcess.execSync;
@@ -343,13 +399,44 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     };
 
     try {
-      const repo1 = new FileStateRepository();
+      const repo1 = createStateRepository();
       const initialExecCalls = execCallCount;
       assert.ok(initialExecCalls > 0, 'First instantiation should invoke execSync');
 
       // Second instantiation should reuse cached root without spawning child processes
-      const repo2 = new FileStateRepository();
+      const repo2 = createStateRepository();
       assert.strictEqual(execCallCount, initialExecCalls, 'Second instantiation should reuse cached workspace root');
+      assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
+    } finally {
+      childProcess.execSync = originalExecSync;
+      FileStateRepository.clearWorkspaceRootCache();
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not cache the cwd fallback when the git probe fails (#221, #244)', () => {
+    const childProcess = require('child_process');
+    FileStateRepository.clearWorkspaceRootCache();
+
+    let execCallCount = 0;
+    const originalExecSync = childProcess.execSync;
+    childProcess.execSync = function (...args: any[]) {
+      execCallCount++;
+      throw new Error('git unavailable');
+    };
+
+    try {
+      const repo1 = createStateRepository();
+      const afterFirst = execCallCount;
+      assert.ok(afterFirst > 0, 'First instantiation should attempt git');
+
+      // A failed resolution must NOT be memoized, otherwise a transient git failure would
+      // permanently pin workspaceRoot to the cwd for the process lifetime.
+      const repo2 = createStateRepository();
+      assert.ok(
+        execCallCount > afterFirst,
+        'Second instantiation must re-attempt git when the first resolution was unproven'
+      );
       assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
     } finally {
       childProcess.execSync = originalExecSync;
@@ -358,10 +445,10 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
   });
 
   test('clearWorkspaceRootCache invalidates cached workspace root', () => {
-    const repo1 = new FileStateRepository();
+    const repo1 = createStateRepository();
     assert.ok(repo1.getStateFilePath());
     FileStateRepository.clearWorkspaceRootCache();
-    const repo2 = new FileStateRepository();
+    const repo2 = createStateRepository();
     assert.strictEqual(repo1.getStateFilePath(), repo2.getStateFilePath());
   });
 
@@ -378,3 +465,112 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     });
   });
 });
+
+describe('Approved plan digest state (issue #298)', () => {
+  function snapshotWithoutDigest(): any {
+    return {
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: 'standard',
+      issue: 41,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    };
+  }
+
+  test('SM-D1: the digest and path round-trip through the snapshot', () => {
+    const sm = StateMachine.fromSnapshot(snapshotWithoutDigest());
+    sm.recordApprovedPlan('/repo/artifacts/plans/41/implementation_plan.md', 'sha256-abc');
+
+    const snapshot = sm.toSnapshot();
+    assert.strictEqual(snapshot.approvedPlanDigest, 'sha256-abc');
+    assert.strictEqual(snapshot.approvedPlanPath, '/repo/artifacts/plans/41/implementation_plan.md');
+
+    const reloaded = StateMachine.fromSnapshot(snapshot);
+    assert.strictEqual(reloaded.approvedPlanDigest, 'sha256-abc');
+    assert.strictEqual(reloaded.approvedPlanPath, '/repo/artifacts/plans/41/implementation_plan.md');
+  });
+
+  test('SM-D2: a legacy snapshot without a digest loads as null, never broken', () => {
+    const sm = StateMachine.fromSnapshot(snapshotWithoutDigest());
+    assert.strictEqual(sm.approvedPlanDigest, null);
+    assert.strictEqual(sm.approvedPlanPath, null);
+    assert.strictEqual(sm.toSnapshot().approvedPlanDigest, null);
+  });
+
+  test('SM-D3: reset clears the approved plan identity', () => {
+    const sm = StateMachine.fromSnapshot(snapshotWithoutDigest());
+    sm.recordApprovedPlan('/repo/plan.md', 'sha256-abc');
+    sm.reset('standard', 41);
+
+    assert.strictEqual(sm.approvedPlanDigest, null);
+    assert.strictEqual(sm.approvedPlanPath, null);
+  });
+});
+
+// #339 (item 11 / T10.1 / AC-3.5): `mode: plan` describes the PLAN phase. The
+// checkpoint FIELD flips to `standard` on the first transition past APPROVAL —
+// `status` prints the raw field, so the field and the rendered cell can never
+// disagree — while a plan-only run halted at APPROVAL keeps `plan`.
+describe('plan mode clears on the first transition out of the plan phase (#339 item 11)', () => {
+  test('a walk ending at APPROVAL keeps mode `plan`', () => {
+    const sm = StateMachine.createInitial({ mode: 'plan' as any });
+    assert.strictEqual(sm.mode, 'plan');
+
+    sm.transition(STAGE_DISCOVERY);
+    assert.strictEqual(sm.mode, 'plan', 'DISCOVERY is inside the plan phase');
+
+    sm.transition(STAGE_PLAN);
+    assert.strictEqual(sm.mode, 'plan', 'PLAN is inside the plan phase');
+
+    sm.transition(STAGE_APPROVAL);
+    assert.strictEqual(sm.mode, 'plan', 'a plan-only run halted at APPROVAL is still plan');
+    assert.strictEqual(sm.toSnapshot().mode, 'plan', 'the snapshot mirrors the field');
+  });
+
+  test('PLAN -> APPROVAL -> IMPLEMENT renders standard in the snapshot', () => {
+    const sm = StateMachine.createInitial({ mode: 'plan' as any });
+    sm.transition(STAGE_PLAN); // INITIALIZED -> PLAN is legal; phase membership is what matters
+    sm.transition(STAGE_APPROVAL);
+    assert.strictEqual(sm.mode, 'plan');
+
+    sm.transition(STAGE_IMPLEMENT);
+    assert.strictEqual(sm.mode, 'standard', 'the first transition past APPROVAL clears the field');
+    assert.strictEqual(sm.toSnapshot().mode, 'standard', 'the snapshot mirrors the field');
+  });
+
+  test('COMPLETED reached from plan-mode history carries `standard`', () => {
+    const sm = StateMachine.createInitial({ mode: 'plan' as any });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+    sm.transition(STAGE_COMPLETED);
+
+    assert.strictEqual(sm.currentStage, STAGE_COMPLETED);
+    assert.strictEqual(sm.mode, 'standard');
+    assert.strictEqual(sm.toSnapshot().mode, 'standard');
+  });
+
+  test('other modes are untouched: standard stays standard, and setMode is unaffected', () => {
+    const sm = StateMachine.createInitial({ mode: 'standard' as any });
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    assert.strictEqual(sm.mode, 'standard');
+
+    // An operator can still set a mode explicitly; only MODE_PLAN self-clears.
+    const plan = StateMachine.createInitial({ mode: 'plan' as any });
+    plan.transition(STAGE_PLAN);
+    plan.transition(STAGE_APPROVAL);
+    plan.transition(STAGE_IMPLEMENT);
+    plan.setMode('plan' as any);
+    assert.strictEqual(plan.mode, 'plan', 'setMode must not be second-guessed here');
+  });
+});
+
+const { createStateRepository } = require('./helpers/state-repo.ts');

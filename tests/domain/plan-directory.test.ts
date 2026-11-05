@@ -1,0 +1,448 @@
+/**
+ * codeloop - Plan directory grammar tests (issue #283)
+ *
+ * T-283.4: the scaffold and the dispatch payload must agree on the slug, even
+ * for apostrophes and punctuation. Before the fix only the scaffold had a
+ * slugifier, and the discovery subagent's own slug differed (`base's` ->
+ * `bases` vs `base-s`), producing TWO directories for one issue.
+ */
+
+const { test, describe, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const { planSlug, planFolderName, planDirectoryPrefix,
+  planArtifactFileName,
+  planByteLength,
+  sanitizePlanTitle,
+  assertPlanNameWithinLimits,
+  PLAN_DIR_NAME_MAX_BYTES,
+  PLAN_FILE_NAME_MAX_BYTES,
+  PLAN_NAME_HASH_HEX,
+  PLAN_SLUG_MAX_BYTES,
+  VALIDATION_FIELD_PLAN_TITLE,
+  ValidationError
+} = require('../../dist/domain');
+const { FilePlanGenerator } = require('../../dist/infrastructure/file-plan-generator');
+
+describe('plan directory grammar (#283)', () => {
+  test("T-283.4: planSlug is stable for the apostrophe title from the incident", () => {
+    assert.strictEqual(planSlug("The base's own new commits"), 'the-base-s-own-new-commits');
+    // The body is the historical FilePlanGenerator.slugify body, unchanged.
+    assert.strictEqual(planSlug('---hello---world---'), 'hello-world');
+    assert.strictEqual(planSlug(''), '');
+    assert.strictEqual(planSlug(null as unknown as string), '');
+  });
+
+  test('T-283.4: the scaffold slugifier and planSlug agree across a punctuation matrix', () => {
+    const generator = new FilePlanGenerator();
+    const titles = [
+      "The base's own new commits",
+      'A "quoted" title',
+      'Fix: the thing; then more',
+      '[Bug] [Phase 6] brackets',
+      'path/to/something',
+      'an em — dash and  multiple   spaces',
+      'Ünïcode and ümlauts',
+      'trailing punctuation!!!'
+    ];
+    for (const title of titles) {
+      assert.strictEqual(generator.slugify(title), planSlug(title), title);
+    }
+  });
+
+  test('T-283.4: planFolderName / planDirectoryPrefix use the same grammar', () => {
+    assert.strictEqual(planFolderName(283, "The base's own new commits"), '283-the-base-s-own-new-commits');
+    assert.strictEqual(planFolderName(null, 'Ad hoc'), 'adhoc-ad-hoc');
+    assert.strictEqual(planDirectoryPrefix(283), '283-');
+    assert.strictEqual(planDirectoryPrefix(null), 'adhoc-');
+  });
+
+  describe('scaffold and resolver share the folder name', () => {
+    let tempDir: string;
+    let generator: any;
+
+    beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-dir-test-'));
+      generator = new FilePlanGenerator();
+    });
+
+    afterEach(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    test("T-283.4: the scaffold folder name equals planFolderName and the resolver returns it", () => {
+      const title = "The base's own new commits";
+      const scaffold = generator.scaffoldPlanDirectory({
+        projectRoot: tempDir,
+        issue: 283,
+        title,
+        type: 'discovery'
+      });
+
+      assert.strictEqual(scaffold.folderName, planFolderName(283, title));
+      assert.strictEqual(generator.findPlanDirectory(tempDir, 283, title), scaffold.planDir);
+    });
+
+    // -----------------------------------------------------------------------
+    // Issue #364: bounded, deterministic, collision-free plan names.
+    // -----------------------------------------------------------------------
+
+    const LONG = 'x'.repeat(372);
+    const CJK = `Phase 6 ${'\u4e2d'.repeat(300)}`;
+    const plansDirOf = (root: string): string => path.join(root, 'artifacts', 'plans');
+
+    test('T-364.1: planFolderName bounds a 372-char slug and stamps a hash', () => {
+      const folder = planFolderName(364, LONG);
+      assert.ok(
+        planByteLength(folder) <= PLAN_DIR_NAME_MAX_BYTES,
+        `${folder} is ${planByteLength(folder)} bytes`
+      );
+      assert.ok(folder.startsWith('364-'), folder);
+      assert.match(folder, /^364-[a-z0-9-]+-[0-9a-f]{8}$/);
+    });
+
+    test('T-364.2: the cut lands on a word boundary when one fits', () => {
+      const words = Array.from({ length: 60 }, (_, i) => `segment${String.fromCharCode(97 + (i % 26))}`);
+      const folder = planFolderName(364, words.join(' '));
+      const slug = folder.slice('364-'.length);
+      const lastWord = slug.replace(/-[0-9a-f]{8}$/, '').split('-').pop();
+      assert.ok(
+        words.includes(lastWord as string),
+        `the cut must land on a whole source word, got ${lastWord}`
+      );
+      assert.ok(
+        planByteLength(slug) <= PLAN_SLUG_MAX_BYTES + 1 + PLAN_NAME_HASH_HEX,
+        `slug is ${planByteLength(slug)} bytes`
+      );
+    });
+
+    test('T-364.3: two long titles for one issue never share a folder', () => {
+      const a = planFolderName(364, LONG);
+      const b = planFolderName(364, `${LONG.slice(0, 371)}y`);
+      const c = planFolderName(364, CJK);
+      assert.notStrictEqual(a, b);
+      assert.notStrictEqual(a, c);
+      assert.notStrictEqual(b, c);
+
+      // Ad-hoc runs: distinct titles still never collide.
+      const adhocA = planFolderName(null, LONG);
+      const adhocB = planFolderName(null, `${LONG.slice(0, 371)}y`);
+      assert.notStrictEqual(adhocA, adhocB);
+      assert.ok(adhocA.startsWith('adhoc-'), adhocA);
+    });
+
+    test('T-364.4: the bound is a documented constant, not a magic number', () => {
+      assert.strictEqual(PLAN_DIR_NAME_MAX_BYTES, 143);
+      const folder = planFolderName(364, 'y'.repeat(101));
+      assert.ok(planByteLength(folder) <= PLAN_DIR_NAME_MAX_BYTES);
+    });
+
+    test('T-364.5: planArtifactFileName never exceeds PLAN_FILE_NAME_MAX_BYTES', () => {
+      for (const title of [CJK, LONG]) {
+        const name = planArtifactFileName('implementation', title);
+        assert.ok(
+          planByteLength(name) <= PLAN_FILE_NAME_MAX_BYTES,
+          `${name} is ${planByteLength(name)} bytes`
+        );
+        assert.ok(name.startsWith('[Implementation] - '), name);
+        assert.ok(name.endsWith('.md'), name);
+        assert.ok(!name.includes('\uFFFD'), 'no split code point');
+        assert.strictEqual(Buffer.from(name, 'utf8').toString('utf8'), name);
+      }
+    });
+
+    test('T-364.6: sanitizePlanTitle keeps the legacy body', () => {
+      assert.strictEqual(sanitizePlanTitle('A "quoted" title'), 'A quoted title');
+      assert.strictEqual(sanitizePlanTitle('path/to/something'), 'path to something');
+      assert.strictEqual(sanitizePlanTitle('trailing punctuation!!!'), 'trailing punctuation!!!');
+    });
+
+    test('T-364.7: assertPlanNameWithinLimits names folder, limit and --title', () => {
+      const overFolder = 'f'.repeat(PLAN_DIR_NAME_MAX_BYTES + 1);
+      assert.throws(
+        () => assertPlanNameWithinLimits({ folderName: overFolder, fileName: 'x.md', title: 't' }),
+        (error: any) => {
+          assert.ok(error instanceof ValidationError, 'typed');
+          assert.strictEqual(error.field, VALIDATION_FIELD_PLAN_TITLE);
+          assert.ok(error.message.includes(overFolder), error.message);
+          assert.ok(error.message.includes(String(PLAN_DIR_NAME_MAX_BYTES)), error.message);
+          assert.ok(error.message.includes('--title'), error.message);
+          return true;
+        }
+      );
+
+      const overFile = `${'g'.repeat(PLAN_FILE_NAME_MAX_BYTES)}.md`;
+      assert.throws(
+        () => assertPlanNameWithinLimits({ folderName: '364-x', fileName: overFile, title: 't' }),
+        (error: any) => {
+          assert.ok(error instanceof ValidationError, 'typed');
+          assert.strictEqual(error.field, VALIDATION_FIELD_PLAN_TITLE);
+          assert.ok(error.message.includes(overFile), error.message);
+          assert.ok(error.message.includes(String(PLAN_FILE_NAME_MAX_BYTES)), error.message);
+          assert.ok(error.message.includes('--title'), error.message);
+          return true;
+        }
+      );
+    });
+
+    test('T-364.8: a 372-char title scaffolds and planDirectoryPrefix finds it', () => {
+      const scaffold = generator.scaffoldPlanDirectory({
+        projectRoot: tempDir,
+        issue: 364,
+        title: LONG
+      });
+
+      const entries = fs.readdirSync(plansDirOf(tempDir));
+      assert.strictEqual(entries.length, 1, JSON.stringify(entries));
+      assert.ok(entries[0].startsWith(planDirectoryPrefix(364)), entries[0]);
+      assert.strictEqual(entries[0], planFolderName(364, LONG));
+      assert.strictEqual(scaffold.folderName, entries[0]);
+      assert.ok(planByteLength(entries[0]) <= PLAN_DIR_NAME_MAX_BYTES);
+    });
+
+    test('T-364.9: re-entry adopts the bounded folder', () => {
+      const first = generator.scaffoldPlanDirectory({
+        projectRoot: tempDir,
+        issue: 364,
+        title: LONG
+      });
+      const second = generator.scaffoldPlanDirectory({
+        projectRoot: tempDir,
+        issue: 364,
+        title: LONG
+      });
+
+      assert.strictEqual(first.directoryCreated, true);
+      assert.strictEqual(second.adoptedExisting, true);
+      assert.strictEqual(second.planDir, first.planDir);
+      assert.strictEqual(fs.readdirSync(plansDirOf(tempDir)).length, 1);
+    });
+
+    test('T-364.10: a CJK title writes a bounded artifact and no second folder', () => {
+      const scaffold = generator.scaffoldPlanDirectory({
+        projectRoot: tempDir,
+        issue: 364,
+        title: CJK
+      });
+
+      const artifacts = fs
+        .readdirSync(scaffold.planDir)
+        .filter((name: string) => name.startsWith('[Implementation] - '));
+      assert.strictEqual(artifacts.length, 1, JSON.stringify(artifacts));
+      assert.ok(
+        Buffer.byteLength(artifacts[0]) <= PLAN_FILE_NAME_MAX_BYTES,
+        `${artifacts[0]} is ${Buffer.byteLength(artifacts[0])} bytes`
+      );
+      assert.strictEqual(fs.readdirSync(plansDirOf(tempDir)).length, 1);
+    });
+
+    test('T-364.11: a failed write leaves no half-scaffolded folder', () => {
+      generator.generateSummaryLog = () => {
+        throw new Error('boom');
+      };
+      const folder = path.join(plansDirOf(tempDir), planFolderName(364, LONG));
+
+      assert.throws(() => generator.scaffoldPlanDirectory({
+        projectRoot: tempDir,
+        issue: 364,
+        title: LONG
+      }));
+      assert.ok(!fs.existsSync(folder), 'the half-scaffolded folder must not survive');
+      assert.deepStrictEqual(fs.readdirSync(plansDirOf(tempDir)), []);
+    });
+
+    // -----------------------------------------------------------------------
+    // Review round 1 (#364): adoption of pre-bound folder names and one shared
+    // issue part.
+    // -----------------------------------------------------------------------
+
+    test('T-364.12: planDirectoryPrefix shares planFolderName\u2019s issue part', () => {
+      // A padded `--issue` used to make the folder `364-x` while adoption
+      // looked for `" 364-"`, so the producer could not find its own directory.
+      assert.strictEqual(planFolderName(' 364', 'Some title'), '364-some-title');
+      assert.strictEqual(planDirectoryPrefix(' 364'), '364-');
+      assert.ok(planFolderName(' 364', 'Some title').startsWith(planDirectoryPrefix(' 364')));
+
+      // A pathological value is clamped the same way on both sides.
+      const pathological = `  ${'9'.repeat(40)}  `;
+      assert.ok(
+        planFolderName(pathological, 't').startsWith(planDirectoryPrefix(pathological)),
+        `${planFolderName(pathological, 't')} vs ${planDirectoryPrefix(pathological)}`
+      );
+      assert.strictEqual(planDirectoryPrefix(null), 'adhoc-');
+      assert.strictEqual(planDirectoryPrefix('   '), 'adhoc-');
+      assert.strictEqual(planDirectoryPrefix(364), '364-');
+    });
+
+    test('T-364.13: a pre-#364 over-budget folder is ADOPTED, not refused', () => {
+      const root = path.join(tempDir, 'legacy');
+      const plansDir = plansDirOf(root);
+      // Every plan folder written before the bound is 154-211 bytes. This is
+      // the shape the real #364 (183 B) and #359 (211 B) folders have.
+      const legacy = `364-${'legacy-folder-'.repeat(13)}`.slice(0, 184);
+      assert.strictEqual(planByteLength(legacy), 184);
+      assert.ok(planByteLength(legacy) > PLAN_DIR_NAME_MAX_BYTES);
+      fs.mkdirSync(path.join(plansDir, legacy), { recursive: true });
+      const legacyPlan = path.join(plansDir, legacy, 'implementation_plan.md');
+      fs.writeFileSync(legacyPlan, '# Legacy Plan\n\n- **Step 1:** Ship the existing spec.\n', 'utf8');
+
+      const scaffold = generator.scaffoldPlanDirectory({
+        projectRoot: root,
+        issue: 364,
+        title: 'Phase 6 a brand new title'
+      });
+
+      assert.strictEqual(scaffold.planDir, path.join(plansDir, legacy));
+      assert.strictEqual(scaffold.folderName, legacy);
+      assert.strictEqual(scaffold.adoptedExisting, true);
+      assert.strictEqual(fs.readdirSync(plansDir).length, 1, 'no second folder');
+      assert.match(fs.readFileSync(legacyPlan, 'utf8'), /Ship the existing spec/);
+    });
+
+    // -----------------------------------------------------------------------
+    // Issue #383: a LOSSY projection is a collision source, not just a long one.
+    // -----------------------------------------------------------------------
+
+    const CJK_C = `Phase 6 ${'中'.repeat(40)}`;
+    const CJK_W = `Phase 6 ${'文'.repeat(40)}`;
+    const HASHED_PHASE_6 = /^adhoc-phase-6-[0-9a-f]{8}$/;
+
+    test('T-383.1: two lossy titles hash apart and re-derive deterministically', () => {
+      // `planSlug` deletes every non-ASCII code point, so both titles project
+      // onto `phase-6`. Before #383 the hash was gated on truncation alone and
+      // both ad-hoc runs shared ONE folder.
+      const a = planFolderName(null, CJK_C);
+      const b = planFolderName(null, CJK_W);
+      assert.match(a, HASHED_PHASE_6, a);
+      assert.match(b, HASHED_PHASE_6, b);
+      assert.notStrictEqual(a, b, 'distinct lossy titles shared a folder');
+      // Adoption re-derives the SAME folder for the same title.
+      assert.strictEqual(planFolderName(null, CJK_C), a);
+      assert.ok(planByteLength(a) <= PLAN_DIR_NAME_MAX_BYTES, a);
+    });
+
+    test('T-383.2: a purely non-Latin title never yields an empty slug', () => {
+      const titles = ['日本語のタイトル', '中文标题', '한국어 제목', 'Тест'];
+      const folders = titles.map((title) => planFolderName(null, title));
+      assert.strictEqual(new Set(folders).size, folders.length, folders.join(' | '));
+      for (const folder of folders) {
+        // The old grammar returned `''`, so the folder was literally `adhoc-/`.
+        assert.match(folder, /^adhoc-plan-[0-9a-f]{8}$/, folder);
+        assert.notStrictEqual(folder, 'adhoc-');
+      }
+      assert.match(planFolderName(null, 'Über café'), /^adhoc-ber-caf-[0-9a-f]{8}$/);
+    });
+
+    test('T-383.3: the legacy folder names stay byte-identical', () => {
+      const legacy: Array<[number | null, string, string]> = [
+        [283, "The base's own new commits", '283-the-base-s-own-new-commits'],
+        [null, 'Ad hoc', 'adhoc-ad-hoc'],
+        [
+          364,
+          'x'.repeat(372),
+          '364-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-27c7ef15'
+        ],
+        [383, 'Fix: the thing', '383-fix-the-thing']
+      ];
+      for (const [issue, title, expected] of legacy) {
+        assert.strictEqual(planFolderName(issue, title), expected);
+      }
+    });
+
+    test('T-383.3b: every folder in this repo is a fixed point of the plain projection', () => {
+      // The strongest repo-level assertion available: the original titles are
+      // not recorded, so pin that no existing name carries a code point the
+      // lossy branch could now hash (which would move adoption).
+      const repoPlans = path.resolve(__dirname, '..', '..', 'artifacts', 'plans');
+      if (!fs.existsSync(repoPlans)) return; // fresh clone: artifacts/ is ignored
+      for (const name of fs.readdirSync(repoPlans)) {
+        assert.match(name, /^[a-z0-9-]+$/, `${name} is not ASCII-lowercase`);
+        const stem = name.replace(/^[^-]+-/, '');
+        assert.strictEqual(planSlug(stem), stem, `${name} would be re-hashed`);
+      }
+    });
+
+    test('T-383.4: an ASCII pair differing only after normalisation stays equal', () => {
+      // Separator/case collapse is NORMALISATION, not loss. Hashing it would
+      // move every pre-#364 folder, so equality is the pinned contract.
+      assert.strictEqual(planFolderName(null, 'Fix: the thing'), 'adhoc-fix-the-thing');
+      assert.strictEqual(planFolderName(null, 'Fix the thing'), 'adhoc-fix-the-thing');
+    });
+
+    test('T-383.5: two lossy ad-hoc titles scaffold two folders, each with its own spec', () => {
+      const first = generator.scaffoldPlanDirectory({ projectRoot: tempDir, title: CJK_C });
+      const second = generator.scaffoldPlanDirectory({ projectRoot: tempDir, title: CJK_W });
+
+      assert.notStrictEqual(path.basename(first.planDir), path.basename(second.planDir));
+      assert.strictEqual(fs.readdirSync(plansDirOf(tempDir)).length, 2);
+      assert.ok(fs.existsSync(first.planPath));
+      assert.ok(fs.existsSync(second.planPath));
+      assert.match(fs.readFileSync(first.planPath, 'utf8'), /中/);
+      assert.match(fs.readFileSync(second.planPath, 'utf8'), /文/);
+
+      // Re-entry with the SECOND title adopts the second folder, and never
+      // creates a third.
+      const again = generator.scaffoldPlanDirectory({ projectRoot: tempDir, title: CJK_W });
+      assert.strictEqual(again.planDir, second.planDir);
+      assert.strictEqual(again.adoptedExisting, true);
+      assert.strictEqual(fs.readdirSync(plansDirOf(tempDir)).length, 2);
+    });
+
+    test('T-383.6: an --issue run keeps one folder and a re-run adopts it', () => {
+      const first = generator.scaffoldPlanDirectory({ projectRoot: tempDir, issue: 383, title: CJK_C });
+      const second = generator.scaffoldPlanDirectory({ projectRoot: tempDir, issue: 383, title: CJK_C });
+
+      assert.strictEqual(second.planDir, first.planDir);
+      assert.strictEqual(second.adoptedExisting, true);
+      assert.strictEqual(second.folderName, planFolderName(383, CJK_C));
+      assert.strictEqual(fs.readdirSync(plansDirOf(tempDir)).length, 1);
+    });
+
+    test('T-383.7: the #388 discovery filename ends on a word, not a comma', () => {
+      const title388 =
+        "[Phase 6] [Bug] Plan evidence is never executed before APPROVAL a false 'reproduced' baseline, smoke blocks that die at seed, and the gate cannot tell";
+      const name = planArtifactFileName('discovery', title388);
+      assert.ok(name.endsWith('die at seed.md'), name);
+      assert.ok(!name.endsWith(',.md'), name);
+      assert.ok(planByteLength(name) <= PLAN_FILE_NAME_MAX_BYTES, `${planByteLength(name)} bytes`);
+      assert.strictEqual(Buffer.from(name, 'utf8').toString('utf8'), name);
+    });
+
+    test('T-383.8: a cut that lands mid-word backs off to the word boundary', () => {
+      const name = planArtifactFileName('discovery', 'word '.repeat(40));
+      assert.ok(name.endsWith(' word.md'), name);
+      assert.ok(planByteLength(name) <= PLAN_FILE_NAME_MAX_BYTES, `${planByteLength(name)} bytes`);
+    });
+
+    test('T-383.9: trailing punctuation is trimmed before the extension', () => {
+      for (const title of [
+        'Die at seed,',
+        'Die at seed;',
+        'Die at seed:',
+        'Die at seed -',
+        'Die at seed \u2014',
+        'Die at seed.'
+      ]) {
+        assert.strictEqual(planArtifactFileName('discovery', title), '[Discovery] - Die at seed.md', title);
+      }
+    });
+
+    test('T-383.10: a derived filename never ends on a dangling article (#402)', () => {
+      const title402 =
+        '[Phase 6] [Bug] The root-build mutation boundary is broken at both ends (baseline executor rebuilds the workspace root; the baseline mutates the root while the gate measures it)';
+      const name = planArtifactFileName('discovery', title402);
+
+      assert.doesNotMatch(
+        name,
+        /[ ](the|a|an|and|of|to)\.md$/,
+        `a derived filename may not end on a dangling article, got: ${name}`
+      );
+      assert.match(name, /[A-Za-z0-9)]\.md$/, `the filename must end on a word: ${name}`);
+      assert.ok(name.length > '[Discovery] - .md'.length, `the title must survive: ${name}`);
+      assert.ok(planByteLength(name) <= PLAN_FILE_NAME_MAX_BYTES, `${planByteLength(name)} bytes`);
+    });
+  });
+});

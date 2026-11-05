@@ -1,5 +1,5 @@
 /**
- * agyloop - Presentation Layer Public API
+ * codeloop - Presentation Layer Public API
  */
 
 export * from './cli';

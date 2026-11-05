@@ -1,17 +1,10 @@
 /**
- * agyloop - SubagentRole Value Object
+ * codeloop - SubagentRole Value Object
  *
  * Self-validating value object representing recognized subagent roles.
  */
 
-import {
-  SUBAGENT_ROLES,
-  SubagentRoleName,
-  ROLE_PLANNER,
-  ROLE_IMPLEMENTER,
-  ROLE_GATE,
-  ROLE_REVIEWER
-} from '../constants';
+import { SUBAGENT_ROLES, SubagentRoleName, ROLE_PLANNER, ROLE_IMPLEMENTER, ROLE_GATE, ROLE_REVIEWER } from '../subagent-roles';
 import { ValidationError } from '../errors';
 
 export class SubagentRole {

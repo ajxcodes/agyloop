@@ -16,7 +16,7 @@ describe('Configuration & Model Routing Engine (TypeScript)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-config-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-config-test-'));
   });
 
   afterEach(() => {
@@ -88,6 +88,38 @@ describe('Configuration & Model Routing Engine (TypeScript)', () => {
     assert.strictEqual(loaded.models.reviewer, 'pro');
     assert.strictEqual(loaded.models.implementer, 'inherit');
     assert.strictEqual(loaded.options.commitAfter, true);
+  });
+
+  test('loadConfig discovers .codeloop.json and .codeloop/config.json in workspace', () => {
+    const codeloopJson = path.join(tempDir, '.codeloop.json');
+    fs.writeFileSync(
+      codeloopJson,
+      JSON.stringify({
+        models: {
+          gate: 'flash'
+        }
+      }),
+      'utf8'
+    );
+
+    let loaded = loadConfig({ workspaceDir: tempDir });
+    assert.strictEqual(loaded.models.gate, 'flash');
+
+    fs.unlinkSync(codeloopJson);
+    const subDir = path.join(tempDir, '.codeloop');
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(subDir, 'config.json'),
+      JSON.stringify({
+        models: {
+          gate: 'pro'
+        }
+      }),
+      'utf8'
+    );
+
+    loaded = loadConfig({ workspaceDir: tempDir });
+    assert.strictEqual(loaded.models.gate, 'pro');
   });
 
   test('loadConfig supports explicit customPath', () => {

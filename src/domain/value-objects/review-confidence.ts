@@ -1,17 +1,11 @@
 /**
- * agyloop - ReviewConfidence Value Object
+ * codeloop - ReviewConfidence Value Object
  *
  * Immutable representation of an AI Review confidence rating and explanation.
  * Strictly avoids magic strings by using domain constants.
  */
 
-import {
-  CONFIDENCE_HIGH,
-  CONFIDENCE_MEDIUM,
-  CONFIDENCE_LOW,
-  REVIEW_CONFIDENCE_LEVELS,
-  ReviewConfidenceLevel
-} from '../constants';
+import { CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW, REVIEW_CONFIDENCE_LEVELS, ReviewConfidenceLevel } from '../vocabulary';
 import { ValidationError } from '../errors';
 
 function normalizeConfidenceLevel(raw: string): ReviewConfidenceLevel {

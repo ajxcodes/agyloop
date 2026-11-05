@@ -1,5 +1,5 @@
 /**
- * agyloop - Pure StateMachine Domain Entity
+ * codeloop - Pure StateMachine Domain Entity
  *
  * Deterministic lifecycle state machine coordinating the 7-stage pair-programming contract:
  * INITIALIZED -> DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED
@@ -7,25 +7,59 @@
  * Pure domain entity: 100% free of filesystem, child processes, or network I/O.
  */
 
-import {
-  StageName,
-  ExecutionMode,
-  STAGE_INITIALIZED,
-  STAGE_APPROVAL,
-  STAGE_PLAN,
-  MODE_STANDARD,
-  STATE_SCHEMA_VERSION,
-  EXECUTION_MODES
-} from '../constants';
+import { StageName, STAGE_INITIALIZED, STAGE_APPROVAL, STAGE_COMPLETED, STAGE_DISCOVERY, STAGE_PLAN, STAGE_IMPLEMENT, STAGE_REVIEW } from '../lifecycle-stages';
+import { ExecutionMode, MODE_PLAN, MODE_STANDARD, EXECUTION_MODES } from '../execution-modes';
+import { STATE_SCHEMA_VERSION, HUMAN_WAIT_GATES } from '../vocabulary';
 import { Stage } from '../value-objects/stage';
 import { IssueNumber } from '../value-objects/issue-number';
 import { WorktreeDescriptor } from '../value-objects/worktree-descriptor';
+import { TriageDisposition, TriageDispositionSerialized } from '../value-objects/triage-disposition';
+import {
+  WorkspaceMutationBaseline,
+  isWorkspaceMutationBaseline
+} from '../value-objects/workspace-mutation';
+import {
+  RecordedPlanDeviation,
+  hydrateRecordedPlanDeviations,
+  planDeviationIdentity,
+  PlanDeviationProps
+} from '../value-objects/plan-deviation';
 import { InvalidTransitionError, ValidationError } from '../errors';
 
 export interface StateHistoryEntry {
   readonly stage: StageName;
   readonly timestamp: string;
   readonly metadata?: Record<string, unknown>;
+}
+
+/**
+ * The stages `mode: plan` legitimately DESCRIBES (#339 item 11).
+ *
+ * A plan-only run halted at APPROVAL is exactly that — still plan. The first
+ * transition past APPROVAL is real implementation work, so the CHECKPOINT FIELD
+ * itself flips to `standard`: `status` prints the raw field, and the field and
+ * the rendered `Execution Mode` cell must never disagree.
+ */
+const PLAN_PHASE_STAGES: ReadonlySet<string> = new Set<string>([
+  STAGE_INITIALIZED,
+  STAGE_DISCOVERY,
+  STAGE_PLAN,
+  STAGE_APPROVAL
+]);
+
+/**
+ * What this run recorded about its delivery PR (issue #315, AC-24 / #332).
+ *
+ * `missing` is the meaningful case: the branch was pushed and the checkpoint
+ * still reached COMPLETED, so the report must say the run is NOT delivered
+ * rather than let a terminal stage imply it was.
+ */
+export type RecordedPullRequestStatus = 'created' | 'existing' | 'missing';
+
+export interface RecordedPullRequest {
+  readonly number: number | null;
+  readonly url: string | null;
+  readonly status: RecordedPullRequestStatus;
 }
 
 export interface StateMachineSnapshot {
@@ -37,7 +71,27 @@ export interface StateMachineSnapshot {
   readonly baseBranch?: string | null;
   readonly worktree?: Record<string, unknown> | null;
   readonly planDir?: string | null;
+  /**
+   * An operator-supplied plan FILE (issue #267). When present it wins over any
+   * directory resolution, so the lifecycle executes exactly the document the
+   * operator handed in.
+   */
+  readonly planPath?: string | null;
   readonly triagePayload?: string | null;
+  /**
+   * The recorded triage disposition (issue #269). Its ABSENCE is meaningful:
+   * a checkpoint without one has never dispositioned any feedback, so the
+   * TRIAGE detector must see the pull request's feedback afresh.
+   */
+  readonly triageDisposition?: TriageDispositionSerialized | null;
+  /**
+   * The sha256 of the NORMALIZED approved plan (issue #298). A checkpoint
+   * without one predates the contract and is reported UNVERIFIED, never
+   * broken.
+   */
+  readonly approvedPlanDigest?: string | null;
+  /** The plan path the digest was taken from (issue #298). */
+  readonly approvedPlanPath?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly history: readonly StateHistoryEntry[];
@@ -46,6 +100,52 @@ export interface StateMachineSnapshot {
   readonly totalHumanWaitMs?: number;
   readonly planRevisionCount?: number;
   readonly implementToGateLoops?: number;
+  /**
+   * How many times the current REVIEW round has dispatched the reviewer
+   * without a verdict being filed (issue #272). Optional: a checkpoint written
+   * before this field loads as `0`.
+   */
+  readonly reviewDispatchCount?: number;
+  /**
+   * How many times the current DISCOVERY stage has dispatched the discovery
+   * subagent without the report being populated (issue #292). Optional: a
+   * checkpoint written before this field loads as `0`.
+   */
+  readonly discoveryDispatchCount?: number;
+  /**
+   * How many times the current PLAN stage has dispatched the planner without
+   * the plan becoming non-blank (issue #292).
+   */
+  readonly planDispatchCount?: number;
+  /**
+   * How many times the current IMPLEMENT stage has dispatched the implementer
+   * without an implementation diff appearing in the task worktree
+   * (issue #327). Optional: a checkpoint written before this field loads as `0`.
+   */
+  readonly implementationDispatchCount?: number;
+  /**
+   * How many blank-plan parks the run has recorded at IMPLEMENT (issue #267).
+   * Reset when the pipeline re-enters PLAN.
+   */
+  readonly planEmptyParkCount?: number;
+  /**
+   * The delivery PR this run recorded on reaching COMPLETED (issue #315,
+   * AC-24). Optional: a checkpoint written before this field loads as `null`,
+   * which means "not recorded" — never "delivered".
+   */
+  readonly pullRequest?: RecordedPullRequest | null;
+  /**
+   * The dispatch-time scoped-write reference for the current DISCOVERY round
+   * (issue #389). Optional: a checkpoint written before this field loads as
+   * `null`, which means "not measured" — never "clean".
+   */
+  readonly discoveryMutationBaseline?: WorkspaceMutationBaseline | null;
+  /**
+   * The implementer's filed plan deviations (issue #432). OPTIONAL and written
+   * ONLY when non-empty, so a run with no deviation serializes byte-identically
+   * to the pre-#432 checkpoint (AC7).
+   */
+  readonly planDeviations?: readonly RecordedPlanDeviation[];
 }
 
 export interface StateStatusSummary {
@@ -56,7 +156,10 @@ export interface StateStatusSummary {
   readonly baseBranch?: string | null;
   readonly worktree?: WorktreeDescriptor | null;
   readonly planDir?: string | null;
+  /** The operator-supplied plan file, when one was recorded (issue #267). */
+  readonly planPath?: string | null;
   readonly triagePayload?: string | null;
+  readonly triageDisposition?: TriageDispositionSerialized | null;
   readonly stepCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -65,6 +168,11 @@ export interface StateStatusSummary {
   readonly activeExecutionDurationMs: number;
   readonly planRevisionCount: number;
   readonly implementToGateLoops: number;
+  readonly reviewDispatchCount: number;
+  readonly discoveryDispatchCount: number;
+  readonly planDispatchCount: number;
+  readonly implementationDispatchCount: number;
+  readonly planEmptyParkCount: number;
 }
 
 export class StateMachine {
@@ -75,7 +183,11 @@ export class StateMachine {
   private _baseBranch: string | null;
   private _worktree: WorktreeDescriptor | null;
   private _planDir: string | null;
+  private _planPath: string | null;
+  private _approvedPlanDigest: string | null;
+  private _approvedPlanPath: string | null;
   private _triagePayload: string | null;
+  private _triageDisposition: TriageDisposition | null;
   private _createdAt: string;
   private _updatedAt: string;
   private _history: StateHistoryEntry[];
@@ -84,6 +196,14 @@ export class StateMachine {
   private _totalHumanWaitMs: number;
   private _planRevisionCount: number;
   private _implementToGateLoops: number;
+  private _reviewDispatchCount: number;
+  private _discoveryDispatchCount: number;
+  private _planDispatchCount: number;
+  private _implementationDispatchCount: number;
+  private _planEmptyParkCount: number;
+  private _pullRequest: RecordedPullRequest | null;
+  private _discoveryMutationBaseline: WorkspaceMutationBaseline | null;
+  private _planDeviations: RecordedPlanDeviation[];
 
   constructor(options: {
     stage?: Stage;
@@ -93,7 +213,11 @@ export class StateMachine {
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
+    planPath?: string | null;
+    approvedPlanDigest?: string | null;
+    approvedPlanPath?: string | null;
     triagePayload?: string | null;
+    triageDisposition?: TriageDisposition | null;
     createdAt?: string;
     updatedAt?: string;
     history?: readonly StateHistoryEntry[];
@@ -102,6 +226,14 @@ export class StateMachine {
     totalHumanWaitMs?: number;
     planRevisionCount?: number;
     implementToGateLoops?: number;
+    reviewDispatchCount?: number;
+    discoveryDispatchCount?: number;
+    planDispatchCount?: number;
+    implementationDispatchCount?: number;
+    planEmptyParkCount?: number;
+    pullRequest?: RecordedPullRequest | null;
+    discoveryMutationBaseline?: WorkspaceMutationBaseline | null;
+    planDeviations?: readonly RecordedPlanDeviation[];
   } = {}) {
     this._stage = options.stage || new Stage(STAGE_INITIALIZED);
     this._mode = options.mode || MODE_STANDARD;
@@ -110,7 +242,11 @@ export class StateMachine {
     this._baseBranch = options.baseBranch || null;
     this._worktree = options.worktree || null;
     this._planDir = options.planDir || null;
+    this._planPath = options.planPath || null;
+    this._approvedPlanDigest = options.approvedPlanDigest || null;
+    this._approvedPlanPath = options.approvedPlanPath || null;
     this._triagePayload = options.triagePayload || null;
+    this._triageDisposition = options.triageDisposition || null;
     const now = new Date().toISOString();
     this._createdAt = options.createdAt || now;
     this._updatedAt = options.updatedAt || now;
@@ -119,6 +255,23 @@ export class StateMachine {
     this._totalHumanWaitMs = typeof options.totalHumanWaitMs === 'number' ? options.totalHumanWaitMs : 0;
     this._planRevisionCount = typeof options.planRevisionCount === 'number' ? options.planRevisionCount : 0;
     this._implementToGateLoops = typeof options.implementToGateLoops === 'number' ? options.implementToGateLoops : 0;
+    this._reviewDispatchCount = typeof options.reviewDispatchCount === 'number' ? options.reviewDispatchCount : 0;
+    this._discoveryDispatchCount =
+      typeof options.discoveryDispatchCount === 'number' ? options.discoveryDispatchCount : 0;
+    this._planDispatchCount =
+      typeof options.planDispatchCount === 'number' ? options.planDispatchCount : 0;
+    this._implementationDispatchCount =
+      typeof options.implementationDispatchCount === 'number'
+        ? options.implementationDispatchCount
+        : 0;
+    this._planEmptyParkCount =
+      typeof options.planEmptyParkCount === 'number' ? options.planEmptyParkCount : 0;
+    this._pullRequest = options.pullRequest ?? null;
+    this._discoveryMutationBaseline =
+      options.discoveryMutationBaseline && isWorkspaceMutationBaseline(options.discoveryMutationBaseline)
+        ? options.discoveryMutationBaseline
+        : null;
+    this._planDeviations = hydrateRecordedPlanDeviations(options.planDeviations);
 
     if (options.history && options.history.length > 0) {
       this._history = [...options.history];
@@ -169,8 +322,41 @@ export class StateMachine {
     return this._planDir;
   }
 
+  /** The operator-supplied plan file, or null when none was recorded. */
+  public get planPath(): string | null {
+    return this._planPath;
+  }
+
+  /** The digest of the approved plan bytes, or null when never recorded. */
+  public get approvedPlanDigest(): string | null {
+    return this._approvedPlanDigest;
+  }
+
+  /** The plan path the approved digest was taken from. */
+  public get approvedPlanPath(): string | null {
+    return this._approvedPlanPath;
+  }
+
+  /**
+   * Records the approved plan's identity (issue #298). Called on a real
+   * approval, and on entering IMPLEMENT from a fresh approval — never on a
+   * retry/self-correction re-entry, which must preserve the frozen bytes.
+   */
+  public recordApprovedPlan(planPath: string | null | undefined, digest: string | null | undefined): void {
+    this._approvedPlanPath = planPath && planPath.trim() ? planPath.trim() : null;
+    this._approvedPlanDigest = digest && digest.trim().length > 0 ? digest : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public get triagePayload(): string | null {
     return this._triagePayload;
+  }
+
+  /**
+   * The recorded triage disposition, or `null` when none was ever taken.
+   */
+  public get triageDisposition(): TriageDisposition | null {
+    return this._triageDisposition;
   }
 
   public get createdAt(): string {
@@ -210,6 +396,181 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  public get reviewDispatchCount(): number {
+    return this._reviewDispatchCount;
+  }
+
+  /**
+   * Records one reviewer dispatch in the current REVIEW round (issue #272).
+   *
+   * Mirrors `incrementImplementGateLoop`: the counter is a context field, so
+   * `next` may record it without advancing a stage.
+   */
+  public recordReviewDispatch(): void {
+    this._reviewDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get discoveryDispatchCount(): number {
+    return this._discoveryDispatchCount;
+  }
+
+  /**
+   * Records one discovery-subagent dispatch in the current DISCOVERY stage
+   * (issue #292). A context field: `next` may record it without advancing.
+   */
+  public recordDiscoveryDispatch(): void {
+    this._discoveryDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * The scoped-write reference captured at the current DISCOVERY dispatch
+   * (issue #389). `null` means unmeasured.
+   */
+  public get discoveryMutationBaseline(): WorkspaceMutationBaseline | null {
+    return this._discoveryMutationBaseline;
+  }
+
+  /**
+   * Records the dispatch-time boundary reference (issue #389).
+   *
+   * A context field on the read path, like `recordDiscoveryDispatch`: `next`
+   * may record it without advancing a stage. The use case captures it at most
+   * once per round (earliest wins) so a second dispatch cannot launder the
+   * first run's writes.
+   */
+  public setDiscoveryMutationBaseline(baseline: WorkspaceMutationBaseline | null): void {
+    this._discoveryMutationBaseline = baseline;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get planDispatchCount(): number {
+    return this._planDispatchCount;
+  }
+
+  /** Records one planner dispatch in the current PLAN stage (issue #292). */
+  public recordPlanDispatch(): void {
+    this._planDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get implementationDispatchCount(): number {
+    return this._implementationDispatchCount;
+  }
+
+  /**
+   * Records one implementer dispatch in the current IMPLEMENT stage
+   * (issue #327). Mirrors `recordPlanDispatch`: a context field, so `next` may
+   * record it without advancing a stage.
+   */
+  public recordImplementationDispatch(): void {
+    this._implementationDispatchCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  public get planEmptyParkCount(): number {
+    return this._planEmptyParkCount;
+  }
+
+  /** Every filed plan deviation, in filing order (issue #432). */
+  public get planDeviations(): readonly RecordedPlanDeviation[] {
+    return Object.freeze([...this._planDeviations]);
+  }
+
+  /**
+   * Records one implementer deviation (issue #432, AC1).
+   *
+   * Identity/dedupe is pure domain: filing the same
+   * section|literal|assertion triple twice is a no-op that returns the
+   * existing record, so a re-dispatched implementer cannot inflate the record.
+   * Ids are `PD-1`, `PD-2`, … — the domain needs no `node:crypto`.
+   */
+  public recordPlanDeviation(props: PlanDeviationProps): RecordedPlanDeviation {
+    const identity = planDeviationIdentity(props);
+    const existing = this._planDeviations.find(
+      (record) => planDeviationIdentity(record) === identity
+    );
+    if (existing) {
+      return existing;
+    }
+    const now = new Date().toISOString();
+    const record: RecordedPlanDeviation = Object.freeze({
+      id: `PD-${this._planDeviations.length + 1}`,
+      planSection: props.planSection,
+      planLiteral: props.planLiteral,
+      implementedAssertion: props.implementedAssertion,
+      reason: props.reason,
+      files: Object.freeze([...(props.files ?? [])]),
+      recordedAt: now,
+      acknowledged: false,
+      acknowledgedAt: null,
+      acknowledgementReason: null
+    });
+    this._planDeviations.push(record);
+    this._updatedAt = now;
+    return record;
+  }
+
+  /**
+   * Acknowledges one filed deviation (issue #432, AC2). Returns `false` for an
+   * unknown id; the caller lists the known ids. A reason is mandatory: an
+   * acknowledgement without one is refused, like a bare `--refute`.
+   */
+  public acknowledgePlanDeviation(id: string, reason: string | null | undefined): boolean {
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    if (trimmedReason.length === 0) {
+      throw new ValidationError(
+        'reason',
+        reason,
+        'acknowledging a plan deviation requires a reason explaining why the new literal is right'
+      );
+    }
+    const index = this._planDeviations.findIndex((record) => record.id === id);
+    if (index === -1) {
+      return false;
+    }
+    const now = new Date().toISOString();
+    this._planDeviations[index] = Object.freeze({
+      ...this._planDeviations[index],
+      acknowledged: true,
+      acknowledgedAt: now,
+      acknowledgementReason: trimmedReason
+    });
+    this._updatedAt = now;
+    return true;
+  }
+
+  /** The delivery PR recorded on reaching COMPLETED, or null when none is recorded. */
+  public get pullRequest(): RecordedPullRequest | null {
+    return this._pullRequest;
+  }
+
+  /**
+   * Records what this run did about the delivery PR (issue #315, AC-24).
+   *
+   * Called once, before the checkpoint is persisted at the COMMIT gate's exit,
+   * so `status` and the `commit` output can tell "delivered" from "pushed with
+   * no PR" instead of inferring it from a terminal stage.
+   */
+  public recordPullRequest(pullRequest: RecordedPullRequest): void {
+    this._pullRequest = {
+      number: typeof pullRequest.number === 'number' ? pullRequest.number : null,
+      url: pullRequest.url && pullRequest.url.trim() ? pullRequest.url.trim() : null,
+      status: pullRequest.status
+    };
+    this._updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Records one blank-plan park at IMPLEMENT (issue #267). The count makes a
+   * silently repeated park observable instead of an identical message.
+   */
+  public recordPlanEmptyPark(): void {
+    this._planEmptyParkCount++;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public resetImplementGateLoop(): void {
     this._implementToGateLoops = 0;
     this._updatedAt = new Date().toISOString();
@@ -224,15 +585,23 @@ export class StateMachine {
   }
 
   public resumeFromGate(): void {
+    // A checkpoint written by an older schema (or hand-edited) can carry a gate
+    // name with no timestamp. The pause is still a pause, so it must still be
+    // cleared — otherwise that machine is un-resumable forever. Only the time
+    // accounting needs the timestamp.
+    if (!this._pausedAtTimestamp && !this._pausedAtGate) {
+      return;
+    }
+
     if (this._pausedAtTimestamp) {
       const elapsed = Date.now() - new Date(this._pausedAtTimestamp).getTime();
       if (elapsed > 0) {
         this._totalHumanWaitMs += elapsed;
       }
-      this._pausedAtGate = null;
-      this._pausedAtTimestamp = null;
-      this._updatedAt = new Date().toISOString();
     }
+    this._pausedAtGate = null;
+    this._pausedAtTimestamp = null;
+    this._updatedAt = new Date().toISOString();
   }
 
   public activeExecutionDurationMs(referenceTime?: number | Date | string): number {
@@ -295,14 +664,42 @@ export class StateMachine {
     this._updatedAt = new Date().toISOString();
   }
 
+  /**
+   * Records the operator-supplied plan file (issue #267). It is an explicit
+   * intent, not an inference: the lifecycle executes THIS document even when a
+   * plan directory is also tracked.
+   */
+  public setPlanPath(planPath: string | null | undefined): void {
+    this._planPath = planPath && planPath.trim() ? planPath.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
   public setTriagePayload(payload: string | null | undefined): void {
     this._triagePayload = payload && payload.trim() ? payload.trim() : null;
+    this._updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Records the triage disposition (issue #269).
+   *
+   * The disposition is a FACT, not a gate: no pause is set by it. It is what
+   * makes returning to the TRIAGE gate unnecessary, because the detector
+   * consults it before routing.
+   */
+  public setTriageDisposition(disposition: TriageDisposition | null): void {
+    this._triageDisposition = disposition || null;
     this._updatedAt = new Date().toISOString();
   }
 
   public setMode(mode: ExecutionMode): void {
     if (!Object.values(EXECUTION_MODES).includes(mode)) {
       throw new ValidationError('mode', mode, `Invalid execution mode: ${mode}`);
+    }
+    // Issue #278: setting the mode it ALREADY has is not a change. Mutating
+    // `_updatedAt` here made a read-only bare `codeloop` rewrite the checkpoint
+    // and advance the timestamp even though nothing happened.
+    if (this._mode === mode) {
+      return;
     }
     this._mode = mode;
     this._updatedAt = new Date().toISOString();
@@ -324,6 +721,8 @@ export class StateMachine {
       throw new InvalidTransitionError(this._stage.value, target.value, this._mode);
     }
 
+    const previousStage = this._stage.value;
+
     if (this._stage.value === STAGE_APPROVAL && target.value === STAGE_PLAN) {
       this._planRevisionCount++;
     }
@@ -331,11 +730,85 @@ export class StateMachine {
     const now = new Date().toISOString();
     this._stage = target;
     this._updatedAt = now;
+    // #339 (item 11): `plan` mode describes the PLAN phase. The first
+    // transition past APPROVAL is real implementation work, so the CHECKPOINT
+    // FIELD itself must change — `status` prints the raw field, and the field
+    // and the rendered cell must never disagree (a COMPLETED run that
+    // implemented/gated/reviewed/committed no longer renders `Execution Mode:
+    // plan`). A plan-only run halted at APPROVAL keeps `plan` (truthful).
+    // Only MODE_PLAN is affected; YOLO/standard and `setMode` are untouched,
+    // and `isLegalTransition` is untouched — mode is not a legality input here.
+    if (this._mode === MODE_PLAN && !PLAN_PHASE_STAGES.has(target.value)) {
+      this._mode = MODE_STANDARD;
+    }
+    // A transition INTO REVIEW starts a fresh review round, so the dispatch
+    // record of the previous round must not leak into it (issue #272).
+    if (target.value === STAGE_REVIEW) {
+      this._reviewDispatchCount = 0;
+    }
+    // Same rule for the two early-stage dispatch records (issue #292): a
+    // transition INTO the stage starts a fresh round.
+    if (target.value === STAGE_DISCOVERY) {
+      this._discoveryDispatchCount = 0;
+      // A new DISCOVERY round has a new boundary reference (issue #389).
+      this._discoveryMutationBaseline = null;
+    }
+    // Leaving DISCOVERY ends the measurement window: later stages legitimately
+    // build, so they must never be measured against a discovery baseline.
+    if (previousStage === STAGE_DISCOVERY && target.value !== STAGE_DISCOVERY) {
+      this._discoveryMutationBaseline = null;
+    }
+    if (target.value === STAGE_PLAN) {
+      this._planDispatchCount = 0;
+      this._planEmptyParkCount = 0;
+      // Issue #432: re-planning IS the "the plan is wrong, revise it" route, so
+      // the deviations a revised plan supersedes are cleared here.
+      this._planDeviations = [];
+    }
+    if (
+      target.value === STAGE_IMPLEMENT &&
+      (previousStage === STAGE_PLAN ||
+        previousStage === STAGE_APPROVAL ||
+        previousStage === STAGE_COMPLETED)
+    ) {
+      // A fresh approval starts a new plan's implementation. A
+      // QUALITY_GATE -> IMPLEMENT retry is the SAME plan, so it preserves them.
+      this._planDeviations = [];
+    }
+    // A transition INTO IMPLEMENT starts a fresh implementation round, so the
+    // re-dispatch record of the previous round must not leak into it (#327).
+    if (target.value === STAGE_IMPLEMENT) {
+      this._implementationDispatchCount = 0;
+    }
     this._history.push({
       stage: target.value,
       timestamp: now,
       metadata: Object.freeze({ ...metadata })
     });
+
+    // The machine genuinely advanced (transitions to the current stage are not
+    // allowed), so a pause at a NON-human gate is now stale: the condition that
+    // halted the run — an exhausted retry budget, a quota rejection — was
+    // resolved by this run getting further. Leaving `pausedAtGate` set would
+    // make the checkpoint claim "waiting for a human" forever, and
+    // `activeExecutionDurationMs()` would keep subtracting a pause that ended.
+    //
+    // Human gates are deliberately preserved: `TransitionStageUseCase`
+    // transitions out of APPROVAL/COMMIT only after the human answered, and
+    // TRIAGE hands control back to a human (see `HUMAN_WAIT_GATES`).
+    //
+    // COMPLETED is the exception, and it is not a special case bolted on: it is the
+    // same rule bounded by "the run finished". A machine that has reached its terminal
+    // stage is not waiting on a human, so the pause must be consumed (and its elapsed
+    // time banked into `totalHumanWaitMs`) here. Without this, `ExecuteCommitUseCase`'s
+    // `COMMIT -> COMPLETED` persisted `{ currentStage: COMPLETED, pausedAtGate: COMMIT }`
+    // and, because COMMIT is in `HUMAN_WAIT_GATES`, no later transition could ever clear
+    // it: `status` reported a finished pipeline that was also waiting on a human, and
+    // `totalHumanWaitMs` stayed 0 forever (#226).
+    const terminal = target.value === STAGE_COMPLETED;
+    if (this._pausedAtGate !== null && (terminal || !HUMAN_WAIT_GATES.includes(this._pausedAtGate))) {
+      this.resumeFromGate();
+    }
   }
 
   public reset(mode?: ExecutionMode, issue?: number | string | null): void {
@@ -349,12 +822,26 @@ export class StateMachine {
     this._baseBranch = null;
     this._worktree = null;
     this._planDir = null;
+    this._planPath = null;
+    this._approvedPlanDigest = null;
+    this._approvedPlanPath = null;
     this._triagePayload = null;
+    // A re-opened task starts with NO disposition: the tool must see the
+    // pull request's feedback again, because the task is being REDONE.
+    this._triageDisposition = null;
     this._pausedAtGate = null;
     this._pausedAtTimestamp = null;
     this._totalHumanWaitMs = 0;
     this._planRevisionCount = 0;
     this._implementToGateLoops = 0;
+    this._reviewDispatchCount = 0;
+    this._discoveryDispatchCount = 0;
+    this._planDispatchCount = 0;
+    this._implementationDispatchCount = 0;
+    this._planEmptyParkCount = 0;
+    this._pullRequest = null;
+    this._discoveryMutationBaseline = null;
+    this._planDeviations = [];
     this._updatedAt = now;
     this._history = [
       {
@@ -374,7 +861,9 @@ export class StateMachine {
       baseBranch: this._baseBranch,
       worktree: this._worktree,
       planDir: this._planDir,
+      planPath: this._planPath,
       triagePayload: this._triagePayload,
+      triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       stepCount: this._history.length,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
@@ -382,7 +871,12 @@ export class StateMachine {
       totalHumanWaitMs: this._totalHumanWaitMs,
       activeExecutionDurationMs: this.activeExecutionDurationMs(),
       planRevisionCount: this._planRevisionCount,
-      implementToGateLoops: this._implementToGateLoops
+      implementToGateLoops: this._implementToGateLoops,
+      reviewDispatchCount: this._reviewDispatchCount,
+      discoveryDispatchCount: this._discoveryDispatchCount,
+      planDispatchCount: this._planDispatchCount,
+      implementationDispatchCount: this._implementationDispatchCount,
+      planEmptyParkCount: this._planEmptyParkCount
     };
   }
 
@@ -396,7 +890,11 @@ export class StateMachine {
       baseBranch: this._baseBranch,
       worktree: this._worktree ? this._worktree.toJSON() : null,
       planDir: this._planDir,
+      planPath: this._planPath,
+      approvedPlanDigest: this._approvedPlanDigest,
+      approvedPlanPath: this._approvedPlanPath,
       triagePayload: this._triagePayload,
+      triageDisposition: this._triageDisposition ? this._triageDisposition.toJSON() : null,
       createdAt: this._createdAt,
       updatedAt: this._updatedAt,
       history: Object.freeze([...this._history]),
@@ -404,7 +902,19 @@ export class StateMachine {
       pausedAtTimestamp: this._pausedAtTimestamp,
       totalHumanWaitMs: this._totalHumanWaitMs,
       planRevisionCount: this._planRevisionCount,
-      implementToGateLoops: this._implementToGateLoops
+      implementToGateLoops: this._implementToGateLoops,
+      reviewDispatchCount: this._reviewDispatchCount,
+      discoveryDispatchCount: this._discoveryDispatchCount,
+      planDispatchCount: this._planDispatchCount,
+      implementationDispatchCount: this._implementationDispatchCount,
+      planEmptyParkCount: this._planEmptyParkCount,
+      pullRequest: this._pullRequest,
+      discoveryMutationBaseline: this._discoveryMutationBaseline,
+      // Issue #432 (AC7): written ONLY when non-empty. A conditional spread
+      // keeps a run with no deviation byte-identical to the pre-#432 snapshot.
+      ...(this._planDeviations.length > 0
+        ? { planDeviations: Object.freeze([...this._planDeviations]) }
+        : {})
     };
   }
 
@@ -433,7 +943,30 @@ export class StateMachine {
     const milestoneTitle = snapshot.milestoneTitle || null;
     const baseBranch = snapshot.baseBranch || null;
     const planDir = snapshot.planDir || null;
+    const planPath = snapshot.planPath || null;
+    const approvedPlanDigest = snapshot.approvedPlanDigest || null;
+    const approvedPlanPath = snapshot.approvedPlanPath || null;
     const triagePayload = snapshot.triagePayload || null;
+    // A legacy checkpoint (no `triageDisposition` key) and a malformed one
+    // both load as `null` — `fromJSON` never throws.
+    const triageDisposition = TriageDisposition.fromJSON(snapshot.triageDisposition);
+    // A legacy checkpoint has no `pullRequest` key: null means "not recorded",
+    // never "delivered" (issue #315, AC-24). An unrecognised status is treated
+    // as `missing` — the honest reading when the record is unusable.
+    const rawPullRequest = snapshot.pullRequest;
+    const pullRequest: RecordedPullRequest | null =
+      rawPullRequest && typeof rawPullRequest === 'object'
+        ? {
+            number: typeof rawPullRequest.number === 'number' ? rawPullRequest.number : null,
+            url: typeof rawPullRequest.url === 'string' && rawPullRequest.url.trim() ? rawPullRequest.url : null,
+            status:
+              rawPullRequest.status === 'created' ||
+              rawPullRequest.status === 'existing' ||
+              rawPullRequest.status === 'missing'
+                ? rawPullRequest.status
+                : 'missing'
+          }
+        : null;
 
     return new StateMachine({
       stage,
@@ -443,7 +976,11 @@ export class StateMachine {
       baseBranch,
       worktree,
       planDir,
+      planPath,
+      approvedPlanDigest,
+      approvedPlanPath,
       triagePayload,
+      triageDisposition,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       history: snapshot.history || [],
@@ -451,7 +988,24 @@ export class StateMachine {
       pausedAtTimestamp: snapshot.pausedAtTimestamp || null,
       totalHumanWaitMs: typeof snapshot.totalHumanWaitMs === 'number' ? snapshot.totalHumanWaitMs : 0,
       planRevisionCount: typeof snapshot.planRevisionCount === 'number' ? snapshot.planRevisionCount : 0,
-      implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0
+      implementToGateLoops: typeof snapshot.implementToGateLoops === 'number' ? snapshot.implementToGateLoops : 0,
+      reviewDispatchCount: typeof snapshot.reviewDispatchCount === 'number' ? snapshot.reviewDispatchCount : 0,
+      discoveryDispatchCount:
+        typeof snapshot.discoveryDispatchCount === 'number' ? snapshot.discoveryDispatchCount : 0,
+      planDispatchCount: typeof snapshot.planDispatchCount === 'number' ? snapshot.planDispatchCount : 0,
+      implementationDispatchCount:
+        typeof snapshot.implementationDispatchCount === 'number'
+          ? snapshot.implementationDispatchCount
+          : 0,
+      planEmptyParkCount:
+        typeof snapshot.planEmptyParkCount === 'number' ? snapshot.planEmptyParkCount : 0,
+      pullRequest,
+      discoveryMutationBaseline:
+        snapshot.discoveryMutationBaseline &&
+        isWorkspaceMutationBaseline(snapshot.discoveryMutationBaseline)
+          ? snapshot.discoveryMutationBaseline
+          : null,
+      planDeviations: hydrateRecordedPlanDeviations(snapshot.planDeviations)
     });
   }
 
@@ -466,6 +1020,7 @@ export class StateMachine {
     baseBranch?: string | null;
     worktree?: WorktreeDescriptor | null;
     planDir?: string | null;
+    planPath?: string | null;
     triagePayload?: string | null;
   } = {}): StateMachine {
     return new StateMachine({
@@ -475,7 +1030,8 @@ export class StateMachine {
       milestoneTitle: options.milestoneTitle,
       baseBranch: options.baseBranch,
       worktree: options.worktree,
-      planDir: options.planDir
+      planDir: options.planDir,
+      planPath: options.planPath
     });
   }
 }

@@ -1,5 +1,5 @@
 /**
- * agyloop - ResolveSubagentUseCase
+ * codeloop - ResolveSubagentUseCase
  *
  * Resolves subagent configuration, model routing, whitelisted tools,
  * and system prompts with strict physical write suppression guarantees.
@@ -51,8 +51,79 @@ import {
   MAX_INLINE_DIFF_LINES,
   DiffAnalyzer,
   IssueNumber,
-  ANTI_INCEPTION_GUARDRAIL
+  ANTI_INCEPTION_GUARDRAIL,
+  buildDefaultTriageSystemPrompt,
+  formatTriageActionList,
+  formatTriageActionSideEffects,
+  formatTriageRoutingCommand,
+  NOTE_REVIEW_VERDICT_RETURN,
+  formatCritiqueEvidenceReturnNote,
+  formatToolProse,
+  resolveHostToolVocabulary,
+  renderSystemPromptForHost,
+  translateToolNames,
+  type HostToolVocabulary,
+  TOOL_CAPABILITY_READ,
+  TOOL_CAPABILITY_SEARCH,
+  TOOL_CAPABILITY_LIST,
+  TOOL_CAPABILITY_WRITE,
+  TOOL_CAPABILITY_EDIT,
+  TOOL_CAPABILITY_SHELL,
+  SmokeProtocol,
+  formatSmokeCheckId,
+  GateCommandComposition,
+  GateCommandSource,
+  GATE_COMMAND_PRECEDENCE,
+  GATE_COMMAND_WORKTREE_CONTRACT,
+  GATE_COMMAND_SOURCE_PLAN,
+  GATE_REPORT_JSON_MARKER,
+  NOTE_GATE_REPORT_RETURN,
+  hasLintCommand,
+  isLintCommand,
+  MSG_GATE_LINT_MISSING,
+  HEADING_QUALITY_GATE_TARGETS,
+  HEADING_MANUAL_SMOKE_TEST_PROTOCOL,
+  HEADING_BASELINE_EVIDENCE,
+  NOTE_SMOKE_BLOCK_SANDBOX_RULE,
+  NOTE_SMOKE_FIXTURE_ISSUE_RULE,
+  NOTE_WORKTREE_GUARD_ESCAPE_HATCH,
+  NOTE_IMPLEMENTER_SMOKE_OWNERSHIP,
+  STATUS_PASSED,
+  STATUS_FAILED,
+  SMOKE_PROTOCOL_NOT_DECLARED,
+  SMOKE_PROTOCOL_VOCABULARY,
+  formatGateReportExample,
+  NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS,
+  NOTE_GATE_REPORT_EVIDENCE_SHAPES,
+  NOTE_GATE_REPORT_TEST_COUNT_TOKEN,
+  formatDiscoveryReportContract,
+  formatDiscoveryExecutionContract,
+  formatDiscoveryFallbackContract,
+  BASELINE_DECLARED_SHAPE_SENTENCE,
+  BASELINE_COMMAND_CWD_CONTRACT,
+  ROOT_BUILD_PROHIBITION_SENTENCE,
+  DISCOVERY_REPRODUCTION_HEADING,
+  DISCOVERY_REPRODUCTION_KEY,
+  shellQuote,
+  CRITIQUE_FLAG_JSON,
+  CRITIQUE_FLAG_COMMIT,
+  CRITIQUE_JS_EXTENSION,
+  CRITIQUE_PROVENANCE_SUFFIX,
+  NODE_RUNTIME_BINARY,
+  NOTE_CRITIQUE_TIER_ONE_UNRESOLVED,
+  // Issue #432: the deviation channel, the Test Register grammar, the
+  // excluded-path rule and the reviewer's AC evidence block.
+  PLAN_DEVIATION_MARKER,
+  PLAN_DEVIATION_EXAMPLE,
+  AC_EVIDENCE_MARKER,
+  REVIEWER_AC_EVIDENCE_SENTENCE,
+  REVIEWER_AC_EVIDENCE_STATUS_CONTRACT,
+  HEADING_TEST_REGISTER,
+  formatPlanDeviationChannelNote,
+  formatAcEvidenceExample,
+  type RecordedPlanDeviation
 } from '../domain';
+import type { PlanIntegrityVerdict } from './resolve-gate-verification';
 
 export {
   DIFF_EXCLUDED_PATHSPECS,
@@ -63,7 +134,7 @@ export {
 };
 import {
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   GitHubGateway,
   GitHubIssueData,
   PromptRepository,
@@ -72,6 +143,7 @@ import {
   formatIssueForPrompt
 } from '../ports';
 import { ManageCritiqueUseCase } from './manage-critique';
+import { buildChangeSetDigestCommand } from './delivered-change-set';
 
 export const PLANNER_SUBAGENT_DEF = Object.freeze({
   name: ROLE_PLANNER,
@@ -170,9 +242,21 @@ export interface SubagentDescriptor {
 
 export interface ResolveSubagentOptions {
   readonly role?: string;
-  readonly customConfig?: AgyLoopConfig;
+  readonly customConfig?: CodeLoopConfig;
   readonly promptPath?: string;
   readonly workspaceDir?: string;
+}
+
+/**
+ * The shared options object for the six system-prompt readers (issue #290).
+ *
+ * `vocabulary` is the host resolved from the SAME config the whitelist came
+ * from; when it is absent the Antigravity asset is returned byte-identically.
+ */
+export interface SystemPromptOptions {
+  readonly promptPath?: string;
+  readonly workspaceDir?: string;
+  readonly vocabulary?: HostToolVocabulary | null;
 }
 
 export interface PlanningTaskPromptParams {
@@ -181,7 +265,7 @@ export interface PlanningTaskPromptParams {
   readonly issueData?: GitHubIssueData | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly userFeedback?: string | null;
   readonly previousPlanContent?: string | null;
   readonly iterationCount?: number | null;
@@ -194,13 +278,21 @@ export interface PlanningTaskPromptParams {
 export interface ImplementationTaskPromptParams {
   readonly planContent?: string | null;
   readonly planPath?: string | null;
+  /**
+   * The plan's smoke protocol, FROZEN at dispatch (issue #388, was #386).
+   *
+   * When absent, `buildImplementationTaskPrompt` parses `planContent`; when the
+   * plan is not supplied either, the section renders the explicit prohibition.
+   * Backward compatible: every existing call site compiles unchanged.
+   */
+  readonly smokeProtocol?: SmokeProtocol;
   readonly issueNumber?: number | string | null;
   readonly issueTitle?: string | null;
   readonly issueBody?: string | null;
   readonly repo?: string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly failureDiagnostics?: string | DiagnosticSnippet | null;
   readonly selfCorrectionPayload?: string | null;
   readonly critiqueFailureSnippet?: string | null;
@@ -212,9 +304,21 @@ export interface GateTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly planContent?: string | null;
   readonly planPath?: string | null;
+  /** The cwd every gate command must run from (issue #298). */
+  readonly cwd?: string;
+  /** The resolver's provenance for the command list (issue #298). */
+  readonly commandSource?: GateCommandSource;
+  readonly commandSourceDetail?: string;
+  readonly appendedCommands?: readonly string[];
+  readonly requiredLint?: boolean;
+  /** The composed workflow-lint step, when the change touches workflows (#369). */
+  readonly composition?: GateCommandComposition;
+  /** The smoke checks FROZEN at dispatch (issue #298). */
+  readonly smokeProtocol?: SmokeProtocol;
+  readonly planIntegrity?: PlanIntegrityVerdict;
 }
 
 export interface ReviewerTaskPromptParams {
@@ -227,17 +331,237 @@ export interface ReviewerTaskPromptParams {
   readonly standardsContent?: string | null;
   readonly workingDiff?: string | null;
   readonly critiqueReport?: string | null;
+  /**
+   * Untracked implementation-evidence paths measured by the SAME probe the
+   * IMPLEMENT boundary uses (issue #356). `git diff <base>` cannot see them, so
+   * the reviewer is handed them explicitly. `undefined`/`null`/`[]` render
+   * NOTHING: a tracked-only change keeps the pre-#356 prompt byte-for-byte.
+   */
+  readonly untrackedFiles?: readonly string[] | null;
+  /**
+   * Where the reviewer writes its Tier 1 evidence (issue #397). When absent the
+   * prompt is byte-identical to the pre-#397 wording — no path, no push.
+   */
+  readonly critiqueReportPath?: string | null;
+  /**
+   * An authoritative critique binary path (issue #314).
+   *
+   * `run-review` resolves it asynchronously and passes it here; when present it
+   * wins over the port. `undefined` means "resolve through the critique port,
+   * else render the discovery instruction".
+   */
   readonly critiquePath?: string | null;
+  /**
+   * The worktree the review certifies (issue #445). The Tier 1 command runs
+   * here with `--commit <base>`; absent falls back to `workspaceDir`, then
+   * `process.cwd()`.
+   */
+  readonly reviewCwd?: string;
   readonly userInstructions?: string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
+  /**
+   * Deviations filed by the implementer (issue #432). Rendered so the verdict
+   * is made with them in view; absent/empty keeps the pre-#432 prompt.
+   */
+  readonly planDeviations?: readonly RecordedPlanDeviation[] | null;
+  /** The plan's `- **Out of Scope:**` declarations (issue #432, AC6). */
+  readonly outOfScope?: readonly string[] | null;
 }
 
 export interface TriageTaskPromptParams {
   readonly issueNumber?: number | string | null;
   readonly workspaceDir?: string;
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly triagePayload?: string | null;
+}
+
+/**
+ * Renders the Tier 1 command for a RESOLVED critique binary (issue #314).
+ *
+ * The installer ships a `critique.js` that the gateway runs through `node`;
+ * a native binary runs directly. The path is single-quoted because macOS
+ * user-data paths contain spaces (`~/Library/Application Support/...`).
+ *
+ * No `PATH` export: the path is absolute, and `~/.local/bin` is not where the
+ * installer writes.
+ *
+ * Issue #445 (AC1): the command now runs FROM the reviewed worktree and carries
+ * the reviewed base as `--commit <base>`. Without either, critique fell back to
+ * `git diff HEAD` / `git diff origin/main...HEAD` in whatever cwd the reviewer
+ * happened to have, so the #439 round reviewed a 416-file collector instead of
+ * the 7-file change. `--commit` is `git diff <base>` (two-dot), the same
+ * measurement `resolveDeliveredChangeSet` uses; `--base` would be
+ * `git diff <base>...HEAD`, which is EMPTY at REVIEW time because HEAD is the
+ * base until the commit gate.
+ *
+ * The provenance sidecar (`<report>.provenance.json`) is published BEFORE the
+ * report, so a report on disk always carries the base/HEAD it was produced
+ * from; a stale sidecar is cleared with the stale report.
+ *
+ * Issue #452: the sidecar also names the change set as CONTENT (a worktree tree
+ * hash). HEAD does not move during REVIEW, so refs alone let an edit made after
+ * Tier 1 ran still certify; the digest closes that. A digest that cannot be
+ * computed publishes NO report (fail closed).
+ */
+function formatCritiqueTierOneCommand(
+  binaryPath: string,
+  reportPath: string | null | undefined,
+  reviewCwd: string,
+  baseRef: string
+): string {
+  const quoted = shellQuote(binaryPath);
+  const command =
+    (binaryPath.endsWith(CRITIQUE_JS_EXTENSION)
+      ? `${NODE_RUNTIME_BINARY} ${quoted} ${CRITIQUE_FLAG_JSON}`
+      : `${quoted} ${CRITIQUE_FLAG_JSON}`) + ` ${CRITIQUE_FLAG_COMMIT} ${shellQuote(baseRef)}`;
+  const quotedCwd = shellQuote(reviewCwd);
+  const quotedBase = shellQuote(baseRef);
+  // Issue #445: an unresolvable base is a LOUD failure. Falling back to
+  // critique's own default is exactly the wrong-diff defect this closes.
+  const resolveBase =
+    `git rev-parse --verify --quiet ${quotedBase}^{commit} >/dev/null || ` +
+    `{ echo "reviewed base ${quotedBase} does not resolve here; no report written" >&2; exit 1; }; `;
+  const enterCwd =
+    `cd ${quotedCwd} || ` +
+    `{ echo "review cwd ${quotedCwd} is unavailable; no report written" >&2; exit 1; }; `;
+  if (!reportPath) return `${enterCwd}${resolveBase}${command}`;
+
+  // Issue #400 (D2): stage into a sibling temp file and publish only on
+  // success, because a POSIX pipeline reports `tee`'s exit status: a crashing
+  // critique still exited 0 and left an empty or truncated evidence file that
+  // a reviewer could name on a `CRITIQUE_REPORT:` line.
+  //
+  // The subshell is load-bearing: `exit` then ends this command, never a
+  // reviewer's interactive shell. The staging file lives in the SAME directory
+  // as the report, so the final `mv` is atomic, and `cat` preserves the Tier 1
+  // read that #397 added (the reviewer still reconciles both tiers). `dirname`
+  // is used rather than splitting the path in JS: the evidence path is absolute
+  // and may be Windows- or POSIX-shaped, and the shell that runs it is the same
+  // shell the reviewer already uses.
+  //
+  // Issue #405 (D2): clear the DESTINATION before critique runs. The report path
+  // is per-issue and stable across review rounds, so a crashed round would
+  // otherwise leave the previous round's evidence at the exact path a reviewer
+  // names. This is deliberately destructive: if a successful critique's publish
+  // then fails, the old report is already gone — stale evidence must not survive
+  // a failed round (issue #405, D3 covers the staging cleanup). The same
+  // rationale clears the stale SIDECAR (issue #445): a previous round's
+  // provenance must never be read beside a new report.
+  const quotedReport = shellQuote(reportPath);
+  const provenanceReport = shellQuote(`${reportPath}${CRITIQUE_PROVENANCE_SUFFIX}`);
+  // JSON-escape the ref for the printf format string, then shell-quote it. The
+  // escapes are built with `split`/`join` rather than a double-quote regex: the
+  // G1 shell-injection guard bans that idiom repository-wide.
+  const jsonBase = shellQuote(baseRef.split('\\').join('\\\\').split('"').join('\\"'));
+  const stagingPath = `"$(dirname ${quotedReport})/.critique-report.$$.tmp"`;
+  const provenanceStaging = `"$(dirname ${quotedReport})/.critique-provenance.$$.tmp"`;
+  const digestCommand = buildChangeSetDigestCommand();
+  return (
+    `mkdir -p "$(dirname ${quotedReport})" && ( ` +
+    `tmp=${stagingPath}; prov=${provenanceStaging}; ` +
+    `rm -f ${quotedReport} ${provenanceReport}; ` +
+    enterCwd +
+    resolveBase +
+    `${command} > "$tmp"; code=$?; ` +
+    `if [ "$code" -ne 0 ]; then rm -f "$tmp"; echo "critique failed (exit $code); no report written" >&2; exit $code; fi; ` +
+    `if [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "critique exited 0 but wrote no evidence; no report written" >&2; exit 1; fi; ` +
+    `head_sha=$(git rev-parse HEAD) || { rm -f "$tmp"; echo "cannot read HEAD in ${quotedCwd}; no report written" >&2; exit 1; }; ` +
+    `change_set_digest=$({ ${digestCommand}; }) || ` +
+    `{ rm -f "$tmp" "$prov"; echo "cannot read the reviewed change set; no report written" >&2; exit 1; }; ` +
+    `printf '{"baseRef":"%s","headCommit":"%s","changeSetDigest":"%s"}\\n' ${jsonBase} "$head_sha" "$change_set_digest" > "$prov" || ` +
+    `{ rm -f "$tmp" "$prov"; echo "cannot stage provenance; no report written" >&2; exit 1; }; ` +
+    `if ! mv "$prov" ${provenanceReport}; then rm -f "$tmp" "$prov" ${provenanceReport}; echo "publish failed; no report written" >&2; exit 1; fi; ` +
+    `if ! mv "$tmp" ${quotedReport}; then rm -f "$tmp" ${provenanceReport}; echo "publish failed; no report written" >&2; exit 1; fi; ` +
+    `cat ${quotedReport} )`
+  );
+}
+
+/**
+ * A command that prints ONE untracked path's full content (issue #356).
+ *
+ * Files use `git diff --no-index`, which renders the whole body as additions and
+ * exits 1 ("differences found") — the prompt says so, hence `|| true`.
+ *
+ * A path ending in `/` is a directory `git status --porcelain` COLLAPSED (every
+ * file in it is untracked). `git diff --no-index /dev/null <dir>` fails with
+ * "Could not access '<dir>/null'", so directories are expanded with
+ * `git ls-files --others --exclude-standard` and printed file by file.
+ *
+ * The `\\n` inside the printf is load-bearing: a literal newline in the template
+ * would break the one-line command.
+ */
+function formatUntrackedContentCommand(path: string): string {
+  const quoted = shellQuote(path);
+  if (path.endsWith('/')) {
+    return `git ls-files --others --exclude-standard -- ${quoted} | while IFS= read -r f; do printf '\\n===== %s =====\\n' "$f"; cat -- "$f"; done`;
+  }
+  return `git diff --no-index -- /dev/null ${quoted} || true`;
+}
+
+/** Trimmed, de-duplicated, order-preserving; anything that is not a path is dropped. */
+function normalizeUntrackedFiles(files: readonly string[] | null | undefined): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const file of files ?? []) {
+    if (typeof file !== 'string') continue;
+    const trimmed = file.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/**
+ * Renders the implementer's frozen-protocol section (issue #388, was #386).
+ *
+ * The IMPLEMENT directive used to supply the plan path and "run the automated
+ * test suite" but never the protocol, so an implementer could claim it ran one
+ * that the gate then failed. The checks are copied VERBATIM, with their plan
+ * line, and an unrunnable protocol states that the gate owns it.
+ */
+function formatImplementerSmokeSection(protocol: SmokeProtocol): string {
+  if (!protocol.declared) {
+    return (
+      `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\n` +
+      `${NOTE_IMPLEMENTER_SMOKE_OWNERSHIP}\n` +
+      'Do not invent checks, and never run a state-mutating `codeloop` command against the workspace root.\n\n'
+    );
+  }
+
+  let text = `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} (frozen at dispatch)\n`;
+
+  if (protocol.checks.length === 0) {
+    text += 'No executable check was extracted from the approved plan.\n';
+  } else {
+    for (const check of protocol.checks) {
+      const title = check.label.toLowerCase().startsWith(`check ${check.index}`)
+        ? check.label
+        : `Check ${check.index} — ${check.label}`;
+      text += `#### ${title} (plan line ${check.planLine})\n`;
+      text += `\`\`\`bash\n${check.body}\n\`\`\`\n\n`;
+    }
+  }
+
+  if (protocol.executable) {
+    text +=
+      "Run each check exactly as written, in order, from the worktree root, with the worktree's own `codeloop` build. " +
+      'Never edit the plan or a check; report a failure by check label and plan line. ' +
+      'A check creates its own sandbox; never point a state-mutating check at the workspace root. ' +
+      `${NOTE_IMPLEMENTER_SMOKE_OWNERSHIP} The prohibition is against inventing a check or asserting a result the gate must certify, not against executing the checks above.\n\n`;
+    return text;
+  }
+
+  text +=
+    'This protocol is NOT executable as written, so do not run a check you cannot complete. ' +
+    `${NOTE_IMPLEMENTER_SMOKE_OWNERSHIP} ` +
+    'The prohibition is against inventing or asserting a result the gate must certify; report the defect instead.\n';
+  for (const finding of protocol.findings) {
+    text += `- Rule \`${finding.rule}\`, check "${finding.label}" at plan line ${finding.line}: ${finding.excerpt}\n`;
+  }
+  text += 'Report the defect by check label and plan line; do not edit the frozen check.\n\n';
+  return text;
 }
 
 export class ResolveSubagentUseCase {
@@ -273,60 +597,101 @@ export class ResolveSubagentUseCase {
     }
   }
 
-  public getPlannerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getPlannerSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_PLANNER, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_PLANNER, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_PLANNER_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_PLANNER_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getDiscoverySystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getDiscoverySystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_DISCOVERY, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_DISCOVERY, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_DISCOVERY_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_DISCOVERY_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getImplementerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getImplementerSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_IMPLEMENTER, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_IMPLEMENTER, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_IMPLEMENTER_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_IMPLEMENTER_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getGateSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getGateSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_GATE, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_GATE, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_GATE_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_GATE_SYSTEM_PROMPT, options.vocabulary);
   }
 
-  public getReviewerSystemPrompt(options: { promptPath?: string; workspaceDir?: string } = {}): string {
+  public getReviewerSystemPrompt(options: SystemPromptOptions = {}): string {
     if (this.promptRepo) {
-      return this.promptRepo.loadPrompt(ROLE_REVIEWER, {
-        promptPath: options.promptPath,
-        cwd: options.workspaceDir
-      });
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_REVIEWER, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
     }
-    return DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT;
+    return renderSystemPromptForHost(DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT, options.vocabulary);
+  }
+
+  public getTriageSystemPrompt(options: SystemPromptOptions = {}): string {
+    if (this.promptRepo) {
+      return renderSystemPromptForHost(
+        this.promptRepo.loadPrompt(ROLE_TRIAGE, {
+          promptPath: options.promptPath,
+          cwd: options.workspaceDir
+        }),
+        options.vocabulary
+      );
+    }
+    return renderSystemPromptForHost(buildDefaultTriageSystemPrompt(), options.vocabulary);
+  }
+
+  /**
+   * Resolves the selected host ONCE per render (issue #290, invariant I4).
+   *
+   * A builder that is handed no config resolves `null`, which is the identity:
+   * the host-neutral #241 prose and the Antigravity asset stay the default.
+   */
+  private vocabularyFor(config?: CodeLoopConfig): HostToolVocabulary | null {
+    return resolveHostToolVocabulary(config?.runner);
   }
 
   public execute(options: ResolveSubagentOptions = {}): SubagentDescriptor {
     const roleVo = SubagentRole.from(options.role || ROLE_PLANNER);
     const config = options.customConfig || this.configRepo.loadConfig({ cwd: options.workspaceDir });
     const resolved = this.configRepo.resolveModel(roleVo.value, config);
+    // Resolved ONCE per descriptor (issue #290, invariant I4): the whitelist and
+    // the system prompt below both derive from this single vocabulary.
+    const vocabulary = this.vocabularyFor(config);
 
     if (roleVo.value === ROLE_DISCOVERY) {
       const whitelist = ToolWhitelist.planner();
@@ -336,7 +701,7 @@ export class ResolveSubagentUseCase {
         description: DISCOVERY_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: true,
           enable_subagent_tools: false,
@@ -344,7 +709,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getDiscoverySystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -357,7 +723,7 @@ export class ResolveSubagentUseCase {
         description: IMPLEMENTER_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: true,
           enable_subagent_tools: false,
@@ -365,7 +731,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getImplementerSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -378,7 +745,7 @@ export class ResolveSubagentUseCase {
         description: GATE_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: false,
           enable_subagent_tools: false,
@@ -386,7 +753,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getGateSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -399,7 +767,7 @@ export class ResolveSubagentUseCase {
         description: REVIEWER_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: whitelist.toArray(),
+        tools: translateToolNames(whitelist.toArray(), vocabulary),
         capabilities: {
           enable_write_tools: false,
           enable_subagent_tools: false,
@@ -407,7 +775,8 @@ export class ResolveSubagentUseCase {
         },
         system_prompt: this.getReviewerSystemPrompt({
           promptPath: options.promptPath,
-          workspaceDir: options.workspaceDir
+          workspaceDir: options.workspaceDir,
+          vocabulary
         })
       };
     }
@@ -419,13 +788,17 @@ export class ResolveSubagentUseCase {
         description: TRIAGE_SUBAGENT_DEF.description,
         model: resolved.tier,
         apiModel: resolved.apiModel,
-        tools: TRIAGE_TOOLS.slice(),
+        tools: translateToolNames(TRIAGE_TOOLS, vocabulary),
         capabilities: {
           enable_write_tools: false,
           enable_subagent_tools: false,
           enable_mcp_tools: false
         },
-        system_prompt: `# AgyLoop Triage Subagent System Prompt\nYou are the Triage Subagent. Your goal is to inspect PR comments and route the pipeline.\nYou may use \`bin/agyloop triage <implement|plan|discovery|completed|dismiss>\` to route the pipeline.`
+        system_prompt: this.getTriageSystemPrompt({
+          promptPath: options.promptPath,
+          workspaceDir: options.workspaceDir,
+          vocabulary
+        })
       };
     }
 
@@ -443,7 +816,7 @@ export class ResolveSubagentUseCase {
       description: PLANNER_SUBAGENT_DEF.description,
       model: resolved.tier,
       apiModel: resolved.apiModel,
-      tools: whitelist.toArray(),
+      tools: translateToolNames(whitelist.toArray(), vocabulary),
       capabilities: {
         enable_write_tools: true,
         enable_subagent_tools: false,
@@ -451,13 +824,15 @@ export class ResolveSubagentUseCase {
       },
       system_prompt: this.getPlannerSystemPrompt({
         promptPath: options.promptPath,
-        workspaceDir: options.workspaceDir
+        workspaceDir: options.workspaceDir,
+        vocabulary
       })
     };
   }
 
   public buildDiscoveryTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
+    const vocabulary = this.vocabularyFor(params.config);
     const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
     const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
     const repo = params.repo || resolvedRepo;
@@ -489,35 +864,66 @@ export class ResolveSubagentUseCase {
     }
 
     let prompt = `# Task: Defect Discovery & Root Cause Analysis\n\n`;
-    prompt += `You are executing the **DISCOVERY** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **DISCOVERY** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the codebase, perform root-cause analysis (RCA), manually smoke test the bug, and produce an actionable discovery report.\n\n`;
 
     // Resolve container runtime and daemon availability
+    //
+    // Issue #295: prefer the runtime's OWN health probe. Availability by socket
+    // file alone reported a working rootless podman absent, so the container
+    // guardrail was dropped from the discovery prompt on every run. The
+    // runtime+socket pair stays as the fallback for a stub detector that has no
+    // probe.
     const detector = params.buildDetector || this.buildDetector;
-    const runtime = params.containerRuntime !== undefined
-      ? params.containerRuntime
-      : (detector && typeof detector.resolveContainerRuntime === 'function' ? detector.resolveContainerRuntime() : null);
-    const socket = detector && typeof detector.resolveContainerSocket === 'function' ? detector.resolveContainerSocket() : null;
-    const isContainerAvailable = Boolean(runtime && socket);
+    const probe = params.containerRuntime === undefined && detector && typeof detector.probeContainerRuntime === 'function'
+      ? detector.probeContainerRuntime()
+      : null;
+    let runtime: 'podman' | 'docker' | null;
+    let isContainerAvailable: boolean;
+    if (probe) {
+      runtime = probe.runtime;
+      isContainerAvailable = true;
+    } else {
+      runtime = params.containerRuntime !== undefined
+        ? params.containerRuntime
+        : (detector && typeof detector.resolveContainerRuntime === 'function' ? detector.resolveContainerRuntime() : null);
+      const socket = detector && typeof detector.resolveContainerSocket === 'function' ? detector.resolveContainerSocket() : null;
+      isContainerAvailable = Boolean(runtime && socket);
+    }
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true, vocabulary })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
 
     if (isContainerAvailable) {
-      prompt += `2. **Strict Container-Only Guardrail**: Command execution in Discovery can ONLY run containerized invocations (\`act\`, \`podman run\`, \`docker run\`). Uncontained host mutations or native executions on the host are strictly prohibited to prevent host environment pollution.\n`;
-      prompt += `3. **Empirical Verification via Ephemeral Container**: Use ${runtime} (\`${runtime} run\`) or \`act\` to empirically reproduce the issue in an isolated container environment and record exact steps and results.\n`;
+      // Issue #389: the boundary is MUTATION, not containment. The old
+      // container-only mandate contradicted the evidence contract (empirical
+      // reproduction needs a build) and was unenforced anyway, so containment
+      // is now an offer with a runnable recipe.
+      prompt += `${formatDiscoveryExecutionContract({ runtime: runtime ?? 'docker', planDir: targetDir })}\n`;
     } else {
-      prompt += `2. **Empirical Verification Fallback**: Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing. Log an informative warning regarding container unavailability.\n`;
+      // Issue #402, Defect 3: #295's fallback sentence stays verbatim, and the
+      // mutation boundary follows it so a host without a container runtime is
+      // still told that every write stays in the plan directory and that the
+      // root build is never rebuilt.
+      prompt += `${formatDiscoveryFallbackContract({ planDir: targetDir })}\n`;
     }
 
-    const deliverableNum = isContainerAvailable ? 4 : 3;
+    const reproductionDeliverable =
+      `You MUST fill out the \`${DISCOVERY_REPRODUCTION_HEADING}\` section — including its \`${DISCOVERY_REPRODUCTION_KEY}\` key — with the exact steps and observed results.`;
+
+    const deliverableNum = 4;
     if (params.planPath) {
       prompt += `${deliverableNum}. **Deliverable**: Update and complete the scaffolded discovery specification template located precisely at: \`${params.planPath}\`.\n`;
-      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+      prompt += `   - Write ONLY this file. Do NOT create another directory under \`artifacts/plans/\` and do NOT create a second discovery artifact.\n`;
+      prompt += `   - ${reproductionDeliverable}\n\n`;
+    } else if (params.planDir) {
+      prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification INSIDE this existing directory: \`${params.planDir}\`, matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `   - Do NOT create another directory under \`artifacts/plans/\`.\n`;
+      prompt += `   - ${reproductionDeliverable}\n\n`;
     } else {
-      prompt += `${deliverableNum}. **Deliverable**: Create the discovery specification in the \`${targetDir}\` directory matching \`templates/discovery-plan.md\`.\n`;
-      prompt += `   - You MUST fill out the \`### Manual Bug Smoke Test\` section with the exact reproduction steps and the results of your smoke test.\n\n`;
+      prompt += `${deliverableNum}. **Deliverable**: Run \`codeloop plan --issue <n>\` first to scaffold the canonical plan directory, then create the discovery specification there matching \`templates/discovery-plan.md\`.\n`;
+      prompt += `   - ${reproductionDeliverable}\n\n`;
     }
 
     if (issueContextBlock) {
@@ -545,8 +951,11 @@ export class ResolveSubagentUseCase {
     prompt += `### Expected Output Structure:\n`;
     prompt += `- **Summary & Symptoms**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Root Cause Analysis**: Detailed breakdown of failure mechanisms.\n`;
-    prompt += `- **Manual Bug Smoke Test**: Exact reproduction steps and results.\n`;
+    prompt += `- **Reproduction Steps & Verification Protocol**: Exact reproduction steps and results.\n`;
     prompt += `- **Remediation Strategy**: Cleanest fix approach.\n\n`;
+
+    prompt += `### Evidence Contract:\n`;
+    prompt += `${formatDiscoveryReportContract()}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -555,6 +964,7 @@ export class ResolveSubagentUseCase {
 
   public buildPlanningTaskPrompt(params: PlanningTaskPromptParams = {}): string {
     const workspaceDir = params.workspaceDir || process.cwd();
+    const vocabulary = this.vocabularyFor(params.config);
     const currentRepo = this.githubGateway ? this.githubGateway.getCurrentRepo(workspaceDir) : null;
     const resolvedRepo = typeof currentRepo === 'string' ? currentRepo : undefined;
     const repo = params.repo || resolvedRepo;
@@ -586,19 +996,25 @@ export class ResolveSubagentUseCase {
     }
 
     let prompt = `# Task: Architectural Investigation & Plan Generation\n\n`;
-    prompt += `You are executing the **PLAN** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **PLAN** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the codebase, perform architectural design, and produce an actionable specification.\n\n`;
 
     const targetDir = params.planDir || 'artifacts/plans/';
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${PLANNER_TOOLS.join(', ')}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
+    prompt += `1. **Scoped Write Access**: You have access to inspection and limited write tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_WRITE, TOOL_CAPABILITY_EDIT], { plural: true, vocabulary })}). You MUST ONLY modify or write files within the \`${targetDir}\` directory.\n`;
     prompt += `2. **Empirical Verification**: Verify all file paths, exports, and call-sites before finalizing your design.\n`;
     if (params.planPath) {
       prompt += `3. **Deliverable**: Update and complete the scaffolded technical specification template located precisely at: \`${params.planPath}\`.\n`;
+      prompt += `   - Write ONLY this file. Do NOT create another directory under \`artifacts/plans/\` and do NOT write a second plan artifact.\n`;
+      prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
+      prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
+    } else if (params.planDir) {
+      prompt += `3. **Deliverable**: Create the technical specification INSIDE this existing directory: \`${params.planDir}\`, matching \`templates/implementation-plan.md\` (prefer \`implementation_plan.md\`).\n`;
+      prompt += `   - Do NOT create another directory under \`artifacts/plans/\`.\n`;
       prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
       prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
     } else {
-      prompt += `3. **Deliverable**: Create the technical specification in the \`${targetDir}\` directory matching \`templates/implementation-plan.md\`.\n`;
+      prompt += `3. **Deliverable**: Run \`codeloop plan --issue <n>\` first to scaffold the canonical plan directory, then complete the technical specification there matching \`templates/implementation-plan.md\`.\n`;
       prompt += `   - You MUST explicitly define a "Manual Smoke Test Protocol".\n`;
       prompt += `   - You MUST explicitly design and mandate unit tests to meet each Acceptance Criteria defined in the plan.\n\n`;
     }
@@ -629,7 +1045,12 @@ export class ResolveSubagentUseCase {
     prompt += `- **Summary & Acceptance Criteria**: Reiterate scope and clear completion criteria.\n`;
     prompt += `- **Architectural Impact**: Detailed breakdown of components, file paths, and potential regression vectors.\n`;
     prompt += `- **Implementation Checklist**: Numbered steps with file targets for the downstream \`implementer\` subagent.\n`;
-    prompt += `- **Quality Gate Targets**: Precise automated test commands to verify the change.\n\n`;
+    prompt += `- **\`### ${HEADING_QUALITY_GATE_TARGETS}\`**: A section with exactly this heading and ONE verification command per line (a fenced \`bash\` block is ideal). These commands ARE the gate's command list, in this order — include lint and every targeted suite the change needs.\n`;
+    prompt += `- **\`### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\`**: A section with exactly this heading whose checks are fenced \`bash\` blocks. Each fenced block must be runnable as written from the worktree root (absolute/relative \`.\` module paths, no JSON-quoted shell comparisons). ${NOTE_SMOKE_BLOCK_SANDBOX_RULE} ${NOTE_SMOKE_FIXTURE_ISSUE_RULE}\n`;
+    prompt += `- **\`### ${HEADING_BASELINE_EVIDENCE}\`** (required only when you declare a baseline): one \`#### <claim-id>\` per declared number, each carrying \`- **Declared:**\`, \`- **Command:**\` and \`- **Output:**\`. Never declare an unmeasured baseline value; the approval guard executes every command and refuses a mismatch, naming the measured value. ${BASELINE_DECLARED_SHAPE_SENTENCE} A baseline command must never rebuild the workspace root: build-like commands (\`npm run build\`, \`npm test\`, \`tsc\`, \`make\`, …) are refused before anything runs. ${ROOT_BUILD_PROHIBITION_SENTENCE} ${BASELINE_COMMAND_CWD_CONTRACT} When a baseline genuinely needs compiled output, compile into a scratch out-dir outside the workspace (\`npx tsc --outDir "$HOME/.cache/codeloop/baseline-<issue>/dist"\`) and require() the module from there.\n`;
+    prompt += `- **\`### ${HEADING_TEST_REGISTER}\`** (issue #432): one \`- **<row-id>**\` bullet per pinned assertion, with EITHER \`**Pins:** \`path\` :: \`test title\`\` (an existing test) OR \`**New test:** \`path\` :: \`test title\`\` (a genuinely new case), plus at least one \`**Asserts:** \`assertion\`\`. A row that pins an existing test MUST restate its literal exactly: the approval guard refuses a row whose expected value contradicts the pinned subject, naming \`file:line\`. Run the existing suite before you declare a literal — a plan literal that contradicts a pinned test cannot be approved.\n`;
+    prompt += `- **Delivered-evidence rule** (issue #432, AC4/AC6): an Acceptance Criterion or checklist step must not target a commit-excluded path (\`artifacts/\`, \`.agyloop/\`, \`node_modules/\`) or a path outside the workspace. The approval gate refuses such a plan and names the path. If a correction is deliberately NOT delivered, say so with a \`- **Out of Scope:** <reason>\` bullet under Context & Objectives instead of instructing an edit to a gitignored file.\n`;
+    prompt += `- **Acceptance Criteria bullets** (issue #432): write each criterion as a PLAIN \`- AC<n>: …\` bullet. A bold-labelled bullet (\`- **AC1:** …\`) stops the reviewer's extractor, so the criterion would never reach the verdict.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -637,18 +1058,20 @@ export class ResolveSubagentUseCase {
   }
 
   public buildImplementationTaskPrompt(params: ImplementationTaskPromptParams): string {
+    const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Implementation Execution\n\n`;
-    prompt += `You are executing the **IMPLEMENT** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **IMPLEMENT** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to surgically implement the changes specified in the approved plan, run verification tests, and ensure all quality criteria are met.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
     prompt += `1. **Plan Fidelity**: Adhere strictly to the approved specification. Do not perform unauthorized refactorings, style drifts, or introduce unrequested dependencies.\n`;
-    prompt += `2. **Surgical Modifications**: Use \`replace_file_content\` for targeted edits on existing files. Use \`write_to_file\` only for new files.\n`;
-    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via \`run_command\` to validate all code edits before completing.\n`;
+    prompt += `2. **Surgical Modifications**: Use ${formatToolProse([TOOL_CAPABILITY_EDIT], { vocabulary })} for targeted edits on existing files. Use ${formatToolProse([TOOL_CAPABILITY_WRITE], { vocabulary })} only for new files.\n`;
+    prompt += `3. **Empirical Verification**: Run the automated test suite and verification commands via ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })} to validate all code edits before completing.\n`;
     prompt += `4. **No Commits**: Do NOT commit your changes. Leave them staged or unstaged in the worktree. The orchestrator's commit gate handles committing.\n\n`;
 
     if (params.workspaceDir) {
       prompt += `### Execution Workspace / Worktree:\n**Working Directory**: \`${params.workspaceDir}\`\n\n`;
+      prompt += `Run every command from this directory. ${NOTE_WORKTREE_GUARD_ESCAPE_HATCH}\n\n`;
     }
 
     const effectiveIssue =
@@ -701,11 +1124,18 @@ export class ResolveSubagentUseCase {
       const planFileName = params.planPath.replace(/^.*[\\/]/, '');
       prompt += `### Approved Technical Plan (${planFileName}):\n`;
       prompt += `The approved technical plan is located at \`${params.planPath}\`.\n`;
-      prompt += `You MUST read this file using the \`view_file\` tool to understand the acceptance criteria and implementation checklist before proceeding.\n\n`;
+      prompt += `You MUST read this file using ${formatToolProse([TOOL_CAPABILITY_READ], { vocabulary })} to understand the acceptance criteria and implementation checklist before proceeding.\n`;
+      prompt += `Do not edit the approved plan; its digest is verified by the gate. Record progress in the CodeLoop Summary, never in the plan.\n\n`;
     } else if (params.planContent && params.planContent.trim()) {
       prompt += `### Approved Technical Plan (${PLAN_DEFAULT_SPECIFICATION_TITLE}):\n\n`;
       prompt += `${params.planContent.trim()}\n\n`;
     }
+
+    // Issue #388 (was #386): the protocol the gate will execute must reach the
+    // implementer, or the implementer must be told the gate owns it.
+    const smokeProtocol =
+      params.smokeProtocol ?? SmokeProtocol.fromPlan(params.planContent ?? '');
+    prompt += formatImplementerSmokeSection(smokeProtocol);
 
     if (params.selfCorrectionPayload && params.selfCorrectionPayload.trim()) {
       prompt += `${params.selfCorrectionPayload.trim()}\n\n`;
@@ -740,7 +1170,15 @@ export class ResolveSubagentUseCase {
     prompt += `### Definition of Done:\n`;
     prompt += `1. All tasks in the plan checklist are implemented.\n`;
     prompt += `2. All tests pass with 100% pass rate.\n`;
-    prompt += `3. No linting or TypeScript compilation errors remain.\n\n`;
+    prompt += `3. No linting or TypeScript compilation errors remain.\n`;
+    prompt += `4. The plan's literal assertions are satisfied exactly as written — every row of its IK/decision table and every frozen smoke check. A unit test that disagrees with a frozen assertion is a defect in the test, not a licence to change the assertion; do not restate a literal with different punctuation.\n`;
+    // Issue #432 (AC1): the ONE finding the implementer used to drop was "the
+    // plan is wrong here". It is now a machine-readable block, filed by the
+    // orchestrator, so the gate and the reviewer can see it.
+    prompt += `5. **Plan deviations go through the channel, never a silent edit.** If an approved literal cannot be satisfied as written, STOP and emit one \`${PLAN_DEVIATION_MARKER}\` block per changed literal in this exact shape:\n`;
+    prompt += '```\n' + PLAN_DEVIATION_EXAMPLE + '\n```\n';
+    prompt += `   The four required keys are "planSection", "planLiteral", "implementedAssertion" and "reason"; "files" is optional. Never change a literal silently and never edit the plan — a test that disagrees with a frozen assertion is a defect in the test until the deviation is acknowledged.\n`;
+    prompt += `   ${formatPlanDeviationChannelNote(effectiveIssue)}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -748,12 +1186,13 @@ export class ResolveSubagentUseCase {
   }
 
   public buildGateTaskPrompt(params: GateTaskPromptParams = {}): string {
+    const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Quality Gate Verification\n\n`;
-    prompt += `You are executing the **QUALITY_GATE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **QUALITY_GATE** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to execute automated build, typecheck, and test suites, isolate diagnostics, and report an objective quality verdict.\n\n`;
 
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Verification Only**: You have access strictly to \`run_command\` and \`view_file\`. Never attempt to edit source files.\n`;
+    prompt += `1. **Verification Only**: You have access strictly to ${formatToolProse([TOOL_CAPABILITY_SHELL, TOOL_CAPABILITY_READ], { plural: true, vocabulary })}. Never attempt to edit source files.\n`;
     prompt += `2. **Log Shielding Mandate**: Do not flood the parent conversation with raw terminal output. Filter noise and extract concise failure summaries.\n`;
     prompt += `3. **Strict Timeout & Exit Code Respect**: Any non-zero exit code or timeout is an immediate gate failure.\n\n`;
 
@@ -764,6 +1203,38 @@ export class ResolveSubagentUseCase {
 
     if (effectiveIssue) {
       prompt += `### Active Issue: #${effectiveIssue}\n\n`;
+    }
+
+    if (params.cwd) {
+      prompt += `### Execution Cwd\n`;
+      prompt += `\`${params.cwd}\`\n\n`;
+      prompt += `Run every command from this directory. Do not cd to the repository root — that tests the root checkout, not this diff. ${NOTE_WORKTREE_GUARD_ESCAPE_HATCH}\n\n`;
+      prompt += `${GATE_COMMAND_WORKTREE_CONTRACT}\n\n`;
+    }
+
+    if (params.commandSource) {
+      prompt += `### Command Source\n`;
+      prompt += `- Source: ${params.commandSource}\n`;
+      if (params.commandSourceDetail) {
+        prompt += `- Detail: ${params.commandSourceDetail}\n`;
+      }
+      prompt += `- Precedence: ${GATE_COMMAND_PRECEDENCE}. Config and auto-detection remain the visible fallback when the approved plan declares no Quality Gate Targets.\n`;
+      if (params.appendedCommands && params.appendedCommands.length > 0) {
+        prompt += `- Mandatory commands appended: ${params.appendedCommands.map((cmd) => `\`${cmd}\``).join(', ')}\n`;
+      }
+      prompt += `\n`;
+    }
+
+    const composition = params.composition;
+    if (composition && composition.required) {
+      prompt += `### Workflow Lint Composition\n`;
+      if (composition.command !== null) {
+        prompt += `- Workflow lint composed: the change touches ${composition.files.map((file) => `\`${file}\``).join(', ')}; appended \`${composition.command}\`.\n`;
+        prompt += `This step is MANDATORY: the approved plan declares gate targets, which replace the act container gate, so the workflow diff is only exercised by this linter.\n\n`;
+      } else {
+        prompt += `- Workflow lint REQUIRED but unavailable: ${composition.unavailableReason ?? 'no workflow linter could be resolved'}.\n`;
+        prompt += `The verdict MUST be \`${STATUS_FAILED}\`: the change touches ${composition.files.map((file) => `\`${file}\``).join(', ')} and no resolved command lints it.\n\n`;
+      }
     }
 
     if (params.commands && params.commands.length > 0) {
@@ -778,19 +1249,86 @@ export class ResolveSubagentUseCase {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
 
-    if (params.planPath) {
-      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
-      prompt += `You MUST read the "Manual Smoke Test Protocol" from the approved plan located at \`${params.planPath}\` using the \`view_file\` tool and execute those steps automatically using your tools.\n\n`;
-    } else if (params.planContent && params.planContent.trim()) {
-      prompt += `### Manual Smoke Test Protocol (from Plan):\n`;
-      prompt += `You MUST read the "Manual Smoke Test Protocol" from the provided plan below and execute those steps automatically using your tools.\n`;
-      prompt += `\`\`\`markdown\n${params.planContent.trim()}\n\`\`\`\n\n`;
+    const commands = params.commands ?? [];
+    const commandDefinitions = commands.map((command, idx) => ({
+      id: `command-${idx}`,
+      label: '',
+      command
+    }));
+
+    if (params.requiredLint === true) {
+      const lintCommand = commandDefinitions.find(isLintCommand)?.command;
+      prompt += `### Lint Gate\n`;
+      prompt += lintCommand
+        ? `REQUIRED — \`${lintCommand}\`. A passing verdict is impossible without this command succeeding.\n\n`
+        : `### Lint Invariant Violation\n${MSG_GATE_LINT_MISSING} The verdict MUST be FAILED.\n\n`;
+    } else if (hasLintCommand(commandDefinitions)) {
+      prompt += `### Lint Gate\n`;
+      prompt += `A lint command is part of the target list. Its failure is a build-class gate failure.\n\n`;
+    } else {
+      prompt += `### Lint Gate\n`;
+      prompt += `Lint is not declared by this project's detector, so it is not mandatory for this run.\n\n`;
     }
+
+    const smoke = params.smokeProtocol;
+    if (smoke && smoke.found) {
+      prompt += `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} (frozen at dispatch)\n`;
+      if (smoke.checks.length === 0) {
+        prompt += `No executable check was extracted. A zero-check protocol is a \`FAILED\` verdict.\n\n`;
+      } else {
+        smoke.checks.forEach((check) => {
+          const checkTitle = check.label.toLowerCase().startsWith(`check ${check.index}`)
+            ? check.label
+            : `Check ${check.index} — ${check.label}`;
+          prompt += `#### ${checkTitle} (id: ${formatSmokeCheckId(check.index)}, plan line ${check.planLine})\n`;
+          prompt += `\`\`\`bash\n${check.body}\n\`\`\`\n\n`;
+        });
+      }
+      prompt += `Execute each check exactly as written, in order. Do NOT edit the plan. A failing check, a skipped check, a zero-check protocol, or any edit to the plan is a \`FAILED\` verdict naming the check and plan line. Report each check in \`smokeChecks\` with the canonical id shown above (\`check-<n>\`); a missing, renamed, duplicated or skipped check is a \`FAILED\` verdict.\n`;
+      if (smoke.findings.length > 0) {
+        prompt += `The verdict MUST be \`FAILED\`: this protocol is not executable as written.\n`;
+        smoke.findings.forEach((finding) => {
+          prompt += `- Rule \`${finding.rule}\`, check "${finding.label}" at plan line ${finding.line}: ${finding.excerpt}\n`;
+        });
+      }
+      prompt += `\n`;
+    } else {
+      prompt += `### ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL}\n`;
+      prompt += `This plan declares no ${HEADING_MANUAL_SMOKE_TEST_PROTOCOL} section. Report \`${SMOKE_PROTOCOL_NOT_DECLARED}\` for it; do not invent checks.\n\n`;
+    }
+
+    prompt += `### Plan Immutability\n`;
+    prompt += `The approved plan${params.planPath ? ` at \`${params.planPath}\`` : ''} is frozen. You may read it with ${formatToolProse([TOOL_CAPABILITY_READ], { vocabulary })}, but editing it is itself a gate failure: report \`FAILED\` and name the path. Annotations belong in the CodeLoop Summary, not in the plan.\n\n`;
 
     prompt += `### Required Verdict Output:\n`;
     prompt += `- Overall Status: PASSED or FAILED\n`;
+    if (params.cwd) {
+      prompt += `- Execution Cwd: ${params.cwd}\n`;
+    }
+    if (params.commandSource) {
+      prompt += `- Command Source: ${params.commandSource}${params.planPath && params.commandSource === GATE_COMMAND_SOURCE_PLAN ? ` (${params.planPath})` : ''}\n`;
+    }
+    if (params.planIntegrity) {
+      prompt += `- Plan Integrity: ${params.planIntegrity.status.toUpperCase()}\n`;
+    }
+    prompt += `- Smoke Protocol: ${SMOKE_PROTOCOL_VOCABULARY}\n`;
     prompt += `- Test Execution Matrix (Command, Exit Code, Duration)\n`;
     prompt += `- Concise Failure Diagnostics (if failed)\n\n`;
+
+    // Issue #284: the ONE result channel. Without it the gate's verdict had no
+    // way into the summary, so `Build Status: PENDING` survived every run.
+    prompt += `### Required Evidence Output\n`;
+    // Issue #311: the example is produced by ONE domain formatter, so what the
+    // prompt shows is literally what `GateResultReport.parseBlock` accepts. A
+    // plan with no smoke protocol is never shown a false `PASSED`.
+    const exampleSmokeToken =
+      smoke !== undefined && smoke.found ? STATUS_PASSED : SMOKE_PROTOCOL_NOT_DECLARED;
+    prompt += `As the LAST thing in your response, emit a ${GATE_REPORT_JSON_MARKER} block:\n\n`;
+    prompt += `${formatGateReportExample(exampleSmokeToken)}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_EXAMPLE_PLACEHOLDERS}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_EVIDENCE_SHAPES}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_TEST_COUNT_TOKEN}\n\n`;
+    prompt += `${NOTE_GATE_REPORT_RETURN}\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -798,28 +1336,51 @@ export class ResolveSubagentUseCase {
   }
 
   public buildReviewerTaskPrompt(params: ReviewerTaskPromptParams = {}): string {
+    const vocabulary = this.vocabularyFor(params.config);
+    // Issue #314: an explicit path (run-review) is authoritative; otherwise ask
+    // the port. Never fall back to a literal home-directory path — the
+    // installer writes to the user-data directory, not ~/.local/bin.
     const resolvedCritiquePath =
       params.critiquePath ??
       (this.manageCritiqueUseCase
         ? this.manageCritiqueUseCase.resolveCritiquePath(params.workspaceDir)
         : ManageCritiqueUseCase.resolveCritiquePath(this.critiquePort, params.workspaceDir));
-    const critiqueBinary = resolvedCritiquePath || '~/.local/bin/critique';
 
     let prompt = `# Task: Code Review & Standards Verification\n\n`;
-    prompt += `You are executing the **REVIEW** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **REVIEW** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to inspect the code diff, verify architectural alignment, enforce repository standards, and validate all acceptance criteria.\n\n`;
 
+    const critiqueReportPath = params.critiqueReportPath || null;
+    // Issue #445: the Tier 1 command runs in the REVIEWED worktree against the
+    // reviewed base. Both are resolved ONCE here so the command and the prose
+    // below cannot name different values.
+    const reviewCwd = params.reviewCwd || params.workspaceDir || process.cwd();
+    const baseBranch = params.baseBranch || '<baseBranch>';
+    const diffExcludeArgs = DIFF_EXCLUDE_ARGS;
+    const readOnlyRule = critiqueReportPath
+      ? 'Never attempt to write or edit files in the repository. The ONE write this review permits is the Tier 1 evidence file named in the Two-Tier section below plus its `.provenance.json` sidecar: they live outside the worktree and are written by shell redirection, via the transient `.critique-report.<pid>.tmp` / `.critique-provenance.<pid>.tmp` staging siblings the command creates beside them. Write nothing else.'
+      : 'Never attempt to write or edit files.';
+
     prompt += `### Operating Constraints:\n`;
-    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${REVIEWER_TOOLS.join(', ')}). Never attempt to write or edit files.\n`;
+    prompt += `1. **Read-Only Whitelist**: You have access strictly to inspection tools (${formatToolProse([TOOL_CAPABILITY_READ, TOOL_CAPABILITY_SEARCH, TOOL_CAPABILITY_LIST, TOOL_CAPABILITY_SHELL], { plural: true, vocabulary })}). ${readOnlyRule}\n`;
     prompt += `2. **Objective Standards Compliance**: Adhere strictly to repository guidelines, zero magic strings/numbers, and clean architecture boundaries.\n`;
     prompt += `3. **Acceptance Criteria Verification**: Confirm every criterion is objectively fulfilled by the working changes.\n\n`;
 
     prompt += `### Two-Tier Review Methodology:\n`;
-    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using \`run_command\`:\n`;
-    prompt += `   \`\`\`bash\n`;
-    prompt += `   export PATH="$HOME/.local/bin:$PATH" && ${critiqueBinary} --json\n`;
-    prompt += `   \`\`\`\n`;
-    prompt += `   - Execute critique CLI against target base branch (\`main\` or phase collector) using the resolved path.\n`;
+    prompt += `1. **Tier 1 (Automated Critique CLI)**: Run automated critique inspection using ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })}:\n`;
+    if (resolvedCritiquePath) {
+      prompt += `   \`\`\`bash\n`;
+      prompt += `   ${formatCritiqueTierOneCommand(resolvedCritiquePath, critiqueReportPath, reviewCwd, baseBranch)}\n`;
+      prompt += `   \`\`\`\n`;
+      prompt += `   - The command above quotes the path resolved for this workspace. Do not substitute a PATH lookup or a guessed location.\n`;
+    } else {
+      prompt += `${NOTE_CRITIQUE_TIER_ONE_UNRESOLVED}\n`;
+    }
+    if (critiqueReportPath) {
+      prompt += `   - ${formatCritiqueEvidenceReturnNote(critiqueReportPath)}\n`;
+      prompt += `   - The path above is authoritative; do not invent another location and do not delete it.\n`;
+    }
+    prompt += `   - Run it from the reviewed worktree \`${reviewCwd}\` against the reviewed base \`${baseBranch}\`: the command carries \`--commit ${baseBranch}\` (═ \`git diff ${baseBranch}\`, so the uncommitted change is included). Do not substitute \`--base\`: that runs \`git diff ${baseBranch}...HEAD\`, which is empty at REVIEW time because HEAD IS the base until the commit gate.\n`;
     prompt += `   - Invariant: Any \`critical\` or \`error\` findings mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n`;
     prompt += `2. **Tier 2 (Manual Diff & Standards Inspection)**: Independently inspect working diff against Acceptance Criteria and repository standards (\`.github/critique.md\`, zero magic numbers/strings, clean architecture).\n`;
     prompt += `3. **Consolidated Verdict**: Cross-reference both tiers into the structured verdict block (\`REVIEW_STATUS: APPROVED | CHANGES_REQUESTED\`).\n\n`;
@@ -884,8 +1445,6 @@ export class ResolveSubagentUseCase {
       prompt += `**Note**: Any \`critical\` or \`error\` findings from critique mandate \`REVIEW_STATUS: CHANGES_REQUESTED\`.\n\n`;
     }
 
-    const baseBranch = params.baseBranch || '<baseBranch>';
-    const diffExcludeArgs = DIFF_EXCLUDE_ARGS;
     const diffInspectionCmd = `git diff ${baseBranch} -- . ${diffExcludeArgs}`;
 
     let filteredDiff: string | null = null;
@@ -904,7 +1463,7 @@ export class ResolveSubagentUseCase {
           prompt += `#### Diff Stat:\n\`\`\`\n${statSummary}\n\`\`\`\n\n`;
         }
         prompt += `### Working Diff Inspection:\n`;
-        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using \`run_command\`:\n`;
+        prompt += `The filtered diff is unusually large (>1,000 lines). Provide \`git diff --stat\` or inspect specific modified files on demand using ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })}:\n`;
         prompt += `\`\`\`bash\n`;
         prompt += `git diff --stat ${baseBranch} -- . ${diffExcludeArgs}\n`;
         prompt += `git diff ${baseBranch} -- <file_path>\n`;
@@ -914,15 +1473,58 @@ export class ResolveSubagentUseCase {
       }
     } else {
       prompt += `### Working Diff Inspection:\n`;
-      prompt += `Inspect the working diff using \`run_command\` with \`${diffInspectionCmd}\`:\n`;
+      prompt += `Inspect the working diff using ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })} with \`${diffInspectionCmd}\`:\n`;
       prompt += `\`\`\`bash\n`;
       prompt += `${diffInspectionCmd}\n`;
       prompt += `\`\`\`\n\n`;
     }
 
+    const untrackedFiles = normalizeUntrackedFiles(params.untrackedFiles);
+    if (untrackedFiles.length > 0) {
+      prompt += `### Untracked Implementation Files (invisible to \`git diff\`):\n`;
+      prompt += `\`${diffInspectionCmd}\` does NOT show untracked files. These paths are NEW and part of this change set, so inspect them with ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })} — the commands below print each one's FULL content:\n`;
+      prompt += '```bash\n';
+      for (const file of untrackedFiles) {
+        prompt += `${formatUntrackedContentCommand(file)}\n`;
+      }
+      prompt += '```\n';
+      prompt += '`git diff --no-index` exits non-zero when the files differ: that means the content WAS printed, and is expected. A path ending in `/` is a whole untracked directory, so its command prints every file inside it.\n';
+      prompt += 'These paths are READ-ONLY evidence for your review: do not stage, stash, or modify them — staging changes what the commit draft sees.\n\n';
+    }
+
     if (params.userInstructions) {
       prompt += `### Developer Directives:\n${params.userInstructions.trim()}\n\n`;
     }
+
+    const deviations = params.planDeviations ?? [];
+    if (deviations.length > 0) {
+      prompt += `### Recorded Plan Deviations:\n`;
+      prompt += `The implementer changed an approved plan literal. The deviation is recorded, not silently edited: judge whether the new literal is right, and say so in \`UNFULFILLED_AC\` only if it is not. Report any ADDITIONAL deviation you find in the section below; do not edit the plan.\n`;
+      for (const deviation of deviations) {
+        prompt += `- ${deviation.id}${deviation.acknowledged ? ' (acknowledged)' : ' (unacknowledged)'}: plan section "${deviation.planSection}" pins "${deviation.planLiteral}"; the implementation asserts "${deviation.implementedAssertion}" — ${deviation.reason}\n`;
+      }
+      prompt += `\n`;
+    }
+
+    prompt += `### Discovered Plan Deviations (report, do not edit):\n`;
+    prompt += `You are read-only: never edit the plan or the implementation, and never run a mutating command. If an approved plan literal cannot be satisfied as written, report it by emitting one \`${PLAN_DEVIATION_MARKER}\` block per changed literal, after your verdict, in the accepted wire format below. The orchestrator files it (legal at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT) before delivery; an unacknowledged deviation blocks the commit.\n`;
+    prompt += '```\n' + PLAN_DEVIATION_EXAMPLE + '\n```\n\n';
+
+    const outOfScope = params.outOfScope ?? [];
+    if (outOfScope.length > 0) {
+      prompt += `### Out of Scope Declarations:\n`;
+      prompt += `The plan deliberately does not deliver these. An AC satisfied only by such a document is \`out-of-scope\`, never \`met\`.\n`;
+      for (const declaration of outOfScope) {
+        const singleLine = String(declaration).replace(/\s+/g, ' ').trim();
+        if (singleLine.length > 0) prompt += `- ${singleLine}\n`;
+      }
+      prompt += `\n`;
+    }
+
+    prompt += `### Delivered Evidence Contract (${AC_EVIDENCE_MARKER}):\n`;
+    prompt += `Evidence must be a path in the DELIVERED change set: a tracked/untracked file in this worktree that appears in \`git diff <base>\` or \`git ls-files --others --exclude-standard\`. An absolute path in the root workspace is NOT evidence, and neither is anything under a gitignored tree (\`artifacts/\`, \`.agyloop/\`).\n`;
+    prompt += `${REVIEWER_AC_EVIDENCE_STATUS_CONTRACT}\n`;
+    prompt += `A \`path:line\` or \`path:start-end\` citation is accepted: the suffix is ignored when the path is matched against the delivered change set. The ${AC_EVIDENCE_MARKER} block is MANDATORY for an \`APPROVED\` verdict — a filed \`APPROVED\` verdict that omits it, or whose block carries no parseable entry, is refused by the review command.\n\n`;
 
     prompt += `### Required Verdict Output:\n`;
     prompt += `You must output a structured review verdict block adhering to this exact format:\n\n`;
@@ -933,7 +1535,17 @@ export class ResolveSubagentUseCase {
     prompt += `- <Unfulfilled criterion 1> (or "None" if all criteria are met)\n`;
     prompt += `REMEDIATION_GUIDANCE:\n`;
     prompt += `- <Actionable remediation item 1> (or "None" if approved)\n`;
+    prompt += `${formatAcEvidenceExample()}\n`;
     prompt += `\`\`\`\n\n`;
+    prompt += `${REVIEWER_AC_EVIDENCE_SENTENCE}\n\n`;
+
+    // Issue #297: ONE contract, stated once. The reviewer is a pure block
+    // producer; the read-only whitelist above and the anti-inception guardrail
+    // below are now unopposed. The filing instruction belongs to the
+    // operator-facing directive (`next`), whose reader is the orchestrator.
+    prompt += `${NOTE_REVIEW_VERDICT_RETURN}\n`;
+    prompt += `Emit the block with your own values, in this exact shape, as the LAST thing in your response. Do not wrap the \`REVIEW_STATUS:\` line\n`;
+    prompt += `in anything else.\n\n`;
 
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
@@ -941,8 +1553,9 @@ export class ResolveSubagentUseCase {
   }
 
   public buildTriageTaskPrompt(params: TriageTaskPromptParams = {}): string {
+    const vocabulary = this.vocabularyFor(params.config);
     let prompt = `# Task: Triage PR Review Comments\n\n`;
-    prompt += `You are executing the **TRIAGE** phase of the AgyLoop pair-programming lifecycle.\n`;
+    prompt += `You are executing the **TRIAGE** phase of the CodeLoop pair-programming lifecycle.\n`;
     prompt += `Your goal is to categorize review comments and route the pipeline to the appropriate next stage.\n\n`;
 
     const effectiveIssue =
@@ -958,7 +1571,12 @@ export class ResolveSubagentUseCase {
       prompt += `### Review Comments to Triage:\n${params.triagePayload.trim()}\n\n`;
     }
 
-    prompt += `You are the Triage Subagent. Directly inspect the comments and execute \`bin/agyloop triage <action>\` using \`run_command\`. Do NOT spawn another subagent to do this.\n\n`;
+    prompt += `You are the Triage Subagent. Directly inspect the comments and route the pipeline by executing:\n`;
+    prompt += `    ${formatTriageRoutingCommand({ issue: effectiveIssue })}\n`;
+    prompt += `Run that command with ${formatToolProse([TOOL_CAPABILITY_SHELL], { vocabulary })}.\n`;
+    prompt += `Where \`<action>\` is one of: ${formatTriageActionList()}.\n`;
+    prompt += `Side effects: ${formatTriageActionSideEffects()}.\n`;
+    prompt += `A routing action requires the checkpoint to be at the TRIAGE gate; \`codeloop next\` is the entry path. Do NOT spawn another subagent to do this.\n\n`;
     prompt += `${ANTI_INCEPTION_GUARDRAIL}\n`;
 
     return prompt.trim();

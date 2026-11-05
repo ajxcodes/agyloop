@@ -1,5 +1,5 @@
 /**
- * agyloop - FileBuildDetector Adapter
+ * codeloop - FileBuildDetector Adapter
  *
  * Concrete filesystem inspection adapter implementing BuildDetectorPort.
  * Inspects repository marker files, lockfiles, and package manifests to dynamically
@@ -63,7 +63,6 @@ import {
   MARKER_GITHUB_WORKFLOWS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_CSPROJ,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_SLN,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MARKER_EXT_FSPROJ,
@@ -97,6 +96,7 @@ import {
   CONFIDENCE_CERTAIN,
   CMD_ID_TYPECHECK,
   CMD_ID_BUILD,
+  CMD_ID_LINT,
   CMD_ID_TEST,
   CMD_ID_PLAYWRIGHT,
   CMD_ID_GO_VET,
@@ -112,6 +112,7 @@ import {
   CMD_ID_ACT,
   CMD_LABEL_TYPECHECK,
   CMD_LABEL_BUILD,
+  CMD_LABEL_LINT,
   CMD_LABEL_TEST,
   CMD_LABEL_PLAYWRIGHT,
   CMD_LABEL_GO_VET,
@@ -125,23 +126,204 @@ import {
   CMD_LABEL_MAVEN_TEST,
   CMD_LABEL_DOTNET_TEST,
   CMD_LABEL_ACT,
+  CONTAINER_PROBE_TIMEOUT_MS,
   CMD_PREFIX_CUSTOM,
   CMD_PREFIX_CONFIG,
+  CMD_LABEL_CUSTOM,
+  CMD_LABEL_CONFIG,
+  CMD_ID_PLAN_TARGET_PREFIX,
+  CMD_LABEL_PLAN_TARGET,
+  CMD_ID_WORKFLOW_LINT,
+  CMD_LABEL_WORKFLOW_LINT,
+  WORKFLOW_LINT_BINARY,
+  CMD_FLAG_MAVEN_FILE,
+  CMD_FLAG_MANIFEST_PATH,
+  CMD_FLAG_PROJECT_DIR,
+  CMD_ID_SCOPE_SEPARATOR,
+  GATE_COMMAND_SOURCE_EXPLICIT,
+  GATE_COMMAND_SOURCE_PLAN,
+  GATE_COMMAND_SOURCE_CONFIG,
+  GATE_COMMAND_SOURCE_ACT,
+  GATE_COMMAND_SOURCE_AUTO_DETECT,
+  GATE_COMMAND_SOURCE_DEFAULT,
+  GateCommandComposition,
+  GateCommandPlan,
+  GateCommandSource,
+  isLintCommand,
+  isWorkflowLintCommand,
+  isWorkflowPath,
+  MSG_WORKFLOW_LINT_UNAVAILABLE,
   SCRIPT_NAME_TYPECHECK,
   SCRIPT_NAME_BUILD,
+  SCRIPT_NAME_LINT,
   SCRIPT_NAME_TEST,
   NPM_DEFAULT_TEST_STUB,
   PYTEST_INDICATOR_KEYWORD,
   PYTEST_CONFIG_HEADER
 } from '../domain';
 
-import { BuildDetectorPort, DetectedProject, AgyLoopConfig } from '../ports';
+import {
+  BuildDetectorPort,
+  DetectedProject,
+  CodeLoopConfig,
+  GateCommandResolutionOptions,
+  ContainerRuntimeProbe
+} from '../ports';
+
+import {
+  DiscoveredSubproject,
+  discoverSubprojects,
+  isCommandWrappedByScripts,
+  scanDirectory,
+  withWorkingDirectory
+} from './workspace-discovery';
+
+/** Timeout for the `git status` probe that finds changed workflow files (#369). */
+const WORKFLOW_STATUS_TIMEOUT_MS = 5000;
+
+/** One directory's detection result (#334). */
+interface DirectoryDetection {
+  readonly ecosystems: Ecosystem[];
+  readonly commands: GateCommandDefinition[];
+  readonly packageManager: PackageManagerName;
+}
+
+/** Options a subproject pass inherits from the workspace root (#334). */
+interface DirectoryDetectionOptions {
+  readonly rootPackageManager?: PackageManagerName;
+  readonly rootHasGradleWrapper?: boolean;
+}
+
+/** Command ids a Node pass can emit: these are never wrapper-deduped (#334). */
+const NODE_COMMAND_IDS: ReadonlySet<string> = new Set<string>([
+  CMD_ID_TYPECHECK,
+  CMD_ID_BUILD,
+  CMD_ID_LINT,
+  CMD_ID_TEST,
+  CMD_ID_PLAYWRIGHT
+]);
+
+/** Collapses identical commands after whitespace normalisation; first wins. */
+function normalizeCommand(command: string): string {
+  return String(command || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/** True when the command came from the workspace root (no scoped id suffix). */
+function isRootScopeCommand(command: GateCommandDefinition): boolean {
+  return !command.id.includes(CMD_ID_SCOPE_SEPARATOR);
+}
+
+/**
+ * De-duplicates an aggregated command list (#334).
+ *
+ * 1. Exact pass: identical commands collapse, first occurrence wins (root commands
+ *    precede subproject commands).
+ * 2. Root-wrapper pass: a ROOT-SCOPE, non-Node command already run by one of the
+ *    root `package.json` scripts is dropped. The scope guard is load-bearing —
+ *    `cd projects/angular && npm test` must never be dropped because the root
+ *    happens to declare an `npm test` script.
+ */
+function dedupeCommands(
+  commands: readonly GateCommandDefinition[],
+  rootScriptBodies: readonly string[]
+): GateCommandDefinition[] {
+  const seen = new Set<string>();
+  const unique: GateCommandDefinition[] = [];
+
+  for (const command of commands) {
+    const key = normalizeCommand(command.command);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(command);
+  }
+
+  return unique.filter((command) => {
+    if (!isRootScopeCommand(command)) return true;
+    if (NODE_COMMAND_IDS.has(command.id)) return true;
+    return !isCommandWrappedByScripts(command.command, rootScriptBodies);
+  });
+}
+
+/** Keeps the first ecosystem of each type, preserving the incoming order. */
+function dedupeByType(ecosystems: readonly Ecosystem[]): Ecosystem[] {
+  const seen = new Set<string>();
+  const unique: Ecosystem[] = [];
+  for (const ecosystem of ecosystems) {
+    if (seen.has(ecosystem.type)) continue;
+    seen.add(ecosystem.type);
+    unique.push(ecosystem);
+  }
+  return unique;
+}
+
+/** Project-file extensions a scoped `dotnet test` may point at (#334). */
+const DOTNET_MANIFEST_EXTENSIONS: readonly string[] = ['.csproj', '.fsproj', '.vbproj'];
+
+/** Picks the .NET manifest a subproject gate should be scoped to. */
+function pickDotnetManifest(files: readonly string[]): string | null {
+  const sorted = [...files].sort();
+  const solution = sorted.find((name) => name.endsWith(MARKER_EXT_SLN));
+  if (solution) return solution;
+  const project = sorted.find((name) =>
+    DOTNET_MANIFEST_EXTENSIONS.some((ext) => name.endsWith(ext))
+  );
+  return project ?? sorted[0] ?? null;
+}
+
+/** The composition plus the definition to append (internal, #369). */
+interface WorkflowLintComposition {
+  readonly composition: GateCommandComposition;
+  readonly definition: GateCommandDefinition | null;
+}
+
+/**
+ * Parses `git status --porcelain -z` output into changed workflow files (#369).
+ *
+ * NUL-separated records are `XY path`; a rename/copy record is followed by its
+ * original path, which is skipped.
+ */
+function parseChangedWorkflowFiles(output: string): string[] {
+  const fields = output.split('\0');
+  const files: string[] = [];
+  for (let index = 0; index < fields.length; index++) {
+    const record = fields[index];
+    if (record.length < 4) continue;
+    const status = record.slice(0, 2);
+    const filePath = record.slice(3);
+    if (status.includes('R') || status.includes('C')) {
+      index += 1;
+    }
+    if (isWorkflowPath(filePath) && !files.includes(filePath)) {
+      files.push(filePath);
+    }
+  }
+  return files;
+}
 
 export class FileBuildDetector implements BuildDetectorPort {
   /**
    * Inspects workspace markers and lockfiles to detect ecosystems and verification commands.
+   *
+   * Discovery is BOUNDED (#334): the root is scanned once, then subprojects are
+   * discovered at most two directory levels below the root — under the standard
+   * monorepo containers (`apps`, `projects`, `packages`, `services`, `libs`), the
+   * well-known project directories (`backend`, `frontend`, `server`, `client`,
+   * `web`, `api`, `src-tauri`), and the workspace globs a repository declares in
+   * `package.json`, `pnpm-workspace.yaml`, `settings.gradle(.kts)`, `Cargo.toml`
+   * and `go.work`.
+   *
+   * Root-level secondary ecosystems were ALWAYS aggregated: `primaryEcosystem`
+   * only supplies a label. What was missing is depth — a nested manifest was
+   * never read at all.
+   *
+   * Dedupe compares ROOT-SCOPE, non-Node commands against the bodies of the root
+   * `package.json` scripts, so a root `"test": "./gradlew test"` does not also
+   * emit `gradle test`. A subproject's Node pass fabricates no fallback test
+   * command: a nested package with no recognised script emits no gate.
    */
-  public async detect(workspaceDir: string, config?: AgyLoopConfig): Promise<DetectedProject> {
+  public async detect(workspaceDir: string, config?: CodeLoopConfig): Promise<DetectedProject> {
     const resolvedDir = path.resolve(workspaceDir || process.cwd());
 
     try {
@@ -162,149 +344,60 @@ export class FileBuildDetector implements BuildDetectorPort {
     }
 
     try {
-      const entries = fs.readdirSync(resolvedDir, { withFileTypes: true });
-      const fileNames = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
+      const fileNames = scanDirectory(resolvedDir);
 
-      const detectedEcosystems: Ecosystem[] = [];
-      const ecosystemCommands: GateCommandDefinition[] = [];
-
-      // Act Container Gate Resolution
+      // Act Container Gate Resolution (root only: it describes the whole repo).
       const actCommand = this.resolveActCommand(resolvedDir, config);
-      if (actCommand) {
-        ecosystemCommands.push(actCommand);
+
+      const rootScan = this.detectAt(resolvedDir, '');
+
+      // Discovery failure is non-fatal, exactly like `detectChangedWorkflowFiles`.
+      let discovered: DiscoveredSubproject[] = [];
+      try {
+        discovered = discoverSubprojects(resolvedDir, fileNames);
+      } catch {
+        discovered = [];
       }
 
-      // 1. Node / TypeScript / JavaScript Detection
-      if (fileNames.has(MARKER_PACKAGE_JSON)) {
-        const { ecosystem, commands } = this.detectNodeEcosystem(resolvedDir, fileNames);
-        detectedEcosystems.push(ecosystem);
-        ecosystemCommands.push(...commands);
-      }
+      const rootHasGradleWrapper =
+        fileNames.has(MARKER_GRADLEW) || fileNames.has(MARKER_GRADLEW_BAT);
 
-      // 2. Go Detection
-      if (fileNames.has(MARKER_GO_MOD)) {
-        detectedEcosystems.push(
-          new Ecosystem({
-            type: ECOSYSTEM_GO,
-            markerFiles: [MARKER_GO_MOD],
-            confidence: CONFIDENCE_CERTAIN,
-            priority: PRIORITY_ECOSYSTEM_GO
-          })
-        );
-        ecosystemCommands.push(
-          { id: CMD_ID_GO_VET, label: CMD_LABEL_GO_VET, command: CMD_GO_VET },
-          { id: CMD_ID_GO_TEST, label: CMD_LABEL_GO_TEST, command: CMD_GO_TEST }
-        );
-      }
+      const subScans = discovered.map((subproject) => ({
+        subproject,
+        scan: this.detectAt(subproject.dir, subproject.relDir, {
+          rootPackageManager: rootScan.packageManager,
+          rootHasGradleWrapper
+        })
+      }));
 
-      // 3. Rust Detection
-      if (fileNames.has(MARKER_CARGO_TOML)) {
-        detectedEcosystems.push(
-          new Ecosystem({
-            type: ECOSYSTEM_RUST,
-            markerFiles: [MARKER_CARGO_TOML],
-            confidence: CONFIDENCE_CERTAIN,
-            priority: PRIORITY_ECOSYSTEM_RUST
-          })
-        );
-        ecosystemCommands.push(
-          { id: CMD_ID_CARGO_CHECK, label: CMD_LABEL_CARGO_CHECK, command: CMD_CARGO_CHECK },
-          { id: CMD_ID_CARGO_TEST, label: CMD_LABEL_CARGO_TEST, command: CMD_CARGO_TEST }
-        );
-      }
+      const ecosystems = dedupeByType([
+        ...rootScan.ecosystems,
+        ...subScans.flatMap((entry) => entry.scan.ecosystems)
+      ]);
 
-      // 4. Python Detection
-      const pythonMarkers: string[] = PYTHON_MARKERS.filter((m) => fileNames.has(m));
-      if (pythonMarkers.length > 0) {
-        const { ecosystem, commands } = this.detectPythonEcosystem(resolvedDir, pythonMarkers);
-        detectedEcosystems.push(ecosystem);
-        ecosystemCommands.push(...commands);
-      }
-
-      // 5. Gradle Detection (Java / Kotlin)
-      const gradleMarkers: string[] = GRADLE_MARKERS.filter((m) => fileNames.has(m));
-      if (gradleMarkers.length > 0) {
-        const hasWrapper = fileNames.has(MARKER_GRADLEW) || fileNames.has(MARKER_GRADLEW_BAT);
-        if (hasWrapper) {
-          gradleMarkers.push(MARKER_GRADLEW);
-        }
-
-        detectedEcosystems.push(
-          new Ecosystem({
-            type: ECOSYSTEM_GRADLE,
-            markerFiles: gradleMarkers,
-            confidence: CONFIDENCE_CERTAIN,
-            priority: PRIORITY_ECOSYSTEM_GRADLE
-          })
-        );
-
-        const checkCmd = hasWrapper ? CMD_GRADLEW_CHECK : CMD_GRADLE_CHECK;
-        const testCmd = hasWrapper ? CMD_GRADLEW_TEST : CMD_GRADLE_TEST;
-        ecosystemCommands.push(
-          { id: CMD_ID_GRADLE_CHECK, label: CMD_LABEL_GRADLE_CHECK, command: checkCmd },
-          { id: CMD_ID_GRADLE_TEST, label: CMD_LABEL_GRADLE_TEST, command: testCmd }
-        );
-      }
-
-      // 6. Maven Detection (Java)
-      if (fileNames.has(MARKER_POM_XML)) {
-        detectedEcosystems.push(
-          new Ecosystem({
-            type: ECOSYSTEM_MAVEN,
-            markerFiles: [MARKER_POM_XML],
-            confidence: CONFIDENCE_CERTAIN,
-            priority: PRIORITY_ECOSYSTEM_MAVEN
-          })
-        );
-        ecosystemCommands.push({
-          id: CMD_ID_MAVEN_TEST,
-          label: CMD_LABEL_MAVEN_TEST,
-          command: CMD_MAVEN_TEST
-        });
-      }
-
-      // 7. .NET Detection (C# / F# / VB)
-      const dotnetFiles = Array.from(fileNames).filter((f) =>
-        DOTNET_EXTENSIONS.some((ext) => f.endsWith(ext))
+      const commands = dedupeCommands(
+        [
+          ...(actCommand ? [actCommand] : []),
+          ...rootScan.commands,
+          ...subScans.flatMap((entry) => entry.scan.commands)
+        ],
+        Object.values(this.readPackageScripts(resolvedDir))
       );
 
-      if (dotnetFiles.length > 0) {
-        detectedEcosystems.push(
-          new Ecosystem({
-            type: ECOSYSTEM_DOTNET,
-            markerFiles: dotnetFiles,
-            confidence: CONFIDENCE_CERTAIN,
-            priority: PRIORITY_ECOSYSTEM_DOTNET
-          })
-        );
-        ecosystemCommands.push({
-          id: CMD_ID_DOTNET_TEST,
-          label: CMD_LABEL_DOTNET_TEST,
-          command: CMD_DOTNET_TEST
-        });
-      }
-
-      // Sort detected ecosystems deterministically according to ECOSYSTEM_PRIORITY_ORDER
-      detectedEcosystems.sort((a, b) => {
-        const orderA = ECOSYSTEM_PRIORITY_ORDER.indexOf(a.type);
-        const orderB = ECOSYSTEM_PRIORITY_ORDER.indexOf(b.type);
-        const posA = orderA === -1 ? FALLBACK_ECOSYSTEM_PRIORITY : orderA;
-        const posB = orderB === -1 ? FALLBACK_ECOSYSTEM_PRIORITY : orderB;
-        return posA - posB;
-      });
-
       const primaryEcosystem =
-        detectedEcosystems.length > 0 ? detectedEcosystems[0] : Ecosystem.unknown();
-
-      const commands =
-        ecosystemCommands.length > 0 ? ecosystemCommands : DEFAULT_GATE_COMMANDS;
+        ecosystems.length > 0 ? ecosystems[0] : Ecosystem.unknown();
 
       return {
         workspaceDir: resolvedDir,
-        ecosystems: detectedEcosystems,
+        ecosystems,
         primaryEcosystem,
-        commands,
-        hasOverrides: false
+        // The safe default applies only when NO ecosystem (root or subproject)
+        // was found: a rootless monorepo must not fall back to npm commands.
+        commands: ecosystems.length > 0 ? commands : DEFAULT_GATE_COMMANDS,
+        subprojects: subScans.map((entry) => ({
+          path: entry.subproject.relDir,
+          ecosystems: entry.scan.ecosystems.map((ecosystem) => ecosystem.type)
+        }))
       };
     } catch (err: unknown) {
       if (err instanceof BuildDetectionError) throw err;
@@ -318,84 +411,408 @@ export class FileBuildDetector implements BuildDetectorPort {
   }
 
   /**
+   * Runs every ecosystem check against ONE directory (#334).
+   *
+   * `relDir` is `''` for the workspace root (whose commands are byte-identical to
+   * the pre-#334 detector) and repo-relative otherwise, in which case commands
+   * are scoped to that directory and command ids/labels carry the scope.
+   */
+  private detectAt(
+    dir: string,
+    relDir: string,
+    options: DirectoryDetectionOptions = {}
+  ): DirectoryDetection {
+    const fileNames = scanDirectory(dir);
+    const ecosystems: Ecosystem[] = [];
+    const commands: GateCommandDefinition[] = [];
+    let packageManager: PackageManagerName = options.rootPackageManager ?? PKG_MGR_NPM;
+
+    // 1. Node / TypeScript / JavaScript Detection
+    if (fileNames.has(MARKER_PACKAGE_JSON)) {
+      const node = this.detectNodeEcosystem(dir, fileNames, relDir, options.rootPackageManager);
+      ecosystems.push(node.ecosystem);
+      commands.push(...node.commands);
+      packageManager = node.packageManager;
+    }
+
+    // 2. Go Detection
+    if (fileNames.has(MARKER_GO_MOD)) {
+      const go = this.detectGoEcosystem(relDir);
+      ecosystems.push(go.ecosystem);
+      commands.push(...go.commands);
+    }
+
+    // 3. Rust Detection
+    if (fileNames.has(MARKER_CARGO_TOML)) {
+      const rust = this.detectRustEcosystem(relDir);
+      ecosystems.push(rust.ecosystem);
+      commands.push(...rust.commands);
+    }
+
+    // 4. Python Detection
+    const pythonMarkers: string[] = PYTHON_MARKERS.filter((m) => fileNames.has(m));
+    if (pythonMarkers.length > 0) {
+      const python = this.detectPythonEcosystem(dir, pythonMarkers, relDir);
+      ecosystems.push(python.ecosystem);
+      commands.push(...python.commands);
+    }
+
+    // 5. Gradle Detection (Java / Kotlin)
+    const gradleMarkers: string[] = GRADLE_MARKERS.filter((m) => fileNames.has(m));
+    if (gradleMarkers.length > 0) {
+      const gradle = this.detectGradleEcosystem(
+        fileNames,
+        gradleMarkers,
+        relDir,
+        options.rootHasGradleWrapper === true
+      );
+      ecosystems.push(gradle.ecosystem);
+      commands.push(...gradle.commands);
+    }
+
+    // 6. Maven Detection (Java)
+    if (fileNames.has(MARKER_POM_XML)) {
+      const maven = this.detectMavenEcosystem(relDir);
+      ecosystems.push(maven.ecosystem);
+      commands.push(...maven.commands);
+    }
+
+    // 7. .NET Detection (C# / F# / VB)
+    const dotnetFiles: string[] = Array.from(fileNames)
+      .filter((f) => DOTNET_EXTENSIONS.some((ext) => f.endsWith(ext)))
+      .sort();
+
+    if (dotnetFiles.length > 0) {
+      const dotnet = this.detectDotnetEcosystem(dotnetFiles, relDir);
+      ecosystems.push(dotnet.ecosystem);
+      commands.push(...dotnet.commands);
+    }
+
+    // Sort detected ecosystems deterministically according to ECOSYSTEM_PRIORITY_ORDER
+    ecosystems.sort((a, b) => {
+      const orderA = ECOSYSTEM_PRIORITY_ORDER.indexOf(a.type);
+      const orderB = ECOSYSTEM_PRIORITY_ORDER.indexOf(b.type);
+      const posA = orderA === -1 ? FALLBACK_ECOSYSTEM_PRIORITY : orderA;
+      const posB = orderB === -1 ? FALLBACK_ECOSYSTEM_PRIORITY : orderB;
+      return posA - posB;
+    });
+
+    return { ecosystems, commands, packageManager };
+  }
+
+  /** Scopes a command id to a subproject directory. */
+  private scopeId(baseId: string, relDir: string): string {
+    return relDir === '' ? baseId : `${baseId}${CMD_ID_SCOPE_SEPARATOR}${relDir}`;
+  }
+
+  /** Scopes a command label to a subproject directory. */
+  private scopeLabel(label: string, relDir: string): string {
+    return relDir === '' ? label : `${label} — ${relDir}`;
+  }
+
+  /** Builds one command definition, scoped to `relDir` when it is not the root. */
+  private scopedCommand(
+    id: string,
+    label: string,
+    command: string,
+    relDir: string
+  ): GateCommandDefinition {
+    return {
+      id: this.scopeId(id, relDir),
+      label: this.scopeLabel(label, relDir),
+      command: withWorkingDirectory(relDir, command)
+    };
+  }
+
+  /**
    * Resolves the concrete verification commands following strict precedence:
    * 1. explicitCommands parameter
-   * 2. config overrides (gateCommands / quality_gates.commands)
-   * 3. auto-detected ecosystem commands
-   * 4. default gate commands fallback
+   * 2. approved plan targets
+   * 3. config overrides (options.gateCommands / quality_gates.commands / verification.gates)
+   * 4. act container gate
+   * 5. auto-detected ecosystem commands
+   * 6. default gate commands fallback
+   *
+   * Thin compatibility wrapper over `resolveCommandPlan` (issue #298): there is
+   * exactly ONE precedence implementation.
    */
   public async resolveCommands(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]> {
+    const plan = await this.resolveCommandPlan(workspaceDir, config, { explicitCommands });
+    return plan.commands;
+  }
+
+  /**
+   * Resolves the verification command list WITH provenance (issue #298).
+   *
+   * Detected Node lint is non-optional: when the workspace declares a `lint`
+   * script and the chosen list omits it, the detected command is appended at
+   * the end and recorded in `appended`. Plan order is otherwise untouched.
+   */
+  public async resolveCommandPlan(
+    workspaceDir: string,
+    config?: CodeLoopConfig,
+    options: GateCommandResolutionOptions = {}
+  ): Promise<GateCommandPlan> {
+    const detected = await this.detectBestEffort(workspaceDir, config);
+    const detectedLint = detected?.commands.find((cmd) => cmd.id === CMD_ID_LINT) ?? null;
+    const planPath = options.planPath ?? null;
+
+    const finalize = (
+      commands: readonly GateCommandDefinition[],
+      source: GateCommandSource,
+      sourceDetail: string,
+      composition: WorkflowLintComposition | null = null
+    ): GateCommandPlan =>
+      this.buildCommandPlan(commands, source, sourceDetail, planPath, detectedLint, composition);
+
     // 1. Explicit CLI / parameter commands (Highest precedence)
-    if (explicitCommands && explicitCommands.length > 0) {
-      return this.normalizeCommands(explicitCommands, CMD_PREFIX_CUSTOM);
+    if (options.explicitCommands && options.explicitCommands.length > 0) {
+      return finalize(
+        this.normalizeCommands(options.explicitCommands, CMD_PREFIX_CUSTOM),
+        GATE_COMMAND_SOURCE_EXPLICIT,
+        'explicit commands (CLI --commands / caller parameter)'
+      );
     }
 
-    // 2. Explicit configuration overrides (.agyloop.json / config.default.json)
-    const configuredCommands = this.extractConfiguredCommands(config);
-    if (configuredCommands && configuredCommands.length > 0) {
-      return this.normalizeCommands(configuredCommands, CMD_PREFIX_CONFIG);
+    // 2. Approved plan Quality Gate Targets.
+    //
+    // #369 (was #368): declaring targets REPLACES the act container gate, so a
+    // change that edits `.github/workflows/**` would be certified without a
+    // workflow linter. Composition happens HERE, at gate resolution, because
+    // at approval time the implementation diff does not exist yet. Only the
+    // plan tier composes: explicit/config/act/auto-detect/default are untouched.
+    if (options.planTargets && options.planTargets.length > 0) {
+      const planCommands = options.planTargets.map((command, idx) => ({
+        id: `${CMD_ID_PLAN_TARGET_PREFIX}${idx + 1}`,
+        label: `${CMD_LABEL_PLAN_TARGET} ${idx + 1}`,
+        command
+      }));
+      const composition = this.composeWorkflowLint(workspaceDir, config, planCommands);
+      return finalize(
+        planCommands,
+        GATE_COMMAND_SOURCE_PLAN,
+        planPath
+          ? `approved plan Quality Gate Targets from ${planPath}`
+          : 'approved plan Quality Gate Targets',
+        composition
+      );
     }
 
-    // 2b. Act Container Gate Resolution (if enabled/configured or auto-detected with containerGates: true)
+    // 3. Explicit configuration overrides (.agyloop.json / config.default.json)
+    const configured = this.extractConfiguredCommands(config);
+    if (configured && configured.commands.length > 0) {
+      return finalize(
+        this.normalizeCommands(configured.commands, CMD_PREFIX_CONFIG),
+        GATE_COMMAND_SOURCE_CONFIG,
+        configured.detail
+      );
+    }
+
+    // 4. Act Container Gate Resolution (if enabled/configured or auto-detected with containerGates: true)
     const actCommand = this.resolveActCommand(workspaceDir, config);
     if (actCommand) {
-      return [actCommand];
+      return finalize([actCommand], GATE_COMMAND_SOURCE_ACT, 'act container gate');
     }
 
-    // 3. Auto-detected commands from workspace filesystem markers
-    const detected = await this.detect(workspaceDir, config);
-    if (detected.commands && detected.commands.length > 0) {
-      return detected.commands;
+    // 5. Auto-detected commands from workspace filesystem markers
+    if (detected && detected.ecosystems.length > 0) {
+      return finalize(
+        detected.commands,
+        GATE_COMMAND_SOURCE_AUTO_DETECT,
+        `auto-detected from workspace markers (${detected.primaryEcosystem.toString()})`
+      );
     }
 
-    // 4. Safe fallback
-    return DEFAULT_GATE_COMMANDS;
+    // 6. Safe fallback
+    return finalize(
+      DEFAULT_GATE_COMMANDS,
+      GATE_COMMAND_SOURCE_DEFAULT,
+      'safe default; no ecosystem markers matched'
+    );
+  }
+
+  /**
+   * Detection for provenance/lint only. Best-effort: a probe failure must not
+   * turn an explicit or plan-sourced command list into an exception.
+   */
+  private async detectBestEffort(
+    workspaceDir: string,
+    config?: CodeLoopConfig
+  ): Promise<DetectedProject | null> {
+    try {
+      return await this.detect(workspaceDir, config);
+    } catch {
+      return null;
+    }
+  }
+
+  private buildCommandPlan(
+    commands: readonly GateCommandDefinition[],
+    source: GateCommandSource,
+    sourceDetail: string,
+    planPath: string | null,
+    detectedLint: GateCommandDefinition | null,
+    workflowLint: WorkflowLintComposition | null = null
+  ): GateCommandPlan {
+    const finalCommands: GateCommandDefinition[] = [...commands];
+    const appended: string[] = [];
+    let lintRequired = false;
+    let lintCommand: string | null = null;
+
+    if (detectedLint !== null) {
+      lintRequired = true;
+      const existingLint = finalCommands.find((cmd) => isLintCommand(cmd));
+      if (existingLint) {
+        lintCommand = existingLint.command;
+      } else {
+        finalCommands.push(detectedLint);
+        appended.push(detectedLint.command);
+        lintCommand = detectedLint.command;
+      }
+    }
+
+    // #369: the composed workflow lint runs AFTER the detected lint, and its
+    // provenance is visible in `appended` and in `composition`.
+    if (workflowLint?.definition) {
+      finalCommands.push(workflowLint.definition);
+      appended.push(workflowLint.definition.command);
+    }
+
+    return {
+      commands: finalCommands,
+      source,
+      sourceDetail,
+      appended,
+      lintRequired,
+      lintCommand,
+      planPath,
+      ...(workflowLint ? { composition: workflowLint.composition } : {})
+    };
+  }
+
+  /**
+   * Detects workflow files the change under test touches (#369).
+   *
+   * Fast path: no `.github/workflows` directory means no git call at all. Any
+   * probe failure returns `[]`: a probe error must never fabricate a
+   * requirement.
+   */
+  public detectChangedWorkflowFiles(workspaceDir: string): string[] {
+    const workflowsDir = path.join(workspaceDir, MARKER_GITHUB_WORKFLOWS);
+    if (!fs.existsSync(workflowsDir)) return [];
+
+    try {
+      const result = child_process.spawnSync(
+        'git',
+        ['status', '--porcelain', '-z', '--untracked-files=all'],
+        { cwd: workspaceDir, encoding: 'utf8', timeout: WORKFLOW_STATUS_TIMEOUT_MS }
+      );
+      if (result.status !== 0 || typeof result.stdout !== 'string') return [];
+      return parseChangedWorkflowFiles(result.stdout);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Composes the workflow lint onto a plan-sourced list when the change touches
+   * workflows and the list declares no workflow linter (#369).
+   *
+   * `act` (the whole CI job, including the actionlint step) is preferred, then a
+   * standalone `actionlint`. When neither can be resolved the composition
+   * carries no command, and the gate fails closed naming the file.
+   */
+  private composeWorkflowLint(
+    workspaceDir: string,
+    config: CodeLoopConfig | undefined,
+    commands: readonly GateCommandDefinition[]
+  ): WorkflowLintComposition | null {
+    const files = this.detectChangedWorkflowFiles(workspaceDir);
+    if (files.length === 0) {
+      // No workflow-touching change: a plan declaring targets is UNaffected.
+      return {
+        composition: { required: false, files: [], command: null, unavailableReason: null },
+        definition: null
+      };
+    }
+
+    if (commands.some((def) => isWorkflowLintCommand(def.command))) {
+      return {
+        composition: { required: false, files: [], command: null, unavailableReason: null },
+        definition: null
+      };
+    }
+
+    const actCommand = this.resolveActCommand(workspaceDir, config);
+    const definition: GateCommandDefinition | null =
+      actCommand ??
+      (this.hasActionlintBinary()
+        ? {
+            id: CMD_ID_WORKFLOW_LINT,
+            label: CMD_LABEL_WORKFLOW_LINT,
+            command: WORKFLOW_LINT_BINARY
+          }
+        : null);
+
+    return {
+      definition,
+      composition: {
+        required: true,
+        files,
+        command: definition ? definition.command : null,
+        unavailableReason: definition ? null : MSG_WORKFLOW_LINT_UNAVAILABLE
+      }
+    };
   }
 
   private detectNodeEcosystem(
     workspaceDir: string,
-    fileNames: Set<string>
-  ): { ecosystem: Ecosystem; commands: GateCommandDefinition[] } {
-    const { pkgMgr, lockfileMarker } = this.detectNodePackageManager(fileNames);
+    fileNames: Set<string>,
+    relDir = '',
+    rootPackageManager?: PackageManagerName
+  ): { ecosystem: Ecosystem; commands: GateCommandDefinition[]; packageManager: PackageManagerName } {
+    const local = this.detectNodePackageManager(fileNames);
+    // A subproject inherits the root package manager unless it declares its own
+    // lockfile (#334): `apps/web` in a pnpm workspace is still a pnpm project.
+    const pkgMgr: PackageManagerName =
+      local.lockfileMarker === undefined && rootPackageManager !== undefined
+        ? rootPackageManager
+        : local.pkgMgr;
     const markers: string[] = [MARKER_PACKAGE_JSON];
-    if (lockfileMarker) {
-      markers.push(lockfileMarker);
+    if (local.lockfileMarker) {
+      markers.push(local.lockfileMarker);
     }
 
     const scripts = this.readPackageScripts(workspaceDir);
     const commands: GateCommandDefinition[] = [];
+    const push = (id: string, label: string, command: string): void => {
+      commands.push(this.scopedCommand(id, label, command, relDir));
+    };
 
     // Check typecheck script
     if (scripts[SCRIPT_NAME_TYPECHECK]) {
-      commands.push({
-        id: CMD_ID_TYPECHECK,
-        label: `${CMD_LABEL_TYPECHECK} (${pkgMgr})`,
-        command: `${pkgMgr} run ${SCRIPT_NAME_TYPECHECK}`
-      });
+      push(CMD_ID_TYPECHECK, `${CMD_LABEL_TYPECHECK} (${pkgMgr})`, `${pkgMgr} run ${SCRIPT_NAME_TYPECHECK}`);
     }
 
     // Check build script (if no typecheck script or build present)
     if (scripts[SCRIPT_NAME_BUILD] && !scripts[SCRIPT_NAME_TYPECHECK]) {
-      commands.push({
-        id: CMD_ID_BUILD,
-        label: `${CMD_LABEL_BUILD} (${pkgMgr})`,
-        command: `${pkgMgr} run ${SCRIPT_NAME_BUILD}`
-      });
+      push(CMD_ID_BUILD, `${CMD_LABEL_BUILD} (${pkgMgr})`, `${pkgMgr} run ${SCRIPT_NAME_BUILD}`);
+    }
+
+    // Check lint script (issue #298: a Node gate can never pass without lint)
+    if (scripts[SCRIPT_NAME_LINT]) {
+      push(CMD_ID_LINT, `${CMD_LABEL_LINT} (${pkgMgr})`, `${pkgMgr} run ${SCRIPT_NAME_LINT}`);
     }
 
     // Check test script
     if (scripts[SCRIPT_NAME_TEST]) {
       const isDefaultStub = scripts[SCRIPT_NAME_TEST].includes(NPM_DEFAULT_TEST_STUB);
       if (!isDefaultStub) {
-        commands.push({
-          id: CMD_ID_TEST,
-          label: `${CMD_LABEL_TEST} (${pkgMgr})`,
-          command: `${pkgMgr} test`
-        });
+        push(CMD_ID_TEST, `${CMD_LABEL_TEST} (${pkgMgr})`, `${pkgMgr} test`);
       }
     }
 
@@ -407,26 +824,16 @@ export class FileBuildDetector implements BuildDetectorPort {
 
     const playwrightScript = PLAYWRIGHT_SCRIPT_CANDIDATES.find((cand) => Boolean(scripts[cand]));
     if (playwrightScript) {
-      commands.push({
-        id: CMD_ID_PLAYWRIGHT,
-        label: `${CMD_LABEL_PLAYWRIGHT} (${pkgMgr})`,
-        command: `${pkgMgr} run ${playwrightScript}`
-      });
+      push(CMD_ID_PLAYWRIGHT, `${CMD_LABEL_PLAYWRIGHT} (${pkgMgr})`, `${pkgMgr} run ${playwrightScript}`);
     } else if (matchedPlaywrightMarker) {
-      commands.push({
-        id: CMD_ID_PLAYWRIGHT,
-        label: CMD_LABEL_PLAYWRIGHT,
-        command: this.resolvePlaywrightRunner(pkgMgr)
-      });
+      push(CMD_ID_PLAYWRIGHT, CMD_LABEL_PLAYWRIGHT, this.resolvePlaywrightRunner(pkgMgr));
     }
 
-    // If no commands were inferred from scripts, provide safe default test
-    if (commands.length === 0) {
-      commands.push({
-        id: CMD_ID_TEST,
-        label: `${CMD_LABEL_TEST} (${pkgMgr})`,
-        command: `${pkgMgr} test`
-      });
+    // If no commands were inferred from scripts, provide safe default test.
+    // #334: ROOT ONLY — fabricating `npm test` inside a script-less subproject
+    // is exactly the failure a rootless monorepo must not inherit.
+    if (relDir === '' && commands.length === 0) {
+      push(CMD_ID_TEST, `${CMD_LABEL_TEST} (${pkgMgr})`, `${pkgMgr} test`);
     }
 
     const ecosystem = new Ecosystem({
@@ -437,7 +844,162 @@ export class FileBuildDetector implements BuildDetectorPort {
       priority: PRIORITY_ECOSYSTEM_NODE
     });
 
-    return { ecosystem, commands };
+    return { ecosystem, commands, packageManager: pkgMgr };
+  }
+
+  private detectGoEcosystem(relDir: string): {
+    ecosystem: Ecosystem;
+    commands: GateCommandDefinition[];
+  } {
+    return {
+      ecosystem: new Ecosystem({
+        type: ECOSYSTEM_GO,
+        markerFiles: [MARKER_GO_MOD],
+        confidence: CONFIDENCE_CERTAIN,
+        priority: PRIORITY_ECOSYSTEM_GO
+      }),
+      commands: [
+        this.scopedCommand(CMD_ID_GO_VET, CMD_LABEL_GO_VET, CMD_GO_VET, relDir),
+        this.scopedCommand(CMD_ID_GO_TEST, CMD_LABEL_GO_TEST, CMD_GO_TEST, relDir)
+      ]
+    };
+  }
+
+  private detectRustEcosystem(relDir: string): {
+    ecosystem: Ecosystem;
+    commands: GateCommandDefinition[];
+  } {
+    const scoped = (base: string): string =>
+      relDir === ''
+        ? base
+        : `${base} ${CMD_FLAG_MANIFEST_PATH} ${relDir}/${MARKER_CARGO_TOML}`;
+
+    return {
+      ecosystem: new Ecosystem({
+        type: ECOSYSTEM_RUST,
+        markerFiles: [MARKER_CARGO_TOML],
+        confidence: CONFIDENCE_CERTAIN,
+        priority: PRIORITY_ECOSYSTEM_RUST
+      }),
+      commands: [
+        {
+          id: this.scopeId(CMD_ID_CARGO_CHECK, relDir),
+          label: this.scopeLabel(CMD_LABEL_CARGO_CHECK, relDir),
+          command: scoped(CMD_CARGO_CHECK)
+        },
+        {
+          id: this.scopeId(CMD_ID_CARGO_TEST, relDir),
+          label: this.scopeLabel(CMD_LABEL_CARGO_TEST, relDir),
+          command: scoped(CMD_CARGO_TEST)
+        }
+      ]
+    };
+  }
+
+  private detectGradleEcosystem(
+    fileNames: Set<string>,
+    gradleMarkers: string[],
+    relDir: string,
+    rootHasGradleWrapper: boolean
+  ): { ecosystem: Ecosystem; commands: GateCommandDefinition[] } {
+    const markers = [...gradleMarkers];
+    const hasWrapper = fileNames.has(MARKER_GRADLEW) || fileNames.has(MARKER_GRADLEW_BAT);
+    if (hasWrapper) {
+      markers.push(MARKER_GRADLEW);
+    }
+
+    let checkCmd: string;
+    let testCmd: string;
+    if (relDir === '') {
+      checkCmd = hasWrapper ? CMD_GRADLEW_CHECK : CMD_GRADLE_CHECK;
+      testCmd = hasWrapper ? CMD_GRADLEW_TEST : CMD_GRADLE_TEST;
+    } else if (hasWrapper) {
+      checkCmd = withWorkingDirectory(relDir, CMD_GRADLEW_CHECK);
+      testCmd = withWorkingDirectory(relDir, CMD_GRADLEW_TEST);
+    } else if (rootHasGradleWrapper) {
+      const wrapper = `./${MARKER_GRADLEW}`;
+      checkCmd = `${wrapper} ${CMD_FLAG_PROJECT_DIR} ${relDir} check`;
+      testCmd = `${wrapper} ${CMD_FLAG_PROJECT_DIR} ${relDir} test`;
+    } else {
+      checkCmd = withWorkingDirectory(relDir, CMD_GRADLE_CHECK);
+      testCmd = withWorkingDirectory(relDir, CMD_GRADLE_TEST);
+    }
+
+    return {
+      ecosystem: new Ecosystem({
+        type: ECOSYSTEM_GRADLE,
+        markerFiles: markers,
+        confidence: CONFIDENCE_CERTAIN,
+        priority: PRIORITY_ECOSYSTEM_GRADLE
+      }),
+      commands: [
+        {
+          id: this.scopeId(CMD_ID_GRADLE_CHECK, relDir),
+          label: this.scopeLabel(CMD_LABEL_GRADLE_CHECK, relDir),
+          command: checkCmd
+        },
+        {
+          id: this.scopeId(CMD_ID_GRADLE_TEST, relDir),
+          label: this.scopeLabel(CMD_LABEL_GRADLE_TEST, relDir),
+          command: testCmd
+        }
+      ]
+    };
+  }
+
+  private detectMavenEcosystem(relDir: string): {
+    ecosystem: Ecosystem;
+    commands: GateCommandDefinition[];
+  } {
+    const command =
+      relDir === ''
+        ? CMD_MAVEN_TEST
+        : `mvn ${CMD_FLAG_MAVEN_FILE} ${relDir}/${MARKER_POM_XML} test`;
+
+    return {
+      ecosystem: new Ecosystem({
+        type: ECOSYSTEM_MAVEN,
+        markerFiles: [MARKER_POM_XML],
+        confidence: CONFIDENCE_CERTAIN,
+        priority: PRIORITY_ECOSYSTEM_MAVEN
+      }),
+      commands: [
+        {
+          id: this.scopeId(CMD_ID_MAVEN_TEST, relDir),
+          label: this.scopeLabel(CMD_LABEL_MAVEN_TEST, relDir),
+          command
+        }
+      ]
+    };
+  }
+
+  private detectDotnetEcosystem(
+    dotnetFiles: string[],
+    relDir: string
+  ): { ecosystem: Ecosystem; commands: GateCommandDefinition[] } {
+    let command: string = CMD_DOTNET_TEST;
+    if (relDir !== '') {
+      const manifest = pickDotnetManifest(dotnetFiles);
+      if (manifest) {
+        command = `${CMD_DOTNET_TEST} ${relDir}/${manifest}`;
+      }
+    }
+
+    return {
+      ecosystem: new Ecosystem({
+        type: ECOSYSTEM_DOTNET,
+        markerFiles: dotnetFiles,
+        confidence: CONFIDENCE_CERTAIN,
+        priority: PRIORITY_ECOSYSTEM_DOTNET
+      }),
+      commands: [
+        {
+          id: this.scopeId(CMD_ID_DOTNET_TEST, relDir),
+          label: this.scopeLabel(CMD_LABEL_DOTNET_TEST, relDir),
+          command
+        }
+      ]
+    };
   }
 
   private detectNodePackageManager(fileNames: Set<string>): {
@@ -489,13 +1051,14 @@ export class FileBuildDetector implements BuildDetectorPort {
 
   private detectPythonEcosystem(
     workspaceDir: string,
-    markers: string[]
+    markers: string[],
+    relDir = ''
   ): { ecosystem: Ecosystem; commands: GateCommandDefinition[] } {
     const usesPytest = this.hasPytestConfigured(workspaceDir, markers);
 
     const commands: GateCommandDefinition[] = usesPytest
-      ? [{ id: CMD_ID_PYTEST, label: CMD_LABEL_PYTEST, command: CMD_PYTEST }]
-      : [{ id: CMD_ID_PYTHON_UNITTEST, label: CMD_LABEL_PYTHON_UNITTEST, command: CMD_PYTHON_UNITTEST }];
+      ? [this.scopedCommand(CMD_ID_PYTEST, CMD_LABEL_PYTEST, CMD_PYTEST, relDir)]
+      : [this.scopedCommand(CMD_ID_PYTHON_UNITTEST, CMD_LABEL_PYTHON_UNITTEST, CMD_PYTHON_UNITTEST, relDir)];
 
     const ecosystem = new Ecosystem({
       type: ECOSYSTEM_PYTHON,
@@ -535,12 +1098,24 @@ export class FileBuildDetector implements BuildDetectorPort {
     }
   }
 
-  private extractConfiguredCommands(config?: AgyLoopConfig): readonly unknown[] | null {
+  /**
+   * Config-sourced gate commands, in precedence order (#333):
+   * `options.gateCommands` → `quality_gates.commands` → `verification.gates`.
+   *
+   * `detail` names the winning key so the resolved plan's provenance is
+   * truthful rather than a generic "config override".
+   */
+  private extractConfiguredCommands(
+    config?: CodeLoopConfig
+  ): { commands: readonly unknown[]; detail: string } | null {
     if (!config) return null;
 
     const gateCommands = config.options?.gateCommands;
     if (Array.isArray(gateCommands) && gateCommands.length > 0) {
-      return gateCommands;
+      return {
+        commands: gateCommands,
+        detail: 'configuration options.gateCommands override'
+      };
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -551,7 +1126,20 @@ export class FileBuildDetector implements BuildDetectorPort {
       Array.isArray(qualityGatesSection.commands) &&
       qualityGatesSection.commands.length > 0
     ) {
-      return qualityGatesSection.commands;
+      return {
+        commands: qualityGatesSection.commands,
+        detail: 'configuration quality_gates.commands override'
+      };
+    }
+
+    // #333: the profile `codeloop init` scaffolds. Ignoring it made every gate
+    // `init` wrote dead configuration.
+    const verificationGates = config.verification?.gates;
+    if (Array.isArray(verificationGates) && verificationGates.length > 0) {
+      return {
+        commands: verificationGates,
+        detail: 'configuration verification.gates override'
+      };
     }
 
     return null;
@@ -564,8 +1152,8 @@ export class FileBuildDetector implements BuildDetectorPort {
     return commands.map((cmd, idx) => {
       const defaultId = `${prefix}-cmd-${idx + 1}`;
       const defaultLabel = prefix === CMD_PREFIX_CUSTOM
-        ? `Custom Command ${idx + 1}`
-        : `Configured Command ${idx + 1}`;
+        ? `${CMD_LABEL_CUSTOM} ${idx + 1}`
+        : `${CMD_LABEL_CONFIG} ${idx + 1}`;
 
       if (typeof cmd === 'string') {
         return {
@@ -611,7 +1199,18 @@ export class FileBuildDetector implements BuildDetectorPort {
    * Resolves the container daemon socket path and type.
    * Priority:
    * 1. Podman socket: unix://$XDG_RUNTIME_DIR/podman/podman.sock or /run/user/<uid>/podman/podman.sock
-   * 2. Docker socket: /var/run/docker.sock or DOCKER_HOST env
+   * 2. Docker host env: DOCKER_HOST — unix-style endpoints (`unix://…` or a bare absolute
+   *    path) are verified against the filesystem (must exist and be a socket) before being
+   *    returned; on failure resolution falls through to the /var/run/docker.sock check.
+   *    Non-unix schemes (`tcp://`, `ssh://`, `http(s)://`, …) cannot be verified via the
+   *    filesystem and pass through unchanged.
+   * 3. Docker socket: /var/run/docker.sock
+   * Returns null when no verifiable socket is available.
+   *
+   * PURE as of issue #295: it emits NO warnings. A missing socket is no longer
+   * evidence that the runtime is unusable (rootless podman has none), so
+   * warning here was noise on every read-only command. `resolveActCommand` owns
+   * the one warning, and only where the gate is actually being selected.
    */
   public static resolveContainerSocket(): { socketPath: string; runtime: 'podman' | 'docker' } | null {
     // Check Podman socket
@@ -623,9 +1222,27 @@ export class FileBuildDetector implements BuildDetectorPort {
       }
     }
 
-    // Check Docker Host env
-    if (process.env.DOCKER_HOST) {
-      return { socketPath: process.env.DOCKER_HOST, runtime: 'docker' };
+    // Check Docker Host env (guard unix sockets; pass through remote endpoints)
+    const dockerHost = process.env.DOCKER_HOST;
+    if (dockerHost) {
+      const unixPath = dockerHost.startsWith('unix://')
+        ? dockerHost.slice('unix://'.length)
+        : dockerHost.startsWith('/') ? dockerHost : null;
+
+      if (unixPath === null) {
+        // tcp://, ssh://, http(s):// — not verifiable via filesystem; preserve legacy pass-through
+        return { socketPath: dockerHost, runtime: 'docker' };
+      }
+
+      try {
+        const st = fs.statSync(unixPath); // statSync (not lstat) follows symlinks
+        if (st.isSocket()) {
+          return { socketPath: dockerHost, runtime: 'docker' };
+        }
+      } catch {
+        // Missing socket: not fatal (#295). The runtime probe below decides.
+      }
+      // fall through to /var/run/docker.sock (and ultimately null)
     }
 
     // Check standard Docker socket
@@ -642,6 +1259,65 @@ export class FileBuildDetector implements BuildDetectorPort {
   }
 
   /**
+   * Probes container runtime HEALTH (issue #295), never just a socket file.
+   *
+   * A working rootless podman answers `podman info` over a fork/exec helper and
+   * has no socket unless `podman system service` was started — so
+   * availability-by-socket-file reported it absent on every run and silently
+   * dropped the act container gate.
+   *
+   * Returns `null` when there is no runtime, or when the runtime does not
+   * answer at all: a dead runtime is a CLEAR SKIP, never a hard failure (#232).
+   */
+  public static probeContainerRuntime(): ContainerRuntimeProbe | null {
+    return new FileBuildDetector().probeContainerRuntime();
+  }
+
+  /**
+   * Probes container runtime HEALTH (issue #295), never just a socket file.
+   *
+   * Instance method on purpose: `resolveContainerRuntime()` and
+   * `resolveContainerSocket()` are the seams tests (and alternate detectors)
+   * override, and `resolveActCommand` must see the same answers it would get
+   * from them.
+   */
+  public probeContainerRuntime(): ContainerRuntimeProbe | null {
+    const runtime = this.resolveContainerRuntime();
+    if (runtime === null) {
+      return null;
+    }
+
+    const socketInfo = this.resolveContainerSocket();
+    if (socketInfo !== null) {
+      return {
+        runtime: socketInfo.runtime,
+        socketPath: socketInfo.socketPath,
+        connection: 'socket'
+      };
+    }
+
+    // No socket: ask the runtime itself whether it is usable.
+    const probeArgs =
+      runtime === 'podman'
+        ? ['info', '--format', '{{.Host.Security.Rootless}}']
+        : ['info', '--format', '{{.ServerVersion}}'];
+
+    try {
+      const res = child_process.spawnSync(runtime, probeArgs, {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        timeout: CONTAINER_PROBE_TIMEOUT_MS
+      });
+      if (res.status === 0) {
+        return { runtime, socketPath: null, connection: 'fork-exec' };
+      }
+    } catch {
+      // Spawn failure = unusable runtime.
+    }
+
+    return null;
+  }
+
+  /**
    * Checks if the `act` CLI binary is available on PATH.
    */
   public static hasActBinary(): boolean {
@@ -650,6 +1326,17 @@ export class FileBuildDetector implements BuildDetectorPort {
 
   public hasActBinary(): boolean {
     return FileBuildDetector.hasActBinary();
+  }
+
+  /**
+   * Checks if the `actionlint` CLI binary is available on PATH (#369).
+   */
+  public static hasActionlintBinary(): boolean {
+    return FileBuildDetector.isBinaryAvailable(WORKFLOW_LINT_BINARY);
+  }
+
+  public hasActionlintBinary(): boolean {
+    return FileBuildDetector.hasActionlintBinary();
   }
 
   /**
@@ -676,7 +1363,7 @@ export class FileBuildDetector implements BuildDetectorPort {
    * Inspects configuration and repository to resolve an `act` verification command if applicable.
    * Returns null if container gates are disabled, workflows are missing, act is missing, or no socket is found.
    */
-  public resolveActCommand(workspaceDir: string, config?: AgyLoopConfig): GateCommandDefinition | null {
+  public resolveActCommand(workspaceDir: string, config?: CodeLoopConfig): GateCommandDefinition | null {
     const options = config?.options;
 
     // Check if containerGates is explicitly disabled
@@ -700,9 +1387,12 @@ export class FileBuildDetector implements BuildDetectorPort {
       return null;
     }
 
-    // Verify container daemon socket is present
-    const socketInfo = this.resolveContainerSocket();
-    if (!socketInfo) {
+    // Verify a USABLE container runtime (#295). This is the ONLY place the
+    // container-gate warning is emitted: read-only commands never call
+    // `resolveActCommand`, so they are silent.
+    const probe = this.probeContainerRuntime();
+    if (!probe) {
+      console.warn('[codeloop] Warning: no usable container runtime; skipping the act container gate.');
       return null;
     }
 
@@ -715,8 +1405,10 @@ export class FileBuildDetector implements BuildDetectorPort {
       cmd += ` -j ${actConfig.job}`;
     }
 
-    if (socketInfo.runtime === 'podman') {
-      cmd += ` --container-daemon-socket ${socketInfo.socketPath}`;
+    // A socket connection must be named; act's default is fork/exec, which is
+    // exactly right for a healthy rootless runtime with no socket.
+    if (probe.connection === 'socket' && probe.runtime === 'podman') {
+      cmd += ` --container-daemon-socket ${probe.socketPath}`;
     }
 
     return {

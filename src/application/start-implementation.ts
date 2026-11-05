@@ -1,5 +1,5 @@
 /**
- * agyloop - StartImplementationUseCase
+ * codeloop - StartImplementationUseCase
  *
  * Coordinates implementation phase execution:
  * 1. Validates lifecycle stage rules (must be APPROVAL, or YOLO bypass, or resuming IMPLEMENT)
@@ -7,7 +7,7 @@
  * 3. Resolves and reads approved plan document from artifacts/plans/<target>/
  * 4. Resolves implementer subagent configuration with write permissions
  * 5. Generates focused, token-minimized handoff prompt
- * 6. Checkpoints state to StateRepository and updates AgyLoop Summary.md
+ * 6. Checkpoints state to StateRepository and updates CodeLoop Summary.md
  */
 
 import {
@@ -21,9 +21,15 @@ import {
   MODE_YOLO,
   ROLE_IMPLEMENTER,
   SUMMARY_STAGE_PLAN_REVIEW,
+  SUMMARY_STAGE_PLAN_APPROVAL,
   SUMMARY_STAGE_IMPLEMENTATION,
   SUMMARY_STATUS_APPROVED,
   SUMMARY_STATUS_IN_PROGRESS,
+  SUMMARY_STATUS_COMPLETED,
+  DURATION_NOT_RECORDED,
+  consumedHumanWaitMs,
+  formatStageDuration,
+  resolveStageRound,
   NOTE_DEVELOPER_APPROVED,
   NOTE_AUTO_APPROVED_YOLO,
   NOTE_IMPLICIT_APPROVAL,
@@ -32,7 +38,9 @@ import {
   IssueNumber,
   InvalidTransitionError,
   ValidationError,
-  WorktreeCreationError
+  WorktreeCreationError,
+  SmokeProtocol,
+  isPlanContentSubstantive
 } from '../domain';
 import {
   StateRepository,
@@ -41,11 +49,21 @@ import {
   GitHubGateway,
   GitHubIssueData,
   WorktreeManagerPort,
-  CommandExecutorPort
+  CommandExecutorPort,
+  SourceFileReaderPort
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { InferBaseBranchUseCase } from './infer-base-branch';
 import { SyncUseCase } from './sync';
+import { assertGateTargetContract } from './gate-target-contract';
+import { assertPlanBaselineContract } from './plan-baseline-contract';
+import {
+  assertApprovedPlanUnchanged,
+  resolvePlanDigest
+} from './plan-digest-contract';
+import { assertSmokeProtocolContract } from './smoke-protocol-contract';
+import { assertPlanTestRegisterContract, resolveTestRegisterBaseRef } from './plan-test-register-contract';
+import { assertPlanEvidenceContract } from './plan-evidence-contract';
 
 export interface StartImplementationParams {
   readonly issue?: number | string | null;
@@ -61,6 +79,16 @@ export interface StartImplementationParams {
   readonly baseBranch?: string | null;
   readonly hasMergeConflicts?: boolean;
   readonly mergeBaseBranch?: string | null;
+  /**
+   * Issue #514 AC3: skip the best-effort collector sync entirely, so the first
+   * implementation step is never gated on a full merged-PR history walk.
+   */
+  readonly noSync?: boolean;
+  /**
+   * Issue #514 AC2: where the "Syncing … before implementation…" progress line
+   * goes. Omitted falls back to `console.log`.
+   */
+  readonly onProgress?: (message: string) => void;
 }
 
 export interface StartImplementationResult {
@@ -84,6 +112,8 @@ export class StartImplementationUseCase {
   private readonly worktreeManager?: WorktreeManagerPort;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
   private readonly commandExecutor?: CommandExecutorPort;
+  /** The Test Register's pinned-test reader (issue #432); optional. */
+  private readonly sourceFileReader?: SourceFileReaderPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -93,7 +123,8 @@ export class StartImplementationUseCase {
     resolveSubagentUseCase?: ResolveSubagentUseCase,
     worktreeManager?: WorktreeManagerPort,
     inferBaseBranchUseCase?: InferBaseBranchUseCase,
-    commandExecutor?: CommandExecutorPort
+    commandExecutor?: CommandExecutorPort,
+    sourceFileReader?: SourceFileReaderPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -104,25 +135,11 @@ export class StartImplementationUseCase {
     this.worktreeManager = worktreeManager;
     this.inferBaseBranchUseCase = inferBaseBranchUseCase;
     this.commandExecutor = commandExecutor;
+    this.sourceFileReader = sourceFileReader;
   }
 
   public async execute(params: StartImplementationParams = {}): Promise<StartImplementationResult> {
     const workspace = params.workspaceDir || process.cwd();
-
-    // 0. Best-effort remote sync of the base collector branch
-    if (this.commandExecutor && this.worktreeManager && this.githubGateway && !params.dryRun && !params.noWorktree) {
-      try {
-        const syncUseCase = new SyncUseCase(
-          this.commandExecutor,
-          this.githubGateway,
-          this.stateRepo,
-          this.worktreeManager
-        );
-        await syncUseCase.execute({ workspaceDir: workspace });
-      } catch (e) {
-        console.warn('Auto-sync before implementation failed:', e instanceof Error ? e.message : String(e));
-      }
-    }
 
     // 1. Load active pipeline state checkpoint
     const snapshot = await this.stateRepo.load();
@@ -131,7 +148,7 @@ export class StartImplementationUseCase {
         STAGE_NONE,
         STAGE_IMPLEMENT,
         MODE_STANDARD,
-        'Cannot start implementation: No pipeline state found. Run "agyloop plan" first.'
+        'Cannot start implementation: No pipeline state found. Run "codeloop plan" first.'
       );
     }
 
@@ -141,7 +158,40 @@ export class StartImplementationUseCase {
       sm.setIssue(activeIssue);
     }
 
+    // Issue #367: entering IMPLEMENT ANSWERS whatever pause the checkpoint
+    // carried. `TransitionStageUseCase` already calls `resumeFromGate()`
+    // unconditionally before its transition (issue #362, Finding 3), which is
+    // why `codeloop transition IMPLEMENT` cleared an APPROVAL pause while
+    // `codeloop implement` did not. The surviving pause made `next --json`
+    // report `actionable: false` with a message naming the very command the
+    // operator had just run — the two documented entry points must agree.
+    //
+    // Nothing is persisted until the final save below, so a refusal after this
+    // point (gate-target contract, missing plan, worktree failure) leaves the
+    // on-disk pause intact, and `--dry-run` never saves at all.
+    //
+    // Issue #376 (AC15): the APPROVAL row carries the wait THIS transition
+    // consumed, so the bank is read immediately before the only code that
+    // banks it. `resumeFromGate()` is a no-op when there is no pause.
+    const waitBefore = sm.totalHumanWaitMs;
+    sm.resumeFromGate();
+    const approvalWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
+
     // 2. Enforce lifecycle transition rules
+    //
+    // Issue #421: a checkpoint parked at APPROVAL WITH a recorded digest is the
+    // operator's certification. Capture it BEFORE the in-memory transition
+    // rewrites `currentStage`, so the guard below knows the plan about to run
+    // had already been approved.
+    const enteredFromApproval =
+      sm.currentStage === STAGE_APPROVAL && Boolean(sm.approvedPlanDigest);
+    // Issue #376 (AC15): the stage the operator ANSWERED with this call. A
+    // re-entry at IMPLEMENT resumed a run that already recorded its approval,
+    // so it must not rewrite that row with `-`.
+    const originalStage = sm.currentStage;
+    const approvalExited =
+      originalStage === STAGE_APPROVAL ||
+      (originalStage === STAGE_PLAN && sm.mode !== MODE_YOLO);
     let resumed = false;
     if (sm.currentStage === STAGE_APPROVAL) {
       sm.transition(STAGE_IMPLEMENT, { note: NOTE_DEVELOPER_APPROVED });
@@ -165,8 +215,82 @@ export class StartImplementationUseCase {
       );
     }
 
-    // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT
-    const skipWorktree = params.noWorktree === true;
+    // Issue #348 (AC1): refuse a plan whose Quality Gate Targets assert a
+    // committed-tree invariant BEFORE this use case's worktree guardrail below,
+    // so a refused approval leaves no orphan `.worktrees/<id>` paired with a
+    // checkpoint that was never written. A resumed IMPLEMENT is a
+    // self-correction retry on an already-approved plan: rewriting it then
+    // would invalidate the digest mid-loop, so the gate-time blockers own it.
+    if (!resumed) {
+      // Issue #421: the digest guard runs FIRST, so an edited plan is refused
+      // with the precise identity diagnostic rather than a derived
+      // baseline/target one.
+      if (enteredFromApproval) {
+        this.assertApprovedPlanMatchesApproval(sm, params, workspace);
+      }
+      this.assertGateTargetContract(sm, params, workspace);
+      // Issue #388: the protocol must be runnable BEFORE the implementer gets
+      // it, and every declared baseline must be measured before it is normative.
+      //
+      // Issue #420: "no orphan" is guaranteed only for THIS use case's own
+      // provisioning below. `codeloop implement` provisions in
+      // `RunLifecycleUseCase.executeImplementMode` BEFORE delegating here, so a
+      // refusal on that path is cleaned up by that caller (worktree directory +
+      // branch + checkpoint, only when it created them). The guards stay here
+      // because the baseline MUST be measured in the task worktree (#418).
+      this.assertSmokeProtocolContract(sm, params, workspace);
+      await this.assertPlanBaselineContract(sm, params, workspace);
+      // Issue #432: the two new APPROVAL contracts, enforced here too so the
+      // two approval entry points cannot drift.
+      this.assertPlanTestRegisterContract(sm, params, workspace);
+      this.assertPlanEvidenceContract(sm, params, workspace);
+    }
+
+    // 2a. Best-effort remote sync of the base collector branch (issue #514).
+    //     Deliberately AFTER the checkpoint load, the stage transition and every
+    //     plan/approval guard: a wrong-stage refusal costs no history walk, and
+    //     the command that consumes the APPROVAL gate no longer looks hung.
+    //     Sync stays best-effort — it never aborts the run and never claims
+    //     success (#328) — but it is now observable (`onProgress`) and skippable
+    //     (`--no-sync`).
+    if (
+      !params.noSync &&
+      this.commandExecutor &&
+      this.worktreeManager &&
+      this.githubGateway &&
+      !params.dryRun &&
+      !params.noWorktree
+    ) {
+      const report = params.onProgress ?? ((message: string) => console.log(message));
+      const syncBase = sm.baseBranch || params.baseBranch || 'the collector branch';
+      report(`Syncing ${syncBase} before implementation…`);
+      try {
+        const syncUseCase = new SyncUseCase(
+          this.commandExecutor,
+          this.githubGateway,
+          this.stateRepo,
+          this.worktreeManager
+        );
+        const syncResult = await syncUseCase.execute({
+          workspaceDir: workspace,
+          onProgress: report
+        });
+        if (!syncResult.success) {
+          // Best-effort: never abort, but never claim success either (#328).
+          console.warn(`Auto-sync before implementation is incomplete: ${syncResult.message}`);
+        }
+      } catch (e) {
+        console.warn('Auto-sync before implementation failed:', e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // 3. Worktree Guardrail: auto-provision worktree if needed when entering IMPLEMENT.
+    //    `dryRun` is part of `skipWorktree`, not just `noWorktree`: `resolveWorktree`
+    //    (run-lifecycle.ts:603) already returns null under `--dry-run` and the final
+    //    save below is gated on `!params.dryRun`, so provisioning here left a real
+    //    `.worktrees/<id>` + branch on disk paired with NO checkpoint referencing it —
+    //    an orphan the operator had to prune by hand (#226).
+    const skipWorktree = params.noWorktree === true || params.dryRun === true;
     if (!skipWorktree && this.worktreeManager) {
       if (!sm.worktree) {
         const taskId = activeIssue || 'adhoc';
@@ -217,7 +341,10 @@ export class StartImplementationUseCase {
     const resolved = this.planGenerator.resolvePlanFile({
       projectRoot: workspace,
       issue: activeIssue,
-      planPath: params.planPath,
+      // An explicit `--plan-path` wins; otherwise the checkpoint's recorded
+      // supplied plan does (issue #267), so `next` and the implementer see the
+      // SAME document the operator handed in.
+      planPath: params.planPath || sm.planPath || undefined,
       planDir: params.planDir || sm.planDir
     });
 
@@ -229,11 +356,49 @@ export class StartImplementationUseCase {
       );
     }
 
-    if (!sm.planDir && resolved?.planDir) {
+    if (params.planPath && resolved?.planPath) {
+      sm.setPlanPath(resolved.planPath);
+    }
+    // Only adopt a plan DIRECTORY for ordinary (canonical) resolution. A
+    // supplied plan file is not a directory instruction: persisting its
+    // dirname made later scaffolding write next to the supplied plan (#267).
+    if (!sm.planDir && resolved?.planDir && !params.planPath && !sm.planPath) {
       sm.setPlanDir(resolved.planDir);
     }
 
     const planContent = resolved ? this.planGenerator.readPlanDocument(resolved.planPath) : '';
+
+    // Issue #298: freeze the approved plan's identity. A fresh approval from a
+    // checkpoint with no recorded digest (legacy / YOLO / PLAN / COMPLETED)
+    // records it; a resume only fills a missing one (a legacy checkpoint), so a
+    // self-correction retry can never re-bless edited bytes.
+    //
+    // Issue #421: when the APPROVAL checkpoint already carries a digest, that
+    // gate-time identity is authoritative — never overwrite it here. The guard
+    // above already refused a mismatch.
+    if (
+      !params.dryRun &&
+      resolved?.planPath &&
+      !enteredFromApproval &&
+      (!resumed || !sm.approvedPlanDigest)
+    ) {
+      const digest = resolvePlanDigest(this.planGenerator, resolved.planPath);
+      if (digest) {
+        sm.recordApprovedPlan(resolved.planPath, digest);
+      }
+    }
+
+    // Issue #267: a plan the operator SUPPLIED must be non-blank before the
+    // implementer is dispatched. The tool's OWN blank scaffold is a different
+    // case: the YOLO path must keep parking at IMPLEMENT with its advisory, so
+    // only an explicitly supplied path is rejected here.
+    if (params.planPath && !isPlanContentSubstantive(planContent)) {
+      throw new ValidationError(
+        VALIDATION_FIELD_PLAN_PATH,
+        resolved?.planPath ?? params.planPath,
+        `The supplied plan is blank: ${resolved?.planPath ?? params.planPath}. Write a plan with implementation steps (or run \`codeloop plan\`) before dispatching the implementer.`
+      );
+    }
 
     // 4. Resolve GitHub issue context if available
     let issueData: GitHubIssueData | null = null;
@@ -298,6 +463,7 @@ export class StartImplementationUseCase {
     const taskPrompt = this.resolveSubagentUseCase.buildImplementationTaskPrompt({
       planContent,
       planPath: resolved?.planPath,
+      smokeProtocol: planContent ? SmokeProtocol.fromPlan(planContent) : undefined,
       issueNumber: activeIssue,
       issueTitle: issueData && !issueData.error ? issueData.title : undefined,
       issueBody: issueData && !issueData.error ? issueData.body : undefined,
@@ -313,15 +479,33 @@ export class StartImplementationUseCase {
       await this.stateRepo.save(sm.toSnapshot());
 
       if (resolved?.summaryPath) {
+        // Issue #376 (AC15): the APPROVAL human gate gets its OWN row, written
+        // FIRST, and its Duration is the wait that gate CONSUMED — never the
+        // cumulative `totalHumanWaitMs`, which is a running bank across the
+        // whole run. A re-entry at IMPLEMENT (or a yolo run that never paused)
+        // writes no approval row at all, so a recorded one is never rewritten
+        // with `-`.
+        const approvalRound = resolveStageRound(sm.history, STAGE_APPROVAL);
+        if (approvalExited && approvalRound > 0) {
+          this.planGenerator.updateSummaryLog(resolved.summaryPath, {
+            stage: SUMMARY_STAGE_PLAN_APPROVAL,
+            status: SUMMARY_STATUS_COMPLETED,
+            duration:
+              approvalWaitMs > 0 ? formatStageDuration(approvalWaitMs) : DURATION_NOT_RECORDED,
+            round: approvalRound
+          });
+        }
         this.planGenerator.updateSummaryLog(resolved.summaryPath, {
           stage: SUMMARY_STAGE_PLAN_REVIEW,
-          status: SUMMARY_STATUS_APPROVED
+          status: SUMMARY_STATUS_APPROVED,
+          round: resolveStageRound(sm.history, STAGE_PLAN)
         });
         this.planGenerator.updateSummaryLog(resolved.summaryPath, {
           stage: SUMMARY_STAGE_IMPLEMENTATION,
           subagent: implementerDef.name,
           model: implementerDef.model,
-          status: SUMMARY_STATUS_IN_PROGRESS
+          status: SUMMARY_STATUS_IN_PROGRESS,
+          round: resolveStageRound(sm.history, STAGE_IMPLEMENT)
         });
       }
     }
@@ -337,6 +521,152 @@ export class StartImplementationUseCase {
       isSelfCorrection,
       failureDiagnostics: failureDiagnostics ?? null
     };
+  }
+
+  /**
+   * Refuses a plan whose Quality Gate Targets cannot be executed as written
+   * (issues #348, #369).
+   *
+   * Runs in `codeloop implement`, the second approval entry point, using the
+   * SAME plan resolution the later block uses. The double resolve is
+   * intentional: it keeps the guard before worktree provisioning without
+   * restructuring the plan-resolution flow below.
+   *
+   * Enforcement is the ONE shared `assertGateTargetContract` (issue #369), so
+   * this entry point and `transition APPROVAL` cannot drift.
+   */
+  private assertGateTargetContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: params.issue || sm.issue,
+      planPath: params.planPath || sm.planPath || undefined,
+      planDir: params.planDir || sm.planDir
+    });
+    if (!resolved) return;
+
+    assertGateTargetContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
+  }
+
+  /** Resolves the plan the SAME way the later block does (issue #388). */
+  private resolvePlanForContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): { readonly planPath: string } | null {
+    const resolved = this.planGenerator.resolvePlanFile({
+      projectRoot: workspace,
+      issue: params.issue || sm.issue,
+      planPath: params.planPath || sm.planPath || undefined,
+      planDir: params.planDir || sm.planDir
+    });
+    return resolved ? { planPath: resolved.planPath } : null;
+  }
+
+  /**
+   * Refuses a plan edited between the approval gate and `codeloop implement`
+   * (issue #421). Runs before every other contract and before worktree
+   * provisioning, so a refused plan writes no checkpoint and provisions
+   * nothing. The checkpoint's recorded path is the fallback resolution: it is
+   * the identity the operator certified.
+   */
+  private assertApprovedPlanMatchesApproval(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    assertApprovedPlanUnchanged({
+      planGenerator: this.planGenerator,
+      planPath: resolved?.planPath ?? sm.approvedPlanPath ?? null,
+      expectedDigest: sm.approvedPlanDigest,
+      boundary: 'approval',
+      dryRun: params.dryRun
+    });
+  }
+
+  /**
+   * Refuses a plan whose frozen smoke protocol cannot run as written
+   * (issue #388, Defect 2), before any worktree is provisioned.
+   */
+  private assertSmokeProtocolContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    assertSmokeProtocolContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      dryRun: params.dryRun
+    });
+  }
+
+  /**
+   * Measures the plan's declared baselines (issue #388, Defect 1), before the
+   * implementer is dispatched a number nobody checked.
+   */
+  private async assertPlanBaselineContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): Promise<void> {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    await assertPlanBaselineContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      workspaceDir: workspace,
+      commandExecutor: this.commandExecutor,
+      dryRun: params.dryRun
+    });
+  }
+
+  private assertPlanTestRegisterContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    assertPlanTestRegisterContract({
+      planGenerator: this.planGenerator,
+      sourceFileReader: this.sourceFileReader,
+      planPath: resolved.planPath,
+      workspaceDir: workspace,
+      // Issue #489: a re-approval runs over the implementation's own dirty
+      // worktree, so the base revision — not that tree — decides whether a
+      // `New test:` title already exists.
+      baseRef: resolveTestRegisterBaseRef([
+        params.baseBranch,
+        sm.baseBranch,
+        sm.worktree ? sm.worktree.baseBranch : null
+      ]),
+      dryRun: params.dryRun
+    });
+  }
+
+  private assertPlanEvidenceContract(
+    sm: StateMachine,
+    params: StartImplementationParams,
+    workspace: string
+  ): void {
+    const resolved = this.resolvePlanForContract(sm, params, workspace);
+    if (!resolved) return;
+    assertPlanEvidenceContract({
+      planGenerator: this.planGenerator,
+      planPath: resolved.planPath,
+      workspaceDir: workspace,
+      dryRun: params.dryRun
+    });
   }
 
   /**

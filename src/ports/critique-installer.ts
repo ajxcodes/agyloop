@@ -1,5 +1,5 @@
 /**
- * agyloop - CritiqueInstallerPort Interface
+ * codeloop - CritiqueInstallerPort Interface
  *
  * Inversion of Control contract for checking critique releases,
  * detecting version updates, caching release metadata, and installing/updating
@@ -20,11 +20,19 @@ export interface CritiqueInstallOptions {
   readonly targetDir?: string;
   readonly force?: boolean;
   readonly timeoutMs?: number;
+  /**
+   * Fetch release metadata only and report what WOULD be installed. No asset
+   * download, no directory creation, no file write and no cache update
+   * (issue #248 AC-248.6).
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface CritiqueUpdateOptions {
   readonly targetDir?: string;
   readonly timeoutMs?: number;
+  /** Simulate the update; forwarded to `install` (#248). */
+  readonly dryRun?: boolean;
 }
 
 export interface CritiqueInstallerPort {

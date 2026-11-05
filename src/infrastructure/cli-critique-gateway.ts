@@ -1,9 +1,9 @@
 /**
- * agyloop - CliCritiqueGateway (Infrastructure Adapter)
+ * codeloop - CliCritiqueGateway (Infrastructure Adapter)
  *
  * Implements CritiquePort with resolution hierarchy:
  * 1. Sibling ../critique (bin/critique or bin/critique.js)
- * 2. Bundled / local in agyloop repository root / cwd: bin/critique, bin/critique.js
+ * 2. Bundled / local in codeloop repository root / cwd: bin/critique, bin/critique.js
  * 3. User data tool dir (LOCALAPPDATA/critique on Windows, ~/Library/Application Support/critique on macOS, ~/.local/share/critique on Linux/macOS)
  * 4. User-local: ~/.local/bin/critique (or .cmd/.bat/.exe on Windows)
  * 5. System $PATH: critique executable on $PATH
@@ -16,26 +16,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import {
-  RESOLVER_SOURCE_SIBLING,
-  RESOLVER_SOURCE_BUNDLED,
-  RESOLVER_SOURCE_USER_DATA,
-  RESOLVER_SOURCE_USER_LOCAL,
-  RESOLVER_SOURCE_SYSTEM_PATH,
-  RESOLVER_SOURCE_NONE,
-  BINARY_CRITIQUE,
-  PATH_BUNDLED_CRITIQUE,
-  PATH_BUNDLED_CRITIQUE_JS,
-  PATH_USER_LOCAL_CRITIQUE,
-  PATH_SIBLING_CRITIQUE_DIR,
-  PATH_USER_DATA_CRITIQUE_DIR,
-  PATH_USER_DATA_CRITIQUE_MAC,
-  CRITIQUE_FLAG_JSON,
-  CRITIQUE_FLAG_STAGED,
-  DIFF_EXCLUDE_ARGS,
-  CRITIQUE_BUILD_COMMAND,
-  MSG_CRITIQUE_NOT_FOUND
-} from '../domain/constants';
+import { RESOLVER_SOURCE_SIBLING, RESOLVER_SOURCE_BUNDLED, RESOLVER_SOURCE_USER_DATA, RESOLVER_SOURCE_USER_LOCAL, RESOLVER_SOURCE_SYSTEM_PATH, RESOLVER_SOURCE_NONE, BINARY_CRITIQUE, PATH_BUNDLED_CRITIQUE, PATH_BUNDLED_CRITIQUE_JS, PATH_USER_LOCAL_CRITIQUE, PATH_SIBLING_CRITIQUE_DIR, PATH_USER_DATA_CRITIQUE_DIR, PATH_USER_DATA_CRITIQUE_MAC } from '../domain/vocabulary';
+import { CRITIQUE_FLAG_JSON, CRITIQUE_FLAG_STAGED, CRITIQUE_FLAG_COMMIT, CRITIQUE_BUILD_COMMAND } from '../domain/critique';
+import { MSG_CRITIQUE_NOT_FOUND } from '../domain/messages';
+import { shellQuote } from '../domain';
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
 import { cleanVersion } from '../domain/value-objects/critique-version';
 import {
@@ -186,7 +170,7 @@ export class CliCritiqueGateway implements CritiquePort {
       // Continue searching
     }
 
-    // 2. Bundled / local in agyloop repository root / cwd: bin/critique, bin/critique.js
+    // 2. Bundled / local in codeloop repository root / cwd: bin/critique, bin/critique.js
     const bundledDirs = [path.resolve(cwd)];
     if (path.resolve(cwd) !== repoRoot) {
       bundledDirs.push(repoRoot);
@@ -324,14 +308,15 @@ export class CliCritiqueGateway implements CritiquePort {
       command = `"${execPath}" ${CRITIQUE_FLAG_JSON}`;
     }
 
-    if (options.baseRef) {
-      // Pipe working tree diff manually so that unstaged changes are correctly evaluated against baseRef
-      const diffCmd = options.staged
-        ? `git diff --cached ${options.baseRef} -- . ${DIFF_EXCLUDE_ARGS}`
-        : `git diff ${options.baseRef} -- . ${DIFF_EXCLUDE_ARGS}`;
-      command = `${diffCmd} | ${command}`;
-    } else if (options.staged) {
+    // Issue #445: critique reads its own diff from the repository — it never
+    // reads stdin, so a piped diff reviewed whatever critique chose instead.
+    // `--commit <ref>` is `git diff <ref>` (uncommitted included); `--staged`
+    // is the index. One flag, chosen here, so the report is bound to what we
+    // certify.
+    if (options.staged) {
       command += ` ${CRITIQUE_FLAG_STAGED}`;
+    } else if (options.baseRef) {
+      command += ` ${CRITIQUE_FLAG_COMMIT} ${shellQuote(options.baseRef)}`;
     }
 
     try {

@@ -1,19 +1,14 @@
 /**
- * agyloop - AiReviewReport Value Object
+ * codeloop - AiReviewReport Value Object
  *
  * Immutable representation of a complete AI PR Review report.
  * Provides structured diagnostic parsing, severity queries, and markdown formatting.
  * Pure domain value object: 100% free of external I/O or child processes.
  */
 
-import {
-  BANNER_REVIEW_TITLE,
-  BANNER_SUMMARY,
-  BANNER_CODE_COMMENTS,
-  MSG_NO_ISSUES_FOUND,
-  MSG_CLEAN_DIFF_REVIEW,
-  REGEX_JSON_CODE_BLOCK
-} from '../constants';
+import { BANNER_REVIEW_TITLE, BANNER_SUMMARY, BANNER_CODE_COMMENTS } from '../vocabulary';
+import { MSG_NO_ISSUES_FOUND, MSG_CLEAN_DIFF_REVIEW } from '../messages';
+import { REGEX_JSON_CODE_BLOCK } from '../regexes';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { ValidationError, CritiqueError, AiReviewerError } from '../errors';
 import { ReviewConfidence } from './review-confidence';
@@ -36,6 +31,16 @@ interface RawReviewJsonPayload {
   readonly confidenceExplanation?: unknown;
   readonly resolvedThreads?: unknown;
   readonly comments?: unknown;
+  /**
+   * The critique CLI's "review did not run" signal (issue #303).
+   *
+   * Dropping it made a bypassed review indistinguishable from a finding-free
+   * critique, so `RunReviewUseCase` recorded `CHANGES_REQUESTED` for a review
+   * that never happened. Read STRICTLY (`=== true`): a truthy string is not a
+   * bypass, and nothing is inferred from `summary`.
+   */
+  readonly bypassed?: unknown;
+  readonly diagnosticMessage?: unknown;
 }
 
 function extractJsonString(rawText: string): string {
@@ -91,16 +96,58 @@ export class AiReviewReport {
     return !this.hasBlockingIssues() && this.confidence.isHigh();
   }
 
+  /**
+   * The canonical blocking count (#242 / NEW-1). One finding per entry, and
+   * the only count `applyTwoTierInvariant` may interpolate.
+   *
+   * Issue #349: a finding is blocking when its severity is `critical`/`error`
+   * AND its body requests a change. An affirmation the model mislabelled as
+   * `critical` is not a blocker; an ambiguous body still is (fail closed).
+   */
+  public blockingCount(): number {
+    return this.blockingFindings().length;
+  }
+
+  /**
+   * The findings that actually block: severity-blocking AND actionable.
+   *
+   * ONE predicate for the count, the escalation and the verdict derivation, so
+   * they can never drift apart again (#242 / NEW-1).
+   */
+  public blockingFindings(): readonly AiReviewFinding[] {
+    return this.findings.filter((finding) => finding.isBlocking() && finding.requestsChange());
+  }
+
+  /**
+   * The severity-blocking findings whose bodies assert no defect (issue #349).
+   *
+   * Never silent: the CLI names every one of these on stderr and in `--json`,
+   * so an exemption can never be mistaken for "critique found nothing".
+   */
+  public nonActionableBlockingFindings(): readonly AiReviewFinding[] {
+    return this.findings.filter((finding) => finding.isBlocking() && !finding.requestsChange());
+  }
+
+  /** How many severity-blocking findings were exempted as affirmations. */
+  public affirmationCount(): number {
+    return this.nonActionableBlockingFindings().length;
+  }
+
   public hasBlockingIssues(): boolean {
-    return this.findings.some((finding) => finding.isBlocking());
+    return this.blockingCount() > 0;
   }
 
   public hasFindings(): boolean {
     return this.findings.length > 0;
   }
 
+  /**
+   * The critique action's threshold vocabulary alias. `error` and `blocking`
+   * are the same set, so this MUST delegate rather than re-filter (#242 /
+   * NEW-1: the two predicates diverging is what produced the N+1 count).
+   */
   public errorCount(): number {
-    return this.findings.filter((f) => f.isError()).length;
+    return this.blockingCount();
   }
 
   public warningCount(): number {
@@ -223,11 +270,20 @@ export class AiReviewReport {
       }
     }
 
+    // Issue #303: the bypass signal the critique CLI emits must survive the
+    // parse. A truthy string is NOT a bypass (strict `=== true`), and the
+    // diagnostic is carried only when it is a string.
+    const bypassed = parsed.bypassed === true;
+    const diagnosticMessage =
+      typeof parsed.diagnosticMessage === 'string' ? parsed.diagnosticMessage : undefined;
+
     return new AiReviewReport({
       summary,
       confidence,
       findings,
       resolvedThreads,
+      bypassed,
+      diagnosticMessage,
       rawOutput: rawText
     });
   }

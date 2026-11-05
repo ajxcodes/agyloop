@@ -1,5 +1,5 @@
 /**
- * agyloop - StartPlanningUseCase
+ * codeloop - StartPlanningUseCase
  *
  * Orchestrates the planning workflow:
  * 1. Fetches issue context from GitHubGateway (if issue specified)
@@ -15,6 +15,7 @@ import {
   STAGE_DISCOVERY,
   STAGE_PLAN,
   STAGE_APPROVAL,
+  STAGE_IMPLEMENT,
   STAGE_COMPLETED,
   MODE_PLAN,
   ExecutionMode,
@@ -22,13 +23,31 @@ import {
   NOTE_GENERATING_SPECS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AWAITING_REVIEW,
+  NOTE_REOPENED_PLAN_FROM_IMPLEMENT,
   SUMMARY_STAGE_DISCOVERY,
   SUMMARY_STAGE_PLAN_REVIEW,
   SUMMARY_STATUS_IN_PROGRESS,
   SUMMARY_STATUS_COMPLETED,
   SUMMARY_STATUS_PENDING,
+  SUMMARY_STATUS_SKIPPED,
+  ROLE_DISCOVERY,
   IssueNumber,
-  PreFlightHaltError
+  PreFlightHaltError,
+  ValidationError,
+  VALIDATION_FIELD_PLAN_PATH,
+  VALIDATION_FIELD_PLAN_TYPE,
+  MSG_PLAN_ISSUE_KIND_LABELS_UNAVAILABLE,
+  NOTE_PLAN_LABELS_UNAVAILABLE,
+  DiscoveryReport,
+  detectIssueKind,
+  isPlanContentSubstantive,
+  isDiscoveryPlanDocument,
+  deriveStageDuration,
+  resolveStageRound,
+  planFolderName,
+  planIssuePart,
+  planArtifactFileName,
+  assertPlanNameWithinLimits
 } from '../domain';
 import {
   StateRepository,
@@ -42,6 +61,14 @@ import {
 } from '../ports';
 import { ResolveSubagentUseCase, SubagentDescriptor } from './resolve-subagent';
 import { SyncUseCase } from './sync';
+import {
+  DiscoveryReentryDecision,
+  PlanArtifactType,
+  PlanEntryDecision,
+  parseRequestedPlanType,
+  resolveDiscoveryReentry,
+  resolvePlanEntry
+} from './lifecycle-reentry-policy';
 
 export interface StartPlanningParams {
   readonly mode?: ExecutionMode;
@@ -54,6 +81,62 @@ export interface StartPlanningParams {
   readonly userFeedback?: string | null;
   readonly previousPlanContent?: string | null;
   readonly skipDiscovery?: boolean;
+  /**
+   * An operator-supplied plan file (issue #267). When present it WINS over
+   * `planDir` and no scaffold is created.
+   */
+  readonly planPath?: string | null;
+  /** An operator-supplied plan directory (issue #267). */
+  readonly planDir?: string | null;
+}
+
+/**
+ * The RCA-gate evidence (issues #283, #306): what was read, where, and what the
+ * predicate found missing.
+ *
+ * `checkedPaths` exists so the park can NAME the files it inspected instead of
+ * claiming a populated report is "an unpopulated scaffold". `evaluatedPath` is
+ * the file the verdict came from (the populated one, or the best-scoring
+ * candidate when none is populated) and `missingEvidence` is the measured gap
+ * from that file — both null until a candidate was scored.
+ */
+export interface DiscoveryReportEvidence {
+  readonly populated: boolean;
+  readonly populatedPath: string | null;
+  readonly checkedPaths: readonly string[];
+  /** The file the verdict was formed on: populated winner, else best candidate. */
+  readonly evaluatedPath?: string | null;
+  /** Measured gaps from `DiscoveryReport.describeMissingEvidence()`; null when populated. */
+  readonly missingEvidence?: string | null;
+  /**
+   * The FIRST candidate the #320 kind gate rejected for its title (#339 item 3).
+   *
+   * `null` unless a candidate was skipped by `isDiscoveryPlanDocument` and the
+   * report never populated: the park message then names the discriminator (the
+   * first line it found) instead of claiming a title-rejected file lacks RCA
+   * content. The kind gate itself is untouched — only its reason is carried out.
+   */
+  readonly kindRejection?: { readonly path: string; readonly firstLine: string } | null;
+}
+
+/**
+ * What a `plan --dry-run` WOULD do (#339 item 2 + audit extra E1).
+ *
+ * Computed read-only from the same branch the real run takes, so the preview
+ * can never promise a scaffold where the real run reuses (or vice versa), and
+ * absent on a park — a park scaffolds nothing to preview.
+ */
+export interface StartPlanningDryRunPreview {
+  readonly action: 'scaffold' | 'reuse' | 'supplied';
+  /** The directory (or supplied file) the real run would use. */
+  readonly dir?: string;
+  /** The bounded folder the real run would create (#364, AC-7). */
+  readonly folderName?: string;
+  /** The bounded artifact filename the real run would create (#364, AC-7). */
+  readonly fileName?: string;
+  /** The resolved plan title (issue title / --title), never a placeholder guess. */
+  readonly title: string;
+  readonly type: string;
 }
 
 export interface StartPlanningResult {
@@ -61,8 +144,48 @@ export interface StartPlanningResult {
   readonly issueData: GitHubIssueData | null;
   readonly scaffoldInfo: ScaffoldResult | null;
   readonly plannerDef: SubagentDescriptor;
+  /**
+   * The descriptor the Discovery role resolved to (issue #315, AC-3).
+   *
+   * It is resolved on EVERY path — a park, an advance and a plain re-entry —
+   * so a caller can attribute the work that actually ran instead of borrowing
+   * the planner's name and model for a stage that never dispatched a planner.
+   */
+  readonly discoveryDef: SubagentDescriptor;
   readonly planTitle: string;
+  /**
+   * The RESOLVED plan artifact type (`'discovery' | 'implementation'`), not the
+   * raw `--type`/`'auto'` value. Surfaced so the dry-run preview and callers can
+   * name the artifact the run actually scaffolds (issue #379).
+   */
   readonly planType: string;
+  /**
+   * The entry decision this invocation took; absent on any re-entry (issue #379).
+   */
+  readonly planEntry?: PlanEntryDecision;
+  /**
+   * True when this invocation left the checkpoint at DISCOVERY with outstanding
+   * RCA work — a first-run bug entry OR a DISCOVERY re-entry park (issue #379).
+   * Additive and optional: absent/stub results mean false.
+   */
+  readonly discoveryParked?: boolean;
+  /**
+   * Set only when this invocation was a re-entry into a checkpoint already
+   * resting at DISCOVERY (issue #237). Undefined on every other path, so
+   * callers can distinguish "first-run park" from "re-entry park" without
+   * re-inferring it from the stage they observe.
+   */
+  readonly discoveryReentry?: DiscoveryReentryDecision;
+  /** The operator-supplied plan this run will execute (issue #267). */
+  readonly suppliedPlanPath?: string | null;
+  /** The RCA-gate evidence, including every path that was checked. */
+  readonly discoveryReportEvidence: DiscoveryReportEvidence;
+  /**
+   * The dry-run preview (#339 item 2 + E1). Set only when `params.dryRun`;
+   * undefined on every real run (the real run prints the scaffold summary it
+   * actually performed instead).
+   */
+  readonly dryRunPreview?: StartPlanningDryRunPreview;
 }
 
 export class StartPlanningUseCase {
@@ -103,7 +226,11 @@ export class StartPlanningUseCase {
           this.stateRepo,
           this.worktreeManager
         );
-        await syncUseCase.execute({ workspaceDir: workspace });
+        const syncResult = await syncUseCase.execute({ workspaceDir: workspace });
+        if (!syncResult.success) {
+          // Best-effort: never abort, but never claim success either (#328).
+          console.warn(`Auto-sync before planning is incomplete: ${syncResult.message}`);
+        }
       } catch (e) {
         console.warn('Auto-sync before planning failed:', e instanceof Error ? e.message : String(e));
       }
@@ -148,26 +275,165 @@ export class StartPlanningUseCase {
         });
       }
       if (issueData?.milestone?.title) {
+        // Issue #284 (D6): this only fires once `fetchIssue` ASKS for
+        // `milestone`. The `gh --json` field list omitted it, so every
+        // checkpoint recorded `milestoneTitle: null` — do not "simplify" the
+        // field list back, and do not rely on a milestone arriving unless it
+        // was requested.
         sm.setMilestoneTitle(issueData.milestone.title);
       }
     }
 
     const planTitle =
       params.title || (issueData && !issueData.error && issueData.title ? issueData.title : 'Task Plan');
+    // #382 D4: an unreadable lookup is NOT the same fact as "the issue has no
+    // labels". Carry the difference forward instead of flattening it to [].
+    const labelsUnavailable = Boolean(issueVo) && (!issueData || Boolean(issueData.error));
     const planLabels = (issueData && !issueData.error ? issueData.labels : []) || [];
-    const planType = params.type || 'auto';
 
-    // 3. Scaffold plan directory
+    // Issue #379: resolve the issue kind and the plan artifact type ONCE, before
+    // anything is scaffolded, so the entry stage and the artifact prefix can
+    // never disagree. `--type` is an explicit override; `auto` (and any unknown
+    // value) infers from the label/title kind.
+    const requestedType = parseRequestedPlanType(params.type);
+    const issueKind = detectIssueKind({
+      labels: planLabels,
+      title: planTitle,
+      labelsUnavailable
+    });
+    let planEntry = resolvePlanEntry({
+      requestedType,
+      issueKind: issueKind.kind,
+      skipDiscovery: params.skipDiscovery === true
+    });
+    const planType: PlanArtifactType = planEntry.artifactType;
+
+    // Issue #383: an ad-hoc run is keyed by its title (see
+    // `scaffoldPlanDirectory`), so the preview and the checkpoint rule below
+    // must not treat a tracked folder as identity.
+    const adhocRun = planIssuePart(activeIssue) === 'adhoc';
+
+    // #382 D4: the fail-open default is now explicit. Without labels AND
+    // without a bug marker the kind falls back to `feature`, which would skip
+    // DISCOVERY silently for a bug whose title carries no keyword. On a
+    // FIRST-RUN entry with no explicit classification input, refuse and name
+    // the flags instead. Deliberately narrow:
+    //  - `--title` is an explicit classification input → warn, proceed;
+    //  - a title marker already selected `bug` → no refusal;
+    //  - `--skip-discovery` / `--type` are explicit operator decisions;
+    //  - a re-entry (DISCOVERY/PLAN/…) already recorded its entry stage.
+    if (
+      issueKind.labelsUnavailable === true &&
+      requestedType === 'auto' &&
+      params.skipDiscovery !== true &&
+      !params.title &&
+      sm.currentStage === STAGE_INITIALIZED &&
+      issueKind.kind === 'feature'
+    ) {
+      throw new ValidationError(
+        VALIDATION_FIELD_PLAN_TYPE,
+        params.type ?? null,
+        MSG_PLAN_ISSUE_KIND_LABELS_UNAVAILABLE.replace('{issue}', String(activeIssue))
+      );
+    }
+    if (issueKind.labelsUnavailable === true) {
+      console.warn(NOTE_PLAN_LABELS_UNAVAILABLE.replace('{kind}', issueKind.kind));
+    }
+
+    // 3. Scaffold plan directory (or accept the operator-supplied plan)
     let scaffoldInfo: ScaffoldResult | null = null;
-    if (!params.dryRun) {
+    let suppliedPlanPath: string | null = null;
+    // Captured BEFORE the scaffold can repoint `sm.planDir`, because after the
+    // repoint the original value is unrecoverable: this is the plan directory
+    // the checkpoint itself tracked, which is the only record of where the
+    // discovery report for THIS run actually lives (issue #237, BLOCKER 2).
+    const checkpointPlanDir = sm.planDir;
+
+    // Issue #301 (AC-6): a PARK is a no-op. Decide BEFORE scaffolding, so a run
+    // that cannot advance writes no plan artifacts and no `.gitignore`. The
+    // decision is recomputed below only when this run actually advances.
+    let willPark = false;
+    let preParkDecision: DiscoveryReentryDecision | undefined;
+    let preParkEvidence: DiscoveryReportEvidence | undefined;
+    if (sm.currentStage === STAGE_DISCOVERY && !params.planPath && !params.dryRun) {
+      preParkEvidence = this.inspectDiscoveryReport(
+        workspace,
+        activeIssue,
+        sm,
+        null,
+        checkpointPlanDir,
+        planTitle
+      );
+      preParkDecision = resolveDiscoveryReentry({
+        currentStage: sm.currentStage,
+        discoveryReportPresent: preParkEvidence.populated,
+        skipDiscovery: params.skipDiscovery === true
+      });
+      willPark = preParkDecision === 'PARK_AT_DISCOVERY';
+    }
+
+    if (params.planPath) {
+      // Issue #267: a supplied plan is the plan the lifecycle executes. It WINS
+      // over `planDir`, and NOTHING is scaffolded — a competing empty directory
+      // would otherwise be created beside it.
+      const resolved = this.planGenerator.resolvePlanFile({
+        projectRoot: workspace,
+        issue: activeIssue,
+        planPath: params.planPath,
+        planDir: params.planDir || checkpointPlanDir
+      });
+      if (!resolved) {
+        throw new ValidationError(
+          VALIDATION_FIELD_PLAN_PATH,
+          params.planPath,
+          `The supplied plan file was not found: ${params.planPath}`
+        );
+      }
+      const suppliedContent = this.planGenerator.readPlanDocument(resolved.planPath);
+      if (!isPlanContentSubstantive(suppliedContent)) {
+        throw new ValidationError(
+          VALIDATION_FIELD_PLAN_PATH,
+          resolved.planPath,
+          `The supplied plan is blank: ${resolved.planPath}. Write a plan with implementation steps (or run \`codeloop plan\` to scaffold one).`
+        );
+      }
+      suppliedPlanPath = resolved.planPath;
+      // Persist the FILE, not its directory: `dirname(supplied)` is often the
+      // repo root, and adopting it as `planDir` made a later plan/yolo pass
+      // scaffold `[Implementation] - …`, `implementation_plan.md` and the
+      // summary INTO that directory, beside the supplied plan (issue #267).
+      sm.setPlanPath(resolved.planPath);
+    } else if (!params.dryRun && !willPark) {
       scaffoldInfo = this.planGenerator.scaffoldPlanDirectory({
         projectRoot: workspace,
         issue: activeIssue,
         title: planTitle,
         type: planType,
-        labels: planLabels
+        labels: planLabels,
+        planDir: params.planDir ?? checkpointPlanDir,
+        // Issue #383: tag a CHECKPOINT-supplied hint (never an explicit
+        // `--plan-dir`) so an ad-hoc run can ignore one that names another title.
+        planDirIsCheckpoint: !params.planDir && Boolean(checkpointPlanDir)
       });
-      if (scaffoldInfo && scaffoldInfo.planDir) {
+      // Adopt the returned directory when:
+      //  - the checkpoint has no plan directory of its own (first run), or
+      //  - the caller explicitly supplied one, or
+      //  - the generator ADOPTED an existing populated directory (the #283 heal).
+      //
+      // Every other case keeps the #237 guard: a scaffold that returns a
+      // different, freshly created directory must never repoint an existing
+      // checkpoint.
+      //
+      // Issue #301: `setPlanDir` always bumps `updatedAt`, so a no-op adoption
+      // must not be issued at all.
+      const shouldAdopt =
+        !sm.planDir ||
+        Boolean(params.planDir) ||
+        scaffoldInfo?.adoptedExisting === true ||
+        // Issue #383: this run deliberately superseded a stale ad-hoc checkpoint
+        // hint, so the checkpoint must follow the title it actually planned.
+        scaffoldInfo?.checkpointDirIgnored === true;
+      if (shouldAdopt && scaffoldInfo?.planDir && sm.planDir !== scaffoldInfo.planDir) {
         sm.setPlanDir(scaffoldInfo.planDir);
       }
     }
@@ -181,28 +447,42 @@ export class StartPlanningUseCase {
       customConfig: config,
       workspaceDir: workspace
     });
-
-    // Detect if task is a bug/defect requiring deep discovery RCA
-    const bugKeywords = ['bug', 'defect', 'fix', 'rca', 'root-cause', 'regression', 'crash', 'error'];
-    const isBugFromParams = params.type === 'discovery';
-    const isBugFromLabels = planLabels.some((l) =>
-      bugKeywords.some((kw) => String(l).toLowerCase().includes(kw))
-    );
-    const titleLower = String(planTitle).toLowerCase();
-    const isBugFromTitle = bugKeywords.some((kw) =>
-      titleLower.includes(`[${kw}]`) || titleLower.includes(`${kw}:`) || titleLower.includes(`${kw}/`)
-    );
-    const isBugFromState =
-      sm.currentStage === STAGE_DISCOVERY || sm.history.some((h) => h.stage === STAGE_DISCOVERY);
-    const isBug =
-      isBugFromParams ||
-      isBugFromLabels ||
-      isBugFromTitle ||
-      isBugFromState ||
-      scaffoldInfo?.type === 'discovery';
+    // Issue #284 (AC4): the Discovery row names the subagent that PERFORMED
+    // discovery, not the planner. Under the default config this resolves to
+    // `inherit` (there is no `models.discovery` mapping), which is the model
+    // actually dispatched — the old `pro` cell came from the planner's
+    // descriptor and was never the discovery subagent's.
+    const discoveryDef = this.resolveSubagentUseCase.execute({
+      role: ROLE_DISCOVERY,
+      customConfig: config,
+      workspaceDir: workspace
+    });
 
     // 5. State Machine Transitions
-    if (sm.currentStage === STAGE_APPROVAL && params.userFeedback) {
+    // Only set when this invocation re-enters a checkpoint already resting at
+    // DISCOVERY (issue #237); undefined on every other path.
+    const wasInitialized = sm.currentStage === STAGE_INITIALIZED;
+    let discoveryReentry: DiscoveryReentryDecision | undefined;
+    let discoveryReportEvidence: DiscoveryReportEvidence = {
+      populated: false,
+      populatedPath: null,
+      checkedPaths: [],
+      evaluatedPath: null,
+      missingEvidence: null
+    };
+
+    if (suppliedPlanPath !== null) {
+      // A non-blank supplied plan is itself the completion evidence: the RCA
+      // gate has nothing left to protect. Re-open PLAN from the early stages;
+      // an IMPLEMENT checkpoint keeps its stage so the operator can go straight
+      // to the implementer directive.
+      if (sm.currentStage === STAGE_INITIALIZED || sm.currentStage === STAGE_DISCOVERY) {
+        sm.transition(STAGE_PLAN, {
+          note: `Plan supplied by the operator: ${suppliedPlanPath}`,
+          suppliedPlan: suppliedPlanPath
+        });
+      }
+    } else if (sm.currentStage === STAGE_APPROVAL && params.userFeedback) {
       // Iterative plan redirection loop: developer requested re-planning
       sm.transition(STAGE_PLAN, {
         note: 'Plan revision requested based on developer feedback',
@@ -210,72 +490,475 @@ export class StartPlanningUseCase {
         previousPlanContent: params.previousPlanContent
       });
     } else if (sm.currentStage === STAGE_INITIALIZED) {
-      if (params.skipDiscovery) {
-        sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
-      } else {
-        sm.transition(STAGE_DISCOVERY, {
-          note: isBug ? NOTE_INITIATED_DISCOVERY_RCA : 'Context discovery and pre-flight analysis completed'
-        });
-        if (!isBug || targetMode === MODE_PLAN) {
-          sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+      // Issue #379: the entry stage comes from the plan-entry policy, not from
+      // the execution mode. A bug issue enters DISCOVERY and STAYS there — this
+      // park is the point of the stage, so its RCA work can be dispatched by
+      // `codeloop next`. Only a non-bug (or an explicit --type/skip override)
+      // enters PLAN. No PLAN transition is issued while RCA work is outstanding.
+      if (planEntry.stage === STAGE_DISCOVERY) {
+        // Evidence before transition: a checkpoint re-opened at INITIALIZED for
+        // an issue whose RCA report is already populated must not park on a met
+        // condition.
+        discoveryReportEvidence = this.inspectDiscoveryReport(
+          workspace,
+          activeIssue,
+          sm,
+          scaffoldInfo,
+          checkpointPlanDir,
+          planTitle
+        );
+        if (discoveryReportEvidence.populated) {
+          planEntry = {
+            ...planEntry,
+            stage: STAGE_PLAN,
+            source: 'discovery-report-present'
+          } satisfies PlanEntryDecision;
         }
       }
+      if (planEntry.stage === STAGE_PLAN) {
+        sm.transition(STAGE_PLAN, {
+          note: NOTE_GENERATING_SPECS,
+          entryStage: STAGE_PLAN,
+          entrySource: planEntry.source,
+          issueKind: issueKind.kind,
+          ...(issueKind.labelsUnavailable ? { labelsUnavailable: true } : {}),
+          ...(planEntry.source === 'skip-discovery' ? { skipDiscovery: true } : {}),
+          ...(planEntry.source === 'discovery-report-present' &&
+          discoveryReportEvidence.populatedPath
+            ? { discoveryReportPath: discoveryReportEvidence.populatedPath }
+            : {})
+        });
+      } else {
+        sm.transition(STAGE_DISCOVERY, {
+          note: NOTE_INITIATED_DISCOVERY_RCA,
+          entryStage: STAGE_DISCOVERY,
+          entrySource: planEntry.source,
+          issueKind: issueKind.kind,
+          ...(issueKind.labelsUnavailable ? { labelsUnavailable: true } : {})
+        });
+        // NO PLAN transition: the stage's work has not happened yet.
+        //
+        // Unlike the #301 re-entry park, this first-run entry MUST scaffold and
+        // persist its checkpoint: without a recorded planDir, `codeloop next`
+        // would fall back to the "Plan Directory Required" human gate instead of
+        // dispatching the discovery subagent.
+      }
     } else if (sm.currentStage === STAGE_DISCOVERY) {
-      sm.transition(STAGE_PLAN, { note: NOTE_GENERATING_SPECS });
+      // One rule, one chokepoint: the RCA gate is no longer implied by "the
+      // stage is DISCOVERY". It requires either content evidence that a
+      // discovery report was populated, or the operator's explicit
+      // --skip-discovery opt-in. Without one of those the checkpoint stays
+      // parked here — and a park writes NOTHING (#301, AC-6).
+      //
+      // A park reuses the pre-computed evidence (no scaffold ran). Every
+      // advancing path recomputes with the scaffold it just created, so the
+      // reported evidence names the real artifacts.
+      discoveryReportEvidence =
+        willPark && preParkEvidence
+          ? preParkEvidence
+          : this.inspectDiscoveryReport(
+              workspace,
+              activeIssue,
+              sm,
+              scaffoldInfo,
+              checkpointPlanDir,
+              planTitle
+            );
+      const decision =
+        willPark && preParkDecision
+          ? preParkDecision
+          : resolveDiscoveryReentry({
+              currentStage: sm.currentStage,
+              discoveryReportPresent: discoveryReportEvidence.populated,
+              skipDiscovery: params.skipDiscovery === true
+            });
+      discoveryReentry = decision;
+      if (decision === 'ADVANCE_TO_PLAN') {
+        sm.transition(STAGE_PLAN, {
+          note: NOTE_GENERATING_SPECS,
+          // Auditable trail: a bypassed RCA gate is recorded in history metadata.
+          skipDiscovery: params.skipDiscovery === true
+        });
+      }
+      // PARK_AT_DISCOVERY: intentionally NO transition is issued.
+    } else if (sm.currentStage === STAGE_IMPLEMENT) {
+      // Issue #267: re-planning from IMPLEMENT is the supported recovery from
+      // the blank-plan park. `IMPLEMENT -> PLAN` is a legal transition now, and
+      // the planner payload is produced at PLAN.
+      sm.transition(STAGE_PLAN, { note: NOTE_REOPENED_PLAN_FROM_IMPLEMENT });
+    }
+
+    // 5b. Dry-run preview (#339 item 2 + audit extra E1): a read-only mirror of
+    // the branch the REAL run takes, computed after the re-entry decision.
+    //
+    // The old preview was an unconditional "Would scaffold …" printed before
+    // the summary legs — false in both directions: it promised a scaffold where
+    // the real run adopts an existing directory, and it printed at a PARK,
+    // where the real run scaffolds nothing. Each arm below names only what the
+    // non-dry path would actually do.
+    let dryRunPreview: StartPlanningDryRunPreview | undefined;
+    if (params.dryRun) {
+      if (discoveryReentry === 'PARK_AT_DISCOVERY') {
+        // A park writes no plan artifacts: nothing to preview.
+        dryRunPreview = undefined;
+      } else if (suppliedPlanPath !== null) {
+        dryRunPreview = {
+          action: 'supplied',
+          dir: suppliedPlanPath,
+          title: planTitle,
+          type: planType
+        };
+      } else {
+        // Stage-less resolution — the same call shape `transition-stage` uses —
+        // so an existing directory resolves whether or not it carries a
+        // discovery file, exactly like the real run's adoption branch.
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: activeIssue,
+          // Issue #383: an ad-hoc preview must not promise a reuse the real run
+          // refuses — a checkpoint folder belongs to the title that created it.
+          planDir: params.planDir ?? (adhocRun ? null : checkpointPlanDir)
+        });
+        if (resolved && resolved.planDir) {
+          dryRunPreview = {
+            action: 'reuse',
+            dir: resolved.planDir,
+            title: planTitle,
+            type: planType
+          };
+        } else {
+          // Issue #364 (AC-7): derive and validate the SAME bounded names the
+          // real run derives, so a dry run can no longer certify a scaffold the
+          // real run would refuse. Issue #379: the type is already the RESOLVED
+          // artifact type (the issue-kind inference ran before the scaffold), so
+          // the previewed artifact prefix matches the file the real run writes.
+          const folderName = planFolderName(activeIssue, planTitle);
+          const fileName = planArtifactFileName(planType, planTitle);
+          assertPlanNameWithinLimits({ folderName, fileName, title: planTitle });
+          dryRunPreview = {
+            action: 'scaffold',
+            dir: params.planDir ?? checkpointPlanDir ?? undefined,
+            folderName,
+            fileName,
+            title: planTitle,
+            type: planType
+          };
+        }
+      }
     }
 
     // 6. Checkpoint state and update summary log
-    if (!params.dryRun) {
+    //
+    // A park is a no-op: a read of a checkpoint that cannot advance must not
+    // create or rewrite anything (#301). No save, no summary update.
+    if (!params.dryRun && !willPark) {
       await this.stateRepo.save(sm.toSnapshot());
 
-      if (scaffoldInfo && scaffoldInfo.summaryPath) {
+      // #339 (audit extra E6): a run that performed NO RCA must never render
+      // the Discovery row COMPLETED. On the INITIALIZED-entry path (and any
+      // other path that skipped step 5's inspection) no candidate was read yet,
+      // so inspect read-only HERE — the same fail-closed predicate — before the
+      // row is labelled. `--skip-discovery` bypasses it (its row is SKIPPED by
+      // flag, unchanged), and a previously populated report still scores
+      // COMPLETED (evidence is re-inspected, never downgraded).
+      if (!params.skipDiscovery && discoveryReportEvidence.checkedPaths.length === 0) {
+        discoveryReportEvidence = this.inspectDiscoveryReport(
+          workspace,
+          activeIssue,
+          sm,
+          scaffoldInfo,
+          sm.planDir ?? checkpointPlanDir,
+          planTitle
+        );
+      }
+      // ONE rule for both writer sites below: COMPLETED iff a populated report
+      // exists or a discovery dispatch was recorded; otherwise SKIPPED — and a
+      // row that never ran is attributed `-`, never a subagent/model pair for
+      // work that did not happen. `--skip-discovery` keeps its audited
+      // `discovery | model | SKIPPED` shape (issue #284).
+      const discoveryRan =
+        discoveryReportEvidence.populated || sm.discoveryDispatchCount > 0;
+      const discoveryStatus = params.skipDiscovery
+        ? SUMMARY_STATUS_SKIPPED
+        : discoveryRan
+          ? SUMMARY_STATUS_COMPLETED
+          : SUMMARY_STATUS_SKIPPED;
+      const discoverySubagent =
+        params.skipDiscovery || discoveryRan ? discoveryDef.name : '-';
+      const discoveryModel = params.skipDiscovery || discoveryRan ? discoveryDef.model : '-';
+
+      const summaryPath = this.resolveSummaryPath(workspace, scaffoldInfo, checkpointPlanDir);
+      if (summaryPath) {
+        // Issue #315 (AC-14): the Discovery row's measured duration on the
+        // `codeloop plan` entry path. The window runs from entering DISCOVERY
+        // to the transition that left it, so it is measurable exactly when the
+        // checkpoint has moved on. A stage still IN PROGRESS keeps `-`: the
+        // window has not ended.
+        const discoveryDuration = deriveStageDuration(sm.history, STAGE_DISCOVERY, {
+          humanWaitMs: 0
+        });
+        // Issue #376 (AC14): the round each row belongs to.
+        const discoveryRound = resolveStageRound(sm.history, STAGE_DISCOVERY);
+        const planningRound = resolveStageRound(sm.history, STAGE_PLAN);
         if (sm.currentStage === STAGE_DISCOVERY) {
-          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+          this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_DISCOVERY,
-            subagent: plannerDef.name,
-            model: plannerDef.model,
-            status: SUMMARY_STATUS_IN_PROGRESS
+            subagent: discoveryDef.name,
+            model: discoveryDef.model,
+            status: SUMMARY_STATUS_IN_PROGRESS,
+            round: discoveryRound
           });
         } else if (sm.currentStage === STAGE_PLAN) {
-          if (!params.skipDiscovery) {
-            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
-              stage: SUMMARY_STAGE_DISCOVERY,
-              subagent: plannerDef.name,
-              model: plannerDef.model,
-              status: SUMMARY_STATUS_COMPLETED
-            });
-          }
-          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+          this.planGenerator.updateSummaryLog(summaryPath, {
+            stage: SUMMARY_STAGE_DISCOVERY,
+            subagent: discoverySubagent,
+            model: discoveryModel,
+            status: discoveryStatus,
+            duration: discoveryDuration,
+            round: discoveryRound
+          });
+          this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
             subagent: plannerDef.name,
             model: plannerDef.model,
             status: SUMMARY_STATUS_IN_PROGRESS,
-            planRevisionCount: sm.planRevisionCount
+            planRevisionCount: sm.planRevisionCount,
+            round: planningRound
           });
         } else {
-          if (!params.skipDiscovery) {
-            this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
-              stage: SUMMARY_STAGE_DISCOVERY,
-              subagent: plannerDef.name,
-              model: plannerDef.model,
-              status: SUMMARY_STATUS_COMPLETED
-            });
-          }
-          this.planGenerator.updateSummaryLog(scaffoldInfo.summaryPath, {
+          this.planGenerator.updateSummaryLog(summaryPath, {
+            stage: SUMMARY_STAGE_DISCOVERY,
+            subagent: discoverySubagent,
+            model: discoveryModel,
+            status: discoveryStatus,
+            duration: discoveryDuration,
+            round: discoveryRound
+          });
+          this.planGenerator.updateSummaryLog(summaryPath, {
             stage: SUMMARY_STAGE_PLAN_REVIEW,
-            status: SUMMARY_STATUS_PENDING
+            status: SUMMARY_STATUS_PENDING,
+            round: planningRound
           });
         }
       }
     }
+
+    // Additive, mode-independent park signal (issue #379): it covers BOTH the
+    // first-run bug entry (which persists its scaffold and checkpoint) and the
+    // #301 re-entry park (which is a no-op). `--skip-discovery` can never park.
+    const discoveryParked =
+      sm.currentStage === STAGE_DISCOVERY && params.skipDiscovery !== true;
 
     return {
       stateMachine: sm,
       issueData,
       scaffoldInfo,
       plannerDef,
+      discoveryDef,
       planTitle,
-      planType
+      planType,
+      planEntry: wasInitialized && suppliedPlanPath === null ? planEntry : undefined,
+      discoveryParked,
+      discoveryReentry,
+      suppliedPlanPath,
+      discoveryReportEvidence,
+      dryRunPreview
     };
+  }
+
+  /**
+   * Content-based evidence that an RCA report exists for this checkpoint
+   * (issues #237, #283).
+   *
+   * Existence is not evidence: the generator always writes the plan file when it
+   * scaffolds a fresh directory, so "a discovery file exists" is true for a
+   * pristine scaffold. Only the CONTENT distinguishes "an untouched template"
+   * from "an RCA ran".
+   *
+   * Reached exclusively through the injected `PlanGeneratorPort` — never `fs` —
+   * so the application layer stays I/O-free. Fails CLOSED on every error: a
+   * read failure must never open the RCA gate.
+   *
+   * Every candidate directory is inspected (the checkpoint's own, the
+   * scaffold's, and the best `<issue>-*` candidate) and every path that was
+   * read is returned, so a park can NAME what it checked instead of claiming a
+   * populated report is "an unpopulated scaffold" (#283, AC3).
+   *
+   * Issue #306: the report is built ONCE per candidate, and the best-scoring
+   * unpopulated candidate keeps its diagnostics. The park then names the
+   * measured gap (empty sections, blank keys, content counts) from the file the
+   * verdict actually came from, not from an arbitrary sibling.
+   *
+   * Issue #320: content alone cannot prove a document is an RCA — only its KIND
+   * can. The same single read that feeds `DiscoveryReport` is first handed to
+   * `isDiscoveryPlanDocument`, so an implementation-shaped
+   * `implementation_plan.md` is skipped BEFORE scoring and can never populate
+   * the gate, name itself as `evaluatedPath`, or invent missing evidence.
+   */
+  private inspectDiscoveryReport(
+    workspace: string,
+    activeIssue: number | string | null,
+    sm: StateMachine,
+    scaffoldInfo: ScaffoldResult | null,
+    checkpointPlanDir: string | null,
+    planTitle: string
+  ): DiscoveryReportEvidence {
+    const checkedPaths: string[] = [];
+    let populatedPath: string | null = null;
+    let bestPath: string | null = null;
+    let bestReport: DiscoveryReport | null = null;
+    let kindRejection: { path: string; firstLine: string } | null = null;
+
+    try {
+      // `findPlanDirectory` ranks a POPULATED candidate first (issue #283), so
+      // even a directory this checkpoint never tracked is considered.
+      const foundPlanDir =
+        activeIssue !== null && typeof this.planGenerator.findPlanDirectory === 'function'
+          ? this.planGenerator.findPlanDirectory(workspace, activeIssue, planTitle)
+          : null;
+
+      const candidateDirs = [
+        checkpointPlanDir,
+        scaffoldInfo ? scaffoldInfo.planDir : null,
+        foundPlanDir
+      ].filter((dir): dir is string => typeof dir === 'string' && dir.length > 0);
+
+      const candidates: string[] = [];
+      if (scaffoldInfo && scaffoldInfo.planPath) {
+        // Only an ADDITIONAL candidate — the kind gate below decides whether
+        // anything is scored (issue #320).
+        candidates.push(scaffoldInfo.planPath);
+      }
+      for (const planDir of candidateDirs) {
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: sm.issue,
+          planDir,
+          // DISCOVERY resolution now ranks a POPULATED `[Discovery]` artifact
+          // ahead of a pristine sibling, then any discovery artifact, so one
+          // empty sibling can never mask a populated one.
+          stage: STAGE_DISCOVERY
+        });
+        if (resolved && resolved.planPath) {
+          candidates.push(resolved.planPath);
+        }
+      }
+
+      // Issue #301: a checkpoint that tracks NO plan directory (legacy or
+      // hand-seeded) must still be able to SEE the canonical report for its
+      // issue — the RCA gate would otherwise park forever because a park no
+      // longer scaffolds a directory to read. `resolvePlanFile` falls back to
+      // `findPlanDirectory(issue)` when `planDir` is null; this is a pure read.
+      if (candidates.length === 0 && activeIssue !== null && activeIssue !== undefined) {
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          issue: activeIssue,
+          planDir: checkpointPlanDir,
+          stage: STAGE_DISCOVERY
+        });
+        if (resolved && resolved.planPath) {
+          candidates.push(resolved.planPath);
+        }
+      }
+
+      for (const candidate of new Set(candidates)) {
+        checkedPaths.push(candidate);
+        try {
+          // One read, one report: the kind check, the verdict and its
+          // diagnostics describe the same file (issues #306, #320).
+          const markdown = this.planGenerator.readPlanDocument(candidate);
+          // Kind before content: an implementation-shaped document is not RCA
+          // evidence (issue #320). It stays in `checkedPaths` (attempted ≠
+          // evidence) but never names `evaluatedPath`/`populatedPath`.
+          if (!isDiscoveryPlanDocument(markdown)) {
+            // #339 (item 3): the gate's REASON is no longer dropped. The first
+            // rejection records the first line it saw, so the park message can
+            // name the title discriminator instead of claiming a file with
+            // perfectly good content "does not yet contain RCA evidence".
+            if (kindRejection === null) {
+              let firstLine = '';
+              for (const rawLine of markdown.split('\n')) {
+                const line = rawLine.replace(/\r$/, '').trim();
+                if (line.length > 0) {
+                  firstLine = line;
+                  break;
+                }
+              }
+              kindRejection = {
+                path: candidate,
+                firstLine: firstLine.length > 0 ? firstLine : '(empty document)'
+              };
+            }
+            continue;
+          }
+          const report = DiscoveryReport.fromMarkdown(markdown);
+          if (report.isPopulated) {
+            populatedPath = candidate;
+            break;
+          }
+          // Keep the candidate that got CLOSEST to the contract, so the park
+          // reports the gaps of the real attempt rather than of a pristine
+          // sibling directory's empty scaffold.
+          if (
+            bestReport === null ||
+            report.contentCharCount > bestReport.contentCharCount ||
+            (report.contentCharCount === bestReport.contentCharCount &&
+              report.contentUnitCount > bestReport.contentUnitCount)
+          ) {
+            bestPath = candidate;
+            bestReport = report;
+          }
+        } catch {
+          // Fail closed: a read failure is not evidence.
+        }
+      }
+    } catch {
+      // Fail closed on any resolver error.
+    }
+
+    return {
+      populated: populatedPath !== null,
+      populatedPath,
+      checkedPaths,
+      evaluatedPath: populatedPath ?? bestPath,
+      missingEvidence: populatedPath ? null : (bestReport?.describeMissingEvidence() ?? null),
+      // A populated report cannot park, so a rejection recorded before the
+      // winner is irrelevant — surface it only when it shaped the verdict.
+      kindRejection: populatedPath !== null ? null : kindRejection
+    };
+  }
+
+  /**
+   * The execution log this run records its progress in.
+   *
+   * Explicit decision: on a re-entry the freshly scaffolded directory is NOT
+   * adopted (see the `setPlanDir` gate above), so `scaffoldInfo.summaryPath`
+   * points at a directory nothing tracks any more. Progress notes written there
+   * would be invisible to whoever reads the checkpoint's own log, so the
+   * checkpoint's directory is preferred and the scaffold's log is only the
+   * fallback — the case for a first run, where no checkpoint planDir exists.
+   *
+   * Read through `resolvePlanFile`, never `fs`, so the application layer stays
+   * I/O-free.
+   */
+  private resolveSummaryPath(
+    workspace: string,
+    scaffoldInfo: ScaffoldResult | null,
+    checkpointPlanDir: string | null
+  ): string | null {
+    if (checkpointPlanDir) {
+      try {
+        const resolved = this.planGenerator.resolvePlanFile({
+          projectRoot: workspace,
+          planDir: checkpointPlanDir
+        });
+        if (resolved && resolved.summaryPath) {
+          return resolved.summaryPath;
+        }
+      } catch {
+        // Fall through to the scaffold's own log rather than losing the update.
+      }
+    }
+    return scaffoldInfo ? scaffoldInfo.summaryPath : null;
   }
 }

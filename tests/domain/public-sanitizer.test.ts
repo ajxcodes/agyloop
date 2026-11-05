@@ -1,5 +1,5 @@
 /**
- * agyloop - PublicSanitizer Value Object Unit Tests
+ * codeloop - PublicSanitizer Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');

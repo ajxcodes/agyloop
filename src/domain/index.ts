@@ -1,12 +1,37 @@
 /**
- * agyloop - Domain Layer Public API
+ * codeloop - Domain Layer Public API
  */
 
-export * from './constants';
 export * from './errors';
+export * from './lifecycle-stages';
+export * from './execution-modes';
+export * from './subagent-roles';
+export * from './model-tiers';
+export * from './tools';
+export * from './cli-contract';
+export * from './messages';
+export * from './regexes';
+export * from './defaults';
+export * from './output-labels';
+export * from './gate-verdicts';
+export * from './critique';
+export * from './plan-contract';
+export * from './opencode';
+export * from './run-summary';
+export * from './discovery';
+export * from './vocabulary';
+export * from './quota-exhaustion';
 export * from './value-objects/stage';
 export * from './value-objects/issue-number';
+export * from './value-objects/issue-token';
+export * from './value-objects/triage-disposition';
+export * from './value-objects/implementation-evidence';
+export * from './value-objects/plan-content';
+export * from './value-objects/plan-directory';
+export * from './value-objects/plan-document-kind';
+export * from './value-objects/issue-kind';
 export * from './value-objects/model-tier';
+export * from './value-objects/runner-type';
 export * from './value-objects/subagent-role';
 export * from './value-objects/tool-whitelist';
 export * from './value-objects/ecosystem';
@@ -17,16 +42,47 @@ export * from './value-objects/gate-summary-report';
 export * from './value-objects/review-confidence';
 export * from './value-objects/ai-review-finding';
 export * from './value-objects/ai-review-report';
+export * from './value-objects/finding-refutation';
 export * from './value-objects/review-verdict';
 export * from './value-objects/commit-message';
+export * from './value-objects/subject-truncation';
 export * from './value-objects/diff-analyzer';
 export * from './value-objects/worktree-descriptor';
 export * from './value-objects/branch-inference';
+export * from './value-objects/pr-issue-association';
 export * from './value-objects/pre-flight-check';
 export * from './value-objects/public-sanitizer';
+export * from './value-objects/root-invariant';
+export * from './value-objects/discovery-report';
 export * from './value-objects/semver-calculator';
+export * from './value-objects/release-label';
 export * from './value-objects/version-anchor';
 export * from './value-objects/critique-version';
+export * from './value-objects/critique-provenance';
+export * from './value-objects/tool-vocabulary';
+export * from './value-objects/host-tool-vocabulary';
+export * from './value-objects/shell-quoting';
+export * from './value-objects/quality-gate-targets';
+export * from './value-objects/smoke-heading';
+export * from './value-objects/smoke-sandbox';
+export * from './value-objects/smoke-protocol';
+export * from './value-objects/baseline-evidence';
+export * from './value-objects/root-build-command';
+export * from './value-objects/baseline-command-cwd';
+export * from './value-objects/plan-digest';
+export * from './value-objects/gate-command-plan';
+export * from './value-objects/run-evidence';
+export * from './value-objects/gate-result-report';
+export * from './value-objects/gate-report-fixture';
+export * from './value-objects/gate-target-coverage';
+export * from './value-objects/smoke-check-coverage';
+export * from './value-objects/json-block';
+export * from './value-objects/plan-deviation';
+export * from './value-objects/test-register';
+export * from './value-objects/plan-evidence-paths';
+export * from './value-objects/markdown';
+export * from './value-objects/ac-evidence';
+export * from './value-objects/workspace-mutation';
 export * from './entities/state-machine';
 
 

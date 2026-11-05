@@ -1,0 +1,297 @@
+/**
+ * codeloop - COMMIT-Gate Description Tests (issue #259, AC4, C1-C3)
+ *
+ * The COMMIT gate used to hard-code "Review passed." regardless of what the
+ * AI review actually did. A SKIPPED review (#236's deliberate advisory
+ * fail-open) must never be presented as a pass, and the #236 fail-open itself
+ * must NOT be inverted into a fabricated CHANGES_REQUESTED.
+ *
+ * The verdict is read from the recorded history metadata (`reviewVerdict`),
+ * exactly the way `RunReviewUseCase` writes it.
+ */
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert');
+
+const { GetNextActionUseCase } = require('../../dist/application');
+const { RunReviewUseCase } = require('../../dist/application');
+const {
+  StateMachine,
+  STAGE_DISCOVERY,
+  STAGE_PLAN,
+  STAGE_APPROVAL,
+  STAGE_IMPLEMENT,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
+  VERDICT_APPROVED,
+  VERDICT_SKIPPED
+} = require('../../dist/domain');
+
+type StateRepository = import('../../src').StateRepository;
+type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
+type ConfigRepository = import('../../src').ConfigRepository;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
+
+class StateRepositoryDouble implements StateRepository {
+  public savedSnapshot: StateMachineSnapshot | null = null;
+
+  constructor(initial: StateMachineSnapshot | null = null) {
+    this.savedSnapshot = initial;
+  }
+
+  public async load(): Promise<StateMachineSnapshot | null> {
+    return this.savedSnapshot;
+  }
+
+  public async save(snapshot: StateMachineSnapshot): Promise<void> {
+    this.savedSnapshot = snapshot;
+  }
+
+  public async reset(): Promise<void> {
+    this.savedSnapshot = null;
+  }
+
+  public getStateFilePath(): string {
+    return '/repo/.agyloop/state.json';
+  }
+}
+
+function makeMockConfigLocal(): ConfigRepository {
+  const config: CodeLoopConfig = {
+    models: {
+      planner: 'pro',
+      implementer: 'inherit',
+      gate: 'flash_lite',
+      reviewer: 'flash'
+    },
+    options: {
+      commitAfter: false,
+      gateTimeoutSeconds: 300,
+      autoApproveInYolo: true,
+      enableMcpInPlanner: true
+    }
+  };
+
+  return {
+    loadConfig: () => config,
+    resolveModel: (role: string) => ({
+      role,
+      configured: config.models[role] || 'inherit',
+      tier: 'flash' as any,
+      apiModel: 'gemini-2.5-flash'
+    }),
+    mapModelToTier: () => 'flash' as any
+  };
+}
+
+/**
+ * Builds a checkpoint resting at the COMMIT gate.
+ *
+ * `reviewVerdict` is written into the metadata of the COMMIT history entry —
+ * exactly the shape `RunReviewUseCase` produces. Passing `null` simulates a
+ * checkpoint that carries NO recorded verdict at all.
+ */
+function buildCommitCheckpoint(
+  reviewVerdict: string | null,
+  extraMetadata: Record<string, unknown> = {}
+): StateMachineSnapshot {
+  const sm = StateMachine.createInitial({ issue: 259, baseBranch: 'main' });
+  sm.transition(STAGE_DISCOVERY);
+  sm.transition(STAGE_PLAN);
+  sm.transition(STAGE_APPROVAL);
+  sm.transition(STAGE_IMPLEMENT);
+  sm.transition(STAGE_QUALITY_GATE);
+  sm.transition(STAGE_REVIEW);
+  sm.transition(
+    STAGE_COMMIT,
+    reviewVerdict === null
+      ? { note: 'Reached the commit gate', ...extraMetadata }
+      : { note: 'Reached the commit gate', reviewVerdict, ...extraMetadata }
+  );
+  return sm.toSnapshot();
+}
+
+async function commitGateDescription(
+  reviewVerdict: string | null,
+  extraMetadata: Record<string, unknown> = {}
+): Promise<string> {
+  const stateRepo = new StateRepositoryDouble(buildCommitCheckpoint(reviewVerdict, extraMetadata));
+  const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
+
+  const result = await useCase.execute({ workspaceDir: '/repo' });
+
+  assert.strictEqual(result.currentStage, STAGE_COMMIT);
+  assert.strictEqual(result.actionType, 'human_gate');
+  return result.description;
+}
+
+// Issue #315 (AC-21): the gate's instruction now names the DELIVERY step, so a
+// COMPLETED checkpoint cannot be read as a delivered run.
+const COMMIT_INSTRUCTIONS =
+  'Draft conventional commit, prompt for confirmation, push to remote, open the PR, and teardown worktree. The run is NOT delivered until that PR is merged.';
+
+describe('GetNextActionUseCase COMMIT-gate description (issue #259, AC4)', () => {
+  test('C1 (AC4): at the COMMIT gate with an APPROVED verdict the description still says "Review passed"', async () => {
+    const description = await commitGateDescription(VERDICT_APPROVED);
+
+    assert.ok(
+      description.startsWith('Review passed.'),
+      `an APPROVED verdict must still read as a pass, got: ${description}`
+    );
+    assert.ok(
+      description.includes(COMMIT_INSTRUCTIONS),
+      `the commit instructions must be preserved, got: ${description}`
+    );
+  });
+
+  test('C2 (AC4): at the COMMIT gate with a SKIPPED verdict the description says SKIPPED and never "Review passed"', async () => {
+    const description = await commitGateDescription(VERDICT_SKIPPED);
+
+    assert.ok(
+      description.includes('SKIPPED'),
+      `a SKIPPED verdict must be named, got: ${description}`
+    );
+    assert.ok(
+      description.includes('advisory, not a pass'),
+      `a SKIPPED verdict must be labelled advisory, got: ${description}`
+    );
+    assert.ok(
+      !description.includes('Review passed'),
+      `a SKIPPED verdict must never be described as a pass, got: ${description}`
+    );
+    assert.ok(
+      description.includes(COMMIT_INSTRUCTIONS),
+      `the commit instructions must be preserved, got: ${description}`
+    );
+  });
+
+  test('C3 (AC4): at the COMMIT gate with no recorded verdict the description claims neither a pass nor a skip', async () => {
+    const description = await commitGateDescription(null);
+
+    assert.ok(
+      description.includes('No AI review verdict is recorded'),
+      `an unrecorded verdict must be reported as such, got: ${description}`
+    );
+    assert.ok(
+      !description.includes('Review passed'),
+      `an unrecorded verdict must never be described as a pass, got: ${description}`
+    );
+    assert.ok(
+      !description.includes('SKIPPED'),
+      `an unrecorded verdict must not be described as a skip, got: ${description}`
+    );
+    assert.ok(
+      description.includes(COMMIT_INSTRUCTIONS),
+      `the commit instructions must be preserved, got: ${description}`
+    );
+  });
+
+  test('C5: a recorded provenance is appended to the verdict sentence (issue #297)', async () => {
+    const description = await commitGateDescription(VERDICT_SKIPPED, {
+      reviewSource: 'skipped',
+      critiqueVerified: false
+    });
+
+    assert.ok(
+      description.includes('[Verdict source: skipped; Tier 1 critique verified: false]'),
+      `the record's provenance must be named, got: ${description}`
+    );
+    assert.ok(description.includes('SKIPPED'), description);
+    assert.ok(description.includes(COMMIT_INSTRUCTIONS), description);
+  });
+
+  test('C6: a legacy checkpoint with no recorded source renders no provenance suffix', async () => {
+    const description = await commitGateDescription(VERDICT_APPROVED);
+
+    assert.ok(description.startsWith('Review passed.'), description);
+    assert.strictEqual(
+      description.includes('Verdict source:'),
+      false,
+      `an unknown provenance must not be invented, got: ${description}`
+    );
+  });
+
+  test('C7 an unacknowledged deviation blocks the COMMIT gate with the acknowledgment command (#437 AC2)', async () => {
+    const sm = StateMachine.createInitial({ issue: 437, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT, { note: 'Reached the commit gate', reviewVerdict: VERDICT_APPROVED });
+    sm.recordPlanDeviation({
+      planSection: '§4.4 Test Register row TR-15',
+      planLiteral: 'tests/application/run-lifecycle.test.ts:664',
+      implementedAssertion: 'tests/application/run-lifecycle.test.ts:4',
+      reason: 'the pinned fixture asserts pausedAtGate at line 4',
+      files: []
+    });
+
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+    const result = await new GetNextActionUseCase(stateRepo, makeMockConfigLocal()).execute({
+      workspaceDir: '/repo'
+    });
+
+    assert.strictEqual(result.title, 'Plan Deviation Unacknowledged');
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.ok(result.description.includes('PD-1'), result.description);
+    assert.ok(
+      result.description.includes('codeloop deviation --issue 437 --ack PD-1'),
+      result.description
+    );
+  });
+});
+
+/**
+ * C4 (issue #269, AC2.4): after a dispatched Reviewer subagent's verdict is
+ * RECORDED through the production path, the COMMIT gate reports the ACTUAL
+ * verdict — never "No AI review verdict is recorded for this task".
+ */
+describe('GetNextActionUseCase COMMIT-gate description after a recorded reviewer verdict (issue #269)', () => {
+  test('C4: a recorded reviewer APPROVED verdict is reported as "Review passed."', async () => {
+    const sm = StateMachine.createInitial({ issue: 269, baseBranch: 'main' });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+
+    const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+
+    // The production recording path: `RunReviewUseCase` with a reviewer
+    // subagent's verdict block (what `codeloop review --verdict-file` does).
+    const reviewUseCase = new RunReviewUseCase(
+      stateRepo,
+      makeMockConfigLocal(),
+      {
+        resolvePlanFile: () => null,
+        readPlanDocument: () => '',
+        updateSummaryLog: () => true
+      } as any,
+      undefined,
+      undefined
+    );
+    const review = await reviewUseCase.execute({
+      reviewOutput: 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: All good.\nUNFULFILLED_AC:\n- None\n'
+    });
+    assert.strictEqual(review.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(review.currentStage, STAGE_COMMIT);
+
+    // Now the COMMIT gate must describe what ACTUALLY happened.
+    const useCase = new GetNextActionUseCase(stateRepo, makeMockConfigLocal());
+    const result = await useCase.execute({ workspaceDir: '/repo' });
+
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.ok(
+      result.description.startsWith('Review passed.'),
+      `the recorded APPROVED verdict must read as a pass, got: ${result.description}`
+    );
+    assert.ok(
+      !result.description.includes('No AI review verdict is recorded'),
+      `the gate must not claim the verdict is missing, got: ${result.description}`
+    );
+  });
+});

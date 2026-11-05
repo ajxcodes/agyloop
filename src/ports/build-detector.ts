@@ -1,15 +1,36 @@
 /**
- * agyloop - BuildDetectorPort Interface
+ * codeloop - BuildDetectorPort Interface
  *
  * Inversion of control contract for repository ecosystem detection and command resolution.
  */
 
-import { Ecosystem, GateCommandDefinition } from '../domain';
-import { AgyLoopConfig } from './config-repository';
+import { Ecosystem, GateCommandDefinition, GateCommandPlan } from '../domain';
+import { CodeLoopConfig } from './config-repository';
 
 export interface ProjectDetectionOptions {
   readonly workspaceDir: string;
   readonly configPath?: string | null;
+}
+
+/**
+ * Optional inputs to command-plan resolution (issue #298).
+ *
+ * `planTargets` are the approved plan's Quality Gate Targets, in plan order.
+ * They sit BELOW explicit CLI commands and ABOVE config/auto-detection, so an
+ * approved plan can widen the gate without letting a plan silently override an
+ * operator's explicit command.
+ */
+export interface GateCommandResolutionOptions {
+  readonly explicitCommands?: readonly string[] | readonly GateCommandDefinition[];
+  readonly planTargets?: readonly string[];
+  readonly planPath?: string | null;
+}
+
+export interface DetectedSubproject {
+  /** Repo-relative POSIX directory, e.g. 'apps/web'. */
+  readonly path: string;
+  /** Ecosystem types detected in that directory, priority-ordered. */
+  readonly ecosystems: readonly string[];
 }
 
 export interface DetectedProject {
@@ -17,25 +38,56 @@ export interface DetectedProject {
   readonly ecosystems: readonly Ecosystem[];
   readonly primaryEcosystem: Ecosystem;
   readonly commands: readonly GateCommandDefinition[];
-  readonly hasOverrides: boolean;
+  /** Subprojects discovered below the workspace root (#334); omitted defaults to none. */
+  readonly subprojects?: readonly DetectedSubproject[];
+}
+
+/**
+ * How a container runtime is reachable (issue #295).
+ *
+ * `socket` means a daemon socket file exists and `act` must be pointed at it;
+ * `fork-exec` means the runtime is HEALTHY but has no socket (rootless podman
+ * connects over a fork/exec helper), so `act` uses its default transport.
+ * Availability is a runtime-health question, never a file-existence question:
+ * a working rootless podman was reported absent on every run.
+ */
+export interface ContainerRuntimeProbe {
+  readonly runtime: 'podman' | 'docker';
+  /** The socket path, or `null` when the runtime has no usable socket. */
+  readonly socketPath: string | null;
+  readonly connection: 'socket' | 'fork-exec';
 }
 
 export interface BuildDetectorPort {
   /**
    * Inspects workspace markers and lockfiles to detect ecosystems and verification commands.
    */
-  detect(workspaceDir: string, config?: AgyLoopConfig): Promise<DetectedProject>;
+  detect(workspaceDir: string, config?: CodeLoopConfig): Promise<DetectedProject>;
+
+  /**
+   * Resolves the concrete verification commands WITH provenance (issue #298).
+   *
+   * Precedence: explicit > plan > config > act > auto-detect > default.
+   * Detected Node lint is appended when the chosen list omits it.
+   */
+  resolveCommandPlan(
+    workspaceDir: string,
+    config?: CodeLoopConfig,
+    options?: GateCommandResolutionOptions
+  ): Promise<GateCommandPlan>;
 
   /**
    * Resolves the concrete verification commands following strict precedence:
    * 1. explicitCommands parameter
-   * 2. config overrides (gateCommands / quality_gates.commands)
-   * 3. auto-detected ecosystem commands
-   * 4. default gate commands fallback
+   * 2. approved plan targets
+   * 3. config overrides (options.gateCommands / quality_gates.commands / verification.gates)
+   * 4. act container gate
+   * 5. auto-detected ecosystem commands
+   * 6. default gate commands fallback
    */
   resolveCommands(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]>;
 
@@ -48,4 +100,13 @@ export interface BuildDetectorPort {
    * Resolves the container daemon socket path and runtime type.
    */
   resolveContainerSocket?(): { socketPath: string; runtime: 'podman' | 'docker' } | null;
+
+  /**
+   * Probes runtime HEALTH, not just a socket file (issue #295).
+   *
+   * Returns `null` when no usable runtime exists (a clear skip, never a hard
+   * failure); returns a `fork-exec` probe when the runtime answers natively but
+   * exposes no socket.
+   */
+  probeContainerRuntime?(): ContainerRuntimeProbe | null;
 }

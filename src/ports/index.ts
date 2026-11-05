@@ -1,5 +1,5 @@
 /**
- * agyloop - Ports Layer Public API
+ * codeloop - Ports Layer Public API
  */
 
 export * from './state-repository';
@@ -15,6 +15,11 @@ export * from './critique-installer';
 export * from './standards-repository';
 export * from './confirmation-prompt';
 export * from './worktree-manager';
+export * from './agent-runner';
+export * from './project-scaffolder';
+export * from './gate-report-repository';
+export * from './workspace-mutation-probe';
+export * from './source-file-reader';
 
 
 

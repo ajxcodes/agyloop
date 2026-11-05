@@ -25,7 +25,7 @@ import type {
   CritiqueResolution
 } from '../../src/ports';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: any = null;
 
   constructor(initialStage: string = STAGE_QUALITY_GATE) {
@@ -57,7 +57,7 @@ class MockStateRepo implements StateRepository {
   }
 }
 
-class MockConfigRepo implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   loadConfig(): any {
     return {};
   }
@@ -74,7 +74,7 @@ class MockConfigRepo implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   resolvePlanFile(): any {
     return null;
   }
@@ -96,6 +96,32 @@ class MockPlanGenerator implements PlanGeneratorPort {
   findPlanDirectory(): any {
     return null;
   }
+}
+
+/**
+ * Issue #455: review from `QUALITY_GATE` certifies through the shared
+ * chokepoint, which fails CLOSED without a filed same-round report.
+ */
+function usableGate(): any {
+  return {
+    load: () => ({
+      verdict: 'PASSED',
+      buildSystem: 'node',
+      buildStatus: 'PASSED',
+      testsStatus: 'PASSED (2 passed)',
+      testsPassed: 2,
+      testsFailed: 0,
+      durationMs: 1000,
+      executedCommands: ['npm test'],
+      commandResults: [],
+      smokeChecks: [],
+      smokeProtocol: 'NOT_DECLARED',
+      notRun: [],
+      gateRound: 1
+    }),
+    save: () => '/fake/gate.json',
+    clear: () => undefined
+  };
 }
 
 describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
@@ -149,18 +175,19 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
-    const result = await useCase.execute({ dryRun: true });
+    const result = await useCase.execute({ dryRun: false });
 
     assert.strictEqual(promptAsked, true);
     assert.strictEqual(installCalled, true);
@@ -210,23 +237,27 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
       undefined,
       mockInstaller,
-      mockPrompt
+      mockPrompt,
+      usableGate()
     );
 
-    const result = await useCase.execute({ dryRun: true });
+    const result = await useCase.execute({ dryRun: false });
 
     assert.strictEqual(installCalled, false);
     assert.strictEqual(result.autoInstalled, false);
-    assert.strictEqual(result.passed, false);
-    assert.strictEqual(result.verdict.status, 'CHANGES_REQUESTED');
+    // Issue #236: an absent critique is an advisory SKIPPED review, not a
+    // fabricated CHANGES_REQUESTED — the run must not block the pipeline.
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.verdict.status, 'SKIPPED');
+    assert.strictEqual(result.verdict.isSkipped(), true);
   });
 
   it('detects outdated version and populates updateNotification banner', async () => {
@@ -272,20 +303,214 @@ describe('RunReviewUseCase Critique Auto-Install & Update Detection', () => {
     };
 
     const useCase = new RunReviewUseCase(
-      new MockStateRepo(),
-      new MockConfigRepo(),
-      new MockPlanGenerator(),
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
       undefined,
       mockCritique,
       undefined,
       undefined,
-      mockInstaller
+      mockInstaller,
+      undefined,
+      usableGate()
+    );
+
+    const result = await useCase.execute({ dryRun: false });
+
+    assert.ok(result.updateNotification);
+    assert.ok(result.updateNotification.includes('v0.1.6 -> v0.2.0'));
+    assert.ok(result.updateNotification.includes('codeloop critique update'));
+  });
+
+  // --- Zero-Hang Invariant (issue #218 / AC6) ------------------------------
+  // The auto-install prompt defaults to "yes" and used to fire whenever the
+  // critique CLI was missing — i.e. on every fresh CI box, where the readline
+  // adapter would never settle.
+
+  it('never asks the critique auto-install prompt when interactive is false', async () => {
+    let promptAsked = false;
+    let installCalled = false;
+
+    const mockPrompt: ConfirmationPromptPort = {
+      async confirm(): Promise<boolean> {
+        promptAsked = true;
+        return true;
+      }
+    };
+
+    const mockInstaller: CritiqueInstallerPort = {
+      async fetchLatestVersion(): Promise<string | null> {
+        return '0.2.0';
+      },
+      async install(): Promise<CritiqueInstallResult> {
+        installCalled = true;
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async update(): Promise<CritiqueInstallResult> {
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async checkUpdateAvailable(): Promise<any> {
+        return { currentVersion: null, latestVersion: '0.2.0', lastCheckedAt: Date.now(), isOutdated: false, isInstalled: false, resolvedPath: null };
+      },
+      async getCachedVersionInfo(): Promise<any> {
+        return null;
+      }
+    };
+
+    const mockCritique: CritiquePort = {
+      resolveReviewer(): CritiqueResolution {
+        return { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false };
+      },
+      async review(): Promise<any> {
+        return AiReviewReport.bypassed('Critique CLI binary not found.');
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
+      undefined,
+      mockCritique,
+      undefined,
+      undefined,
+      mockInstaller,
+      mockPrompt,
+      usableGate()
+    );
+
+    const result = await useCase.execute({ dryRun: false, interactive: false });
+
+    assert.strictEqual(promptAsked, false);
+    assert.strictEqual(installCalled, false);
+    assert.strictEqual(result.autoInstalled, false);
+  });
+
+  it('still asks the critique auto-install prompt when interactive is undefined (default)', async () => {
+    let promptAsked = false;
+
+    const mockPrompt: ConfirmationPromptPort = {
+      async confirm(): Promise<boolean> {
+        promptAsked = true;
+        return false;
+      }
+    };
+
+    const mockInstaller: CritiqueInstallerPort = {
+      async fetchLatestVersion(): Promise<string | null> {
+        return '0.2.0';
+      },
+      async install(): Promise<CritiqueInstallResult> {
+        return { success: false, version: null, targetPath: null, error: 'declined' };
+      },
+      async update(): Promise<CritiqueInstallResult> {
+        return { success: false, version: null, targetPath: null, error: 'declined' };
+      },
+      async checkUpdateAvailable(): Promise<any> {
+        return { currentVersion: null, latestVersion: '0.2.0', lastCheckedAt: Date.now(), isOutdated: false, isInstalled: false, resolvedPath: null };
+      },
+      async getCachedVersionInfo(): Promise<any> {
+        return null;
+      }
+    };
+
+    const mockCritique: CritiquePort = {
+      resolveReviewer(): CritiqueResolution {
+        return { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false };
+      },
+      async review(): Promise<any> {
+        return AiReviewReport.bypassed('Critique CLI binary not found.');
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
+      undefined,
+      mockCritique,
+      undefined,
+      undefined,
+      mockInstaller,
+      mockPrompt,
+      usableGate()
+    );
+
+    await useCase.execute({ dryRun: false });
+
+    assert.strictEqual(promptAsked, true);
+  });
+});
+
+/**
+ * Issue #248 (R13): a DRY RUN must not reach the network or the machine's
+ * installation. The installer prompt defaults to yes, so an unguarded dry run
+ * would both prompt and mutate the user's data directory.
+ */
+describe('RunReviewUseCase --dry-run never installs or checks for updates (#248)', () => {
+  it('does not prompt, install, or run the update check', async () => {
+    let promptAsked = false;
+    let installCalled = false;
+    let updateChecked = false;
+
+    const mockPrompt: ConfirmationPromptPort = {
+      async confirm(): Promise<boolean> {
+        promptAsked = true;
+        return true;
+      }
+    };
+
+    const mockInstaller: CritiqueInstallerPort = {
+      async fetchLatestVersion(): Promise<string | null> {
+        return null;
+      },
+      async install(): Promise<CritiqueInstallResult> {
+        installCalled = true;
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async update(): Promise<CritiqueInstallResult> {
+        return { success: true, version: '0.2.0', targetPath: '/mock/bin/critique.js', error: null };
+      },
+      async checkUpdateAvailable(): Promise<any> {
+        updateChecked = true;
+        return { currentVersion: null, latestVersion: null, lastCheckedAt: 0, isOutdated: false, isInstalled: false };
+      },
+      async getCachedVersionInfo(): Promise<any> {
+        return null;
+      }
+    };
+
+    const mockCritique: CritiquePort = {
+      resolveReviewer(): CritiqueResolution {
+        return { source: RESOLVER_SOURCE_NONE, path: null, isAvailable: false };
+      },
+      async review(): Promise<any> {
+        return AiReviewReport.empty();
+      },
+      async getVersion(): Promise<string | null> {
+        return null;
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      new StateRepositoryDouble(),
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(),
+      undefined,
+      mockCritique,
+      undefined,
+      undefined,
+      mockInstaller,
+      mockPrompt,
+      usableGate()
     );
 
     const result = await useCase.execute({ dryRun: true });
 
-    assert.ok(result.updateNotification);
-    assert.ok(result.updateNotification.includes('v0.1.6 -> v0.2.0'));
-    assert.ok(result.updateNotification.includes('agyloop critique update'));
+    assert.strictEqual(promptAsked, false, 'a dry run must not prompt');
+    assert.strictEqual(installCalled, false, 'a dry run must not install');
+    assert.strictEqual(updateChecked, false, 'a dry run must not run the update check (it writes the cache)');
+    assert.strictEqual(result.dryRun, true);
+    assert.strictEqual(result.previousStage, STAGE_QUALITY_GATE);
   });
 });

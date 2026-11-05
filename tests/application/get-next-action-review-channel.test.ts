@@ -1,0 +1,320 @@
+/**
+ * codeloop - REVIEW directive channel tests (issue #272)
+ *
+ * The gap: `codeloop next` at REVIEW returned the same directive forever and
+ * never named the channel that records the verdict. These tests pin the
+ * operator-facing fields AND the re-dispatch record.
+ *
+ * RV1 - the channel + exit condition are named in the operator fields
+ * RV2 - three reads name the channel and record counts 1, 2, 3
+ * RV3 - the fourth read is the breaker, names the cap AND the way out
+ * RV4 - a paused read never increments the counter
+ * RV5 - the directive AND the reviewer prompt name the SAME Tier 1 evidence
+ *       path, passed back with `--critique-report` (issue #397, D2-AC1)
+ * RV6 - the evidence path is derived from the checkpoint, never auto-discovered
+ */
+
+const { describe, test, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const { GetNextActionUseCase, critiqueReportPathFor } = require('../../dist/application');
+const { FileStateRepository } = require('../../dist/infrastructure');
+const { readCheckpoint } = require('../helpers/state-seed.ts');
+
+/** Canonical task-seed writer pinned to the caller-owned checkpoint file. */
+function seedCheckpointFile(stateFile: string, extra: Record<string, unknown> = {}): string {
+  const now = new Date().toISOString();
+  return helpersStateSeed.seedCheckpoint(
+    path.dirname(path.dirname(path.dirname(stateFile))),
+    {
+      version: '1.0.0',
+      currentStage: 'REVIEW',
+      mode: 'standard',
+      issue: ISSUE,
+      baseBranch: 'main',
+      createdAt: now,
+      updatedAt: now,
+      history: [{ stage: 'REVIEW', timestamp: now }],
+      pausedAtGate: null,
+      pausedAtTimestamp: null,
+      reviewDispatchCount: 0,
+      ...extra
+    },
+    { file: stateFile }
+  );
+}
+
+const helpersStateSeed = require('../helpers/state-seed.ts');
+const {
+  NOTE_REVIEW_GATE_EXIT_CONDITION,
+  MAX_REVIEW_DISPATCH_LOOPS,
+  StateStorageError
+} = require('../../dist/domain');
+
+const ISSUE = 241;
+
+const configRepo = {
+  loadConfig: () => ({ options: { enableMcpInPlanner: true } }),
+  resolveModel: (role: string) => ({
+    role,
+    configured: 'flash',
+    tier: 'flash',
+    apiModel: 'gemini-2.5-flash'
+  }),
+  mapModelToTier: () => 'flash'
+};
+
+describe('REVIEW directive names its verdict channel (issue #272)', () => {
+  let sandbox: string;
+  let stateFile: string;
+  let useCase: any;
+
+  // Run from INSIDE the sandbox: `FileStateRepository.save()` refuses to write
+  // a task checkpoint from within a DIFFERENT task's worktree, and this suite
+  // may itself run from `.worktrees/<n>`. The sandbox is the workspace under
+  // test, so it is also the correct cwd.
+  const executeRead = async () => {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(sandbox);
+      return await useCase.execute({ issue: ISSUE, workspaceDir: sandbox });
+    } finally {
+      process.chdir(previousCwd);
+    }
+  };
+
+  beforeEach(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-channel-'));
+    stateFile = path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
+    seedCheckpointFile(stateFile);
+    const stateRepo = createStateRepository({ stateFilePath: stateFile });
+    useCase = new GetNextActionUseCase(stateRepo, configRepo);
+  });
+
+  afterEach(() => {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  test('RV1: the operator fields name the filing command and the exit condition', async () => {
+    const result = await executeRead();
+
+    assert.ok(result.title.length > 0, 'the directive must keep a title');
+    assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+    assert.match(result.humanSummary, /codeloop review --issue 241 --verdict-file/);
+    assert.ok(
+      result.humanSummary.includes(NOTE_REVIEW_GATE_EXIT_CONDITION),
+      `the human summary must state what ends the gate, got:\n${result.humanSummary}`
+    );
+  });
+
+  test('RV2: three reads all name the channel and record dispatch counts 1, 2, 3', async () => {
+    for (let read = 1; read <= 3; read += 1) {
+      const result = await executeRead();
+      assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+      assert.match(result.humanSummary, /codeloop review --issue 241 --verdict-file/);
+      assert.strictEqual(result.reviewDispatchCount, read);
+      assert.strictEqual(readCheckpoint(stateFile).reviewDispatchCount, read);
+    }
+  });
+
+  test('RV3: the fourth read is the breaker and names the cap + the way out', async () => {
+    await executeRead();
+    await executeRead();
+    await executeRead();
+
+    const result = await executeRead();
+
+    assert.strictEqual(result.actionType, 'human_gate');
+    assert.strictEqual(result.title, 'Review Verdict Breaker');
+    assert.match(result.description, new RegExp(String(MAX_REVIEW_DISPATCH_LOOPS)));
+    assert.match(result.description, /codeloop review/);
+    assert.strictEqual(result.reviewDispatchCount, MAX_REVIEW_DISPATCH_LOOPS);
+    assert.strictEqual(readCheckpoint(stateFile).reviewDispatchCount, MAX_REVIEW_DISPATCH_LOOPS);
+  });
+
+  test('RV4: a paused read does not increment the counter', async () => {
+    seedCheckpointFile(stateFile, { pausedAtGate: 'APPROVAL', pausedAtTimestamp: new Date().toISOString() });
+
+    const result = await executeRead();
+
+    assert.strictEqual(result.reviewDispatchCount, 0);
+    assert.strictEqual(readCheckpoint(stateFile).reviewDispatchCount, 0);
+    assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+  });
+
+  test('RV5: the directive and the reviewer prompt name the SAME Tier 1 evidence path (issue #397)', async () => {
+    const result = await executeRead();
+    const expected = critiqueReportPathFor(stateFile, ISSUE);
+
+    for (const field of [result.description, result.humanSummary]) {
+      assert.ok(field.includes('--critique-report'), `a directive field omits --critique-report: ${field}`);
+      assert.ok(field.includes(expected), `a directive field omits ${expected}: ${field}`);
+    }
+
+    const prompt = result.invocationPayload.Subagents[0].Prompt;
+    assert.ok(prompt.includes(expected), 'the reviewer prompt names a different evidence path');
+    assert.strictEqual(
+      /codeloop\s+review/.test(prompt),
+      false,
+      'the read-only reviewer must not be told to file its own verdict'
+    );
+  });
+
+  test('RV6: critiqueReportPathFor derives the path from the checkpoint, beside tasks/', () => {
+    assert.strictEqual(
+      critiqueReportPathFor('/repo/.agyloop/tasks/397.json', 397),
+      '/repo/.agyloop/critique/397.json'
+    );
+    assert.strictEqual(
+      critiqueReportPathFor('/repo/.agyloop/state.json', 397),
+      '/repo/.agyloop/critique/397.json'
+    );
+    assert.strictEqual(
+      critiqueReportPathFor('/repo/.agyloop/tasks/397.json', null),
+      '/repo/.agyloop/critique/adhoc.json'
+    );
+    assert.strictEqual(
+      critiqueReportPathFor('C:\\repo\\.agyloop\\tasks\\397.json', 397),
+      'C:\\repo\\.agyloop\\critique\\397.json'
+    );
+  });
+});
+
+/**
+ * Issue #291 (F1): a REVIEW read must degrade, not abort, when the re-dispatch
+ * counter save fails — and the skip must be visible on stderr.
+ */
+class FailingStateRepo {
+  public saveCalls = 0;
+  private readonly snapshot: any;
+
+  constructor(snapshot: any) {
+    this.snapshot = snapshot;
+  }
+
+  public async load(): Promise<any> {
+    return this.snapshot;
+  }
+
+  public async save(): Promise<void> {
+    this.saveCalls += 1;
+    throw new StateStorageError('checkpoint is not writable from this cwd');
+  }
+
+  public async reset(): Promise<void> {}
+
+  public getStateFilePath(): string {
+    return '/fake/.agyloop/tasks/241.json';
+  }
+}
+
+class RecoveringStateRepo {
+  public saveCalls = 0;
+  public snapshot: any;
+
+  constructor(snapshot: any) {
+    this.snapshot = snapshot;
+  }
+
+  public async load(): Promise<any> {
+    return this.snapshot;
+  }
+
+  public async save(next: any): Promise<void> {
+    this.saveCalls += 1;
+    if (this.saveCalls === 1) {
+      throw new StateStorageError('checkpoint is not writable from this cwd');
+    }
+    this.snapshot = next;
+  }
+
+  public async reset(): Promise<void> {}
+
+  public getStateFilePath(): string {
+    return '/fake/.agyloop/tasks/241.json';
+  }
+}
+
+function reviewSnapshot(): any {
+  return {
+    version: '1.0.0',
+    currentStage: 'REVIEW',
+    mode: 'standard',
+    issue: ISSUE,
+    baseBranch: 'main',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    history: [{ stage: 'REVIEW', timestamp: new Date().toISOString() }],
+    pausedAtGate: null,
+    pausedAtTimestamp: null,
+    reviewDispatchCount: 0
+  };
+}
+
+describe('REVIEW read degrades on an unwritable counter save (issue #291 F1)', () => {
+  test('CH1: a failing save returns the directive, names the channel, and warns', async () => {
+    const repo = new FailingStateRepo(reviewSnapshot());
+    const useCase = new GetNextActionUseCase(repo as any, configRepo);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    let result: any;
+    try {
+      console.warn = (...args: any[]) => {
+        warnings.push(args.map(String).join(' '));
+      };
+      result = await useCase.execute({ issue: ISSUE, workspaceDir: process.cwd() });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.strictEqual(result.actionType, 'subagent');
+    assert.match(result.description, /codeloop review --issue 241 --verdict-file/);
+    assert.match(result.humanSummary, /codeloop review --issue 241 --verdict-file/);
+    assert.strictEqual(result.reviewDispatchCount, 1, 'the in-memory count is reported');
+    assert.strictEqual(repo.saveCalls, 1, 'the save was attempted once and threw');
+    assert.strictEqual(warnings.length, 1, `exactly one warning expected, got: ${warnings.join(' | ')}`);
+    assert.ok(
+      warnings[0].includes('could not record the review dispatch counter'),
+      `the warning must name what was not persisted, got: ${warnings[0]}`
+    );
+  });
+
+  test('CH2: the warning is not duplicated, and a later writable read persists the count', async () => {
+    const repo = new RecoveringStateRepo(reviewSnapshot());
+    const useCase = new GetNextActionUseCase(repo as any, configRepo);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    try {
+      console.warn = (...args: any[]) => {
+        warnings.push(args.map(String).join(' '));
+      };
+      await useCase.execute({ issue: ISSUE, workspaceDir: process.cwd() });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.strictEqual(warnings.length, 1, 'one failed save, one warning');
+
+    // The breaker stays reachable: once the checkpoint is writable the count is
+    // recorded again, without any new warning.
+    const secondWarnings: string[] = [];
+    try {
+      console.warn = (...args: any[]) => {
+        secondWarnings.push(args.map(String).join(' '));
+      };
+      await useCase.execute({ issue: ISSUE, workspaceDir: process.cwd() });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepStrictEqual(secondWarnings, []);
+    assert.strictEqual(repo.snapshot.reviewDispatchCount, 1, 'the counter is persisted again');
+    assert.strictEqual(repo.saveCalls, 2);
+  });
+});
+
+const { createStateRepository } = require('../helpers/state-repo.ts');

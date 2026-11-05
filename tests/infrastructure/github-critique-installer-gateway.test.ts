@@ -16,7 +16,7 @@ describe('GithubCritiqueInstallerGateway (Infrastructure Layer)', () => {
   let cacheFilePath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-critique-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-critique-test-'));
     cacheFilePath = path.join(tempDir, 'cache.json');
   });
 

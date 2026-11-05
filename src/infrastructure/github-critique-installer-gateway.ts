@@ -1,5 +1,5 @@
 /**
- * agyloop - GithubCritiqueInstallerGateway (Infrastructure Adapter)
+ * codeloop - GithubCritiqueInstallerGateway (Infrastructure Adapter)
  *
  * Implements CritiqueInstallerPort:
  * 1. Checks GitHub Releases API (ajxcodes/critique/releases/latest) with non-blocking timeouts
@@ -94,7 +94,7 @@ export class GithubCritiqueInstallerGateway implements CritiqueInstallerPort {
         ? path.join('.agyloop', CRITIQUE_CACHE_FILENAME)
         : path.join(this.targetBaseDir, CRITIQUE_CACHE_FILENAME));
     this.fetcher = options.fetcher || globalThis.fetch;
-    this.userAgent = options.userAgent || `agyloop/${CLI_VERSION}`;
+    this.userAgent = options.userAgent || `codeloop/${CLI_VERSION}`;
   }
 
   /**
@@ -304,6 +304,19 @@ export class GithubCritiqueInstallerGateway implements CritiqueInstallerPort {
         downloadUrl = `https://github.com/ajxcodes/critique/releases/download/${rawTag}/critique.js`;
       }
 
+      // 2b. Dry run (issue #248): the ONE network call permitted is the release
+      // METADATA fetch above — it is needed to say WHICH version would be
+      // installed. Nothing below runs: no asset download, no mkdirSync, no
+      // writeFileSync, no chmod, no cache write.
+      if (options.dryRun) {
+        return createCritiqueInstallResult({
+          success: true,
+          dryRun: true,
+          version,
+          targetPath: path.join(binDir, 'critique.js')
+        });
+      }
+
       // 3. Download asset
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -404,7 +417,8 @@ export class GithubCritiqueInstallerGateway implements CritiqueInstallerPort {
     return this.install({
       targetDir: options.targetDir,
       timeoutMs: options.timeoutMs,
-      force: true
+      force: true,
+      dryRun: options.dryRun
     });
   }
 

@@ -1,5 +1,5 @@
 /**
- * agyloop - ListModelsUseCase
+ * codeloop - ListModelsUseCase
  *
  * Queries ModelCatalogPort to retrieve discovered Gemini models and their tier mappings.
  */

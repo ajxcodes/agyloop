@@ -1,5 +1,5 @@
 /**
- * agyloop - ExecuteCommitUseCase (Application Layer)
+ * codeloop - ExecuteCommitUseCase (Application Layer)
  *
  * Coordinates commit execution & human confirmation gate:
  * 1. Validates pipeline stage (must be at STAGE_COMMIT).
@@ -7,7 +7,7 @@
  * 3. Enforces Human Approval Confirmation Gate (never commits silently in standard mode).
  * 4. Executes git commit via CommandExecutorPort upon confirmation.
  * 5. Advances StateMachine transition: STAGE_COMMIT -> STAGE_COMPLETED.
- * 6. Updates AgyLoop Summary.md stage Commit / PR with commit hash, message, and timestamp.
+ * 6. Updates CodeLoop Summary.md stage Commit / PR with commit hash, message, and timestamp.
  * 7. Checkpoints state to StateRepository.
  *
  * Strict Hexagonal Architecture: zero direct I/O, zero Node.js built-ins.
@@ -30,8 +30,20 @@ import {
   CommitExecutionError,
   InvalidTransitionError,
   PublicSanitizer,
-  buildGitTokenRedirectConfig
+  buildGitTokenRedirectConfig,
+  consumedHumanWaitMs,
+  escapeShellQuote,
+  formatStageDuration,
+  isRootWorkspace,
+  COMMIT_EXCLUDED_PATHSPECS,
+  isCommitExcludedPath,
+  GATE_COMMIT,
+  measureStageWindowMs,
+  resolveStageRound,
+  IssueNumber,
+  planDeviationsCommitBody
 } from '../domain';
+import { assertPlanDeviationsAcknowledged } from './plan-deviation';
 import {
   StateRepository,
   CommandExecutorPort,
@@ -56,6 +68,12 @@ export interface ExecuteCommitParams {
   readonly rejectionFeedback?: string | null;
   readonly rejectionReason?: string | null;
   readonly createPr?: boolean;
+  /**
+   * True only when a human can answer prompts. Defaults to true for backwards
+   * compatibility; the CLI composition root and the readline adapter both enforce
+   * TTY so a non-interactive session can never block (issue #218 AC6).
+   */
+  readonly interactive?: boolean;
 }
 
 export interface ExecuteCommitResult {
@@ -67,10 +85,50 @@ export interface ExecuteCommitResult {
   readonly stateMachine: StateMachine;
   readonly summaryUpdated: boolean;
   readonly prBaseBranch?: string;
+  /**
+   * The PR was CREATED by this run (issue #240/Defect 1). When true the manual
+   * "Next Step (Create PR)" script is suppressed — it would describe work that
+   * was already done.
+   */
+  readonly prCreated?: boolean;
+  /** The created PR's URL, best effort — `undefined` when it could not be read. */
+  readonly prUrl?: string;
+  /** A PR already existed for the active branch; nothing was created. */
+  readonly prExists?: boolean;
+  /**
+   * True when the PR targets a collector branch (`phase/*`, `feature/*`).
+   *
+   * It is a MEASUREMENT of the base, not a prediction of the merge outcome
+   * (issue #376, Defect 1): collector-branch merges have auto-closed the issue
+   * on some deliveries (#369/#354) and left it open on others (#399/#401), and
+   * the PR's closing-issue link list is empty on both. `cli.ts` therefore
+   * states the measured base and phrases the `codeloop sync` advice
+   * conditionally.
+   */
+  readonly prBaseIsCollector?: boolean;
+  /**
+   * The issue the PR body's `Closes #N` names (issue #351).
+   *
+   * `params.issue || sm.issue` — the SAME value that builds the keyword. The
+   * CLI's collector caveat must key on this, not on whether the operator
+   * happened to pass `--issue`: the pipeline's own recommended invocation takes
+   * the issue from the checkpoint.
+   */
+  readonly resolvedIssue?: number | null;
   readonly prCommand?: string;
   readonly worktreeTornDown?: boolean;
+  readonly worktreeTornDownPath?: string;
+  readonly worktreeTornDownIsolated?: boolean;
   readonly pushError?: string;
   readonly fallbackUsed?: boolean;
+  /**
+   * The directory the commit actually ran in (issue #301, absorbing #307).
+   * Reported so the operator can see WHERE the commit landed — the worktree or
+   * the workspace root — instead of having to infer it.
+   */
+  readonly commitCwd: string;
+  /** Whether `commitCwd` is an isolated worktree or the workspace root. */
+  readonly worktreeMode: 'isolated' | 'root';
 }
 
 export class ExecuteCommitUseCase {
@@ -96,13 +154,18 @@ export class ExecuteCommitUseCase {
 
   public async execute(params: ExecuteCommitParams = {}): Promise<ExecuteCommitResult> {
     const initialDir = params.workspaceDir || process.cwd();
+    const rootDir = params.rootWorkspaceDir || initialDir;
     const snapshot = await this.stateRepo.load();
     const sm = snapshot ? StateMachine.fromSnapshot(snapshot) : StateMachine.createInitial();
-    const cwd = sm.worktree?.worktreePath;
-    if (!cwd) {
-      throw new CommitExecutionError('validateWorktree', 'Worktree path is missing in state. Cannot commit to root workspace.');
-    }
-    const rootDir = params.rootWorkspaceDir || initialDir;
+
+    // Issue #301/#307: `worktree: null` is a LEGAL root-scoped run
+    // (`--no-worktree`, a torn-down descriptor, a root-workspace pipeline).
+    // `null` no longer means "cannot commit": it means "commit the workspace the
+    // caller named". An isolated descriptor still wins, so the safety that
+    // prevents committing the wrong tree is unchanged.
+    const descriptorPath = sm.worktree?.worktreePath;
+    const cwd = descriptorPath ?? initialDir;
+    const worktreeMode: 'isolated' | 'root' = descriptorPath ? 'isolated' : 'root';
 
     if (sm.currentStage !== STAGE_COMMIT) {
       throw new InvalidTransitionError(
@@ -112,6 +175,10 @@ export class ExecuteCommitUseCase {
         `Cannot execute commit: Pipeline is at stage '${sm.currentStage}'. Current stage must be '${STAGE_COMMIT}'.`
       );
     }
+
+    // Issue #437: refuse before any git work while a recorded deviation is
+    // unacknowledged — the same posture as `transition REVIEW`.
+    assertPlanDeviationsAcknowledged(sm, params.issue ?? sm.issue);
 
     // Resolve CommitMessage
     let commitMessage: CommitMessage;
@@ -143,7 +210,9 @@ export class ExecuteCommitUseCase {
         commitMessage,
         currentStage: sm.currentStage,
         stateMachine: sm,
-        summaryUpdated: false
+        summaryUpdated: false,
+        commitCwd: cwd,
+        worktreeMode
       };
     }
 
@@ -158,6 +227,11 @@ export class ExecuteCommitUseCase {
       userConfirmed = false;
     } else if (isExplicitlyConfirmed || isBypassed) {
       userConfirmed = true;
+    } else if (params.interactive === false) {
+      // Non-interactive session: never block on a prompt. Leave the commit
+      // unconfirmed so the caller's rejection path reports it as cancelled
+      // (mirrors the fail-closed `init` prompt gate).
+      userConfirmed = false;
     } else if (this.confirmationPrompt) {
       const promptQuery = `\nProposed Conventional Commit:\n  ${commitMessage.toSingleLine()}\n\nFull Message:\n${commitMessage.toFullMessage()}\n\n${PROMPT_CONFIRM_COMMIT}`;
       userConfirmed = await this.confirmationPrompt.confirm(promptQuery, false);
@@ -215,7 +289,9 @@ export class ExecuteCommitUseCase {
           commitMessage,
           currentStage: sm.currentStage,
           stateMachine: sm,
-          summaryUpdated
+          summaryUpdated,
+          commitCwd: cwd,
+          worktreeMode
         };
       }
 
@@ -226,7 +302,9 @@ export class ExecuteCommitUseCase {
         commitMessage,
         currentStage: sm.currentStage,
         stateMachine: sm,
-        summaryUpdated: false
+        summaryUpdated: false,
+        commitCwd: cwd,
+        worktreeMode
       };
     }
 
@@ -241,6 +319,20 @@ export class ExecuteCommitUseCase {
 
     // Stage changes if not already strictly staged
     if (!params.staged) {
+      // Issue #301 (absorbing #319): refuse HONESTLY when the working tree
+      // contains nothing but the paths this gate excludes. Without this, the
+      // run printed a file list the commit then untracked and failed with git's
+      // "nothing added to commit but untracked files present".
+      const committable = parsePorcelainPaths(statusRes.stdout).filter(
+        (path) => !isCommitExcludedPath(path)
+      );
+      if (committable.length === 0) {
+        throw new CommitExecutionError(
+          'git status',
+          `Nothing to commit: the working tree contains only paths codeloop excludes from every commit (${COMMIT_EXCLUDED_PATHSPECS.join(', ')}). Stage or create a real change first.`
+        );
+      }
+
       const addRes = await this.commandExecutor.execute('git add -A', { cwd });
       if (addRes.exitCode !== 0) {
         throw new CommitExecutionError(
@@ -248,8 +340,29 @@ export class ExecuteCommitUseCase {
           addRes.stderr || addRes.stdout || 'Failed to stage working changes.'
         );
       }
-      // Defensive untrack: remove any accidentally staged symlinks (.agyloop, node_modules, artifacts)
-      await this.commandExecutor.execute('git rm --cached -rf .agyloop node_modules artifacts || true', { cwd });
+      // Defensive untrack: remove any accidentally staged symlinks (.agyloop, node_modules, artifacts).
+      //
+      // `--ignore-unmatch` is load-bearing (issue #102 regression): without it, `git rm --cached`
+      // aborts with "fatal: pathspec 'node_modules' did not match any files" as soon as ANY of the
+      // three pathspecs is untracked, which happens on a clean repo. The abort happens BEFORE the
+      // remaining pathspecs are processed, so `.agyloop` survived and got committed -- and because
+      // `.agyloop` is a symlink (mode 120000) rather than a directory, the granular `.gitignore`
+      // rules (`.agyloop/state.json`, `.agyloop/tasks/`, ...) never matched it either.
+      //
+      // Uses the argv form (no shell) so the command behaves identically on Windows and there is
+      // no `|| true` to swallow a genuine failure: exit status is checked and we fail closed.
+      const untrackRes = await this.commandExecutor.execute('git', {
+        cwd,
+        args: ['rm', '--cached', '-rf', '--ignore-unmatch', ...COMMIT_EXCLUDED_PATHSPECS]
+      });
+      if (untrackRes.exitCode !== 0) {
+        throw new CommitExecutionError(
+          'git rm --cached',
+          untrackRes.stderr ||
+            untrackRes.stdout ||
+            `Failed to untrack ${COMMIT_EXCLUDED_PATHSPECS.join(' / ')}.`
+        );
+      }
     }
 
     // Execute git commit
@@ -272,6 +385,10 @@ export class ExecuteCommitUseCase {
 
     // Resolve PR target base branch (inferred collector branch or main)
     const prBaseBranch = sm.baseBranch || 'main';
+    // Shape-based, deliberately (issue #240/Defect 3): no default-branch probe
+    // exists here, and adding a network call to the commit path is not worth it.
+    // `main` / `master` are never collectors.
+    const prBaseIsCollector = /^(phase|feature)\//.test(prBaseBranch);
 
     // Resolve active branch (worktree branch or git rev-parse HEAD fallback)
     let activeBranch = sm.worktree?.branch || '';
@@ -290,11 +407,21 @@ export class ExecuteCommitUseCase {
     // Resolve milestone and issue for PR generation
     const milestone = params.milestoneTitle || sm.milestoneTitle || undefined;
     const issueId = params.issue || sm.issue;
-
-    const escapeShellQuote = (str: string) => str.replace(/'/g, "'\\''");
+    // Issue #351: report the issue the body's `Closes` line actually names.
+    // `params.issue` is typed `number | string`; the keyword interpolates it
+    // verbatim, so normalise only a genuinely numeric token and never invent one.
+    // Issue #354 (nit 3): `IssueNumber` already owns the definition of a valid
+    // issue number; a second inline `/^\d+$/` here could drift from it. The
+    // value object returns null instead of throwing, which is exactly the
+    // "never invent an operand" contract #351 asked for.
+    const resolvedIssue: number | null =
+      issueId === null || issueId === undefined
+        ? null
+        : IssueNumber.tryFrom(issueId)?.value ?? null;
 
     // Check if PR already exists for the active branch
     let prExists = false;
+    let existingPrNumber: number | null = null;
     if (activeBranch) {
       try {
         const prListRes = await this.commandExecutor.execute(`gh pr list --head '${escapeShellQuote(activeBranch)}' --json number`, { cwd });
@@ -302,6 +429,9 @@ export class ExecuteCommitUseCase {
           const prs = JSON.parse(prListRes.stdout.trim());
           if (Array.isArray(prs) && prs.length > 0) {
             prExists = true;
+            if (typeof prs[0]?.number === 'number') {
+              existingPrNumber = prs[0].number;
+            }
           }
         }
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -322,7 +452,8 @@ export class ExecuteCommitUseCase {
         const singleLine = commitMessage.toSingleLine();
         const sanitizedTitle = PublicSanitizer.sanitizeCommitMessage(singleLine);
 
-        const rawBody = commitMessage.body ? `${commitMessage.body}\n\nCloses #${issueId}` : `Closes #${issueId}`;
+        const deliveredBody = planDeviationsCommitBody(commitMessage.body ?? null, sm.planDeviations);
+        const rawBody = deliveredBody ? `${deliveredBody}\n\nCloses #${issueId}` : `Closes #${issueId}`;
         const sanitizedBody = PublicSanitizer.sanitizeMarkdown(rawBody);
 
         prCommandCore += ` --title '${escapeShellQuote(sanitizedTitle)}' --body '${escapeShellQuote(sanitizedBody)}'`;
@@ -332,8 +463,11 @@ export class ExecuteCommitUseCase {
         }
       }
 
-      // Wrap with dirty tree check to avoid "Warning: 1 uncommitted change" from gh pr create
-      prCommand = `if ! git diff-index --quiet HEAD --; then git stash push -q -m "pr-create"; ${prCommandCore}; git stash pop -q; else ${prCommandCore}; fi`;
+      // Issue #315 (AC-23 / #332): the fallback is ONE copy-pasteable command.
+      // The commit leaves a clean tree, so the stash-wrapped `if ! git diff-index
+      // … then git stash push … fi` line was almost always dead code and never
+      // something an operator could read or safely copy.
+      prCommand = prCommandCore;
     }
 
     // Remote Task Branch Push with Automated Token Fallback
@@ -377,29 +511,94 @@ export class ExecuteCommitUseCase {
       throw new CommitExecutionError('git push', `Failed to push to remote: ${pushError}`);
     }
 
+    // Issue #240/Defect 1: report what this run DID with the PR, and never hand
+    // the operator a script for work that is already done. `prCommand` is
+    // returned ONLY when no PR was created.
+    let prCreated = false;
+    let prUrl: string | undefined;
+    let returnedPrCommand: string | undefined = prCommand;
+
     if (params.createPr && !prExists) {
       try {
-        await this.commandExecutor.execute(prCommand, { cwd });
+        const createRes = await this.commandExecutor.execute(prCommand, { cwd });
+        if (createRes.exitCode === 0) {
+          prCreated = true;
+          returnedPrCommand = undefined;
+          prUrl = await this.readCreatedPrUrl(activeBranch, cwd);
+        } else {
+          console.warn(
+            'Auto PR creation failed:',
+            (createRes.stderr || createRes.stdout || 'gh pr create exited non-zero').trim()
+          );
+        }
       } catch (err: unknown) {
         // Non-fatal if PR creation fails during auto-create
         console.warn('Auto PR creation failed:', err instanceof Error ? err.message : String(err));
       }
     }
 
+    // Issue #315 (AC-24 / #332): record what this run did about delivery BEFORE
+    // the checkpoint is persisted at the gate's exit. A COMPLETED run with no PR
+    // then says so in `status` and in the commit output, instead of letting a
+    // terminal stage imply the work was delivered.
+    const createdPrNumberMatch = prUrl ? /\/pull\/(\d+)/.exec(prUrl) : null;
+    sm.recordPullRequest({
+      number: createdPrNumberMatch ? Number(createdPrNumberMatch[1]) : existingPrNumber,
+      url: prCreated ? prUrl ?? null : null,
+      status: prCreated ? 'created' : prExists ? 'existing' : 'missing'
+    });
+
     // Advance StateMachine
     const transitionNote = isYolo ? NOTE_COMMIT_AUTO_APPROVED : NOTE_COMMIT_CONFIRMED;
+    const waitBefore = sm.totalHumanWaitMs;
+    // Issue #315 (AC-13 / #318.1): the COMMIT gate's confirmation wait is
+    // consumed HERE, before the terminal transition. `transition()` would also
+    // resume a human-gate pause (COMPLETED is terminal), but doing it explicitly
+    // makes the value read below independent of that internal ordering — and
+    // makes an abandoned-but-recorded pause impossible to skip.
+    if (sm.pausedAtGate === GATE_COMMIT) {
+      sm.resumeFromGate();
+    }
     sm.transition(STAGE_COMPLETED, {
       note: transitionNote,
       commitHash,
       commitMessage: commitMessage.toSingleLine()
     });
+    // Issue #284 (AC5): this row IS a human gate with a row of its own, so its
+    // wait is the honest measurement — and the value the live `263m 50s` used
+    // to contradict.
+    let commitGateWaitMs = consumedHumanWaitMs(waitBefore, sm.totalHumanWaitMs);
+    if (commitGateWaitMs <= 0) {
+      // Fallback for a checkpoint that records no pause (hand-edited, or written
+      // by a build older than #315): the COMMIT window is measurable from the
+      // history entry that opened the gate, so the row is never a false `0s`.
+      // The COMMIT entry is the penultimate one now that COMPLETED is written.
+      const windowMs = measureStageWindowMs(sm.history, STAGE_COMMIT);
+      if (windowMs !== null) {
+        commitGateWaitMs = windowMs;
+      }
+    }
 
     // Checkpoint state
     await this.stateRepo.save(sm.toSnapshot());
 
     // Automated Worktree Teardown
     let worktreeTornDown = false;
-    const shouldTeardown = !params.keepWorktree && Boolean(sm.worktree) && Boolean(this.worktreeManager) && !pushFailed;
+    let worktreeTornDownPath: string | undefined = undefined;
+    let worktreeTornDownIsolated: boolean | undefined = undefined;
+    // Issue #247 (S2): never tear down a non-isolated descriptor, and never a
+    // descriptor whose path resolves onto the root workspace — the shared
+    // root-invariant predicate (`isRootWorkspace`) is authoritative; the
+    // `isIsolated` label alone is not trusted.
+    const worktree = sm.worktree;
+    const shouldTeardown =
+      !params.keepWorktree &&
+      Boolean(worktree) &&
+      Boolean(this.worktreeManager) &&
+      !pushFailed &&
+      worktree !== null &&
+      worktree.isIsolated !== false &&
+      !isRootWorkspace(worktree.worktreePath, rootDir);
 
     if (shouldTeardown && this.worktreeManager && sm.worktree) {
       const wtPath = sm.worktree.worktreePath;
@@ -407,9 +606,9 @@ export class ExecuteCommitUseCase {
       let doTeardown = false;
       if (isExplicitlyConfirmed || isBypassed) {
         doTeardown = true;
-      } else if (this.confirmationPrompt) {
+      } else if (params.interactive !== false && this.confirmationPrompt) {
         doTeardown = await this.confirmationPrompt.confirm(
-          `\nTeardown isolated git worktree at ${wtPath}?`,
+          `\nTeardown git worktree at ${wtPath}?`,
           true
         );
       }
@@ -420,11 +619,22 @@ export class ExecuteCommitUseCase {
             worktreePath: wtPath,
             workspaceDir: rootDir,
             force: true,
-            prune: true
+            prune: true,
+            // Internal teardown: the worktree may already be gone (removed out
+            // of band) and/or registered outside `.worktrees` (an adopted
+            // worktree). Both are legitimate here; neither waives the
+            // registration check, and no external path is ever rmSync'ed (#282).
+            tolerateMissing: true,
+            allowExternal: true
           });
+          // Capture the descriptor facts BEFORE the state loses the worktree, so
+          // the CLI can report the torn-down path accurately (issue #247, S7).
+          const tornDownIsIsolated = sm.worktree.isIsolated;
           sm.setWorktree(null);
           await this.stateRepo.save(sm.toSnapshot());
           worktreeTornDown = true;
+          worktreeTornDownPath = wtPath;
+          worktreeTornDownIsolated = tornDownIsIsolated;
         } catch {
           // Teardown failure non-fatal
         }
@@ -457,9 +667,17 @@ export class ExecuteCommitUseCase {
         summaryUpdated = this.planGenerator.updateSummaryLog(summaryPath, {
           stage: SUMMARY_STAGE_COMMIT_PR,
           status: SUMMARY_STATUS_COMPLETED,
+          duration: formatStageDuration(commitGateWaitMs),
+          // Issue #376 (AC14): the round this write belongs to, from the ONE
+          // shared formula — a re-commit after a remediation round must not
+          // replace the first Commit Gate row.
+          round: resolveStageRound(sm.history, STAGE_COMMIT),
           commitHash,
           commitMessage: commitMessage.toSingleLine(),
-          commitTimestamp: new Date().toISOString()
+          commitTimestamp: new Date().toISOString(),
+          // Issue #284 (AC2): reaching COMPLETED is the last chance to make an
+          // unrecorded row honest. Nothing may survive as PENDING/IN PROGRESS.
+          finalize: true
         });
       }
     }
@@ -473,10 +691,69 @@ export class ExecuteCommitUseCase {
       stateMachine: sm,
       summaryUpdated,
       prBaseBranch,
-      prCommand,
+      prCreated,
+      prUrl,
+      prExists,
+      prBaseIsCollector,
+      resolvedIssue,
+      prCommand: returnedPrCommand,
       worktreeTornDown,
+      worktreeTornDownPath,
+      worktreeTornDownIsolated,
       pushError,
-      fallbackUsed
+      fallbackUsed,
+      commitCwd: cwd,
+      worktreeMode
     };
   }
+
+  /**
+   * Reads the URL of the PR that was just created (issue #240/Defect 1).
+   *
+   * Best effort: the PR exists whether or not `gh pr view` can read it back, so
+   * a failure here must not undo the creation or fail the commit. Returning
+   * `undefined` makes the CLI say "URL unavailable" rather than invent one.
+   */
+  private async readCreatedPrUrl(activeBranch: string, cwd: string): Promise<string | undefined> {
+    if (!activeBranch) {
+      return undefined;
+    }
+    try {
+      const res = await this.commandExecutor.execute(
+        `gh pr view '${escapeShellQuote(activeBranch)}' --json url --jq .url`,
+        { cwd }
+      );
+      const url = (res.stdout || '').trim();
+      if (res.exitCode === 0 && url.length > 0) {
+        return url;
+      }
+    } catch {
+      // Best effort only.
+    }
+    return undefined;
+  }
+}
+
+/**
+ * Extracts repo-relative paths from `git status --porcelain` output.
+ *
+ * Handles the v1 `XY path` shape and the rename form `R  old -> new` (the NEW
+ * path is what the commit will contain), and unquotes paths git C-quoted.
+ */
+function parsePorcelainPaths(stdout: string): string[] {
+  const paths: string[] = [];
+  for (const line of stdout.split('\n')) {
+    if (line.length < 4) continue;
+    const raw = line.slice(3).trim();
+    if (!raw) continue;
+    const arrow = raw.lastIndexOf(' -> ');
+    const candidate = (arrow === -1 ? raw : raw.slice(arrow + 4)).trim();
+    if (!candidate) continue;
+    paths.push(
+      candidate.length >= 2 && candidate.startsWith('"') && candidate.endsWith('"')
+        ? candidate.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+        : candidate
+    );
+  }
+  return paths;
 }

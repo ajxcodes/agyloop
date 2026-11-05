@@ -1,4 +1,4 @@
-# AgyLoop (`agyloop`)
+# CodeLoop (`codeloop`)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Google Antigravity Plugin](https://img.shields.io/badge/Antigravity-Plugin%20v2-purple.svg)](https://github.com/ajxcodes/agyloop)
@@ -6,7 +6,7 @@
 
 > **Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity (`agy`)**
 
-`agyloop` transforms autonomous coding agents from single-prompt chat assistants into a disciplined, context-isolated pair-programming pipeline:
+`codeloop` transforms autonomous coding agents from single-prompt chat assistants into a disciplined, context-isolated pair-programming pipeline:
 
 $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \longrightarrow \text{Implement} \longrightarrow \text{Quality Gate} \longrightarrow \text{AI Review} \longrightarrow \text{Commit}$$
 
@@ -23,7 +23,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 
 ## 🏗️ Architecture & Lifecycle Contract
 
-`agyloop` introduces a phased state machine coordinated across specialized, context-isolated subagents:
+`codeloop` introduces a phased state machine coordinated across specialized, context-isolated subagents:
 
 ```text
 [Issue / Task Context]
@@ -42,7 +42,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 │    • Generates persistent artifacts in:                │
 │      `artifacts/plans/[Discovery] - {Title}.md`        │
 │      `artifacts/plans/[Implementation] - {Title}.md`   │
-│      `artifacts/plans/AgyLoop Summary.md`              │
+│      `artifacts/plans/CodeLoop Summary.md`              │
 └────────────────────────┬───────────────────────────────┘
                          │
                          ▼
@@ -62,7 +62,7 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 │    • Auto-detects Gradle, npm, dotnet, Go, Cargo, etc. │
 │    • Returns compact structured summary:               │
 │      `GATE_STATUS: PASSED | FAILED`                    │
-│      `TEST_COUNT: X passed, 0 failed`                  │
+│      `TEST_METRICS: X passed, 0 failed, 0 skipped`     │
 └────────────────────────┬───────────────────────────────┘
                          │
                          ▼
@@ -80,6 +80,10 @@ $$\text{Context} \longrightarrow \text{Plan} \longrightarrow \text{Approve} \lon
 │    • Hard gate: Draft -> Interactive user confirmation │
 └────────────────────────────────────────────────────────┘
 ```
+
+A gate report may declare the test count its runner does not print: append `TEST_METRICS: <n> passed, <n> failed, <n> skipped` to the command output. A `PASSED` report whose executed test command has no measured total (`"testsPassed": null` or `0`) is refused at filing and again at `transition REVIEW`.
+
+An approved plan literal that cannot be satisfied as written is a **deviation**, not a silent edit. The implementer emits a `PLAN_DEVIATION:` block, either as a JSON object carrying `planSection`, `planLiteral`, `implementedAssertion` and `reason` (optional `files: ["path:line"]`) or with the prose labels `Plan section:`, `Plan literal:`, `Implemented:` and `Reason:`; the orchestrator files it with `codeloop deviation --issue <n> --deviation-file <path>` (or `--deviation-stdin`). The record lands in the checkpoint. `codeloop deviation` files at IMPLEMENT, QUALITY_GATE, REVIEW and COMMIT; `codeloop transition REVIEW` and `codeloop commit` refuse while one is unacknowledged — acknowledge it with `codeloop deviation --issue <n> --ack PD-1 --reason "<why the new literal is right>"`, or route the plan back with `codeloop transition PLAN`. If a deviation is discovered after implementation, file it at REVIEW, or route back with `codeloop transition IMPLEMENT`, file it there, and re-run the gate. At APPROVAL the pipeline also refuses a Test Register literal that contradicts the test it pins (naming `file:line`) and an acceptance criterion or checklist step that targets a commit-excluded path (`artifacts/`, `.agyloop/`, `node_modules/`); deliver such a correction as a tracked document or declare it `**Out of Scope:**`. A `New test:` row is judged against the **base revision** — `--base-branch`, else the checkpoint's recorded `baseBranch`, else `main` — because a plan revised through `codeloop transition PLAN` is re-approved while the implementation's own tests are already in the worktree; a `Pins:` row keeps resolving against the delivered worktree, so a pinned test that was deleted there is still refused. In the verdict, `AC_EVIDENCE:` names the path that proves each criterion — evidence outside the delivered change set makes the criterion `unverifiable` and the round cannot be certified; a filed `APPROVED` verdict that omits the block, or whose block parses to nothing, is refused and records nothing.
 
 ---
 
@@ -101,26 +105,81 @@ Optimize latency, reasoning capability, and quota usage by assigning appropriate
 
 ```bash
 # Full lifecycle with human approval gates (Plan -> Stop -> Implement -> Gate -> Review -> Commit)
-/agyloop [issue]
+/codeloop [issue]
 
 # Plan-only mode: generates persistent tech spec in artifacts/plans/ and hard-stops for review
-/agyloop plan [--issue <id>]
+/codeloop plan [--issue <id>]
 
 # Resumes implementation directly from an approved plan inside isolated worktree
-/agyloop implement [--issue <id>]
+/codeloop implement [--issue <id>]
 
 # Fast-path / unattended mode: auto-approves plan gate & infers defaults while keeping quality gates
-/agyloop yolo [--issue <id>]
+/codeloop yolo [--issue <id>]
 
 # Automatically commit if all quality gates and reviews pass green
-/agyloop --commit-after
+/codeloop --commit-after
+
+# Commit and open the PR from the tool (base = the collector branch) instead of
+# printing the `gh pr create …` command for you to run. Without it the branch is
+# pushed but the run is NOT delivered until the PR is merged.
+# `--commit-after` (and `yolo --commit-after`) implies `--create-pr`: an
+# unattended run opens the PR itself rather than stopping one step short.
+codeloop commit --create-pr
 
 # PR Review comment triage: inspect and route review feedback
-/agyloop triage [implement | plan | discovery | dismiss]
+/codeloop triage [implement | plan | discovery | dismiss]
 
 # Worktree management: list, clean, prune isolated worktrees
-bin/agyloop worktree [list | clean | prune]
+codeloop worktree [list | clean | prune]
 ```
+
+### Collector-branch PRs and the closing keyword
+
+A PR that targets a collector branch (`phase/*` / `feature/*`) is not a
+default-branch PR. GitHub's documented **closing keyword** rule (`Closes #N`)
+covers the default branch only, but delivery here has not been consistent: some
+collector-branch merges auto-close the issue (#369 closed 12 s after the merge,
+before any `sync`), and some leave it open until `codeloop sync` closes it
+(#401). A pre-merge `closingIssuesReferences` read does not discriminate — it is
+`0` on both shapes. `codeloop commit` therefore states the measured base — a
+collector branch, not the default branch — and prints conditional advice: if
+`Closes #N` does not close the issue on merge, run `codeloop sync` to close it.
+The advice is printed only when a PR exists.
+
+Likewise, the TRIAGE gate ends on its own: once the pull request is merged or
+closed, `codeloop next` records `COMPLETED` and reports idle, with no
+`codeloop resume` needed. An open PR keeps the gate.
+
+### ⚠️ Behaviour change (issue #250): `--issue` is strict
+
+`--issue <num>` accepts **digits only** (an optional leading `#` is allowed, so
+`--issue 250` and `--issue #250` are the same thing). A token with trailing
+garbage is **rejected** — the command exits 1 and reads or writes nothing:
+
+```
+✗ Invalid --issue '999abc'. Expected a positive integer (digits only), e.g. --issue 250.
+```
+
+**Deliberately changed behaviour.** `codeloop status --issue 999abc` and
+`codeloop resume --issue 999abc` previously *clamped* the token to issue 999
+and silently addressed `tasks/999.json`, while their sibling `halt` wrote the
+ROOT checkpoint `.agyloop/state.json`. Four parsers read the same token and
+disagreed about what it meant (clamp / root / literal file / silently ignored).
+They now all fail the same way, before any checkpoint is touched.
+
+Related, also deliberate: `codeloop reset --issue <n>` now exits **1** when
+there is no checkpoint for that issue (it used to print an unconditional
+success line for a reset it never performed), and `codeloop branch-info` is now
+read-only with respect to checkpoints — it performs **zero** checkpoint writes
+(it can still touch git, e.g. to materialise a missing base branch).
+
+Every checkpoint-touching command (`status`, `next`, `resume`, `transition`,
+`branch-info`, `halt`, `reset --issue <n>`, `commit`, `implement`, `plan`,
+`yolo`, `abort`, `triage`, `sync`) now resolves the SAME authoritative
+checkpoint, so a command that reads a task checkpoint writes that same
+checkpoint — never the root. (`reset` without `--issue` is the one exception:
+it clears the repository's OWN checkpoint — the root outside a task worktree,
+`tasks/<n>.json` inside one — and now names the file it actually cleared.)
 
 ---
 
@@ -129,7 +188,7 @@ bin/agyloop worktree [list | clean | prune]
 All plans and run summaries live in a gitignored `{project-root}/artifacts/plans/` directory:
 - `[Discovery] - {Title}.md`: Root-cause investigation and reproduction commands for bugs.
 - `[Implementation] - {Title}.md`: Detailed design specification and step-by-step technical plan.
-- `AgyLoop Summary.md`: Cumulative execution log tracking subagent runtimes, quality gate verdicts, and model tiers.
+- `CodeLoop Summary.md`: Cumulative execution log tracking subagent runtimes, quality gate verdicts, and model tiers.
 
 Plans remain persistent across IDE reloads, branch changes, and multi-day tasks without polluting your Git commit history.
 
@@ -137,7 +196,7 @@ Plans remain persistent across IDE reloads, branch changes, and multi-day tasks 
 
 ## 📦 Installation & Symlink Setup
 
-To register `agyloop` with your local Antigravity installation, symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/agyloop`):
+To register `codeloop` with your local Antigravity installation, symlink the repository into the global Antigravity plugins directory (`~/.gemini/config/plugins/agyloop`):
 
 ### 1. Run Setup Script
 ```bash
@@ -155,7 +214,7 @@ To register `agyloop` with your local Antigravity installation, symlink the repo
 
 ## 🛠️ Troubleshooting & Plugin Resolution
 
-If Antigravity does not immediately discover the `/agyloop` command or subagents:
+If Antigravity does not immediately discover the `/codeloop` command or subagents:
 
 1. **Check Symlink Resolution**:
    Ensure `~/.gemini/config/plugins/agyloop` points directly to your repository root:
@@ -172,7 +231,7 @@ If Antigravity does not immediately discover the `/agyloop` command or subagents
    ```json
    {
      "plugins": {
-       "agyloop": { "enabled": true }
+       "codeloop": { "enabled": true }
      }
    }
    ```
@@ -183,9 +242,9 @@ If Antigravity does not immediately discover the `/agyloop` command or subagents
 
 ## 🗺️ Roadmap & Tracking
 
-Track the development of `agyloop` in the central [ajxcodes/projects](https://github.com/ajxcodes/projects) management board:
-- **Parent Epic**: [#47 - [Epic] AgyLoop: Multi-Subagent Development Lifecycle Orchestrator for Antigravity](https://github.com/ajxcodes/projects/issues/47)
-- **Project Board**: [GitHub Project #9 (AgyLoop)](https://github.com/users/ajxcodes/projects/9)
+Track the development of `codeloop` in the central [ajxcodes/projects](https://github.com/ajxcodes/projects) management board:
+- **Parent Epic**: [#47 - [Epic] CodeLoop: Multi-Subagent Development Lifecycle Orchestrator for Antigravity](https://github.com/ajxcodes/projects/issues/47)
+- **Project Board**: [GitHub Project #9 (CodeLoop)](https://github.com/users/ajxcodes/projects/9)
 
 ---
 

@@ -1,12 +1,12 @@
 /**
- * agyloop - CritiquePort Inversion of Control Interface
+ * codeloop - CritiquePort Inversion of Control Interface
  *
  * Contract for resolving the critique CLI executable and conducting pre-commit/PR reviews.
  * Depends strictly on src/domain/ with zero direct I/O modules.
  */
 
 import { AiReviewReport } from '../domain/value-objects/ai-review-report';
-import { ResolverSource } from '../domain/constants';
+import { ResolverSource } from '../domain/vocabulary';
 
 export interface CritiqueOptions {
   readonly cwd?: string;

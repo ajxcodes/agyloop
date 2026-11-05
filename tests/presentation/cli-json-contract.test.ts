@@ -1,0 +1,330 @@
+/** The canonical seedTask composed with this suite's snapshot() default shape. */
+function seedTaskAt(
+  dir: string,
+  issue: number,
+  overrides: Record<string, unknown> = {}
+): void {
+  seedTaskCanonical(dir, snapshot({ issue, ...overrides }));
+}
+
+/**
+ * codeloop - `--json` surface contract (#275, absorbed by #248 Wave 3)
+ *
+ * Two defects are pinned here:
+ *
+ *   A. `triage --json` printed a human banner to stdout BEFORE its JSON, so
+ *      `codeloop triage --json | jq` died on the banner even though the command
+ *      succeeded.
+ *   B. `--json` was silently ignored by commands with no JSON surface, so a
+ *      consumer got human text and exit 0.
+ *
+ * The enumeration is derived from `COMMAND_CAPABILITIES` — the SAME table the
+ * capability gate reads — never a second hand-maintained list.
+ */
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+
+const { runCli } = require('../../dist/presentation/cli');
+const { buildChangeSetDigestCommand } = require('../../dist/application');
+const { COMMAND_CAPABILITIES } = require('../../dist/presentation/cli-flags');
+const { stripAnsi } = require('../helpers/cli-harness.ts');
+const { seedTask: seedTaskCanonical } = require('../helpers/state-seed.ts');
+const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
+
+const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
+const SEEDED_AT = '2026-10-01T00:00:00.000Z';
+
+interface CaptureResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+
+function snapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: '1.0.0',
+    currentStage: 'PLAN',
+    mode: 'standard',
+    issue: null,
+    milestoneTitle: null,
+    baseBranch: 'main',
+    worktree: null,
+    planDir: null,
+    triagePayload: null,
+    triageDisposition: null,
+    createdAt: SEEDED_AT,
+    updatedAt: SEEDED_AT,
+    history: [{ stage: 'PLAN', timestamp: SEEDED_AT }],
+    pausedAtGate: null,
+    pausedAtTimestamp: null,
+    totalHumanWaitMs: 0,
+    planRevisionCount: 0,
+    implementToGateLoops: 0,
+    reviewDispatchCount: 0,
+    ...overrides
+  };
+}
+
+function seedRoot(dir: string, overrides: Record<string, unknown> = {}): void {
+  fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.agyloop', 'state.json'), JSON.stringify(snapshot(overrides)));
+}
+
+
+function initGitWorkspace(dir: string): void {
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+  // Issue #452: the provenance sidecar is written AFTER its digest is read, so
+  // it must not itself become part of the change set it describes.
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.provenance.json\n');
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  execFileSync('git', ['add', '-A'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
+}
+
+/**
+ * Issue #445: the provenance sidecar published beside a Tier 1 report.
+ * `codeloop review` certifies a supplied report only when the sidecar names this
+ * review's base and HEAD, so the positive-path fixtures seed it.
+ */
+function initCritiqueProvenance(dir: string, reportName: string, baseRef = 'main'): void {
+  const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+  // Issue #452: the sidecar binds content too, so the fixture seeds the
+  // worktree's current change-set digest.
+  const changeSetDigest = execFileSync('sh', ['-c', buildChangeSetDigestCommand()], {
+    cwd: dir,
+    encoding: 'utf8'
+  }).trim();
+  fs.writeFileSync(
+    path.join(dir, `${reportName}.provenance.json`),
+    JSON.stringify({ baseRef, headCommit, changeSetDigest })
+  );
+}
+
+
+/**
+ * One fixture per capability key. A key added to the table without a fixture
+ * (or a fixture for a key that no longer exists) fails T-J1 — the enumeration
+ * is the table's, not this file's.
+ */
+const CASES: Record<string, { args: string[]; seed?: (dir: string) => void }> = {
+  '(default)': { args: ['--json'] },
+  init: { args: ['init', '--json'] },
+  next: { args: ['next', '--json'] },
+  'branch-info': { args: ['branch-info', '--json'], seed: initGitWorkspace },
+  status: { args: ['status', '--json'] },
+  config: { args: ['config', '--json'] },
+  models: { args: ['models', '--json'] },
+  prompt: { args: ['prompt', '--json'] },
+  reset: { args: ['reset', '--json'] },
+  resume: { args: ['resume', '--json'] },
+  halt: { args: ['halt', '--reason', 'quota', '--json'], seed: (dir) => seedRoot(dir, { currentStage: 'IMPLEMENT' }) },
+  abort: { args: ['abort', '--json'] },
+  transition: { args: ['transition', 'PLAN', '--json'] },
+  'worktree:list': { args: ['worktree', 'list', '--json'] },
+  'worktree:clean': { args: ['worktree', 'clean', '--json'] },
+  'worktree:prune': { args: ['worktree', 'prune', '--json'] },
+  'worktree:remove': { args: ['worktree', 'remove', '902', '--json'] },
+  'critique:status': { args: ['critique', 'status', '--json'] },
+  'critique:install': { args: ['critique', 'install', '--json'] },
+  'critique:update': { args: ['critique', 'update', '--json'] },
+  'opencode:install': { args: ['opencode', 'install', '--json'] },
+  triage: {
+    args: ['triage', '--issue', '901', '--json'],
+    seed: (dir) => seedTaskAt(dir, 901, { currentStage: 'TRIAGE' })
+  },
+  review: {
+    args: ['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json'],
+    seed: (dir) => {
+      initGitWorkspace(dir);
+      seedTaskAt(dir, 905, { currentStage: 'REVIEW' });
+      fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
+      // Issue #297: the hermetic Tier 1 evidence channel — the fixture never
+      // shells out to a host `critique`, and the invariant still runs.
+      fs.writeFileSync(
+        path.join(dir, 'critique.json'),
+        JSON.stringify({
+          summary: 'Clean automated review',
+          confidenceLevel: 'High',
+          confidenceExplanation: 'diff verified',
+          comments: []
+        })
+      );
+      initCritiqueProvenance(dir, 'critique.json');
+    }
+  },
+  // Issue #284: the gate evidence channel. The fixture files one valid block
+  // against a checkpoint resting at the gate.
+  'gate-report': {
+    args: ['gate-report', '--issue', '906', '--report-file', 'gate.json', '--json'],
+    seed: (dir) => {
+      initGitWorkspace(dir);
+      seedTaskAt(dir, 906, {
+        currentStage: 'QUALITY_GATE',
+        history: [{ stage: 'QUALITY_GATE', timestamp: SEEDED_AT }]
+      });
+      fs.writeFileSync(
+        path.join(dir, 'gate.json'),
+        [
+          'GATE_REPORT_JSON:',
+          '{ "verdict": "PASSED", "buildSystem": "node", "buildStatus": "PASSED",',
+          '  "testsStatus": "PASSED (12 passed)", "testsPassed": 12, "testsFailed": 0,',
+          '  "durationMs": 1000, "executedCommands": ["npm test"],',
+          '  "smokeProtocol": "NOT_DECLARED", "notRun": [] }'
+        ].join('\n')
+      );
+    }
+  },
+  // Issue #432: the deviation channel's read-only listing surface.
+  deviation: { args: ['deviation', '--json'], seed: (dir) => seedRoot(dir) },
+  plan: { args: ['plan', '--json'] },
+  implement: { args: ['implement', '--json'] },
+  commit: { args: ['commit', '--json'] },
+  release: { args: ['release', '--json'] },
+  yolo: { args: ['yolo', '--json'] },
+  sync: { args: ['sync', '--json'] }
+};
+
+describe('--json surface contract (#275)', () => {
+  test('T-J1: the fixture map matches the capability table exactly', () => {
+    const tableKeys = Object.keys(COMMAND_CAPABILITIES).sort();
+    const fixtureKeys = Object.keys(CASES).sort();
+    assert.deepStrictEqual(fixtureKeys, tableKeys);
+  });
+
+  test('T-J2/T-J7: every supported surface emits ONE document with a dryRun marker', async () => {
+    const supported = Object.keys(COMMAND_CAPABILITIES).filter(
+      (key) => (COMMAND_CAPABILITIES as any)[key].json === 'supported'
+    );
+    assert.ok(supported.length >= 9, 'the JSON surface must not shrink silently');
+
+    for (const key of supported) {
+      const fixture = CASES[key];
+      const result = await runCliInSandboxCanonical(fixture.args, { seed: fixture.seed, stripAnsi: true });
+      // `halt` predicts the real command's exit code (2) even in JSON mode.
+      assert.ok(
+        result.code === 0 || (key === 'halt' && result.code === 2),
+        `${key}: ${result.stderr}`
+      );
+      assert.ok(!result.stdout.includes('\x1b'), `${key} must not emit ANSI on stdout`);
+      let payload: any;
+      try {
+        payload = JSON.parse(result.stdout);
+      } catch {
+        assert.fail(`${key} did not emit a single JSON document:\n${result.stdout}\nstderr:${result.stderr}`);
+      }
+      assert.strictEqual(typeof payload.dryRun, 'boolean', `${key} payload must carry a dryRun marker`);
+    }
+  });
+
+  test('T-J3: every refused surface errors and prints no JSON document', async () => {
+    const refused = Object.keys(COMMAND_CAPABILITIES).filter(
+      (key) => (COMMAND_CAPABILITIES as any)[key].json === 'refused'
+    );
+    for (const key of refused) {
+      const fixture = CASES[key];
+      const result = await runCliInSandboxCanonical(fixture.args, { seed: fixture.seed, stripAnsi: true });
+      assert.notStrictEqual(result.code, 0, `${key} must refuse --json`);
+      assert.ok(result.stderr.includes('--json'), `${key}: ${result.stderr}`);
+      assert.ok(!result.stdout.trimStart().startsWith('{'), `${key} printed a JSON document`);
+    }
+  });
+
+  test('T-J4: `triage --json` stdout is parseable on its own (the banner bug)', async () => {
+    const result = await runCliInSandboxCanonical(['triage', '--issue', '901', '--json'], { seed: (dir: string) =>
+      seedTaskAt(dir, 901, { currentStage: 'TRIAGE' }), stripAnsi: true });
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.ok(
+      !result.stdout.includes('=== CodeLoop: PR Review Comments Triage ==='),
+      `the banner must not precede the JSON document:\n${result.stdout}`
+    );
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.dryRun, false);
+    assert.strictEqual(typeof payload.stateUpdated, 'boolean');
+    assert.ok(!('stateMachine' in payload), 'the payload must not serialise the entity');
+  });
+
+  test('T-J5: `status --json` is a single document with raw (ANSI-free) fields', async () => {
+    const result = await runCliInSandboxCanonical(['status', '--json'], { seed: (dir: string) => {
+      seedRoot(dir, { currentStage: 'COMPLETED', mode: 'standard', issue: 905 });
+      seedTaskAt(dir, 999, { currentStage: 'PLAN' });
+    }, stripAnsi: true });
+    assert.strictEqual(result.code, 0, result.stderr);
+    assert.ok(!result.stdout.includes('\x1b'), 'no ANSI in a JSON document');
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.dryRun, false);
+    assert.strictEqual(payload.currentStage, 'PLAN');
+    assert.strictEqual(payload.mode, 'standard');
+    assert.strictEqual(payload.resolvedIssue, 999);
+    assert.ok(Array.isArray(payload.activeTasks));
+    assert.ok(Array.isArray(payload.history));
+    assert.ok(!('stateMachine' in payload));
+  });
+
+  test('T-J6: `review --json --dry-run` asserts no unwritten state', async () => {
+    const result = await runCliInSandboxCanonical(['review', '--issue', '905', '--verdict-file', 'verdict.md', '--critique-report', 'critique.json', '--json', '--dry-run'], { seed: (dir: string) => {
+        initGitWorkspace(dir);
+        seedTaskAt(dir, 905, { currentStage: 'REVIEW' });
+        fs.writeFileSync(path.join(dir, 'verdict.md'), 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n');
+        fs.writeFileSync(
+          path.join(dir, 'critique.json'),
+          JSON.stringify({
+            summary: 'Clean automated review',
+            confidenceLevel: 'High',
+            confidenceExplanation: 'diff verified',
+            comments: []
+          })
+        );
+        initCritiqueProvenance(dir, 'critique.json');
+      }, stripAnsi: true });
+    assert.strictEqual(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.dryRun, true);
+    assert.strictEqual(payload.previousStage, 'REVIEW');
+    assert.strictEqual(payload.currentStage, 'REVIEW');
+    assert.strictEqual(payload.wouldSetStage, 'COMMIT');
+    assert.strictEqual(payload.wouldRecordVerdict, 'APPROVED');
+    assert.strictEqual(payload.wouldRecordCritiqueVerified, true);
+    assert.ok(!('reviewVerdict' in payload), 'a dry run must not claim a filed verdict');
+  });
+
+  test('JP1: `review --json` carries the provenance as booleans, in one document (issue #297)', async () => {
+    const fixture = CASES.review;
+    const result = await runCliInSandboxCanonical(fixture.args, { seed: fixture.seed, stripAnsi: true });
+
+    assert.strictEqual(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.strictEqual(payload.critiqueVerified, true);
+    assert.strictEqual(payload.reviewerVerdict, 'APPROVED');
+    assert.strictEqual(payload.reviewVerdict, 'APPROVED');
+    assert.strictEqual(payload.verdictSource, 'reviewer-output');
+    assert.strictEqual(typeof payload.dryRun, 'boolean');
+  });
+
+  test('T-J9: `triage --json --dry-run` reports a prediction, never a written disposition', async () => {
+    const result = await runCliInSandboxCanonical(['triage', 'implement', '--issue', '901', '--dry-run', '--json'], { seed: (dir: string) => seedTaskAt(dir, 901, { currentStage: 'TRIAGE' }), stripAnsi: true });
+    assert.strictEqual(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+
+    assert.strictEqual(payload.dryRun, true);
+    assert.strictEqual(payload.stateUpdated, false);
+    // The past-tense claim is the defect (#248, AC-275.6): nothing was written,
+    // so no disposition may be reported as recorded, and no `recordedAt`
+    // timestamp may be presented as a fact.
+    assert.strictEqual(payload.dispositionRecorded, false);
+    assert.strictEqual(payload.disposition, null);
+    assert.ok(!JSON.stringify(payload).includes('recordedAt'), 'a dry run must not carry a recordedAt timestamp');
+    // No PR feedback is readable in this fixture, so the PREDICTION is that
+    // nothing would be recorded. With feedback, the triage use-case test
+    // asserts `wouldRecordDisposition === true` while `dispositionRecorded`
+    // stays false.
+    assert.strictEqual(payload.wouldRecordDisposition, false);
+  });
+});

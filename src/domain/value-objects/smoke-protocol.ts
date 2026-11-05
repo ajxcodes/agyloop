@@ -1,0 +1,2731 @@
+/**
+ * codeloop - SmokeProtocol Value Object (issue #298)
+ *
+ * Pure extractor / linter / runner-script builder for a plan's
+ * `Manual Smoke Test Protocol`.
+ *
+ * The protocol is FROZEN at dispatch: the checks extracted here are the ones
+ * the gate is told to execute, and a failure is attributed to a check label
+ * and a plan line — never "go read the plan and run it".
+ *
+ * Static rules: quoted-json-comparison, bare-module-path, empty-check,
+ * no-executable-check (issue #298), sandbox-path (issue #359 — a check that
+ * invokes the CLI must create its directory sandbox where the state guard
+ * recognises it), sandbox-cwd (issue #440 — a check that DECLARES such a
+ * sandbox must actually run the CLI inside it, or point `--workspace` at it),
+ * sandbox-missing (issue #498 — a check that invokes the CLI outside every
+ * recognised sandbox and never declares one; the complement of sandbox-cwd),
+ * missing-parent-directory (issue #388 — a check that WRITES
+ * a path must create that path's parent first, or it dies before product code),
+ * nested-single-quote (issue #467 — a raw apostrophe inside a single-quoted
+ * `node -e` / `bash -c` program closes the shell word early, so the executed
+ * program is not the approved one) and the fixture-consistency rules
+ * (issue #413 — gate-report-fixture-contradiction, worktree-fixture-unmatched,
+ * gate-report-marker-missing).
+ *
+ * `sandbox-cwd` and `sandbox-missing` share ONE invocation classifier, which
+ * (issue #503) also recognises the shipped launcher (`./bin/codeloop`,
+ * `bin/codeloop.js`), `NAME=value`-prefixed commands, shell interpreter forms
+ * (`bash bin/codeloop.js`) and `sh -c` programs.
+ *
+ * The #413 rules are textual mirrors of runtime contracts: each one protects a
+ * check's OWN fixture from making its assertion impossible, so approval never
+ * pins a digest for a protocol that only fails once executed. They call the
+ * real `normaliseGateTests` and mirror `IssueNumber.inferFromPath` and
+ * `GateResultReport.parseBlock`.
+ *
+ * No I/O, no external imports.
+ */
+
+import { normaliseGateTests } from './gate-result-report';
+import {
+  assertsGateReportMarkerRefusal,
+  assertsWorktreeMismatch,
+  blankFixtureSpans,
+  findUnmatchableWorktreeLiterals,
+  gateReportReportFileLines,
+  hasGateReportMarker,
+  lineOffsetOf,
+  parseGateReportFixtures,
+  producesGateReportMarker
+} from './gate-report-fixture';
+import { isSmokeSectionHeading } from './smoke-heading';
+import { HEADING_NUMBER_PREFIX, detectHeading as detectHeadingImpl, isCommentLine as isCommentLineImpl, truncate as truncateImpl } from './markdown';
+import {
+  isAnchoredPath,
+  isWithinSmokeSandbox,
+  normaliseLexicalPath,
+  resolvePathAgainstCwd,
+  SMOKE_SANDBOX_ROOT_DISPLAY,
+  SMOKE_SANDBOX_DIR_PREFIX
+} from './smoke-sandbox';
+
+export interface SmokeCheck {
+  /** 1-based position within the protocol. */
+  readonly index: number;
+  readonly label: string;
+  /** The fenced body exactly as written. */
+  readonly body: string;
+  /** 1-based plan line of the opening fence. */
+  readonly planLine: number;
+}
+
+export interface SmokeFinding {
+  readonly rule: string;
+  /** 0 when the finding is about the section as a whole. */
+  readonly checkIndex: number;
+  readonly label: string;
+  /** 1-based plan line of the offending text. */
+  readonly line: number;
+  readonly excerpt: string;
+}
+
+export interface SmokeFailure {
+  readonly checkIndex: number;
+  readonly label: string;
+  readonly planLine: number;
+  /** The first `FAIL` line of the output, when one was printed. */
+  readonly failLine: string | null;
+}
+
+const FENCE_PREFIX = '```';
+const NUMBERED_LABEL = /^\s*\d+[.)]\s+(.*)$/;
+const BOLD_LABEL = /^\s*\*\*([^*]+)\*\*\s*:?\s*$/;
+/**
+ * A scaffold placeholder: a bullet whose entire content is a bold label, e.g.
+ * `- **Check 1:**`. The generated plan template emits exactly this shape under
+ * `### Manual Smoke Test Protocol` for the documented `codeloop yolo` fast
+ * path, which never dispatches the PLANNER. Such a section declares NO
+ * protocol, so it must read as NOT DECLARED rather than as a broken protocol.
+ */
+const PLACEHOLDER_BULLET = /^\s*[-*]\s+\*\*[^*]+\*\*\s*:?\s*$/;
+
+const SHELL_FENCE_LANGUAGES: ReadonlySet<string> = new Set(['', 'bash', 'sh', 'shell', 'console']);
+
+const REQUIRE_PATTERN = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
+const FROM_PATTERN = /\bfrom\s+['"]([^'"]+)['"]/g;
+const RELATIVE_MODULE_EXTENSIONS = /\.(?:js|json|mjs|cjs)$/;
+const QUOTED_COMPARISON = /\[\s*"?\$\(.*\)"?\s*={1,2}\s*"[^"]*"\s*\]/;
+/**
+ * The commands that emit JSON-QUOTED text (issue #327, Defect 1).
+ *
+ * The old rule was block-scoped: `body.includes('JSON.stringify')` armed the
+ * comparison check for EVERY line in the fence, so a fixture-seeding
+ * `node -e '…JSON.stringify…'` rejected an unrelated
+ * `[ "$(git rev-parse HEAD)" = "$BEFORE" ]`. Attribution is now per command:
+ * a comparison is flagged only when the command it compares is one of these.
+ *
+ * `jq -r` is deliberately NOT a marker — raw output is unquoted text.
+ */
+const JSON_QUOTING_MARKERS: readonly RegExp[] = Object.freeze([
+  /JSON\.stringify/,
+  /\bjson\.dumps\b/,
+  /\bjson_encode\b/,
+  /\bConvertTo-Json\b/i,
+  /\bjq\b[^\n]*?(?:^|\s)(?:-c|--compact-output)(?=\s|$)/
+]);
+const FUNCTION_OPEN = /^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{/;
+const FAIL_WORD = /\bFAIL\b/;
+
+const NODE_BUILTINS: ReadonlySet<string> = new Set([
+  'assert',
+  'async_hooks',
+  'buffer',
+  'child_process',
+  'cluster',
+  'console',
+  'constants',
+  'crypto',
+  'dgram',
+  'diagnostics_channel',
+  'dns',
+  'domain',
+  'events',
+  'fs',
+  'http',
+  'http2',
+  'https',
+  'inspector',
+  'module',
+  'net',
+  'os',
+  'path',
+  'perf_hooks',
+  'process',
+  'punycode',
+  'querystring',
+  'readline',
+  'repl',
+  'stream',
+  'string_decoder',
+  'sys',
+  'timers',
+  'tls',
+  'trace_events',
+  'tty',
+  'url',
+  'util',
+  'v8',
+  'vm',
+  'wasi',
+  'worker_threads',
+  'zlib'
+]);
+
+function stripNumbering(title: string): string {
+  return title.replace(HEADING_NUMBER_PREFIX, '').trim();
+}
+
+function isRelativeOrBuiltinSpecifier(specifier: string): boolean {
+  if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) {
+    return true;
+  }
+  return NODE_BUILTINS.has(specifier);
+}
+
+function bareModuleSpecifier(line: string): string | null {
+  for (const pattern of [REQUIRE_PATTERN, FROM_PATTERN]) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(line)) !== null) {
+      const specifier = match[1];
+      if (!RELATIVE_MODULE_EXTENSIONS.test(specifier)) continue;
+      if (isRelativeOrBuiltinSpecifier(specifier)) continue;
+      return specifier;
+    }
+  }
+  return null;
+}
+
+export class SmokeProtocol {
+  public readonly found: boolean;
+  public readonly headingLine: number;
+  public readonly checks: readonly SmokeCheck[];
+  public readonly findings: readonly SmokeFinding[];
+
+  private constructor(
+    found: boolean,
+    headingLine: number,
+    checks: readonly SmokeCheck[],
+    findings: readonly SmokeFinding[]
+  ) {
+    this.found = found;
+    this.headingLine = headingLine;
+    this.checks = Object.freeze([...checks]);
+    this.findings = Object.freeze([...findings]);
+  }
+
+  /** True when the protocol exists and no static rule rejects it. */
+  public get executable(): boolean {
+    return this.findings.length === 0;
+  }
+
+  /** True when a section was declared but contains zero runnable check. */
+  public get declared(): boolean {
+    return this.found;
+  }
+
+  public static empty(): SmokeProtocol {
+    return new SmokeProtocol(false, 0, [], []);
+  }
+
+  public static fromPlan(markdown: string): SmokeProtocol {
+    const lines = (markdown ?? '').split('\n');
+    const checks: SmokeCheck[] = [];
+    const findings: SmokeFinding[] = [];
+
+    let headingLine = 0;
+    let sectionLevel = 0;
+    let inSection = false;
+    let label = '';
+    let fenceLanguage: string | null = null;
+    let fenceStartLine = 0;
+    let fenceLabel = '';
+    let fenceBody: string[] = [];
+    // A section only declares a protocol when it carries prose or a fence. The
+    // generated scaffold holds nothing but `- **Check 1:**`, which is a
+    // placeholder, not a broken protocol — see PLACEHOLDER_BULLET.
+    let sawFence = false;
+    let sawContent = false;
+
+    const finishFence = (): void => {
+      if (fenceLanguage === null) return;
+      if (!SHELL_FENCE_LANGUAGES.has(fenceLanguage)) {
+        fenceLanguage = null;
+        fenceBody = [];
+        return;
+      }
+
+      const index = checks.length + 1;
+      const checkLabel = fenceLabel || `Check ${index}`;
+      const body = fenceBody.join('\n');
+      checks.push({ index, label: checkLabel, body, planLine: fenceStartLine });
+      collectFindings(index, checkLabel, fenceStartLine, fenceBody, findings);
+
+      fenceLanguage = null;
+      fenceBody = [];
+    };
+
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      const trimmed = line.trim();
+
+      if (fenceLanguage !== null) {
+        if (trimmed.startsWith(FENCE_PREFIX)) {
+          finishFence();
+        } else {
+          fenceBody.push(line);
+        }
+        continue;
+      }
+
+      const heading = detectHeadingImpl(line);
+
+      if (!inSection) {
+        if (heading && isSmokeSectionHeading(heading)) {
+          inSection = true;
+          headingLine = index + 1;
+          sectionLevel = heading.level;
+        }
+        continue;
+      }
+
+      if (heading) {
+        if (heading.level <= sectionLevel) break;
+        label = stripNumbering(heading.title);
+        continue;
+      }
+
+      if (trimmed.startsWith(FENCE_PREFIX)) {
+        sawFence = true;
+        fenceLanguage = trimmed.slice(FENCE_PREFIX.length).trim().toLowerCase();
+        fenceStartLine = index + 1;
+        fenceLabel = label;
+        fenceBody = [];
+        continue;
+      }
+
+      const numbered = NUMBERED_LABEL.exec(line);
+      if (numbered) {
+        label = stripNumbering(numbered[1]);
+        if (numbered[1].trim().length > 0) sawContent = true;
+        continue;
+      }
+      const bold = BOLD_LABEL.exec(line);
+      if (bold) {
+        label = bold[1].trim();
+        continue;
+      }
+
+      if (!isCommentLineImpl(line) && !PLACEHOLDER_BULLET.test(line)) {
+        sawContent = true;
+      }
+    }
+
+    // A section that never closed its last fence still describes a check.
+    finishFence();
+
+    // Issue #388: a write whose parent no earlier statement creates dies before
+    // any product code runs. Accumulated across checks in protocol order.
+    collectMissingParentFindings(checks, findings);
+
+    // Issue #413: a check whose own fixture makes its assertion impossible is
+    // refused before the plan digest is pinned, not when the gate runs it.
+    collectFixtureFindings(checks, findings);
+
+    // Issue #440: a check that names a recognised sandbox but never enters it
+    // runs the CLI against the LIVE checkpoint. Accumulated across checks in
+    // protocol order because `toScript()` executes ONE shell.
+    collectSandboxCwdFindings(checks, findings);
+
+    // `no-executable-check` is reserved for a section that DECLARES a protocol
+    // (prose or a fence) but offers nothing runnable. A placeholder-only
+    // section — the generated scaffold — is NOT DECLARED: failing it would make
+    // the documented `codeloop yolo` fast path (which never dispatches the
+    // PLANNER) unable to reach COMMIT.
+    if (inSection && checks.length === 0 && (sawFence || sawContent)) {
+      findings.push({
+        rule: SMOKE_RULE_NO_EXECUTABLE_CHECK,
+        checkIndex: 0,
+        label: 'Manual Smoke Test Protocol',
+        line: headingLine,
+        excerpt: 'Manual Smoke Test Protocol'
+      });
+    }
+
+    const declared = inSection && (checks.length > 0 || sawFence || sawContent);
+    return new SmokeProtocol(declared, headingLine, checks, findings);
+  }
+
+  /**
+   * Builds the single script the gate executes. `set -e` only: a protocol may
+   * legitimately read an optional variable, so `-u` is deliberately absent.
+   */
+  public toScript(): string | null {
+    if (!this.found || this.checks.length === 0) return null;
+
+    const lines: string[] = ['set -e'];
+    for (const check of this.checks) {
+      lines.push(
+        `printf '%s\\n' '${SMOKE_CHECK_MARKER_PREFIX}${check.index}${SMOKE_CHECK_MARKER_SUFFIX}'`
+      );
+      lines.push(check.body);
+      lines.push('');
+    }
+    return `${lines.join('\n')}\n`;
+  }
+
+  /** Attributes a non-zero exit to the last check whose marker was printed. */
+  public attributeFailure(combinedOutput: string | null): SmokeFailure | null {
+    if (!combinedOutput) return null;
+
+    const markerPattern = new RegExp(
+      `${SMOKE_CHECK_MARKER_PREFIX}(\\d+)${SMOKE_CHECK_MARKER_SUFFIX}`,
+      'g'
+    );
+    let lastIndex: number | null = null;
+    let match: RegExpExecArray | null;
+    while ((match = markerPattern.exec(combinedOutput)) !== null) {
+      lastIndex = Number(match[1]);
+    }
+    if (lastIndex === null) return null;
+
+    const check = this.checks.find((candidate) => candidate.index === lastIndex);
+    if (!check) return null;
+
+    const failLine =
+      combinedOutput
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => FAIL_WORD.test(line)) ?? null;
+
+    return {
+      checkIndex: check.index,
+      label: check.label,
+      planLine: check.planLine,
+      failLine
+    };
+  }
+}
+
+/** True when the text routes its output through JSON quoting (issue #327). */
+function hasJsonMarker(text: string): boolean {
+  return JSON_QUOTING_MARKERS.some((marker) => marker.test(text));
+}
+
+/**
+ * Extracts the balanced body of every `$( … )` group on a line (issue #327).
+ *
+ * Single-quoted spans are skipped, so a shell snippet that merely EMBEDS a
+ * `$(…)` inside `node -e '…'` is not mistaken for a substitution. Nested
+ * substitutions (`$(state "$(cat id)")`) yield both bodies. Returns `[]` when
+ * the line's parentheses are unbalanced.
+ */
+function commandSubstitutions(line: string): string[] {
+  const bodies: string[] = [];
+  let inSingleQuote = false;
+
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+
+    if (char === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+    if (char !== '$' || line[index + 1] !== '(') continue;
+
+    let depth = 1;
+    let cursor = index + 2;
+    let nestedSingleQuote = false;
+    for (; cursor < line.length; cursor++) {
+      const inner = line[cursor];
+      if (inner === "'") {
+        nestedSingleQuote = !nestedSingleQuote;
+        continue;
+      }
+      if (nestedSingleQuote) continue;
+      if (inner === '(') {
+        depth++;
+      } else if (inner === ')') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+
+    if (depth !== 0) return [];
+
+    bodies.push(line.slice(index + 2, cursor));
+    index = cursor;
+  }
+
+  // Nested substitutions live inside the bodies just collected.
+  return [...bodies, ...bodies.flatMap((body) => commandSubstitutions(body))];
+}
+
+/**
+ * The shell functions defined in a check whose BODY routes output through JSON
+ * quoting (issue #327). Computed once per check, so a comparison that calls one
+ * of them is still attributed to the JSON-producing command.
+ */
+function jsonQuotingFunctions(bodyLines: readonly string[]): Set<string> {
+  const functions = new Set<string>();
+  let openFunction: string | null = null;
+
+  for (const line of bodyLines) {
+    if (openFunction === null) {
+      const match = FUNCTION_OPEN.exec(line);
+      if (!match) continue;
+      openFunction = match[1];
+    }
+
+    if (hasJsonMarker(line)) {
+      functions.add(openFunction);
+    }
+
+    // A line ending in `}` closes the function, covering both the one-line and
+    // the multi-line definition shape.
+    if (line.trim().endsWith('}')) {
+      openFunction = null;
+    }
+  }
+
+  return functions;
+}
+
+/**
+ * True only when THIS comparison compares JSON-QUOTED output (issue #327,
+ * Defect 1) — not merely because the fence contains a JSON marker somewhere.
+ */
+function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>): boolean {
+  if (!QUOTED_COMPARISON.test(line)) return false;
+  if (hasJsonMarker(line)) return true;
+
+  for (const body of commandSubstitutions(line)) {
+    if (hasJsonMarker(body)) return true;
+    const command = body.trim().split(/\s+/)[0] ?? '';
+    if (jsonFunctions.has(command.replace(/[;"']/g, ''))) return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #359: the `sandbox-path` rule — a check that invokes the CLI must
+// create its directory sandbox under `$HOME/.cache/codeloop/smoke-*`, the only
+// root the state guard recognises. A purely textual mirror of the guard's
+// semantics; no filesystem probing (SmokeProtocol stays I/O-free).
+//
+// Issue #364: the rule tracks `cd` per check at STATEMENT granularity (see
+// `cwdByStatement`), so a RELATIVE
+// `mkdir`/`mktemp` under a sandbox `cd` is recognised, while a `..`-escaped
+// path that resolves outside the sandbox is refused. The token heuristic is
+// retained only for paths no `cd` can anchor.
+// ---------------------------------------------------------------------------
+
+/**
+ * A codeloop CLI invocation, anchored at the command token: bare
+ * (`codeloop transition`), the shipped launcher (`./bin/codeloop`,
+ * `bin/codeloop.js`, `/abs/bin/codeloop`), `node <…>/bin/codeloop.js …`, a shell
+ * interpreter holding that script (`bash bin/codeloop.js`), `npx codeloop …`,
+ * the deprecated `codeloop` launcher, each optionally prefixed
+ * `env [-u AGY_SUBAGENT] …` or `NAME=value` words (issue #503).
+ *
+ * Quote-precedence (issue #359, I4) is NOT a property of this pattern: for
+ * `"node bin/codeloop.js transition …"` inside a `node -e '…'` fixture-seeding
+ * script no match exists (quote characters are absent from the boundary class),
+ * but for `"env -u AGY_SUBAGENT node bin/codeloop.js …"` the regex re-anchors at
+ * the inner `node` token and the boundary class never sees the quote. Whether a
+ * match is a real invocation is therefore decided by POSITION in
+ * `invokesCodeloopCli` — see `isProseAt`/`chainStart` (issue #362, F2.2).
+ */
+const CLI_LAUNCHER_TOKEN =
+  String.raw`(?:[^\s'"();&|]*\/)?bin\/(?:codeloop|agyloop)(?:\.js)?`;
+const CLI_INVOCATION_PATTERN = new RegExp(
+  String.raw`(?:^|[\s;&|(=])(?:env\s+(?:(?:-\S+|[\w=]+)\s+)*|npx\s+)?(?:` +
+    String.raw`(?:ba|da|z)?sh\s+\S*bin\/(?:codeloop|agyloop)\.js|` +
+    String.raw`node\s+\S*bin\/(?:codeloop|agyloop)\.js|` +
+    `${CLI_LAUNCHER_TOKEN}|` +
+    String.raw`(?:codeloop|agyloop)(?![\w-]))`
+);
+
+/**
+ * The `env`/`npx` prefix immediately before a command token, whether or not the
+ * prefix is preceded by a quote (issue #362, F2.2). The capture group is the
+ * prefix itself, so the caller can recover the exact chain-start offset.
+ */
+const ENV_CHAIN_TAIL = /(?:^|[\s;&|(='"])((?:env|npx)\s+(?:(?:-\S+|[\w=]+)\s+)*)$/;
+
+/**
+ * The temp roots the guard refuses: `/tmp`, `/var/tmp`, `/dev/shm`, `$TMPDIR`.
+ * (The guard's recognised ROOT lives in `smoke-sandbox.ts` since #364 — the old
+ * textual prefix list here could not see `cd` or `..`.)
+ */
+const TEMP_ROOT_PATTERN = /(?:^|\/)(?:tmp|var\/tmp|dev\/shm)(?:\/|$)|\$\{?TMPDIR\}?/;
+const SMOKE_TOKEN = 'smoke';
+const MKTEMP_TOKEN = /\bmktemp\b/;
+/**
+ * The `mktemp` DIRECTORY mode: `-d`, clustered (`-dt`), parenthesised
+ * (`$(mktemp -d)`), or `--tmpdir[=DIR]`. A bare `mktemp` creates a FILE and is
+ * never a sandbox (issue #359, I3.2).
+ */
+const MKTEMP_DIR_FLAG = /(?:^|[\s)])-[a-zA-Z]*d[a-zA-Z]*(?=[\s)'`"]|$)|--tmpdir(?:=\S*)?/;
+/** An assignment whose value is path-shaped (issue #359, §2.3.3). */
+const PATH_SHAPED_VALUE = /^(?:\/|~|\$HOME|\$\{HOME\}|\$TMPDIR|\$\{TMPDIR\})/;
+const ASSIGNMENT_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+/** A statement whose entire text is `cd <target>` (issue #364). */
+const CD_STATEMENT = /^cd(?:\s+(.*))?$/;
+const QUOTE_CHARS = /["'`]/g;
+
+/** One directory-sandbox creation found on a check-body line. */
+interface SandboxCandidate {
+  /** 0-based offset of the offending line within the fence body. */
+  readonly offset: number;
+  /** 0-based index of the STATEMENT on that line that performs the creation. */
+  readonly statement: number;
+  /** The created path as written (quotes stripped); the line itself for an implicit temp root. */
+  readonly createdPath: string;
+  /** True when `mktemp -d` names no root: the OS temp dir is implied (I3.3). */
+  readonly implicitTemp: boolean;
+}
+
+function stripQuotes(text: string): string {
+  return text.replace(QUOTE_CHARS, '');
+}
+
+/**
+ * Removes backslash escapes of quote characters (issue #362, F2.1).
+ *
+ * A `node -e` fixture seeds plan TEXT as a JS string literal, so a correct
+ * sandbox path arrives as `\"$HOME/.cache/codeloop/smoke-…\"`. `stripQuotes`
+ * alone left the backslashes behind (`\$HOME/…`), which failed recognition and
+ * flagged the plan that documents the rule. Escape-then-strip is the correct
+ * order because `\"` in a shell-seeded string IS quote syntax.
+ */
+function unescapeQuotes(text: string): string {
+  return text.replace(/\\(["'`])/g, '$1');
+}
+
+/** A path string as written → the path itself (unescaped, unquoted). */
+function normalisePathText(text: string): string {
+  return stripQuotes(unescapeQuotes(text));
+}
+
+function splitShellTokens(line: string): string[] {
+  return line.trim().split(/\s+/).filter((token) => token.length > 0);
+}
+
+/** Index of the `)` matching the `(` at `openIndex`, or -1 when unbalanced. */
+function matchClosingParen(line: string, openIndex: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+
+  for (let index = openIndex; index < line.length; index++) {
+    const char = line[index];
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * True when `target` sits inside a quoted string on `line` — plan TEXT that the
+ * shell never executes (issue #362, F2.2; #359 I4).
+ *
+ * Single quotes are inert. Inside double quotes a `$( … )` or backtick group
+ * still EXECUTES, so those regions are not prose — which keeps
+ * `OUT="$(codeloop next --json)"` an invocation while
+ * `"env -u AGY_SUBAGENT node bin/codeloop.js …"` seeded as data is not.
+ * Deleting quoted spans wholesale was rejected: it loses
+ * `node "$ROOT/bin/codeloop.js"`, whose binary path is itself quoted.
+ */
+function isProseAt(line: string, target: number): boolean {
+  let index = 0;
+
+  while (index < line.length) {
+    const char = line[index];
+
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
+
+    if (char === "'") {
+      const close = line.indexOf("'", index + 1);
+      const end = close === -1 ? line.length : close;
+      if (target > index && target < end) return true;
+      index = end + 1;
+      continue;
+    }
+
+    if (char === '"') {
+      index++;
+      while (index < line.length) {
+        const inner = line[index];
+        if (inner === '\\') {
+          if (index === target) return true;
+          index += 2;
+          continue;
+        }
+        if (inner === '"') {
+          index++;
+          break;
+        }
+        if (inner === '$' && line[index + 1] === '(') {
+          const close = matchClosingParen(line, index + 1);
+          if (close === -1) return false;
+          if (target > index + 1 && target < close) return false;
+          index = close + 1;
+          continue;
+        }
+        if (inner === '`') {
+          const close = line.indexOf('`', index + 1);
+          if (close === -1) return false;
+          if (target > index && target < close) return false;
+          index = close + 1;
+          continue;
+        }
+        if (index === target) return true;
+        index++;
+      }
+      continue;
+    }
+
+    if (char === '`') {
+      const close = line.indexOf('`', index + 1);
+      if (close === -1) return false;
+      // A backtick group is a command substitution: it executes.
+      if (target > index && target < close) return false;
+      index = close + 1;
+      continue;
+    }
+
+    if (index === target) return false;
+    index++;
+  }
+
+  return false;
+}
+
+/**
+ * The offset of the statement that the matched command token belongs to,
+ * including any `env`/`npx` prefix the invocation pattern re-anchored past
+ * (issue #362, F2.2). That is the position quote-precedence must be asked
+ * about: `"env -u AGY_SUBAGENT node …"` starts inside the quoted span even
+ * though the regex matched at the inner `node`.
+ */
+function chainStart(line: string, tokenStart: number): number {
+  const prefix = line.slice(0, tokenStart);
+  const match = ENV_CHAIN_TAIL.exec(prefix);
+  if (!match) return tokenStart;
+  return prefix.length - match[1].length;
+}
+
+/** One `(ba|da|z)?sh -c '<program>'` program exposed as its own statement (#503). */
+interface ShellProgramRegion {
+  /** The RAW source slice between the quotes — offsets map 1:1 onto the statement. */
+  readonly text: string;
+  /** Offset of the first content character in the statement. */
+  readonly start: number;
+  /** Offset of the closing quote. */
+  readonly end: number;
+}
+
+/**
+ * A shell interpreter handing a program to `-c` (issue #503). One quoted word
+ * per wrapper: `env -S`, clustered flags (`bash -lc`) and nested wrappers are
+ * out of scope.
+ */
+const SHELL_C_WRAPPER_SOURCE = String.raw`(?:^|[\s;&|(])(?:ba|da|z)?sh\s+-c\s+(['"])`;
+
+function readShellProgram(line: string, quoteIndex: number): ShellProgramRegion | null {
+  const quote = line[quoteIndex];
+  let index = quoteIndex + 1;
+  while (index < line.length) {
+    const char = line[index];
+    if (char === '\\' && quote === '"' && index + 1 < line.length) {
+      index += 2; // bash honours \" \\ \$ \` inside a double-quoted word
+      continue;
+    }
+    if (char === quote) {
+      return { text: line.slice(quoteIndex + 1, index), start: quoteIndex + 1, end: index };
+    }
+    index++;
+  }
+  return null; // unterminated: another rule owns that shape
+}
+
+/**
+ * The programs of every NON-PROSE `sh -c '<program>'` wrapper on a statement,
+ * in source order (issue #503). Each program is analysed as a statement of its
+ * own, so its CLI invocation counts and its own `cd`/`--workspace` anchors it.
+ */
+function shellProgramRegions(statement: string): ShellProgramRegion[] {
+  const scanner = new RegExp(SHELL_C_WRAPPER_SOURCE, 'g'); // fresh: recursion must not share lastIndex
+  const regions: ShellProgramRegion[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = scanner.exec(statement)) !== null) {
+    // The pattern consumes one boundary character (unless it matched at `^`).
+    const wrapperStart = match.index + (match.index === 0 ? 0 : 1);
+    if (isProseAt(statement, wrapperStart)) continue;
+    const word = readShellProgram(statement, match.index + match[0].length - 1);
+    if (word === null) continue;
+    regions.push(word);
+    scanner.lastIndex = word.end + 1;
+  }
+  return regions;
+}
+
+/**
+ * The offset of the chain start of the FIRST real codeloop invocation in
+ * `text`, or `null` when it does not invoke the CLI. Recursion-safe: every call
+ * builds a FRESH `g` regex because a shared `lastIndex` would silently skip
+ * candidates after a nested scan (issue #503).
+ */
+function scanCodeloopInvocation(text: string): number | null {
+  const scanner = new RegExp(CLI_INVOCATION_PATTERN.source, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = scanner.exec(text)) !== null) {
+    // The pattern consumes one boundary character (unless it matched at `^`).
+    const tokenStart = match.index + (match.index === 0 ? 0 : 1);
+    if (!isProseAt(text, chainStart(text, tokenStart))) {
+      return chainStart(text, tokenStart);
+    }
+    if (match[0].length === 0) scanner.lastIndex++;
+  }
+  return null;
+}
+
+/**
+ * The offset of the chain start of the FIRST real codeloop invocation on a
+ * line, or `null` when the line does not invoke the CLI.
+ *
+ * Every candidate match is classified by POSITION (issue #362, F2.2): an
+ * `env`-prefixed chain seeded as quoted text is prose even though the pattern
+ * anchored at its inner `node` token, while a real invocation — including
+ * `OUT="$(codeloop next --json)"` — still counts. A `sh -c` program is scanned
+ * recursively and its inner offset mapped back onto the statement (issue #503).
+ */
+function codeloopInvocationOffset(line: string): number | null {
+  if (isCommentLineImpl(line)) return null;
+
+  const direct = scanCodeloopInvocation(line);
+  if (direct !== null) return direct;
+  for (const region of shellProgramRegions(line)) {
+    const inner = codeloopInvocationOffset(region.text);
+    if (inner !== null) return region.start + inner;
+  }
+
+  return null;
+}
+
+/**
+ * True when a non-comment line invokes the codeloop CLI as a command (I3.1).
+ *
+ * Delegates to `codeloopInvocationOffset` so the two rules share one
+ * prose/position classifier; the semantics are unchanged.
+ */
+function invokesCodeloopCli(line: string): boolean {
+  return codeloopInvocationOffset(line) !== null;
+}
+
+/** `mktemp -d …` creations: named `-p`/`--tmpdir` root, template, or bare (§2.3.3). */
+function mktempCandidates(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate[] {
+  const tokens = splitShellTokens(statement);
+  const start = tokens.findIndex((token) => MKTEMP_TOKEN.test(token));
+  if (start === -1) return [];
+  const command = tokens.slice(start).join(' ');
+  if (!MKTEMP_DIR_FLAG.test(command)) return [];
+
+  let root: string | null = null;
+  const templates: string[] = [];
+  for (let index = start + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === '-p') {
+      const value = tokens[index + 1];
+      if (value !== undefined) {
+        root = normalisePathText(value);
+        index++;
+      }
+      continue;
+    }
+    if (token === '--tmpdir') {
+      root = '$TMPDIR';
+      continue;
+    }
+    if (token.startsWith('--tmpdir=')) {
+      root = normalisePathText(token.slice('--tmpdir='.length));
+      continue;
+    }
+    if (token.startsWith('-') && token !== '-') continue;
+    templates.push(normalisePathText(token));
+  }
+
+  if (root !== null) {
+    if (templates.length === 0) {
+      return [{ offset, statement: statementIndex, createdPath: root, implicitTemp: false }];
+    }
+    return templates.map((template) => ({
+      offset,
+      statement: statementIndex,
+      // A relative template lands under the named root; an absolute one is
+      // itself the created path.
+      createdPath: template.startsWith('/') ? template : `${root}/${template}`,
+      implicitTemp: false
+    }));
+  }
+  if (templates.length === 0) {
+    // `mktemp -d` with no path at all: the implicit OS temp dir (I3.3).
+    return [
+      {
+        offset,
+        statement: statementIndex,
+        createdPath: statement.trim(),
+        implicitTemp: true
+      }
+    ];
+  }
+  // A NAMED template is not the implicit OS temp dir (issue #362, F2.4): §2.3.4
+  // documents the filter as temp-anchored OR `smoke`-named, so
+  // `mktemp -d "$PWD/fixture-XXXXXX"` is an explicit workspace directory and
+  // only `implicitTemp` (bare `mktemp -d`) is temp by construction.
+  return templates.map((template) => ({
+    offset,
+    statement: statementIndex,
+    createdPath: template,
+    implicitTemp: false
+  }));
+}
+
+/** The first non-flag argument of a `mkdir [-p] …` statement. */
+function mkdirCandidate(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate | null {
+  const tokens = splitShellTokens(statement);
+  const start = tokens.findIndex((token) => token === 'mkdir');
+  if (start === -1) return null;
+  for (let index = start + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === '-m' || token === '--mode') {
+      index++;
+      continue;
+    }
+    if (token.startsWith('-')) continue;
+    return {
+      offset,
+      statement: statementIndex,
+      createdPath: normalisePathText(token),
+      implicitTemp: false
+    };
+  }
+  return null;
+}
+
+/** The explicit target directory of `git clone <url> <dir>` — never the 2-arg form. */
+function gitCloneCandidate(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate | null {
+  const tokens = splitShellTokens(statement);
+  const cloneIndex = tokens.findIndex(
+    (token, index) => token === 'clone' && tokens[index - 1] === 'git'
+  );
+  if (cloneIndex === -1) return null;
+  const positional = tokens.slice(cloneIndex + 1).filter((token) => !token.startsWith('-'));
+  const target = positional[1];
+  if (target === undefined) return null;
+  return {
+    offset,
+    statement: statementIndex,
+    createdPath: normalisePathText(target),
+    implicitTemp: false
+  };
+}
+
+/**
+ * Splits a line at its top-level `;` and `&&` separators (issue #362, F2.3;
+ * `&&` added by #364 so `cd "$SBX" && mkdir -p artifacts/x` yields two
+ * statements and the cwd can be tracked). Quote-aware: a separator inside a
+ * quoted value is data. `||` is deliberately NOT a separator — `cd A || cd B`
+ * is ambiguous, so the cwd stays unknown rather than guessed.
+ */
+function splitStatements(line: string): string[] {
+  const statements: string[] = [];
+  let start = 0;
+  let quote: string | null = null;
+
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === ';') {
+      statements.push(line.slice(start, index));
+      start = index + 1;
+      continue;
+    }
+    if (char === '&' && line[index + 1] === '&') {
+      statements.push(line.slice(start, index));
+      index++;
+      start = index + 1;
+    }
+  }
+
+  statements.push(line.slice(start));
+  return statements;
+}
+
+/**
+ * Every path-shaped assignment in a STATEMENT (`SBX=/tmp/…`,
+ * `SBX="$HOME/.cache/codeloop/smoke-x"`).
+ *
+ * The old single-candidate form read
+ * `SANDBOX="$HOME/.cache/codeloop"; mkdir -p "$SANDBOX"; WS="$(mktemp …)"` as ONE
+ * assignment whose value swallowed the rest of the line, so the trailing
+ * `smoke` token still flagged a correct, runtime-accepted sandbox (#284).
+ */
+function assignmentCandidates(
+  statement: string,
+  offset: number,
+  statementIndex: number
+): SandboxCandidate[] {
+  const match = ASSIGNMENT_PATTERN.exec(statement);
+  if (!match) return [];
+  const value = normalisePathText(match[2].trim());
+  if (!PATH_SHAPED_VALUE.test(value)) return [];
+  return [{ offset, statement: statementIndex, createdPath: value, implicitTemp: false }];
+}
+
+/**
+ * The `VAR=<path>` assignments visible at each body line (issue #362, F2.3):
+ * cumulative, last assignment wins, only path-shaped values recorded.
+ */
+function assignmentsByLine(
+  bodyLines: readonly string[]
+): ReadonlyMap<number, ReadonlyMap<string, string>> {
+  const byLine = new Map<number, ReadonlyMap<string, string>>();
+  const visible = new Map<string, string>();
+
+  bodyLines.forEach((line, offset) => {
+    if (!isCommentLineImpl(line)) {
+      for (const statement of splitStatements(line)) {
+        const match = ASSIGNMENT_PATTERN.exec(statement);
+        if (!match) continue;
+        const value = normalisePathText(match[2].trim());
+        if (!PATH_SHAPED_VALUE.test(value)) continue;
+        visible.set(match[1], value);
+      }
+    }
+    byLine.set(offset, new Map(visible));
+  });
+
+  return byLine;
+}
+
+/**
+ * The `cd <target>` a statement performs, if any (issue #364).
+ *
+ * @returns `undefined` when the statement is not a `cd`; `null` when the cwd
+ *          becomes UNKNOWN (bare `cd`, `cd -`, a subshell/pipeline/backtick
+ *          `cd`, or an unresolvable variable) — never guessed; otherwise the
+ *          resolved target (still possibly relative).
+ */
+function cdTarget(
+  statement: string,
+  assignments: ReadonlyMap<string, string>
+): string | null | undefined {
+  const trimmed = statement.trim();
+  const match = CD_STATEMENT.exec(trimmed);
+  if (!match) return undefined;
+
+  // A subshell, backtick, or pipeline `cd` never changes the PARENT's cwd.
+  if (trimmed.includes('$(') || trimmed.includes('`') || trimmed.includes('(') || trimmed.includes('|')) {
+    return null;
+  }
+
+  const rawTarget = (match[1] ?? '').trim();
+  if (rawTarget.length === 0) return null;
+  // `cd -` and `$OLDPWD` depend on shell history the rule cannot see.
+  if (rawTarget === '-' || rawTarget === '$OLDPWD' || rawTarget === '${OLDPWD}' || rawTarget === '~-') {
+    return null;
+  }
+
+  const resolved = resolveVariables(normalisePathText(rawTarget), assignments);
+  if (resolved.trim().length === 0) return null;
+  // A variable the rule could not resolve (other than the documented `$HOME`
+  // anchor) leaves the cwd unknown rather than guessed.
+  if (/\$[A-Za-z_{]/.test(resolved.replace(/\$\{HOME\}|\$HOME/g, ''))) return null;
+  return resolved;
+}
+
+/**
+ * The tracked working directory IN EFFECT BEFORE each statement (issue #364).
+ *
+ * Keyed `${lineOffset}:${statementIndex}`. Walked once, in statement order: a
+ * resolvable `cd` moves the cwd only for the statements that FOLLOW it, so
+ * `cd "$SBX" && mkdir -p artifacts/x` judges the mkdir against the sandbox
+ * while `mkdir -p artifacts/x && cd "$SBX"` still judges the mkdir against the
+ * cwd before the cd (unknown, hence flagged — the mkdir really did run outside
+ * the sandbox). The map is per CHECK (one `bodyLines` array), so a `cd` in
+ * check 1 can never leak into check 2. The cwd starts UNKNOWN.
+ */
+function cwdByStatement(
+  bodyLines: readonly string[],
+  assignments: ReadonlyMap<number, ReadonlyMap<string, string>>
+): ReadonlyMap<string, string | null> {
+  const byStatement = new Map<string, string | null>();
+  let cwd: string | null = null;
+
+  bodyLines.forEach((line, offset) => {
+    if (isCommentLineImpl(line)) return;
+    splitStatements(line).forEach((statement, index) => {
+      byStatement.set(statementKey(offset, index), cwd);
+      const target = cdTarget(statement, assignments.get(offset) ?? new Map<string, string>());
+      if (target === undefined) return;
+      cwd = target === null ? null : resolvePathAgainstCwd(cwd, target);
+    });
+  });
+
+  return byStatement;
+}
+
+/** The key of one statement in a check body: `<line offset>:<statement index>`. */
+function statementKey(offset: number, statement: number): string {
+  return `${offset}:${statement}`;
+}
+
+/** Expands `$NAME`/`${NAME}` from the assignments visible at that line. */
+function resolveVariables(text: string, assignments: ReadonlyMap<string, string>): string {
+  let resolved = text;
+
+  for (let pass = 0; pass < 5; pass++) {
+    const next = resolved.replace(
+      /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+      (whole, braced: string | undefined, plain: string | undefined) => {
+        const value = assignments.get(braced ?? plain ?? '');
+        return value === undefined ? whole : value;
+      }
+    );
+    if (next === resolved) break;
+    resolved = next;
+  }
+
+  return resolved;
+}
+
+/** Every sandbox-creation candidate of one check body (§2.3.3). */
+function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
+  const candidates: SandboxCandidate[] = [];
+  bodyLines.forEach((line, offset) => {
+    if (isCommentLineImpl(line)) return;
+    // Statement granularity (issue #364 review): the cwd a creation is judged
+    // against is the one in effect BEFORE its own statement, so a trailing
+    // `&& cd "$SBX"` can no longer launder a mkdir that ran elsewhere.
+    splitStatements(line).forEach((statement, statementIndex) => {
+      candidates.push(...mktempCandidates(statement, offset, statementIndex));
+      for (const candidate of [
+        mkdirCandidate(statement, offset, statementIndex),
+        gitCloneCandidate(statement, offset, statementIndex)
+      ]) {
+        if (candidate !== null) candidates.push(candidate);
+      }
+      candidates.push(...assignmentCandidates(statement, offset, statementIndex));
+    });
+  });
+  return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #440 / #498 / #503: the `sandbox-cwd` and `sandbox-missing` rules.
+//
+// `sandbox-path` (issue #359) asks only WHERE a check creates its sandbox. The
+// #370 reproduction declared `$HOME/.cache/codeloop/smoke-348/approval`, cd'd to
+// the worktree and then ran `transition APPROVAL`, so a legal transition would
+// have mutated the LIVE checkpoint while the plan validated clean. Naming a
+// sandbox is not entering it.
+//
+// The walk asks two questions of every non-inert CLI invocation in a check:
+//
+//   1. Does it run anchored — a `cd` in force at the invocation (direct,
+//      same-line, subshell, command substitution, or mktemp/variable
+//      indirection), or a `--workspace` target inside a sandbox?
+//   2. Did this check DECLARE a recognised sandbox?
+//
+// Declared + unanchored -> `sandbox-cwd` (issue #440). Undeclared + unanchored
+// -> `sandbox-missing` (issue #498): before #498 the walk bailed out on
+// `!declared`, so the check that ignored the sandbox contract entirely was the
+// only shape that certified clean.
+//
+// Both rules ask the SAME classifier (issue #503). It recognises the CLI's own
+// shipped launcher (`./bin/codeloop`, `bin/codeloop.js`, `$ROOT/bin/codeloop`),
+// `NAME=value`-prefixed commands (`AGYLOOP_ALLOW_WORKTREE_ISSUE_MISMATCH=1 …`,
+// quoted verbatim in the dispatched implementer/gate prompts), a shell
+// interpreter holding the script (`bash bin/codeloop.js`) and a non-prose
+// `sh -c '<program>'` wrapper, whose program is read as a statement of its own.
+//
+// Deliberate boundaries: (a) an invocation anchored by an earlier check's `cd`
+// is accepted because `toScript()` executes ONE shell, (b) an UNKNOWN cwd is
+// fail-open — historical plans read variables set outside the fence, and the
+// runtime `AGYLOOP_SMOKE` guard is the backstop, and (c) a nested `sh -c` is
+// followed for DETECTION but judged against the outer program's prefix.
+// ---------------------------------------------------------------------------
+
+/** Sentinel cwd for the worktree root the gate executes the script from. */
+const SANDBOX_CWD_WORKTREE = '$PWD';
+const WORKTREE_ROOT_LABEL = 'the worktree root ($PWD)';
+/** An invocation carrying one of these flags cannot mutate state. */
+const NON_MUTATING_FLAG = /(?:^|\s)(?:--help|-h|--version|-V)(?=[\s;&|)"']|$)/;
+/** `--workspace <path>` / `--workspace=<path>` (and the `-dir` spelling). */
+const WORKSPACE_FLAG = /--workspace(?:-dir)?(?:=|\s+)(\S+)/g;
+/** A statement whose trimmed form is `cd <target>`, optionally inside `(`. */
+const CD_PREFIX = /^(\(+\s*)?cd(?:\s+(.*?))?\s*\)*$/;
+/** An inline `cd <target>` before a CLI token in the same statement. */
+const INLINE_CD = /(?:^|[\s;&|(])cd\s+("[^"]*"|'[^']*'|\S+)/g;
+
+/** One non-inert CLI invocation and the cwd it was judged against. */
+interface SandboxInvocation {
+  /** 0-based offset of the line within the check body. */
+  readonly offset: number;
+  /** True when a `cd`/`--workspace` anchored the invocation inside a sandbox. */
+  readonly anchored: boolean;
+  /** The effective cwd at the invocation; `null` when unknown. */
+  readonly cwd: string | null;
+}
+
+/** The cumulative cwd/variable tracker for ONE shell script. */
+interface SandboxCwdState {
+  /** `SANDBOX_CWD_WORKTREE`, a resolved path, or `null` when unknown. */
+  cwd: string | null;
+  /** Variables the rule resolved itself; separate from `assignmentsByLine`. */
+  readonly variables: Map<string, string>;
+  /** True once a declared path resolves inside a recognised sandbox. */
+  declared: boolean;
+  /** The first such declaration, for the finding excerpt. */
+  declaredSandbox: string | null;
+}
+
+/** True when a variable still carries a name the rule cannot resolve. */
+function hasUnknownVariable(text: string): boolean {
+  return /\$[A-Za-z_{]/.test(
+    text.replace(/\$\{HOME\}|\$HOME/g, '').replace(/\$\{PWD\}|\$PWD/g, '')
+  );
+}
+
+/**
+ * Resolves a path/variable text to an absolute path, the worktree sentinel, or
+ * `null` when it is UNKNOWN. Variables come from the rule's own map; `$HOME`
+ * and `$PWD` are the only anchors interpreted here.
+ */
+function sandboxCwdTarget(
+  raw: string,
+  cwd: string | null,
+  variables: ReadonlyMap<string, string>
+): string | null {
+  const text = normalisePathText(raw).trim().replace(/[)\s]+$/, '');
+  if (text.length === 0) return null;
+  if (text === '-' || text === '$OLDPWD' || text === '${OLDPWD}' || text === '~-') return null;
+
+  const resolved = resolveVariables(text, variables).trim();
+  if (resolved.length === 0) return null;
+  if (resolved === '$PWD' || resolved === '${PWD}') return SANDBOX_CWD_WORKTREE;
+  if (hasUnknownVariable(resolved)) return null;
+
+  const normalised =
+    resolved.startsWith('$PWD/') || resolved.startsWith('${PWD}/')
+      ? normaliseLexicalPath(resolved.replace(/^\$\{PWD\}/, '$PWD'))
+      : resolved;
+  if (normalised.startsWith('$PWD/')) return normaliseLexicalPath(normalised);
+  if (isAnchoredPath(normalised)) return normaliseLexicalPath(normalised);
+  if (cwd === null) return null;
+  return resolvePathAgainstCwd(cwd, normalised);
+}
+
+/** Arms the rule when `value` (a resolved variable) sits inside a sandbox. */
+function noteSandboxDeclaration(value: string | null, state: SandboxCwdState): void {
+  if (value === null || value === SANDBOX_CWD_WORKTREE) return;
+  if (!isWithinSmokeSandbox(value)) return;
+  state.declared = true;
+  if (state.declaredSandbox === null) state.declaredSandbox = value;
+}
+
+/**
+ * Records one path-shaped assignment in the rule's OWN variable map.
+ *
+ * Separate from `assignmentsByLine` so `sandbox-path` verdicts cannot shift.
+ * Records only values that RESOLVE to an anchored path (so `$SANDBOX`-rooted
+ * templates are recorded), a `mktemp -d` template, or the `$PWD` sentinel —
+ * never a non-path value such as `ISSUE=440`.
+ */
+function recordSandboxCwdAssignment(
+  statement: string,
+  cwd: string | null,
+  state: SandboxCwdState
+): void {
+  const match = ASSIGNMENT_PATTERN.exec(statement);
+  if (!match) return;
+  const name = match[1];
+  const raw = normalisePathText(match[2].trim());
+
+  const mktemp = mktempCandidates(statement, 0, 0);
+  if (mktemp.length > 0) {
+    const value = mktemp[0].implicitTemp
+      ? '$TMPDIR'
+      : sandboxCwdTarget(mktemp[0].createdPath, cwd, state.variables);
+    if (value !== null) state.variables.set(name, value);
+    return;
+  }
+
+  if (
+    raw === '$PWD' ||
+    raw === '${PWD}' ||
+    raw === '$(pwd)' ||
+    /^\$\{[A-Za-z_][A-Za-z0-9_]*:-(\$PWD|\$\{PWD\})\}$/.test(raw)
+  ) {
+    state.variables.set(name, SANDBOX_CWD_WORKTREE);
+    noteSandboxDeclaration(SANDBOX_CWD_WORKTREE, state);
+    return;
+  }
+
+  const resolved = resolveVariables(raw, state.variables).trim();
+  if (resolved.length === 0 || hasUnknownVariable(resolved)) return;
+  if (!isAnchoredPath(resolved) && !resolved.startsWith('$PWD')) return;
+
+  const target = sandboxCwdTarget(raw, cwd, state.variables);
+  if (target === null) return;
+  state.variables.set(name, target);
+  noteSandboxDeclaration(target, state);
+}
+
+/**
+ * Applies a statement-level `cd` to the tracker.
+ *
+ * @returns True when the `cd` was a SUBSHELL `cd` — it applies to the remaining
+ *          statements on the line and is restored afterwards.
+ */
+function advanceSandboxCwd(statement: string, state: SandboxCwdState): boolean {
+  const trimmed = statement.trim();
+  const match = CD_PREFIX.exec(trimmed);
+  if (!match) return false;
+
+  const subshell = match[1] !== undefined;
+  if (trimmed.includes('$(') || trimmed.includes('`') || trimmed.includes('|')) {
+    state.cwd = null;
+    return subshell;
+  }
+
+  state.cwd = sandboxCwdTarget(match[2] ?? '', state.cwd, state.variables);
+  return subshell;
+}
+
+/**
+ * The effective cwd for an invocation inside `text`: the last inline `cd`
+ * between the start of the statement (or the last `;`/`&&`/`(`) and the CLI
+ * token wins, which is what makes `OUT="$(cd "$WS" && cli)"` anchored. Falls
+ * back to `baseCwd` when the text carries no inline `cd` (issue #503).
+ */
+function inlineCwdWithin(
+  text: string,
+  prefixEnd: number,
+  baseCwd: string | null,
+  state: SandboxCwdState
+): { readonly found: boolean; readonly cwd: string | null } {
+  INLINE_CD.lastIndex = 0;
+  let found = false;
+  let cwd = baseCwd;
+  let match: RegExpExecArray | null;
+  const prefix = text.slice(0, prefixEnd);
+  while ((match = INLINE_CD.exec(prefix)) !== null) {
+    const start = match.index + (match[0].startsWith('cd') ? 0 : 1);
+    if (isProseAt(text, start)) continue;
+    found = true;
+    cwd = sandboxCwdTarget(match[1], baseCwd, state.variables);
+  }
+  return { found, cwd };
+}
+
+function inlineSandboxCwd(
+  statement: string,
+  tokenOffset: number,
+  state: SandboxCwdState
+): string | null {
+  const outer = inlineCwdWithin(statement, tokenOffset, state.cwd, state);
+  for (const region of shellProgramRegions(statement)) {
+    if (tokenOffset <= region.start || tokenOffset > region.end) continue;
+    const inner = inlineCwdWithin(region.text, tokenOffset - region.start, outer.cwd, state);
+    return inner.found ? inner.cwd : outer.cwd;
+  }
+  return outer.cwd;
+}
+
+/** The last `--workspace` target of an invocation text, when present (#503). */
+function workspaceWithin(
+  text: string,
+  state: SandboxCwdState
+): { readonly present: boolean; readonly target: string | null } {
+  WORKSPACE_FLAG.lastIndex = 0;
+  let present = false;
+  let target: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = WORKSPACE_FLAG.exec(text)) !== null) {
+    if (isProseAt(text, match.index)) continue;
+    present = true;
+    target = sandboxCwdTarget(match[1], state.cwd, state.variables);
+  }
+  return { present, target };
+}
+
+/**
+ * The last `--workspace` target of an invocation statement, when present. A
+ * `sh -c` program's own `--workspace` is honoured when the statement carries
+ * none of its own (issue #503).
+ */
+function sandboxWorkspaceTarget(
+  statement: string,
+  state: SandboxCwdState
+): { readonly present: boolean; readonly target: string | null } {
+  const outer = workspaceWithin(statement, state);
+  if (outer.present) return outer;
+  for (const region of shellProgramRegions(statement)) {
+    const inner = workspaceWithin(region.text, state);
+    if (inner.present) return inner;
+  }
+  return { present: false, target: null };
+}
+
+/** `--help`/`--version` invocations cannot mutate state. */
+function isNonMutatingInvocation(statement: string): boolean {
+  return NON_MUTATING_FLAG.test(statement);
+}
+
+/**
+ * One leading `NAME=value` word of a command line. A per-command assignment
+ * (`FOO=bar codeloop …`) is NOT a definition: the command that follows runs
+ * (issue #503).
+ */
+const ASSIGNMENT_WORD =
+  /^\s*[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S*)\s+/;
+/** `NAME=(…)` is a shell ARRAY definition, never a command prefix. */
+const ARRAY_ASSIGNMENT = /^\s*[A-Za-z_][A-Za-z0-9_]*=\(/;
+
+function stripAssignmentPrefix(statement: string): string {
+  let remainder = statement;
+  for (;;) {
+    if (ARRAY_ASSIGNMENT.test(remainder)) return remainder;
+    const match = ASSIGNMENT_WORD.exec(remainder);
+    if (!match) return remainder;
+    remainder = remainder.slice(match[0].length);
+  }
+}
+
+/** An assignment with no command after it is a definition (issue #503). */
+function isInertAssignment(statement: string): boolean {
+  const stripped = stripAssignmentPrefix(statement);
+  if (ARRAY_ASSIGNMENT.test(stripped)) return true;
+  const match = ASSIGNMENT_PATTERN.exec(stripped);
+  if (!match) return false;
+  return !match[2].includes('$(');
+}
+
+/** The FIRST invocation that would run outside every sandbox, if any. */
+function firstUnanchoredInvocation(
+  invocations: readonly SandboxInvocation[]
+): SandboxInvocation | null {
+  return invocations.find((invocation) => !invocation.anchored) ?? null;
+}
+
+/** The display form of the cwd an invocation was judged against. */
+function sandboxCwdLabel(cwd: string | null): string {
+  if (cwd === SANDBOX_CWD_WORKTREE) return WORKTREE_ROOT_LABEL;
+  if (cwd === null) return 'an unknown directory';
+  return cwd;
+}
+
+/**
+ * Emits at most one `sandbox-cwd` or `sandbox-missing` finding per check
+ * (issues #440 and #498).
+ *
+ * `sandbox-cwd` is reserved for a check that DECLARES a recognised sandbox and
+ * then runs the CLI outside it. `sandbox-missing` covers the complement: a
+ * check that declares none and still runs the CLI outside every sandbox.
+ *
+ * The walk is cumulative across checks because `toScript()` executes ONE shell:
+ * a `cd` or a variable set in check 1 is still in force in check 2. Comment,
+ * heredoc and multi-line-quote body lines are skipped, exactly like the other
+ * static rules.
+ */
+function collectSandboxCwdFindings(
+  checks: readonly SmokeCheck[],
+  findings: SmokeFinding[]
+): void {
+  const state: SandboxCwdState = {
+    cwd: SANDBOX_CWD_WORKTREE,
+    variables: new Map<string, string>(),
+    declared: false,
+    declaredSandbox: null
+  };
+
+  for (const check of checks) {
+    const bodyLines = check.body.split('\n');
+    const heredocData = heredocDataLines(bodyLines);
+    const quotedContinuation = quotedContinuationLines(bodyLines);
+    const invocations: SandboxInvocation[] = [];
+    // Arming is per CHECK: a declaration in an earlier check does not arm a
+    // later block that deliberately runs from the worktree (corpus 315). The
+    // cwd and variables still carry, because `toScript()` is ONE shell.
+    state.declared = false;
+    state.declaredSandbox = null;
+
+    bodyLines.forEach((line, offset) => {
+      if (isCommentLineImpl(line) || heredocData.has(offset) || quotedContinuation.has(offset)) {
+        return;
+      }
+
+      const parentCwd = state.cwd;
+      let restoreCwd: string | null | undefined;
+
+      splitStatements(line).forEach((statement) => {
+        recordSandboxCwdAssignment(statement, state.cwd, state);
+
+        for (const candidate of mktempCandidates(statement, offset, 0)) {
+          if (candidate.implicitTemp) continue;
+          noteSandboxDeclaration(
+            sandboxCwdTarget(candidate.createdPath, state.cwd, state.variables),
+            state
+          );
+        }
+        for (const candidate of [
+          mkdirCandidate(statement, offset, 0),
+          gitCloneCandidate(statement, offset, 0)
+        ]) {
+          if (candidate === null) continue;
+          noteSandboxDeclaration(
+            sandboxCwdTarget(candidate.createdPath, state.cwd, state.variables),
+            state
+          );
+        }
+
+        const subshell = advanceSandboxCwd(statement, state);
+        if (subshell && restoreCwd === undefined) restoreCwd = parentCwd;
+
+        if (isInertAssignment(statement)) return;
+        const tokenOffset = codeloopInvocationOffset(statement);
+        if (tokenOffset === null) return;
+        if (isNonMutatingInvocation(statement)) return;
+
+        const cwd = inlineSandboxCwd(statement, tokenOffset, state);
+        const workspace = sandboxWorkspaceTarget(statement, state);
+        // A known `--workspace` target decides on its own; an absent/unknown
+        // one falls back to the effective cwd, and an unknown cwd is fail-open.
+        const anchored =
+          workspace.present && workspace.target !== null
+            ? isWithinSmokeSandbox(workspace.target)
+            : cwd === null
+              ? true
+              : isWithinSmokeSandbox(cwd);
+
+        invocations.push({ offset, anchored, cwd });
+      });
+
+      if (restoreCwd !== undefined) state.cwd = restoreCwd;
+    });
+
+    const offending = firstUnanchoredInvocation(invocations);
+    if (offending === null) continue;
+
+    // Issue #498: an undeclared check whose invocation actually runs outside
+    // every sandbox is the residual half of the #370/#440 family. The rule id
+    // says "declares no sandbox"; `sandbox-cwd` stays reserved for the check
+    // that DOES declare one and then leaves it.
+    if (!state.declared) {
+      findings.push({
+        rule: SMOKE_RULE_SANDBOX_MISSING,
+        checkIndex: check.index,
+        label: check.label,
+        line: check.planLine + 1 + offending.offset,
+        excerpt: `${truncateImpl(bodyLines[offending.offset] ?? '')} — declares no sandbox but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; create and cd into ${SMOKE_SANDBOX_RECOMMENDED_PATH} first`
+      });
+      continue;
+    }
+
+    findings.push({
+      rule: SMOKE_RULE_SANDBOX_CWD,
+      checkIndex: check.index,
+      label: check.label,
+      line: check.planLine + 1 + offending.offset,
+      excerpt: `${truncateImpl(bodyLines[offending.offset] ?? '')} — declares ${state.declaredSandbox ?? SMOKE_SANDBOX_RECOMMENDED_PATH} but runs the codeloop CLI from ${sandboxCwdLabel(offending.cwd)}; cd into the sandbox first`
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #388: the `missing-parent-directory` rule.
+//
+// The #382 plan's Smoke 6/7 seeded `.agyloop/tasks/382.json` with a
+// `node -e 'fs.writeFileSync(…)'` one-liner but never created `.agyloop/tasks`.
+// Every assertion downstream died at the write, and the validator still
+// reported `executable: true`, so the gate had to edit the frozen script.
+//
+// The scan is deliberately CONSERVATIVE and I/O-free:
+//
+//   - writes are recognised from shell redirections (`>`, `>>`, `&>`), `tee`
+//     and a bounded list of literal `node -e` fs calls;
+//   - a `path.join(…)` or unresolved `$VAR` path is skipped, never guessed;
+//   - heredoc data is skipped, so a plan TEXT seeded inside `node - <<'NODE'`
+//     is never mistaken for an executed write;
+//   - created directories accumulate in CHECK ORDER (one script, executed in
+//     order) while each check keeps its own `cd`/assignment state;
+//   - a write under `.agyloop/`, `artifacts/plans/` or `.worktrees/` is
+//     exempt after an earlier `codeloop` invocation, because the CLI creates
+//     the checkpoint directory, the plan scaffold or the task worktree.
+// ---------------------------------------------------------------------------
+
+/** Parents that always exist, so a write into them needs no `mkdir` first. */
+const ALWAYS_PRESENT_PARENTS: readonly string[] = Object.freeze(
+  ['/tmp', '/var/tmp', '/dev/shm', '$TMPDIR', '$HOME', '$HOME/.cache/codeloop'].map(
+    (path) => normaliseLexicalPath(path)
+  )
+);
+
+/** The paths the `codeloop` CLI creates on its own (issue #388 §2.2). */
+const TOOL_SCAFFOLD_MARKERS: readonly string[] = Object.freeze([
+  '/.agyloop/',
+  '/artifacts/plans/',
+  '/.worktrees/'
+]);
+
+/** Redirection targets that are not filesystem writes. */
+const NON_WRITE_TARGETS: ReadonlySet<string> = new Set([
+  '/dev/null',
+  '/dev/stdout',
+  '/dev/stderr',
+  '/dev/fd/1',
+  '/dev/fd/2'
+]);
+
+/** The `node -e` fs calls whose first argument can be a literal write path. */
+const LITERAL_WRITE_CALLS: ReadonlySet<string> = new Set([
+  'writeFileSync',
+  'writeFile',
+  'appendFileSync',
+  'appendFile',
+  'createWriteStream',
+  'openSync'
+]);
+
+const HEREDOC_OPEN = /<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/;
+/**
+ * The prefix of a `node -e '<program>'` wrapper (issue #467, D2).
+ *
+ * The old pattern captured the payload with `'([^']*)'`, so it stopped at the
+ * first apostrophe and never saw a write after one — raw or correctly
+ * escaped. The prefix is matched here and the payload is walked by
+ * `readQuotedProgram`, the same quote model the refusal rule uses. Non-global:
+ * only the first wrapper on a statement is read.
+ */
+const NODE_EVAL = /\bnode\b[^\n]*?\s(?:--eval|-e)\s+'/;
+
+interface WriteTarget {
+  /** 0-based offset of the line within the check body. */
+  readonly offset: number;
+  /** 0-based index of the statement on that line. */
+  readonly statement: number;
+  /** The path as written (quotes stripped, variables unresolved). */
+  readonly path: string;
+}
+
+interface CreatedDirectory {
+  readonly path: string;
+  /** `mkdir -p` guarantees every ancestor; plain `mkdir` guarantees only itself. */
+  readonly recursive: boolean;
+}
+
+/** The set of body-line offsets that are heredoc DATA (never executed). */
+function heredocDataLines(bodyLines: readonly string[]): ReadonlySet<number> {
+  const data = new Set<number>();
+  let delimiter: string | null = null;
+  let indented = false;
+
+  bodyLines.forEach((line, offset) => {
+    if (delimiter !== null) {
+      const candidate = indented ? line.trim() : line;
+      data.add(offset);
+      if (candidate === delimiter) delimiter = null;
+      return;
+    }
+
+    HEREDOC_OPEN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = HEREDOC_OPEN.exec(line)) !== null) {
+      if (!isProseAt(line, match.index)) {
+        indented = match[1] === '-';
+        delimiter = match[3];
+        break;
+      }
+    }
+  });
+
+  return data;
+}
+
+/**
+ * Offsets of lines that START inside a multi-line shell quote.
+ *
+ * A common plan shape is `node -e '` followed by a multi-line JS body and a
+ * closing `'`. Those body lines are shell STRING DATA, so an arrow function
+ * (`=>`) or a regex (`/^…/`) inside them must never be read as a shell
+ * redirection. The opening line itself is still scanned: a real write before
+ * the quote (`printf x > out.json; node -e '…'`) stays visible.
+ */
+function quotedContinuationLines(bodyLines: readonly string[]): ReadonlySet<number> {
+  const continuation = new Set<number>();
+  let quote: string | null = null;
+
+  bodyLines.forEach((line, offset) => {
+    if (quote !== null) continuation.add(offset);
+    if (isCommentLineImpl(line)) return;
+
+    let index = 0;
+    while (index < line.length) {
+      const char = line[index];
+      if (char === '\\') {
+        index += 2;
+        continue;
+      }
+      if (quote === null) {
+        if (char === "'" || char === '"' || char === '`') quote = char;
+      } else if (char === quote) {
+        quote = null;
+      }
+      index++;
+    }
+  });
+
+  return continuation;
+}
+
+/** Characters that end a shell word. */
+const SHELL_WORD_SEPARATORS: ReadonlySet<string> = new Set([
+  ' ',
+  '\t',
+  '\n',
+  '\r',
+  ';',
+  '&',
+  '|',
+  ')',
+  '>',
+  '<'
+]);
+
+/** Interpreters whose program is one shell-quoted word (issue #467). */
+const SHELL_PROGRAM_WRAPPER =
+  /\b(?:node\b[^\n]*?\s(?:--eval|-e)|(?:ba|da|z)?sh\s+-c|python3?\s+-c)\s+'/g;
+
+interface QuotedProgram {
+  /** The program bash hands the interpreter, sanctioned escapes decoded. */
+  readonly program: string;
+  /** Offset of the apostrophe that closed the word early, or null. */
+  readonly offendingOffset: number | null;
+  /** Index just past the closing quote; `body.length` when the word never closes. */
+  readonly endOffset: number;
+  /** True when no terminating quote exists. */
+  readonly unterminated: boolean;
+}
+
+interface DoubleQuotedSegment {
+  /** The segment with bash's double-quote escapes decoded. */
+  readonly text: string;
+  /** Index just past the closing `"`, or `body.length` when it never closes. */
+  readonly endOffset: number;
+  readonly closed: boolean;
+}
+
+/**
+ * Reads the double-quoted segment opened at `openIndex` (issue #467).
+ *
+ * A `'"'"'` spelling is a double-quoted `'` adjacent to single-quoted
+ * segments; bash concatenates the three pieces, so the walker copies the
+ * segment's CONTENT into the program rather than its delimiters.
+ */
+function skipDoubleQuoted(body: string, openIndex: number): DoubleQuotedSegment {
+  let text = '';
+  let index = openIndex + 1;
+
+  while (index < body.length) {
+    const char = body[index];
+    if (char === '\\' && index + 1 < body.length) {
+      const next = body[index + 1];
+      if (next === '"' || next === '\\' || next === '$' || next === '`') {
+        text += next;
+        index += 2;
+        continue;
+      }
+      if (next === '\n') {
+        // A backslash-newline is a line continuation: it removes both.
+        index += 2;
+        continue;
+      }
+      text += char;
+      index++;
+      continue;
+    }
+    if (char === '"') return { text, endOffset: index + 1, closed: true };
+    text += char;
+    index++;
+  }
+
+  return { text, endOffset: body.length, closed: false };
+}
+
+/**
+ * Walks the single-quoted shell word opened at `openIndex` (issue #467).
+ *
+ * The walker follows the WORD, not the line. A closing apostrophe followed by
+ * a separator (or EOF) ends the word cleanly; followed by `"` it is a
+ * sanctioned `'"'"'`/`'"$VAR"'` continuation; followed by anything else the
+ * word closes EARLY and bash re-glues the remainder by concatenation — the
+ * #447 defect, where `… for 'phase/447'.` reached node as `… for phase/447.`.
+ *
+ * Sanctioned spellings: `'"'"'`, `'\''`, a `"…"` continuation, and a heredoc.
+ * `\'` is deliberately NOT sanctioned: bash does not honour it inside a
+ * single-quoted word, so accepting it would certify a `SyntaxError`. The
+ * `'a'b` concatenation is refused by design — it is legal shell, but the
+ * payload a reviewer reads is not the program that runs. An unterminated word
+ * is a separate finding (see `collectNestedSingleQuoteFindings`).
+ */
+function readQuotedProgram(body: string, openIndex: number): QuotedProgram {
+  let program = '';
+  let index = openIndex + 1;
+  let mode: 'single' | 'outside' = 'single';
+
+  while (index < body.length) {
+    if (mode === 'single') {
+      if (body[index] !== "'") {
+        program += body[index];
+        index++;
+        continue;
+      }
+
+      // `'\''` — a backslash-escaped apostrophe the shell does honour.
+      if (body.startsWith("'\\''", index)) {
+        program += "'";
+        index += 4;
+        continue;
+      }
+
+      // `'"…"'` — a double-quoted continuation adjacent to the word.
+      if (body[index + 1] === '"') {
+        const segment = skipDoubleQuoted(body, index + 1);
+        if (!segment.closed) {
+          return {
+            program: program + segment.text,
+            offendingOffset: null,
+            endOffset: segment.endOffset,
+            unterminated: true
+          };
+        }
+        program += segment.text;
+        index = segment.endOffset;
+        mode = 'outside';
+        continue;
+      }
+
+      // `''` — an empty adjacent segment.
+      if (body[index + 1] === "'") {
+        index += 2;
+        continue;
+      }
+
+      // A clean close: separator, or the end of the body.
+      if (index + 1 >= body.length || SHELL_WORD_SEPARATORS.has(body[index + 1])) {
+        return { program, offendingOffset: null, endOffset: index + 1, unterminated: false };
+      }
+
+      // Anything else re-glues the word: the program the operator approved is
+      // not the one bash hands the interpreter.
+      return {
+        program,
+        offendingOffset: index,
+        endOffset: index + 1,
+        unterminated: false
+      };
+    }
+
+    const char = body[index];
+    if (char === "'") {
+      mode = 'single';
+      index++;
+      continue;
+    }
+    if (char === '"') {
+      const segment = skipDoubleQuoted(body, index);
+      if (!segment.closed) {
+        return {
+          program: program + segment.text,
+          offendingOffset: null,
+          endOffset: segment.endOffset,
+          unterminated: true
+        };
+      }
+      program += segment.text;
+      index = segment.endOffset;
+      continue;
+    }
+    if (SHELL_WORD_SEPARATORS.has(char)) {
+      return { program, offendingOffset: null, endOffset: index, unterminated: false };
+    }
+
+    return {
+      program,
+      offendingOffset: index,
+      endOffset: index + 1,
+      unterminated: false
+    };
+  }
+
+  // The word never closed.
+  return { program, offendingOffset: null, endOffset: body.length, unterminated: true };
+}
+
+/** True when `text` starts a new JS string literal at `index`. */
+function isJsQuote(text: string, index: number): boolean {
+  const char = text[index];
+  return char === "'" || char === '"' || char === '`';
+}
+
+/** The offset just past the JS string literal opened at `start`. */
+function skipJsString(text: string, start: number): number {
+  const quote = text[start];
+  let index = start + 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (text[index] === quote) return index + 1;
+    index++;
+  }
+  return text.length;
+}
+
+/**
+ * Literal write paths in a `node -e` script.
+ *
+ * The tiny lexer skips JS string literals, so
+ * `fs.writeFileSync(".agyloop/tasks/382.json", …)` is found while
+ * `const seeded = 'fs.writeFileSync(".agyloop/tasks/x.json", …)'` is not.
+ */
+function literalWritePaths(script: string): string[] {
+  const paths: string[] = [];
+  let index = 0;
+
+  while (index < script.length) {
+    const char = script[index];
+    if (isJsQuote(script, index)) {
+      index = skipJsString(script, index);
+      continue;
+    }
+    if (!/[A-Za-z_$]/.test(char)) {
+      index++;
+      continue;
+    }
+
+    let end = index;
+    while (end < script.length && /[\w$]/.test(script[end])) end++;
+    const name = script.slice(index, end);
+
+    if (LITERAL_WRITE_CALLS.has(name)) {
+      let cursor = end;
+      while (cursor < script.length && /\s/.test(script[cursor])) cursor++;
+      if (script[cursor] === '(') {
+        cursor++;
+        while (cursor < script.length && /\s/.test(script[cursor])) cursor++;
+        const quote = script[cursor];
+        if (quote === "'" || quote === '"') {
+          const close = skipJsString(script, cursor);
+          const literal = script.slice(cursor + 1, close - 1);
+          if (literal.length > 0 && !literal.includes('${')) paths.push(literal);
+          index = close;
+          continue;
+        }
+      }
+    }
+
+    index = end;
+  }
+
+  return paths;
+}
+
+/** Shell redirection targets on a statement (`>`, `>>`, `&>`). */
+function redirectTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  const targets: WriteTarget[] = [];
+
+  for (let index = 0; index < statement.length; index++) {
+    if (statement[index] === '\\') {
+      index++;
+      continue;
+    }
+    if (statement[index] !== '>') continue;
+    if (isProseAt(statement, index)) continue;
+
+    let cursor = index + 1;
+    if (statement[cursor] === '&') {
+      // `>&1` / `>&2` duplicate a file descriptor; `&>` writes a file.
+      if (statement[cursor + 1] !== '>') continue;
+      cursor += 2;
+    } else if (statement[cursor] === '>') {
+      cursor++;
+    }
+
+    while (cursor < statement.length && /\s/.test(statement[cursor])) cursor++;
+    if (cursor >= statement.length) continue;
+
+    let quote: string | null = null;
+    let token = '';
+    while (cursor < statement.length) {
+      const char = statement[cursor];
+      if (quote !== null) {
+        if (char === quote) {
+          quote = null;
+          cursor++;
+          continue;
+        }
+        token += char;
+        cursor++;
+        continue;
+      }
+      if (char === "'" || char === '"') {
+        quote = char;
+        cursor++;
+        continue;
+      }
+      if (/\s/.test(char) || char === ';' || char === '&' || char === '|') break;
+      token += char;
+      cursor++;
+    }
+
+    index = cursor - 1;
+    const target = token.trim();
+    if (target.length === 0) continue;
+    if (target.startsWith('&') || NON_WRITE_TARGETS.has(target)) continue;
+    targets.push({ offset, statement: statementIndex, path: target });
+  }
+
+  return targets;
+}
+
+/** `tee [-a] <path> …` targets. */
+function teeTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  const tokens = splitShellTokens(statement);
+  const start = tokens.findIndex((token) => token === 'tee' || token.endsWith('/tee'));
+  if (start === -1) return [];
+
+  const targets: WriteTarget[] = [];
+  for (let index = start + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.startsWith('-') && token !== '-') continue;
+    const path = normalisePathText(token);
+    if (path.length > 0) targets.push({ offset, statement: statementIndex, path });
+  }
+  return targets;
+}
+
+function nodeEvalTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  const match = NODE_EVAL.exec(statement);
+  if (match === null) return [];
+  const program = readQuotedProgram(statement, match.index + match[0].length - 1);
+  // An offending quote is refused by `nested-single-quote`; reading a mutated
+  // payload would only produce a misleading write target.
+  if (program.offendingOffset !== null) return [];
+  return literalWritePaths(program.program).map((path) => ({
+    offset,
+    statement: statementIndex,
+    path
+  }));
+}
+
+/** Every write target of one statement. */
+function writeTargets(statement: string, offset: number, statementIndex: number): WriteTarget[] {
+  return [
+    ...redirectTargets(statement, offset, statementIndex),
+    ...teeTargets(statement, offset, statementIndex),
+    ...nodeEvalTargets(statement, offset, statementIndex)
+  ];
+}
+
+/** Every directory a statement creates: all `mkdir` args, `mktemp -d`, `git clone`. */
+function createdDirectories(statement: string, offset: number, statementIndex: number): CreatedDirectory[] {
+  const created: CreatedDirectory[] = [];
+  const tokens = splitShellTokens(statement);
+  const mkdirStart = tokens.findIndex((token) => token === 'mkdir');
+
+  if (mkdirStart !== -1) {
+    const recursive = tokens
+      .slice(mkdirStart + 1)
+      .some((token) => token === '--parents' || /^-[a-zA-Z]*p/.test(token));
+    for (let index = mkdirStart + 1; index < tokens.length; index++) {
+      const token = tokens[index];
+      if (token === '-m' || token === '--mode') {
+        index++;
+        continue;
+      }
+      if (token.startsWith('-')) continue;
+      const path = normalisePathText(token);
+      if (path.length > 0) created.push({ path, recursive });
+    }
+  }
+
+  for (const candidate of mktempCandidates(statement, offset, statementIndex)) {
+    if (candidate.implicitTemp) continue;
+    created.push({ path: candidate.createdPath, recursive: true });
+  }
+
+  const clone = gitCloneCandidate(statement, offset, statementIndex);
+  if (clone !== null) created.push({ path: clone.createdPath, recursive: false });
+
+  return created;
+}
+
+/**
+ * Resolves a path for coverage comparison. A relative path under an unknown
+ * cwd is compared RELATIVE-TO-ITSELF: both the write and the `mkdir` that
+ * should cover it are judged the same way, so `mkdir -p .agyloop/tasks` covers
+ * `.agyloop/tasks/382.json` even when no `cd` anchors the check.
+ */
+function resolveComparable(cwd: string | null, path: string): string | null {
+  const text = String(path ?? '').trim();
+  if (text.length === 0) return null;
+  if (isAnchoredPath(text)) return normaliseLexicalPath(text);
+  if (cwd === null || cwd.trim().length === 0) return normaliseLexicalPath(text);
+  return normaliseLexicalPath(`${cwd}/${text}`);
+}
+
+/** The directory containing `path`, or `null` when it has no directory component. */
+function parentDirectory(path: string): string | null {
+  const normalised = normaliseLexicalPath(path);
+  const slash = normalised.lastIndexOf('/');
+  if (slash === -1) return null;
+  if (slash === 0) return '/';
+  return normalised.slice(0, slash);
+}
+
+function isAlwaysPresentParent(parent: string): boolean {
+  return ALWAYS_PRESENT_PARENTS.includes(normaliseLexicalPath(parent));
+}
+
+function isToolScaffolded(
+  parent: string,
+  cliRoots: ReadonlySet<string>,
+  cliInUnknownCwd: boolean
+): boolean {
+  const padded = `/${normaliseLexicalPath(parent)}/`;
+  if (!TOOL_SCAFFOLD_MARKERS.some((marker) => padded.includes(marker))) return false;
+
+  if (isAnchoredPath(parent)) {
+    for (const root of cliRoots) {
+      if (root.length === 0) continue;
+      if (parent === root || parent.startsWith(`${root}/`)) return true;
+    }
+    return false;
+  }
+  // A relative parent can only be scaffolded by a CLI that ALSO ran without a
+  // tracked cwd — the same relative comparison context.
+  return cliInUnknownCwd;
+}
+
+/** True when a resolved path still carries a variable the rule cannot resolve. */
+function hasUnresolvedVariable(path: string): boolean {
+  return /\$[A-Za-z_{]/.test(
+    path.replace(/\$\{HOME\}|\$HOME|\$\{TMPDIR\}|\$TMPDIR/g, '')
+  );
+}
+
+/** Adds a created directory, and every ancestor when the mkdir was recursive. */
+function addCreatedDirectory(
+  covered: Set<string>,
+  directory: CreatedDirectory,
+  cwd: string | null,
+  assignments: ReadonlyMap<string, string>
+): void {
+  const resolved = resolveComparable(cwd, resolveVariables(directory.path, assignments));
+  if (resolved === null || hasUnresolvedVariable(resolved)) return;
+
+  const segments = resolved.split('/');
+  if (!directory.recursive) {
+    covered.add(resolved);
+    return;
+  }
+  // `mkdir -p a/b` guarantees `a` as well; never walk above the anchor.
+  let prefix = resolved.startsWith('/') ? '' : null;
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment.length === 0) continue;
+    prefix = prefix === null ? segment : `${prefix}/${segment}`;
+    if (prefix.length > 0) covered.add(prefix);
+  }
+}
+
+/**
+ * Accumulates created directories and CLI invocations in CHECK ORDER and emits
+ * one `missing-parent-directory` finding per offending write line (issue #388).
+ *
+ * Every write is judged against its OWN path and its OWN `cd`/assignment state;
+ * only the set of created directories and the "a CLI ran earlier" flag carry
+ * across checks, matching the ONE script `toScript()` builds.
+ */
+function collectMissingParentFindings(
+  checks: readonly SmokeCheck[],
+  findings: SmokeFinding[]
+): void {
+  const covered = new Set<string>();
+  const cliRoots = new Set<string>();
+  let cliInUnknownCwd = false;
+
+  for (const check of checks) {
+    const bodyLines = check.body.split('\n');
+    const heredocData = heredocDataLines(bodyLines);
+    const quotedContinuation = quotedContinuationLines(bodyLines);
+    const assignments = assignmentsByLine(bodyLines);
+    const cwds = cwdByStatement(bodyLines, assignments);
+    // One finding per offending write LINE, even when a line carries two writes.
+    const reportedOffsets = new Set<number>();
+
+    bodyLines.forEach((line, offset) => {
+      if (isCommentLineImpl(line) || heredocData.has(offset) || quotedContinuation.has(offset)) return;
+      const lineAssignments = assignments.get(offset) ?? new Map<string, string>();
+
+      splitStatements(line).forEach((statement, statementIndex) => {
+        const key = statementKey(offset, statementIndex);
+        const cwd = cwds.get(key) ?? null;
+        const statementInvokesCli = invokesCodeloopCli(statement);
+
+        for (const directory of createdDirectories(statement, offset, statementIndex)) {
+          addCreatedDirectory(covered, directory, cwd, lineAssignments);
+        }
+
+        for (const target of writeTargets(statement, offset, statementIndex)) {
+          const resolved = resolveComparable(cwd, resolveVariables(target.path, lineAssignments));
+          if (resolved === null || hasUnresolvedVariable(resolved)) continue;
+          const parent = parentDirectory(resolved);
+          // No directory component: the write lands in the current directory.
+          if (parent === null) continue;
+          if (isAlwaysPresentParent(parent)) continue;
+          if (covered.has(parent)) continue;
+          if (isToolScaffolded(parent, cliRoots, cliInUnknownCwd)) continue;
+          if (reportedOffsets.has(offset)) continue;
+
+          reportedOffsets.add(offset);
+          findings.push({
+            rule: SMOKE_RULE_MISSING_PARENT_DIRECTORY,
+            checkIndex: check.index,
+            label: check.label,
+            line: check.planLine + 1 + offset,
+            excerpt: `${truncateImpl(line)} — required parent: ${parent}`
+          });
+        }
+
+        if (statementInvokesCli) {
+          // The CLI creates `.agyloop/`, the plan scaffold and the task worktree
+          // in ITS OWN sandbox — never in a sibling sandbox a later check uses.
+          if (cwd === null) cliInUnknownCwd = true;
+          else cliRoots.add(normaliseLexicalPath(cwd));
+        }
+      });
+    });
+  }
+}
+
+/**
+ * Emits the three fixture-consistency findings (issue #413) in protocol order.
+ *
+ * Rule A (`gate-report-fixture-contradiction`) asks the REAL
+ * `normaliseGateTests` what the runtime will record, then fires only when the
+ * check asserts the declared (pre-rewrite) status outside the fixture.
+ *
+ * Rule B (`worktree-fixture-unmatched`) is armed by the assertion text, not by
+ * the directory name, because `.worktrees/<n>-suffix` is a legitimate
+ * orphan-cleanup fixture.
+ *
+ * Rule C (`gate-report-marker-missing`) carries `markerAvailable` across
+ * checks: the gate executes ONE script, so a marker seeded by an earlier check
+ * is legitimate.
+ */
+function collectFixtureFindings(
+  checks: readonly SmokeCheck[],
+  findings: SmokeFinding[]
+): void {
+  let markerAvailable = false;
+
+  for (const check of checks) {
+    const body = check.body;
+
+    // Rule A — the fixture declares a value normalisation rewrites.
+    const fixtures = parseGateReportFixtures(body);
+    const blanked = blankFixtureSpans(
+      body,
+      fixtures.map((fixture) => fixture.span)
+    );
+    for (const fixture of fixtures) {
+      const normalisation = normaliseGateTests(fixture.report);
+      if (!normalisation.rewritten) continue;
+      if (fixture.report.testsStatus === normalisation.testsStatus) continue;
+      const asserted = blanked
+        .split('\n')
+        .some(
+          (line) =>
+            !isCommentLineImpl(line) && line.includes(fixture.report.testsStatus)
+        );
+      if (!asserted) continue;
+      findings.push({
+        rule: SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION,
+        checkIndex: check.index,
+        label: check.label,
+        line: check.planLine + 1 + lineOffsetOf(body, fixture.markerOffset),
+        excerpt: truncateImpl(
+          `declared "${fixture.report.testsStatus}" but normaliseGateTests records "${normalisation.testsStatus}"`
+        )
+      });
+    }
+
+    // Rule B — an armed check whose cwd fixture `inferFromPath` cannot match.
+    if (assertsWorktreeMismatch(body)) {
+      const [first] = findUnmatchableWorktreeLiterals(body);
+      if (first) {
+        findings.push({
+          rule: SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED,
+          checkIndex: check.index,
+          label: check.label,
+          line: check.planLine + 1 + first.lineOffset,
+          excerpt: truncateImpl(
+            `${first.literal} — IssueNumber.inferFromPath matches .worktrees/<n>/ only, so the mismatch guard never fires`
+          )
+        });
+      }
+    }
+
+    // Rule C — a `--report-file` fixture no marker can make parseBlock accept.
+    // Both the marker producer and the refusal exemption are comment-aware: a
+    // `#`/`//` line that names either must not decide the rule.
+    const markerInCheck = hasGateReportMarker(body) || producesGateReportMarker(body);
+    const assertsMarkerRefusal = assertsGateReportMarkerRefusal(body);
+    if (!markerInCheck && !markerAvailable && !assertsMarkerRefusal) {
+      for (const lineOffset of gateReportReportFileLines(body)) {
+        findings.push({
+          rule: SMOKE_RULE_GATE_REPORT_MARKER_MISSING,
+          checkIndex: check.index,
+          label: check.label,
+          line: check.planLine + 1 + lineOffset,
+          excerpt:
+            '--report-file fixture has no GATE_REPORT_JSON: marker; GateResultReport.parseBlock refuses it as "missing GATE_REPORT_JSON: block"'
+        });
+      }
+    }
+    markerAvailable = markerAvailable || markerInCheck;
+  }
+}
+
+/**
+ * Emits one `nested-single-quote` finding per interpreter wrapper whose
+ * single-quoted program closes early (issue #467).
+ *
+ * The #447 plan's Check 2 nested a raw apostrophe inside `node -e '…'`; bash
+ * closed the word there, node received a different needle, and the check that
+ * approval had certified `executable: true` failed verbatim at the gate. The
+ * refusal happens here, before the plan digest is pinned — execution never
+ * rewrites the fence (`toScript` stays byte-identical to the approved plan).
+ *
+ * Heredoc DATA is blanked to spaces first (line offsets survive) so a fixture
+ * that merely documents the shape is not scanned. Comment lines and quoted
+ * prose are skipped for the same reason: `# then run node -e '…'` and
+ * `assert.ok(x.includes("node -e '…'"))` are not programs.
+ */
+function collectNestedSingleQuoteFindings(
+  checkIndex: number,
+  label: string,
+  fenceStartLine: number,
+  bodyLines: readonly string[],
+  findings: SmokeFinding[]
+): void {
+  const heredocData = heredocDataLines(bodyLines);
+  const maskedLines = bodyLines.map((line, offset) =>
+    heredocData.has(offset) ? ' '.repeat(line.length) : line
+  );
+  const masked = maskedLines.join('\n');
+
+  SHELL_PROGRAM_WRAPPER.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SHELL_PROGRAM_WRAPPER.exec(masked)) !== null) {
+    const openIndex = match.index + match[0].length - 1;
+    const openingOffset = lineOffsetOf(masked, match.index);
+    const openingLine = maskedLines[openingOffset] ?? '';
+    const lineStart = match.index === 0 ? 0 : masked.lastIndexOf('\n', match.index - 1) + 1;
+
+    if (isCommentLineImpl(openingLine) || isProseAt(openingLine, match.index - lineStart)) {
+      SHELL_PROGRAM_WRAPPER.lastIndex = openIndex + 1;
+      continue;
+    }
+
+    const program = readQuotedProgram(masked, openIndex);
+
+    if (program.offendingOffset !== null) {
+      const offset = lineOffsetOf(masked, program.offendingOffset);
+      findings.push({
+        rule: SMOKE_RULE_NESTED_SINGLE_QUOTE,
+        checkIndex,
+        label,
+        line: fenceStartLine + 1 + offset,
+        // The remedy rides AFTER truncation, so the 160-char cap cannot cut it.
+        excerpt: `${truncateImpl(bodyLines[offset] ?? '')} — a raw ' inside the single-quoted program ends it early; use '"'"', '\\'' or a heredoc`
+      });
+    } else if (program.unterminated) {
+      findings.push({
+        rule: SMOKE_RULE_NESTED_SINGLE_QUOTE,
+        checkIndex,
+        label,
+        line: fenceStartLine + 1 + openingOffset,
+        excerpt: `${truncateImpl(bodyLines[openingOffset] ?? '')} — the single-quoted program never closes; close it with ' or use a heredoc`
+      });
+    }
+
+    // Advance past the walked word: a payload that documents the wrapper
+    // shape must not be reported twice.
+    SHELL_PROGRAM_WRAPPER.lastIndex = Math.max(program.endOffset, openIndex + 1);
+  }
+}
+
+function collectFindings(
+  checkIndex: number,
+  label: string,
+  fenceStartLine: number,
+  bodyLines: readonly string[],
+  findings: SmokeFinding[]
+): void {
+  const hasExecutableLine = bodyLines.some((line) => !isCommentLineImpl(line));
+  if (!hasExecutableLine) {
+    findings.push({
+      rule: SMOKE_RULE_EMPTY_CHECK,
+      checkIndex,
+      label,
+      line: fenceStartLine,
+      excerpt: truncateImpl(label)
+    });
+    return;
+  }
+
+  // Issue #467: a raw apostrophe inside a single-quoted interpreter program is
+  // refused before the plan digest is pinned, not after a full gate round.
+  collectNestedSingleQuoteFindings(checkIndex, label, fenceStartLine, bodyLines, findings);
+
+  // The function set is per CHECK, not per fence-wide substring search.
+  const jsonFunctions = jsonQuotingFunctions(bodyLines);
+
+  bodyLines.forEach((line, offset) => {
+    const lineNumber = fenceStartLine + 1 + offset;
+    const trimmed = line.trim();
+    if (isCommentLineImpl(line)) return;
+
+    if (isQuotedJsonComparison(line, jsonFunctions)) {
+      findings.push({
+        rule: SMOKE_RULE_QUOTED_JSON_COMPARISON,
+        checkIndex,
+        label,
+        line: lineNumber,
+        excerpt: truncateImpl(trimmed)
+      });
+    }
+
+    const bareSpecifier = bareModuleSpecifier(line);
+    if (bareSpecifier !== null) {
+      findings.push({
+        rule: SMOKE_RULE_BARE_MODULE_PATH,
+        checkIndex,
+        label,
+        line: lineNumber,
+        excerpt: truncateImpl(trimmed)
+      });
+    }
+  });
+
+  // Issue #359, §2.3: a check that invokes the CLI must sandbox where the
+  // state guard recognises it. One finding per offending line (I2: the
+  // analysis never taints a sibling check that does not invoke the CLI).
+  if (bodyLines.some((line) => invokesCodeloopCli(line))) {
+    // Issue #362, F2.3: variables visible at the candidate's line are resolved
+    // BEFORE both tests, so `mktemp -d "$SANDBOX/smoke-…"` (the #284 shape) is
+    // recognised — while a variable that resolves onto `/tmp` is still
+    // flagged, because resolution cannot launder a temp root.
+    //
+    // Issue #364: the cwd is tracked per check, so a RELATIVE path under a
+    // sandbox `cd` is recognised (#354 shape) and a `..`-escaped path that
+    // resolves outside the sandbox is refused. A path no `cd` can anchor keeps
+    // the token heuristic (SP15: a bare relative `artifacts/smoke359` stays
+    // flagged).
+    const assignments = assignmentsByLine(bodyLines);
+    const cwds = cwdByStatement(bodyLines, assignments);
+    const flaggedOffsets = new Set<number>();
+    for (const candidate of sandboxCandidates(bodyLines)) {
+      if (flaggedOffsets.has(candidate.offset)) continue;
+      const resolved = resolveVariables(
+        candidate.createdPath,
+        assignments.get(candidate.offset) ?? new Map<string, string>()
+      );
+      const cwdBefore = cwds.get(statementKey(candidate.offset, candidate.statement)) ?? null;
+      const absolute = resolvePathAgainstCwd(cwdBefore, resolved);
+      if (absolute !== null && isWithinSmokeSandbox(absolute)) continue;
+      const display = absolute ?? resolved;
+      const offending =
+        candidate.implicitTemp || TEMP_ROOT_PATTERN.test(display) || display.includes(SMOKE_TOKEN);
+      if (!offending) continue;
+      flaggedOffsets.add(candidate.offset);
+      // The required path rides in `excerpt` AFTER truncation, so the 160-char
+      // cap can never cut it.
+      findings.push({
+        rule: SMOKE_RULE_SANDBOX_PATH,
+        checkIndex,
+        label,
+        line: fenceStartLine + 1 + candidate.offset,
+        excerpt: `${truncateImpl(bodyLines[candidate.offset])} — required sandbox: ${SMOKE_SANDBOX_RECOMMENDED_PATH}`
+      });
+    }
+  }
+}
+
+import { GateSmokeCoverageRefusalParams, STATUS_FAILED, STATUS_PASSED, formatGateReportChannelCommand, GATE_COVERAGE_INGEST_REFILE, GATE_COVERAGE_FILING_REFILE, GATE_COVERAGE_INGEST_TAIL, GATE_COVERAGE_FILING_TAIL } from '../gate-verdicts';
+// lazy: avoid module-load cycle with messages.ts
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const _msg = () => require('../messages');
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+
+/** Runtime smoke attribution markers (issue #298). */
+export const SMOKE_CHECK_MARKER_PREFIX = '__AGYLOOP_SMOKE_CHECK_' as const;
+
+export const SMOKE_CHECK_MARKER_SUFFIX = '__' as const;
+
+export const SMOKE_SCRIPT_SHELL = 'bash' as const;
+
+
+export const SMOKE_STATUS_PASSED = 'PASSED' as const;
+
+export const SMOKE_STATUS_FAILED = 'FAILED' as const;
+
+/**
+ * The RENDERED summary phrase only (issue #311).
+ *
+ * It is never emitted in a prompt and never accepted on the wire: a prompt that
+ * asked for this spelling produced a block `GateResultReport` rejected
+ * wholesale, losing the verdict, test counts and command list of a gate that
+ * did run. Every prompt and wire surface uses `SMOKE_PROTOCOL_VALUES` below.
+ */
+export const SMOKE_STATUS_NOT_DECLARED = 'NOT DECLARED' as const;
+
+export const SMOKE_STATUS_TIMED_OUT = 'TIMED_OUT' as const;
+
+
+/** Wire token for "the plan declares no smoke protocol" (issue #298, #311). */
+export const SMOKE_PROTOCOL_NOT_DECLARED = 'NOT_DECLARED' as const;
+
+
+/**
+ * The RENDERED summary value for "an evidence block was filed without a
+ * `smokeProtocol`" (issue #338). Lower case on purpose: it is never a wire
+ * token and must never be accepted by the parser.
+ */
+export const SMOKE_PROTOCOL_NOT_REPORTED = 'not reported' as const;
+
+
+/**
+ * The ONE smoke-protocol vocabulary (issue #311).
+ *
+ * `GateResultReport.readSmokeProtocol` validates against this list and the gate
+ * prompt names the same list, so the prompt can no longer ask for a token the
+ * parser rejects (the `NOT DECLARED` / `NOT_DECLARED` divergence).
+ */
+export type SmokeProtocolWireValue =
+  | typeof STATUS_PASSED
+  | typeof STATUS_FAILED
+  | typeof SMOKE_PROTOCOL_NOT_DECLARED;
+
+
+/** The ONLY values the gate prompt may name and the parser may accept (issue #311). */
+export const SMOKE_PROTOCOL_VALUES: readonly SmokeProtocolWireValue[] = Object.freeze([
+  STATUS_PASSED,
+  STATUS_FAILED,
+  SMOKE_PROTOCOL_NOT_DECLARED
+]);
+
+
+/** The rendered verdict list, e.g. `PASSED | FAILED | NOT_DECLARED` (issue #311). */
+export const SMOKE_PROTOCOL_VOCABULARY = SMOKE_PROTOCOL_VALUES.join(' | ');
+
+
+/** Static smoke-protocol findings (issue #298). */
+export const SMOKE_RULE_QUOTED_JSON_COMPARISON = 'quoted-json-comparison' as const;
+
+export const SMOKE_RULE_BARE_MODULE_PATH = 'bare-module-path' as const;
+
+export const SMOKE_RULE_NO_EXECUTABLE_CHECK = 'no-executable-check' as const;
+
+export const SMOKE_RULE_EMPTY_CHECK = 'empty-check' as const;
+
+/** Static smoke-protocol findings (issue #359). */
+export const SMOKE_RULE_SANDBOX_PATH = 'sandbox-path' as const;
+
+/**
+ * A check that DECLARES a recognised smoke sandbox but invokes the `codeloop`
+ * CLI from outside it (issue #440). `sandbox-path` only asks where the sandbox
+ * is created; naming one is not entering it, and the #370 reproduction cd'd
+ * back to the worktree before the transition, mutating the live checkpoint.
+ */
+export const SMOKE_RULE_SANDBOX_CWD = 'sandbox-cwd' as const;
+
+/**
+ * A check that invokes the `codeloop` CLI outside every recognised sandbox and
+ * never declares one (issue #498). `sandbox-cwd` (#440) only judges a check
+ * that NAMES a sandbox; before #498, declaring nothing skipped the rule
+ * entirely, so a CLI invocation from the worktree root — whose `.agyloop`
+ * symlinks the live checkpoint — certified `executable: true`.
+ */
+export const SMOKE_RULE_SANDBOX_MISSING = 'sandbox-missing' as const;
+
+/**
+ * A check writes a path whose parent directory no earlier statement creates
+ * (issue #388). The #382 Smoke 6/7 blocks seeded `.agyloop/tasks/382.json`
+ * without `mkdir -p .agyloop/tasks`, so they died before any product code ran
+ * while the validator still reported `executable: true`.
+ */
+export const SMOKE_RULE_MISSING_PARENT_DIRECTORY = 'missing-parent-directory' as const;
+
+/**
+ * A check nests a raw `'` inside a single-quoted interpreter program
+ * (`node -e '…'`, `bash -c '…'`, issue #467). Bash closes the quoted word at
+ * that apostrophe and re-glues the remainder by concatenation, so the program
+ * the interpreter receives is NOT the program the plan displays — the #447
+ * fence lost the quotes around `'phase/447'` and its needle stopped matching.
+ * `bash -n` cannot see this: the mutated script is still syntactically valid,
+ * which is why the rule walks the shell word instead of asking bash.
+ */
+export const SMOKE_RULE_NESTED_SINGLE_QUOTE = 'nested-single-quote' as const;
+
+/**
+ * Fixture-consistency findings (issue #413). Each rule is a documented textual
+ * mirror of the runtime contract it protects; every filed reproduction was a
+ * check whose OWN fixture made the assertion impossible, certified executable
+ * until the implementer or gate executed it after the plan digest was pinned.
+ */
+
+/**
+ * The check's `GATE_REPORT_JSON` fixture declares a `testsStatus` that
+ * `normaliseGateTests` rewrites at ingest, yet the check asserts the declared
+ * (pre-rewrite) value outside the fixture. Mirrors `normaliseGateTests`.
+ */
+export const SMOKE_RULE_GATE_REPORT_FIXTURE_CONTRADICTION =
+  'gate-report-fixture-contradiction' as const;
+
+/**
+ * The check seeds a `.worktrees/<n>-suffix` directory while asserting the
+ * worktree-mismatch message. `IssueNumber.inferFromPath` requires
+ * `.worktrees/<n>/`, so the guard never fires and the message never prints.
+ */
+export const SMOKE_RULE_WORKTREE_FIXTURE_UNMATCHED = 'worktree-fixture-unmatched' as const;
+
+/**
+ * The check invokes `gate-report --report-file` with no `GATE_REPORT_JSON:`
+ * marker anywhere earlier in the protocol. `GateResultReport.parseBlock`
+ * refuses it as `missing GATE_REPORT_JSON: block`, so the asserted literal is
+ * never printed. Mirrors `parseBlock`.
+ */
+export const SMOKE_RULE_GATE_REPORT_MARKER_MISSING = 'gate-report-marker-missing' as const;
+
+
+/**
+ * The tool's OWN smoke sandbox (issue #279).
+ *
+ * The role prompts used to mandate `/tmp/smoke-<issue>` — the one directory the
+ * storage-layer guard refuses EVERY state mutation in. The permitted path is the
+ * per-user cache directory below: outside the workspace (so `discoverWorkspaceRoot`
+ * cannot climb to the real `.agyloop`), outside the OS temp directory (so the
+ * `/tmp` rule does not apply), and positively recognisable as this tool's own
+ * sandbox by the guard.
+ *
+ * ONE source: the prompt prose, the recommended path in the refusal message and
+ * the guard's sandbox root all derive from these segments.
+ */
+export { SMOKE_SANDBOX_HOME_SEGMENTS, SMOKE_SANDBOX_DIR_PREFIX, SMOKE_SANDBOX_HOME_ANCHOR, SMOKE_SANDBOX_ROOT_DISPLAY } from './smoke-sandbox';
+
+export const SMOKE_SANDBOX_RECOMMENDED_PATH = `${SMOKE_SANDBOX_ROOT_DISPLAY}/${SMOKE_SANDBOX_DIR_PREFIX}<issue>`;
+
+export const SMOKE_SANDBOX_MANDATE =
+  `If you must execute state-mutating commands (e.g. \`codeloop transition\`) or destructive compiles for a smoke test, you MUST clone the repository into an isolated standalone directory **OUTSIDE** the workspace entirely at \`${SMOKE_SANDBOX_RECOMMENDED_PATH}\`. If it is placed anywhere inside the workspace (e.g. \`scratch/\` or \`.worktrees/\`), the CLI will climb the directory tree and corrupt the root \`.agyloop/state.json\`. The tool refuses state mutation inside a smoke-isolation directory it does not recognise as its own sandbox, so use this path exactly. After the smoke test is complete, you MUST destroy this isolated directory to keep the environment clean.` as const;
+
+export const SMOKE_SANDBOX_AGY_SUBAGENT_NOTE =
+  'If your harness sets AGY_SUBAGENT=1, prefix state-mutating smoke commands with `env -u AGY_SUBAGENT` so the root-mutation guard does not block them.' as const;
+
+
+/**
+ * The in-repo smoke isolation directory the guard refuses outside a test run
+ * (issue #279). Composed from segments so the guard carries no magic path.
+ */
+export const SMOKE_ISOLATION_ARTIFACTS_DIR = 'artifacts' as const;
+
+export const SMOKE_ISOLATION_ARTIFACTS_PREFIX = 'smoke' as const;
+
+
+
+
+export function formatGateSmokeCoverageRefusal(
+  params: GateSmokeCoverageRefusalParams
+): string {
+  const missing = Array.isArray(params.missing) ? params.missing : [];
+  const renderedMissing = missing.map((id) => `\`${id}\``).join(', ');
+  const clauses = [
+    _msg().smokeClause('Unknown id(s)', params.unknown),
+    _msg().smokeClause('Duplicate id(s)', params.duplicate),
+    _msg().smokeClause('Skipped', params.skipped),
+    _msg().smokeClause('Not passed', params.failed)
+  ].join('');
+  const ingest = params.channel === 'ingest';
+  return _msg().MSG_GATE_SMOKE_COVERAGE_MISSING
+    .replace('{reason}', () => _msg().smokeReasonClause(params))
+    .replace('{missingCount}', String(missing.length))
+    .replace('{declaredCount}', String(params.declaredCount))
+    .replace('{missing}', () => renderedMissing)
+    .replace('{clauses}', () => clauses)
+    .replace('{refile}', ingest ? GATE_COVERAGE_INGEST_REFILE : GATE_COVERAGE_FILING_REFILE)
+    .replace('{command}', formatGateReportChannelCommand(params.issue))
+    .replace('{tail}', ingest ? GATE_COVERAGE_INGEST_TAIL : GATE_COVERAGE_FILING_TAIL);
+}

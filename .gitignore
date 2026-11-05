@@ -2,9 +2,28 @@
 artifacts
 artifacts/
 artifacts/plans/
+# codeloop / codeloop ephemeral runtime state
+# Bare `.agyloop` (restored in #102, dropped by #216/#217) is the only rule that matches the state
+# dir when it is a SYMLINK: git stores it as mode 120000 -- a file -- so every `.agyloop/...` rule
+# below silently misses it. No trailing slash on purpose: a trailing slash matches directories only
+# and would NOT match a symlink. Scoped to this repo's own working tree; INIT_GITIGNORE_RULES (used
+# to scaffold *consumer* projects) still emits granular rules only, so `.agyloop/config.json`
+# remains trackable there.
 .agyloop
-.worktrees
-config.json
+.codeloop/state.json
+.codeloop/tasks/
+.codeloop/locks/
+.codeloop/logs/
+.codeloop/critique-update-cache.json
+.codeloop/*.bak
+.agyloop/state.json
+.agyloop/tasks/
+.agyloop/locks/
+.agyloop/logs/
+.agyloop/critique-update-cache.json
+.agyloop/*.bak
+.worktrees/
+/config.json
 
 # Environment & Secrets
 .env

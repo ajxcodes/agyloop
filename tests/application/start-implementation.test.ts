@@ -19,6 +19,7 @@ const {
   MODE_YOLO,
   InvalidTransitionError,
   ValidationError,
+  WorktreeDescriptor,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   NOTE_IMPLICIT_APPROVAL
 } = require('../../dist/domain');
@@ -28,7 +29,7 @@ type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type GitHubGateway = import('../../src').GitHubGateway;
 type GitHubIssueData = import('../../src').GitHubIssueData;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 type PlanGeneratorPort = import('../../src').PlanGeneratorPort;
 type ScaffoldParams = import('../../src').ScaffoldParams;
 type ScaffoldResult = import('../../src').ScaffoldResult;
@@ -37,8 +38,11 @@ type GeneratePlanOptions = import('../../src').GeneratePlanOptions;
 type GeneratePlanResult = import('../../src').GeneratePlanResult;
 type GenerateSummaryLogOptions = import('../../src').GenerateSummaryLogOptions;
 type GenerateSummaryLogResult = import('../../src').GenerateSummaryLogResult;
+type WorktreeManagerPort = import('../../src').WorktreeManagerPort;
+type CreateWorktreeOptions = import('../../src').CreateWorktreeOptions;
+type RemoveWorktreeOptions = import('../../src').RemoveWorktreeOptions;
 
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: StateMachineSnapshot | null = null;
   public saveCallCount: number = 0;
 
@@ -64,7 +68,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockGitHubGateway implements GitHubGateway {
+class GitHubGatewayDouble implements GitHubGateway {
   public issueToReturn: GitHubIssueData | null = null;
 
   constructor(issueToReturn: GitHubIssueData | null = null) {
@@ -88,8 +92,8 @@ class MockGitHubGateway implements GitHubGateway {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
-  public config: AgyLoopConfig;
+class ConfigRepositoryDouble implements ConfigRepository {
+  public config: CodeLoopConfig;
 
   constructor(customModels: Record<string, string> = {}) {
     this.config = {
@@ -109,7 +113,7 @@ class MockConfigRepository implements ConfigRepository {
     };
   }
 
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return this.config;
   }
 
@@ -135,7 +139,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public planDir: string | null;
   public summaryUpdates: Array<{ file: string; data: SummaryUpdateData }> = [];
 
@@ -148,7 +152,14 @@ class MockPlanGenerator implements PlanGeneratorPort {
   }
 
   public generatePlan(_options: GeneratePlanOptions): GeneratePlanResult {
-    return { planPath: '', mirrorPath: null, content: '', created: true };
+    return {
+      planPath: '',
+      mirrorPath: null,
+      content: '',
+      mirrorContent: null,
+      created: true,
+      mirrorCreated: false
+    };
   }
 
   public generateSummaryLog(_options: GenerateSummaryLogOptions): GenerateSummaryLogResult {
@@ -172,7 +183,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
         planDir: path.dirname(options.planPath),
         planPath: options.planPath,
         planFileName: path.basename(options.planPath),
-        summaryPath: path.join(path.dirname(options.planPath), 'AgyLoop Summary.md')
+        summaryPath: path.join(path.dirname(options.planPath), 'CodeLoop Summary.md')
       };
     }
     const dir =
@@ -191,12 +202,123 @@ class MockPlanGenerator implements PlanGeneratorPort {
       planDir: dir,
       planPath,
       planFileName: planFile,
-      summaryPath: path.join(dir, 'AgyLoop Summary.md')
+      summaryPath: path.join(dir, 'CodeLoop Summary.md')
     };
   }
 
   public readPlanDocument(planPath: string): string {
     return fs.readFileSync(planPath, 'utf8');
+  }
+
+  /** Deterministic, content-addressed stand-in for the sha256 adapter (#298). */
+  public hashPlanDocument(planPath: string): string | null {
+    try {
+      return `sha256:${fs.readFileSync(planPath, 'utf8')}`;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * A `WorktreeManagerPort` double that both COUNTS `createWorktree` calls and
+ * really `mkdir`s the directory it reports.
+ *
+ * The mkdir is the point (#226): asserting "no worktree directory exists" is
+ * only meaningful if the mock would have created one. Without it the assertion
+ * would be reporting on a stub rather than on the filesystem.
+ */
+class WorktreeManagerDouble implements WorktreeManagerPort {
+  public createWorktreeCallCount = 0;
+  public readonly createdBranches: string[] = [];
+  private readonly root: string;
+
+  constructor(root: string) {
+    this.root = root;
+  }
+
+  public async createWorktree(options: CreateWorktreeOptions) {
+    this.createWorktreeCallCount++;
+    const worktreePath = path.join(this.root, '.worktrees', String(options.taskId));
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const branch = `task/${options.taskId}`;
+    this.createdBranches.push(branch);
+    return WorktreeDescriptor.create({
+      taskId: options.taskId,
+      worktreePath,
+      branch,
+      baseBranch: options.baseBranch || 'main',
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  public async removeWorktree(_options: RemoveWorktreeOptions): Promise<void> {
+    throw new Error('removeWorktree is not expected in StartImplementationUseCase tests');
+  }
+
+  public async resolveTaskWorktreePath(_dir: string, taskId: string | number): Promise<string> {
+    return path.join(this.root, '.worktrees', String(taskId));
+  }
+
+  public resolveTaskBranchName(taskId: string | number): string {
+    return `task/${taskId}`;
+  }
+
+  public async ensureGitIgnore(): Promise<boolean> {
+    return false;
+  }
+
+  public async resolveBaseBranch(): Promise<string> {
+    return 'main';
+  }
+
+  public async pruneWorktrees(): Promise<void> {}
+
+  public async listWorktrees(): Promise<any[]> {
+    return [];
+  }
+
+  public async cleanOrphanedWorktrees(): Promise<number> {
+    return 0;
+  }
+
+  public async listBranches(): Promise<string[]> {
+    return ['main', ...this.createdBranches];
+  }
+
+  public async createBranch(): Promise<void> {}
+
+  public async isAncestor(): Promise<boolean> {
+    return false;
+  }
+
+  public async getCommitsBetween(): Promise<any[]> {
+    return [];
+  }
+
+  public async pushBranch(): Promise<boolean> {
+    return true;
+  }
+}
+
+/**
+ * Records every command through the port (issue #514): the ordering tests need
+ * to prove a refusal ran NO history walk, not merely that no progress printed.
+ */
+class SpyCommandExecutor {
+  public readonly executedCommands: string[] = [];
+
+  public async execute(command: string): Promise<import('../../src').CommandExecutionResult> {
+    this.executedCommands.push(command);
+    return {
+      command,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      combinedOutput: '',
+      durationMs: 1,
+      timedOut: false
+    };
   }
 }
 
@@ -206,7 +328,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   let testPlanPath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-impl-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-impl-test-'));
     testPlanDir = path.join(tempDir, 'artifacts/plans/16-test-task');
     fs.mkdirSync(testPlanDir, { recursive: true });
     testPlanPath = path.join(testPlanDir, 'implementation-plan.md');
@@ -216,7 +338,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       'utf8'
     );
     fs.writeFileSync(
-      path.join(testPlanDir, 'AgyLoop Summary.md'),
+      path.join(testPlanDir, 'CodeLoop Summary.md'),
       `# Summary Log\n`,
       'utf8'
     );
@@ -229,7 +351,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('advances stage from APPROVAL to IMPLEMENT, loads plan, and saves state', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -241,9 +363,9 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
         { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
       ]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
-    const github = new MockGitHubGateway();
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen, github);
     const result = await useCase.execute({
@@ -279,13 +401,22 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.ok(result.taskPrompt.includes('Definition of Done'));
 
     // Verify summary log was updated
-    assert.strictEqual(planGen.summaryUpdates.length, 2);
-    assert.strictEqual(planGen.summaryUpdates[0].data.status, 'APPROVED');
-    assert.strictEqual(planGen.summaryUpdates[1].data.status, 'IN PROGRESS');
+    //
+    // Issue #376 (AC15): leaving APPROVAL writes its OWN row first, with the
+    // wait this transition consumed; then Plan Review, then Implementation.
+    assert.strictEqual(planGen.summaryUpdates.length, 3);
+    assert.deepStrictEqual(
+      planGen.summaryUpdates.map((update: any) => [update.data.stage, update.data.status]),
+      [
+        ['Plan Approval', 'COMPLETED'],
+        ['Plan Review', 'APPROVED'],
+        ['Implementation', 'IN PROGRESS']
+      ]
+    );
   });
 
   test('allows resuming when pipeline is already at IMPLEMENT stage', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_IMPLEMENT,
       mode: MODE_STANDARD,
@@ -294,8 +425,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -307,8 +438,47 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(result.resumed, true);
   });
 
+  test('R5 (#348): a RESUMED implement with a committed-tree target does not throw', async () => {
+    fs.writeFileSync(
+      testPlanPath,
+      [
+        '# Test Implementation Plan',
+        '',
+        '## 5. Quality Gate Targets',
+        '',
+        '- `git diff --exit-code -- package-lock.json`',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_IMPLEMENT,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_IMPLEMENT, timestamp: new Date().toISOString() }]
+    });
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new ConfigRepositoryDouble(),
+      planGen
+    );
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.resumed, true);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.ok(
+      result.planContent.includes('git diff --exit-code'),
+      'the legacy plan is dispatched unchanged; the gate-time blockers own it'
+    );
+  });
+
   test('allows direct transition from PLAN to IMPLEMENT in YOLO mode', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_PLAN,
       mode: MODE_YOLO,
@@ -317,8 +487,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_PLAN, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -331,7 +501,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('allows reopening implementation when pipeline is at COMPLETED stage', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_COMPLETED,
       mode: MODE_STANDARD,
@@ -340,8 +510,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_COMPLETED, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -355,7 +525,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('allows direct transition from PLAN to IMPLEMENT in standard mode by implicitly approving', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_PLAN,
       mode: MODE_STANDARD,
@@ -364,8 +534,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_PLAN, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
@@ -381,9 +551,9 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('throws InvalidTransitionError when pipeline state is uninitialized', async () => {
-    const stateRepo = new MockStateRepository(null);
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const stateRepo = new StateRepositoryDouble(null);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     await assert.rejects(
@@ -393,7 +563,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('throws InvalidTransitionError when attempting implementation from DISCOVERY stage', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_DISCOVERY,
       mode: MODE_STANDARD,
@@ -402,8 +572,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     await assert.rejects(
@@ -413,7 +583,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   });
 
   test('throws ValidationError when approved plan document cannot be found', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -422,8 +592,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(null); // No plan directory found
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(null); // No plan directory found
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     await assert.rejects(
@@ -434,9 +604,13 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
 
   test('supports explicit planPath override', async () => {
     const customPlanPath = path.join(tempDir, 'custom-plan.md');
-    fs.writeFileSync(customPlanPath, '# Custom Plan Specification\n', 'utf8');
+    fs.writeFileSync(
+      customPlanPath,
+      '# Custom Plan Specification\n\n## 3. Implementation Steps\n- [ ] **Step 1:** do the thing\n',
+      'utf8'
+    );
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -445,8 +619,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(null);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(null);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -455,11 +629,17 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     });
 
     assert.strictEqual(result.planPath, customPlanPath);
-    assert.strictEqual(result.planContent, '# Custom Plan Specification\n');
+    assert.ok(result.planContent.startsWith('# Custom Plan Specification'));
+    // Issue #267: the supplied FILE is persisted so `next` (and the gate/review)
+    // execute the same document, not a lexicographic neighbour.
+    assert.strictEqual(stateRepo.snapshot?.planPath, customPlanPath);
+    // The supplied plan's directory is NOT adopted as `planDir`: doing so made a
+    // later plan pass scaffold beside the supplied plan.
+    assert.strictEqual(stateRepo.snapshot?.planDir ?? null, null);
   });
 
   test('dryRun avoids saving state or mutating disk', async () => {
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -468,8 +648,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -483,8 +663,132 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
   });
 
+  // --- #226: --dry-run is a no-write contract, provisioning included ---------
+  //
+  // The use case already skipped the sync (`:113`), the checkpoint save and the
+  // summary update under `dryRun`, but NOT the worktree guardrail — so
+  // `implement --dry-run` left a real `.worktrees/<id>` + branch on disk paired
+  // with no checkpoint referencing it, an orphan the operator had to prune.
+  // The mock really `mkdir`s, so "no worktree directory exists" is a claim
+  // about the filesystem and not merely about a call counter.
+
+  test('implement --dry-run provisions no worktree directory and no branch (#226)', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      planDir: testPlanDir,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(testPlanDir),
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    // Must not throw: the `WorktreeCreationError` invariant at
+    // `start-implementation.ts` is inside the skipped guardrail.
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: true });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      worktreeManager.createWorktreeCallCount,
+      0,
+      '--dry-run must not provision a worktree'
+    );
+    assert.deepStrictEqual(worktreeManager.createdBranches, [], '--dry-run must not create a branch');
+    assert.ok(
+      !fs.existsSync(path.join(tempDir, '.worktrees')),
+      'no worktree directory may exist on disk after --dry-run'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 0, '--dry-run must not checkpoint');
+    assert.strictEqual(result.stateMachine.worktree, null);
+  });
+
+  test('does not auto-provision a worktree when noWorktree is true (#247)', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      planDir: testPlanDir,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(testPlanDir),
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, noWorktree: true });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(
+      worktreeManager.createWorktreeCallCount,
+      0,
+      '--no-worktree must not provision a worktree'
+    );
+    assert.deepStrictEqual(worktreeManager.createdBranches, [], '--no-worktree must not create a branch');
+    assert.ok(
+      !fs.existsSync(path.join(tempDir, '.worktrees')),
+      'no worktree directory may exist on disk after --no-worktree'
+    );
+    assert.strictEqual(result.stateMachine.worktree, null);
+  });
+
+  test('implement without --dry-run still provisions exactly one worktree (negative control)', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      planDir: testPlanDir,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(testPlanDir),
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: false });
+
+    // Without this the --dry-run test above would pass against a dead mock.
+    assert.strictEqual(worktreeManager.createWorktreeCallCount, 1);
+    assert.deepStrictEqual(worktreeManager.createdBranches, ['task/16']);
+    assert.ok(
+      fs.existsSync(path.join(tempDir, '.worktrees', '16')),
+      'the mock must actually create the directory it reports'
+    );
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+    assert.ok(result.stateMachine.worktree);
+    assert.strictEqual(result.stateMachine.worktree!.worktreePath, path.join(tempDir, '.worktrees', '16'));
+  });
+
   test('ResolveSubagentUseCase resolves implementer role with custom model config', () => {
-    const configRepo = new MockConfigRepository({ implementer: 'gemini-3.5-pro' });
+    const configRepo = new ConfigRepositoryDouble({ implementer: 'gemini-3.5-pro' });
     const resolveUseCase = new ResolveSubagentUseCase(configRepo);
 
     const def = resolveUseCase.execute({ role: 'implementer' });
@@ -495,7 +799,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(def.capabilities.enable_write_tools, true);
     assert.strictEqual(def.capabilities.enable_subagent_tools, false);
     assert.strictEqual(def.capabilities.enable_mcp_tools, false);
-    assert.ok(def.system_prompt.includes('AgyLoop Code Implementation Subagent'));
+    assert.ok(def.system_prompt.includes('CodeLoop Code Implementation Subagent'));
   });
 
   test('IMPLEMENTER_SUBAGENT_DEF conforms to required invariants', () => {
@@ -514,7 +818,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir, 'implementation_plan.md'), '# Plan 24\n- [ ] Task 1');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_IMPLEMENT,
       mode: MODE_STANDARD,
@@ -536,8 +840,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
         }
       ]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -557,7 +861,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir, 'implementation_plan.md'), '# Plan 24\n- [ ] Task 1');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -566,8 +870,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
 
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
     const result = await useCase.execute({
@@ -587,7 +891,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir2, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir2, 'implementation_plan.md'), '# Conflict Plan\n- [ ] Fix conflicts');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -596,8 +900,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir2);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir2);
 
     type CommandExecutorPort = import('../../src').CommandExecutorPort;
     type CommandExecutionResult = import('../../src').CommandExecutionResult;
@@ -672,7 +976,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir3, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir3, 'implementation_plan.md'), '# Clean Merge Plan\n- [ ] Task');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -681,8 +985,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir3);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir3);
 
     type CommandExecutorPort = import('../../src').CommandExecutorPort;
     type CommandExecutionResult = import('../../src').CommandExecutionResult;
@@ -730,7 +1034,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir4, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir4, 'implementation_plan.md'), '# Fetch Fail Plan\n- [ ] Task');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -739,8 +1043,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir4);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir4);
 
     type CommandExecutorPort = import('../../src').CommandExecutorPort;
     type CommandExecutionResult = import('../../src').CommandExecutionResult;
@@ -789,7 +1093,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     fs.mkdirSync(testPlanDir5, { recursive: true });
     fs.writeFileSync(path.join(testPlanDir5, 'implementation_plan.md'), '# No Executor Plan\n- [ ] Task');
 
-    const stateRepo = new MockStateRepository({
+    const stateRepo = new StateRepositoryDouble({
       version: '1.0.0',
       currentStage: STAGE_APPROVAL,
       mode: MODE_STANDARD,
@@ -798,8 +1102,8 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       updatedAt: new Date().toISOString(),
       history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
     });
-    const configRepo = new MockConfigRepository();
-    const planGen = new MockPlanGenerator(testPlanDir5);
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir5);
 
     // No commandExecutor provided — conflict logic should be skipped
     const useCase = new StartImplementationUseCase(stateRepo, configRepo, planGen);
@@ -815,5 +1119,463 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     // Without commandExecutor, no conflict payload should be injected
     assert.strictEqual(result.isSelfCorrection, false);
     assert.ok(!result.taskPrompt.includes('Merge Conflict'));
+  });
+
+  /**
+   * Issue #514: the auto-sync used to run as step 0, BEFORE the checkpoint was
+   * even loaded. These three tests pin the ordering, the progress line and the
+   * opt-out.
+   */
+  test('refuses a wrong-stage checkpoint before the auto-sync runs (AC1, #514)', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_DISCOVERY,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_DISCOVERY, timestamp: new Date().toISOString() }]
+    });
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
+    const worktree = new WorktreeManagerDouble(tempDir);
+    const executor = new SpyCommandExecutor();
+    const capturedProgress: string[] = [];
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      github,
+      undefined,
+      worktree,
+      undefined,
+      executor
+    );
+
+    await assert.rejects(
+      async () =>
+        useCase.execute({
+          issue: 16,
+          workspaceDir: tempDir,
+          onProgress: (message: string) => capturedProgress.push(message)
+        }),
+      InvalidTransitionError
+    );
+
+    assert.deepStrictEqual(executor.executedCommands, [], 'a refusal must cost no sync work');
+    assert.ok(
+      !capturedProgress.some((message) => message.includes('Syncing')),
+      `a refusal must not announce a sync: ${JSON.stringify(capturedProgress)}`
+    );
+  });
+
+  test('reports a Syncing progress line before the auto-sync on a valid checkpoint (AC2, #514)', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: STAGE_INITIALIZED, timestamp: new Date().toISOString() },
+        { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
+      ]
+    });
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
+    const worktree = new WorktreeManagerDouble(tempDir);
+    const executor = new SpyCommandExecutor();
+    const capturedProgress: string[] = [];
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      github,
+      undefined,
+      worktree,
+      undefined,
+      executor
+    );
+
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir,
+      onProgress: (message: string) => capturedProgress.push(message)
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.match(capturedProgress[0], /Syncing .+ before implementation…/);
+    assert.ok(
+      executor.executedCommands.includes('git fetch origin'),
+      `the sync must actually fetch: ${JSON.stringify(executor.executedCommands)}`
+    );
+  });
+
+  test('skips the auto-sync when noSync is true (AC3, #514)', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: STAGE_INITIALIZED, timestamp: new Date().toISOString() },
+        { stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }
+      ]
+    });
+    const configRepo = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble(testPlanDir);
+    const github = new GitHubGatewayDouble();
+    const worktree = new WorktreeManagerDouble(tempDir);
+    const executor = new SpyCommandExecutor();
+    const capturedProgress: string[] = [];
+
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      configRepo,
+      planGen,
+      github,
+      undefined,
+      worktree,
+      undefined,
+      executor
+    );
+
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir,
+      noSync: true,
+      onProgress: (message: string) => capturedProgress.push(message)
+    });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.deepStrictEqual(executor.executedCommands, [], '--no-sync must run no command');
+    assert.ok(
+      !capturedProgress.some((message) => message.includes('Syncing')),
+      `--no-sync must not announce a sync: ${JSON.stringify(capturedProgress)}`
+    );
+  });
+});
+
+// ============================================================================
+// Supplied plan validation (issue #267, AC-B3)
+// ============================================================================
+
+describe('StartImplementationUseCase supplied-plan validation (#267)', () => {
+  const { test: caseTest } = require('node:test');
+  const fsReal = require('node:fs');
+  const osReal = require('node:os');
+  const pathReal = require('node:path');
+
+  function approvalCheckpoint(issue: number): any {
+    return {
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    };
+  }
+
+  caseTest('T-267.B3: a blank supplied plan is rejected before the implementer is prepared', async () => {
+    const tempDir = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'codeloop-supplied-plan-'));
+    try {
+      const blank = pathReal.join(tempDir, 'blank.md');
+      fsReal.writeFileSync(blank, '', 'utf8');
+
+      const stateRepo = new StateRepositoryDouble(approvalCheckpoint(16));
+      const planGen = new PlanGeneratorDouble(null);
+      const useCase = new StartImplementationUseCase(
+        stateRepo,
+        new ConfigRepositoryDouble(),
+        planGen
+      );
+
+      await assert.rejects(
+        async () => useCase.execute({ planPath: blank, workspaceDir: tempDir }),
+        (err: any) => {
+          assert.ok(err.message.includes(blank), err.message);
+          assert.match(err.message, /blank/i);
+          assert.match(err.message, /codeloop plan/);
+          return true;
+        }
+      );
+
+      // The checkpoint is not SAVED on the rejection path (the save happens at
+      // the very end of the use case).
+      assert.strictEqual(stateRepo.saveCallCount, 0);
+      assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    } finally {
+      fsReal.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('StartImplementationUseCase - approved plan digest (issue #298)', () => {
+  let tempDir: string;
+  let planDir: string;
+  let planPath: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-impl-digest-'));
+    planDir = path.join(tempDir, 'artifacts/plans/16-test-task');
+    fs.mkdirSync(planDir, { recursive: true });
+    planPath = path.join(planDir, 'implementation-plan.md');
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1\n', 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function snapshotAt(stage: string, extra: Record<string, unknown> = {}): any {
+    return {
+      version: '1.0.0',
+      currentStage: stage,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage, timestamp: new Date().toISOString() }],
+      ...extra
+    };
+  }
+
+  test('SI-D1: a fresh approval records the digest and the plan path', async () => {
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+    const expected = planGen.hashPlanDocument(planPath);
+
+    assert.strictEqual(result.resumed, false);
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, expected);
+    assert.strictEqual(result.stateMachine.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, expected);
+  });
+
+  test('SI-D2: a resume never overwrites an existing approved digest', async () => {
+    const stateRepo = new StateRepositoryDouble(
+      snapshotAt(STAGE_IMPLEMENT, {
+        approvedPlanDigest: 'frozen-digest',
+        approvedPlanPath: planPath
+      })
+    );
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.resumed, true);
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, 'frozen-digest');
+  });
+
+  test('SI-D3: a dry run records nothing', async () => {
+    const stateRepo = new StateRepositoryDouble(snapshotAt(STAGE_APPROVAL));
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir, dryRun: true });
+
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, null);
+    assert.strictEqual(stateRepo.saveCallCount, 0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #421: the APPROVAL digest is an identity, not a formality.
+  // -------------------------------------------------------------------------
+
+  test('SI-D4: implement refuses a plan edited after approval', async () => {
+    const planGen = new PlanGeneratorDouble(planDir);
+    const approved = planGen.hashPlanDocument(planPath);
+    const stateRepo = new StateRepositoryDouble(
+      snapshotAt(STAGE_APPROVAL, {
+        approvedPlanDigest: approved,
+        approvedPlanPath: planPath
+      })
+    );
+    const worktreeManager = new WorktreeManagerDouble(tempDir);
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new ConfigRepositoryDouble(),
+      planGen,
+      undefined,
+      undefined,
+      worktreeManager
+    );
+
+    fs.writeFileSync(planPath, '# Plan\n\n## Steps\n- [ ] Step 1 (edited)\n', 'utf8');
+    const edited = planGen.hashPlanDocument(planPath);
+
+    await assert.rejects(
+      async () => useCase.execute({ issue: 16, workspaceDir: tempDir }),
+      (err: any) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+        assert.strictEqual(err.field, 'approvedPlanDigest');
+        assert.ok(err.message.includes(planPath), err.message);
+        assert.ok(err.message.includes(approved), err.message);
+        assert.ok(err.message.includes(edited), err.message);
+        assert.match(err.message, /changed after approval/);
+        return true;
+      }
+    );
+
+    assert.strictEqual(stateRepo.saveCallCount, 0, 'a refusal must persist nothing');
+    assert.strictEqual(stateRepo.snapshot?.currentStage, STAGE_APPROVAL);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, approved);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanPath, planPath);
+    assert.strictEqual(worktreeManager.createWorktreeCallCount, 0, 'a refusal provisions nothing');
+    assert.ok(!fs.existsSync(path.join(tempDir, '.worktrees')));
+  });
+
+  test('SI-D5: a matching plan keeps the gate-time identity', async () => {
+    const planGen = new PlanGeneratorDouble(planDir);
+    const approved = planGen.hashPlanDocument(planPath);
+    const stateRepo = new StateRepositoryDouble(
+      snapshotAt(STAGE_APPROVAL, {
+        approvedPlanDigest: approved,
+        approvedPlanPath: planPath
+      })
+    );
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
+
+    // A different resolution (byte-identical copy) must not overwrite the
+    // recorded path: the APPROVAL checkpoint owns the identity.
+    const copyPath = path.join(tempDir, 'copy-of-approved-plan.md');
+    fs.copyFileSync(planPath, copyPath);
+
+    const result = await useCase.execute({
+      issue: 16,
+      workspaceDir: tempDir,
+      planPath: copyPath
+    });
+
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, approved);
+    assert.strictEqual(result.stateMachine.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, approved);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.saveCallCount, 1);
+  });
+
+  test('SI-D6: a YOLO PLAN entry still records the digest', async () => {
+    const stateRepo = new StateRepositoryDouble(
+      snapshotAt(STAGE_PLAN, { mode: MODE_YOLO })
+    );
+    const planGen = new PlanGeneratorDouble(planDir);
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
+    const expected = planGen.hashPlanDocument(planPath);
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.stateMachine.approvedPlanDigest, expected);
+    assert.strictEqual(result.stateMachine.approvedPlanPath, planPath);
+    assert.strictEqual(stateRepo.snapshot?.approvedPlanDigest, expected);
+  });
+
+  test('SI-D7: a dry-run mismatch warns and writes nothing', async () => {
+    const planGen = new PlanGeneratorDouble(planDir);
+    const actual = planGen.hashPlanDocument(planPath);
+    const stateRepo = new StateRepositoryDouble(
+      snapshotAt(STAGE_APPROVAL, {
+        approvedPlanDigest: 'wrong-digest',
+        approvedPlanPath: planPath
+      })
+    );
+    const useCase = new StartImplementationUseCase(stateRepo, new ConfigRepositoryDouble(), planGen);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    try {
+      const result = await useCase.execute({
+        issue: 16,
+        workspaceDir: tempDir,
+        dryRun: true
+      });
+      assert.strictEqual(result.stateMachine.currentStage, STAGE_IMPLEMENT);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const refusal = warnings.find((line) => line.includes('wrong-digest')) ?? '';
+    assert.ok(refusal.includes(planPath), warnings.join('\n'));
+    assert.ok(refusal.includes('wrong-digest'), warnings.join('\n'));
+    assert.ok(refusal.includes(actual as string), warnings.join('\n'));
+    assert.strictEqual(stateRepo.saveCallCount, 0, '--dry-run must write nothing');
+  });
+});
+
+describe('StartImplementationUseCase - frozen smoke directive (issue #388)', () => {
+  let tempDir: string;
+  let planDir: string;
+  let planPath: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-impl-smoke-'));
+    planDir = path.join(tempDir, 'artifacts/plans/388-smoke');
+    fs.mkdirSync(planDir, { recursive: true });
+    planPath = path.join(planDir, 'implementation_plan.md');
+    fs.writeFileSync(
+      planPath,
+      [
+        '# [Implementation] - smoke handoff',
+        '',
+        '## 3. Implementation Steps',
+        '- [ ] **Step 1:** hold',
+        '',
+        '### Manual Smoke Test Protocol',
+        '',
+        '**SI smoke label**',
+        '',
+        '```bash',
+        'echo si-smoke-388',
+        '```',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('SI-SMOKE: the directive carries the protocol parsed from the resolved plan', async () => {
+    const stateRepo = new StateRepositoryDouble({
+      version: '1.0.0',
+      currentStage: STAGE_APPROVAL,
+      mode: MODE_STANDARD,
+      issue: 16,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      history: [{ stage: STAGE_APPROVAL, timestamp: new Date().toISOString() }]
+    });
+    const useCase = new StartImplementationUseCase(
+      stateRepo,
+      new ConfigRepositoryDouble(),
+      new PlanGeneratorDouble(planDir)
+    );
+
+    const result = await useCase.execute({ issue: 16, workspaceDir: tempDir });
+
+    assert.ok(
+      result.taskPrompt.includes('### Manual Smoke Test Protocol (frozen at dispatch)'),
+      result.taskPrompt
+    );
+    assert.ok(result.taskPrompt.includes('SI smoke label'), result.taskPrompt);
+    assert.ok(result.taskPrompt.includes('echo si-smoke-388'), result.taskPrompt);
+    assert.ok(result.taskPrompt.includes('(plan line '), result.taskPrompt);
   });
 });

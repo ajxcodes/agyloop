@@ -1,5 +1,5 @@
 /**
- * agyloop - Architecture Fitness Tests: Hexagonal Architecture Boundaries
+ * codeloop - Architecture Fitness Tests: Hexagonal Architecture Boundaries
  *
  * Statically inspects source files and module imports across all architectural layers
  * to enforce strict Hexagonal Boundaries, Dependency Inversion, and zero direct I/O leakage:
@@ -271,6 +271,8 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
           'findPullRequest',
           'createPullRequest',
           'applyLabels',
+          'labelExists',
+          'createLabel',
           'commentOnIssue',
           'closeIssue'
         ]
@@ -356,6 +358,12 @@ describe('Hexagonal Architecture Boundaries & Dependency Inversion Fitness Tests
           'getCommitsBetween',
           'isAncestor'
         ]
+      },
+      {
+        adapterFile: 'failover-agent-runner.ts',
+        className: 'FailoverAgentRunner',
+        portName: 'AgentRunnerPort',
+        requiredMethods: ['invokeSubagent']
       }
     ];
 

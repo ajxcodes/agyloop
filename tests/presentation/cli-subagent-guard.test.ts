@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Subagent Guard Presentation Tests
+ * codeloop - CLI Subagent Guard Presentation Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -13,6 +13,7 @@ const {
   EXIT_CODE_SUCCESS,
   EXIT_CODE_FAILURE
 } = require('../../dist/presentation');
+const { MSG_TRIAGE_ROUTING_REQUIRES_GATE } = require('../../dist/domain');
 
 describe('CLI Subagent Guard', () => {
   let prevCwd: string;
@@ -26,7 +27,7 @@ describe('CLI Subagent Guard', () => {
   beforeEach(() => {
     prevCwd = process.cwd();
     originalEnvSubagent = process.env.AGY_SUBAGENT;
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-subagent-guard-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-subagent-guard-'));
     const stateDir = path.join(tempDir, '.agyloop');
     fs.mkdirSync(stateDir, { recursive: true });
     
@@ -86,10 +87,10 @@ describe('CLI Subagent Guard', () => {
       assert.ok(errorOutput.includes("Command 'yolo' violates the Zero Direct Root Mutation invariant."));
     });
 
-    test('blocks mutating commands (default/null)', async () => {
-      const exitCode = await runCli([]);
+    test('blocks mutating commands (abort)', async () => {
+      const exitCode = await runCli(['abort']);
       assert.strictEqual(exitCode, 1);
-      assert.ok(errorOutput.includes("Command '(default)' violates the Zero Direct Root Mutation invariant."));
+      assert.ok(errorOutput.includes("Command 'abort' violates the Zero Direct Root Mutation invariant."));
     });
 
     test('permits non-mutating commands (status)', async () => {
@@ -109,6 +110,73 @@ describe('CLI Subagent Guard', () => {
       assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
       assert.strictEqual(errorOutput.includes('Root agent is not allowed'), false);
     });
+
+    test('permits subagents to report quota via halt (issue #220 inbound channel)', async () => {
+      // Issue #293: halt records a condition on a RUNNING pipeline, so a
+      // checkpoint must exist first.
+      const now = new Date().toISOString();
+      fs.mkdirSync(path.join(tempDir, '.agyloop'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, '.agyloop', 'state.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'IMPLEMENT',
+          mode: 'standard',
+          issue: null,
+          createdAt: now,
+          updatedAt: now,
+          history: [{ stage: 'IMPLEMENT', timestamp: now }]
+        })
+      );
+      const exitCode = await runCli(['halt', '--reason', 'quota', '--dry-run']);
+      assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
+      assert.strictEqual(errorOutput.includes('Zero Direct Root Mutation'), false);
+      assert.strictEqual(exitCode, 2);
+    });
+
+    test('blocks subagents from filing a review verdict (issue #297)', async () => {
+      // The reviewer only EMITS a block; the orchestrator files it. A
+      // subagent-marked `review` is refused exactly like every other mutating
+      // command, and the checkpoint is untouched.
+      const issue = '777';
+      const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+      const statePath = path.join(tasksDir, `${issue}.json`);
+      const now = new Date().toISOString();
+      const seeded = JSON.stringify({
+        version: '1.0.0',
+        currentStage: 'REVIEW',
+        mode: 'standard',
+        issue: Number(issue),
+        baseBranch: 'main',
+        createdAt: now,
+        updatedAt: now,
+        history: [{ stage: 'REVIEW', timestamp: now }],
+        pausedAtGate: null,
+        pausedAtTimestamp: null
+      });
+      fs.writeFileSync(statePath, seeded);
+
+      const verdictFile = path.join(tempDir, 'verdict.md');
+      fs.writeFileSync(verdictFile, 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n', 'utf8');
+
+      const exitCode = await runCli(['review', '--issue', issue, '--verdict-file', verdictFile]);
+
+      assert.strictEqual(exitCode, 1, 'a subagent must not be able to file a verdict');
+      assert.ok(
+        errorOutput.includes('Subagents are not permitted'),
+        `the root-mutation guard must fire, got:\n${errorOutput}`
+      );
+      assert.ok(
+        errorOutput.includes('Zero Direct Root Mutation'),
+        `the guard must name the invariant, got:\n${errorOutput}`
+      );
+      assert.strictEqual(
+        fs.readFileSync(statePath, 'utf8'),
+        seeded,
+        'a refused filing must not touch the checkpoint'
+      );
+    });
   });
 
   describe('When AGY_SUBAGENT is not set', () => {
@@ -116,15 +184,99 @@ describe('CLI Subagent Guard', () => {
       delete process.env.AGY_SUBAGENT;
     });
 
+    test('permits the orchestrator to file a review verdict (issue #297)', async () => {
+      const issue = '778';
+      const tasksDir = path.join(tempDir, '.agyloop', 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+      const now = new Date().toISOString();
+      const statePath = path.join(tasksDir, `${issue}.json`);
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          version: '1.0.0',
+          currentStage: 'REVIEW',
+          mode: 'standard',
+          issue: Number(issue),
+          baseBranch: 'main',
+          createdAt: now,
+          updatedAt: now,
+          history: [{ stage: 'REVIEW', timestamp: now }],
+          pausedAtGate: null,
+          pausedAtTimestamp: null
+        })
+      );
+
+      const verdictFile = path.join(tempDir, 'verdict.md');
+      fs.writeFileSync(verdictFile, 'REVIEW_STATUS: APPROVED\nREVIEW_SUMMARY: ok\n', 'utf8');
+      const critiqueFile = path.join(tempDir, 'critique.json');
+      fs.writeFileSync(
+        critiqueFile,
+        JSON.stringify({
+          summary: 'Clean automated review',
+          confidenceLevel: 'High',
+          confidenceExplanation: 'diff verified',
+          comments: []
+        })
+      );
+
+      const exitCode = await runCli([
+        'review',
+        '--issue',
+        issue,
+        '--verdict-file',
+        verdictFile,
+        '--critique-report',
+        critiqueFile
+      ]);
+
+      assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
+      assert.strictEqual(exitCode, 0, `the orchestrator must be able to file, got:\n${errorOutput}`);
+      const checkpoint = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      assert.strictEqual(checkpoint.currentStage, 'COMMIT');
+    });
+
     test('permits mutating commands', async () => {
       await runCli(['transition', 'PLAN']);
       assert.strictEqual(errorOutput.includes('Subagents are not permitted'), false);
     });
 
-    test('blocks root agent from running triage actions', async () => {
+    test('SG3a: permits a triage routing action without an environment marker', async () => {
+      // Seed the gate the action actually routes: TRIAGE.
+      const statePath = path.join(tempDir, '.agyloop', 'state.json');
+      const snapshot = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          ...snapshot,
+          currentStage: 'TRIAGE',
+          history: [{ stage: 'TRIAGE', timestamp: new Date().toISOString() }],
+          pausedAtGate: null,
+          pausedAtTimestamp: null
+        })
+      );
+
+      const exitCode = await runCli(['triage', 'completed']);
+
+      assert.strictEqual(exitCode, 0, `a routing action must not need a marker, got:\n${errorOutput}`);
+      assert.strictEqual(
+        errorOutput.includes('Root agent is not allowed'),
+        false,
+        'the removed marker guard must not fire'
+      );
+      assert.strictEqual(
+        errorOutput.includes('requires the checkpoint to be at the TRIAGE gate'),
+        false,
+        'a TRIAGE checkpoint must be routable'
+      );
+    });
+
+    test('SG3b: refuses a routing action from a non-TRIAGE checkpoint', async () => {
       const exitCode = await runCli(['triage', 'implement']);
       assert.strictEqual(exitCode, 1);
-      assert.ok(errorOutput.includes('Error: Execution blocked. Root agent is not allowed to run pipeline routing triage actions.'));
+      assert.ok(
+        errorOutput.includes(MSG_TRIAGE_ROUTING_REQUIRES_GATE),
+        `the stage precondition must refuse routing from INITIALIZED, got:\n${errorOutput}`
+      );
     });
   });
 });

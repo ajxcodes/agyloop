@@ -1,5 +1,5 @@
 /**
- * agyloop - RunQualityGateUseCase
+ * codeloop - RunQualityGateUseCase
  *
  * Coordinates Quality Gate phase execution:
  * 1. Validates lifecycle stage rules (current stage must be IMPLEMENT or QUALITY_GATE).
@@ -10,7 +10,7 @@
  * 6. Evaluates overall verdict:
  *    - All pass: transitions to STAGE_REVIEW.
  *    - Any fail: falls back to STAGE_IMPLEMENT.
- * 7. Updates AgyLoop Summary.md with build and test metrics.
+ * 7. Updates CodeLoop Summary.md with build and test metrics.
  * 8. Checkpoints pipeline state to StateRepository.
  */
 
@@ -29,32 +29,31 @@ import {
   SUMMARY_STATUS_FAILED,
   STATUS_PASSED,
   STATUS_FAILED,
+  STATUS_VACUOUS,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_TIMED_OUT,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_DISPLAY_TIMED_OUT,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   STATUS_SKIPPED,
   NOTE_EXECUTING_GATES,
   NOTE_GATES_PASSED,
   NOTE_GATES_FAILED,
   NOTE_RERUN_GATES_COMPLETED,
   DEFAULT_GATE_TIMEOUT_SECONDS,
-  DEFAULT_GATE_COMMANDS,
   GateCommandDefinition,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MAX_FILTERED_LOG_LINES,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   MAX_FILTERED_OUTPUT_CHARS,
   MS_PER_SECOND,
+  ENV_AGYLOOP_SMOKE,
+  ENV_FLAG_ENABLED,
   ECOSYSTEM_UNKNOWN,
   CMD_ID_BUILD,
   CMD_ID_TYPECHECK,
   CMD_ID_TEST,
   CMD_ID_PLAYWRIGHT,
   CMD_ID_E2E,
-  CMD_PREFIX_CUSTOM,
-  CMD_PREFIX_CONFIG,
   TestMetrics,
   DiagnosticSnippet,
   GateSummaryReport,
@@ -67,20 +66,75 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   TOKEN_FAILING_ASSERTION,
   MSG_COMMAND_FAILED_NO_OUTPUT,
+  MSG_GATE_VACUOUS,
+  MSG_GATE_UNMEASURABLE,
+  // Issue #412: the in-process gate fails an exit-0 test command with no
+  // positive test total; the predicate is shared with the filed-evidence floor.
+  MSG_GATE_NO_TEST_EVIDENCE,
+  // Issue #415: an exit-0 run whose summary still parses as failed tests is a
+  // parser contradiction, not a pass.
+  MSG_GATE_TEST_METRICS_CONFLICT,
+  isTestCommand as isTestCommandText,
+  MSG_PLAN_MODIFIED_DURING_GATE,
+  MSG_PLAN_MODIFIED_AFTER_APPROVAL,
+  MSG_PLAN_APPROVED_MISSING,
+  MSG_SMOKE_PROTOCOL_FAILED,
+  MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE,
+  MSG_SMOKE_PROTOCOL_NO_CHECKS,
+  SMOKE_CHECK_MARKER_PREFIX,
+  MSG_GATE_LINT_MISSING,
+  CMD_ID_LINT,
+  CMD_ID_SMOKE_PROTOCOL,
+  CMD_LABEL_SMOKE_PROTOCOL,
+  CMD_ID_PLAN_INTEGRITY,
+  CMD_LABEL_PLAN_INTEGRITY,
+  CMD_ID_GATE_TARGET_CONTRACT,
+  CMD_LABEL_GATE_TARGET_CONTRACT,
+  formatGateTargetContractViolations,
+  isLintCommand,
+  hasLintCommand,
+  SMOKE_STATUS_PASSED,
+  SMOKE_STATUS_FAILED,
+  SMOKE_STATUS_NOT_DECLARED,
+  SMOKE_STATUS_TIMED_OUT,
+  SMOKE_PROTOCOL_NOT_DECLARED,
+  PLAN_INTEGRITY_MISMATCH,
+  PLAN_INTEGRITY_MISSING,
+  PlanIntegrityStatus,
+  LABEL_EXECUTION_CWD,
+  LABEL_COMMAND_SOURCE,
+  LABEL_PLAN_INTEGRITY,
+  LABEL_SMOKE_PROTOCOL,
+  LABEL_IMPLEMENTATION_EVIDENCE,
+  LABEL_IMPLEMENTATION_EVIDENCE_LINE,
+  LABEL_BASE_FRESHNESS,
+  LABEL_BASE_FRESHNESS_LINE,
+  HEADER_QUALITY_GATE_REPORT,
+  LABEL_OVERALL_VERDICT,
   InvalidTransitionError,
+  GateResultReport,
+  formatSmokeCheckId,
+  resolveGateRound,
+  formatGateReportedDuration,
+  formatStageDuration,
+  measureStageWindowMs,
+  DURATION_NOT_RECORDED,
+  SMOKE_PROTOCOL_NOT_REPORTED,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   QualityGateTimeoutError
 } from '../domain';
 import {
   StateRepository,
   ConfigRepository,
-  AgyLoopConfig,
   PlanGeneratorPort,
   CommandExecutorPort,
-  BuildDetectorPort
+  BuildDetectorPort,
+  GateReportRepositoryPort
 } from '../ports';
 
 import { ResolveSubagentUseCase } from './resolve-subagent';
+import { resolveGateVerification, GateVerification } from './resolve-gate-verification';
+import type { ImplementationDiff } from './detect-implementation-diff';
 
 export interface GateCommandReport {
   readonly id: string;
@@ -93,6 +147,8 @@ export interface GateCommandReport {
   readonly testMetrics?: { total?: number; passed?: number; failed?: number } | TestMetrics | null;
   readonly failureSnippet?: string;
   readonly diagnosticSnippet?: DiagnosticSnippet | null;
+  /** The cwd the command actually ran in (issue #298). */
+  readonly cwd?: string;
 }
 
 export interface QualityGateRunParams {
@@ -104,6 +160,18 @@ export interface QualityGateRunParams {
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
   readonly workspaceDir?: string;
+  /**
+   * The implementation-evidence verdict (issue #259).
+   *
+   * This is an INJECTED verdict, not a probe: the gate use case runs no git
+   * command of its own. That is deliberate — the lifecycle owns the probe, and
+   * a probe inside the gate would silently consume a queued gate command in
+   * every consumer that drives this use case with a response queue.
+   *
+   * When it is present and reports an UNCHANGED tree, the gate refuses to
+   * certify: no gate command is executed and the verdict is VACUOUS.
+   */
+  readonly implementationDiff?: ImplementationDiff | null;
 }
 
 export interface QualityGateRunResult {
@@ -119,6 +187,24 @@ export interface QualityGateRunResult {
   readonly detectedEcosystems?: readonly string[];
   readonly gateReport?: GateSummaryReport;
   readonly diagnosticSnippet?: DiagnosticSnippet | null;
+  /**
+   * True when the gate refused to certify an unimplemented tree (issue #259).
+   * A VACUOUS verdict is NOT a failure: nothing was executed and nothing was
+   * reverted — the stage was never advanced.
+   */
+  readonly vacuous?: boolean;
+  /** The implementation-evidence verdict this run was given (when any). */
+  readonly implementationDiff?: ImplementationDiff | null;
+  /** The cwd every gate command was executed from (issue #298). */
+  readonly executionCwd?: string;
+  /** The provenance of the executed command list (issue #298). */
+  readonly commandSource?: string;
+  readonly commandSourceDetail?: string;
+  /** Plan integrity before/after execution (issue #298). */
+  readonly planIntegrityStatus?: PlanIntegrityStatus;
+  /** `PASSED` | `FAILED` | `NOT DECLARED` | `TIMED_OUT` (issue #298). */
+  readonly smokeStatus?: string;
+  readonly smokeReport?: GateCommandReport;
 }
 
 export class RunQualityGateUseCase {
@@ -128,6 +214,12 @@ export class RunQualityGateUseCase {
   private readonly commandExecutor: CommandExecutorPort;
   private readonly buildDetector?: BuildDetectorPort;
   private readonly resolveSubagentUseCase: ResolveSubagentUseCase;
+  /**
+   * The gate evidence channel (issue #284). Optional so every existing call
+   * site and test keeps working: without it the gate still runs and still
+   * writes the summary itself, it just files no evidence for the transition.
+   */
+  private readonly gateReportRepo?: GateReportRepositoryPort;
 
   constructor(
     stateRepo: StateRepository,
@@ -135,7 +227,8 @@ export class RunQualityGateUseCase {
     planGenerator: PlanGeneratorPort,
     commandExecutor: CommandExecutorPort,
     buildDetector?: BuildDetectorPort,
-    resolveSubagentUseCase?: ResolveSubagentUseCase
+    resolveSubagentUseCase?: ResolveSubagentUseCase,
+    gateReportRepo?: GateReportRepositoryPort
   ) {
     this.stateRepo = stateRepo;
     this.configRepo = configRepo;
@@ -144,6 +237,7 @@ export class RunQualityGateUseCase {
     this.buildDetector = buildDetector;
     this.resolveSubagentUseCase =
       resolveSubagentUseCase ?? new ResolveSubagentUseCase(configRepo);
+    this.gateReportRepo = gateReportRepo;
   }
 
   public async execute(params: QualityGateRunParams = {}): Promise<QualityGateRunResult> {
@@ -156,7 +250,7 @@ export class RunQualityGateUseCase {
         STAGE_NONE,
         STAGE_QUALITY_GATE,
         MODE_STANDARD,
-        'Cannot run quality gates: No pipeline state found. Run "agyloop implement" first.'
+        'Cannot run quality gates: No pipeline state found. Run "codeloop implement" first.'
       );
     }
 
@@ -164,6 +258,31 @@ export class RunQualityGateUseCase {
     const activeIssue = params.issue || sm.issue;
     if (activeIssue) {
       sm.setIssue(activeIssue);
+    }
+
+    // 1b. Issue #259: the gate refuses to certify an unimplemented tree.
+    //
+    // A passing suite over an UNCHANGED tree is positive evidence of nothing:
+    // the pre-existing tests still pass when no implementation was produced.
+    // The gate therefore refuses to certify such a tree — it executes NO gate
+    // command, does not transition, does not touch the retry counter, and
+    // reports the VACUOUS verdict instead of PASSED.
+    //
+    // A verdict that carries a `probeError` is NOT a verdict: the probe could
+    // not read the tree at all (no git, not a repository, an unreadable
+    // directory). There is nothing to certify against, so the gate keeps its
+    // pre-existing behaviour instead of inventing a refusal.
+    const injectedDiff = params.implementationDiff ?? null;
+    // Issue #263: only a MEASURED branch diff can support a branch verdict. A
+    // `measurementError` means the branch's own changes could not be measured
+    // (no merge-base, the diff failed) — that is not "no changes", so the gate
+    // must not report VACUOUS on it.
+    const measuredDiff =
+      injectedDiff && injectedDiff.probeError === null && (injectedDiff.measurementError ?? null) === null
+        ? injectedDiff
+        : null;
+    if (measuredDiff && !measuredDiff.hasChanges) {
+      return this.buildVacuousResult(sm, measuredDiff);
     }
 
     // 2. Enforce lifecycle transition rules
@@ -202,17 +321,38 @@ export class RunQualityGateUseCase {
         : config.options.gateTimeoutSeconds || DEFAULT_GATE_TIMEOUT_SECONDS;
     const timeoutMs = timeoutSeconds * MS_PER_SECOND;
 
-    // 4. Resolve commands to execute (supporting auto-detection engine and config overrides)
-    let commandDefinitions: readonly GateCommandDefinition[];
+    // 4. Resolve the gate execution contract (issue #298): plan targets,
+    // command provenance, smoke protocol and plan integrity all come from ONE
+    // application service. There is no second precedence implementation.
+    const verification = await resolveGateVerification({
+      projectRoot: workspace,
+      workspaceDir: workspace,
+      config,
+      issue: activeIssue,
+      planPath: params.planPath ?? null,
+      planDir: params.planDir ?? sm.planDir,
+      stage: sm.currentStage,
+      explicitCommands: params.commands,
+      planGenerator: this.planGenerator,
+      buildDetector: this.buildDetector,
+      approvedPlanDigest: sm.approvedPlanDigest
+    });
+
+    const commandDefinitions = verification.commandPlan.commands;
+    const commandSource = verification.commandPlan.source;
+    const commandSourceDetail = verification.commandPlan.sourceDetail;
+    const executionCwd = verification.cwd;
+    let planIntegrityStatus: PlanIntegrityStatus = verification.integrity.status;
+    // A declared protocol is never reported PASSED until it actually ran.
+    let smokeStatus: string = verification.smoke.found
+      ? SMOKE_STATUS_FAILED
+      : SMOKE_STATUS_NOT_DECLARED;
+    let smokeReport: GateCommandReport | undefined;
+
     let detectedEcosystemNames: string[] = [];
     let primaryEcosystemName: string | undefined;
 
     if (this.buildDetector) {
-      commandDefinitions = await this.buildDetector.resolveCommands(
-        workspace,
-        config,
-        params.commands
-      );
       try {
         const detected = await this.buildDetector.detect(workspace);
         detectedEcosystemNames = detected.ecosystems.map((e) => e.toString());
@@ -223,65 +363,185 @@ export class RunQualityGateUseCase {
         detectedEcosystemNames = [ECOSYSTEM_UNKNOWN];
         primaryEcosystemName = ECOSYSTEM_UNKNOWN;
       }
-    } else {
-      commandDefinitions = this.resolveCommands(params.commands, config);
     }
 
     // 5. Execute commands in isolated shell with log buffering and filtering
     const reports: GateCommandReport[] = [];
+    // Issue #415: the metrics of the LAST executed TEST command. The status line
+    // and the filed evidence are both built from this ONE value, and only a test
+    // command may supply it (a build command's incidental `999 passed` is not
+    // evidence about the suite).
+    let measuredTestMetrics: TestMetrics | null = null;
+    let measuredTestCommand: string | null = null;
     let allPassed = true;
     let totalDurationMs = 0;
     let buildStatus: string = STATUS_PASSED;
     let testsStatus: string = STATUS_PASSED;
     let testsMetricSummary = '';
 
-    for (const cmdDef of commandDefinitions) {
-      const execResult = await this.commandExecutor.execute(cmdDef.command, {
-        cwd: workspace,
-        timeoutMs
-      });
-
-      totalDurationMs += execResult.durationMs;
-      const passed = execResult.exitCode === 0 && !execResult.timedOut;
-
-      const testMetrics = this.extractTestMetrics(execResult.combinedOutput);
-      let failureSnippet: string | undefined;
-      let diagnosticSnippet: DiagnosticSnippet | null = null;
-
-      if (!passed) {
-        allPassed = false;
-        diagnosticSnippet = DiagnosticSnippet.extract(execResult.combinedOutput, execResult.stderr);
-        failureSnippet = diagnosticSnippet ? diagnosticSnippet.toString() : this.extractFailureSnippet(execResult.combinedOutput, execResult.stderr);
+    const preflightFailure = this.buildPreflightFailure(verification);
+    if (preflightFailure) {
+      allPassed = false;
+      buildStatus = STATUS_FAILED;
+      // No test command ran: the gate refused to certify before execution.
+      testsStatus = STATUS_SKIPPED;
+      reports.push(preflightFailure.report);
+      if (preflightFailure.kind === 'smoke') {
+        smokeStatus = SMOKE_STATUS_FAILED;
+        smokeReport = preflightFailure.report;
       }
+    } else {
+      for (const cmdDef of commandDefinitions) {
+        const execResult = await this.commandExecutor.execute(cmdDef.command, {
+          cwd: executionCwd,
+          timeoutMs
+        });
 
-      if (this.isBuildCommand(cmdDef.id) && !passed) {
-        buildStatus = STATUS_FAILED;
-      }
+        totalDurationMs += execResult.durationMs;
+        const passed = execResult.exitCode === 0 && !execResult.timedOut;
 
-      if (this.isTestCommand(cmdDef.id)) {
+        const testMetrics = this.extractTestMetrics(execResult.combinedOutput);
+        let failureSnippet: string | undefined;
+        let diagnosticSnippet: DiagnosticSnippet | null = null;
+
         if (!passed) {
+          allPassed = false;
+          diagnosticSnippet = DiagnosticSnippet.extract(execResult.combinedOutput, execResult.stderr);
+          failureSnippet = diagnosticSnippet ? diagnosticSnippet.toString() : this.extractFailureSnippet(execResult.combinedOutput, execResult.stderr);
+        }
+
+        if (this.isBuildCommand(cmdDef) && !passed) {
+          buildStatus = STATUS_FAILED;
+        }
+
+        if (this.isTestCommand(cmdDef)) {
+          if (testMetrics) {
+            measuredTestMetrics = testMetrics;
+            measuredTestCommand = cmdDef.command;
+          }
+          if (!passed) {
+            testsStatus = STATUS_FAILED;
+          } else if (testMetrics && testMetrics.total > 0) {
+            testsMetricSummary = ` (${this.measuredPassedCount(testMetrics)} passed)`;
+          }
+        }
+
+        reports.push({
+          id: cmdDef.id,
+          label: cmdDef.label,
+          command: cmdDef.command,
+          exitCode: execResult.exitCode,
+          durationMs: execResult.durationMs,
+          passed,
+          timedOut: execResult.timedOut,
+          testMetrics,
+          failureSnippet,
+          diagnosticSnippet,
+          cwd: executionCwd
+        });
+
+        // Issues #415 (D2-b): an exit-0 test command whose summary still parses
+        // as having failed tests is a parser contradiction, not a pass. Evaluate
+        // it PER COMMAND (not once after the loop over the LAST test command):
+        // with two test commands, an earlier contradictory summary used to be
+        // certified while the record filed the later command's numbers. Fail
+        // closed with a named diagnostic instead of throwing out of
+        // `GateResultReport.fromJSON` after every command has run.
+        if (this.isTestCommand(cmdDef) && passed && testMetrics && testMetrics.failed > 0) {
+          allPassed = false;
           testsStatus = STATUS_FAILED;
-        } else if (testMetrics && (testMetrics.passed || testMetrics.total)) {
-          testsMetricSummary = ` (${testMetrics.passed || testMetrics.total} passed)`;
+          reports[reports.length - 1] = {
+            ...reports[reports.length - 1],
+            passed: false,
+            failureSnippet: MSG_GATE_TEST_METRICS_CONFLICT
+              .replace('{command}', () => cmdDef.command)
+              .replace('{failed}', () => String(testMetrics.failed))
+          };
+          break;
+        }
+
+        // Issue #412: an exit-0 test command that produced no positive test
+        // total is NOT a pass. With Node's NODE_TEST_CONTEXT exported,
+        // `node --test` skips every file, prints a warning, executes zero tests
+        // and still exits 0. The gate must not certify that shape.
+        if (this.isTestCommand(cmdDef) && passed && (!testMetrics || testMetrics.total === 0)) {
+          allPassed = false;
+          testsStatus = STATUS_FAILED;
+          reports[reports.length - 1] = {
+            ...reports[reports.length - 1],
+            passed: false,
+            failureSnippet: MSG_GATE_NO_TEST_EVIDENCE.replace('{command}', () => cmdDef.command)
+          };
+          break;
+        }
+
+        // Fail fast on build/test failure
+        if (!passed) {
+          break;
         }
       }
 
-      reports.push({
-        id: cmdDef.id,
-        label: cmdDef.label,
-        command: cmdDef.command,
-        exitCode: execResult.exitCode,
-        durationMs: execResult.durationMs,
-        passed,
-        timedOut: execResult.timedOut,
-        testMetrics,
-        failureSnippet,
-        diagnosticSnippet
-      });
+      // Issues #415 (D2-b): fallback for a contradictory parse that slipped past
+      // the per-command guard above (for example a metrics value recorded on the
+      // last test command after the loop). The per-command check is the primary
+      // path; this keeps a future refactor fail-closed.
+      if (allPassed && measuredTestMetrics && measuredTestMetrics.failed > 0) {
+        const conflictMetrics = measuredTestMetrics;
+        const conflictAt = reports.findIndex((r) => r.testMetrics === conflictMetrics);
+        const index = conflictAt >= 0 ? conflictAt : reports.length - 1;
+        const conflictCommand =
+          measuredTestCommand ?? (index >= 0 ? reports[index].command : 'the test command');
+        allPassed = false;
+        testsStatus = STATUS_FAILED;
+        if (index >= 0) {
+          reports[index] = {
+            ...reports[index],
+            passed: false,
+            failureSnippet: MSG_GATE_TEST_METRICS_CONFLICT
+              .replace('{command}', () => conflictCommand)
+              .replace('{failed}', () => String(conflictMetrics.failed))
+          };
+        }
+      }
 
-      // Fail fast on build/test failure
-      if (!passed) {
-        break;
+      // 5b. Manual Smoke Test Protocol (issue #298). Runs only after every
+      // command passed; a non-zero exit, a timeout, a printed FAIL line or a
+      // missing check marker is a gate failure naming check + plan line.
+      if (allPassed) {
+        const smokeOutcome = await this.runSmokeProtocol(verification, executionCwd, timeoutMs);
+        if (smokeOutcome) {
+          totalDurationMs += smokeOutcome.report.durationMs;
+          reports.push(smokeOutcome.report);
+          smokeReport = smokeOutcome.report;
+          smokeStatus = smokeOutcome.status;
+          if (!smokeOutcome.report.passed) {
+            allPassed = false;
+          }
+        }
+      }
+    }
+
+    // 5c. The approved plan must be byte-identical before and after the gate.
+    if (preflightFailure === null && verification.integrity.actualDigest !== null) {
+      const postDigest = this.hashResolvedPlan(verification);
+      if (postDigest !== null && postDigest !== verification.integrity.actualDigest) {
+        allPassed = false;
+        planIntegrityStatus = PLAN_INTEGRITY_MISMATCH;
+        reports.push({
+          id: CMD_ID_PLAN_INTEGRITY,
+          label: CMD_LABEL_PLAN_INTEGRITY,
+          command: verification.planPath ?? CMD_LABEL_PLAN_INTEGRITY,
+          exitCode: 1,
+          durationMs: 0,
+          passed: false,
+          timedOut: false,
+          failureSnippet: MSG_PLAN_MODIFIED_DURING_GATE
+            .replace('{path}', verification.planPath ?? '(unknown plan path)')
+            .replace('{expected}', verification.integrity.actualDigest)
+            .replace('{actual}', postDigest),
+          diagnosticSnippet: null,
+          cwd: executionCwd
+        });
       }
     }
 
@@ -291,10 +551,7 @@ export class RunQualityGateUseCase {
 
     const failedReport = reports.find((r) => !r.passed);
     const primaryDiagnostic = failedReport?.diagnosticSnippet ?? (failedReport?.failureSnippet ? DiagnosticSnippet.fromRaw(failedReport.failureSnippet) : null);
-    const primaryTestMetrics = reports.find((r) => r.testMetrics)?.testMetrics;
-    const testMetricsVO = primaryTestMetrics instanceof TestMetrics
-      ? primaryTestMetrics
-      : (primaryTestMetrics ? TestMetrics.create(primaryTestMetrics) : null);
+    const testMetricsVO: TestMetrics | null = measuredTestMetrics;
 
     const gateReport = GateSummaryReport.create({
       verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
@@ -339,7 +596,7 @@ export class RunQualityGateUseCase {
       sm.incrementImplementGateLoop();
     }
 
-    // 7. Update AgyLoop Summary.md via PlanGeneratorPort
+    // 7. Update CodeLoop Summary.md via PlanGeneratorPort
     const resolvedPlan = this.planGenerator.resolvePlanFile({
       projectRoot: workspace,
       issue: activeIssue,
@@ -347,11 +604,68 @@ export class RunQualityGateUseCase {
       planDir: params.planDir || sm.planDir
     });
 
-    const durationStr = `${(totalDurationMs / MS_PER_SECOND).toFixed(1)}s`;
+    // Issue #338 (S4): the gate measured ITSELF; the cell must name that clock,
+    // exactly like the dispatched path. The wall window is measurable once this
+    // use case has appended the REVIEW/IMPLEMENT entry.
+    //
+    // Issue #376 (AC16): the Duration COLUMN is the wall clock only (one clock,
+    // summable); the gate's own timer is passed as a named self-report note so
+    // both clocks survive without sharing a cell.
+    const gateWallMs = measureStageWindowMs(sm.history, STAGE_QUALITY_GATE);
+    const durationStr = gateWallMs !== null ? formatStageDuration(gateWallMs) : DURATION_NOT_RECORDED;
     const gateStatus = allPassed ? SUMMARY_STATUS_COMPLETED : SUMMARY_STATUS_FAILED;
+
+    // Issue #284: file the SAME evidence the dispatched path files, so an
+    // in-process (yolo) run and a filed run leave identical records. The round
+    // comes from the ONE shared formula (issue #311).
+    const gateRound = resolveGateRound(sm.history);
+    // Issue #444: `runSmokeProtocol` executes the whole `toScript()` under
+    // `set -e`, so a PASSED status means every declared check ran. Publish one
+    // canonical `smokeChecks` entry per check — the same ids the prompt names —
+    // instead of an empty list that a smoke-coverage guard would refuse.
+    const smokeChecks =
+      smokeStatus === SMOKE_STATUS_PASSED
+        ? verification.smoke.checks.map((check) => ({
+            id: formatSmokeCheckId(check.index),
+            label: check.label,
+            passed: true
+          }))
+        : [];
+    const evidence = GateResultReport.fromJSON({
+      verdict: allPassed ? STATUS_PASSED : STATUS_FAILED,
+      // A gate run without a detector still has to name SOMETHING: the report
+      // is fail-closed on an empty build system, and `unknown` is the honest id.
+      buildSystem: primaryEcosystemName || ECOSYSTEM_UNKNOWN,
+      buildStatus,
+      testsStatus,
+      testsPassed: testMetricsVO ? this.measuredPassedCount(testMetricsVO) : null,
+      testsFailed: testMetricsVO ? testMetricsVO.failed : null,
+      durationMs: totalDurationMs,
+      executedCommands: reports.map((r) => r.command),
+      smokeChecks,
+      smokeProtocol: smokeStatus === SMOKE_STATUS_PASSED
+        ? 'PASSED'
+        : smokeStatus === SMOKE_STATUS_FAILED
+          ? 'FAILED'
+          : smokeStatus === SMOKE_STATUS_NOT_DECLARED
+            ? SMOKE_PROTOCOL_NOT_DECLARED
+            // A timed-out smoke protocol is a failure, never "not declared".
+            : 'FAILED',
+      notRun: [],
+      gateRound
+    });
 
     if (!params.dryRun) {
       await this.stateRepo.save(sm.toSnapshot());
+
+      if (this.gateReportRepo) {
+        try {
+          this.gateReportRepo.save(activeIssue, evidence);
+        } catch {
+          // Filing is best effort here: the summary write below still records
+          // the same values for this run.
+        }
+      }
 
       if (resolvedPlan && resolvedPlan.summaryPath) {
         this.planGenerator.updateSummaryLog(resolvedPlan.summaryPath, {
@@ -360,23 +674,52 @@ export class RunQualityGateUseCase {
           model: gateDef.model,
           status: gateStatus,
           duration: durationStr,
+          round: gateRound,
+          gateSelfReport: {
+            round: gateRound,
+            text: formatGateReportedDuration(totalDurationMs, gateWallMs)
+          },
           buildStatus,
           testsStatus,
-          buildSystem: primaryEcosystemName,
+          // One source: the same values the evidence record carries (issue #338).
+          // Issue #444: a PASSED protocol now publishes one canonical entry per
+          // declared check, so the summary names the behavioural evidence it
+          // certifies (and clears an earlier round's lines when there is none).
+          buildSystem: evidence.buildSystem,
           detectedEcosystems: detectedEcosystemNames,
           executedCommands: reports.map((r) => r.command),
-          reviewNote: allPassed
-            ? `All quality gates passed successfully in ${durationStr}.`
-            : `Quality gates failed during execution.${primaryDiagnostic?.fileLocation ? ` Failing location: ${primaryDiagnostic.fileLocation}.` : ''} Pipeline reverted to IMPLEMENT.`
+          smokeChecks,
+          smokeProtocol: evidence.smokeProtocol ?? SMOKE_PROTOCOL_NOT_REPORTED,
+          notRun: []
         });
       }
     }
 
     // 8. Generate concise token-minimized summary report
-    const summaryReport = gateReport.formatTextReport({
+    const rawSummaryReport = gateReport.formatTextReport({
       nextStage: sm.currentStage,
       summaryPath: resolvedPlan?.summaryPath
     });
+
+    // 8a. Issue #298: the report states WHERE the gate ran, WHAT produced the
+    // command list, and whether the approved plan is still the plan on disk.
+    // Without these lines a PASSED verdict cannot be audited.
+    const contractReport = this.withVerificationContract(rawSummaryReport, {
+      executionCwd,
+      commandSource,
+      commandSourceDetail,
+      planIntegrityStatus,
+      smokeStatus
+    });
+
+    // 8b. Issue #259: make "the suite passed" and "the suite passed ON A TREE
+    // THAT CONTAINS THE IMPLEMENTATION" two different statements. Issue #263
+    // adds the base-freshness advisory and the unmeasurable-branch warning to
+    // the same block. The block is purely additive: when there is nothing to
+    // add, the report is byte-identical to what it always was.
+    const summaryReport = injectedDiff
+      ? this.withImplementationEvidence(contractReport, injectedDiff)
+      : contractReport;
 
     return {
       passed: allPassed,
@@ -390,42 +733,377 @@ export class RunQualityGateUseCase {
       buildSystem: primaryEcosystemName,
       detectedEcosystems: detectedEcosystemNames,
       gateReport,
-      diagnosticSnippet: primaryDiagnostic
+      diagnosticSnippet: primaryDiagnostic,
+      vacuous: false,
+      implementationDiff: injectedDiff,
+      executionCwd,
+      commandSource,
+      commandSourceDetail,
+      planIntegrityStatus,
+      smokeStatus,
+      smokeReport
     };
   }
 
-  private resolveCommands(
-    inputCommands?: readonly string[] | readonly GateCommandDefinition[],
-    config?: AgyLoopConfig
-  ): readonly GateCommandDefinition[] {
+  /**
+   * Builds the VACUOUS verdict: the gate refused to certify a tree that
+   * contains no implementation.
+   *
+   * No gate command ran, no transition happened, the retry counter is
+   * untouched, and the summary log is NOT written (nothing ran, so there is
+   * nothing to log). The verdict line is VACUOUS — never PASSED — so the
+   * operator can tell "refused" from "failed".
+   *
+   * The report is built as a plain string on purpose: a `GateSummaryReport`
+   * would have to widen the `GateVerdict` union, and this issue must not
+   * change any shared contract.
+   *
+   * `buildStatus` / `testsStatus` carry `STATUS_VACUOUS`, not `STATUS_FAILED`:
+   * no build and no test ran, so there is no outcome to report — only the
+   * refusal to certify.
+   */
+  private buildVacuousResult(
+    sm: StateMachine,
+    implementationDiff: ImplementationDiff
+  ): QualityGateRunResult {
+    const baseRef = implementationDiff.baseRef;
 
-    if (inputCommands && inputCommands.length > 0) {
-      return inputCommands.map((cmd, idx) => {
-        if (typeof cmd === 'string') {
-          return {
-            id: `${CMD_PREFIX_CUSTOM}-cmd-${idx + 1}`,
-            label: `Custom Command ${idx + 1}`,
-            command: cmd
-          };
-        }
-        return cmd;
-      });
+    let summaryReport = `${HEADER_QUALITY_GATE_REPORT}\n`;
+    summaryReport += `${LABEL_OVERALL_VERDICT.padEnd(16)}: ${STATUS_VACUOUS}\n`;
+    summaryReport += `  ⚠ ${MSG_GATE_VACUOUS.replace('{baseRef}', baseRef)}\n`;
+    // The evidence line is always part of a VACUOUS report (it states the
+    // measured count of 0); the freshness advisory follows it when the base
+    // branch has advanced (issue #263).
+    summaryReport += this.buildEvidenceLines(implementationDiff, {
+      evidenceIndent: '  ',
+      alwaysIncludeEvidenceLine: true
+    }).join('\n');
+
+    return {
+      passed: false,
+      vacuous: true,
+      currentStage: sm.currentStage,
+      stateMachine: sm,
+      reports: [],
+      totalDurationMs: 0,
+      summaryReport,
+      // Issue #259: a VACUOUS verdict is neither a pass nor a failure — NO
+      // gate command ran, so there is no build and no test outcome to record.
+      // `STATUS_FAILED` would claim a failure for an event that never
+      // happened (the same false-claim class this issue removes); the honest
+      // token is the refusal itself.
+      buildStatus: STATUS_VACUOUS,
+      testsStatus: STATUS_VACUOUS,
+      gateReport: undefined,
+      diagnosticSnippet: null,
+      implementationDiff
+    };
+  }
+
+  /**
+   * Inserts the execution-contract lines (issue #298) directly under the
+   * verdict, so `Execution Cwd` / `Command Source` / `Plan Integrity` are part
+   * of every gate report rather than an assumption.
+   */
+  private withVerificationContract(
+    summaryReport: string,
+    details: {
+      executionCwd: string;
+      commandSource: string;
+      commandSourceDetail: string;
+      planIntegrityStatus: PlanIntegrityStatus;
+      smokeStatus: string;
+    }
+  ): string {
+    const lines = [
+      `${LABEL_EXECUTION_CWD.padEnd(16)}: ${details.executionCwd}`,
+      `${LABEL_COMMAND_SOURCE.padEnd(16)}: ${details.commandSource} (${details.commandSourceDetail})`,
+      `${LABEL_PLAN_INTEGRITY.padEnd(16)}: ${details.planIntegrityStatus.toUpperCase()}`,
+      `${LABEL_SMOKE_PROTOCOL.padEnd(16)}: ${details.smokeStatus}`
+    ];
+
+    const reportLines = summaryReport.split('\n');
+    const verdictIndex = reportLines.findIndex((line) => line.startsWith(LABEL_OVERALL_VERDICT));
+
+    if (verdictIndex === -1) {
+      return `${summaryReport}\n${lines.join('\n')}`;
     }
 
-    if (config?.options?.gateCommands && Array.isArray(config.options.gateCommands)) {
-      return config.options.gateCommands.map((cmd: string | GateCommandDefinition, idx: number) => {
-        if (typeof cmd === 'string') {
-          return {
-            id: `${CMD_PREFIX_CONFIG}-cmd-${idx + 1}`,
-            label: `Configured Command ${idx + 1}`,
-            command: cmd
-          };
-        }
-        return cmd;
-      });
+    reportLines.splice(verdictIndex + 1, 0, ...lines);
+    return reportLines.join('\n');
+  }
+
+  /**
+   * Inserts the implementation-evidence block into a gate report that DID run.
+   * The block sits directly under the verdict so the reader sees, in one
+   * glance, that the suite was executed against a tree that actually contains
+   * the implementation — and, when the base branch has advanced, how far
+   * behind that tree is (issue #263).
+   *
+   * Returns the report unchanged when the block is empty, so a measured,
+   * up-to-date tree produces exactly the pre-#263 text.
+   */
+  private withImplementationEvidence(
+    summaryReport: string,
+    implementationDiff: ImplementationDiff
+  ): string {
+    const addedLines = this.buildEvidenceLines(implementationDiff);
+    if (addedLines.length === 0) {
+      return summaryReport;
     }
 
-    return DEFAULT_GATE_COMMANDS;
+    const lines = summaryReport.split('\n');
+    const verdictIndex = lines.findIndex((line) => line.startsWith(LABEL_OVERALL_VERDICT));
+
+    if (verdictIndex === -1) {
+      return `${summaryReport}\n${addedLines.join('\n')}`;
+    }
+
+    lines.splice(verdictIndex + 1, 0, ...addedLines);
+    return lines.join('\n');
+  }
+
+  /**
+   * Builds the evidence block shared by the running-gate report and the
+   * VACUOUS report (so the two cannot drift):
+   *
+   *   1. `Implementation : N file(s) changed relative to '<baseRef>'`;
+   *   2. `Base freshness : …` when the base ref has advanced since the branch
+   *      point (advisory — never blocks a pass);
+   *   3. the `⚠ Could not measure …` warning when the branch diff is
+   *      unmeasurable (issue #263).
+   *
+   * The count is computed from the same two arrays the probe measured, so the
+   * printed number and the measured number cannot disagree (AC5).
+   */
+  private buildEvidenceLines(
+    implementationDiff: ImplementationDiff,
+    options: { evidenceIndent?: string; alwaysIncludeEvidenceLine?: boolean } = {}
+  ): string[] {
+    const lines: string[] = [];
+    const indent = options.evidenceIndent ?? '';
+
+    if (options.alwaysIncludeEvidenceLine || implementationDiff.hasChanges) {
+      const changedFileCount =
+        implementationDiff.trackedChangedFiles.length + implementationDiff.untrackedFiles.length;
+      lines.push(
+        `${indent}${LABEL_IMPLEMENTATION_EVIDENCE_LINE.replace('{label}', LABEL_IMPLEMENTATION_EVIDENCE)
+          .replace('{count}', String(changedFileCount))
+          .replace('{baseRef}', implementationDiff.baseRef)}`
+      );
+    }
+
+    const baseAheadCommits = implementationDiff.baseAheadCommits ?? 0;
+    const mergeBase = implementationDiff.mergeBase ?? null;
+    if (baseAheadCommits > 0 && mergeBase !== null) {
+      // The LOCAL ref only (no `git fetch`): a base that moved only on the
+      // remote is not detected.
+      lines.push(
+        `  ${LABEL_BASE_FRESHNESS_LINE.replace('{label}', LABEL_BASE_FRESHNESS)
+          .replace('{ahead}', String(baseAheadCommits))
+          .replace('{baseRef}', implementationDiff.baseRef)
+          .replace('{own}', String(implementationDiff.ownCommits ?? 0))
+          .replace('{mergeBase}', mergeBase.slice(0, 7))}`
+      );
+    }
+
+    const measurementError = implementationDiff.measurementError ?? null;
+    if (measurementError !== null) {
+      lines.push(`  ⚠ ${MSG_GATE_UNMEASURABLE.replace('{error}', measurementError)}`);
+    }
+
+    return lines;
+  }
+
+  /**
+   * Preflight contract failures (issue #298): an unusable approved artifact
+   * skips command execution entirely and fails the gate with a synthetic
+   * report naming the offending plan line/check.
+   */
+  private buildPreflightFailure(
+    verification: GateVerification
+  ): { kind: 'integrity' | 'target-contract' | 'smoke' | 'lint'; report: GateCommandReport } | null {
+    const integrity = verification.integrity;
+
+    if (integrity.status === PLAN_INTEGRITY_MISMATCH) {
+      return {
+        kind: 'integrity',
+        report: this.buildSyntheticReport(
+          CMD_ID_PLAN_INTEGRITY,
+          CMD_LABEL_PLAN_INTEGRITY,
+          integrity.planPath ?? CMD_LABEL_PLAN_INTEGRITY,
+          MSG_PLAN_MODIFIED_AFTER_APPROVAL
+            .replace('{path}', integrity.planPath ?? '(unknown plan path)')
+            .replace('{expected}', integrity.expectedDigest ?? '(none)')
+            .replace('{actual}', integrity.actualDigest ?? '(unreadable)')
+        )
+      };
+    }
+
+    if (integrity.status === PLAN_INTEGRITY_MISSING) {
+      return {
+        kind: 'integrity',
+        report: this.buildSyntheticReport(
+          CMD_ID_PLAN_INTEGRITY,
+          CMD_LABEL_PLAN_INTEGRITY,
+          integrity.planPath ?? CMD_LABEL_PLAN_INTEGRITY,
+          MSG_PLAN_APPROVED_MISSING
+            .replace('{path}', integrity.planPath ?? '(unknown plan path)')
+            .replace('{expected}', integrity.expectedDigest ?? '(none)')
+        )
+      };
+    }
+
+    // Issue #348: a committed-tree assertion can never pass on the tree the
+    // gate runs in. Fail closed BEFORE executing any command.
+    if (verification.targetFindings.length > 0) {
+      return {
+        kind: 'target-contract',
+        report: this.buildSyntheticReport(
+          CMD_ID_GATE_TARGET_CONTRACT,
+          CMD_LABEL_GATE_TARGET_CONTRACT,
+          verification.targetFindings[0].command,
+          formatGateTargetContractViolations(verification.targetFindings)
+        )
+      };
+    }
+
+    if (verification.smoke.findings.length > 0) {
+      const detail = verification.smoke.findings
+        .map((finding) =>
+          MSG_SMOKE_PROTOCOL_NOT_EXECUTABLE
+            .replace('{check}', finding.label || `Check ${finding.checkIndex}`)
+            .replace('{line}', String(finding.line))
+            .replace('{rule}', finding.rule)
+            .replace('{excerpt}', finding.excerpt)
+        )
+        .join(' ');
+      return {
+        kind: 'smoke',
+        report: this.buildSyntheticReport(
+          CMD_ID_SMOKE_PROTOCOL,
+          CMD_LABEL_SMOKE_PROTOCOL,
+          `${verification.smoke.checks.length} extracted check(s)`,
+          detail
+        )
+      };
+    }
+
+    if (verification.commandPlan.lintRequired && !hasLintCommand(verification.commandPlan.commands)) {
+      return {
+        kind: 'lint',
+        report: this.buildSyntheticReport(
+          CMD_ID_PLAN_INTEGRITY,
+          CMD_LABEL_PLAN_INTEGRITY,
+          CMD_ID_LINT,
+          MSG_GATE_LINT_MISSING
+        )
+      };
+    }
+
+    return null;
+  }
+
+  private buildSyntheticReport(
+    id: string,
+    label: string,
+    command: string,
+    failureSnippet: string
+  ): GateCommandReport {
+    return {
+      id,
+      label,
+      command,
+      exitCode: 1,
+      durationMs: 0,
+      passed: false,
+      timedOut: false,
+      failureSnippet,
+      diagnosticSnippet: null
+    };
+  }
+
+  /**
+   * Executes the frozen smoke protocol and attributes any failure to a check
+   * label and plan line (issue #298).
+   */
+  private async runSmokeProtocol(
+    verification: GateVerification,
+    executionCwd: string,
+    timeoutMs: number
+  ): Promise<{ status: string; report: GateCommandReport } | null> {
+    const smoke = verification.smoke;
+    const script = smoke.toScript();
+    if (!smoke.found || script === null) {
+      return null;
+    }
+
+    const execResult = await this.commandExecutor.execute(script, {
+      cwd: executionCwd,
+      timeoutMs,
+      env: { [ENV_AGYLOOP_SMOKE]: ENV_FLAG_ENABLED }
+    });
+    const output = execResult.combinedOutput ?? '';
+    const failure = smoke.attributeFailure(output);
+    const hasMarker = output.includes(SMOKE_CHECK_MARKER_PREFIX);
+    const printedFail = output
+      .split('\n')
+      .some((line) => /\bFAIL\b/.test(line));
+
+    let status: string = SMOKE_STATUS_PASSED;
+    let failureSnippet: string | undefined;
+
+    if (execResult.timedOut) {
+      status = SMOKE_STATUS_TIMED_OUT;
+      failureSnippet = this.formatSmokeFailure(
+        failure?.label ?? CMD_LABEL_SMOKE_PROTOCOL,
+        failure?.planLine ?? smoke.headingLine,
+        ': timed out'
+      );
+    } else if (!hasMarker) {
+      status = SMOKE_STATUS_FAILED;
+      failureSnippet = MSG_SMOKE_PROTOCOL_NO_CHECKS;
+    } else if (execResult.exitCode !== 0 || printedFail) {
+      status = SMOKE_STATUS_FAILED;
+      const detail = failure?.failLine ? `: ${failure.failLine}` : `: exit code ${execResult.exitCode}`;
+      failureSnippet = this.formatSmokeFailure(
+        failure?.label ?? CMD_LABEL_SMOKE_PROTOCOL,
+        failure?.planLine ?? smoke.headingLine,
+        detail
+      );
+    }
+
+    const passed = status === SMOKE_STATUS_PASSED;
+
+    return {
+      status,
+      report: {
+        id: CMD_ID_SMOKE_PROTOCOL,
+        label: CMD_LABEL_SMOKE_PROTOCOL,
+        command: `${CMD_LABEL_SMOKE_PROTOCOL} (${smoke.checks.length} check(s))`,
+        exitCode: execResult.exitCode,
+        durationMs: execResult.durationMs,
+        passed,
+        timedOut: execResult.timedOut,
+        failureSnippet,
+        diagnosticSnippet: passed ? null : DiagnosticSnippet.fromRaw(failureSnippet ?? MSG_SMOKE_PROTOCOL_FAILED),
+        cwd: executionCwd
+      }
+    };
+  }
+
+  private formatSmokeFailure(label: string, planLine: number, detail: string): string {
+    return MSG_SMOKE_PROTOCOL_FAILED
+      .replace('{check}', label)
+      .replace('{line}', String(planLine))
+      .replace('{detail}', detail);
+  }
+
+  /** Re-hashes the SAME resolved plan path the gate read before executing. */
+  private hashResolvedPlan(verification: GateVerification): string | null {
+    if (!verification.planPath) return null;
+    if (typeof this.planGenerator.hashPlanDocument !== 'function') return null;
+    return this.planGenerator.hashPlanDocument(verification.planPath);
   }
 
   private extractTestMetrics(output: string): TestMetrics | null {
@@ -433,22 +1111,56 @@ export class RunQualityGateUseCase {
     return TestMetrics.parse(output);
   }
 
+  /**
+   * The ONE measured pass count for a run (issue #415).
+   *
+   * `testsStatus` and the filed evidence used different expressions
+   * (`passed || total` vs. `passed`), so a .NET summary filed
+   * `testsPassed: 0` beside `PASSED (12 passed)`. Both now call this.
+   */
+  private measuredPassedCount(metrics: TestMetrics | null): number {
+    if (!metrics) return 0;
+    if (metrics.passed > 0) return metrics.passed;
+    // Defence in depth: the parser guarantees a positive `passed` for a
+    // positive `total` with no failures, but if a future regression restores
+    // the .NET shape, this still records the SAME number the status prints.
+    if (metrics.failed === 0 && metrics.total > 0) return metrics.total;
+    return metrics.passed;
+  }
+
   private extractFailureSnippet(combinedOutput: string, stderr: string): string {
     const diag = DiagnosticSnippet.extract(combinedOutput, stderr);
     return diag ? diag.toString() : MSG_COMMAND_FAILED_NO_OUTPUT;
   }
 
-  private isBuildCommand(cmdId: string): boolean {
-    const id = cmdId.toLowerCase();
-    return id.includes(CMD_ID_BUILD) || id.includes(CMD_ID_TYPECHECK);
+  /**
+   * True when any whitespace-separated token of the command equals `token`.
+   * Plan-sourced commands carry synthetic ids (`plan-1`, …), so their class
+   * must come from the command TEXT the plan declared (issue #298 review).
+   */
+  private commandHasToken(command: string, token: string): boolean {
+    return command.split(/\s+/).some((part) => part === token);
   }
 
-  private isTestCommand(cmdId: string): boolean {
-    const id = cmdId.toLowerCase();
+  private isBuildCommand(cmdDef: GateCommandDefinition): boolean {
+    const id = cmdDef.id.toLowerCase();
+    return (
+      id.includes(CMD_ID_BUILD) ||
+      id.includes(CMD_ID_TYPECHECK) ||
+      id.includes(CMD_ID_LINT) ||
+      isLintCommand(cmdDef) ||
+      this.commandHasToken(cmdDef.command, CMD_ID_BUILD) ||
+      this.commandHasToken(cmdDef.command, CMD_ID_TYPECHECK)
+    );
+  }
+
+  private isTestCommand(cmdDef: GateCommandDefinition): boolean {
+    const id = cmdDef.id.toLowerCase();
     return (
       id.includes(CMD_ID_TEST) ||
       id.includes(CMD_ID_PLAYWRIGHT) ||
-      id.includes(CMD_ID_E2E)
+      id.includes(CMD_ID_E2E) ||
+      isTestCommandText(cmdDef.command)
     );
   }
 

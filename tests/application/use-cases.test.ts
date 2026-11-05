@@ -13,7 +13,10 @@ const {
   STAGE_APPROVAL, STAGE_PLAN,
   STAGE_IMPLEMENT,
   STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
   STAGE_COMPLETED,
+  StateMachine,
   MODE_STANDARD,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   HALT_TYPE_MISSING_PLAN_DIR
@@ -24,14 +27,14 @@ type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type GitHubGateway = import('../../src').GitHubGateway;
 type GitHubIssueData = import('../../src').GitHubIssueData;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 type PlanGeneratorPort = import('../../src').PlanGeneratorPort;
 type ScaffoldParams = import('../../src').ScaffoldParams;
 type ScaffoldResult = import('../../src').ScaffoldResult;
 type SummaryUpdateData = import('../../src').SummaryUpdateData;
 type ModelCatalogPort = import('../../src').ModelCatalogPort;
 type DiscoveredModel = import('../../src').DiscoveredModel;
-class MockStateRepository implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public snapshot: StateMachineSnapshot | null = null;
   public saveCallCount = 0;
   public resetCallCount = 0;
@@ -55,7 +58,7 @@ class MockStateRepository implements StateRepository {
   }
 }
 
-class MockGitHubGateway implements GitHubGateway {
+class GitHubGatewayDouble implements GitHubGateway {
   public issueToReturn: GitHubIssueData | null = null;
 
   public getCurrentRepo(): string | null {
@@ -75,8 +78,8 @@ class MockGitHubGateway implements GitHubGateway {
   }
 }
 
-class MockConfigRepository implements ConfigRepository {
-  public config: AgyLoopConfig = {
+class ConfigRepositoryDouble implements ConfigRepository {
+  public config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -91,7 +94,7 @@ class MockConfigRepository implements ConfigRepository {
     }
   };
 
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return this.config;
   }
 
@@ -112,7 +115,7 @@ class MockConfigRepository implements ConfigRepository {
   }
 }
 
-class MockPlanGenerator implements PlanGeneratorPort {
+class PlanGeneratorDouble implements PlanGeneratorPort {
   public lastScaffoldParams: ScaffoldParams | null = null;
   public summaryUpdates: SummaryUpdateData[] = [];
 
@@ -124,12 +127,22 @@ class MockPlanGenerator implements PlanGeneratorPort {
       type: 'implementation',
       planPath: '/mock/plans/1-test/[Implementation] - Test.md',
       mirrorPath: '/mock/plans/1-test/implementation_plan.md',
-      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md'
+      summaryPath: '/mock/plans/1-test/CodeLoop Summary.md',
+      directoryCreated: false,
+      filesCreated: false,
+      adoptedExisting: true
     };
   }
 
   public generatePlan() {
-    return { planPath: '', mirrorPath: null, content: '', created: true };
+    return {
+      planPath: '',
+      mirrorPath: null,
+      content: '',
+      mirrorContent: null,
+      created: true,
+      mirrorCreated: false
+    };
   }
 
   public generateSummaryLog() {
@@ -150,7 +163,7 @@ class MockPlanGenerator implements PlanGeneratorPort {
       planDir: '/mock/plans/1-test',
       planPath: '/mock/plans/1-test/[Implementation] - Test.md',
       planFileName: '[Implementation] - Test.md',
-      summaryPath: '/mock/plans/1-test/AgyLoop Summary.md'
+      summaryPath: '/mock/plans/1-test/CodeLoop Summary.md'
     };
   }
 
@@ -174,10 +187,10 @@ class MockModelCatalog implements ModelCatalogPort {
 
 describe('Application Layer Use Cases (with Mock Adapters)', () => {
   test('StartPlanningUseCase coordinates discovery, scaffolding, transitions to APPROVAL and saves state', async () => {
-    const stateRepo = new MockStateRepository();
-    const github = new MockGitHubGateway();
-    const config = new MockConfigRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const github = new GitHubGatewayDouble();
+    const config = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
 
     const useCase = new StartPlanningUseCase(stateRepo, github, config, planGen);
     const result = await useCase.execute({
@@ -194,10 +207,10 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('StartPlanningUseCase resets state and transitions to APPROVAL when previous stage was COMPLETED', async () => {
-    const stateRepo = new MockStateRepository();
-    const github = new MockGitHubGateway();
-    const config = new MockConfigRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const github = new GitHubGatewayDouble();
+    const config = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
 
     // Previous run was completed
     stateRepo.snapshot = {
@@ -223,10 +236,10 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('StartPlanningUseCase resets state when initiated with a new issue ID even if previous was in another stage', async () => {
-    const stateRepo = new MockStateRepository();
-    const github = new MockGitHubGateway();
-    const config = new MockConfigRepository();
-    const planGen = new MockPlanGenerator();
+    const stateRepo = new StateRepositoryDouble();
+    const github = new GitHubGatewayDouble();
+    const config = new ConfigRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
 
     // Previous run was left in IMPLEMENT for issue 10
     stateRepo.snapshot = {
@@ -252,7 +265,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('TransitionStageUseCase advances stage and persists snapshot', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const transitionUseCase = new TransitionStageUseCase(stateRepo);
 
     const sm1 = await transitionUseCase.execute({
@@ -270,22 +283,22 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('TransitionStageUseCase blocks transition to PLAN if planDir is null', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const transitionUseCase = new TransitionStageUseCase(stateRepo);
 
     await assert.rejects(
       () => transitionUseCase.execute({ targetStage: 'PLAN' }),
       {
         name: 'PreFlightHaltError',
-        message: 'Cannot transition to PLAN stage without an active plan directory. Use `bin/agyloop plan` or `bin/agyloop <issue>` to initialize the planning phase.',
+        message: 'Cannot transition to PLAN stage without an active plan directory. Use `codeloop plan` or `codeloop <issue>` to initialize the planning phase.',
         haltType: HALT_TYPE_MISSING_PLAN_DIR
       }
     );
   });
 
-  test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in AgyLoop Summary.md', async () => {
-    const stateRepo = new MockStateRepository();
-    const planGen = new MockPlanGenerator();
+  test('TransitionStageUseCase marks preceding stage as COMPLETED with computed duration in CodeLoop Summary.md', async () => {
+    const stateRepo = new StateRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
     const transitionUseCase = new TransitionStageUseCase(
       stateRepo,
       undefined,
@@ -328,9 +341,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     assert.strictEqual(planReviewUpdate!.status, 'IN PROGRESS');
   });
 
-  test('TransitionStageUseCase subtracts totalHumanWaitMs when computing stage duration', async () => {
-    const stateRepo = new MockStateRepository();
-    const planGen = new MockPlanGenerator();
+  test('TransitionStageUseCase subtracts ONLY the wait this transition consumed, never the cumulative total', async () => {
+    const stateRepo = new StateRepositoryDouble();
+    const planGen = new PlanGeneratorDouble();
     const transitionUseCase = new TransitionStageUseCase(
       stateRepo,
       undefined,
@@ -338,7 +351,9 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
       planGen
     );
 
-    // Initial state: IMPLEMENT started 100 seconds ago, human wait 40 seconds => 60s active
+    // Issue #284 (AC5): this test used to PIN THE DEFECT — it seeded a 40 s
+    // CUMULATIVE bank and expected it subtracted from a 100 s window. Banked
+    // wait from an earlier gate is not this stage's idle time.
     const hundredSecondsAgo = new Date(Date.now() - 100000).toISOString();
     stateRepo.snapshot = {
       version: '1.0.0',
@@ -363,11 +378,120 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     const implementUpdate = planGen.summaryUpdates.find(u => u.stage === 'Implementation');
     assert.ok(implementUpdate, 'Expected Implementation update in summary');
     assert.strictEqual(implementUpdate!.status, 'COMPLETED');
-    assert.strictEqual(implementUpdate!.duration, '1m 0s');
+    assert.strictEqual(
+      implementUpdate!.duration,
+      '1m 40s',
+      'the cumulative bank must NOT be subtracted from a stage window'
+    );
+
+    // ...and a wait consumed by THIS transition IS subtracted.
+    const stateRepo2 = new StateRepositoryDouble();
+    const planGen2 = new PlanGeneratorDouble();
+    const transitionUseCase2 = new TransitionStageUseCase(stateRepo2, undefined, undefined, planGen2);
+    stateRepo2.snapshot = {
+      version: '1.0.0',
+      currentStage: 'IMPLEMENT',
+      mode: MODE_STANDARD,
+      issue: 51,
+      createdAt: hundredSecondsAgo,
+      updatedAt: new Date().toISOString(),
+      history: [
+        { stage: 'APPROVAL', timestamp: hundredSecondsAgo },
+        { stage: 'IMPLEMENT', timestamp: hundredSecondsAgo }
+      ],
+      pausedAtGate: null,
+      pausedAtTimestamp: new Date(Date.now() - 40000).toISOString(),
+      totalHumanWaitMs: 0
+    };
+
+    await transitionUseCase2.execute({
+      targetStage: 'QUALITY_GATE',
+      issue: 51,
+      noWorktree: true
+    });
+
+    const implementUpdate2 = planGen2.summaryUpdates.find(u => u.stage === 'Implementation');
+    assert.ok(implementUpdate2, 'Expected Implementation update in summary');
+    assert.strictEqual(implementUpdate2!.duration, '1m 0s');
+  });
+
+  // ---- issue #237: entering COMPLETED is bookkeeping, never a teardown -------
+  describe('TransitionStageUseCase -> COMPLETED no-teardown policy', () => {
+    const NOW = new Date().toISOString();
+    const WORKTREE = {
+      taskId: '50',
+      worktreePath: '/repo/.worktrees/50',
+      branch: 'task/50',
+      baseBranch: 'main',
+      createdAt: NOW
+    };
+
+    /**
+     * `COMMIT` and `TRIAGE` are the only legal inbound edges to COMPLETED, so
+     * both must leave the worktree descriptor exactly as it was on disk.
+     */
+    for (const sourceStage of [STAGE_COMMIT, 'TRIAGE']) {
+      test(`entering COMPLETED from ${sourceStage} issues zero removeWorktree calls`, async () => {
+        const stateRepo = new StateRepositoryDouble();
+        let removeWorktreeCalls = 0;
+        const worktreeManager: any = {
+          createWorktree: async () => WORKTREE,
+          removeWorktree: async () => {
+            removeWorktreeCalls++;
+          }
+        };
+        stateRepo.snapshot = {
+          version: '1.0.0',
+          currentStage: sourceStage,
+          mode: MODE_STANDARD,
+          issue: 50,
+          planDir: 'artifacts/plans/50-done',
+          worktree: WORKTREE,
+          createdAt: NOW,
+          updatedAt: NOW,
+          history: [
+            { stage: 'INITIALIZED', timestamp: NOW },
+            { stage: sourceStage, timestamp: NOW }
+          ],
+          totalHumanWaitMs: 0
+        } as unknown as StateMachineSnapshot;
+
+        const transitionUseCase = new TransitionStageUseCase(
+          stateRepo,
+          worktreeManager,
+          undefined,
+          undefined
+        );
+        const sm = await transitionUseCase.execute({
+          targetStage: STAGE_COMPLETED,
+          issue: 50,
+          workspaceDir: '/repo'
+        });
+
+        assert.strictEqual(sm.currentStage, STAGE_COMPLETED);
+        assert.strictEqual(removeWorktreeCalls, 0, 'entering COMPLETED must never detach a worktree');
+        assert.ok(sm.worktree, 'the worktree descriptor must survive the transition');
+        assert.strictEqual(sm.worktree!.worktreePath, WORKTREE.worktreePath);
+      });
+    }
+
+    test('COMPLETED is not reachable from IMPLEMENT, so unverified work cannot be marked complete', () => {
+      const sm = StateMachine.fromSnapshot({
+        version: '1.0.0',
+        currentStage: STAGE_IMPLEMENT,
+        mode: MODE_STANDARD,
+        issue: 50,
+        createdAt: NOW,
+        updatedAt: NOW,
+        history: [{ stage: STAGE_IMPLEMENT, timestamp: NOW }]
+      } as unknown as StateMachineSnapshot);
+
+      assert.strictEqual(sm.canTransition(STAGE_COMPLETED), false);
+    });
   });
 
   test('GetPipelineStatusUseCase retrieves state and history from repository', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     const getStatusUseCase = new GetPipelineStatusUseCase(stateRepo);
 
     const result = await getStatusUseCase.execute();
@@ -377,7 +501,7 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
   });
 
   test('ResetPipelineUseCase clears state repository and returns fresh initial state', async () => {
-    const stateRepo = new MockStateRepository();
+    const stateRepo = new StateRepositoryDouble();
     stateRepo.snapshot = {
       version: '1.0.0',
       currentStage: STAGE_QUALITY_GATE,
@@ -389,15 +513,20 @@ describe('Application Layer Use Cases (with Mock Adapters)', () => {
     };
 
     const resetUseCase = new ResetPipelineUseCase(stateRepo);
-    const sm = await resetUseCase.execute();
+    // Issue #250: the use case now REPORTS what it did — the state machine is
+    // one field of the result, alongside the scope it addressed.
+    const result = await resetUseCase.execute();
 
-    assert.strictEqual(sm.currentStage, STAGE_INITIALIZED);
+    assert.strictEqual(result.stateMachine.currentStage, STAGE_INITIALIZED);
+    assert.strictEqual(result.scope, 'root');
+    assert.strictEqual(result.issue, null);
+    assert.strictEqual(result.removed, true);
     assert.strictEqual(stateRepo.snapshot, null);
     assert.strictEqual(stateRepo.resetCallCount, 1);
   });
 
   test('ResolveSubagentUseCase resolves subagent definition with safety invariants', () => {
-    const configRepo = new MockConfigRepository();
+    const configRepo = new ConfigRepositoryDouble();
     const resolveUseCase = new ResolveSubagentUseCase(configRepo);
 
     const def = resolveUseCase.execute({ role: 'planner' });

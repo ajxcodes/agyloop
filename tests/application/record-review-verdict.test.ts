@@ -1,0 +1,657 @@
+/**
+ * codeloop - Recording a dispatched Reviewer Subagent's verdict (issue #269, Defect 2)
+ *
+ * `RunReviewParams.reviewOutput` was declared, parsed and consumed — and NO
+ * caller ever supplied it, so the reviewer subagent's Tier 2 verdict was
+ * STRUCTURALLY UNRECORDABLE: a `CHANGES_REQUESTED` could never fail a gate,
+ * and the COMMIT gate could only ever be reached with "No AI review verdict is
+ * recorded for this task".
+ *
+ * RV1 - APPROVED  -> COMMIT, passed, `reviewVerdict: 'APPROVED'`
+ * RV2 - CHANGES_REQUESTED -> IMPLEMENT, NOT passed, `reviewVerdict: 'CHANGES_REQUESTED'`
+ * RV3 - a self-declared `SKIPPED` is REFUSED by `ReviewVerdict.parse` (#236)
+ * RV4 - a CHANGES_REQUESTED is never downgraded to SKIPPED
+ * RV5 - no reviewer output and no critique report -> SKIPPED -> COMMIT (N1:
+ *      the #236 fail-open is NOT inverted)
+ * RV8 - filing a verdict does NOT prompt to install critique, run the update
+ *      check, or mutate the machine — but it DOES run Tier 1 (issue #297)
+ * RV9 - a critique escalation is reported as such, never as the reviewer's
+ *      verdict (R3)
+ * RV10-RV12 - Tier 1 cannot be disabled by a supplied verdict; the reviewer's
+ *      own status and the provenance are persisted (issue #297, AC2/AC3)
+ * RV13 - a BYPASSED report never downgrades a real reviewer verdict (#303)
+ * RV14 - a supplied prior report is the dedupe: no subprocess, same invariant
+ * RV15 - a verdict written with natural "none" phrasing is recorded APPROVED and
+ *      advances to COMMIT, with NO self-correction payload (issue #356)
+ * RV16 - exactly ONE critique invocation per recorded verdict in the dispatched
+ *      flow: the reviewer's own run, passed back as a prior report (issue #397)
+ * RV17 - with no report supplied, `review` still runs critique (never SKIPPED)
+ */
+
+const { test, describe, beforeEach } = require('node:test');
+const assert = require('node:assert');
+
+const {
+  StateMachine,
+  Stage,
+  IssueNumber,
+  STAGE_DISCOVERY,
+  STAGE_PLAN,
+  STAGE_APPROVAL,
+  STAGE_QUALITY_GATE,
+  STAGE_REVIEW,
+  STAGE_COMMIT,
+  STAGE_IMPLEMENT,
+  VERDICT_APPROVED,
+  VERDICT_CHANGES_REQUESTED,
+  VERDICT_SKIPPED,
+  ReviewerSubagentError
+} = require('../../dist/domain');
+const { RunReviewUseCase } = require('../../dist/application');
+const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
+
+import type {
+  StateRepository,
+  ConfigRepository,
+  PlanGeneratorPort,
+  StandardsRepository,
+  CritiquePort,
+  CritiqueOptions,
+  CritiqueResolution,
+  CodeLoopConfig,
+  ResolvedPlanLocation
+} from '../../src/ports';
+import type { AiReviewReport as AiReviewReportType } from '../../src/domain';
+
+class StateRepositoryDouble implements StateRepository {
+  public savedSnapshot: any = null;
+
+  constructor(initialSnapshot: any = null) {
+    this.savedSnapshot = initialSnapshot;
+  }
+
+  public async load(): Promise<any> {
+    return this.savedSnapshot;
+  }
+
+  public async save(snapshot: any): Promise<void> {
+    this.savedSnapshot = snapshot;
+  }
+
+  public async reset(): Promise<void> {
+    this.savedSnapshot = null;
+  }
+
+  public getStateFilePath(): string {
+    return '/fake/state.json';
+  }
+}
+
+class ConfigRepositoryDouble implements ConfigRepository {
+  public loadConfig(): CodeLoopConfig {
+    return DEFAULT_CONFIG;
+  }
+
+  public resolveModel(role: string): any {
+    return { role, configured: 'flash', tier: 'flash', apiModel: 'gemini-3.5-flash' };
+  }
+
+  public mapModelToTier(): any {
+    return 'flash';
+  }
+}
+
+class PlanGeneratorDouble implements PlanGeneratorPort {
+  public updateSummaryLog(): boolean {
+    return true;
+  }
+
+  public scaffoldPlanDirectory(): any {
+    return null;
+  }
+
+  public generatePlan(): any {
+    return null;
+  }
+
+  public generateSummaryLog(): any {
+    return null;
+  }
+
+  public findPlanDirectory(): string | null {
+    return null;
+  }
+
+  public resolvePlanFile(): ResolvedPlanLocation | null {
+    return {
+      planDir: '/fake/plans/269-task',
+      planPath: '/fake/plans/269-task/implementation_plan.md',
+      planFileName: 'implementation_plan.md',
+      summaryPath: '/fake/plans/269-task/Summary.md'
+    };
+  }
+
+  public readPlanDocument(): string {
+    return '# Plan\n\n## Acceptance Criteria\n- AC 1: the verdict is recordable\n';
+  }
+}
+
+class StandardsRepositoryDouble implements StandardsRepository {
+  public loadStandards(): string | null {
+    return '# Standards';
+  }
+
+  public findStandardsPath(): string | null {
+    return '/fake/.github/critique.md';
+  }
+}
+
+/** A critique port that reports NOTHING (a clean Tier 1 report). */
+class CleanCritique implements CritiquePort {
+  /**
+   * How many times the Tier 1 critique was EXECUTED (issues #269, #297).
+   *
+   * The filing path DOES run the critique CLI now: it is the cross-check that
+   * makes a filed verdict trustworthy. This counter pins that it really ran.
+   */
+  public reviewCalls = 0;
+
+  public resolveReviewer(): CritiqueResolution {
+    return { source: 'bundled', path: '/fake/bin/critique.js', isAvailable: true };
+  }
+
+  public async getVersion(): Promise<string> {
+    return '1.0.0';
+  }
+
+  public async review(options?: CritiqueOptions): Promise<AiReviewReportType> {
+    this.reviewCalls += 1;
+    this.lastReviewOptions = options;
+    const { AiReviewReport, ReviewConfidence } = require('../../dist/domain');
+    return new AiReviewReport({
+      summary: 'Clean automated review',
+      confidence: ReviewConfidence.high('Diff verified.'),
+      findings: []
+    });
+  }
+
+  public lastReviewOptions?: CritiqueOptions;
+}
+
+const APPROVED_BLOCK = `REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: The change set faithfully implements the approved plan.
+UNFULFILLED_AC:
+- None
+REMEDIATION_GUIDANCE:
+- None
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+`;
+
+const CHANGES_REQUESTED_BLOCK = `REVIEW_STATUS: CHANGES_REQUESTED
+REVIEW_SUMMARY: The nil dereference in resolve-subagent.ts is unfixed.
+UNFULFILLED_AC:
+- The nil dereference is fixed
+REMEDIATION_GUIDANCE:
+- Fix the nil dereference in src/application/resolve-subagent.ts
+`;
+
+/**
+ * The reviewer's OWN words (issue #356): both list blocks are filled with
+ * natural "None (…)" phrasing instead of the prompt's sanctioned literal.
+ */
+const MIXED_NONE_APPROVED_BLOCK = `REVIEW_STATUS: APPROVED
+REVIEW_SUMMARY: Every acceptance criterion is met; the diff is in scope.
+UNFULFILLED_AC:
+- None in the reviewed in-repo scope (deferred to post-commit).
+REMEDIATION_GUIDANCE:
+- None required.
+AC_EVIDENCE:
+- AC1: met — \`src/application/run-review.ts\`
+`;
+
+describe('Recording a dispatched reviewer verdict (issue #269, Defect 2)', () => {
+  let stateRepo: StateRepositoryDouble;
+  let configRepo: ConfigRepositoryDouble;
+  let planGenerator: PlanGeneratorDouble;
+  let standardsRepo: StandardsRepositoryDouble;
+  let critique: CleanCritique;
+
+  beforeEach(() => {
+    const initialSm = new StateMachine({
+      stage: new Stage('REVIEW'),
+      issue: new IssueNumber(269)
+    });
+    stateRepo = new StateRepositoryDouble(initialSm.toSnapshot());
+    configRepo = new ConfigRepositoryDouble();
+    planGenerator = new PlanGeneratorDouble();
+    standardsRepo = new StandardsRepositoryDouble();
+    critique = new CleanCritique();
+  });
+
+  function buildUseCase(): any {
+    return new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique
+    );
+  }
+
+  test('RV1: an APPROVED reviewer output advances to COMMIT and is recorded in the history', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    // Issue #297: Tier 1 is no longer disabled by a supplied verdict. The clean
+    // report does not change the outcome — that is the point.
+    assert.strictEqual(critique.reviewCalls, 1, 'Tier 1 must run on the filing path');
+    assert.strictEqual(result.critiqueVerified, true);
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.stage, STAGE_COMMIT);
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_APPROVED);
+  });
+
+  test('RV15: the reviewer\'s natural none phrasing is recorded APPROVED and advances to COMMIT (issue #356)', async () => {
+    // The live #352 shape: the reviewer said APPROVED and wrote
+    // "- None in the reviewed in-repo scope (deferred to post-commit)." The
+    // parse captured that bullet as a criterion and the two-tier invariant
+    // rewrote the verdict to CHANGES_REQUESTED.
+    const result = await buildUseCase().execute({ reviewOutput: MIXED_NONE_APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.passed, true, 'the reviewer APPROVED; the gate must pass');
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.stage, STAGE_COMMIT);
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_APPROVED);
+    assert.strictEqual(last.metadata.reviewerVerdict, VERDICT_APPROVED);
+    assert.strictEqual(
+      'selfCorrectionPayload' in (last.metadata ?? {}),
+      false,
+      'an approval carries no self-correction payload'
+    );
+  });
+
+  test('RV2: a CHANGES_REQUESTED reviewer output FAILS the gate and reverts to IMPLEMENT', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: CHANGES_REQUESTED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.passed, false, 'a CHANGES_REQUESTED must fail the gate');
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_IMPLEMENT);
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.stage, STAGE_IMPLEMENT);
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_CHANGES_REQUESTED);
+  });
+
+  test('RV3: a self-declared SKIPPED block is REFUSED by ReviewVerdict.parse (#236)', async () => {
+    await assert.rejects(
+      () => buildUseCase().execute({ reviewOutput: 'REVIEW_STATUS: SKIPPED\nREVIEW_SUMMARY: nope\n' }),
+      (err: any) => err instanceof ReviewerSubagentError
+    );
+
+    // The checkpoint must be UNCHANGED: a refused verdict writes nothing.
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_REVIEW);
+    assert.ok(
+      !saved.history.some((h: any) => h.metadata?.reviewVerdict === VERDICT_SKIPPED),
+      'a refused verdict must not be recorded'
+    );
+  });
+
+  test('RV4: a CHANGES_REQUESTED output is NEVER downgraded to SKIPPED', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: CHANGES_REQUESTED_BLOCK });
+
+    assert.notStrictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+
+    const saved: any = await stateRepo.load();
+    const recorded = saved.history
+      .map((h: any) => h.metadata?.reviewVerdict)
+      .filter((v: any) => typeof v === 'string');
+    assert.ok(recorded.includes(VERDICT_CHANGES_REQUESTED));
+    assert.ok(!recorded.includes(VERDICT_SKIPPED));
+  });
+
+  test('RV5: with no reviewer output and no critique report the verdict is still SKIPPED -> COMMIT (N1)', async () => {
+    // No critique port at all: the production absence path.
+    const useCase = new RunReviewUseCase(stateRepo, configRepo, planGenerator, standardsRepo);
+    const result = await useCase.execute({});
+
+    assert.strictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.passed, true, 'the #236 advisory fail-open is NOT inverted');
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+    assert.strictEqual(result.reviewSource, 'skipped');
+
+    const saved: any = await stateRepo.load();
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_SKIPPED);
+  });
+
+  test('RV6: a verdict can be recorded while the pipeline rests at the COMMIT gate', async () => {
+    // The LIVE case (issue #269): the commit gate reported "No AI review
+    // verdict is recorded for this task" while the reviewer was holding a
+    // genuine APPROVED verdict that had no channel to the checkpoint.
+    const sm = StateMachine.createInitial({ issue: 269 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+    stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+
+    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+
+    const saved: any = await stateRepo.load();
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.stage, STAGE_COMMIT);
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_APPROVED);
+  });
+
+  test('RV7: a CHANGES_REQUESTED recorded at the COMMIT gate reverts to IMPLEMENT', async () => {
+    const sm = StateMachine.createInitial({ issue: 269 });
+    sm.transition(STAGE_DISCOVERY);
+    sm.transition(STAGE_PLAN);
+    sm.transition(STAGE_APPROVAL);
+    sm.transition(STAGE_IMPLEMENT);
+    sm.transition(STAGE_QUALITY_GATE);
+    sm.transition(STAGE_REVIEW);
+    sm.transition(STAGE_COMMIT);
+    stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+
+    const result = await buildUseCase().execute({ reviewOutput: CHANGES_REQUESTED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.passed, false, 'a CHANGES_REQUESTED must fail the gate');
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_IMPLEMENT);
+    const last = saved.history[saved.history.length - 1];
+    assert.strictEqual(last.metadata.reviewVerdict, VERDICT_CHANGES_REQUESTED);
+  });
+
+  test('RV8: filing a verdict never prompts, never checks for updates, and never mutates the machine (issue #297)', async () => {
+    // The invariant that mattered in #269 was "no interactive side effect on
+    // the filing path". Tier 1 now RUNS, so the test asserts the side effects,
+    // not the absence of the critique call.
+    let installCalls = 0;
+    let updateChecks = 0;
+    let confirmCalls = 0;
+
+    const installer: any = {
+      fetchLatestVersion: async () => null,
+      checkUpdateAvailable: async () => {
+        updateChecks += 1;
+        return { isOutdated: false };
+      },
+      install: async () => {
+        installCalls += 1;
+        return { success: true };
+      },
+      update: async () => ({ success: true }),
+      getCachedVersionInfo: async () => null
+    };
+    const confirmationPrompt: any = {
+      confirm: async () => {
+        confirmCalls += 1;
+        return true;
+      }
+    };
+
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      critique,
+      undefined,
+      undefined,
+      installer,
+      confirmationPrompt
+    );
+
+    const result = await useCase.execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(installCalls, 0, 'the filing path must not install critique');
+    assert.strictEqual(confirmCalls, 0, 'the filing path must not prompt');
+    assert.strictEqual(updateChecks, 0, 'the filing path must not run the update check');
+    assert.strictEqual(critique.reviewCalls, 1, 'Tier 1 still runs');
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+  });
+
+  test('RV9: a critique escalation is reported as such, never as the reviewer\'s verdict (issue #269, R3)', async () => {
+    // The reviewer APPROVED, but the critique report carries a blocking
+    // finding, so the TWO-TIER INVARIANT escalates the verdict to
+    // CHANGES_REQUESTED. The recorded SOURCE must name BOTH contributors:
+    // plain `reviewer-output` would claim that the reviewer asked for changes
+    // the reviewer never asked for.
+    const { AiReviewReport, AiReviewFinding, ReviewConfidence } = require('../../dist/domain');
+    const priorCritiqueReport = new AiReviewReport({
+      summary: 'Automated critique found a blocking defect',
+      confidence: ReviewConfidence.high('Deep static scan'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/index.ts',
+          line: 1,
+          rule: 'blocking-defect',
+          message: 'Injected blocking defect',
+          severity: 'error'
+        })
+      ]
+    });
+
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport
+    });
+
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+
+    // The source must NOT claim the reviewer requested the changes.
+    assert.notStrictEqual(
+      result.reviewSource,
+      'reviewer-output',
+      'the source must not claim the reviewer produced the CHANGES_REQUESTED'
+    );
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #297: a supplied verdict must not disable Tier 1, and the record must
+  // carry BOTH the reviewer's own status and the provenance.
+  // -------------------------------------------------------------------------
+
+  function errorCritique(): any {
+    const { AiReviewReport, AiReviewFinding, ReviewConfidence } = require('../../dist/domain');
+    const port: any = {
+      reviewCalls: 0,
+      resolveReviewer: () => ({ source: 'bundled', path: '/fake/bin/critique.js', isAvailable: true }),
+      getVersion: async () => '1.0.0',
+      review: async () => {
+        port.reviewCalls += 1;
+        return new AiReviewReport({
+          summary: 'Automated critique found a blocking defect',
+          confidence: ReviewConfidence.high('Static scan'),
+          findings: [
+            new AiReviewFinding({
+              path: 'src/index.ts',
+              line: 1,
+              rule: 'blocking-defect',
+              message: 'Forged blocking defect',
+              severity: 'error'
+            })
+          ]
+        });
+      }
+    };
+    return port;
+  }
+
+  test('RV10: a filed APPROVED cannot outrank an error finding (Tier 1 still runs)', async () => {
+    const errorPort = errorCritique();
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      errorPort
+    );
+
+    const result = await useCase.execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.passed, false);
+    assert.strictEqual(result.currentStage, STAGE_IMPLEMENT);
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    assert.strictEqual(errorPort.reviewCalls, 1, 'Tier 1 was executed, not bypassed');
+  });
+
+  test('RV11: the record carries the reviewer\'s own status, the provenance, and the reviewer\'s words', async () => {
+    const errorPort = errorCritique();
+    const useCase = new RunReviewUseCase(
+      stateRepo,
+      configRepo,
+      planGenerator,
+      standardsRepo,
+      errorPort
+    );
+
+    await useCase.execute({ reviewOutput: APPROVED_BLOCK });
+
+    const saved: any = await stateRepo.load();
+    const metadata = saved.history[saved.history.length - 1].metadata;
+
+    assert.strictEqual(metadata.reviewerVerdict, VERDICT_APPROVED);
+    assert.strictEqual(metadata.reviewVerdict, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(metadata.reviewSource, 'reviewer-output+critique-escalation');
+    assert.strictEqual(metadata.critiqueVerified, true);
+    assert.ok(
+      String(metadata.reviewTokens).includes('faithfully implements the approved plan'),
+      `the reviewer's summary must travel with the escalation, got:\n${metadata.reviewTokens}`
+    );
+  });
+
+  test('RV12: a clean Tier 1 report leaves the reviewer APPROVED and is recorded as verified', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.critiqueVerified, true);
+
+    const saved: any = await stateRepo.load();
+    const metadata = saved.history[saved.history.length - 1].metadata;
+    assert.strictEqual(metadata.reviewerVerdict, VERDICT_APPROVED);
+    assert.strictEqual(metadata.reviewSource, 'reviewer-output');
+    assert.strictEqual(metadata.critiqueVerified, true);
+  });
+
+  test('RV13: a BYPASSED Tier 1 report never downgrades a real reviewer verdict (issue #303)', async () => {
+    const { AiReviewReport } = require('../../dist/domain');
+    const bypassed = AiReviewReport.parse(
+      JSON.stringify({
+        bypassed: true,
+        diagnosticMessage: 'GEMINI_API_KEY is not set.',
+        summary: 'AI review was bypassed: Error: GEMINI_API_KEY is not set.',
+        confidenceLevel: 'Low',
+        confidenceExplanation: 'bypassed',
+        comments: []
+      })
+    );
+
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport: bypassed
+    });
+
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.critiqueVerified, false);
+  });
+
+  test('RV14: a supplied prior report is deduped — no subprocess, same escalation', async () => {
+    const { AiReviewReport, AiReviewFinding, ReviewConfidence } = require('../../dist/domain');
+    const priorCritiqueReport = new AiReviewReport({
+      summary: 'Automated critique found a blocking defect',
+      confidence: ReviewConfidence.high('Static scan'),
+      findings: [
+        new AiReviewFinding({
+          path: 'src/index.ts',
+          line: 1,
+          rule: 'blocking-defect',
+          message: 'Forged blocking defect',
+          severity: 'error'
+        })
+      ]
+    });
+
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport
+    });
+
+    assert.strictEqual(critique.reviewCalls, 0, 'supplied evidence must not re-run the subprocess');
+    assert.strictEqual(result.verdict.status, VERDICT_CHANGES_REQUESTED);
+    assert.strictEqual(result.reviewSource, 'reviewer-output+critique-escalation');
+    // issue #445: a bare supplied report carries no provenance sidecar, so it
+    // informs the invariant but never certifies the round.
+    assert.strictEqual(result.critiqueVerified, false);
+  });
+
+  test('RV16: the dispatched flow spends exactly ONE critique invocation per recorded verdict (issue #397)', async () => {
+    // The reviewer subagent's own Tier 1, inside its session.
+    const reviewerReport = await critique.review();
+    assert.strictEqual(critique.reviewCalls, 1, 'the reviewer run is the first invocation');
+
+    // The orchestrator files with the report the reviewer produced. The second
+    // Tier 1 must NOT happen: the supplied report IS the evidence.
+    const result = await buildUseCase().execute({
+      reviewOutput: APPROVED_BLOCK,
+      priorCritiqueReport: reviewerReport
+    });
+
+    assert.strictEqual(critique.reviewCalls, 1, 'the supplied report must not spawn a second critique run');
+    // issue #445: a bare supplied report carries no provenance sidecar, so it
+    // informs the invariant but never certifies the round.
+    assert.strictEqual(result.critiqueVerified, false);
+    assert.strictEqual(result.reviewSource, 'reviewer-output');
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+
+    const saved: any = await stateRepo.load();
+    assert.strictEqual(saved.currentStage, STAGE_COMMIT);
+  });
+
+  test('RV17: with no report supplied, `review` still runs critique exactly once (issue #397, D2-AC3)', async () => {
+    const result = await buildUseCase().execute({ reviewOutput: APPROVED_BLOCK });
+
+    assert.strictEqual(critique.reviewCalls, 1, 'the fallback must still run Tier 1');
+    assert.strictEqual(result.critiqueVerified, true);
+    assert.strictEqual(result.verdict.status, VERDICT_APPROVED);
+    assert.notStrictEqual(result.verdict.status, VERDICT_SKIPPED);
+    assert.strictEqual(result.currentStage, STAGE_COMMIT);
+  });
+});

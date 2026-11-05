@@ -1,5 +1,5 @@
 /**
- * agyloop - RunLifecycleUseCase (Application Layer)
+ * codeloop - RunLifecycleUseCase (Application Layer)
  *
  * Coordinates the full Antigravity development lifecycle orchestration:
  * INITIALIZED -> DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED
@@ -16,11 +16,35 @@
  * - commitAfter: Automatically drafts and executes commit upon green gates and review.
  * - yolo + commitAfter: 100% end-to-end unattended continuous loop.
  *
+ * THE CROSS-MODE INVARIANT (issue #259, S9):
+ *
+ *   No lifecycle path may advance past IMPLEMENT to QUALITY_GATE without
+ *   positive evidence that the implementation exists in the active workspace.
+ *
+ * The invariant is deliberately phrased as an EVIDENCE rule and not as a
+ * DISPATCH rule. codeloop is a dispatcher, not an executor: no path in this
+ * repository ever runs a subagent (`codeloop next` hands an
+ * `actionType: 'subagent'` payload to an EXTERNAL orchestrator), and
+ * `AgentRunnerPort` is deliberately not wired into the lifecycle
+ * (`src/application/halt-pipeline.ts`). `codeloop implement` and
+ * `codeloop yolo` are therefore EQUALLY incapable of dispatching — the
+ * difference is that `implement` STOPS at IMPLEMENT and hands the operator a
+ * next step, while `yolo` used to CONTINUE into verification over a tree that
+ * nothing had changed.
+ *
+ * | Path                  | Advances past IMPLEMENT? | What enforces the invariant |
+ * |-----------------------|--------------------------|-----------------------------|
+ * | `codeloop yolo`       | yes (gates + review)     | the implementation-evidence probe at the IMPLEMENT -> QUALITY_GATE boundary, which PARKS when the tree carries no implementation |
+ * | `codeloop implement`  | no — prepares and stops  | already satisfied: it never calls the gate or the review |
+ * | `codeloop` (standard) | yes (gates + review)     | the same probe, injected into the gate, which returns VACUOUS and stops the loop before the review |
+ * | `codeloop gates` / `codeloop commit` | no implementation stage | not in scope of the invariant |
+ *
  * Strict Hexagonal Architecture: Zero direct I/O, zero Node.js built-ins.
  */
 
 import {
   StateMachine,
+  StateMachineSnapshot,
   IssueNumber,
   StageName,
   ExecutionMode,
@@ -42,19 +66,46 @@ import {
   GATE_APPROVAL,
   GATE_COMMIT,
   GATE_TRIAGE,
+  GATE_CIRCUIT_BREAKER,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_LIFECYCLE_STARTED,
   NOTE_LIFECYCLE_COMPLETED,
   NOTE_PAUSED_APPROVAL_GATE,
   NOTE_PAUSED_COMMIT_GATE,
   NOTE_PAUSED_TRIAGE_GATE,
+  NOTE_YOLO_PARKED_AT_DISCOVERY,
+  withRecordedPauseHint,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_AUTO_APPROVED_PLAN,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   NOTE_COMMIT_AFTER_EXECUTED,
   NOTE_ALREADY_COMPLETED,
+  NOTE_PAUSED_CIRCUIT_BREAKER_GATE,
+  NOTE_YOLO_NO_IMPLEMENTATION,
+  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN,
+  NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN_REPEAT,
+  NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE,
+  PLAN_EMPTY_PARK_REPEAT_THRESHOLD,
+  formatDiscoveryParkAwaitingRca,
+  isPlanContentSubstantive,
+  NOTE_GATES_VACUOUS_STANDARD,
+  NOTE_GATES_VACUOUS_YOLO,
   GateCommandDefinition,
-  WorktreeDescriptor
+  WorktreeDescriptor,
+  DEFAULT_CB_MAX_GATE_RETRIES,
+  CB_ACTION_PAUSE_FOR_HUMAN,
+  CB_ACTION_ABORT,
+  CB_ACTION_WARN,
+  CircuitBreakerTrippedError,
+  QuotaExhaustedError,
+  QUOTA_RESUME_COMMAND,
+  VERDICT_SKIPPED,
+  StateStorageError,
+  WorktreeCreationError,
+  WorktreeError,
+  ValidationError,
+  InvalidTransitionError,
+  isSamePath
 } from '../domain';
 import {
   StateRepository,
@@ -67,17 +118,22 @@ import {
   CritiquePort,
   CritiqueInstallerPort,
   ConfirmationPromptPort,
-  WorktreeManagerPort
+  WorktreeManagerPort,
+  GateReportRepositoryPort,
+  SourceFileReaderPort
 } from '../ports';
 import { StartPlanningUseCase, StartPlanningResult } from './start-planning';
 import { StartImplementationUseCase, StartImplementationResult } from './start-implementation';
 import { RunQualityGateUseCase, QualityGateRunResult } from './run-quality-gate';
+import { DetectImplementationDiffUseCase, ImplementationDiff } from './detect-implementation-diff';
 import { RunReviewUseCase, RunReviewResult } from './run-review';
 import { DraftCommitUseCase, DraftCommitResult } from './draft-commit';
 import { ExecuteCommitUseCase, ExecuteCommitResult } from './execute-commit';
 import { ResolveSubagentUseCase } from './resolve-subagent';
 import { RunPreFlightCheckUseCase } from './run-preflight-check';
 import { InferBaseBranchUseCase } from './infer-base-branch';
+import { shouldRouteToTriage } from './lifecycle-reentry-policy';
+import { actionableReviewFeedback } from './triage-feedback';
 import type { PreFlightCheckResult } from '../domain';
 
 export interface RunLifecycleParams {
@@ -86,11 +142,25 @@ export interface RunLifecycleParams {
   readonly title?: string | null;
   readonly type?: string | null;
   readonly commitAfter?: boolean;
+  /**
+   * Open the delivery PR from the tool (issue #315, AC-22/AC-25). Forwarded to
+   * `ExecuteCommitUseCase`; `yolo --commit-after` implies it, because a hands-off
+   * run that stops one step short of delivery is not hands-off.
+   */
+  readonly createPr?: boolean;
   readonly yes?: boolean;
   readonly staged?: boolean;
   readonly message?: string | null;
   readonly dryRun?: boolean;
   readonly configPath?: string | null;
+  /**
+   * The repository the WHOLE run is bound to (issue #425): the checkpoint
+   * directory *and* the provisioning / measurement / gate cwd. Every path the
+   * lifecycle derives — config load, pre-flight, plan scaffolding, the worktree,
+   * the baseline measurement, the diff and the gate — comes from this one value.
+   * Omitted means the process's current directory, which is today's behaviour
+   * for a caller that has no `--workspace`.
+   */
   readonly workspaceDir?: string;
   readonly workingDiff?: string | null;
   readonly commands?: readonly string[] | readonly GateCommandDefinition[];
@@ -101,10 +171,59 @@ export interface RunLifecycleParams {
   readonly planPath?: string | null;
   readonly planDir?: string | null;
   readonly userInstructions?: string | null;
+  /**
+   * The dispatched Reviewer subagent's verdict block (issue #269).
+   *
+   * Forwarded to `RunReviewUseCase` as `reviewOutput` — the domain's chosen
+   * seam for "the reviewer's verdict". Omitted, the behaviour is byte-identical
+   * to today (the critique-based Tier 1 review, or the #236 advisory
+   * fail-open).
+   */
+  readonly reviewOutput?: string | null;
   readonly interactiveCommit?: boolean;
+  /**
+   * False when no human can answer prompts (non-TTY, `--json`). Threaded into the
+   * stage use cases that own a prompt so a non-interactive run never blocks
+   * (issue #218 AC6). Omitted means interactive.
+   */
+  readonly interactive?: boolean;
   readonly worktree?: boolean;
   readonly step?: boolean;
+  /**
+   * Explicit operator opt-in that bypasses the DISCOVERY RCA park (issue #237).
+   * Threaded into `StartPlanningUseCase` and enforced by
+   * `resolveDiscoveryReentry`; recorded in history metadata so a bypassed RCA
+   * gate stays auditable. Without it, re-entering a DISCOVERY checkpoint whose
+   * report does not yet carry RCA evidence parks instead of advancing.
+   */
+  readonly skipDiscovery?: boolean;
+  /**
+   * Issue #514 AC3: skip the best-effort collector sync that precedes
+   * implementation. Threaded to every `StartImplementationUseCase.execute` call
+   * site so `codeloop implement --no-sync` really has an effect.
+   */
+  readonly noSync?: boolean;
   readonly onProgress?: (message: string) => void;
+}
+
+/**
+ * Non-blocking notice about a gate pause that was already on disk when this run
+ * started (typically a CIRCUIT_BREAKER halt persisted by a previous invocation).
+ *
+ * Typed on the result instead of `console.warn`-ed from here so the application
+ * layer stays free of I/O policy and the presentation layer owns *where* the
+ * notice goes — the breaker diagnostic is contractually stderr-only, and
+ * stdout may be parsed by `--json` consumers.
+ */
+export interface PersistedPauseAdvisory {
+  /** Gate name recorded on the loaded checkpoint. */
+  readonly gate: string;
+  /** ISO instant the pause was recorded; null for a timestamp-less checkpoint. */
+  readonly pausedAtTimestamp: string | null;
+  /** Fully-qualified command that actually clears the pause. */
+  readonly resumeCommand: string;
+  /** Operator-facing text, including gate, timestamp and the resume command. */
+  readonly message: string;
 }
 
 export interface RunLifecycleResult {
@@ -112,7 +231,17 @@ export interface RunLifecycleResult {
   readonly mode: ExecutionMode;
   readonly currentStage: StageName;
   readonly stateMachine: StateMachine;
-  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | null;
+  readonly pausedAtGate?: typeof GATE_APPROVAL | typeof GATE_COMMIT | typeof GATE_TRIAGE | typeof GATE_CIRCUIT_BREAKER | null;
+  /**
+   * Set when the checkpoint loaded at the start of the run was already paused at a
+   * gate. ADVISORY ONLY — the run proceeds and the exit path is unchanged.
+   */
+  readonly persistedPauseAdvisory?: PersistedPauseAdvisory;
+  /**
+   * True when the halt was caused by provider quota exhaustion rather than a
+   * retry-count circuit breaker. Lets the CLI pick a distinguishable exit code.
+   */
+  readonly quotaExhausted?: boolean;
   readonly planResult?: StartPlanningResult;
   readonly implementationResult?: StartImplementationResult;
   readonly qualityGateResult?: QualityGateRunResult;
@@ -121,6 +250,32 @@ export interface RunLifecycleResult {
   readonly executeCommitResult?: ExecuteCommitResult;
   readonly worktree?: WorktreeDescriptor | null;
   readonly message?: string;
+  /**
+   * True when the run parked because NO implementation was detected (issue
+   * #259). The stage stayed at IMPLEMENT: no transition happened, nothing was
+   * reverted, and no gate command was executed.
+   */
+  readonly implementationHalted?: boolean;
+  /**
+   * The implementation-evidence verdict the run was given (issue #259). It is
+   * the operator-facing diagnostic for the park and the `--json` payload for
+   * machine consumers.
+   */
+  readonly implementationDiff?: ImplementationDiff | null;
+  /**
+   * True when the plan the run was given carries NO implementation steps —
+   * the tool's own blank scaffold (issue #259, S10). The fast-path never
+   * dispatches the planner, so its plan IS the scaffold; a directive that
+   * points at an empty plan is a false instruction, so the park suppresses it
+   * and names the plan instead.
+   */
+  readonly implementationPlanEmpty?: boolean;
+  /**
+   * How many blank-plan parks have been recorded for this checkpoint
+   * (issue #267). 1 on the first park, 2+ on a repeat, so the CLI can say
+   * "attempt N, still blank" instead of repeating the same text.
+   */
+  readonly implementationPlanParkCount?: number;
 }
 
 export interface RunLifecycleDependencies {
@@ -142,8 +297,48 @@ export interface RunLifecycleDependencies {
   readonly draftCommitUseCase?: DraftCommitUseCase;
   readonly executeCommitUseCase?: ExecuteCommitUseCase;
   readonly worktreeManager?: WorktreeManagerPort;
+  /**
+   * The Test Register's pinned-test reader (issue #432). Optional so existing
+   * callers compile; the CLI wires it, so a real `implement` resolves a pin.
+   */
+  readonly sourceFileReader?: SourceFileReaderPort;
   readonly runPreFlightCheckUseCase?: RunPreFlightCheckUseCase;
   readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  /**
+   * The implementation-evidence probe (issue #259). Injectable so a caller can
+   * drive the park deterministically without a real git repository.
+   */
+  readonly detectImplementationDiffUseCase?: DetectImplementationDiffUseCase;
+  /**
+   * The gate evidence channel (issue #284). Optional; injected by the CLI
+   * composition root so an in-process gate run files the same record a
+   * dispatched gate files.
+   */
+  readonly gateReportRepo?: GateReportRepositoryPort;
+}
+
+/**
+ * "Did this invocation create it?" evidence captured BEFORE provisioning
+ * (issue #420).
+ *
+ * `createWorktree` can CREATE or ADOPT a worktree, and the descriptor does not
+ * say which, so the pre-provisioning worktree list plus the pre-provisioning
+ * local branch list are the only reliable provenance evidence.
+ *
+ * #426: `null` means the probe did not answer — never "nothing existed". `[]` is
+ * a valid, TRUSTED answer ("a successful read found nothing") and only comes
+ * from `probeProvisioningState`, never from the `[]`-on-failure readers.
+ */
+interface WorktreeProvisioningProvenance {
+  /** `null` = the probe did not answer; provenance is UNKNOWN, never assume new. */
+  readonly existingWorktreePaths: readonly string[] | null;
+  /** `null` = unknown; the worktree may still be removed, the branch must not. */
+  readonly existingBranches: readonly string[] | null;
+}
+
+interface ProvisionedWorktreeCleanup {
+  readonly removed: boolean;
+  readonly warnings: readonly string[];
 }
 
 export class RunLifecycleUseCase {
@@ -166,6 +361,7 @@ export class RunLifecycleUseCase {
   private readonly executeCommitUseCase: ExecuteCommitUseCase;
   private readonly runPreFlightCheckUseCase: RunPreFlightCheckUseCase;
   private readonly inferBaseBranchUseCase?: InferBaseBranchUseCase;
+  private readonly detectImplementationDiffUseCase: DetectImplementationDiffUseCase;
 
   constructor(deps: RunLifecycleDependencies) {
     this.stateRepo = deps.stateRepo;
@@ -195,7 +391,7 @@ export class RunLifecycleUseCase {
 
     this.inferBaseBranchUseCase =
       deps.inferBaseBranchUseCase ??
-      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo) : undefined);
+      (this.worktreeManager ? new InferBaseBranchUseCase(this.worktreeManager, this.githubGateway, this.stateRepo, this.configRepo) : undefined);
 
     this.startImplementationUseCase =
       deps.startImplementationUseCase ??
@@ -207,7 +403,8 @@ export class RunLifecycleUseCase {
         resolveSubagentUseCase,
         this.worktreeManager,
         this.inferBaseBranchUseCase,
-        this.commandExecutor
+        this.commandExecutor,
+        deps.sourceFileReader
       );
 
     this.runQualityGateUseCase =
@@ -218,7 +415,8 @@ export class RunLifecycleUseCase {
         this.planGenerator,
         this.commandExecutor,
         this.buildDetector,
-        resolveSubagentUseCase
+        resolveSubagentUseCase,
+        deps.gateReportRepo
       );
 
     this.runReviewUseCase =
@@ -232,7 +430,11 @@ export class RunLifecycleUseCase {
         this.commandExecutor,
         resolveSubagentUseCase,
         deps.critiqueInstaller,
-        this.confirmationPrompt
+        this.confirmationPrompt,
+        // Issue #455: the review leg certifies `QUALITY_GATE -> REVIEW` through
+        // the same shared chokepoint `transition REVIEW` uses, so it needs the
+        // gate evidence channel the in-process gate already files into.
+        deps.gateReportRepo
       );
 
     this.draftCommitUseCase =
@@ -257,6 +459,10 @@ export class RunLifecycleUseCase {
     this.runPreFlightCheckUseCase =
       deps.runPreFlightCheckUseCase ??
       new RunPreFlightCheckUseCase(this.githubGateway, this.worktreeManager, this.stateRepo);
+
+    this.detectImplementationDiffUseCase =
+      deps.detectImplementationDiffUseCase ??
+      new DetectImplementationDiffUseCase(this.commandExecutor);
   }
 
   public async execute(params: RunLifecycleParams = {}): Promise<RunLifecycleResult> {
@@ -291,10 +497,59 @@ export class RunLifecycleUseCase {
       }
     }
 
+    // 2. Load state checkpoint and determine execution mode.
+    //
+    // Issue #278: this is hoisted ABOVE the pre-flight block because it is a
+    // pure READ and the "just look" path needs its answer before anything with
+    // a side effect (network / `gh`) can run.
+    const snapshot = await this.stateRepo.load();
+    const requestedMode: ExecutionMode = params.mode || MODE_STANDARD;
+    const isNewIssue =
+      params.issue !== undefined &&
+      params.issue !== null &&
+      snapshot !== null &&
+      snapshot.issue !== null &&
+      String(params.issue) !== String(snapshot.issue);
+    /**
+     * A bare `codeloop` against a COMPLETED checkpoint is a read.
+     *
+     * Before #278 the standard path unconditionally called `sm.setMode()` and
+     * `stateRepo.save()`, so the run rewrote `mode` and `updatedAt`, and then
+     * provisioned a worktree on a stale branch. `MODE_IMPLEMENT` is
+     * deliberately EXCLUDED: `StartImplementationUseCase` legitimately re-opens
+     * COMPLETED → IMPLEMENT.
+     */
+    const isFinishedStandardRun =
+      snapshot?.currentStage === STAGE_COMPLETED &&
+      requestedMode === MODE_STANDARD &&
+      !isNewIssue;
+
+    // #428: a workspace that can never hold a worktree is refused BEFORE the state
+    // initialization below, so the refusal's "Nothing was written." is measured.
+    const provisioningIssue =
+      params.issue !== undefined && params.issue !== null && String(params.issue).trim() !== ''
+        ? Number(params.issue)
+        : snapshot?.issue ?? effectiveIssue;
+
+    if (
+      this.willProvisionWorktreeInThisRun(
+        params,
+        requestedMode,
+        snapshot?.currentStage ?? STAGE_INITIALIZED,
+        provisioningIssue,
+        isFinishedStandardRun
+      )
+    ) {
+      await this.worktreeManager!.assertWorkspaceProvisionable!({
+        workspaceDir: workspace,
+        issue: provisioningIssue
+      });
+    }
+
     // Run Pre-Flight Task Check (Anti-Duplicate & Resume Mode)
     const activeIssueToCheck = effectiveIssue;
     let preflightResult = undefined;
-    if (activeIssueToCheck && !params.dryRun) {
+    if (activeIssueToCheck && !params.dryRun && !isFinishedStandardRun) {
       preflightResult = await this.runPreFlightCheckUseCase.execute({
         issueNumber: activeIssueToCheck,
         workspaceDir: workspace,
@@ -302,19 +557,22 @@ export class RunLifecycleUseCase {
       });
     }
 
-    // 2. Load state checkpoint and determine execution mode
-    const snapshot = await this.stateRepo.load();
     let sm: StateMachine;
     let activeMode: ExecutionMode = params.mode || MODE_STANDARD;
-    const isNewIssue =
-      params.issue !== undefined &&
-      params.issue !== null &&
-      snapshot !== null &&
-      snapshot.issue !== null &&
-      String(params.issue) !== String(snapshot.issue);
-
     if (snapshot) {
       sm = StateMachine.fromSnapshot(snapshot);
+      if (isFinishedStandardRun) {
+        // Nothing to do, and NOTHING to write: return before the reset/mode
+        // legs can touch the checkpoint or provision a worktree.
+        return {
+          success: true,
+          mode: MODE_STANDARD,
+          currentStage: STAGE_COMPLETED,
+          stateMachine: sm,
+          worktree: null,
+          message: NOTE_ALREADY_COMPLETED
+        };
+      }
       if (
         (activeMode === MODE_PLAN && (sm.currentStage === STAGE_COMPLETED || isNewIssue)) ||
         (isNewIssue && (activeMode === MODE_STANDARD || activeMode === MODE_YOLO))
@@ -326,9 +584,14 @@ export class RunLifecycleUseCase {
       } else {
         if (params.mode) {
           activeMode = params.mode;
-          sm.setMode(activeMode);
-          if (!params.dryRun) {
-            await this.stateRepo.save(sm.toSnapshot());
+          // Defence in depth for every other mode (#278 AC-278.2): `setMode`
+          // is a no-op when the mode is unchanged, so the save is skipped when
+          // there is nothing to persist.
+          if (sm.mode !== activeMode) {
+            sm.setMode(activeMode);
+            if (!params.dryRun) {
+              await this.stateRepo.save(sm.toSnapshot());
+            }
           }
         } else {
           activeMode = sm.mode || MODE_STANDARD;
@@ -345,7 +608,14 @@ export class RunLifecycleUseCase {
       }
     }
 
-    const finalIssue = params.issue ?? effectiveIssue;
+    // The RESOLVED checkpoint is authoritative about its own issue (issue #250).
+    //
+    // With the scope applied, `sm` is the checkpoint the operator's issue (or
+    // the scan) named — e.g. `.agyloop/tasks/250.json` while the current branch
+    // is `task/251-x`. A path/branch inference may only SUPPLY an issue for a
+    // checkpoint that has none; it must never RELABEL a resolved one, or the
+    // scoped file would be rewritten with someone else's issue number.
+    const finalIssue = params.issue ?? sm.issue ?? effectiveIssue;
     if (finalIssue && !isNewIssue && sm.issue !== Number(finalIssue)) {
       sm.setIssue(finalIssue);
       if (!params.dryRun) {
@@ -353,79 +623,127 @@ export class RunLifecycleUseCase {
       }
     }
 
-    // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE
-    if (
+    // Advisory (never blocking) for a pause that was already persisted before this
+    // run. This is the single chokepoint every mode flows through, so one check
+    // covers `plan`, `implement`, `yolo`, `commit` and the default loop.
+    const persistedPauseAdvisory = this.buildPersistedPauseAdvisory(sm);
+    const withAdvisory = (result: RunLifecycleResult): RunLifecycleResult =>
+      persistedPauseAdvisory ? { ...result, persistedPauseAdvisory } : result;
+
+    // If preflight check detected resume mode with PR review comments, route to STAGE_TRIAGE.
+    // The predicate lives in the one lifecycle re-entry policy so this rule and
+    // `GetNextActionUseCase`'s COMPLETED path can never drift apart: today's
+    // condition was `isResume && (comments.length > 0 || changesRequested) && stage !== TRIAGE`,
+    // which is exactly `shouldRouteToTriage({ currentStage, hasOpenReviewFeedback })`.
+    // Issue #397: this dispatcher built its payload from the UNCLASSIFIED
+    // preflight comments, so a YOLO/lifecycle route put the repository's own
+    // summary INSIDE the payload (`commentsCount: 3`) while `next` kept it
+    // outside (`commentsCount: 2`). One selector, three call sites.
+    const actionableReviewComments = actionableReviewFeedback(
+      preflightResult?.prReviewComments ?? []
+    );
+    const hasOpenReviewFeedback = Boolean(
       preflightResult &&
-      preflightResult.isResume &&
-      ((preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) || preflightResult.prHasChangesRequested) &&
-      sm.currentStage !== STAGE_TRIAGE
-    ) {
+        preflightResult.isResume &&
+        (actionableReviewComments.length > 0 || preflightResult.prHasChangesRequested)
+    );
+
+    if (preflightResult && shouldRouteToTriage({ currentStage: sm.currentStage, hasOpenReviewFeedback })) {
       if (sm.canTransition(STAGE_TRIAGE)) {
-        if (preflightResult.prReviewComments && preflightResult.prReviewComments.length > 0) {
-          sm.setTriagePayload(preflightResult.prReviewComments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n'));
+        if (actionableReviewComments.length > 0) {
+          sm.setTriagePayload(actionableReviewComments.map((c) => `- [${c.author || 'Unknown'}]: ${c.body}`).join('\n'));
         }
         sm.transition(STAGE_TRIAGE, {
           note: NOTE_PAUSED_TRIAGE_GATE,
           prNumber: preflightResult.resumePrNumber,
-          commentsCount: preflightResult.prReviewComments?.length ?? 0
+          commentsCount: actionableReviewComments.length
         });
       } else {
-        return {
+        return withAdvisory({
           success: false,
           mode: activeMode,
           currentStage: sm.currentStage,
           stateMachine: sm,
           message: `Cannot transition to TRIAGE from ${sm.currentStage}`
-        };
+        });
       }
       sm.pauseAtGate(GATE_TRIAGE);
       if (!params.dryRun) {
         await this.stateRepo.save(sm.toSnapshot());
       }
-      return {
+      return withAdvisory({
         success: true,
         mode: activeMode,
         currentStage: sm.currentStage,
         stateMachine: sm,
         pausedAtGate: GATE_TRIAGE,
         message: NOTE_PAUSED_TRIAGE_GATE
-      };
+      });
     }
 
     if (sm.currentStage === STAGE_TRIAGE) {
       sm.pauseAtGate(GATE_TRIAGE);
-      return {
+      return withAdvisory({
         success: true,
         mode: activeMode,
         currentStage: sm.currentStage,
         stateMachine: sm,
         pausedAtGate: GATE_TRIAGE,
         message: NOTE_PAUSED_TRIAGE_GATE
-      };
+      });
     }
 
     // 3. Dispatch based on operational mode
-    switch (activeMode) {
-      case MODE_PLAN:
-        return this.executePlanMode(sm, params, workspace);
+    //
+    // A provider quota rejection (HTTP 429 / RESOURCE_EXHAUSTED) raised by any stage
+    // use-case is a recoverable halt, not a crash: checkpoint at the
+    // CIRCUIT_BREAKER gate so the next invocation resumes with full context
+    // (issue #218 AC4). Every other error propagates untouched.
+    try {
+      // `return await` (not bare `return`): a returned promise settles OUTSIDE the
+      // try block, so the rejection would bypass the quota interception below.
+      switch (activeMode) {
+        case MODE_PLAN:
+          return withAdvisory(await this.executePlanMode(sm, params, workspace));
 
-      case MODE_IMPLEMENT:
-        return this.executeImplementMode(sm, params, workspace, preflightResult);
+        case MODE_IMPLEMENT:
+          return withAdvisory(
+            await this.executeImplementMode(sm, params, workspace, preflightResult, snapshot)
+          );
 
-      case MODE_COMMIT:
-        return this.executeCommitMode(sm, params, workspace);
+        case MODE_COMMIT:
+          return withAdvisory(await this.executeCommitMode(sm, params, workspace));
 
-      case MODE_YOLO:
-        return this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult);
+        case MODE_YOLO:
+          return withAdvisory(await this.executeYoloMode(sm, params, commitAfter, workspace, preflightResult));
 
-      case MODE_STANDARD:
-      default:
-        return this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult);
+        case MODE_STANDARD:
+        default:
+          return withAdvisory(await this.executeStandardMode(sm, params, commitAfter, workspace, preflightResult));
+      }
+    } catch (err: unknown) {
+      if (!(err instanceof QuotaExhaustedError)) {
+        throw err;
+      }
+
+      sm.pauseAtGate(GATE_CIRCUIT_BREAKER);
+      await this.persistCheckpoint(sm, params.dryRun);
+
+      return {
+        success: false,
+        mode: activeMode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        pausedAtGate: GATE_CIRCUIT_BREAKER,
+        quotaExhausted: true,
+        message: `${err.message} ${NOTE_PAUSED_CIRCUIT_BREAKER_GATE}: state persisted.`
+      };
     }
   }
 
   /**
-   * Plan-only mode: runs discovery & planning, scaffolds persistent plan, halts at APPROVAL gate.
+   * Plan-only mode: scaffolds the persistent plan and leaves the checkpoint at PLAN;
+   * `codeloop next` dispatches the planner.
    */
   private async executePlanMode(
     sm: StateMachine,
@@ -439,6 +757,9 @@ export class RunLifecycleUseCase {
       type: params.type,
       dryRun: params.dryRun,
       configPath: params.configPath,
+      skipDiscovery: params.skipDiscovery,
+      planPath: params.planPath,
+      planDir: params.planDir,
       workspaceDir: workspace
     });
 
@@ -450,14 +771,83 @@ export class RunLifecycleUseCase {
       stateMachine: planResult.stateMachine,
       pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
       planResult,
-      message: isApproval
-        ? NOTE_PAUSED_APPROVAL_GATE
-        : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
+      message:
+        planResult.discoveryParked === true
+          ? // Discovery park (issues #237, #379): the RCA never ran, so
+            // "advanced to DISCOVERY" would read like progress. Name the
+            // outstanding work AND the paths that were actually checked
+            // (issue #283, AC3). This now covers the first-run bug entry too.
+            this.formatDiscoveryParkMessage(planResult, sm.pausedAtGate)
+          : isApproval
+            ? NOTE_PAUSED_APPROVAL_GATE
+            : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
+    };
+  }
+
+  /**
+   * The DISCOVERY park message, naming the missing evidence and the paths that
+   * were actually read (issues #283, #306). Falls back to the base note when
+   * nothing is known.
+   */
+  private formatDiscoveryParkMessage(
+    planResult?: StartPlanningResult | null,
+    pausedAtGate?: string | null
+  ): string {
+    const evidence = planResult?.discoveryReportEvidence;
+    return formatDiscoveryParkAwaitingRca(
+      (evidence?.checkedPaths ?? []).join(', '),
+      evidence?.missingEvidence ?? null,
+      evidence?.evaluatedPath ?? null,
+      pausedAtGate,
+      // #339 (item 3): a title-rejected report gets the kind headline naming
+      // the first line the gate saw, never the generic "does not yet contain
+      // RCA evidence" claim its content disproves.
+      evidence?.kindRejection ?? null
+    );
+  }
+
+  /**
+   * Builds the "you are resuming from a paused checkpoint" notice, or undefined
+   * when the loaded checkpoint is not paused.
+   *
+   * Why this exists: `handleCircuitBreakerTrip` is only reachable from the
+   * quality-gate retry path, `GetNextActionUseCase` never reads `pausedAtGate`,
+   * and the CLI's `persistedHaltExitCode` only inspects the result of the run
+   * that *just* happened. A breaker pause persisted by an earlier invocation was
+   * therefore invisible — the next `codeloop plan` / `implement` / `yolo` / bare
+   * run silently proceeded as if nothing had ever halted.
+   *
+   * Advisory by construction: this only *reports*, it never blocks and never
+   * mutates state, so the documented resume path (`codeloop implement`) keeps
+   * working and a fresh trip keeps its existing exit code.
+   */
+  private buildPersistedPauseAdvisory(sm: StateMachine): PersistedPauseAdvisory | undefined {
+    const gate = sm.pausedAtGate;
+    if (!gate) {
+      return undefined;
+    }
+
+    const pausedAtTimestamp = sm.pausedAtTimestamp;
+    const since = pausedAtTimestamp ? ` since ${pausedAtTimestamp}` : '';
+    return {
+      gate,
+      pausedAtTimestamp,
+      resumeCommand: QUOTA_RESUME_COMMAND,
+      message:
+        `Checkpoint is paused at the ${gate} gate${since}. ` +
+        `Resolve the blocking condition, then run \`${QUOTA_RESUME_COMMAND}\` to clear the pause. ` +
+        `Continuing anyway — this notice is advisory and nothing is lost.`
     };
   }
 
   /**
    * Helper: resolves an isolated git worktree if enabled for the active task.
+   *
+   * `null` means "not requested" and NOTHING ELSE (issue #301). The callers that
+   * may legitimately skip provisioning are the top guards below: a dry run, an
+   * explicit `--no-worktree`, no worktree manager, or no issue. Every failure
+   * after that point THROWS — the run never silently degrades to the root
+   * workspace while a worktree sits on disk.
    */
   private async resolveWorktree(
     sm: StateMachine,
@@ -473,41 +863,165 @@ export class RunLifecycleUseCase {
       return null;
     }
 
-    try {
-      let baseBranch = params.baseRef || params.baseBranch;
-      let branchPrefix: string | undefined = undefined;
+    const manager = this.worktreeManager;
+    let baseBranch = params.baseRef || params.baseBranch;
+    let branchPrefix: string | undefined = undefined;
 
-      if (this.inferBaseBranchUseCase) {
-        try {
-          const inference = await this.inferBaseBranchUseCase.execute({
-            issueNumber: taskId,
-            title: params.title,
-            explicitBaseBranch: baseBranch,
-            workspaceDir: rootWorkspace
-          });
-          baseBranch = inference.baseBranch;
-          branchPrefix = inference.taskBranchPrefix;
-        } catch {
-          // Fallback if inference fails
-        }
+    // Base-branch inference is NON-FATAL: a failed inference falls back to the
+    // caller's explicit branch (or the manager's own default).
+    if (this.inferBaseBranchUseCase) {
+      try {
+        const inference = await this.inferBaseBranchUseCase.execute({
+          issueNumber: taskId,
+          title: params.title,
+          explicitBaseBranch: baseBranch,
+          workspaceDir: rootWorkspace
+        });
+        baseBranch = inference.baseBranch;
+        branchPrefix = inference.taskBranchPrefix;
+      } catch {
+        // Fallback if inference fails
       }
+    }
 
-      const descriptor = await this.worktreeManager.createWorktree({
+    let descriptor: WorktreeDescriptor;
+    try {
+      descriptor = await manager.createWorktree({
         taskId,
         baseBranch,
         branchPrefix,
         title: params.title,
         workspaceDir: rootWorkspace
       });
-
-      sm.setWorktree(descriptor);
-      if (baseBranch) {
-        sm.setBaseBranch(baseBranch);
+    } catch (err: unknown) {
+      // A pre-existing worktree error keeps its own operation/message; anything
+      // else is wrapped so the caller always sees a worktree failure.
+      if (err instanceof WorktreeError) {
+        throw err;
       }
-      return descriptor;
-    } catch {
-      return null;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new WorktreeCreationError(
+        'createWorktree',
+        `Failed to create the isolated worktree for issue #${taskId}: ${message}`,
+        {},
+        err
+      );
     }
+
+    sm.setWorktree(descriptor);
+    if (baseBranch) {
+      sm.setBaseBranch(baseBranch);
+    }
+
+    // #234/#226 + #301: the descriptor save is part of the provisioning
+    // TRANSACTION. `createWorktree` -> `setWorktree` -> `save`; if the save
+    // fails, the just-created worktree is torn down before the error is
+    // rethrown, so an on-disk worktree can never outlive a `worktree: null`
+    // checkpoint. Failing loudly is what stops the run from continuing from the
+    // root workspace as if nothing was requested.
+    // `dryRun` returns null at the top of this helper, so this save never fires
+    // on a dry run.
+    try {
+      await this.stateRepo.save(sm.toSnapshot());
+    } catch (err: unknown) {
+      let teardownError: unknown = null;
+      try {
+        await manager.removeWorktree({
+          worktreePath: descriptor.worktreePath,
+          workspaceDir: rootWorkspace,
+          force: true,
+          prune: true,
+          tolerateMissing: true,
+          allowExternal: true
+        });
+      } catch (teardownErr: unknown) {
+        teardownError = teardownErr;
+      }
+
+      const base = err instanceof Error ? err.message : String(err);
+      const teardown = teardownError
+        ? ` Teardown also failed (${teardownError instanceof Error ? teardownError.message : String(teardownError)}); run \`codeloop worktree prune\`.`
+        : ' The just-created worktree was torn down.';
+      const suffix = `${teardown} The run did NOT continue from the root workspace.`;
+
+      if (err instanceof StateStorageError) {
+        throw new StateStorageError(err.filePath, err.operation, `${err.message}${suffix}`, err);
+      }
+      throw new StateStorageError(
+        this.stateRepo.getStateFilePath(),
+        'save',
+        `Failed to persist the worktree descriptor for issue #${taskId}: ${base}.${suffix}`,
+        err
+      );
+    }
+
+    return descriptor;
+  }
+
+  /**
+   * The ONLY lifecycle legs that START IMPLEMENTATION — and therefore the only
+   * ones allowed to create a worktree (issue #301).
+   *
+   * Every other stage honours the descriptor already on the checkpoint, or runs
+   * from the workspace root. `mode=implement` provisions explicitly in
+   * `executeImplementMode`; it never reaches this helper.
+   */
+  private shouldProvisionWorktree(stage: StageName, mode: ExecutionMode): boolean {
+    if (mode === MODE_YOLO) {
+      return stage === STAGE_PLAN || stage === STAGE_APPROVAL;
+    }
+    return stage === STAGE_APPROVAL;
+  }
+
+  /**
+   * True when THIS invocation will provision (or adopt) a worktree, mirroring the
+   * dispatch below one-for-one (issue #428):
+   *
+   *   - IMPLEMENT always calls `resolveWorktree` (`executeImplementMode`);
+   *   - YOLO provisions at PLAN/APPROVAL, and a run starting at INITIALIZED/DISCOVERY
+   *     plans first and then reaches one of them — a COMPLETED checkpoint never does;
+   *   - STANDARD provisions only at APPROVAL (`shouldProvisionWorktree`), so a
+   *     first-run `codeloop` that only plans into a plain directory is NOT refused;
+   *   - PLAN and COMMIT never provision.
+   *
+   * `--dry-run`, `--no-worktree`, a finished STANDARD read, a run with no issue and an
+   * adapter without the optional probe all return false and keep today's ordering.
+   */
+  private willProvisionWorktreeInThisRun(
+    params: RunLifecycleParams,
+    requestedMode: ExecutionMode,
+    stage: StageName,
+    issue: number | null,
+    isFinishedStandardRun: boolean
+  ): boolean {
+    if (params.dryRun === true || params.worktree === false) return false;
+    if (!this.worktreeManager?.assertWorkspaceProvisionable) return false;
+    if (issue === null || issue === undefined) return false;
+    if (isFinishedStandardRun) return false;
+
+    if (requestedMode === MODE_IMPLEMENT) return true;
+    if (requestedMode === MODE_YOLO) return stage !== STAGE_COMPLETED;
+    if (requestedMode === MODE_STANDARD) return stage === STAGE_APPROVAL;
+    return false;
+  }
+
+  /**
+   * Measures the working tree against the base branch (issue #259).
+   *
+   * The base reference follows the same fallback chain the review path uses:
+   * an explicit ref -> the inferred base branch -> 'main'.
+   */
+  private async probeImplementationDiff(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    workspace: string
+  ): Promise<ImplementationDiff> {
+    const baseRef = params.baseRef ?? params.baseBranch ?? sm.baseBranch ?? 'main';
+
+    return this.detectImplementationDiffUseCase.execute({
+      workspaceDir: workspace,
+      baseRef
+    });
   }
 
   /**
@@ -526,7 +1040,11 @@ export class RunLifecycleUseCase {
         worktreePath: worktree.worktreePath,
         workspaceDir: rootWorkspace,
         force: true,
-        prune: true
+        prune: true,
+        // Internal teardown (#282): a worktree deleted out of band must not
+        // fail the run, and an adopted worktree may live outside `.worktrees`.
+        tolerateMissing: true,
+        allowExternal: true
       });
     } catch {
       // Non-fatal
@@ -534,28 +1052,223 @@ export class RunLifecycleUseCase {
   }
 
   /**
+   * Captures "did this invocation create it?" evidence BEFORE provisioning
+   * (issue #420).
+   *
+   * #426: provenance comes ONLY from `probeProvisioningState`, which distinguishes
+   * a failed read (`null`) from a successful empty read (`[]`). A manager without
+   * that method — every adapter whose `listWorktrees`/`listBranches` answer `[]`
+   * on a failed `git` read — cannot prove anything, so it yields `null` and the
+   * cleanup then declines to touch what it cannot prove it created.
+   */
+  private async captureWorktreeProvisioningProvenance(
+    workspace: string
+  ): Promise<WorktreeProvisioningProvenance> {
+    const unknown: WorktreeProvisioningProvenance = {
+      existingWorktreePaths: null,
+      existingBranches: null
+    };
+    const manager = this.worktreeManager;
+    // #426: a reader that cannot tell a failed read from an empty registry is not
+    // provenance. Unknown is the only safe answer, and it removes nothing.
+    if (!manager || typeof manager.probeProvisioningState !== 'function') {
+      return unknown;
+    }
+    try {
+      const probe = await manager.probeProvisioningState({ workspaceDir: workspace });
+      return {
+        existingWorktreePaths: probe.worktreePaths,
+        existingBranches: probe.localBranches
+      };
+    } catch {
+      return unknown;
+    }
+  }
+
+  /**
+   * Removes a worktree THIS invocation created and deletes its branch only when
+   * the branch is provably new (issue #420).
+   *
+   * The fail-safe direction is always "leave it": unknown provenance, an adopted
+   * or non-canonical worktree, and a failed removal all return
+   * `removed === false`, so the caller keeps the descriptor and the surviving
+   * worktree stays discoverable through `codeloop status` / `codeloop next`.
+   *
+   * #426: provenance is PROVEN, not inferred: a reader that answers `[]` on a
+   * failed `git` read is not consulted, and every path that keeps something it
+   * may have created emits one warning.
+   */
+  private async discardProvisionedWorktree(
+    worktree: WorktreeDescriptor,
+    provenance: WorktreeProvisioningProvenance,
+    workspace: string
+  ): Promise<ProvisionedWorktreeCleanup> {
+    const warnings: string[] = [];
+    const manager = this.worktreeManager;
+    if (!manager) {
+      return { removed: false, warnings };
+    }
+
+    // Unknown provenance is never "new" (AC5 of #420, AC1/AC3 of #426).
+    const existingWorktreePaths = provenance.existingWorktreePaths;
+    if (existingWorktreePaths === null) {
+      warnings.push(
+        `The worktree at ${worktree.worktreePath} was left in place: this run could not prove whether it created it (the pre-provisioning probe did not answer). Run \`codeloop worktree list\` and remove it with \`codeloop worktree remove ${worktree.taskId}\` if it is not needed.`
+      );
+      return { removed: false, warnings };
+    }
+
+    // A worktree already registered before provisioning was adopted, not
+    // created here — never remove it (#282, #287).
+    if (existingWorktreePaths.some((existing) => isSamePath(existing, worktree.worktreePath))) {
+      return { removed: false, warnings };
+    }
+
+    // Only the canonical container is ours to remove; an external or custom
+    // path is treated as adopted.
+    let canonicalPath: string;
+    try {
+      canonicalPath = await manager.resolveTaskWorktreePath(workspace, worktree.taskId);
+    } catch {
+      return { removed: false, warnings };
+    }
+    if (!isSamePath(canonicalPath, worktree.worktreePath)) {
+      return { removed: false, warnings };
+    }
+
+    try {
+      await manager.removeWorktree({
+        worktreePath: worktree.worktreePath,
+        workspaceDir: workspace,
+        force: true,
+        prune: true,
+        // Internal teardown (#282): a target deleted out of band must not turn
+        // a refusal into a cleanup failure. `allowExternal` is deliberately NOT
+        // set: this cleanup only ever targets the canonical path proven above.
+        tolerateMissing: true
+      });
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      warnings.push(
+        `The worktree created for issue #${worktree.taskId} at ${worktree.worktreePath} could not be removed (${reason}); run \`codeloop worktree prune\`.`
+      );
+      return { removed: false, warnings };
+    }
+
+    const branch = worktree.branch;
+    const existingBranches = provenance.existingBranches;
+    const deleteBranch = manager.deleteBranch;
+
+    if (existingBranches === null) {
+      // #426 AC5: the branch probe did not answer, so the branch is not provably
+      // new. The worktree went; the branch stays and is named.
+      warnings.push(
+        `The worktree was removed, but branch '${branch}' was left in place: the pre-provisioning branch probe did not answer, so this run cannot prove it created it; run \`git branch -D ${branch}\` if it should be deleted.`
+      );
+    } else if (!existingBranches.includes(branch)) {
+      if (typeof deleteBranch !== 'function') {
+        // #426 AC4: the port cannot delete branches; say so instead of keeping
+        // the branch in silence.
+        warnings.push(
+          `The worktree was removed, but this manager cannot delete branch '${branch}'; run \`git branch -D ${branch}\`.`
+        );
+      } else {
+        try {
+          await deleteBranch.call(manager, { branchName: branch, workspaceDir: workspace });
+        } catch (err: unknown) {
+          const reason = err instanceof Error ? err.message : String(err);
+          warnings.push(
+            `The worktree was removed, but branch '${branch}' could not be deleted (${reason}); run \`git branch -D ${branch}\`.`
+          );
+        }
+      }
+    }
+
+    return { removed: true, warnings };
+  }
+
+  /**
    * Implement mode: resumes execution directly from approved plan specification.
+   *
+   * Issue #420: this leg provisions the worktree BEFORE the plan guards run
+   * inside `StartImplementationUseCase`, so a guard refusal must undo only what
+   * THIS invocation created — the worktree directory, the branch and the
+   * descriptor `resolveWorktree` wrote. An adopted worktree, unknown provenance
+   * or a failed teardown leaves everything in place (descriptor included) so the
+   * orphan stays visible; the guard's own error is always rethrown unchanged.
+   *
+   * The restore target is the checkpoint the run LOADED (`checkpointAtLoad`),
+   * not a fresh `sm.toSnapshot()`: `execute` normalizes `mode`/`issue` before
+   * dispatch, and AC3 requires a refusal to leave the values the run loaded —
+   * including `updatedAt` — so the approval identity stays byte-stable.
    */
   private async executeImplementMode(
     sm: StateMachine,
     params: RunLifecycleParams,
     workspace: string,
-    preflightResult?: PreFlightCheckResult
+    preflightResult?: PreFlightCheckResult,
+    checkpointAtLoad?: StateMachineSnapshot | null
   ): Promise<RunLifecycleResult> {
+    const hadDescriptor = Boolean(sm.worktree);
+    const checkpointBeforeProvisioning = checkpointAtLoad ?? sm.toSnapshot();
+    const provenance =
+      hadDescriptor || params.dryRun === true || params.worktree === false || !this.worktreeManager
+        ? null
+        : await this.captureWorktreeProvisioningProvenance(workspace);
+
     const worktree = await this.resolveWorktree(sm, params, workspace);
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
 
-    const implResult = await this.startImplementationUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      userInstructions: params.userInstructions,
-      configPath: params.configPath,
-      dryRun: params.dryRun,
-      workspaceDir: activeWorkspace,
-      hasMergeConflicts: preflightResult?.hasMergeConflicts,
-      mergeBaseBranch: preflightResult?.candidateBaseBranch
-    });
+    let implResult: StartImplementationResult;
+    try {
+      implResult = await this.startImplementationUseCase.execute({
+        issue: sm.issue,
+        planPath: params.planPath,
+        planDir: params.planDir,
+        userInstructions: params.userInstructions,
+        configPath: params.configPath,
+        dryRun: params.dryRun,
+        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+        // across the boundary so StartImplementationUseCase's `skipWorktree`
+        // guardrail really short-circuits instead of re-provisioning through the
+        // adopt path. `resolveWorktree` (above) remains the outer layer.
+        noWorktree: params.worktree === false,
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch,
+        // Issue #514: the best-effort sync is now observable and skippable on
+        // every lifecycle leg that can start implementation.
+        noSync: params.noSync,
+        onProgress: params.onProgress
+      });
+    } catch (err: unknown) {
+      // Only a REFUSAL ("this plan/stage cannot start") is torn down. Provisioning
+      // failures keep their own transaction teardown in `resolveWorktree`, and a
+      // quota halt is intercepted one level up.
+      if (
+        (err instanceof ValidationError || err instanceof InvalidTransitionError) &&
+        !hadDescriptor &&
+        worktree &&
+        provenance
+      ) {
+        const cleanup = await this.discardProvisionedWorktree(worktree, provenance, workspace);
+        for (const warning of cleanup.warnings) {
+          params.onProgress?.(warning);
+        }
+        if (cleanup.removed) {
+          try {
+            await this.stateRepo.save(checkpointBeforeProvisioning);
+          } catch {
+            params.onProgress?.(
+              `The worktree was removed, but the checkpoint could not be restored: ${this.stateRepo.getStateFilePath()}. It may still describe the removed worktree.`
+            );
+          }
+        }
+      }
+
+      // The guard's own refusal, never a cleanup error (#420 AC4).
+      throw err;
+    }
 
     return {
       success: true,
@@ -578,7 +1291,9 @@ export class RunLifecycleUseCase {
     params: RunLifecycleParams,
     workspace: string
   ): Promise<RunLifecycleResult> {
-    const worktree = await this.resolveWorktree(sm, params, workspace);
+    // Issue #301: `codeloop commit` must commit the tree it was pointed at. It
+    // never provisions — a commit is not the start of an implementation.
+    const worktree = sm.worktree ?? null;
     const activeWorkspace = worktree ? worktree.worktreePath : workspace;
 
     const draftResult = await this.draftCommitUseCase.execute({
@@ -593,13 +1308,17 @@ export class RunLifecycleUseCase {
     const bypass = params.yes ?? false;
     const execResult = await this.executeCommitUseCase.execute({
       commitMessage: draftResult.commitMessage,
-      confirmed: bypass,
+      // Only assert explicit confirmation when the caller asked for it; passing a
+      // literal `false` short-circuits the gate and silently cancels the commit.
+      confirmed: bypass ? true : undefined,
       bypassConfirmation: bypass,
       staged: params.staged,
       dryRun: params.dryRun,
       issue: sm.issue,
+      interactive: params.interactive,
       workspaceDir: activeWorkspace,
-      rootWorkspaceDir: workspace
+      rootWorkspaceDir: workspace,
+      createPr: params.createPr
     });
 
     if (execResult.success) {
@@ -616,6 +1335,246 @@ export class RunLifecycleUseCase {
       worktree: execResult.success ? null : worktree,
       message: execResult.success ? NOTE_LIFECYCLE_COMPLETED : 'Commit not executed.'
     };
+  }
+
+  /**
+   * The ONE worktree-decision block for the gated modes
+   * (issue #441: was written twice across YOLO and standard mode, moved verbatim).
+   *
+   * Issue #301: only a leg that actually STARTS implementation provisions.
+   * A gated mode's re-entry (e.g. a YOLO re-run at REVIEW/COMMIT) honours the
+   * descriptor already on the checkpoint instead of creating a second worktree.
+   * The default/implement-mode leg keeps its own call — not in scope.
+   */
+  private async resolveWorktreeAndActiveWorkspace(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    workspace: string,
+    mode: ExecutionMode
+  ): Promise<{
+    worktree: WorktreeDescriptor | null;
+    activeWorkspace: string;
+    hadDescriptor: boolean;
+  }> {
+    const hadDescriptor = Boolean(sm.worktree);
+    const provision = this.shouldProvisionWorktree(sm.currentStage, mode);
+    const worktree = provision
+      ? await this.resolveWorktree(sm, params, workspace)
+      : (sm.worktree ?? null);
+    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+    return { worktree, activeWorkspace, hadDescriptor };
+  }
+
+  /**
+   * The ONE implementation-start leg with teardown-on-refusal
+   * (issue #441: was written twice across YOLO and standard mode, moved verbatim).
+   *
+   * Issue #301: a worktree provisioned by THIS leg is torn down when the leg
+   * fails (a bad plan, a missing approved plan), so the failed run leaves no
+   * orphan worktree DIRECTORY behind. The branch it created is NOT deleted
+   * (issue #420: only the implement-mode leg has provenance-aware branch
+   * cleanup). The leg's own error is what the operator sees — never the cleanup.
+   *
+   * `forwardUserInstructions` preserves the one deliberate behavioural asymmetry
+   * between the modes (AC4): YOLO keeps omitting `userInstructions` from
+   * `StartImplementationUseCase`; standard mode still forwards it. The key order
+   * and the values of every other entry are the mode's own, verbatim.
+   */
+  private async startImplementationWithTeardownGuard(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    workspace: string,
+    hadDescriptor: boolean,
+    worktree: WorktreeDescriptor | null,
+    preflightResult: PreFlightCheckResult | undefined,
+    forwardUserInstructions: boolean
+  ): Promise<StartImplementationResult> {
+    // Issue #301: the teardown below runs ONLY when the leg THROWS — a refusal
+    // (a bad plan) must not leave an orphan worktree DIRECTORY behind.
+    try {
+      return await this.startImplementationUseCase.execute({
+        issue: sm.issue,
+        planPath: params.planPath,
+        planDir: params.planDir,
+        // YOLO keeps OMITTING `userInstructions` (AC4); only standard mode
+        // forwards it into the implementer prompt.
+        ...(forwardUserInstructions ? { userInstructions: params.userInstructions } : {}),
+        configPath: params.configPath,
+        dryRun: params.dryRun,
+        // Issue #247: forward the tri-state `worktree === false` (`--no-worktree`)
+        // across the boundary so StartImplementationUseCase's `skipWorktree`
+        // guardrail really short-circuits instead of re-provisioning through the
+        // adopt path. `resolveWorktree` (above) remains the outer layer.
+        noWorktree: params.worktree === false,
+        workspaceDir: activeWorkspace,
+        hasMergeConflicts: preflightResult?.hasMergeConflicts,
+        mergeBaseBranch: preflightResult?.candidateBaseBranch,
+        // Issue #514: the best-effort sync is now observable and skippable on
+        // every lifecycle leg that can start implementation.
+        noSync: params.noSync,
+        onProgress: params.onProgress
+      });
+    } catch (err: unknown) {
+      if (!hadDescriptor && worktree) {
+        await this.teardownWorktree(worktree, workspace);
+        try {
+          sm.setWorktree(null);
+          await this.stateRepo.save(sm.toSnapshot());
+        } catch {
+          // Best effort: the run fails with the leg's own error.
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * The ONE implementation-evidence probe + `probeError` verdict guard shared by
+   * the gated modes (issue #441: was written twice, moved verbatim).
+   *
+   * The probe answers exactly one question — "is there an implementation?" —
+   * and that question is only meaningful at the IMPLEMENT -> QUALITY_GATE
+   * boundary. YOLO runs it ONLY when the checkpoint is at IMPLEMENT
+   * (`probeOnlyAtImplementStage`); a re-run of the gates from
+   * QUALITY_GATE/COMMIT/COMPLETED answers it implicitly and yields a null diff.
+   * Standard probes unconditionally inside its own IMPLEMENT block.
+   *
+   * A verdict that carries a `probeError` is NOT a verdict: the probe could
+   * not read the tree (no git, not a repository, an unreadable directory).
+   * The run then keeps its pre-existing behaviour instead of parking on an
+   * absence of information.
+   */
+  private async probeImplementationDiffForStage(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    probeOnlyAtImplementStage: false
+  ): Promise<{ implementationDiff: ImplementationDiff; implementationVerdict: ImplementationDiff | null }>;
+  private async probeImplementationDiffForStage(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    probeOnlyAtImplementStage: true
+  ): Promise<{
+    implementationDiff: ImplementationDiff | null;
+    implementationVerdict: ImplementationDiff | null;
+  }>;
+  private async probeImplementationDiffForStage(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    probeOnlyAtImplementStage: boolean
+  ): Promise<{
+    implementationDiff: ImplementationDiff | null;
+    implementationVerdict: ImplementationDiff | null;
+  }> {
+    const implementationDiff =
+      probeOnlyAtImplementStage && sm.currentStage !== STAGE_IMPLEMENT
+        ? null
+        : await this.probeImplementationDiff(sm, params, activeWorkspace);
+
+    const implementationVerdict =
+      implementationDiff !== null && implementationDiff.probeError === null
+        ? implementationDiff
+        : null;
+
+    return { implementationDiff, implementationVerdict };
+  }
+
+  /**
+   * The ONE quality-gate invocation shared by the gated modes
+   * (issue #441: was written twice, byte-identical). The stage-gating,
+   * VACUOUS handling and fail-returns stay per-mode.
+   */
+  private async runStageQualityGate(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string,
+    implementationVerdict: ImplementationDiff | null
+  ): Promise<QualityGateRunResult> {
+    // B. Quality Gates
+    return this.runQualityGateUseCase.execute({
+      issue: sm.issue,
+      planPath: params.planPath ?? sm.planPath,
+      planDir: params.planDir,
+      commands: params.commands,
+      timeoutSeconds: params.timeoutSeconds,
+      dryRun: params.dryRun,
+      configPath: params.configPath,
+      workspaceDir: activeWorkspace,
+      implementationDiff: implementationVerdict
+    });
+  }
+
+  /**
+   * The ONE gate-failure policy read and circuit-breaker trip check shared by
+   * the gated modes (issue #441: was written twice, byte-identical except the
+   * surrounding mode).
+   *
+   * The VACUOUS branch (per-mode message constants) STAYS in each mode and
+   * precedes this call exactly as today: a VACUOUS verdict is a REFUSAL, not a
+   * failure, so it must never consume a gate retry — least of all trip the
+   * circuit breaker (issue #259).
+   *
+   * The retry limit is honoured from the ACTIVE workspace's config (`cwd` is
+   * load-bearing for issue #425), the trip comparison stays the seeded
+   * `implementToGateLoops` counter against the configured limit, and
+   * `handleCircuitBreakerTrip` keeps its abort/warn/pause-for-human contract.
+   *
+   * Returns `null` when the counter is under the limit; each mode then keeps
+   * assembling its own fail-return, unchanged.
+   */
+  private async maybeTripGateBreaker(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string
+  ): Promise<RunLifecycleResult | null> {
+    const config = this.configRepo.loadConfig({ customPath: params.configPath, cwd: activeWorkspace });
+    const maxRetries = config.circuitBreakers?.maxGateRetries ?? DEFAULT_CB_MAX_GATE_RETRIES;
+    const actionOnTrip = config.circuitBreakers?.actionOnTrip ?? CB_ACTION_PAUSE_FOR_HUMAN;
+
+    if (sm.implementToGateLoops >= maxRetries) {
+      return this.handleCircuitBreakerTrip(
+        sm,
+        'qualityGateRetries',
+        maxRetries,
+        sm.implementToGateLoops,
+        actionOnTrip,
+        'Quality gates failed repeatedly.',
+        params.dryRun
+      );
+    }
+
+    return null;
+  }
+
+  /**
+   * The ONE AI-review invocation params block shared by the gated modes
+   * (issue #441: was written twice, byte-identical). Each mode's
+   * review stage-gating guard stays in the mode code.
+   */
+  private async runStageReview(
+    sm: StateMachine,
+    params: RunLifecycleParams,
+    activeWorkspace: string
+  ): Promise<RunReviewResult> {
+    // C. AI PR Review
+    return this.runReviewUseCase.execute({
+      issue: sm.issue,
+      planPath: params.planPath ?? sm.planPath,
+      planDir: params.planDir,
+      standardsPath: params.standardsPath,
+      userInstructions: params.userInstructions,
+      workingDiff: params.workingDiff,
+      reviewOutput: params.reviewOutput,
+      staged: params.staged,
+      baseRef: params.baseRef,
+      dryRun: params.dryRun,
+      configPath: params.configPath,
+      interactive: params.interactive,
+      workspaceDir: activeWorkspace
+    });
   }
 
   /**
@@ -648,6 +1607,9 @@ export class RunLifecycleUseCase {
           type: params.type,
           dryRun: true,
           configPath: params.configPath,
+          skipDiscovery: params.skipDiscovery,
+          planPath: params.planPath,
+          planDir: params.planDir,
           workspaceDir: workspace
         });
       }
@@ -671,6 +1633,9 @@ export class RunLifecycleUseCase {
         type: params.type,
         dryRun: params.dryRun,
         configPath: params.configPath,
+        skipDiscovery: params.skipDiscovery,
+        planPath: params.planPath,
+        planDir: params.planDir,
         workspaceDir: workspace
       });
 
@@ -681,40 +1646,214 @@ export class RunLifecycleUseCase {
       }
     }
 
-    // Resolve isolated worktree for implementation and verification
-    const worktree = await this.resolveWorktree(sm, params, workspace);
-    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+    // #234: bug issues are intentionally parked at DISCOVERY for RCA, and YOLO never
+    // dispatches subagents inline (`codeloop next` does). Return a checkpointed,
+    // actionable park instead of falling through to the quality gates from the wrong
+    // stage. Mirrors executeStandardMode's post-planning return (lines 963-986).
+    //
+    // #237: the park now also holds on RE-ENTRY, when the operator re-ran `yolo`
+    // after a first-run park but the discovery report is still an unpopulated
+    // scaffold. Issue #379: a first-run bug entry and a re-entry park are both
+    // "parked" (both leave outstanding RCA work), so both get the evidence
+    // message naming what is missing and which paths were read.
+    if (sm.currentStage === STAGE_DISCOVERY) {
+      return {
+        success: true, // deliberate halt, not a failure
+        mode: MODE_YOLO,
+        currentStage: STAGE_DISCOVERY,
+        stateMachine: sm,
+        planResult,
+        message:
+          planResult?.discoveryParked === true
+            ? this.formatDiscoveryParkMessage(planResult, sm.pausedAtGate)
+            : withRecordedPauseHint(NOTE_YOLO_PARKED_AT_DISCOVERY, sm.pausedAtGate)
+      };
+    }
+
+    // Resolve isolated worktree for implementation and verification.
+    //
+    // Issue #301: only a leg that actually STARTS implementation provisions.
+    // YOLO A4 keeps its PLAN/APPROVAL provisioning; a YOLO re-entry at
+    // REVIEW/COMMIT honours the descriptor already on the checkpoint instead of
+    // creating a second worktree.
+    const { worktree, activeWorkspace, hadDescriptor } =
+      await this.resolveWorktreeAndActiveWorkspace(sm, params, workspace, MODE_YOLO);
 
     if (sm.currentStage === STAGE_PLAN || sm.currentStage === STAGE_APPROVAL) {
-      implResult = await this.startImplementationUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        configPath: params.configPath,
-        dryRun: params.dryRun,
-        workspaceDir: activeWorkspace,
-        hasMergeConflicts: preflightResult?.hasMergeConflicts,
-        mergeBaseBranch: preflightResult?.candidateBaseBranch
-      });
+      // Issue #301: a worktree provisioned by THIS leg is torn down when the
+      // leg fails, so a bad plan cannot leave an orphan worktree DIRECTORY
+      // behind. The branch it created is NOT deleted (issue #420: only the
+      // implement-mode leg has provenance-aware branch cleanup). The operator's
+      // failure stays the plan error — never the cleanup.
+      implResult = await this.startImplementationWithTeardownGuard(
+        sm,
+        params,
+        activeWorkspace,
+        workspace,
+        hadDescriptor,
+        worktree,
+        preflightResult,
+        // YOLO keeps omitting `userInstructions` (AC4).
+        false
+      );
 
       sm = implResult.stateMachine;
     }
 
+    // Issue #259: the YOLO fast-path PREPARES an implementation but never
+    // dispatches the implementer subagent, so the gates used to certify the
+    // untouched baseline and the pipeline advanced to COMMIT with an empty
+    // diff. Measure the working tree BEFORE the gates run: when it contains no
+    // implementation, park at IMPLEMENT instead of certifying nothing.
+    //
+    // The probe runs exactly where its answer can change the outcome, and
+    // nowhere else: only while the checkpoint is at IMPLEMENT (a re-run of the
+    // gates from QUALITY_GATE/COMMIT/COMPLETED answers the question
+    // implicitly — the pipeline only got there over a tree that carried an
+    // implementation). The shared helper carries the `probeError` guard.
+    const { implementationDiff, implementationVerdict } =
+      await this.probeImplementationDiffForStage(sm, params, activeWorkspace, true);
+
+    if (implementationVerdict && !implementationVerdict.hasChanges) {
+      // A park performs NO `StateMachine.transition()`: `IMPLEMENT -> IMPLEMENT`
+      // is not a legal transition, and the stage was never advanced, so nothing
+      // was reverted. The park reason lives in the result message and in the
+      // returned verdict; the persisted stage + `updatedAt` record the halt.
+
+      // Issue #259 (S10): the plan the fast-path actually implements. The
+      // planner is never dispatched either, so the plan IS the tool's own
+      // blank scaffold — and an implementer directive that points at an empty
+      // plan is a false instruction. An ABSENT implementation result is not a
+      // verdict (the same rule as `probeError`): never refuse on absent
+      // information.
+      //
+      // Issue #263: when the branch's own changes could not be MEASURED, the
+      // park must say that — never "the working tree is unchanged relative to
+      // <base>", which would be a claim the probe cannot support. The
+      // plan-empty advisory belongs to the measured case only; the operator's
+      // first problem is that the tree cannot be certified.
+      const unmeasurable = (implementationVerdict.measurementError ?? null) !== null;
+
+      // Issue #267: a RE-RUN at IMPLEMENT never calls StartImplementation, so
+      // `implResult` is absent. Resolve and read the plan anyway — otherwise
+      // the second park could not tell the operator the plan is STILL blank.
+      let planContentAtPark = implResult?.planContent ?? '';
+      let resolvedPlanPath = implResult?.planPath ?? '';
+      if (!implResult && this.planGenerator) {
+        try {
+          const resolved = this.planGenerator.resolvePlanFile({
+            issue: sm.issue,
+            planPath: sm.planPath ?? undefined,
+            planDir: sm.planDir
+          });
+          if (resolved) {
+            resolvedPlanPath = resolved.planPath;
+            planContentAtPark = this.planGenerator.readPlanDocument(resolved.planPath);
+          }
+        } catch {
+          // Unreadable is not evidence of a blank plan; fall through.
+        }
+      }
+      const planIsEmpty = planContentAtPark.length > 0 && !isPlanContentSubstantive(planContentAtPark);
+      const planPath = resolvedPlanPath || '(the scaffolded plan)';
+
+      // A measured, blank-plan park is recorded so a repeat is distinguishable
+      // from the first occurrence (AC-A5). An unmeasurable park is a DIFFERENT
+      // problem and must not consume this counter.
+      if (planIsEmpty && !unmeasurable) {
+        sm.recordPlanEmptyPark();
+      }
+      const planParkCount = sm.planEmptyParkCount;
+
+      await this.persistCheckpoint(sm, params.dryRun);
+
+      return {
+        success: true, // a deliberate, checkpointed park — exactly like the DISCOVERY park
+        mode: MODE_YOLO,
+        currentStage: STAGE_IMPLEMENT,
+        stateMachine: sm,
+        planResult,
+        implementationResult: implResult,
+        worktree,
+        implementationHalted: true,
+        implementationDiff,
+        implementationPlanEmpty: unmeasurable ? false : planIsEmpty,
+        implementationPlanParkCount: planIsEmpty && !unmeasurable ? planParkCount : undefined,
+        message: unmeasurable
+          ? NOTE_YOLO_NO_IMPLEMENTATION_UNMEASURABLE.replace(
+              '{baseRef}',
+              implementationVerdict.baseRef
+            ).replace('{error}', implementationVerdict.measurementError!)
+          : planIsEmpty
+            ? (planParkCount >= PLAN_EMPTY_PARK_REPEAT_THRESHOLD
+                ? NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN_REPEAT.replace(
+                    '{baseRef}',
+                    implementationVerdict.baseRef
+                  )
+                    .replace('{planPath}', planPath)
+                    .replace('{count}', String(planParkCount))
+                : NOTE_YOLO_NO_IMPLEMENTATION_EMPTY_PLAN.replace(
+                    '{baseRef}',
+                    implementationVerdict.baseRef
+                  ).replace('{planPath}', planPath))
+            : NOTE_YOLO_NO_IMPLEMENTATION.replace('{baseRef}', implementationVerdict.baseRef)
+      };
+    }
+
+    // #234: an unattended run must never depend on RunQualityGateUseCase's
+    // InvalidTransitionError for control flow. Whitelist = exactly the source
+    // stages that use case accepts (run-quality-gate.ts:170-185).
+    const gatesAllowed =
+      sm.currentStage === STAGE_IMPLEMENT ||
+      sm.currentStage === STAGE_QUALITY_GATE ||
+      sm.currentStage === STAGE_COMMIT ||
+      sm.currentStage === STAGE_COMPLETED;
+
+    if (!gatesAllowed) {
+      await this.persistCheckpoint(sm, params.dryRun);
+      return {
+        success: false,
+        mode: MODE_YOLO,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        planResult,
+        implementationResult: implResult,
+        worktree,
+        message: `YOLO fast-path halted before quality gates: stage '${sm.currentStage}' cannot run gates (requires IMPLEMENT/QUALITY_GATE/COMMIT/COMPLETED). State is checkpointed — run \`codeloop next\` for the next directive or \`codeloop resume\` to clear a pause.`
+      };
+    }
+
     // B. Quality Gates
-    const qgResult = await this.runQualityGateUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      commands: params.commands,
-      timeoutSeconds: params.timeoutSeconds,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace
-    });
+    const qgResult = await this.runStageQualityGate(sm, params, activeWorkspace, implementationVerdict);
 
     sm = qgResult.stateMachine;
 
     if (!qgResult.passed) {
+      // Issue #259 (defence in depth): a VACUOUS verdict is a REFUSAL, not a
+      // failure. Nothing was executed, nothing was reverted (the stage was
+      // never advanced), and the verdict must NEVER consume a gate retry —
+      // least of all trip the circuit breaker. This branch therefore precedes
+      // the breaker check below.
+      if (qgResult.vacuous === true) {
+        return {
+          success: true,
+          mode: MODE_YOLO,
+          currentStage: sm.currentStage,
+          stateMachine: sm,
+          planResult,
+          implementationResult: implResult,
+          qualityGateResult: qgResult,
+          worktree,
+          implementationDiff: qgResult.implementationDiff ?? implementationDiff,
+          message: NOTE_GATES_VACUOUS_YOLO
+        };
+      }
+
+      const trip = await this.maybeTripGateBreaker(sm, params, activeWorkspace);
+      if (trip !== null) {
+        return trip;
+      }
+
       return {
         success: false,
         mode: MODE_YOLO,
@@ -728,20 +1867,32 @@ export class RunLifecycleUseCase {
       };
     }
 
-    // C. AI PR Review
-    const reviewResult = await this.runReviewUseCase.execute({
-      issue: sm.issue,
-      planPath: params.planPath,
-      planDir: params.planDir,
-      standardsPath: params.standardsPath,
-      userInstructions: params.userInstructions,
-      workingDiff: params.workingDiff,
-      staged: params.staged,
-      baseRef: params.baseRef,
-      dryRun: params.dryRun,
-      configPath: params.configPath,
-      workspaceDir: activeWorkspace
-    });
+    // #234: same wrong-stage defense as the gate guard above. Whitelist = exactly
+    // the source stages RunReviewUseCase accepts (run-review.ts:216-225). After a
+    // passing gate run this is structurally unreachable; it exists so an anomalous
+    // stage checkpoints with guidance instead of throwing.
+    const reviewAllowed =
+      sm.currentStage === STAGE_QUALITY_GATE ||
+      sm.currentStage === STAGE_REVIEW ||
+      sm.currentStage === STAGE_COMPLETED;
+
+    if (!reviewAllowed) {
+      await this.persistCheckpoint(sm, params.dryRun);
+      return {
+        success: false,
+        mode: MODE_YOLO,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        planResult,
+        implementationResult: implResult,
+        worktree,
+        message: `YOLO fast-path halted before AI review: stage '${sm.currentStage}' cannot run review (requires QUALITY_GATE/REVIEW/COMPLETED). State is checkpointed — run \`codeloop next\` for the next directive or \`codeloop resume\` to clear a pause.`
+      };
+    }
+
+    // C. AI PR Review — one shared params block (issue #441); the
+    // stage-gating guard above stays in the YOLO mode.
+    const reviewResult = await this.runStageReview(sm, params, activeWorkspace);
 
     sm = reviewResult.stateMachine;
 
@@ -779,7 +1930,8 @@ export class RunLifecycleUseCase {
         dryRun: params.dryRun,
         issue: sm.issue,
         workspaceDir: activeWorkspace,
-        rootWorkspaceDir: workspace
+        rootWorkspaceDir: workspace,
+        createPr: params.createPr
       });
 
       if (execResult.success) {
@@ -802,6 +1954,11 @@ export class RunLifecycleUseCase {
       };
     }
 
+    const yoloMessage =
+      reviewResult.verdict.status === VERDICT_SKIPPED
+        ? 'YOLO pipeline passed gates; AI review skipped (advisory). Paused at COMMIT gate.'
+        : 'YOLO pipeline passed gates and review. Paused at COMMIT gate.';
+
     return {
       success: true,
       mode: MODE_YOLO,
@@ -813,7 +1970,7 @@ export class RunLifecycleUseCase {
       qualityGateResult: qgResult,
       reviewResult,
       worktree,
-      message: 'YOLO pipeline passed gates and review. Paused at COMMIT gate.'
+      message: yoloMessage
     };
   }
 
@@ -836,6 +1993,9 @@ export class RunLifecycleUseCase {
         type: params.type,
         dryRun: params.dryRun,
         configPath: params.configPath,
+        skipDiscovery: params.skipDiscovery,
+        planPath: params.planPath,
+        planDir: params.planDir,
         workspaceDir: workspace
       });
 
@@ -847,30 +2007,57 @@ export class RunLifecycleUseCase {
         stateMachine: planResult.stateMachine,
         pausedAtGate: isApproval ? GATE_APPROVAL : undefined,
         planResult,
-        message: isApproval
-          ? NOTE_PAUSED_APPROVAL_GATE
-          : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
+        message:
+          planResult.discoveryParked === true
+            ? this.formatDiscoveryParkMessage(planResult)
+            : isApproval
+              ? NOTE_PAUSED_APPROVAL_GATE
+              : `Pipeline advanced to ${planResult.stateMachine.currentStage}.`
       };
     }
 
-    // Resolve isolated worktree for implementation, verification, and commit
-    const worktree = await this.resolveWorktree(sm, params, workspace);
-    const activeWorkspace = worktree ? worktree.worktreePath : workspace;
+    // Issue #278: a finished standard run returns BEFORE `resolveWorktree`, so
+    // no path through standard mode can provision a worktree for a COMPLETED
+    // checkpoint (the live defect: a bare `codeloop` re-created a task worktree
+    // from a stale, already-merged branch).
+    if (sm.currentStage === STAGE_COMPLETED) {
+      return {
+        success: true,
+        mode: MODE_STANDARD,
+        currentStage: STAGE_COMPLETED,
+        stateMachine: sm,
+        worktree: null,
+        message: NOTE_ALREADY_COMPLETED
+      };
+    }
+
+    // Issue #301 (extends #278 to the rest of the pipeline): provisioning a
+    // worktree is a consequence of STARTING IMPLEMENTATION, not of running the
+    // CLI. A bare `codeloop` at PLAN/IMPLEMENT/QUALITY_GATE/REVIEW is a read:
+    // it honours the descriptor already on the checkpoint (or runs from the
+    // workspace root) and writes NOTHING — the checkpoint stays byte-identical.
+    const { worktree, activeWorkspace, hadDescriptor } =
+      await this.resolveWorktreeAndActiveWorkspace(sm, params, workspace, MODE_STANDARD);
 
     // 2. If at APPROVAL: human review has occurred, start implementation
     let implResult: StartImplementationResult | undefined;
     if (sm.currentStage === STAGE_APPROVAL) {
-      implResult = await this.startImplementationUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        userInstructions: params.userInstructions,
-        configPath: params.configPath,
-        dryRun: params.dryRun,
-        workspaceDir: activeWorkspace,
-        hasMergeConflicts: preflightResult?.hasMergeConflicts,
-        mergeBaseBranch: preflightResult?.candidateBaseBranch
-      });
+      // Issue #301: a worktree provisioned by THIS leg is torn down when the
+      // leg fails (a missing/invalid approved plan), so the failed run leaves
+      // no orphan DIRECTORY behind. The branch it created is NOT deleted
+      // (issue #420: only the implement-mode leg has provenance-aware branch
+      // cleanup). The plan error is what the operator sees.
+      implResult = await this.startImplementationWithTeardownGuard(
+        sm,
+        params,
+        activeWorkspace,
+        workspace,
+        hadDescriptor,
+        worktree,
+        preflightResult,
+        // Standard mode forwards the operator's instructions (AC4).
+        true
+      );
 
       sm = implResult.stateMachine;
     }
@@ -878,20 +2065,47 @@ export class RunLifecycleUseCase {
     // 3. If at IMPLEMENT: run quality gates
     let qgResult: QualityGateRunResult | undefined;
     if (sm.currentStage === STAGE_IMPLEMENT) {
-      qgResult = await this.runQualityGateUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        commands: params.commands,
-        timeoutSeconds: params.timeoutSeconds,
-        dryRun: params.dryRun,
-        configPath: params.configPath,
-        workspaceDir: activeWorkspace
-      });
+      // Issue #259: the standard loop does NOT park — the operator may
+      // legitimately run the gates on a tree they have not committed — but the
+      // gate still receives the implementation-evidence verdict, so a gate
+      // over an unchanged tree is reported as VACUOUS instead of certifying
+      // the untouched baseline. The shared helper carries the `probeError`
+      // guard: a verdict whose tree could not be read is NOT a verdict, so
+      // the gate keeps its pre-existing behaviour.
+      const { implementationDiff, implementationVerdict } =
+        await this.probeImplementationDiffForStage(sm, params, activeWorkspace, false);
+
+      qgResult = await this.runStageQualityGate(sm, params, activeWorkspace, implementationVerdict);
 
       sm = qgResult.stateMachine;
 
       if (!qgResult.passed) {
+        // Issue #259: a VACUOUS verdict is NOT a failure. The standard loop
+        // must not start failing on an unchanged tree, and it must never
+        // claim "Quality gates failed" / "reverted to IMPLEMENT" — nothing
+        // ran and nothing was reverted.
+        if (qgResult.vacuous === true) {
+          return {
+            success: true,
+            mode: MODE_STANDARD,
+            currentStage: sm.currentStage,
+            stateMachine: sm,
+            implementationResult: implResult,
+            qualityGateResult: qgResult,
+            worktree,
+            implementationDiff: qgResult.implementationDiff ?? implementationDiff,
+            message: NOTE_GATES_VACUOUS_STANDARD.replace(
+              '{baseRef}',
+              (qgResult.implementationDiff ?? implementationDiff).baseRef
+            )
+          };
+        }
+
+        const trip = await this.maybeTripGateBreaker(sm, params, activeWorkspace);
+        if (trip !== null) {
+          return trip;
+        }
+
         return {
           success: false,
           mode: MODE_STANDARD,
@@ -905,22 +2119,11 @@ export class RunLifecycleUseCase {
       }
     }
 
-    // 4. If at REVIEW (or just advanced from gates): run AI PR review
+    // 4. If at REVIEW (or just advanced from gates): run AI PR review — one
+    // shared invocation block (issue #441); the stage gate stays per-mode.
     let reviewResult: RunReviewResult | undefined;
     if (sm.currentStage === STAGE_QUALITY_GATE || sm.currentStage === STAGE_REVIEW) {
-      reviewResult = await this.runReviewUseCase.execute({
-        issue: sm.issue,
-        planPath: params.planPath,
-        planDir: params.planDir,
-        standardsPath: params.standardsPath,
-        userInstructions: params.userInstructions,
-        workingDiff: params.workingDiff,
-        staged: params.staged,
-        baseRef: params.baseRef,
-        dryRun: params.dryRun,
-        configPath: params.configPath,
-        workspaceDir: activeWorkspace
-      });
+      reviewResult = await this.runStageReview(sm, params, activeWorkspace);
 
       sm = reviewResult.stateMachine;
 
@@ -959,7 +2162,8 @@ export class RunLifecycleUseCase {
           dryRun: params.dryRun,
           issue: sm.issue,
           workspaceDir: activeWorkspace,
-          rootWorkspaceDir: workspace
+          rootWorkspaceDir: workspace,
+          createPr: params.createPr
         });
 
         if (execResult.success) {
@@ -981,15 +2185,17 @@ export class RunLifecycleUseCase {
         };
       }
 
-      if (params.interactiveCommit && this.confirmationPrompt) {
+      if (params.interactiveCommit && params.interactive !== false && this.confirmationPrompt) {
         const execResult = await this.executeCommitUseCase.execute({
           commitMessage: draftResult.commitMessage,
           bypassConfirmation: false,
+          interactive: params.interactive,
           staged: params.staged,
           dryRun: params.dryRun,
           issue: sm.issue,
           workspaceDir: activeWorkspace,
-          rootWorkspaceDir: workspace
+          rootWorkspaceDir: workspace,
+          createPr: params.createPr
         });
 
         if (execResult.success) {
@@ -1026,17 +2232,6 @@ export class RunLifecycleUseCase {
       };
     }
 
-    if (sm.currentStage === STAGE_COMPLETED) {
-      return {
-        success: true,
-        mode: MODE_STANDARD,
-        currentStage: STAGE_COMPLETED,
-        stateMachine: sm,
-        worktree: null,
-        message: NOTE_ALREADY_COMPLETED
-      };
-    }
-
     return {
       success: true,
       mode: MODE_STANDARD,
@@ -1046,5 +2241,64 @@ export class RunLifecycleUseCase {
       qualityGateResult: qgResult,
       reviewResult
     };
+  }
+
+  private async handleCircuitBreakerTrip(
+    sm: StateMachine,
+    breaker: string,
+    limit: number,
+    actual: number,
+    action: string,
+    extraMessage?: string,
+    dryRun?: boolean
+  ): Promise<RunLifecycleResult> {
+    const baseMsg = `Circuit breaker '${breaker}' tripped: exceeded limit ${limit} (actual: ${actual}).`;
+    const fullMsg = extraMessage ? `${baseMsg} ${extraMessage}` : baseMsg;
+
+    if (action === CB_ACTION_ABORT) {
+      throw new CircuitBreakerTrippedError(breaker, limit, actual, action, fullMsg);
+    }
+
+    if (action === CB_ACTION_WARN) {
+      return {
+        success: false,
+        mode: sm.mode,
+        currentStage: sm.currentStage,
+        stateMachine: sm,
+        message: `[WARNING] ${fullMsg}`
+      };
+    }
+
+    // Default: pause_for_human.
+    // The pause MUST be persisted (issue #218 AC4): an in-memory pause alone leaves
+    // `pausedAtGate: null` on disk, so the next invocation restarts the stage from
+    // scratch with no context.
+    sm.pauseAtGate(GATE_CIRCUIT_BREAKER);
+    await this.persistCheckpoint(sm, dryRun);
+
+    return {
+      success: false,
+      mode: sm.mode,
+      currentStage: sm.currentStage,
+      stateMachine: sm,
+      pausedAtGate: GATE_CIRCUIT_BREAKER,
+      message: `${fullMsg} ${NOTE_PAUSED_CIRCUIT_BREAKER_GATE}: state persisted — re-run after the blocking condition clears.`
+    };
+  }
+
+  /**
+   * Shared checkpoint helper. A storage failure must never replace the lifecycle
+   * diagnostic that triggered it (a read-only mount or full disk must not mask a
+   * circuit-breaker trip or a quota halt).
+   */
+  private async persistCheckpoint(sm: StateMachine, dryRun?: boolean): Promise<void> {
+    if (dryRun) {
+      return;
+    }
+    try {
+      await this.stateRepo.save(sm.toSnapshot());
+    } catch {
+      // Non-fatal by design — the in-memory pause and the returned diagnostic stand.
+    }
   }
 }

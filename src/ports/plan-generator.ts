@@ -1,5 +1,5 @@
 /**
- * agyloop - PlanGeneratorPort Interface
+ * codeloop - PlanGeneratorPort Interface
  *
  * Port interface for persistent plan directory scaffolding, templating,
  * and execution log maintenance.
@@ -12,6 +12,21 @@ export interface ScaffoldParams {
   readonly type?: string | null;
   readonly labels?: readonly string[];
   readonly templatesDir?: string;
+  /**
+   * The checkpoint's tracked directory (issue #283). Explicit intent wins over
+   * the derived slug — but a populated sibling report still wins over an empty
+   * tracked directory, which is what heals the orphaned-report case.
+   *
+   * A checkpoint hint may additionally be IGNORED for an ad-hoc run whose
+   * folder belongs to another title — see `planDirIsCheckpoint` (issue #383).
+   */
+  readonly planDir?: string | null;
+  /**
+   * True when `planDir` is the CHECKPOINT's tracked directory rather than an
+   * explicit `--plan-dir` (issue #383). An ad-hoc run is keyed by its TITLE, so
+   * a checkpoint tracking a DIFFERENT title's folder is a stale hint.
+   */
+  readonly planDirIsCheckpoint?: boolean;
 }
 
 export interface ScaffoldResult {
@@ -21,6 +36,43 @@ export interface ScaffoldResult {
   readonly planPath: string;
   readonly mirrorPath: string;
   readonly summaryPath: string;
+  /** `mkdir` actually happened this run (issue #240/Defect 5). */
+  readonly directoryCreated: boolean;
+  /** Any of plan/mirror/summary was actually written this run. */
+  readonly filesCreated: boolean;
+  /** The target directory already existed and was reused. */
+  readonly adoptedExisting: boolean;
+  /** The checkpoint's folder was ignored because it names another ad-hoc title (issue #383). */
+  readonly checkpointDirIgnored?: boolean;
+}
+
+/** One gate that was declared but never executed (issue #284). */
+export interface SummaryNotRunEntry {
+  readonly id: string;
+  readonly label?: string;
+  readonly reason: string;
+}
+
+/**
+ * One declared smoke check and its verdict (issue #325, AC-17).
+ *
+ * Structurally identical to the domain's `GateSmokeCheck`; declared here so the
+ * port stays dependency-free. `passed: null` means "ran without reporting a
+ * verdict" and renders as an unknown mark — never as a pass.
+ */
+export interface SummarySmokeCheck {
+  readonly id: string;
+  readonly label?: string;
+  readonly passed: boolean | null;
+}
+
+/** One filed plan deviation, as the summary renders it (issue #432). */
+export interface SummaryPlanDeviation {
+  readonly id: string;
+  readonly planSection: string;
+  readonly planLiteral: string;
+  readonly implementedAssertion: string;
+  readonly acknowledged: boolean;
 }
 
 export interface SummaryUpdateData {
@@ -30,25 +82,126 @@ export interface SummaryUpdateData {
   readonly model?: string;
   readonly duration?: string;
   readonly notes?: string;
+  /**
+   * The remediation ROUND this write belongs to (issue #376, AC14).
+   *
+   * Absent or `1` addresses the unlabelled `<N>. Stage` row exactly as before.
+   * `R > 1` names `${base} (round R)`: the first such write renames the plain
+   * row to `${base} (round 1)` and appends the `R` row after it, so a later
+   * round can never silently replace an earlier one.
+   */
+  readonly round?: number;
+  /**
+   * The Quality Gate's OWN timer for this round (issue #376, AC16).
+   *
+   * The Duration column carries ONE clock — the wall clock — so the gate's
+   * self-reported number renders as a named note beside the table instead of
+   * packing two units into a non-summable cell. `text` is pre-rendered by the
+   * application layer (`formatGateReportedDuration`).
+   */
+  readonly gateSelfReport?: {
+    readonly round: number;
+    readonly text: string;
+  };
   readonly buildStatus?: string;
   readonly testsStatus?: string;
   readonly reviewNote?: string;
-  readonly buildSystem?: string;
+  /**
+   * ONE review note PER ROUND (issue #284, AC6; re-scoped by issue #376, AC17).
+   *
+   * `## Review Notes` accumulates one bullet per round, sorted by round. A
+   * SECOND round no longer erases the first: the section keeps every verdict
+   * and marks the highest round ` (current)`. With a single round the bullet is
+   * byte-identical to the pre-#376 shape.
+   */
+  readonly reviewRecord?: {
+    readonly round: number;
+    readonly verdict: string;
+    readonly baseCommit: string | null;
+    readonly timestamp: string;
+    readonly summary: string;
+  };
+  /**
+   * Gates that were declared but NOT executed (issue #284). Rendered as one
+   * `- **Not Run:** …` line, so "never attempted" is distinguishable from
+   * "passed". Tri-state (issue #338): `undefined` leaves the line untouched,
+   * `[]` removes it, a non-empty list replaces it.
+   */
+  readonly notRun?: readonly SummaryNotRunEntry[];
+  /**
+   * Finalizes the summary when the run lands at COMPLETED (issue #284).
+   *
+   * Any stage row still `PENDING` / `IN PROGRESS` becomes `NOT RECORDED`, and
+   * the metric defaults become `not recorded`. A completed run must never read
+   * as one that has not started.
+   */
+  readonly finalize?: boolean;
+  /**
+   * The filed report's build system (issue #338). Tri-state, like the list
+   * metrics below: `undefined` leaves the line untouched, `null` REMOVES it
+   * (this round filed no report, so it names no ecosystem).
+   */
+  readonly buildSystem?: string | null;
   readonly detectedEcosystems?: readonly string[] | string;
+  /**
+   * Commands THIS round measured (issue #338). `undefined` leaves the line
+   * untouched, `[]` removes it, a non-empty list replaces it.
+   */
   readonly executedCommands?: readonly string[];
+  /**
+   * Declared smoke checks, each with its own verdict (issue #325, AC-17).
+   * Rendered as its own line so the command list stays commands only.
+   * `undefined` leaves the line untouched, `[]` removes it.
+   */
+  readonly smokeChecks?: readonly SummarySmokeCheck[];
+  /**
+   * The round's smoke-protocol verdict (issue #338): a wire token
+   * (`PASSED` / `FAILED` / `NOT_DECLARED`) or `SMOKE_PROTOCOL_NOT_REPORTED`.
+   * `undefined` leaves the line untouched; `null` removes it.
+   */
+  readonly smokeProtocol?: string | null;
   readonly commitHash?: string;
   readonly commitMessage?: string;
   readonly commitTimestamp?: string;
   readonly planRevisionCount?: number;
+  /**
+   * The implementer's filed plan deviations (issue #432).
+   *
+   * Tri-state, like every other metric: `undefined` leaves the line untouched,
+   * `[]` removes it, a non-empty list renders one line naming each record and
+   * its acknowledgement state.
+   */
+  readonly planDeviations?: readonly SummaryPlanDeviation[];
   readonly prComments?: readonly string[] | string;
   readonly commitRejection?: {
     readonly targetStage?: string;
     readonly reason?: string;
   } | string;
+  readonly abortEvent?: {
+    readonly timestamp: string;
+    readonly stage: string;
+    readonly subagent?: string;
+    readonly filesTouched?: readonly string[];
+    readonly teardownMetrics?: Record<string, unknown> | string;
+    readonly reason?: string;
+  };
 }
 
 export interface GeneratePlanOptions {
   readonly targetDir: string;
+  /**
+   * The canonical folder name DERIVED by this call, when the caller derived
+   * one (issue #364 review). Omit it when `targetDir` is an ADOPTED directory:
+   * a pre-#364 folder name can exceed the 143-byte bound, and the filesystem
+   * accepting the name is proof enough. The filename assertion always runs.
+   */
+  readonly folderName?: string | null;
+  /**
+   * The exact primary artifact to write (issue #283). When supplied, the
+   * existing-primary reuse has already chosen it (e.g. a populated
+   * `[Discovery] - <title>.md` that must be reused byte-for-byte).
+   */
+  readonly planPath?: string | null;
   readonly type?: 'discovery' | 'implementation';
   readonly title?: string;
   readonly issueNumber?: number | string;
@@ -63,7 +216,10 @@ export interface GeneratePlanResult {
   readonly planPath: string;
   readonly mirrorPath: string | null;
   readonly content: string;
+  /** The spec content when it differs from `content` (discovery scaffolds). */
+  readonly mirrorContent: string | null;
   readonly created: boolean;
+  readonly mirrorCreated: boolean;
 }
 
 export interface GenerateSummaryLogOptions {
@@ -105,6 +261,16 @@ export interface PlanGeneratorPort {
   scaffoldPlanDirectory(params: ScaffoldParams): ScaffoldResult;
 
   /**
+   * The plan type a scaffold would resolve from a title + labels (issue #364).
+   *
+   * `--type auto` delegates here, so a `--dry-run` can preview the SAME
+   * artifact prefix the real run writes (`[Discovery] - ` vs
+   * `[Implementation] - `) instead of always guessing implementation.
+   * Optional so existing fake generators need no change.
+   */
+  detectPlanType?(title: string, labels?: readonly string[]): 'discovery' | 'implementation';
+
+  /**
    * Generates a plan document in targetDir.
    */
   generatePlan(options: GeneratePlanOptions): GeneratePlanResult;
@@ -115,7 +281,7 @@ export interface PlanGeneratorPort {
   generateSummaryLog(options: GenerateSummaryLogOptions): GenerateSummaryLogResult;
 
   /**
-   * Updates stage status or metrics in an existing AgyLoop Summary.md file.
+   * Updates stage status or metrics in an existing CodeLoop Summary.md file.
    */
   updateSummaryLog(summaryFilePath: string, updateData: SummaryUpdateData): boolean;
 
@@ -133,4 +299,14 @@ export interface PlanGeneratorPort {
    * Reads the plan document content from disk.
    */
   readPlanDocument(planPath: string): string;
+
+  /**
+   * Returns the sha256 of the NORMALIZED plan bytes (issue #298), or `null`
+   * when the file cannot be read. Checkbox ticks and line-ending noise are
+   * normalized away, so they are not plan edits.
+   *
+   * Optional: a legacy/external mock without it simply reports plan integrity
+   * as UNVERIFIED instead of failing.
+   */
+  hashPlanDocument?(planPath: string): string | null;
 }

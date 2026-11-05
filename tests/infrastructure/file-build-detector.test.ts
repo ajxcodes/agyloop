@@ -1,15 +1,20 @@
+const { gitStatus } = require('../helpers/sandbox.ts');
 /**
- * agyloop - FileBuildDetector Infrastructure Tests
+ * codeloop - FileBuildDetector Infrastructure Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
+const net = require('node:net');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('node:child_process');
 
 const {
   FileBuildDetector,
+  ResolveSubagentUseCase,
+  FileConfigRepository,
   ECOSYSTEM_NODE,
   ECOSYSTEM_GO,
   ECOSYSTEM_RUST,
@@ -27,7 +32,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-build-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-build-test-'));
   });
 
   afterEach(() => {
@@ -310,6 +315,86 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       assert.strictEqual(resolved[0].command, 'cargo clippy');
       assert.strictEqual(resolved[1].command, 'cargo test --release');
     });
+
+    // #333 AC1 — the `codeloop init` verification profile is live configuration.
+    const BASE_CONFIG = {
+      models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+      options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+    };
+
+    test('FBD-333-1 verification.gates is consumed as a config-tier source (#333 AC1)', async () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({ name: 'ac333', scripts: { test: 'node --test' } }),
+        'utf8'
+      );
+
+      const detector = new FileBuildDetector();
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Gate', command: 'echo AC-333-CONFIG-GATE' }]
+        }
+      } as any);
+
+      assert.strictEqual(plan.source, 'config');
+      assert.strictEqual(plan.commands[0].command, 'echo AC-333-CONFIG-GATE');
+      assert.strictEqual(plan.sourceDetail, 'configuration verification.gates override');
+    });
+
+    test('FBD-333-2 legacy gateCommands outranks verification.gates (#333 AC1)', async () => {
+      fs.writeFileSync(path.join(tempDir, 'go.mod'), 'module app\n', 'utf8');
+
+      const detector = new FileBuildDetector();
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        options: { ...BASE_CONFIG.options, gateCommands: ['echo LEGACY-GATE'] },
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Gate', command: 'echo AC-333-CONFIG-GATE' }]
+        }
+      } as any);
+
+      assert.strictEqual(plan.commands[0].command, 'echo LEGACY-GATE');
+      assert.strictEqual(plan.commands.length, 1);
+    });
+
+    test('FBD-333-3 verification.gates outranks act and auto-detection (#333 AC1)', async () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({ name: 'ac333', scripts: { test: 'node --test' } }),
+        'utf8'
+      );
+
+      const detector = new FileBuildDetector();
+      detector.resolveActCommand = () => ({ id: 'act', label: 'Act', command: 'act' });
+
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        verification: {
+          gates: [{ id: 'ac-333', label: 'AC-333 Gate', command: 'echo AC-333-CONFIG-GATE' }]
+        }
+      } as any);
+
+      assert.strictEqual(plan.source, 'config');
+      assert.deepStrictEqual(plan.commands.map((def: { command: string }) => def.command), [
+        'echo AC-333-CONFIG-GATE'
+      ]);
+    });
+
+    test('FBD-333-4 a bare command verification gate is normalised (#333 AC1)', async () => {
+      fs.writeFileSync(path.join(tempDir, 'go.mod'), 'module app\n', 'utf8');
+
+      const detector = new FileBuildDetector();
+      const plan = await detector.resolveCommandPlan(tempDir, {
+        ...BASE_CONFIG,
+        verification: { gates: ['echo BARE-GATE'] }
+      } as any);
+
+      assert.deepStrictEqual(plan.commands.map((def: { command: string }) => def.command), [
+        'echo BARE-GATE'
+      ]);
+      assert.strictEqual(plan.commands[0].id, 'config-cmd-1');
+    });
   });
 
   describe('Act & Container Quality Gates (AC1 - AC5)', () => {
@@ -330,8 +415,14 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       fs.writeFileSync(path.join(workflowsDir, 'test.yml'), 'name: Test\n', 'utf8');
 
       const detector = new FileBuildDetector();
-      // Stub hasActBinary and resolveContainerSocket to ensure deterministic resolution
+      // Stub all three decision seams: act presence, runtime availability, and
+      // the socket. `resolveContainerRuntime` is environment-dependent (it looks
+      // for podman/docker on PATH), so leaving it real made this test pass on a
+      // host with a container runtime and fail inside a container image without
+      // one (#284) — the gate was skipped and DEFAULT_GATE_COMMANDS (2 commands)
+      // fell through. The resolver must be decided by these seams alone.
       detector.hasActBinary = () => true;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
 
       const config = {
@@ -364,7 +455,8 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       const detector = new FileBuildDetector();
       detector.hasActBinary = () => true;
 
-      // When Podman socket is resolved
+      // When Podman socket is resolved (the probe must honour this seam).
+      detector.resolveContainerRuntime = () => 'podman';
       detector.resolveContainerSocket = () => ({
         socketPath: 'unix:///run/user/1000/podman/podman.sock',
         runtime: 'podman'
@@ -400,6 +492,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
 
       const detector = new FileBuildDetector();
       detector.hasActBinary = () => true;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
 
       const detected = await detector.detect(tempDir, {
@@ -418,6 +511,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       const detector = new FileBuildDetector();
       // Case A: Act binary missing
       detector.hasActBinary = () => false;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
 
       const resolvedNoAct = await detector.resolveCommands(tempDir, {
@@ -427,9 +521,11 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
       assert.strictEqual(resolvedNoAct.length, 1);
       assert.strictEqual(resolvedNoAct[0].command, 'npm test');
 
-      // Case B: Container socket missing
+      // Case B: no usable container runtime (#295 — a missing socket is not
+      // evidence; the runtime health probe decides and fails closed here).
       detector.hasActBinary = () => true;
       detector.resolveContainerSocket = () => null;
+      detector.probeContainerRuntime = () => null;
 
       const resolvedNoSocket = await detector.resolveCommands(tempDir, {
         models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
@@ -440,6 +536,7 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
 
       // Case C: containerGates explicitly set to false
       detector.hasActBinary = () => true;
+      detector.resolveContainerRuntime = () => 'docker';
       detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
       const resolvedDisabled = await detector.resolveCommands(tempDir, {
         models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
@@ -480,5 +577,782 @@ describe('FileBuildDetector (Infrastructure Layer)', () => {
         Object.defineProperty(process, 'platform', { value: originalPlatform });
       }
     });
+  });
+
+  describe('DOCKER_HOST endpoint resolution (Issue #232)', () => {
+    const savedEnv: { DOCKER_HOST?: string; XDG_RUNTIME_DIR?: string } = {};
+
+    beforeEach(() => {
+      savedEnv.DOCKER_HOST = process.env.DOCKER_HOST;
+      savedEnv.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+      // Isolate the podman branch with an empty XDG runtime dir
+      process.env.XDG_RUNTIME_DIR = path.join(tempDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+    });
+
+    afterEach(() => {
+      if (savedEnv.DOCKER_HOST === undefined) delete process.env.DOCKER_HOST;
+      else process.env.DOCKER_HOST = savedEnv.DOCKER_HOST;
+      if (savedEnv.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
+    });
+
+    /**
+     * Runs `body` with `/var/run/docker.sock` stubbed absent (host-machine determinism)
+     * and `console.warn` captured. ALWAYS restores both in a finally block (rule: sibling
+     * tests share the same process, so stubs must never leak).
+     */
+    async function withIsolatedFs<T>(body: (warnings: string[]) => T): Promise<T> {
+      const originalExistsSync = fs.existsSync;
+      const originalWarn = console.warn;
+      const warnings: string[] = [];
+      fs.existsSync = (p: any) => (String(p) === '/var/run/docker.sock' ? false : originalExistsSync(p));
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(' '));
+      };
+      try {
+        return await body(warnings);
+      } finally {
+        fs.existsSync = originalExistsSync;
+        console.warn = originalWarn;
+      }
+    }
+
+    test('T1: a dead DOCKER_HOST unix socket resolves to null WITHOUT a warning (#295: pure)', async () => {
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      await withIsolatedFs(async (warnings) => {
+        assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
+        assert.deepStrictEqual(warnings, [], 'socket resolution must not warn; resolveActCommand owns the warning');
+      });
+    });
+
+    test('T2: DOCKER_HOST pointing at a non-socket path resolves to null WITHOUT a warning', async () => {
+      const regularFile = path.join(tempDir, 'not-a-socket');
+      fs.writeFileSync(regularFile, 'definitely not a socket', 'utf8');
+      process.env.DOCKER_HOST = `unix://${regularFile}`;
+
+      await withIsolatedFs(async (warnings) => {
+        assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
+        assert.deepStrictEqual(warnings, [], 'a non-socket path is not a warning site');
+      });
+    });
+
+    test('T3: live unix socket passes through verbatim with runtime docker', async () => {
+      const liveSock = path.join(tempDir, 'live.sock');
+      process.env.DOCKER_HOST = `unix://${liveSock}`;
+      const server = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(liveSock, resolve);
+      });
+      try {
+        await withIsolatedFs(async () => {
+          assert.deepStrictEqual(FileBuildDetector.resolveContainerSocket(), {
+            socketPath: `unix://${liveSock}`,
+            runtime: 'docker'
+          });
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        fs.rmSync(liveSock, { force: true });
+      }
+    });
+
+    test('T4: non-unix DOCKER_HOST schemes pass through unchanged', async () => {
+      process.env.DOCKER_HOST = 'tcp://127.0.0.1:2375';
+
+      await withIsolatedFs(async () => {
+        assert.deepStrictEqual(FileBuildDetector.resolveContainerSocket(), {
+          socketPath: 'tcp://127.0.0.1:2375',
+          runtime: 'docker'
+        });
+      });
+    });
+
+    test('T5: DOCKER_HOST unset with no local sockets resolves to null', async () => {
+      delete process.env.DOCKER_HOST;
+
+      await withIsolatedFs(async () => {
+        assert.strictEqual(FileBuildDetector.resolveContainerSocket(), null);
+      });
+    });
+
+    test('T6: a DEAD runtime skips the act gate and falls back to host commands', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      const detector = new FileBuildDetector();
+      detector.hasActBinary = () => true;
+      // #295: the runtime is what decides availability, and this one is dead.
+      detector.resolveContainerRuntime = () => 'docker';
+      detector.probeContainerRuntime = () => null;
+      const config = {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+      };
+
+      await withIsolatedFs(async (warnings) => {
+        assert.strictEqual(detector.resolveActCommand(tempDir, config), null);
+        assert.strictEqual(warnings.length, 1, 'exactly one container warning, at gate selection only');
+        assert.ok(warnings[0].includes('no usable container runtime'));
+
+        const resolved = await detector.resolveCommands(tempDir, config);
+        assert.strictEqual(resolved.length, 1);
+        assert.strictEqual(resolved[0].command, 'npm test');
+        assert.ok(resolved.every((c: { id: string }) => c.id !== CMD_ID_ACT));
+      });
+    });
+
+    test('T7: a HEALTHY runtime with no socket probes as fork-exec and act gets no socket flag (#295)', async () => {
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      process.env.XDG_RUNTIME_DIR = path.join(tempDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const podman = path.join(binDir, 'podman');
+      fs.writeFileSync(podman, '#!/bin/sh\nexit 0\n', 'utf8');
+      fs.chmodSync(podman, 0o755);
+      const prevPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+
+      try {
+        await withIsolatedFs(async () => {
+          const probe = FileBuildDetector.probeContainerRuntime();
+          assert.deepStrictEqual(probe, {
+            runtime: 'podman',
+            socketPath: null,
+            connection: 'fork-exec'
+          });
+
+          const detector = new FileBuildDetector();
+          detector.hasActBinary = () => true;
+          const actCommand = detector.resolveActCommand(tempDir, {
+            models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+            options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+          });
+          assert.strictEqual(actCommand.id, CMD_ID_ACT);
+          assert.strictEqual(actCommand.command, 'act');
+          assert.ok(!actCommand.command.includes('--container-daemon-socket'));
+        });
+      } finally {
+        process.env.PATH = prevPath;
+      }
+    });
+
+    test('T8: a runtime that FAILS its native probe is a clear skip, never a hard failure (#295/#232)', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      process.env.XDG_RUNTIME_DIR = path.join(tempDir, 'xdg');
+      fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+      process.env.DOCKER_HOST = `unix://${path.join(tempDir, 'missing.sock')}`;
+
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const podman = path.join(binDir, 'podman');
+      fs.writeFileSync(podman, '#!/bin/sh\nexit 1\n', 'utf8');
+      fs.chmodSync(podman, 0o755);
+      const prevPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
+
+      try {
+        await withIsolatedFs(async (warnings) => {
+          assert.strictEqual(FileBuildDetector.probeContainerRuntime(), null);
+
+          const detector = new FileBuildDetector();
+          detector.hasActBinary = () => true;
+          const config = {
+            models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+            options: { commitAfter: false, gateTimeoutSeconds: 300, autoApproveInYolo: true, enableMcpInPlanner: true }
+          };
+          assert.strictEqual(detector.resolveActCommand(tempDir, config), null);
+          assert.strictEqual(warnings.length, 1);
+
+          const resolved = await detector.resolveCommands(tempDir, config);
+          assert.strictEqual(resolved.length, 1);
+          assert.strictEqual(resolved[0].command, 'npm test');
+        });
+      } finally {
+        process.env.PATH = prevPath;
+      }
+    });
+
+    test('T9: a read-only command emits no container warning (#295: warning only at gate selection)', () => {
+      const { spawnSync } = require('node:child_process');
+      const repoRoot = path.resolve(__dirname, '..', '..');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+      const binDir = path.join(tempDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const podman = path.join(binDir, 'podman');
+      fs.writeFileSync(podman, '#!/bin/sh\nexit 1\n', 'utf8');
+      fs.chmodSync(podman, 0o755);
+      fs.mkdirSync(path.join(tempDir, '.home'), { recursive: true });
+
+      const result = spawnSync(process.execPath, [path.join(repoRoot, 'bin', 'codeloop.js'), 'status'], {
+        cwd: tempDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          HOME: path.join(tempDir, '.home'),
+          DOCKER_HOST: `unix://${path.join(tempDir, 'missing.sock')}`,
+          XDG_RUNTIME_DIR: path.join(tempDir, 'xdg'),
+          AGY_SUBAGENT: ''
+        }
+      });
+
+      assert.ok(
+        !`${result.stderr}`.includes('container'),
+        `a read-only command must not warn about the container runtime, got:\n${result.stderr}`
+      );
+    });
+  });
+
+  describe('Environment-independent container gate resolution (#284)', () => {
+    /**
+     * Points PATH at a directory whose ONLY executable is a `which` that always
+     * exits 1. For the duration of `body`, the runtime lookups
+     * (`resolveContainerRuntime`, `hasActBinary`) therefore answer "absent" for
+     * podman/docker/act regardless of what the host has installed — the
+     * Alpine CI condition that made AC2 host-dependent.
+     *
+     * PATH is restored in a finally block: sibling tests share this process, so
+     * an environment stub must never leak.
+     */
+    async function withRuntimeFreePath<T>(body: () => Promise<T> | T): Promise<T> {
+      const binDir = path.join(tempDir, 'runtime-free-bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const which = path.join(binDir, 'which');
+      fs.writeFileSync(which, '#!/bin/sh\nexit 1\n', 'utf8');
+      fs.chmodSync(which, 0o755);
+
+      const prevPath = process.env.PATH;
+      process.env.PATH = binDir;
+      try {
+        return await body();
+      } finally {
+        if (prevPath === undefined) delete process.env.PATH;
+        else process.env.PATH = prevPath;
+      }
+    }
+
+    function containerGateConfig(): any {
+      return {
+        models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+        options: {
+          commitAfter: false,
+          gateTimeoutSeconds: 300,
+          autoApproveInYolo: true,
+          enableMcpInPlanner: true,
+          containerGates: true,
+          act: { enabled: true, workflow: '.github/workflows/ci.yml', job: 'test-job' }
+        }
+      };
+    }
+
+    test('REG1: a stubbed healthy runtime resolves the act gate even with NO runtime binary installed', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+
+      await withRuntimeFreePath(async () => {
+        // Nothing is installed: the REAL lookups report no runtime and no act,
+        // which is exactly the Alpine CI condition.
+        assert.strictEqual(FileBuildDetector.resolveContainerRuntime(), null);
+        assert.strictEqual(FileBuildDetector.hasActBinary(), false);
+
+        const detector = new FileBuildDetector();
+        detector.hasActBinary = () => true;
+        detector.resolveContainerRuntime = () => 'docker';
+        detector.resolveContainerSocket = () => ({ socketPath: 'unix:///var/run/docker.sock', runtime: 'docker' });
+
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+          warnings.push(args.map(String).join(' '));
+        };
+        try {
+          const actCommand = detector.resolveActCommand(tempDir, containerGateConfig());
+          assert.ok(actCommand, 'a healthy stubbed runtime must still select the act gate');
+          assert.strictEqual(actCommand.id, CMD_ID_ACT);
+
+          const resolved = await detector.resolveCommands(tempDir, containerGateConfig());
+          assert.strictEqual(resolved.length, 1, 'the act gate replaces the host commands, it does not join them');
+          assert.strictEqual(resolved[0].id, CMD_ID_ACT);
+          assert.strictEqual(resolved[0].label, CMD_LABEL_ACT);
+          assert.strictEqual(resolved[0].command, 'act -W .github/workflows/ci.yml -j test-job');
+          assert.deepStrictEqual(warnings, [], 'a selected gate must not warn about the runtime');
+        } finally {
+          console.warn = originalWarn;
+        }
+      });
+    });
+
+    test('REG2: an absent runtime is a clear skip, never a hard failure (#232/#295), independent of PATH', async () => {
+      fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest' } }), 'utf8');
+      fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+
+      await withRuntimeFreePath(async () => {
+        const detector = new FileBuildDetector();
+        detector.hasActBinary = () => true;
+        // Explicitly absent: no runtime answered the probe.
+        detector.resolveContainerRuntime = () => null;
+
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+          warnings.push(args.map(String).join(' '));
+        };
+        try {
+          assert.strictEqual(detector.resolveActCommand(tempDir, containerGateConfig()), null);
+          assert.strictEqual(warnings.length, 1, 'exactly one warning, at gate selection');
+          assert.ok(warnings[0].includes('no usable container runtime'));
+
+          const resolved = await detector.resolveCommands(tempDir, containerGateConfig());
+          assert.strictEqual(resolved.length, 1);
+          assert.strictEqual(resolved[0].command, 'npm test');
+          assert.ok(resolved.every((cmd: { id: string }) => cmd.id !== CMD_ID_ACT));
+        } finally {
+          console.warn = originalWarn;
+        }
+      });
+    });
+  });
+});
+
+describe('FileBuildDetector - lint and command-plan provenance (issue #298)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-build-lint-'));
+  });
+
+  afterEach(() => {
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  function writePackage(scripts: Record<string, string>, lockfile?: string): void {
+    fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ name: 'lint-probe', scripts }), 'utf8');
+    if (lockfile) {
+      fs.writeFileSync(path.join(tempDir, lockfile), '', 'utf8');
+    }
+  }
+
+  function configWith(commands: string[]): any {
+    return {
+      models: { planner: 'pro', implementer: 'inherit', gate: 'flash_lite', reviewer: 'flash' },
+      options: {
+        commitAfter: false,
+        gateTimeoutSeconds: 300,
+        autoApproveInYolo: true,
+        enableMcpInPlanner: true,
+        gateCommands: commands
+      }
+    };
+  }
+
+  test('FBD-L1: the Node detector emits typecheck, lint, test in that order', async () => {
+    writePackage({ typecheck: 'tsc --noEmit', lint: 'eslint .', test: 'node --test' });
+
+    const detected = await new FileBuildDetector().detect(tempDir);
+
+    assert.deepStrictEqual(
+      detected.commands.map((cmd: any) => cmd.command),
+      ['npm run typecheck', 'npm run lint', 'npm test']
+    );
+    assert.deepStrictEqual(
+      detected.commands.map((cmd: any) => cmd.id),
+      ['typecheck', 'lint', 'test']
+    );
+  });
+
+  test('FBD-L2: no lint script means no lint command', async () => {
+    writePackage({ typecheck: 'tsc --noEmit', test: 'node --test' });
+
+    const detected = await new FileBuildDetector().detect(tempDir);
+
+    assert.ok(!detected.commands.some((cmd: any) => cmd.command.split(/\s+/).includes('lint')));
+  });
+
+  test('FBD-P1: precedence is explicit > plan > config > auto-detect', async () => {
+    writePackage({ typecheck: 'tsc --noEmit', lint: 'eslint .', test: 'node --test' });
+    const detector = new FileBuildDetector();
+
+    const explicit = await detector.resolveCommandPlan(tempDir, configWith(['echo config']), {
+      explicitCommands: ['echo explicit'],
+      planTargets: ['echo plan']
+    });
+    assert.strictEqual(explicit.source, 'explicit');
+    assert.strictEqual(explicit.commands[0].command, 'echo explicit');
+
+    const plan = await detector.resolveCommandPlan(tempDir, configWith(['echo config']), {
+      planTargets: ['echo plan']
+    });
+    assert.strictEqual(plan.source, 'plan');
+    assert.deepStrictEqual(
+      plan.commands.map((cmd: any) => cmd.command),
+      ['echo plan', 'npm run lint']
+    );
+
+    const config = await detector.resolveCommandPlan(tempDir, configWith(['echo config']));
+    assert.strictEqual(config.source, 'config');
+
+    const detected = await detector.resolveCommandPlan(tempDir);
+    assert.strictEqual(detected.source, 'auto-detect');
+    assert.deepStrictEqual(
+      detected.commands.map((cmd: any) => cmd.command),
+      ['npm run typecheck', 'npm run lint', 'npm test']
+    );
+  });
+
+  test('FBD-P2: plan targets keep their order and mandatory lint is appended last', async () => {
+    writePackage({ lint: 'eslint .', test: 'node --test' });
+    const detector = new FileBuildDetector();
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run build', 'npm test'],
+      planPath: '/repo/artifacts/plans/41/implementation_plan.md'
+    });
+
+    assert.strictEqual(resolved.source, 'plan');
+    assert.strictEqual(resolved.lintRequired, true);
+    assert.strictEqual(resolved.lintCommand, 'npm run lint');
+    assert.deepStrictEqual(resolved.appended, ['npm run lint']);
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run build', 'npm test', 'npm run lint']
+    );
+    assert.strictEqual(resolved.planPath, '/repo/artifacts/plans/41/implementation_plan.md');
+  });
+
+  test('FBD-P3: no plan targets falls back with a visible detail', async () => {
+    fs.writeFileSync(path.join(tempDir, 'README.md'), '# docs', 'utf8');
+    const detector = new FileBuildDetector();
+
+    const resolved = await detector.resolveCommandPlan(tempDir);
+
+    assert.strictEqual(resolved.source, 'default');
+    assert.ok(resolved.sourceDetail.includes('safe default'));
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      DEFAULT_GATE_COMMANDS.map((cmd: any) => cmd.command)
+    );
+    assert.deepStrictEqual(resolved.appended, []);
+  });
+});
+
+describe('Workflow lint composition (#369, was #368)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-workflow-lint-'));
+  });
+
+  afterEach(() => {
+    if (tempDir && fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+
+  function runGit(args: string[]): any {
+    return gitStatus(tempDir, args, { stdio: 'pipe' });
+  }
+
+  function runGitOk(args: string[]): string {
+    const result = runGit(args);
+    assert.strictEqual(
+      result.status,
+      0,
+      `git ${args.join(' ')} failed (${result.status}): ${result.stderr || result.stdout}`
+    );
+    return result.stdout;
+  }
+
+  /** A real repo whose committed workflow file may be left MODIFIED. */
+  function seedRepo(options: { modified?: boolean } = {}): void {
+    runGitOk(['init', '-q']);
+    runGitOk(['config', 'user.email', 'smoke@example.test']);
+    runGitOk(['config', 'user.name', 'smoke']);
+    fs.mkdirSync(path.join(tempDir, '.github', 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, '.github', 'workflows', 'ci.yml'), 'name: CI\n', 'utf8');
+    fs.writeFileSync(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'probe', scripts: { lint: 'eslint .' } }),
+      'utf8'
+    );
+    runGitOk(['add', '-A']);
+    runGitOk(['commit', '-qm', 'seed']);
+    if (options.modified !== false) {
+      fs.appendFileSync(path.join(tempDir, '.github', 'workflows', 'ci.yml'), '# touched\n');
+    }
+  }
+
+  function stubbedDetector(options: {
+    act?: boolean;
+    actionlint?: boolean;
+  } = {}): any {
+    const detector = new FileBuildDetector();
+    detector.hasActBinary = () => options.act === true;
+    detector.hasActionlintBinary = () => options.actionlint === true;
+    detector.probeContainerRuntime = () =>
+      options.act
+        ? { runtime: 'docker', socketPath: null, connection: 'fork-exec' }
+        : null;
+    return detector;
+  }
+
+  test('FBD-W1: a workflow diff + a plan with lint only appends actionlint (#369, AC-14)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: false, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.strictEqual(resolved.source, 'plan');
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint', 'actionlint']
+    );
+    assert.deepStrictEqual(resolved.appended, ['actionlint']);
+    assert.deepStrictEqual(resolved.composition, {
+      required: true,
+      files: ['.github/workflows/ci.yml'],
+      command: 'actionlint',
+      unavailableReason: null
+    });
+  });
+
+  test('FBD-W2: act is preferred over actionlint when it can run the CI job (#369)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: true, actionlint: true });
+    const config = {
+      options: { containerGates: true, act: { enabled: true, job: 'lint' } }
+    };
+
+    const resolved = await detector.resolveCommandPlan(tempDir, config, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint', 'act -j lint']
+    );
+    assert.strictEqual(resolved.composition.required, true);
+    assert.strictEqual(resolved.composition.command, 'act -j lint');
+    assert.ok(!resolved.commands.some((cmd: any) => cmd.command.includes('actionlint')));
+  });
+
+  test('FBD-W3: a plan that already declares actionlint is not duplicated (#369)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: false, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint', 'actionlint']
+    });
+
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint', 'actionlint']
+    );
+    assert.strictEqual(resolved.composition.required, false);
+    assert.deepStrictEqual(resolved.appended, []);
+  });
+
+  test('FBD-W4: a clean workflow change requires no composition (#369, AC-12)', async () => {
+    seedRepo({ modified: false });
+    const detector = stubbedDetector({ act: false, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.strictEqual(resolved.source, 'plan');
+    assert.deepStrictEqual(
+      resolved.commands.map((cmd: any) => cmd.command),
+      ['npm run lint']
+    );
+    assert.strictEqual(resolved.composition.required, false);
+    assert.deepStrictEqual(resolved.composition.files, []);
+  });
+
+  test('FBD-W5: a plan with no targets keeps the act tier unchanged (#369, AC-15)', async () => {
+    seedRepo({ modified: false });
+    const detector = stubbedDetector({ act: true, actionlint: true });
+
+    const resolved = await detector.resolveCommandPlan(tempDir);
+
+    assert.strictEqual(resolved.source, 'act');
+    assert.strictEqual(resolved.commands[0].command, 'act');
+    assert.strictEqual(resolved.composition, undefined);
+  });
+
+  test('FBD-W6: no available linter marks the composition unavailable (#369)', async () => {
+    seedRepo();
+    const detector = stubbedDetector({ act: false, actionlint: false });
+
+    const resolved = await detector.resolveCommandPlan(tempDir, undefined, {
+      planTargets: ['npm run lint']
+    });
+
+    assert.strictEqual(resolved.composition.required, true);
+    assert.strictEqual(resolved.composition.command, null);
+    assert.ok(resolved.composition.unavailableReason, 'an unavailable composition states why');
+    assert.deepStrictEqual(resolved.composition.files, ['.github/workflows/ci.yml']);
+  });
+
+  test('PL-369: both planner prompt copies state the composition rule (#369)', () => {
+    const useCase = new ResolveSubagentUseCase(new FileConfigRepository());
+    const prompt = useCase.getPlannerSystemPrompt();
+    const onDisk = fs.readFileSync(path.join(__dirname, '../../prompts/planner.md'), 'utf8');
+
+    for (const text of [prompt, onDisk]) {
+      assert.ok(text.includes('Declaring targets replaces the act container gate'), 'composition rule');
+      assert.ok(text.includes('.github/workflows/**'), 'workflow path glob');
+      assert.ok(text.includes('actionlint'), 'the linter the gate composes');
+    }
+  });
+
+  test('SUB-369: the gate prompt renders the composition provenance (#369)', () => {
+    const useCase = new ResolveSubagentUseCase(new FileConfigRepository());
+    const prompt = useCase.buildGateTaskPrompt({
+      commands: ['npm run lint', 'actionlint'],
+      composition: {
+        required: true,
+        files: ['.github/workflows/ci.yml'],
+        command: 'actionlint',
+        unavailableReason: null
+      }
+    });
+
+    assert.ok(prompt.includes('Workflow lint composed'), prompt);
+    assert.ok(prompt.includes('.github/workflows/ci.yml'), prompt);
+    assert.ok(prompt.includes('actionlint'), prompt);
+  });
+});
+
+describe('FileBuildDetector - polyglot subproject discovery (#334)', () => {
+  let dir: string;
+
+  const write = (rel: string, content = ''): void => {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  };
+
+  const commands = (detected: any): string[] =>
+    detected.commands.map((command: any) => command.command);
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-build-334-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('FBD-334-1 detects an apps/* portfolio and scopes every subproject command', async () => {
+    write(
+      'package.json',
+      JSON.stringify({
+        name: 'root',
+        private: true,
+        workspaces: ['apps/*'],
+        scripts: { build: 'pnpm --filter web build' }
+      })
+    );
+    write('pnpm-workspace.yaml', 'packages:\n  - "apps/*"\n');
+    write('pnpm-lock.yaml');
+    write(
+      'apps/web/package.json',
+      JSON.stringify({
+        name: 'web',
+        scripts: { typecheck: 'tsc --noEmit', test: 'jest', 'test:e2e': 'playwright test' }
+      })
+    );
+    write('apps/web/playwright.config.ts', 'export default {};');
+    write('apps/web/jest.config.js', 'module.exports = {};');
+    write('apps/api/Portfolio.sln', '<Solution></Solution>');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), [
+      'pnpm run build',
+      'dotnet test apps/api/Portfolio.sln',
+      'cd apps/web && pnpm run typecheck',
+      'cd apps/web && pnpm test',
+      'cd apps/web && pnpm run test:e2e'
+    ]);
+    assert.strictEqual((detected.subprojects ?? []).length, 2);
+  });
+
+  test('FBD-334-2 detects a rootless projects/* monorepo without the npm fallback', async () => {
+    write('docker-compose.yml', 'services: {}');
+    write('run.sh', '#!/bin/sh\necho run\n');
+    write(
+      'projects/angular/package.json',
+      JSON.stringify({ name: 'angular', scripts: { build: 'ng build', test: 'ng test' } })
+    );
+    write(
+      'projects/react/package.json',
+      JSON.stringify({ name: 'react', scripts: { typecheck: 'tsc', test: 'vitest run' } })
+    );
+    write('projects/dotnet/App.sln', '<Solution></Solution>');
+    write('projects/dotnet/App.csproj', '<Project></Project>');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), [
+      'cd projects/angular && npm run build',
+      'cd projects/angular && npm test',
+      'dotnet test projects/dotnet/App.sln',
+      'cd projects/react && npm run typecheck',
+      'cd projects/react && npm test'
+    ]);
+  });
+
+  test('FBD-334-3 drops a root command already wrapped by a package.json script', async () => {
+    write('package.json', JSON.stringify({ name: 'hybrid', scripts: { test: './gradlew test' } }));
+    write('build.gradle.kts', '// gradle');
+    write('settings.gradle.kts', 'rootProject.name = "hybrid"');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), ['npm test', 'gradle check']);
+  });
+
+  test('FBD-334-4 discovers src-tauri/Cargo.toml and scopes cargo with --manifest-path', async () => {
+    write(
+      'package.json',
+      JSON.stringify({ name: 'tauri', scripts: { build: 'tsc -b', test: 'node --test' } })
+    );
+    write('src-tauri/Cargo.toml', '[package]\nname = "tauri"\n');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), [
+      'npm run build',
+      'npm test',
+      'cargo check --manifest-path src-tauri/Cargo.toml',
+      'cargo test --manifest-path src-tauri/Cargo.toml'
+    ]);
+  });
+
+  test('FBD-334-5 a single-stack repository is unchanged by subproject discovery', async () => {
+    write(
+      'package.json',
+      JSON.stringify({ name: 'single', scripts: { typecheck: 'tsc --noEmit', test: 'node --test' } })
+    );
+    write('package-lock.json', '{}');
+    write('src/index.js', 'console.log(1);');
+
+    const detected = await new FileBuildDetector().detect(dir);
+
+    assert.deepStrictEqual(commands(detected), ['npm run typecheck', 'npm test']);
   });
 });

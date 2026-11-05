@@ -1,5 +1,5 @@
 /**
- * agyloop - CommandExecutorPort Interface
+ * codeloop - CommandExecutorPort Interface
  *
  * Inversion of control contract for executing shell commands, capturing outputs,
  * enforcing execution timeouts, and preventing direct child_process leaks.
@@ -31,4 +31,9 @@ export interface CommandExecutorPort {
    * @returns CommandExecutionResult containing exit code, stdout, stderr, duration, and timeout status.
    */
   execute(command: string, options?: CommandExecutionOptions): Promise<CommandExecutionResult>;
+
+  /**
+   * Terminates all currently tracked child processes.
+   */
+  killAll?(signal?: string): number;
 }

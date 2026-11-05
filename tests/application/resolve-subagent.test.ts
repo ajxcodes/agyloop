@@ -1,25 +1,57 @@
 /**
- * agyloop - ResolveSubagentUseCase Unit Tests
+ * codeloop - ResolveSubagentUseCase Unit Tests
  *
  * Tests for critique path resolution and two-tier reviewer prompt generation.
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync, execFileSync } = require('node:child_process');
 
 const {
   ResolveSubagentUseCase,
   ManageCritiqueUseCase,
   DIFF_EXCLUDE_ARGS,
   MAX_INLINE_DIFF_LINES,
-  ANTI_INCEPTION_GUARDRAIL
+  ANTI_INCEPTION_GUARDRAIL,
+  buildChangeSetDigestCommand
 } = require('../../dist/application');
+const { FileBuildDetector } = require('../../dist/infrastructure');
 const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
-const { RESOLVER_SOURCE_USER_DATA, RESOLVER_SOURCE_NONE } = require('../../dist/domain');
+const {
+  RESOLVER_SOURCE_USER_DATA,
+  RESOLVER_SOURCE_NONE,
+  TRIAGE_DISPOSITION_ACTIONS,
+  STATE_MUTATING_COMMANDS,
+  NOTE_REVIEW_VERDICT_RETURN,
+  DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+  DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS,
+  DISCOVERY_REPORT_MIN_CONTENT_CHARS,
+  DISCOVERY_REPORT_MIN_CHARS,
+  DISCOVERY_REPORT_MIN_FILLED_KEYS,
+  DISCOVERY_REPORT_MAX_UNFILLED_KEYS,
+  DISCOVERY_REPORT_MIN_PROSE_SECTIONS,
+  DiscoveryReport,
+  formatDiscoveryReportContract,
+  GATE_COMMAND_WORKTREE_CONTRACT,
+  WORKTREE_GUARD_SIGNAL,
+  ENV_NODE_TEST_CONTEXT,
+  ENV_NODE_ENV,
+  ENV_NODE_VALUE_TEST,
+  ENV_ALLOW_WORKTREE_ISSUE_MISMATCH,
+  NOTE_WORKTREE_GUARD_ESCAPE_HATCH,
+  NOTE_SMOKE_FIXTURE_ISSUE_RULE,
+  NOTE_GATE_REPORT_TEST_COUNT_TOKEN,
+  TOKEN_TEST_METRICS,
+  SmokeProtocol
+} = require('../../dist/domain');
 
 import type { ConfigRepository, CritiquePort, CritiqueResolution } from '../../src/ports';
 
-class MockConfigRepo implements ConfigRepository {
+class ConfigRepositoryDouble implements ConfigRepository {
   public loadConfig(): any {
     return DEFAULT_CONFIG;
   }
@@ -36,7 +68,7 @@ class MockConfigRepo implements ConfigRepository {
   }
 }
 
-class MockCritiquePort implements CritiquePort {
+class CritiqueDouble implements CritiquePort {
   private readonly resolution: CritiqueResolution;
 
   constructor(resolution?: CritiqueResolution) {
@@ -57,7 +89,7 @@ class MockCritiquePort implements CritiquePort {
 }
 
 describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () => {
-  const configRepo = new MockConfigRepo();
+  const configRepo = new ConfigRepositoryDouble();
 
   test('injects explicitly provided params.critiquePath and two-tier instructions into reviewer prompt', () => {
     const useCase = new ResolveSubagentUseCase(configRepo);
@@ -68,7 +100,8 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
     });
 
     assert.ok(prompt.includes('### Two-Tier Review Methodology:'));
-    assert.ok(prompt.includes('export PATH="$HOME/.local/bin:$PATH" && /opt/custom/bin/critique --json'));
+    assert.ok(prompt.includes("'/opt/custom/bin/critique' --json"));
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
     assert.ok(prompt.includes('Tier 1 (Automated Critique CLI)'));
     assert.ok(prompt.includes('Tier 2 (Manual Diff & Standards Inspection)'));
     assert.ok(prompt.includes('Consolidated Verdict'));
@@ -77,9 +110,9 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
   });
 
   test('resolves critique path from injected ManageCritiqueUseCase', () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_USER_DATA,
-      path: '/home/user/.local/share/agyloop/tools/critique',
+      path: '/home/user/.local/share/codeloop/tools/critique',
       isAvailable: true
     });
     const mockInstaller: any = {
@@ -92,15 +125,12 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
       issueNumber: 52
     });
 
-    assert.ok(
-      prompt.includes(
-        'export PATH="$HOME/.local/bin:$PATH" && /home/user/.local/share/agyloop/tools/critique --json'
-      )
-    );
+    assert.ok(prompt.includes("'/home/user/.local/share/codeloop/tools/critique' --json"));
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
   });
 
   test('resolves critique path from injected CritiquePort', () => {
-    const critiquePort = new MockCritiquePort({
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_USER_DATA,
       path: '/usr/bin/critique',
       isAvailable: true
@@ -109,11 +139,12 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
     const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, critiquePort);
     const prompt = useCase.buildReviewerTaskPrompt();
 
-    assert.ok(prompt.includes('export PATH="$HOME/.local/bin:$PATH" && /usr/bin/critique --json'));
+    assert.ok(prompt.includes("'/usr/bin/critique' --json"));
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export may be rendered');
   });
 
-  test('falls back to ~/.local/bin/critique when critique path is unresolvable', () => {
-    const critiquePort = new MockCritiquePort({
+  test('names the resolver, not a hardcoded path, when critique is unresolvable (issue #314)', () => {
+    const critiquePort = new CritiqueDouble({
       source: RESOLVER_SOURCE_NONE,
       path: null,
       isAvailable: false
@@ -122,8 +153,34 @@ describe('ResolveSubagentUseCase - Reviewer Prompt & Critique Resolution', () =>
     const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, critiquePort);
     const prompt = useCase.buildReviewerTaskPrompt();
 
-    assert.ok(prompt.includes('export PATH="$HOME/.local/bin:$PATH" && ~/.local/bin/critique --json'));
+    assert.ok(prompt.includes('codeloop critique status'), 'AC2: the fallback must name the resolver');
+    assert.ok(
+      prompt.includes('~/.local/share/critique'),
+      'AC2: the fallback must name the real search locations'
+    );
+    assert.ok(
+      !prompt.includes('~/.local/bin/critique --json'),
+      'AC3: the fallback must not quote the dead path as the command'
+    );
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export');
     assert.ok(prompt.includes('Any `critical` or `error` findings mandate `REVIEW_STATUS: CHANGES_REQUESTED`'));
+  });
+
+  test('runs a resolved .js critique binary through node (issue #314)', () => {
+    const critiquePort = new CritiqueDouble({
+      source: RESOLVER_SOURCE_USER_DATA,
+      path: '/home/user/.local/share/critique/bin/critique.js',
+      isAvailable: true
+    });
+
+    const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, critiquePort);
+    const prompt = useCase.buildReviewerTaskPrompt();
+
+    assert.ok(
+      prompt.includes("node '/home/user/.local/share/critique/bin/critique.js' --json"),
+      `AC3: a resolved .js binary must render through node, got:\n${prompt.slice(0, 2000)}`
+    );
+    assert.ok(!prompt.includes('export PATH='), 'AC4: no PATH export');
   });
 
   describe('Token Optimization & Context Shielding in Reviewer Task Prompt', () => {
@@ -242,6 +299,142 @@ index 1111111..2222222 100644
     });
   });
 
+  /**
+   * Issue #356, Defect 2: `git diff <base>` cannot see an untracked file, so the
+   * reviewer's ONLY inspection command printed nothing for a change whose
+   * load-bearing part was a NEW file. The dispatch now hands the reviewer the
+   * probe's measured `untrackedFiles`, each with a command that prints its FULL
+   * content — without staging anything.
+   */
+  describe('Untracked implementation files (issue #356)', () => {
+    const HEADING = '### Untracked Implementation Files';
+
+    test('UT1: names an untracked file and gives a command that prints its full content', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ['.github/actionlint.yaml']
+      });
+
+      assert.ok(prompt.includes(`${HEADING} (invisible to \`git diff\`):`), 'the heading must render');
+      assert.ok(prompt.includes('.github/actionlint.yaml'), 'the untracked path must be named');
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null '.github/actionlint.yaml' || true"),
+        `the content command must render, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('READ-ONLY evidence'), 'the reviewer must be told it is read-only');
+      assert.strictEqual(prompt.includes('git add'), false, 'the prompt must not name a staging command');
+      assert.strictEqual(prompt.includes('git stash'), false, 'the prompt must not name a stash command');
+    });
+
+    test('UT2: a collapsed untracked directory expands via ls-files instead of --no-index', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      // `git status --porcelain` collapses a wholly-untracked directory to
+      // `?? src/newdir/`, and `git diff --no-index /dev/null src/newdir/` fails
+      // with "Could not access 'src/newdir//null'".
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ['src/newdir/']
+      });
+
+      assert.ok(
+        prompt.includes(
+          "git ls-files --others --exclude-standard -- 'src/newdir/' | while IFS= read -r f; do"
+        ),
+        `the directory entry must expand, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('cat -- "$f"'), 'the directory command must print file content');
+      assert.ok(
+        !prompt.includes("--no-index -- /dev/null 'src/newdir/'"),
+        'a directory must never be handed to git diff --no-index'
+      );
+    });
+
+    test('UT3: a path containing a space is shell-quoted', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ['docs/my note.md']
+      });
+
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null 'docs/my note.md' || true"),
+        `a space-containing path must be one quoted word, got:\n${prompt}`
+      );
+    });
+
+    test('UT4: an embedded single quote is escaped by shellQuote, not naively interpolated', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        untrackedFiles: ["docs/it's a note.md"]
+      });
+
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null 'docs/it'\\''s a note.md' || true"),
+        `the embedded quote must be escaped, got:\n${prompt}`
+      );
+    });
+
+    test('UT5: a tracked-only change keeps the prompt byte-identical', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const baseline = useCase.buildReviewerTaskPrompt({ issueNumber: 356, baseBranch: 'main' });
+
+      const variants = [
+        useCase.buildReviewerTaskPrompt({
+          issueNumber: 356,
+          baseBranch: 'main',
+          untrackedFiles: undefined
+        }),
+        useCase.buildReviewerTaskPrompt({
+          issueNumber: 356,
+          baseBranch: 'main',
+          untrackedFiles: null
+        }),
+        useCase.buildReviewerTaskPrompt({
+          issueNumber: 356,
+          baseBranch: 'main',
+          untrackedFiles: []
+        })
+      ];
+
+      for (const variant of variants) {
+        assert.strictEqual(variant, baseline, 'an empty untracked list must render nothing');
+        assert.strictEqual(variant.includes(HEADING), false);
+      }
+    });
+
+    test('UT6: the >1,000-line branch renders the untracked section too', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const largeDiff = [
+        'diff --git a/src/heavy.ts b/src/heavy.ts',
+        '--- a/src/heavy.ts',
+        '+++ b/src/heavy.ts',
+        '@@ -1,1 +1,1500 @@'
+      ]
+        .concat(Array.from({ length: 1500 }, (_, i) => `+const line_${i} = ${i};`))
+        .join('\n');
+
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 356,
+        baseBranch: 'main',
+        workingDiff: largeDiff,
+        untrackedFiles: ['.github/actionlint.yaml']
+      });
+
+      assert.ok(prompt.includes('Working diff exceeds 1,000 lines'));
+      assert.ok(prompt.includes(HEADING), 'the omitted-diff branch must still name untracked files');
+      assert.ok(
+        prompt.includes("git diff --no-index -- /dev/null '.github/actionlint.yaml' || true"),
+        'the omitted-diff branch must carry the content command'
+      );
+    });
+  });
+
   describe('Anti-Inception Guardrails', () => {
     test('appends anti-inception guardrail to all subagent task prompts', () => {
       const useCase = new ResolveSubagentUseCase(configRepo);
@@ -261,15 +454,415 @@ index 1111111..2222222 100644
       assert.ok(triagePrompt.includes(ANTI_INCEPTION_GUARDRAIL));
 
       assert.ok(
-        triagePrompt.includes(
-          'You are the Triage Subagent. Directly inspect the comments and execute `bin/agyloop triage <action>` using `run_command`. Do NOT spawn another subagent to do this.'
-        )
+        triagePrompt.includes('codeloop triage <action> --issue 203'),
+        `the triage directive must name the exact routing command, got:\n${triagePrompt}`
+      );
+      for (const action of TRIAGE_DISPOSITION_ACTIONS) {
+        assert.ok(
+          triagePrompt.includes(action),
+          `the triage directive must name the action '${action}', got:\n${triagePrompt}`
+        );
+      }
+      assert.ok(
+        triagePrompt.includes('posts nothing'),
+        `the triage directive must state the non-destructive exit, got:\n${triagePrompt}`
+      );
+      assert.ok(
+        triagePrompt.includes('writes to GitHub'),
+        `the triage directive must state the dismissal side effect, got:\n${triagePrompt}`
+      );
+      assert.strictEqual(
+        triagePrompt.includes('AGY_SUBAGENT'),
+        false,
+        'the triage directive must not require an environment marker'
+      );
+      assert.strictEqual(
+        triagePrompt.includes('bin/agyloop triage <action>'),
+        false,
+        'the triage directive must not name the old refused command form'
       );
     });
   });
 
+  describe('REVIEW verdict contract (issue #297)', () => {
+    test('PS1: the reviewer is read-only and is told to emit, never to file', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({ issueNumber: 297 });
+
+      // The read-only rules survive, and they are now unopposed.
+      assert.ok(prompt.includes('Never attempt to write or edit files'));
+      assert.ok(prompt.includes(ANTI_INCEPTION_GUARDRAIL));
+      assert.ok(prompt.includes('the orchestrator files it'));
+      assert.ok(prompt.includes(NOTE_REVIEW_VERDICT_RETURN));
+
+      // No mutating command may appear anywhere in the payload.
+      assert.strictEqual(
+        /codeloop\s+review/.test(prompt),
+        false,
+        `the read-only reviewer must not be told to file its own verdict, got:\n${prompt}`
+      );
+      const named = (STATE_MUTATING_COMMANDS as readonly (string | null)[])
+        .filter((command): command is string => command !== null)
+        .filter((command) => new RegExp(`codeloop\\s+${command}\\b`).test(prompt));
+      assert.deepStrictEqual(named, [], 'the payload must name zero mutating commands');
+    });
+
+    test('PS2: the reviewer keeps its own Tier 1 cross-check methodology', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({ issueNumber: 297 });
+
+      assert.ok(prompt.includes('### Two-Tier Review Methodology:'));
+      assert.ok(
+        prompt.includes('Any `critical` or `error` findings mandate `REVIEW_STATUS: CHANGES_REQUESTED`')
+      );
+    });
+
+    test('PS3: a named Tier 1 evidence path is staged and published only on success (issue #397/#400)', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const reportPath = '/repo/.agyloop/critique/397.json';
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 397,
+        critiquePath: '/opt/custom/bin/critique',
+        critiqueReportPath: reportPath
+      });
+
+      assert.ok(prompt.includes(reportPath), 'the prompt must name the exact evidence path');
+      assert.ok(prompt.includes('mkdir -p'), 'the Tier 1 command must create the evidence directory');
+      // Issue #400: the command stages beside the report, publishes with `mv`
+      // only after critique succeeds, and echoes the report for Tier 1 reading.
+      assert.ok(
+        prompt.includes('.critique-report.$$.tmp'),
+        `the Tier 1 command must stage to a transient sibling, got:\n${prompt}`
+      );
+      assert.ok(
+        prompt.includes(`mv "$tmp" '${reportPath}'`),
+        `the report must be published by mv, got:\n${prompt}`
+      );
+      assert.ok(
+        prompt.includes(`cat '${reportPath}'`),
+        `the published report must still be readable by the reviewer, got:\n${prompt}`
+      );
+      assert.ok(
+        prompt.includes('exit $code'),
+        `the Tier 1 command must propagate critique's exit code, got:\n${prompt}`
+      );
+      assert.strictEqual(
+        prompt.includes('| tee'),
+        false,
+        `a pipeline reports tee's status, not critique's, got:\n${prompt}`
+      );
+      assert.ok(prompt.includes('exits non-zero'), 'the return note must key omission on the exit status');
+      assert.ok(prompt.includes('CRITIQUE_REPORT:'), 'the prompt must require the return line');
+      assert.ok(
+        prompt.includes('The ONE write this review permits is the Tier 1 evidence file'),
+        'the carve-out must name the evidence file as the only permitted write'
+      );
+      assert.strictEqual(
+        /codeloop\s+review/.test(prompt),
+        false,
+        'the read-only reviewer must not be told to file its own verdict'
+      );
+    });
+
+    test('PS4: without a report path the prompt stays byte-identical to the pre-#397 wording', () => {
+      const useCase = new ResolveSubagentUseCase(configRepo);
+      const prompt = useCase.buildReviewerTaskPrompt({
+        issueNumber: 397,
+        critiquePath: '/opt/custom/bin/critique'
+      });
+
+      assert.strictEqual(prompt.includes('CRITIQUE_REPORT:'), false);
+      assert.strictEqual(prompt.includes('tee '), false);
+      assert.ok(prompt.includes('Never attempt to write or edit files'));
+      assert.ok(prompt.includes(NOTE_REVIEW_VERDICT_RETURN));
+    });
+
+    test('PS5: the rendered Tier 1 command propagates a critique failure and publishes no report (issue #400)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
+      try {
+        initGitRepo(dir);
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const reportPath = path.join(dir, 'critique', '397.json');
+        const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt({
+          issueNumber: 400,
+          baseBranch: 'HEAD',
+          reviewCwd: dir,
+          critiquePath: critiqueStub,
+          critiqueReportPath: reportPath
+        });
+        const fence = /```bash\n([\s\S]*?)\n\s*```/.exec(prompt);
+        assert.ok(fence, `the reviewer prompt must carry a Tier 1 bash fence, got:\n${prompt}`);
+        const command = fence![1].trim();
+        assert.strictEqual(command.includes('| tee'), false, `still a tee pipeline:\n${command}`);
+
+        const runStub = (body: string) => {
+          fs.writeFileSync(critiqueStub, body, 'utf8');
+          return spawnSync('sh', ['-c', command], { encoding: 'utf8' });
+        };
+        const stagingDebris = (): string[] =>
+          fs.existsSync(path.dirname(reportPath))
+            ? fs.readdirSync(path.dirname(reportPath)).filter((name: string) => name.includes('.tmp'))
+            : [];
+
+        // Clean run: exit 0, a parseable report on disk, and JSON on stdout.
+        const clean = runStub(`process.stdout.write('{"summary":"ok","comments":[]}');`);
+        assert.strictEqual(clean.status, 0, clean.stderr);
+        assert.ok(fs.existsSync(reportPath), 'a successful Tier 1 must publish the report');
+        assert.strictEqual(JSON.parse(fs.readFileSync(reportPath, 'utf8')).summary, 'ok');
+        assert.ok(clean.stdout.includes('"summary":"ok"'), clean.stdout);
+        assert.deepStrictEqual(stagingDebris(), [], 'no staging file may survive success');
+
+        // Crash before any output: critique's exit code must survive, nothing published.
+        fs.rmSync(reportPath, { force: true });
+        const crash = runStub('process.exit(2);');
+        assert.strictEqual(crash.status, 2, crash.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'a crash must publish nothing');
+        assert.ok(crash.stderr.includes('critique failed (exit 2)'), crash.stderr);
+        assert.deepStrictEqual(stagingDebris(), [], 'no staging file may survive a crash');
+
+        // Partial output then crash: the truncated payload must never be published.
+        const partial = runStub(`process.stdout.write('{"findings":['); process.exit(2);`);
+        assert.strictEqual(partial.status, 2, partial.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'a partial payload must publish nothing');
+
+        // Silent success: an empty file is not evidence.
+        const silent = runStub('process.exit(0);');
+        assert.strictEqual(silent.status, 1, silent.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'an empty run must publish nothing');
+        assert.ok(silent.stderr.includes('wrote no evidence'), silent.stderr);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    const renderTierOneCommand = (reportPath: string, critiquePath: string): string => {
+      const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt({
+        issueNumber: 405,
+        // Issue #445: the fence now prechecks that the reviewed base resolves IN
+        // the review cwd, so an executed fixture pins a real git worktree and a
+        // ref that always resolves there.
+        baseBranch: 'HEAD',
+        reviewCwd: path.dirname(critiquePath),
+        critiquePath,
+        critiqueReportPath: reportPath
+      });
+      const fence = /```bash\n([\s\S]*?)\n\s*```/.exec(prompt);
+      assert.ok(fence, `the reviewer prompt must carry a Tier 1 bash fence, got:\n${prompt}`);
+      return fence![1].trim();
+    };
+
+    /** Issue #445: a disposable git worktree the Tier 1 precheck can resolve in. */
+    const initGitRepo = (dir: string): void => {
+      execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-qm', 'init', '--allow-empty'], { cwd: dir, stdio: 'ignore' });
+    };
+
+    const renderTierOne = (params: any) => {
+      const prompt = new ResolveSubagentUseCase(configRepo).buildReviewerTaskPrompt(params);
+      const fence = /```bash\n([\s\S]*?)\n\s*```/.exec(prompt);
+      assert.ok(fence, `the reviewer prompt must carry a Tier 1 bash fence, got:\n${prompt}`);
+      return { prompt, fence: fence![1].trim() };
+    };
+
+    test('PS6: a pre-existing report is cleared before critique, so a crashed round leaves no evidence (issue #405, D2)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
+      try {
+        initGitRepo(dir);
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const reportPath = path.join(dir, 'critique', '405.json');
+        fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+        fs.writeFileSync(reportPath, '{"round":1,"summary":"STALE_ROUND_1"}', 'utf8');
+
+        const command = renderTierOneCommand(reportPath, critiqueStub);
+        const clearIndex = command.indexOf(`rm -f '${reportPath}'`);
+        assert.ok(clearIndex !== -1, `the destination must be cleared, got:\n${command}`);
+        assert.ok(clearIndex < command.indexOf(critiqueStub), 'the clear must precede the critique invocation');
+
+        fs.writeFileSync(critiqueStub, 'process.exit(2);', 'utf8');
+        const crashed = spawnSync('sh', ['-c', command], { encoding: 'utf8' });
+        assert.strictEqual(crashed.status, 2, crashed.stderr);
+        assert.strictEqual(
+          fs.existsSync(reportPath),
+          false,
+          'a crashed round must not leave round 1 evidence at the named path'
+        );
+        assert.ok(crashed.stderr.includes('critique failed (exit 2)'), crashed.stderr);
+        const debris = fs
+          .readdirSync(path.dirname(reportPath))
+          .filter((name: string) => name.endsWith('.tmp'));
+        assert.deepStrictEqual(debris, [], 'no staging file may survive a crash');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('PS7: a failed publish removes the staging sibling (issue #405, D3)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-'));
+      try {
+        initGitRepo(dir);
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const reportPath = path.join(dir, 'critique', '405.json');
+        const command = renderTierOneCommand(reportPath, critiqueStub);
+        assert.ok(
+          command.includes(`if ! mv "$tmp" '${reportPath}'; then`),
+          `the publish must have an explicit failure branch, got:\n${command}`
+        );
+
+        // A PATH-shadowed mv is deterministic and works when the suite runs as
+        // root; permission tricks on the destination do not.
+        const binDir = path.join(dir, 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(binDir, 'mv'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+        fs.writeFileSync(
+          critiqueStub,
+          `process.stdout.write('{"summary":"fresh","comments":[]}');`,
+          'utf8'
+        );
+
+        const failed = spawnSync('sh', ['-c', command], {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` }
+        });
+        assert.notStrictEqual(failed.status, 0, 'a failed publish must exit non-zero');
+        assert.ok(failed.stderr.includes('publish failed; no report written'), failed.stderr);
+        assert.strictEqual(fs.existsSync(reportPath), false, 'a failed publish must publish nothing');
+        const debris = fs.existsSync(path.dirname(reportPath))
+          ? fs.readdirSync(path.dirname(reportPath)).filter((name: string) => name.endsWith('.tmp'))
+          : [];
+        assert.deepStrictEqual(debris, [], 'a failed publish must remove its staging sibling');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('PS8: the Tier 1 command names the review cwd and the reviewed base with --commit (issue #445)', () => {
+      const { fence } = renderTierOne({
+        issueNumber: 445,
+        baseBranch: 'phase/6-codeloop',
+        reviewCwd: '/repo/.worktrees/445',
+        critiquePath: '/opt/custom/bin/critique.js',
+        critiqueReportPath: '/repo/.agyloop/critique/445.json'
+      });
+      assert.ok(fence.includes("cd '/repo/.worktrees/445'"), `the command must run in the reviewed worktree, got:\n${fence}`);
+      assert.ok(fence.includes("--commit 'phase/6-codeloop'"), `the command must pin the reviewed base, got:\n${fence}`);
+      assert.strictEqual(/--base\b/.test(fence), false, `--base runs git diff <ref>...HEAD and sees nothing at REVIEW time, got:\n${fence}`);
+    });
+
+    test('PS9: the rendered Tier 1 command runs in the review cwd and publishes provenance (issue #445)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-445-'));
+      try {
+        execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+        fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir, stdio: 'ignore' });
+        const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        const callLog = path.join(dir, 'call.json');
+        fs.writeFileSync(
+          critiqueStub,
+          [
+            "const fs = require('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(callLog)}, JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));`,
+            `process.stdout.write('{"summary":"stub","comments":[]}');`
+          ].join('\n'),
+          'utf8'
+        );
+
+        // Issue #452: keep the report inside the tool's excluded state tree, so
+        // publishing it cannot change the change-set digest it records.
+        const reportPath = path.join(dir, '.agyloop', 'critique', '445.json');
+        const { fence } = renderTierOne({
+          issueNumber: 445,
+          baseBranch: 'main',
+          reviewCwd: dir,
+          critiquePath: critiqueStub,
+          critiqueReportPath: reportPath
+        });
+
+        const run = spawnSync('sh', ['-c', fence], { encoding: 'utf8' });
+        assert.strictEqual(run.status, 0, run.stderr);
+        const call = JSON.parse(fs.readFileSync(callLog, 'utf8'));
+        assert.strictEqual(call.cwd, dir, 'critique must run in the reviewed worktree');
+        assert.deepStrictEqual(call.argv, ['--json', '--commit', 'main']);
+        assert.ok(fs.existsSync(reportPath), 'a successful Tier 1 must publish the report');
+        const provenance = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
+        assert.strictEqual(provenance.baseRef, 'main');
+        assert.strictEqual(provenance.headCommit, head);
+        assert.strictEqual(
+          provenance.changeSetDigest,
+          execFileSync('sh', ['-c', buildChangeSetDigestCommand()], { cwd: dir, encoding: 'utf8' }).trim()
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('PS10: the Tier 1 prose names the same base the command carries (issue #445)', () => {
+      const { prompt } = renderTierOne({
+        issueNumber: 445,
+        baseBranch: 'phase/6-codeloop',
+        reviewCwd: '/repo/.worktrees/445',
+        critiquePath: '/opt/custom/bin/critique.js',
+        critiqueReportPath: '/repo/.agyloop/critique/445.json'
+      });
+      assert.ok(prompt.includes('against the reviewed base `phase/6-codeloop`'), `the prose must name the same base, got:\n${prompt.slice(0, 4000)}`);
+      assert.ok(!prompt.includes('against target base branch'));
+    });
+
+    test('PS11: re-running the fence after an edit regenerates a sidecar whose digest matches the new tree (#452 AC3)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-tier1-452-'));
+      try {
+        execFileSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.name', 'smoke'], { cwd: dir, stdio: 'ignore' });
+        fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n', 'utf8');
+        execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir, stdio: 'ignore' });
+
+        const critiqueStub = path.join(dir, 'critique-stub.js');
+        fs.writeFileSync(
+          critiqueStub,
+          "process.stdout.write('{\"summary\":\"stub\",\"comments\":[]}');",
+          'utf8'
+        );
+        // The report lives in the excluded `.agyloop` tree, so the fence's own
+        // provenance writes cannot change the tree it is hashing.
+        const reportPath = path.join(dir, '.agyloop', 'critique', '452.json');
+        const { fence } = renderTierOne({
+          issueNumber: 452,
+          baseBranch: 'main',
+          reviewCwd: dir,
+          critiquePath: critiqueStub,
+          critiqueReportPath: reportPath
+        });
+
+        const firstRun = spawnSync('sh', ['-c', fence], { encoding: 'utf8' });
+        assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+        const first = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
+
+        fs.appendFileSync(path.join(dir, 'base.txt'), 'edited\n', 'utf8');
+        const secondRun = spawnSync('sh', ['-c', fence], { encoding: 'utf8' });
+        assert.strictEqual(secondRun.status, 0, secondRun.stderr);
+        const second = JSON.parse(fs.readFileSync(`${reportPath}.provenance.json`, 'utf8'));
+
+        assert.notStrictEqual(second.changeSetDigest, first.changeSetDigest);
+        assert.strictEqual(
+          second.changeSetDigest,
+          execFileSync('sh', ['-c', buildChangeSetDigestCommand()], { cwd: dir, encoding: 'utf8' }).trim()
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('Discovery Subagent Container Execution & Fallback (AC6 - AC8)', () => {
-    test('AC6 & AC7: injects container execution capabilities and Strict Container-Only Guardrail when container runtime/daemon is available', () => {
+    test('AC6 & AC7: injects the mutation boundary and a runnable container recipe when container runtime/daemon is available', () => {
       const mockDetector: any = {
         resolveContainerRuntime: () => 'podman',
         resolveContainerSocket: () => ({ socketPath: 'unix:///run/user/1000/podman/podman.sock', runtime: 'podman' })
@@ -280,10 +873,24 @@ index 1111111..2222222 100644
         issueNumber: 119
       });
 
-      assert.ok(prompt.includes('Strict Container-Only Guardrail'));
-      assert.ok(prompt.includes('Command execution in Discovery can ONLY run containerized invocations (`act`, `podman run`, `docker run`)'));
-      assert.ok(prompt.includes('Empirical Verification via Ephemeral Container'));
-      assert.ok(prompt.includes('Use podman (`podman run`) or `act` to empirically reproduce'));
+      // Issue #389: the boundary is MUTATION, not containment — a host-run
+      // harness cannot satisfy "container-only" and "reproduce empirically" at
+      // the same time, so the mandate became a boundary plus an offer.
+      assert.ok(prompt.includes('**Mutation Boundary**'));
+      assert.ok(prompt.includes('every WRITE must land inside'));
+      assert.ok(prompt.includes('Never rebuild the repository root'));
+      assert.ok(prompt.includes('the root build is what the installed `codeloop` executes'));
+      assert.ok(prompt.includes('**Container-Preferred Empirical Verification**'));
+      assert.ok(prompt.includes('docker.io/library/node:24-bookworm-slim'));
+      assert.ok(prompt.includes('-v "$PWD":/repo:ro'));
+      assert.ok(prompt.includes('podman run --rm --network=none'));
+      assert.ok(
+        prompt.includes(
+          'If the runtime is unreachable when you run it, fall back to host reads plus static RCA and record why in the report.'
+        )
+      );
+      assert.strictEqual(prompt.includes('can ONLY run containerized invocations'), false);
+      assert.strictEqual(prompt.includes('Strict Container-Only Guardrail'), false);
     });
 
     test('AC8: injects graceful fallback to static RCA code tracing when container runtime/daemon is unavailable', () => {
@@ -301,6 +908,539 @@ index 1111111..2222222 100644
       assert.ok(prompt.includes('Container runtime/daemon is unavailable. Skip empirical smoke execution and fall back cleanly to static RCA code tracing.'));
       assert.ok(!prompt.includes('Strict Container-Only Guardrail'));
     });
+
+    test('T8: real detector with a dead DOCKER_HOST dispatches the fallback prompt (AC-5 / Issue #232)', () => {
+      const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-sub-232-'));
+      const savedEnv = { DOCKER_HOST: process.env.DOCKER_HOST, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR };
+      const originalExistsSync = fs.existsSync;
+      try {
+        process.env.DOCKER_HOST = `unix://${path.join(workspaceDir, 'missing.sock')}`;
+        process.env.XDG_RUNTIME_DIR = path.join(workspaceDir, 'xdg');
+        fs.mkdirSync(process.env.XDG_RUNTIME_DIR, { recursive: true });
+        // Stub only the standard docker socket for host determinism; delegate everything else
+        fs.existsSync = (p: any) => (String(p) === '/var/run/docker.sock' ? false : originalExistsSync(p));
+
+        const detector = new FileBuildDetector();
+        const useCase = new ResolveSubagentUseCase(configRepo, undefined, undefined, undefined, detector);
+
+        const prompt = useCase.buildDiscoveryTaskPrompt({
+          issueNumber: 119,
+          containerRuntime: 'docker'
+        });
+
+        assert.ok(prompt.includes('Empirical Verification Fallback'));
+        assert.ok(prompt.includes('Container runtime/daemon is unavailable'));
+        assert.ok(!prompt.includes('Strict Container-Only Guardrail'));
+      } finally {
+        fs.existsSync = originalExistsSync;
+        if (savedEnv.DOCKER_HOST === undefined) delete process.env.DOCKER_HOST;
+        else process.env.DOCKER_HOST = savedEnv.DOCKER_HOST;
+        if (savedEnv.XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR;
+        else process.env.XDG_RUNTIME_DIR = savedEnv.XDG_RUNTIME_DIR;
+        fs.rmSync(workspaceDir, { recursive: true, force: true });
+      }
+    });
   });
 });
 
+describe('State-guard escape hatch parity (issue #405, D1)', () => {
+  const configRepo = new ConfigRepositoryDouble();
+  const WORKTREE = '/repo/.worktrees/405';
+
+  const signalOf = (text: string): string => {
+    const match = /tool-owned `([^`]+)`/.exec(text);
+    assert.ok(match, `the dispatch must name the state-guard escape hatch, got:\n${text}`);
+    return match![1];
+  };
+
+  test('PS8: IMPLEMENT and QUALITY_GATE name the SAME guard signal from one shared note', () => {
+    const useCase = new ResolveSubagentUseCase(configRepo);
+    const implementer = useCase.buildImplementationTaskPrompt({
+      issueNumber: 405,
+      workspaceDir: WORKTREE
+    });
+    const gate = useCase.buildGateTaskPrompt({ issueNumber: 405, cwd: WORKTREE });
+
+    assert.strictEqual(WORKTREE_GUARD_SIGNAL, ENV_ALLOW_WORKTREE_ISSUE_MISMATCH);
+    assert.notStrictEqual(WORKTREE_GUARD_SIGNAL, ENV_NODE_TEST_CONTEXT);
+    assert.strictEqual(signalOf(implementer), WORKTREE_GUARD_SIGNAL);
+    assert.strictEqual(signalOf(gate), WORKTREE_GUARD_SIGNAL);
+    assert.ok(implementer.includes(NOTE_WORKTREE_GUARD_ESCAPE_HATCH), implementer);
+    assert.ok(gate.includes(NOTE_WORKTREE_GUARD_ESCAPE_HATCH), gate);
+    assert.strictEqual(
+      implementer.includes(ENV_NODE_TEST_CONTEXT),
+      false,
+      'the implementer must not advertise the Node runner marker'
+    );
+    assert.strictEqual(
+      gate.includes(ENV_NODE_TEST_CONTEXT),
+      false,
+      'the gate must not advertise the Node runner marker'
+    );
+    assert.ok(
+      implementer.indexOf(NOTE_WORKTREE_GUARD_ESCAPE_HATCH) <
+        implementer.indexOf('### Manual Smoke Test Protocol'),
+      'the guard note must precede the frozen protocol'
+    );
+    assert.strictEqual(
+      implementer.includes(`${ENV_NODE_ENV}=${ENV_NODE_VALUE_TEST}`),
+      false,
+      'the implementer must not name a second hatch'
+    );
+  });
+
+  test('PS9: the planner states the fixture-issue override in the check itself', () => {
+    const planner = new ResolveSubagentUseCase(configRepo).buildPlanningTaskPrompt({ issueNumber: 405 });
+    assert.ok(planner.includes(NOTE_SMOKE_FIXTURE_ISSUE_RULE), planner);
+    assert.ok(planner.includes('fixture issue number other than the worktree'), planner);
+    assert.ok(planner.includes(`${WORKTREE_GUARD_SIGNAL}=1`), planner);
+    assert.strictEqual(planner.includes(ENV_NODE_TEST_CONTEXT), false);
+  });
+
+  test('PS10: the static smoke validator accepts the documented override (no new rule)', () => {
+    const plan = [
+      '### Manual Smoke Test Protocol',
+      '',
+      '```bash',
+      `${WORKTREE_GUARD_SIGNAL}=1 node -e 'console.log("fixture 9405")'`,
+      '```',
+      ''
+    ].join('\n');
+    const protocol = SmokeProtocol.fromPlan(plan);
+    assert.strictEqual(protocol.declared, true);
+    assert.strictEqual(protocol.executable, true, JSON.stringify(protocol.findings));
+    assert.deepStrictEqual(protocol.findings, []);
+  });
+});
+
+describe('Gate prompt evidence contract (issue #298)', () => {
+  const { SmokeProtocol, HEADING_QUALITY_GATE_TARGETS, HEADING_MANUAL_SMOKE_TEST_PROTOCOL } =
+    require('../../dist/domain');
+
+  const SMOKE_PLAN = [
+    '# Plan',
+    '',
+    '## 6. Manual Smoke Test Protocol',
+    '',
+    '#### Check 1 — the app starts',
+    '',
+    '```bash',
+    'echo "S1 PASS"',
+    '```',
+    ''
+  ].join('\n');
+
+  function useCase(): any {
+    return new ResolveSubagentUseCase(new ConfigRepositoryDouble());
+  }
+
+  test('RS-G1: the prompt states cwd, source, frozen checks and the edit ban', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm run build', 'npm run lint', 'npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan',
+      commandSourceDetail: 'approved plan Quality Gate Targets from /repo/artifacts/plans/41/implementation_plan.md',
+      planPath: '/repo/artifacts/plans/41/implementation_plan.md',
+      requiredLint: true,
+      smokeProtocol: SmokeProtocol.fromPlan(SMOKE_PLAN),
+      planIntegrity: {
+        status: 'verified',
+        planPath: '/repo/artifacts/plans/41/implementation_plan.md',
+        expectedDigest: 'abc',
+        actualDigest: 'abc'
+      }
+    });
+
+    assert.ok(prompt.includes('### Execution Cwd'));
+    assert.ok(prompt.includes('/repo/.worktrees/41'));
+    assert.match(prompt, /Do not cd to the repository root/i);
+    assert.ok(prompt.includes('### Command Source'));
+    assert.match(prompt, /Source:\s*plan/);
+    assert.match(prompt, /explicit > plan > config > act > auto-detect > default/);
+    assert.ok(prompt.includes('Do NOT edit the plan'));
+    assert.ok(prompt.includes('frozen at dispatch'));
+    assert.ok(prompt.includes('Check 1'));
+    assert.ok(prompt.includes('plan line'));
+    assert.ok(!prompt.includes('execute those steps automatically'));
+    assert.match(prompt, /Command Source:\s*plan/);
+    assert.match(prompt, /Smoke Protocol: PASSED \| FAILED \| NOT_DECLARED/);
+  });
+
+  test('RS-G7 (#444): the gate prompt publishes each check\u2019s canonical id', () => {
+    const TWO_CHECK_PLAN = [
+      '# Plan',
+      '',
+      '### Manual Smoke Test Protocol',
+      '',
+      '#### Check 1 — the app starts',
+      '',
+      '```bash',
+      'echo "S1 PASS"',
+      '```',
+      '',
+      '#### Check 2 — the app serves',
+      '',
+      '```bash',
+      'echo "S2 PASS"',
+      '```',
+      ''
+    ].join('\n');
+
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 444,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/444',
+      commandSource: 'plan',
+      smokeProtocol: SmokeProtocol.fromPlan(TWO_CHECK_PLAN)
+    });
+
+    assert.ok(prompt.includes('id: check-1'), prompt);
+    assert.ok(prompt.includes('id: check-2'), prompt);
+    assert.match(prompt, /a missing, renamed, duplicated or skipped check is a `FAILED` verdict/);
+  });
+
+  test('RS-G8: the planner prompt requires a cd or --workspace anchor (#440)', () => {
+    const prompt = useCase().buildPlanningTaskPrompt({
+      issueNumber: 440,
+      planDir: 'artifacts/plans/440/',
+      planPath: 'artifacts/plans/440/implementation_plan.md'
+    });
+    assert.ok(prompt.includes('cd into that sandbox'), 'the cd requirement must be stated');
+    assert.ok(prompt.includes('--workspace'), 'the --workspace alternative must be named');
+    assert.ok(
+      prompt.includes('before the first CLI invocation'),
+      'the ordering requirement must be stated'
+    );
+  });
+
+  test('RS-G2: a required lint with no lint command is an invariant violation', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan',
+      requiredLint: true
+    });
+
+    assert.ok(prompt.includes('### Lint Invariant Violation'));
+    assert.match(prompt, /MUST be FAILED/);
+  });
+
+  test('RS-G3a (#348): the gate prompt states the dirty-worktree gate-command contract', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/348'
+    });
+
+    assert.ok(prompt.includes(GATE_COMMAND_WORKTREE_CONTRACT));
+    assert.ok(prompt.includes('UNCOMMITTED'));
+    assert.ok(prompt.includes('before the commit gate'));
+    assert.ok(prompt.includes('No synthetic commit'));
+  });
+
+  test('RS-G3: the planner prompt requires both exact headings and the implementer forbids edits', () => {
+    const plannerPrompt = useCase().buildPlanningTaskPrompt({ issueNumber: 41 });
+    assert.ok(plannerPrompt.includes(HEADING_QUALITY_GATE_TARGETS));
+    assert.ok(plannerPrompt.includes(HEADING_MANUAL_SMOKE_TEST_PROTOCOL));
+
+    const implementerPrompt = useCase().buildImplementationTaskPrompt({
+      issueNumber: 41,
+      planPath: '/repo/artifacts/plans/41/implementation_plan.md'
+    });
+    assert.ok(implementerPrompt.includes('Do not edit the approved plan'));
+  });
+
+  test('RS-G4: the gate prompt requires the GATE_REPORT_JSON evidence block and forbids running codeloop (#284)', () => {
+    const prompt = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan'
+    });
+
+    assert.ok(prompt.includes('### Required Evidence Output'));
+    assert.ok(prompt.includes('GATE_REPORT_JSON:'));
+    assert.ok(prompt.includes('"testsStatus": "PASSED (N passed)"'));
+    assert.ok(prompt.includes('codeloop gate-report'));
+    assert.ok(
+      prompt.includes('Do not run any `codeloop` command'),
+      `the read-only gate must be told not to run codeloop, got:\n${prompt}`
+    );
+    // The block must be the LAST thing in the response, exactly like the
+    // reviewer's verdict block.
+    assert.ok(prompt.indexOf('GATE_REPORT_JSON:') > prompt.indexOf('### Required Verdict Output'));
+  });
+
+  test('RS-G5 (#415): the gate prompt documents the count token a count-less runner needs', () => {
+    const gate = useCase().buildGateTaskPrompt({
+      issueNumber: 41,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/41',
+      commandSource: 'plan'
+    });
+
+    assert.ok(gate.includes(NOTE_GATE_REPORT_TEST_COUNT_TOKEN), gate);
+    assert.ok(gate.includes(`${TOKEN_TEST_METRICS}: <n> passed`), gate);
+    assert.ok(gate.indexOf('GATE_REPORT_JSON:') > gate.indexOf('### Required Verdict Output'));
+  });
+
+  test('RS-G5: a healthy runtime with no socket selects the container recipe (#295)', () => {
+    const mockDetector: any = {
+      probeContainerRuntime: () => ({ runtime: 'podman', socketPath: null, connection: 'fork-exec' }),
+      resolveContainerRuntime: () => 'podman',
+      resolveContainerSocket: () => null
+    };
+    const selection = new ResolveSubagentUseCase(
+      new ConfigRepositoryDouble(),
+      undefined,
+      undefined,
+      undefined,
+      mockDetector
+    );
+
+    const prompt = selection.buildDiscoveryTaskPrompt({ issueNumber: 119 });
+
+    // #295's rule survives: a working fork-exec runtime is still detected and
+    // still yields the explicit recipe. Only the MANDATE (#389) is gone.
+    assert.ok(prompt.includes('**Mutation Boundary**'));
+    assert.ok(prompt.includes('podman run --rm --network=none'));
+    assert.ok(prompt.includes('docker.io/library/node:24-bookworm-slim'));
+  });
+
+  test('RS-G6: the planner prompt names the sandbox path for AUTHORED smoke blocks (#359)', () => {
+    const prompt = useCase().buildPlanningTaskPrompt({
+      issueNumber: 359,
+      planDir: 'artifacts/plans/359/',
+      planPath: 'artifacts/plans/359/implementation_plan.md'
+    });
+    // The requirement lives in the TASK prompt (dispatch payload), not only in
+    // the self-directed system-prompt mandate.
+    assert.ok(prompt.includes('.cache/codeloop/smoke-'), 'the required sandbox path must be named');
+    assert.ok(prompt.includes('mktemp'), 'the refusal rule must name mktemp');
+    assert.ok(prompt.includes('rejected at dispatch'), 'the consequence must be stated');
+  });
+});
+
+describe('Discovery evidence contract (issue #306)', () => {
+  test('T14: the discovery prompt states the same contract the predicate enforces', () => {
+    const useCase = new ResolveSubagentUseCase(new ConfigRepositoryDouble());
+    const prompt = useCase.buildDiscoveryTaskPrompt({ issueNumber: 306 });
+    const contract = formatDiscoveryReportContract();
+
+    assert.ok(prompt.includes(contract), 'the prompt must carry the shared contract verbatim');
+    assert.ok(prompt.includes('### Evidence Contract:'), 'the contract must be labelled as such');
+
+    // The numbers are interpolated from the exports, so the prompt and the
+    // predicate cannot drift (AC4). Every published rule is asserted by the
+    // phrase that carries it, not by a bare digit that could match anything.
+    for (const value of [
+      DISCOVERY_REPORT_MIN_CONTENT_UNITS,
+      DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS,
+      DISCOVERY_REPORT_MIN_CONTENT_CHARS
+    ]) {
+      assert.ok(contract.includes(String(value)), `the contract must state '${value}', got: ${contract}`);
+    }
+    for (const rule of [
+      `${DISCOVERY_REPORT_MIN_CHARS} characters long`,
+      `${DISCOVERY_REPORT_MIN_CONTENT_UNITS} content-bearing sections or key values`,
+      `each with ${DISCOVERY_REPORT_MIN_CONTENT_UNIT_CHARS}+ characters`,
+      `${DISCOVERY_REPORT_MIN_CONTENT_CHARS} substantive characters`,
+      `${DISCOVERY_REPORT_MIN_PROSE_SECTIONS}+ substantive \`##\` sections`,
+      `${DISCOVERY_REPORT_MIN_FILLED_KEYS}+ filled key values`,
+      `at most ${DISCOVERY_REPORT_MAX_UNFILLED_KEYS} template keys blank`
+    ]) {
+      assert.ok(contract.includes(rule), `the contract must publish '${rule}', got: ${contract}`);
+    }
+
+    // Both accepted shapes are named, so a subagent can satisfy either.
+    assert.ok(prompt.includes('- **Key:**'), 'the prompt must name the bullet shape');
+    assert.ok(prompt.includes('##'), 'the prompt must name the heading shape');
+
+    // SUFFICIENCY (not just string inclusion): a document built to exactly the
+    // published numbers must actually be accepted, so the contract cannot
+    // understate a veto the predicate applies (the AC4 defect: the unstated
+    // blank-key cap and length floor parked a document that satisfied every
+    // sentence the prompt published).
+    const perUnit = DISCOVERY_REPORT_MIN_CONTENT_CHARS / DISCOVERY_REPORT_MIN_CONTENT_UNITS;
+    const value = (label: string): string => `${label} `.padEnd(perUnit, 'x');
+    const publishedNumbers = [
+      '# [Discovery] - contract probe',
+      '',
+      `- **Observed Behavior:** ${value('the login form crashes without a session cookie')}`,
+      `- **Identified Failure Mode:** ${value('the session resolver result is dereferenced unguarded')}`,
+      `- **Recommended Fix Approach:** ${value('guard the resolver and add a regression test')}`,
+      ''
+    ].join('\n');
+    assert.ok(
+      publishedNumbers.length >= DISCOVERY_REPORT_MIN_CHARS,
+      'fixture sanity: the contract-minimum document must clear the length floor'
+    );
+    const published = DiscoveryReport.fromMarkdown(publishedNumbers);
+    assert.strictEqual(published.contentUnitCount, DISCOVERY_REPORT_MIN_CONTENT_UNITS);
+    assert.ok(published.contentCharCount >= DISCOVERY_REPORT_MIN_CONTENT_CHARS);
+    assert.deepStrictEqual(published.unfilledPlaceholderKeys, []);
+    assert.strictEqual(
+      published.isPopulated,
+      true,
+      'a report satisfying every published number must be accepted by the predicate'
+    );
+  });
+});
+
+describe('Gate prompt → parser vocabulary contract (issue #311)', () => {
+  const {
+    GateResultReport,
+    GATE_REPORT_JSON_MARKER,
+    SMOKE_PROTOCOL_VALUES,
+    SMOKE_PROTOCOL_VOCABULARY,
+    SMOKE_PROTOCOL_NOT_DECLARED,
+    SmokeProtocol
+  } = require('../../dist/domain');
+
+  const CONTRACT_SMOKE_PLAN = [
+    '# Plan',
+    '',
+    '## 6. Manual Smoke Test Protocol',
+    '',
+    '#### Check 1 — the app starts',
+    '',
+    '```bash',
+    'echo "S1 PASS"',
+    '```',
+    ''
+  ].join('\n');
+
+  function gatePrompt(params: any = {}): string {
+    return new ResolveSubagentUseCase(new ConfigRepositoryDouble()).buildGateTaskPrompt({
+      issueNumber: 311,
+      commands: ['npm test'],
+      cwd: '/repo/.worktrees/311',
+      ...params
+    });
+  }
+
+  function emittedExample(prompt: string): string {
+    const marker = prompt.lastIndexOf(GATE_REPORT_JSON_MARKER);
+    assert.ok(marker >= 0, 'the gate prompt must emit a GATE_REPORT_JSON example');
+    return prompt.slice(marker);
+  }
+
+  test('#311 P1: a no-protocol plan emits an example the parser accepts as NOT_DECLARED', () => {
+    const prompt = gatePrompt();
+    const example = emittedExample(prompt);
+
+    const report = GateResultReport.parseBlock(example, 1);
+    assert.strictEqual(report.smokeProtocol, SMOKE_PROTOCOL_NOT_DECLARED);
+
+    assert.ok(
+      prompt.includes(`Report \`${SMOKE_PROTOCOL_NOT_DECLARED}\` for it`),
+      'the prose must name the canonical wire token'
+    );
+    assert.ok(
+      !prompt.includes('NOT DECLARED'),
+      'the prompt must never emit the spaced spelling the parser used to reject'
+    );
+    assert.ok(
+      prompt.includes(`- Smoke Protocol: ${SMOKE_PROTOCOL_VOCABULARY}`),
+      'the verdict list must be the parser vocabulary'
+    );
+  });
+
+  test('#311 P2: a declared protocol emits an example the parser accepts as PASSED', () => {
+    const prompt = gatePrompt({ smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) });
+    const report = GateResultReport.parseBlock(emittedExample(prompt), 1);
+    assert.strictEqual(report.smokeProtocol, 'PASSED');
+  });
+
+  test('#311 P3: the example token and the verdict list come from one vocabulary', () => {
+    for (const params of [{}, { smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) }]) {
+      const prompt = gatePrompt(params);
+      const report = GateResultReport.parseBlock(emittedExample(prompt), 1);
+      assert.ok(
+        SMOKE_PROTOCOL_VALUES.includes(report.smokeProtocol),
+        `the example token ${report.smokeProtocol} must be a vocabulary member`
+      );
+      const verdictLine =
+        prompt
+          .split('\n')
+          .find((line: string) => line.startsWith('- Smoke Protocol: ')) ?? '';
+      assert.ok(verdictLine.length > 0, 'the prompt must carry the verdict line');
+      assert.ok(verdictLine.endsWith(SMOKE_PROTOCOL_VOCABULARY));
+    }
+  });
+
+  /**
+   * The published evidence shapes (#338, absorbing #343).
+   *
+   * The prompt is the contract: a gate that follows it must emit exactly what
+   * `GateResultReport.parseBlock` files. These cases assert the literals the
+   * gate is shown, in BOTH smoke-protocol branches, and then parse the very
+   * prompt text — so the example and the parser cannot drift apart again.
+   */
+  const SMOKE_CHECKS_SHAPE =
+    '"smokeChecks": [{ "id": "<check-id>", "label": "<check label>", "passed": true }]';
+  const NOT_RUN_SHAPE =
+    '"notRun": [{ "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }]';
+
+  function fillPromptExample(example: string): string {
+    return example
+      .replaceAll('<id>', 'node')
+      .replaceAll('<command>', 'npm test')
+      .replaceAll('<check-id>', 'check-1')
+      .replaceAll('<check label>', 'app boots')
+      .replaceAll('<gate-id>', 'e2e')
+      .replaceAll('<gate label>', 'e2e suite')
+      .replaceAll('<why it did not run>', 'no fixtures');
+  }
+
+  test('#338 T2.1: the prompt example publishes both object shapes', () => {
+    const prompt = gatePrompt({ smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) });
+    assert.ok(prompt.includes(SMOKE_CHECKS_SHAPE), 'the example must show the smokeChecks shape');
+    assert.ok(prompt.includes(NOT_RUN_SHAPE), 'the example must show the notRun shape');
+  });
+
+  test('#338 T2.2: the prose names the accepted types', () => {
+    const prompt = gatePrompt({ smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) });
+    for (const token of [
+      'BOOLEAN or `null`',
+      '"PASSED" is rejected',
+      'defaults to `id`',
+      'never collapsed into `true`',
+      'array of bare strings is rejected'
+    ]) {
+      assert.ok(prompt.includes(token), `the prompt is missing: ${token}`);
+    }
+  });
+
+  test('#338 T2.3: the no-protocol branch publishes the shapes too', () => {
+    const smokeEntryShape = `{ "id": "<check-id>", "label": "<check label>", "passed": true }`;
+    const notRunEntryShape = `{ "id": "<gate-id>", "label": "<gate label>", "reason": "<why it did not run>" }`;
+    for (const params of [{}, { smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) }]) {
+      const prompt = gatePrompt(params);
+      assert.ok(prompt.includes(smokeEntryShape), 'the smokeChecks shape is never optional');
+      assert.ok(prompt.includes(notRunEntryShape), 'the notRun shape is never optional');
+      assert.ok(
+        !prompt.includes('NOT DECLARED'),
+        'the prompt must never emit the spaced spelling the parser used to reject'
+      );
+    }
+  });
+
+  test('#338 T2.4: the emitted example parses through the parser', () => {
+    for (const params of [{}, { smokeProtocol: SmokeProtocol.fromPlan(CONTRACT_SMOKE_PLAN) }]) {
+      const report = GateResultReport.parseBlock(
+        fillPromptExample(emittedExample(gatePrompt(params))),
+        1
+      );
+      const expectedChecks = params.smokeProtocol ? 1 : 0;
+      assert.strictEqual(report.smokeChecks.length, expectedChecks);
+      if (expectedChecks > 0) {
+        assert.strictEqual(report.smokeChecks[0].passed, true);
+      }
+      assert.strictEqual(report.notRun.length, 1);
+      assert.strictEqual(report.notRun[0].reason, 'no fixtures');
+    }
+  });
+});

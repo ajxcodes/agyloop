@@ -1,6 +1,6 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
-  "name": "agyloop",
+  "name": "codeloop",
   "version": "0.6.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "author": {
@@ -30,7 +30,7 @@
     "agyloop": {
       "name": "agyloop",
       "description": "Multi-subagent development lifecycle orchestrator (Context -> Plan -> Implement -> Gate -> Review -> Commit)",
-      "usage": "/agyloop [plan | implement | gates | yolo] [--commit-after]",
+      "usage": "/agyloop [plan | implement | yolo | abort] [--commit-after]",
       "subcommands": {
         "plan": {
           "description": "Run read-only planning subagent and generate persistent specs in artifacts/plans/"
@@ -38,11 +38,37 @@
         "implement": {
           "description": "Resume straight from an approved plan with a fresh context"
         },
-        "gates": {
-          "description": "Run quality and AI review gates on current working diff"
+        "yolo": {
+          "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
+        },
+        "abort": {
+          "description": "Emergency Stop: halt subagents, clear git index locks, quarantine worktrees, and stop sandboxes"
+        }
+      },
+      "flags": {
+        "--commit-after": {
+          "type": "boolean",
+          "description": "Automatically commit if all quality gates and reviews pass green",
+          "default": false
+        }
+      }
+    },
+    "codeloop": {
+      "name": "codeloop",
+      "description": "Multi-subagent development lifecycle orchestrator (alias for agyloop)",
+      "usage": "/codeloop [plan | implement | yolo | abort] [--commit-after]",
+      "subcommands": {
+        "plan": {
+          "description": "Run read-only planning subagent and generate persistent specs in artifacts/plans/"
+        },
+        "implement": {
+          "description": "Resume straight from an approved plan with a fresh context"
         },
         "yolo": {
           "description": "Fast-path mode auto-approving plan gates while enforcing quality checks"
+        },
+        "abort": {
+          "description": "Emergency Stop: halt subagents, clear git index locks, quarantine worktrees, and stop sandboxes"
         }
       },
       "flags": {
@@ -106,13 +132,15 @@
       "name": "gate",
       "description": "Fast, isolated quality gate subagent executing builds, tests, and linters",
       "model": "flash_lite",
-      "role": "Quality Gate Verification Subagent"
+      "role": "Quality Gate Verification Subagent",
+      "system_prompt": "prompts/gate.md"
     },
     "reviewer": {
       "name": "reviewer",
       "description": "Standards compliance and acceptance criteria review subagent",
       "model": "flash",
-      "role": "AI Reviewer Subagent"
+      "role": "AI Reviewer Subagent",
+      "system_prompt": "prompts/reviewer.md"
     },
     "triage": {
       "name": "triage",

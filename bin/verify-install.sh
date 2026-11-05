@@ -1,13 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ==============================================================================
-# agyloop - Installation & Plugin Verification
+# codeloop - Installation & Plugin Verification
 # ==============================================================================
 # Validates symlink resolution, manifest schema integrity, commands, and subagents.
 # ==============================================================================
 
-set -euo pipefail
+# NOTE: `pipefail` is deliberately absent. It is not POSIX (dash < 0.5.12, BusyBox
+# < 1.36) and would abort the script at this line; there is no pipeline here anyway.
+set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET_DIR="${HOME}/.gemini/config/plugins"
@@ -18,23 +20,23 @@ FAILED=0
 
 resolve_path() {
   local target="$1"
-  if command -v realpath &>/dev/null; then
+  if command -v realpath >/dev/null 2>&1; then
     realpath "${target}"
-  elif command -v greadlink &>/dev/null; then
+  elif command -v greadlink >/dev/null 2>&1; then
     greadlink -f "${target}"
   else
     readlink -f "${target}" 2>/dev/null || readlink "${target}"
   fi
 }
 
-echo "=== AgyLoop: Installation Verification ==="
+echo "=== CodeLoop: Installation Verification ==="
 echo ""
 
 # 1. Check symlink existence
 echo "1. Checking plugin symlink..."
-if [[ -L "${TARGET_LINK}" ]]; then
+if [ -L "${TARGET_LINK}" ]; then
   RESOLVED="$(resolve_path "${TARGET_LINK}" || true)"
-  if [[ "${RESOLVED}" == "${REPO_ROOT}" ]]; then
+  if [ "${RESOLVED}" = "${REPO_ROOT}" ]; then
     echo "   ✓ Symlink valid: ${TARGET_LINK} -> ${RESOLVED}"
   else
     echo "   ✗ Symlink exists but points to wrong destination: ${RESOLVED}"
@@ -49,7 +51,7 @@ fi
 
 # 2. Check plugin.json readability through symlink
 echo "2. Checking manifest resolution through symlink..."
-if [[ -f "${PLUGIN_MANIFEST}" ]]; then
+if [ -f "${PLUGIN_MANIFEST}" ]; then
   echo "   ✓ Manifest found at: ${PLUGIN_MANIFEST}"
 else
   echo "   ✗ plugin.json not found via symlink path (${PLUGIN_MANIFEST})."
@@ -57,9 +59,16 @@ else
 fi
 
 # 3. Check JSON validity with jq
+# The `-f` guard keeps an absent manifest from being reported as malformed: when
+# the link is missing, step 2 has already failed the run and printing "Invalid
+# JSON syntax" about a file jq never opened sent operators hunting for a parse
+# bug instead of running the one command that fixes it (#226).
 echo "3. Validating JSON syntax..."
-if command -v jq &>/dev/null; then
-  if jq empty "${PLUGIN_MANIFEST}" 2>/dev/null; then
+if command -v jq >/dev/null 2>&1; then
+  if [ ! -f "${PLUGIN_MANIFEST}" ]; then
+    echo "   ! Manifest not readable at ${PLUGIN_MANIFEST}; skipping JSON syntax test."
+    echo "     Run './bin/setup-symlink.sh' to establish the link, then re-run this script."
+  elif jq empty "${PLUGIN_MANIFEST}" 2>/dev/null; then
     echo "   ✓ Valid JSON syntax."
   else
     echo "   ✗ Invalid JSON syntax in ${PLUGIN_MANIFEST}."
@@ -70,48 +79,55 @@ else
 fi
 
 # 4. Check core plugin fields
+# The `-f` guard plus `|| true` on every extraction is load-bearing: under `set -e`
+# a failed command substitution in a plain assignment aborts the script with THAT
+# command's exit status (jq returns 2 for "no such file", 4 for a parse error), so
+# callers saw `2` instead of the documented `1` and never reached the FAILED summary.
 echo "4. Validating Plugin V2 metadata & contracts..."
-if command -v jq &>/dev/null; then
-  PLUGIN_NAME="$(jq -r '.name // empty' "${PLUGIN_MANIFEST}")"
-  PLUGIN_VERSION="$(jq -r '.version // empty' "${PLUGIN_MANIFEST}")"
-  HAS_COMMAND="$(jq -r '.commands.agyloop.name // empty' "${PLUGIN_MANIFEST}")"
-  PLANNER_SUBAGENT="$(jq -r '.subagents.planner.name // empty' "${PLUGIN_MANIFEST}")"
-  IMPLEMENTER_SUBAGENT="$(jq -r '.subagents.implementer.name // empty' "${PLUGIN_MANIFEST}")"
-  GATE_SUBAGENT="$(jq -r '.subagents.gate.name // empty' "${PLUGIN_MANIFEST}")"
-  REVIEWER_SUBAGENT="$(jq -r '.subagents.reviewer.name // empty' "${PLUGIN_MANIFEST}")"
+if command -v jq >/dev/null 2>&1 && [ -f "${PLUGIN_MANIFEST}" ]; then
+  PLUGIN_NAME="$(jq -r '.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  PLUGIN_VERSION="$(jq -r '.version // empty' "${PLUGIN_MANIFEST}" || true)"
+  HAS_COMMAND="$(jq -r '.commands.agyloop.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  PLANNER_SUBAGENT="$(jq -r '.subagents.planner.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  IMPLEMENTER_SUBAGENT="$(jq -r '.subagents.implementer.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  GATE_SUBAGENT="$(jq -r '.subagents.gate.name // empty' "${PLUGIN_MANIFEST}" || true)"
+  REVIEWER_SUBAGENT="$(jq -r '.subagents.reviewer.name // empty' "${PLUGIN_MANIFEST}" || true)"
 
-  if [[ "${PLUGIN_NAME}" == "agyloop" ]]; then
+  if [ "${PLUGIN_NAME}" = "codeloop" ]; then
     echo "   ✓ Plugin Name: ${PLUGIN_NAME}"
   else
     echo "   ✗ Unexpected or missing plugin name: '${PLUGIN_NAME}'"
     FAILED=1
   fi
 
-  if [[ -n "${PLUGIN_VERSION}" ]]; then
+  if [ -n "${PLUGIN_VERSION}" ]; then
     echo "   ✓ Plugin Version: ${PLUGIN_VERSION}"
   else
     echo "   ✗ Plugin version missing."
     FAILED=1
   fi
 
-  if [[ "${HAS_COMMAND}" == "agyloop" ]]; then
+  if [ "${HAS_COMMAND}" = "agyloop" ]; then
     echo "   ✓ Command '/agyloop' declared."
   else
     echo "   ✗ Command '/agyloop' missing in manifest."
     FAILED=1
   fi
 
-  if [[ -n "${PLANNER_SUBAGENT}" && -n "${IMPLEMENTER_SUBAGENT}" && -n "${GATE_SUBAGENT}" && -n "${REVIEWER_SUBAGENT}" ]]; then
+  if [ -n "${PLANNER_SUBAGENT}" ] && [ -n "${IMPLEMENTER_SUBAGENT}" ] &&
+     [ -n "${GATE_SUBAGENT}" ] && [ -n "${REVIEWER_SUBAGENT}" ]; then
     echo "   ✓ All 4 subagents declared (planner, implementer, gate, reviewer)."
   else
     echo "   ✗ One or more required subagents missing from manifest."
     FAILED=1
   fi
+else
+  echo "   ! Manifest unreadable; skipping metadata contract checks."
 fi
 
 # 5. Antigravity Environment Check
 echo "5. Checking Antigravity runtime environment..."
-if command -v agy &>/dev/null; then
+if command -v agy >/dev/null 2>&1; then
   echo "   ✓ Antigravity CLI ('agy') detected in PATH."
 else
   echo "   ! 'agy' CLI binary not found in PATH (normal if running standalone Antigravity IDE/App)."
@@ -119,8 +135,8 @@ fi
 
 echo ""
 echo "--------------------------------------------------"
-if [[ "${FAILED}" -eq 0 ]]; then
-  echo "🎉 Verification PASSED! AgyLoop plugin is properly installed."
+if [ "${FAILED}" -eq 0 ]; then
+  echo "🎉 Verification PASSED! CodeLoop plugin is properly installed."
   echo "You can now reload Antigravity or type '/agyloop' in your chat canvas."
   exit 0
 else

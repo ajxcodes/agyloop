@@ -11,7 +11,11 @@ const {
   REVIEWER_SUBAGENT_DEF,
   ToolWhitelist,
   ResolveSubagentUseCase,
-  FileConfigRepository
+  FileConfigRepository,
+  DEFAULT_CONFIG,
+  BASELINE_DECLARED_SHAPE_SENTENCE,
+  BASELINE_COMMAND_CWD_CONTRACT,
+  ROOT_BUILD_PROHIBITION_SENTENCE
 } = require('../dist');
 
 
@@ -43,12 +47,27 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
   test('getPlannerSystemPrompt returns comprehensive guidance with key architectural invariants', () => {
     const prompt = resolveUseCase.getPlannerSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 500);
-    assert.ok(prompt.includes('AgyLoop Architectural Planning Subagent'));
+    assert.ok(prompt.includes('CodeLoop Architectural Planning Subagent'));
     assert.ok(prompt.includes('Scoped File Modifications (Plans Only)'));
     assert.ok(prompt.includes('Root-Cause Analysis (RCA)'));
     assert.ok(prompt.includes('templates/discovery-plan.md'));
     assert.ok(prompt.includes('templates/implementation-plan.md'));
     assert.ok(prompt.includes('view_file'));
+  });
+
+  test('the documented gate-command contract is present in both planner prompt copies (#348)', () => {
+    const prompt = resolveUseCase.getPlannerSystemPrompt();
+    assert.ok(prompt.includes('Quality Gate Targets contract'));
+    assert.ok(prompt.includes('UNCOMMITTED'));
+    assert.ok(prompt.includes('No synthetic commit'));
+
+    // The compiled fallback and the on-disk prompt must not drift.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const onDisk = fs.readFileSync(path.join(__dirname, '../prompts/planner.md'), 'utf8');
+    assert.ok(onDisk.includes('Quality Gate Targets contract'));
+    assert.ok(onDisk.includes('UNCOMMITTED'));
+    assert.ok(onDisk.includes('No synthetic commit'));
   });
 
   test('getPlannerDefinition integrates with config and resolves model tier', () => {
@@ -90,12 +109,27 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
     assert.ok(prompt.includes('artifacts/plans/'));
     assert.ok(prompt.includes('User / Developer Directives:'));
     assert.ok(prompt.includes('Refactor database client to use connection pooling.'));
+    // Issue #388: the planner is told how to carry a declared baseline.
+    assert.ok(prompt.includes('### Baseline Evidence'), prompt);
+    assert.ok(prompt.includes('- **Declared:**'), prompt);
+    assert.ok(prompt.includes('- **Command:**'), prompt);
+    assert.ok(prompt.includes('- **Output:**'), prompt);
+    assert.ok(prompt.includes('Never declare an unmeasured baseline value'), prompt);
+    // Issue #402: the label contract and the root-build prohibition reach the
+    // planner BEFORE a claim is authored.
+    assert.ok(prompt.includes(BASELINE_DECLARED_SHAPE_SENTENCE), prompt);
+    assert.ok(prompt.includes(ROOT_BUILD_PROHIBITION_SENTENCE), prompt);
+    assert.ok(prompt.includes('npx tsc --outDir'), prompt);
+    // PLN1 (issue #418): the command cwd contract reaches the planner too, so
+    // the planner learns WHERE the commands are measured before authoring one.
+    assert.ok(prompt.includes(BASELINE_COMMAND_CWD_CONTRACT), prompt);
+    assert.ok(prompt.includes('npx tsc --outDir'), prompt);
   });
 
   test('getImplementerSystemPrompt returns detailed instructions with write capabilities', () => {
     const prompt = resolveUseCase.getImplementerSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 300);
-    assert.ok(prompt.includes('AgyLoop Code Implementation Subagent'));
+    assert.ok(prompt.includes('CodeLoop Code Implementation Subagent'));
     assert.ok(prompt.includes('Strict Plan Adherence') || prompt.includes('strictly adhering'));
     assert.ok(prompt.includes('replace_file_content'));
     assert.ok(prompt.includes('write_to_file'));
@@ -147,7 +181,7 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
   test('getGateSystemPrompt returns comprehensive guidance with log shielding mandate', () => {
     const prompt = resolveUseCase.getGateSystemPrompt();
     assert.ok(typeof prompt === 'string' && prompt.length > 500);
-    assert.ok(prompt.includes('AgyLoop Quality Gate Verification Subagent'));
+    assert.ok(prompt.includes('CodeLoop Quality Gate Verification Subagent'));
     assert.ok(prompt.includes('Verification-Only Mandate'));
     assert.ok(prompt.includes('Log Isolation & Shielding Mandate'));
     assert.ok(prompt.includes('run_command'));
@@ -224,14 +258,21 @@ describe('Planning Subagent Definition & Safety Guarantees (TypeScript)', () => 
 
   test('getReviewerSystemPrompt returns comprehensive guidance with verdict tokens', () => {
     const prompt = resolveUseCase.getReviewerSystemPrompt();
-    assert.ok(prompt.includes('# AgyLoop AI Reviewer Subagent System Prompt'));
+    assert.ok(prompt.includes('# CodeLoop AI Reviewer Subagent System Prompt'));
     assert.ok(prompt.includes('REVIEW_STATUS: APPROVED | CHANGES_REQUESTED'));
     assert.ok(prompt.includes('UNFULFILLED_AC:'));
     assert.ok(prompt.includes('REMEDIATION_GUIDANCE:'));
   });
 
   test('getReviewerDefinition integrates with config and resolves model tier', () => {
-    const def = resolveUseCase.execute({ role: 'reviewer' });
+    // Issue #290: the whitelist is now rendered for the SELECTED host, so this
+    // descriptor test pins its config instead of inheriting the operator's
+    // ~/.gemini/config (which selects `opencode` on some machines). `auto` is an
+    // unresolved host, so the Antigravity identifiers below stay the default.
+    const def = resolveUseCase.execute({
+      role: 'reviewer',
+      customConfig: { ...DEFAULT_CONFIG, runner: 'auto' }
+    });
     assert.strictEqual(def.name, 'reviewer');
     assert.strictEqual(def.model, 'flash');
     assert.strictEqual(def.apiModel, 'gemini-3.5-flash');

@@ -1,9 +1,12 @@
 /**
- * agyloop - Worktree Guardrails & Teardown Unit Tests
+ * codeloop - Worktree Guardrails & Teardown Unit Tests
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   TransitionStageUseCase,
   StartImplementationUseCase,
@@ -31,12 +34,12 @@ import type {
   CommandExecutorPort,
   ConfirmationPromptPort,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   PlanGeneratorPort
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
 
-class MockStateRepo implements StateRepository {
+class StateRepositoryDouble implements StateRepository {
   public savedSnapshot: StateMachineSnapshot | null = null;
 
   constructor(initial: StateMachineSnapshot | null = null) {
@@ -107,8 +110,8 @@ function makeMockPrompt(confirmed = true): ConfirmationPromptPort {
   };
 }
 
-function makeMockConfig(): ConfigRepository {
-  const config: AgyLoopConfig = {
+function makeMockConfigLocal(): ConfigRepository {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -154,18 +157,31 @@ function makeMockPlanGenerator(): PlanGeneratorPort {
       type: 'implementation',
       planPath: '/repo/artifacts/plans/[Implementation] - Test.md',
       mirrorPath: '',
-      summaryPath: '/repo/artifacts/plans/AgyLoop Summary.md'
+      summaryPath: '/repo/artifacts/plans/CodeLoop Summary.md',
+      directoryCreated: false,
+      filesCreated: false,
+      adoptedExisting: true
     }),
     resolvePlanFile: () => ({
       planPath: '/repo/artifacts/plans/[Implementation] - Test.md',
       planDir: '/repo/artifacts/plans',
       planFileName: '[Implementation] - Test.md',
-      summaryPath: '/repo/artifacts/plans/AgyLoop Summary.md',
+      summaryPath: '/repo/artifacts/plans/CodeLoop Summary.md',
       exists: true,
       hasSummary: true
     }),
     readPlanDocument: () => '# Plan\nImplementation details',
-    generatePlan: () => ({ planPath: '', mirrorPath: '', isNew: false, created: false, title: '', content: '', documentContent: '' }),
+    generatePlan: () => ({
+      planPath: '',
+      mirrorPath: '',
+      isNew: false,
+      created: false,
+      title: '',
+      content: '',
+      mirrorContent: null,
+      mirrorCreated: false,
+      documentContent: ''
+    }),
     generateSummaryLog: () => ({ summaryPath: '', isNew: false, created: false, content: '' }),
     updateSummaryLog: () => true,
     findPlanDirectory: () => '/repo/artifacts/plans'
@@ -180,7 +196,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       let createdTaskId = '';
 
       const mockWorktree = makeMockWorktree({
@@ -214,7 +230,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const useCase = new TransitionStageUseCase(stateRepo); // No worktreeManager
 
       await assert.rejects(
@@ -235,7 +251,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const useCase = new TransitionStageUseCase(stateRepo);
 
       const updatedSm = await useCase.execute({
@@ -251,12 +267,12 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
   describe('StartImplementationUseCase Stage Validation & Worktree Provisioning', () => {
     test('enforces stage transition validation first before attempting worktree operations', async () => {
       const sm = StateMachine.createInitial({ issue: 41 }); // in INITIALIZED
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -281,12 +297,12 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -306,7 +322,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
       let capturedParams: any = null;
 
@@ -334,7 +350,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -352,7 +368,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('PLAN');
       sm.transition('APPROVAL');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       const mockWorktree = makeMockWorktree();
       let capturedParams: any = null;
 
@@ -380,7 +396,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
 
       const useCase = new StartImplementationUseCase(
         stateRepo,
-        makeMockConfig(),
+        makeMockConfigLocal(),
         makeMockPlanGenerator(),
         undefined,
         undefined,
@@ -390,6 +406,54 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
 
       await useCase.execute({ workspaceDir: '/repo', baseBranch: 'custom/override-branch' });
       assert.strictEqual(capturedParams.explicitBaseBranch, 'custom/override-branch');
+    });
+
+    test('skips the worktree guardrail under dryRun, exactly as it already did under noWorktree (#226)', async () => {
+      const sm = StateMachine.createInitial({ issue: 41 });
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition('APPROVAL');
+
+      const runWith = async (params: import('../../src/application/start-implementation').StartImplementationParams) => {
+        const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+        let createWorktreeCalls = 0;
+        const useCase = new StartImplementationUseCase(
+          stateRepo,
+          makeMockConfigLocal(),
+          makeMockPlanGenerator(),
+          undefined,
+          undefined,
+          makeMockWorktree({
+            createWorktree: async (opts: CreateWorktreeOptions) => {
+              createWorktreeCalls++;
+              return WorktreeDescriptor.create({
+                taskId: opts.taskId,
+                worktreePath: `/repo/.worktrees/${opts.taskId}`,
+                branch: `task/${opts.taskId}-work`,
+                baseBranch: 'phase/1-bridge',
+                createdAt: new Date().toISOString()
+              });
+            }
+          })
+        );
+        const result = await useCase.execute({ workspaceDir: '/repo', ...params });
+        return { createWorktreeCalls, sm: result.stateMachine };
+      };
+
+      // Control first: a plain run must still provision, or "0" below is a dead mock.
+      const baseline = await runWith({});
+      assert.strictEqual(baseline.createWorktreeCalls, 1);
+      assert.ok(baseline.sm.worktree);
+
+      // #226: dryRun now skips the guardrail, so --dry-run leaves no orphan worktree.
+      const dryRun = await runWith({ dryRun: true });
+      assert.strictEqual(dryRun.createWorktreeCalls, 0, 'dryRun must skip the worktree guardrail');
+      assert.strictEqual(dryRun.sm.worktree, null);
+
+      // Unchanged: noWorktree already skipped it, and still does.
+      const noWorktree = await runWith({ noWorktree: true });
+      assert.strictEqual(noWorktree.createWorktreeCalls, 0, 'noWorktree behaviour must be unchanged');
+      assert.strictEqual(noWorktree.sm.worktree, null);
     });
   });
 
@@ -414,7 +478,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('REVIEW');
       sm.transition('COMMIT');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       let removedPath = '';
       let forceRemoved = false;
       let pruned = false;
@@ -475,7 +539,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       sm.transition('REVIEW');
       sm.transition('COMMIT');
 
-      const stateRepo = new MockStateRepo(sm.toSnapshot());
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
       let removeCalled = false;
 
       const mockWorktree = makeMockWorktree({
@@ -507,6 +571,231 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
       assert.strictEqual(result.worktreeTornDown, false);
       assert.strictEqual(removeCalled, false);
       assert.ok(result.stateMachine.worktree);
+    });
+
+    // Issue #247 (AC2, AC1): teardown must be gated on the shared root-invariant
+    // predicate — a descriptor pointing at the root workspace is never torn down,
+    // no matter how it labels itself.
+    test('skips teardown entirely for a root-workspace descriptor (isIsolated false, path === rootDir) and preserves the workspace', async () => {
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-247-root-'));
+      try {
+        const sentinelPath = path.join(rootDir, 'sentinel.txt');
+        fs.writeFileSync(sentinelPath, 'alive', 'utf8');
+
+        const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'fix/247' });
+        sm.setWorktree(
+          WorktreeDescriptor.create({
+            taskId: 247,
+            worktreePath: rootDir,
+            branch: 'fix/247-repro',
+            baseBranch: 'fix/247',
+            isIsolated: false
+          })
+        );
+        sm.transition('DISCOVERY');
+        sm.transition('PLAN');
+        sm.transition(STAGE_APPROVAL);
+        sm.transition(STAGE_IMPLEMENT);
+        sm.transition('QUALITY_GATE');
+        sm.transition('REVIEW');
+        sm.transition(STAGE_COMMIT);
+
+        const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+        let removeCalled = false;
+
+        const mockWorktree = makeMockWorktree({
+          removeWorktree: async () => {
+            removeCalled = true;
+          }
+        });
+
+        const useCase = new ExecuteCommitUseCase(
+          stateRepo,
+          makeMockCommandExecutor(),
+          undefined,
+          makeMockPrompt(true),
+          mockWorktree
+        );
+
+        const result = await useCase.execute({
+          commitMessage: CommitMessage.create({
+            type: 'fix',
+            description: 'never delete the repo root (#247)'
+          }),
+          bypassConfirmation: true,
+          rootWorkspaceDir: rootDir
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(removeCalled, false, 'the root descriptor must never reach removeWorktree');
+        assert.ok(!result.worktreeTornDown, 'teardown is skipped');
+        assert.strictEqual(result.worktreeTornDownPath, undefined);
+        assert.strictEqual(fs.existsSync(sentinelPath), true, 'the workspace root must be preserved');
+        assert.strictEqual(fs.readFileSync(sentinelPath, 'utf8'), 'alive');
+      } finally {
+        fs.rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    test('skips teardown for an isolated-labelled descriptor whose path resolves on the root (predicate does not trust isIsolated alone)', async () => {
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-247-deceptive-'));
+      try {
+        const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'fix/247' });
+        sm.setWorktree(
+          WorktreeDescriptor.create({
+            taskId: 247,
+            worktreePath: rootDir,
+            branch: 'fix/247-repro',
+            baseBranch: 'fix/247',
+            isIsolated: true
+          })
+        );
+        sm.transition('DISCOVERY');
+        sm.transition('PLAN');
+        sm.transition(STAGE_APPROVAL);
+        sm.transition(STAGE_IMPLEMENT);
+        sm.transition('QUALITY_GATE');
+        sm.transition('REVIEW');
+        sm.transition(STAGE_COMMIT);
+
+        const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+        let removeCalled = false;
+
+        const mockWorktree = makeMockWorktree({
+          removeWorktree: async () => {
+            removeCalled = true;
+          }
+        });
+
+        const useCase = new ExecuteCommitUseCase(
+          stateRepo,
+          makeMockCommandExecutor(),
+          undefined,
+          makeMockPrompt(true),
+          mockWorktree
+        );
+
+        const result = await useCase.execute({
+          commitMessage: CommitMessage.create({
+            type: 'fix',
+            description: 'path beats label (#247)'
+          }),
+          bypassConfirmation: true,
+          rootWorkspaceDir: rootDir
+        });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(removeCalled, false);
+        assert.ok(!result.worktreeTornDown);
+        assert.ok(result.stateMachine.worktree, 'the lying descriptor must not be silently blessed: state keeps it');
+      } finally {
+        fs.rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+
+    test('tears down a non-root worktree after commit when the root invariant is satisfied (anti-over-restriction)', async () => {
+      const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'main' });
+      sm.setWorktree(
+        WorktreeDescriptor.create({
+          taskId: 247,
+          worktreePath: '/repo/.worktrees/247',
+          branch: 'task/247-work',
+          baseBranch: 'main',
+          isIsolated: true
+        })
+      );
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      sm.transition('QUALITY_GATE');
+      sm.transition('REVIEW');
+      sm.transition(STAGE_COMMIT);
+
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+      const calls: RemoveWorktreeOptions[] = [];
+
+      const mockWorktree = makeMockWorktree({
+        removeWorktree: async (opts: RemoveWorktreeOptions) => {
+          calls.push(opts);
+        }
+      });
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        makeMockCommandExecutor(),
+        undefined,
+        makeMockPrompt(true),
+        mockWorktree
+      );
+
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({
+          type: 'feat',
+          description: 'isolated teardown still works (#247)'
+        }),
+        bypassConfirmation: true,
+        rootWorkspaceDir: '/repo'
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].worktreePath, '/repo/.worktrees/247');
+    });
+
+    test('reports worktreeTornDownPath (and isolated flag) on the result for a descriptor-accurate CLI message', async () => {
+      const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'main' });
+      sm.setWorktree(
+        WorktreeDescriptor.create({
+          taskId: 247,
+          worktreePath: '/repo/.worktrees/247',
+          branch: 'task/247-work',
+          baseBranch: 'main',
+          isIsolated: true
+        })
+      );
+      sm.transition('DISCOVERY');
+      sm.transition('PLAN');
+      sm.transition(STAGE_APPROVAL);
+      sm.transition(STAGE_IMPLEMENT);
+      sm.transition('QUALITY_GATE');
+      sm.transition('REVIEW');
+      sm.transition(STAGE_COMMIT);
+
+      const stateRepo = new StateRepositoryDouble(sm.toSnapshot());
+      const promptMessages: string[] = [];
+      const recordingPrompt = {
+        confirm: async (message: string): Promise<boolean> => {
+          promptMessages.push(message);
+          return true;
+        }
+      };
+
+      const useCase = new ExecuteCommitUseCase(
+        stateRepo,
+        makeMockCommandExecutor(),
+        undefined,
+        recordingPrompt as unknown as ConfirmationPromptPort,
+        makeMockWorktree()
+      );
+
+      const result = await useCase.execute({
+        commitMessage: CommitMessage.create({
+          type: 'feat',
+          description: 'accurate teardown report (#247)'
+        })
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.worktreeTornDown, true);
+      assert.strictEqual(result.worktreeTornDownPath, '/repo/.worktrees/247');
+      assert.strictEqual(result.worktreeTornDownIsolated, true);
+      // The teardown prompt asks about the worktree; it no longer claims isolation up front.
+      const teardownMessage = promptMessages.find((m) => m.includes('Teardown'));
+      assert.ok(teardownMessage, 'a teardown confirmation prompt must have been shown');
+      assert.ok(teardownMessage!.includes('Teardown git worktree at /repo/.worktrees/247'));
+      assert.strictEqual(teardownMessage!.includes('isolated'), false);
     });
   });
 });

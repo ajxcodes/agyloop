@@ -1,14 +1,16 @@
 {
-  "name": "agyloop",
+  "name": "codeloop",
   "version": "0.6.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
+    "codeloop": "./bin/codeloop.js",
     "agyloop": "./bin/agyloop.js"
   },
   "scripts": {
     "build": "tsc",
+    "postbuild": "node bin/write-build-stamp.js",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "lint": "eslint src tests",
     "test": "npm run build && node --test tests/*.test.ts tests/**/*.test.ts",

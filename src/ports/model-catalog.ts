@@ -1,5 +1,5 @@
 /**
- * agyloop - ModelCatalogPort Interface
+ * codeloop - ModelCatalogPort Interface
  *
  * Inversion of control interface for Gemini model discovery and tier mapping.
  */

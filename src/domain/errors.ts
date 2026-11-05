@@ -1,37 +1,13 @@
 /**
- * agyloop - Sealed Domain Error Hierarchy
+ * codeloop - Sealed Domain Error Hierarchy
  *
  * Provides strongly-typed, discriminated error classes for domain rule
  * violations, storage errors, config issues, and write violations.
  */
 
-import {
-  ErrorCode,
-  ERR_INVALID_TRANSITION,
-  ERR_PHYSICAL_WRITE_VIOLATION,
-  ERR_GITHUB_CONTEXT,
-  ERR_CONFIG_RESOLUTION,
-  ERR_STATE_STORAGE,
-  ERR_VALIDATION,
-  ERR_GATE_TIMEOUT,
-  ERR_GATE_EXECUTION,
-  ERR_BUILD_DETECTION,
-  ERR_GATE_SUMMARY_PARSE,
-  ERR_CRITIQUE,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  ERR_AI_REVIEWER,
-  ERR_CRITIQUE_INSTALL,
-  ERR_CRITIQUE_UPDATE,
-  ERR_REVIEWER_SUBAGENT,
-  ERR_COMMIT_EXECUTION,
-  ERR_WORKTREE,
-  ERR_PREFLIGHT_HALT,
-  ERR_MILESTONE_RELEASE,
-  ERR_MILESTONE_SEALED
-} from './constants';
 
 
-export abstract class AgyLoopError extends Error {
+export abstract class CodeLoopError extends Error {
   public abstract readonly code: ErrorCode;
   public readonly details?: Record<string, unknown>;
 
@@ -43,7 +19,7 @@ export abstract class AgyLoopError extends Error {
   }
 }
 
-export class InvalidTransitionError extends AgyLoopError {
+export class InvalidTransitionError extends CodeLoopError {
   public readonly code = ERR_INVALID_TRANSITION;
   public readonly fromStage: string;
   public readonly toStage: string;
@@ -60,7 +36,7 @@ export class InvalidTransitionError extends AgyLoopError {
   }
 }
 
-export class PhysicalWriteViolationError extends AgyLoopError {
+export class PhysicalWriteViolationError extends CodeLoopError {
   public readonly code = ERR_PHYSICAL_WRITE_VIOLATION;
   public readonly toolOrCapability: string;
 
@@ -73,7 +49,7 @@ export class PhysicalWriteViolationError extends AgyLoopError {
   }
 }
 
-export class GitHubContextError extends AgyLoopError {
+export class GitHubContextError extends CodeLoopError {
   public readonly code = ERR_GITHUB_CONTEXT;
   public readonly operation: string;
 
@@ -87,7 +63,7 @@ export class GitHubContextError extends AgyLoopError {
   }
 }
 
-export class ConfigResolutionError extends AgyLoopError {
+export class ConfigResolutionError extends CodeLoopError {
   public readonly code = ERR_CONFIG_RESOLUTION;
   public readonly target: string;
 
@@ -98,7 +74,42 @@ export class ConfigResolutionError extends AgyLoopError {
   }
 }
 
-export class StateStorageError extends AgyLoopError {
+export class CircuitBreakerTrippedError extends CodeLoopError {
+  public readonly code = ERR_CIRCUIT_BREAKER_TRIPPED;
+  public readonly breaker: string;
+  public readonly limit: number;
+  public readonly actual: number;
+  public readonly action: string;
+
+  constructor(
+    breaker: string,
+    limit: number,
+    actual: number,
+    action: string,
+    customMessage?: string
+  ) {
+    const msg =
+      customMessage ||
+      `Circuit breaker '${breaker}' tripped: exceeded limit ${limit} (actual: ${actual}). Action: ${action}.`;
+    super(msg, { breaker, limit, actual, action });
+    this.breaker = breaker;
+    this.limit = limit;
+    this.actual = actual;
+    this.action = action;
+  }
+}
+
+export class EmergencyAbortError extends CodeLoopError {
+  public readonly code = ERR_EMERGENCY_ABORT;
+  public readonly reason: string;
+
+  constructor(reason: string, details?: Record<string, unknown>) {
+    super(`Emergency abort triggered: ${reason}`, details);
+    this.reason = reason;
+  }
+}
+
+export class StateStorageError extends CodeLoopError {
   public readonly code = ERR_STATE_STORAGE;
   public readonly filePath: string;
   public readonly operation: string;
@@ -115,7 +126,7 @@ export class StateStorageError extends AgyLoopError {
   }
 }
 
-export class ValidationError extends AgyLoopError {
+export class ValidationError extends CodeLoopError {
   public readonly code = ERR_VALIDATION;
   public readonly field: string;
   public readonly value: unknown;
@@ -127,7 +138,7 @@ export class ValidationError extends AgyLoopError {
   }
 }
 
-export class QualityGateTimeoutError extends AgyLoopError {
+export class QualityGateTimeoutError extends CodeLoopError {
   public readonly code = ERR_GATE_TIMEOUT;
   public readonly command: string;
   public readonly timeoutSeconds: number;
@@ -144,7 +155,7 @@ export class QualityGateTimeoutError extends AgyLoopError {
   }
 }
 
-export class QualityGateExecutionError extends AgyLoopError {
+export class QualityGateExecutionError extends CodeLoopError {
   public readonly code = ERR_GATE_EXECUTION;
   public readonly command: string;
   public readonly exitCode: number;
@@ -161,7 +172,7 @@ export class QualityGateExecutionError extends AgyLoopError {
   }
 }
 
-export class BuildDetectionError extends AgyLoopError {
+export class BuildDetectionError extends CodeLoopError {
   public readonly code = ERR_BUILD_DETECTION;
   public readonly target: string;
   public readonly reason: string;
@@ -177,7 +188,7 @@ export class BuildDetectionError extends AgyLoopError {
   }
 }
 
-export class QualityGateSummaryParseError extends AgyLoopError {
+export class QualityGateSummaryParseError extends CodeLoopError {
   public readonly code = ERR_GATE_SUMMARY_PARSE;
   public readonly rawContent: string;
   public readonly reason: string;
@@ -189,7 +200,7 @@ export class QualityGateSummaryParseError extends AgyLoopError {
   }
 }
 
-export class CritiqueError extends AgyLoopError {
+export class CritiqueError extends CodeLoopError {
   public readonly code = ERR_CRITIQUE;
   public readonly operation: string;
   public readonly reason: string;
@@ -208,7 +219,7 @@ export class CritiqueError extends AgyLoopError {
 export const AiReviewerError = CritiqueError;
 export type AiReviewerError = CritiqueError;
 
-export class CritiqueInstallError extends AgyLoopError {
+export class CritiqueInstallError extends CodeLoopError {
   public readonly code = ERR_CRITIQUE_INSTALL;
   public readonly operation: string;
   public readonly reason: string;
@@ -224,7 +235,7 @@ export class CritiqueInstallError extends AgyLoopError {
   }
 }
 
-export class CritiqueUpdateError extends AgyLoopError {
+export class CritiqueUpdateError extends CodeLoopError {
   public readonly code = ERR_CRITIQUE_UPDATE;
   public readonly operation: string;
   public readonly reason: string;
@@ -240,7 +251,7 @@ export class CritiqueUpdateError extends AgyLoopError {
   }
 }
 
-export class ReviewerSubagentError extends AgyLoopError {
+export class ReviewerSubagentError extends CodeLoopError {
   public readonly code = ERR_REVIEWER_SUBAGENT;
   public readonly operation: string;
   public readonly reason: string;
@@ -256,7 +267,31 @@ export class ReviewerSubagentError extends AgyLoopError {
   }
 }
 
-export class CommitExecutionError extends AgyLoopError {
+/**
+ * An operator `--refute` that could not be honoured (issue #349).
+ *
+ * Raised BEFORE any checkpoint write, so a refused refutation leaves the
+ * checkpoint byte-identical: every condition in the plan's fail-closed table
+ * (no reason, malformed target, unknown/ambiguous/duplicate target, no report,
+ * no filed `APPROVED` verdict) is a hard error that records nothing.
+ *
+ * `refusals` carries one human-readable line per refused spec so the CLI can
+ * print every diagnostic rather than just the first.
+ */
+export class RefutationRefusedError extends CodeLoopError {
+  public readonly code = ERR_REFUTATION_REFUSED;
+  public readonly operation = 'review' as const;
+  public readonly refusals: readonly string[];
+
+  constructor(operation: 'review', refusals: readonly string[]) {
+    const lines = refusals.length > 0 ? refusals : ['A refutation was refused.'];
+    super(lines.join('; '), { operation, refusals: lines });
+    this.operation = operation;
+    this.refusals = Object.freeze([...lines]);
+  }
+}
+
+export class CommitExecutionError extends CodeLoopError {
   public readonly code = ERR_COMMIT_EXECUTION;
   public readonly operation: string;
   public readonly reason: string;
@@ -272,7 +307,7 @@ export class CommitExecutionError extends AgyLoopError {
   }
 }
 
-export class WorktreeError extends AgyLoopError {
+export class WorktreeError extends CodeLoopError {
   public readonly code = ERR_WORKTREE;
   public readonly operation: string;
   public readonly reason: string;
@@ -300,7 +335,7 @@ export class WorktreeCleanupError extends WorktreeError {
   }
 }
 
-export class PreFlightHaltError extends AgyLoopError {
+export class PreFlightHaltError extends CodeLoopError {
   public readonly code = ERR_PREFLIGHT_HALT;
   public readonly reason: string;
   public readonly haltType: 'CLOSED' | 'MERGED' | string;
@@ -312,7 +347,7 @@ export class PreFlightHaltError extends AgyLoopError {
   }
 }
 
-export class MilestoneReleaseError extends AgyLoopError {
+export class MilestoneReleaseError extends CodeLoopError {
   public readonly code = ERR_MILESTONE_RELEASE;
   public readonly reason: string;
 
@@ -326,7 +361,7 @@ export class MilestoneReleaseError extends AgyLoopError {
   }
 }
 
-export class MilestoneSealedError extends AgyLoopError {
+export class MilestoneSealedError extends CodeLoopError {
   public readonly code = ERR_MILESTONE_SEALED;
   public readonly phaseBranch: string;
 
@@ -339,5 +374,88 @@ export class MilestoneSealedError extends AgyLoopError {
   }
 }
 
+/* eslint-disable @typescript-eslint/no-unused-vars */
 
 
+export const ERR_INVALID_TRANSITION = 'ERR_INVALID_TRANSITION' as const;
+
+export const ERR_PHYSICAL_WRITE_VIOLATION = 'ERR_PHYSICAL_WRITE_VIOLATION' as const;
+
+export const ERR_GITHUB_CONTEXT = 'ERR_GITHUB_CONTEXT' as const;
+
+export const ERR_CONFIG_RESOLUTION = 'ERR_CONFIG_RESOLUTION' as const;
+
+export const ERR_STATE_STORAGE = 'ERR_STATE_STORAGE' as const;
+
+export const ERR_VALIDATION = 'ERR_VALIDATION' as const;
+
+export const ERR_GATE_TIMEOUT = 'ERR_GATE_TIMEOUT' as const;
+
+export const ERR_GATE_EXECUTION = 'ERR_GATE_EXECUTION' as const;
+
+export const ERR_BUILD_DETECTION = 'ERR_BUILD_DETECTION' as const;
+
+export const ERR_GATE_SUMMARY_PARSE = 'ERR_GATE_SUMMARY_PARSE' as const;
+
+export const ERR_CRITIQUE = 'ERR_CRITIQUE' as const;
+
+export const ERR_AI_REVIEWER = ERR_CRITIQUE;
+
+export const ERR_CRITIQUE_INSTALL = 'ERR_CRITIQUE_INSTALL' as const;
+
+export const ERR_CRITIQUE_UPDATE = 'ERR_CRITIQUE_UPDATE' as const;
+
+export const ERR_REVIEWER_SUBAGENT = 'ERR_REVIEWER_SUBAGENT' as const;
+
+export const ERR_REFUTATION_REFUSED = 'ERR_REFUTATION_REFUSED' as const;
+
+export const ERR_COMMIT_EXECUTION = 'ERR_COMMIT_EXECUTION' as const;
+
+export const ERR_WORKTREE = 'ERR_WORKTREE' as const;
+
+export const ERR_PREFLIGHT_HALT = 'ERR_PREFLIGHT_HALT' as const;
+
+export const ERR_MILESTONE_RELEASE = 'ERR_MILESTONE_RELEASE' as const;
+
+export const ERR_MILESTONE_SEALED = 'ERR_MILESTONE_SEALED' as const;
+
+export const ERR_CIRCUIT_BREAKER_TRIPPED = 'ERR_CIRCUIT_BREAKER_TRIPPED' as const;
+
+export const ERR_EMERGENCY_ABORT = 'ERR_EMERGENCY_ABORT' as const;
+
+export const ERR_QUOTA_EXHAUSTED = 'ERR_QUOTA_EXHAUSTED' as const;
+
+export const HALT_TYPE_MISSING_PLAN_DIR = 'MISSING_PLAN_DIR' as const;
+
+
+export const ERROR_CODES = Object.freeze({
+  INVALID_TRANSITION: ERR_INVALID_TRANSITION,
+  PHYSICAL_WRITE_VIOLATION: ERR_PHYSICAL_WRITE_VIOLATION,
+  GITHUB_CONTEXT: ERR_GITHUB_CONTEXT,
+  CONFIG_RESOLUTION: ERR_CONFIG_RESOLUTION,
+  STATE_STORAGE: ERR_STATE_STORAGE,
+  VALIDATION: ERR_VALIDATION,
+  GATE_TIMEOUT: ERR_GATE_TIMEOUT,
+  GATE_EXECUTION: ERR_GATE_EXECUTION,
+  BUILD_DETECTION: ERR_BUILD_DETECTION,
+  GATE_SUMMARY_PARSE: ERR_GATE_SUMMARY_PARSE,
+  CRITIQUE: ERR_CRITIQUE,
+  AI_REVIEWER: ERR_CRITIQUE,
+  CRITIQUE_INSTALL: ERR_CRITIQUE_INSTALL,
+  CRITIQUE_UPDATE: ERR_CRITIQUE_UPDATE,
+  REVIEWER_SUBAGENT: ERR_REVIEWER_SUBAGENT,
+  REFUTATION_REFUSED: ERR_REFUTATION_REFUSED,
+  COMMIT_EXECUTION: ERR_COMMIT_EXECUTION,
+  WORKTREE: ERR_WORKTREE,
+  PREFLIGHT_HALT: ERR_PREFLIGHT_HALT,
+  MILESTONE_RELEASE: ERR_MILESTONE_RELEASE,
+  MILESTONE_SEALED: ERR_MILESTONE_SEALED,
+  CIRCUIT_BREAKER_TRIPPED: ERR_CIRCUIT_BREAKER_TRIPPED,
+  EMERGENCY_ABORT: ERR_EMERGENCY_ABORT,
+  PREFLIGHT_HALT_MISSING_PLAN_DIR: HALT_TYPE_MISSING_PLAN_DIR,
+  QUOTA_EXHAUSTED: ERR_QUOTA_EXHAUSTED
+});
+
+
+
+export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];

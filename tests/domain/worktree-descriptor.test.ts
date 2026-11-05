@@ -1,5 +1,5 @@
 /**
- * agyloop - WorktreeDescriptor Value Object Unit Tests
+ * codeloop - WorktreeDescriptor Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -91,8 +91,8 @@ describe('WorktreeDescriptor Value Object', () => {
 
   test('slugify transforms title strings into URL and branch-safe slugs', () => {
     assert.strictEqual(
-      WorktreeDescriptor.slugify('[Feature] agyloop: Git Worktree Isolation for Parallel Multi-Agent Task Execution'),
-      'agyloop-git-worktree-isolation-for-parallel-multi-agent-task-execution'
+      WorktreeDescriptor.slugify('[Feature] codeloop: Git Worktree Isolation for Parallel Multi-Agent Task Execution'),
+      'codeloop-git-worktree-isolation-for-parallel-multi-agent-task-execution'
     );
     assert.strictEqual(
       WorktreeDescriptor.slugify('Fix: Broken .git/index.lock contention!'),
@@ -160,6 +160,56 @@ describe('WorktreeDescriptor Value Object', () => {
       slug: 'slug',
       isIsolated: true
     });
+  });
+
+  test('reusedBranchCommit descriptor field: serialises, round-trips through fromJSON, and stays off fresh branches (#264)', () => {
+    // (a) A descriptor that reports a reused branch carries the commit through
+    // toJSON and back through fromJSON.
+    const reused = new WorktreeDescriptor({
+      taskId: '264',
+      worktreePath: '/repo/.worktrees/264',
+      branch: 'fix/264',
+      baseBranch: 'main',
+      reusedBranchCommit: '  b542e58deadbeefdeadbeefdeadbeefdeadbeef  '
+    });
+    assert.strictEqual(reused.reusedBranchCommit, 'b542e58deadbeefdeadbeefdeadbeefdeadbeef');
+
+    const json = reused.toJSON();
+    assert.strictEqual(json.reusedBranchCommit, reused.reusedBranchCommit);
+
+    const roundTripped = WorktreeDescriptor.fromJSON(json);
+    assert.strictEqual(roundTripped.reusedBranchCommit, reused.reusedBranchCommit);
+    assert.strictEqual(roundTripped.branch, reused.branch);
+
+    // A blank reuse commit is not trace metadata: it is dropped, not kept as ''.
+    const blank = new WorktreeDescriptor({
+      taskId: '264',
+      worktreePath: '/repo/.worktrees/264',
+      branch: 'fix/264',
+      baseBranch: 'main',
+      reusedBranchCommit: '   '
+    });
+    assert.strictEqual(blank.reusedBranchCommit, undefined);
+
+    // (b) A descriptor WITHOUT the field produces exactly the pre-change toJSON
+    // key set (the reuse trace metadata must not leak into non-reusing payloads).
+    const fresh = new WorktreeDescriptor({
+      taskId: '87',
+      worktreePath: '/repo/.worktrees/87',
+      branch: 'task/87-slug',
+      baseBranch: 'main',
+      slug: 'slug'
+    });
+    assert.deepStrictEqual(Object.keys(fresh.toJSON()).sort(), [
+      'baseBranch',
+      'branch',
+      'isIsolated',
+      'slug',
+      'taskId',
+      'worktreePath'
+    ]);
+    assert.strictEqual('reusedBranchCommit' in fresh.toJSON(), false);
+    assert.strictEqual(WorktreeDescriptor.fromJSON({ ...fresh.toJSON(), reusedBranchCommit: undefined }).reusedBranchCommit, undefined);
   });
 
   test('Worktree errors preserve codes and cause details', () => {
