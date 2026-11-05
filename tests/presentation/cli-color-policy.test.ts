@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE colour policy for the whole process (issue #339, items 8/9,
+ * codeloop - ONE colour policy for the whole process (issue #339, items 8/9,
  * absorbing #341)
  *
  * T9.1  piped `status`, `next` and `worktree list` contain ZERO ESC bytes.

@@ -1,5 +1,5 @@
 /**
- * agyloop - The ONE `--issue` token grammar (issue #250)
+ * codeloop - The ONE `--issue` token grammar (issue #250)
  *
  * Before this module existed, FOUR parsers read the same token and disagreed
  * about what it meant:

@@ -1,5 +1,5 @@
 /**
- * agyloop - `sync` fails CLOSED when an issue cannot be read (#328)
+ * codeloop - `sync` fails CLOSED when an issue cannot be read (#328)
  *
  * The defect this file pins: `gh issue view` failed (HTTP 502), the gateway
  * mapped the failure to `state: 'UNKNOWN'`, `sync` guarded on
@@ -45,7 +45,7 @@ interface Sandbox {
  */
 function makeSyncFailClosedSandbox(mode: 'fail' | 'open'): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-sync-failclosed-',
+    prefix: 'codeloop-sync-failclosed-',
     dirName: 'repo',
     gitignore: false,
     initialBranch: 'phase/test',
@@ -181,7 +181,7 @@ describe('sync fails closed on an unreadable issue (#328)', () => {
       assert.ok(comments[0].includes('Closes #306'), comments[0]);
       assert.ok(comments[0].includes('`phase/test`'), comments[0]);
       // Issue #315 (AC-33 / G5): the body is the ONLY string other people see,
-      // so it names the live launcher — never the deprecated `agyloop`.
+      // so it names the live launcher — never the deprecated `codeloop`.
       assert.match(
         comments[0],
         /--body '?Closed by codeloop sync:/,

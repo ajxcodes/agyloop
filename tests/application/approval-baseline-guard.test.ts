@@ -1,5 +1,5 @@
 /**
- * agyloop - Approval baseline guard regression suite (issue #388, Defect 1)
+ * codeloop - Approval baseline guard regression suite (issue #388, Defect 1)
  *
  * ABG1 - `transition APPROVAL` refuses a mismatched baseline, nothing is saved
  *        and the checkpoint stays at PLAN
@@ -232,7 +232,7 @@ function makePlanGenerator(planDir: string, planPath: string): any {
           planDir: path.dirname(options.planPath),
           planPath: options.planPath,
           planFileName: path.basename(options.planPath),
-          summaryPath: path.join(path.dirname(options.planPath), 'AgyLoop Summary.md')
+          summaryPath: path.join(path.dirname(options.planPath), 'CodeLoop Summary.md')
         };
       }
       if (!fs.existsSync(planDir)) return null;
@@ -240,7 +240,7 @@ function makePlanGenerator(planDir: string, planPath: string): any {
         planDir,
         planPath,
         planFileName: path.basename(planPath),
-        summaryPath: path.join(planDir, 'AgyLoop Summary.md')
+        summaryPath: path.join(planDir, 'CodeLoop Summary.md')
       };
     },
     readPlanDocument: (target: string) => fs.readFileSync(target, 'utf8'),
@@ -339,7 +339,7 @@ describe('Approval baseline guard (issue #388)', () => {
   let planPath: string;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-approval-baseline-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-approval-baseline-'));
     planDir = path.join(root, 'artifacts/plans/388-baseline');
     fs.mkdirSync(planDir, { recursive: true });
     planPath = path.join(planDir, 'implementation_plan.md');

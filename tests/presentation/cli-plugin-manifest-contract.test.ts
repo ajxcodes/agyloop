@@ -1,5 +1,5 @@
 /**
- * agyloop - Plugin manifest <-> CLI contract (issue #276, absorbed into #241)
+ * codeloop - Plugin manifest <-> CLI contract (issue #276, absorbed into #241)
  *
  * The shipped Antigravity plugin manifest advertised a `gates` subcommand that
  * was removed two phases earlier. Nothing read the manifest, so the drift was

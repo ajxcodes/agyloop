@@ -1,5 +1,5 @@
 /**
- * agyloop - FileWorkspaceMutationProbe (issue #389, AC2)
+ * codeloop - FileWorkspaceMutationProbe (issue #389, AC2)
  *
  * The adapter exists because the obvious oracle is blind: `dist/` is
  * gitignored, so `git status --porcelain` reports a root rebuild as clean. These
@@ -42,7 +42,7 @@ const GIT_AVAILABLE = (() => {
 const PLAN_DIR_REL = 'artifacts/plans/389-smoke';
 
 function makeWorkspace(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-probe-389-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-probe-389-'));
   fs.mkdirSync(path.join(root, 'artifacts/plans/389-smoke'), { recursive: true });
   fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\nbuild/\nartifacts/\n.agyloop/\n');
   fs.writeFileSync(path.join(root, 'README.md'), 'seed\n');
@@ -172,7 +172,7 @@ describe('FileWorkspaceMutationProbe (issue #389)', { skip: !GIT_AVAILABLE }, ()
   });
 
   test('I6: a non-repository workspace leaves the tracked set null and does not throw', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-probe-389-nogit-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-probe-389-nogit-'));
     fs.mkdirSync(path.join(root, 'artifacts/plans/389-smoke'), { recursive: true });
     const probe = new FileWorkspaceMutationProbe(new ProcessCommandExecutor());
     const planDir = path.join(root, PLAN_DIR_REL);

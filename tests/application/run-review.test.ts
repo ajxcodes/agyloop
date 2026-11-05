@@ -1,5 +1,5 @@
 /**
- * agyloop - RunReviewUseCase Unit Tests
+ * codeloop - RunReviewUseCase Unit Tests
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -42,7 +42,7 @@ import type {
   CritiquePort,
   CritiqueOptions,
   CritiqueResolution,
-  AgyLoopConfig,
+  CodeLoopConfig,
   ResolvedPlanLocation
 } from '../../src/ports';
 
@@ -73,11 +73,11 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return DEFAULT_CONFIG;
   }
 
-  public resolveModel(role: string, config?: AgyLoopConfig): any {
+  public resolveModel(role: string, config?: CodeLoopConfig): any {
     return {
       role,
       configured: 'flash',

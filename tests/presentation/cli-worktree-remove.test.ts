@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI `worktree remove` End-to-End Tests (issue #282, absorbs #273)
+ * codeloop - CLI `worktree remove` End-to-End Tests (issue #282, absorbs #273)
  *
  * `worktree remove` is the only destructive command in the operator surface.
  * These tests run it against a REAL git repository and pin the operator-facing
@@ -36,7 +36,7 @@ interface Sandbox {
 
 function makeWorktreeRemoveSandbox() {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-wt-remove-',
+    prefix: 'codeloop-cli-wt-remove-',
     initialCommit: 'chore: probe init',
     seed: (dir: string) => {
       fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');
@@ -135,7 +135,7 @@ function gitWorktreeList(dir: string): string {
 describe('codeloop worktree remove (#282)', () => {
   test('T-P1 refuses an absolute external target and leaves it intact (AC-1)', async () => {
     const sandbox = makeWorktreeRemoveSandbox();
-    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim-cli-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-victim-cli-'));
     const decoyTarget = path.join(sandbox.dir, 'node-modules-target');
     fs.mkdirSync(decoyTarget, { recursive: true });
     fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
@@ -177,7 +177,7 @@ describe('codeloop worktree remove (#282)', () => {
 
   test('T-P3 refuses a .worktrees symlink escape (AC-3)', async () => {
     const sandbox = makeWorktreeRemoveSandbox();
-    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim-link-cli-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-victim-link-cli-'));
     fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
 
     const worktreesDir = path.join(sandbox.dir, '.worktrees');

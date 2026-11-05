@@ -1,5 +1,5 @@
 /**
- * agyloop - Root-Invariant Value Object Unit Tests (#247, T1)
+ * codeloop - Root-Invariant Value Object Unit Tests (#247, T1)
  *
  * Contract of the ONE shared Zero Direct Root Mutation predicate:
  * `isRootWorkspace`, `isPathInsideRoot`, `assertNotRootWorkspace`.

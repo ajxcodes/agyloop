@@ -1,5 +1,5 @@
 /**
- * agyloop - `fetchIssue` asks for the milestone and the checkpoint persists it
+ * codeloop - `fetchIssue` asks for the milestone and the checkpoint persists it
  * (issue #284, AC7 / Defect 6)
  *
  * The defect: `gh issue view --json` never requested `milestone`, and it
@@ -38,7 +38,7 @@ interface Sandbox {
 
 function makeMilestoneSandbox(): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-gh-milestone-',
+    prefix: 'codeloop-gh-milestone-',
     dirName: '',
     gitignore: false,
     seed: (dir: string) => {

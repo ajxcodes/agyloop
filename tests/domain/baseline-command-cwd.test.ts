@@ -1,5 +1,5 @@
 /**
- * agyloop - Baseline command cwd-contract detector tests (issue #418)
+ * codeloop - Baseline command cwd-contract detector tests (issue #418)
  *
  * CWD1 - the issue's exact command (`require("./dist/domain")`) is refused as
  *        `./dist`
@@ -25,8 +25,8 @@ const ISSUE_COMMAND = `node -e 'console.log(JSON.stringify({ok:typeof require(".
 const OWN_EVIDENCE_COMMAND =
   'node -e \'const fs=require("node:fs");console.log(JSON.stringify({distIgnored:/(^|\\n)dist\\/(\\n|$)/.test(fs.readFileSync(".gitignore","utf8"))}))\'';
 
-const SCRATCH_OUT_DIR = 'npx tsc -p tsconfig.json --outDir "$HOME/.cache/agyloop/baseline-418/dist"';
-const SCRATCH_COMMAND = `${SCRATCH_OUT_DIR} && node -e 'require(process.env.HOME+"/.cache/agyloop/baseline-418/dist/domain")'`;
+const SCRATCH_OUT_DIR = 'npx tsc -p tsconfig.json --outDir "$HOME/.cache/codeloop/baseline-418/dist"';
+const SCRATCH_COMMAND = `${SCRATCH_OUT_DIR} && node -e 'require(process.env.HOME+"/.cache/codeloop/baseline-418/dist/domain")'`;
 
 describe('detectWorkspaceBuildOutputCommand (issue #418)', () => {
   test('CWD1: the issue command resolves `./dist`', () => {
@@ -63,7 +63,7 @@ describe('detectWorkspaceBuildOutputCommand (issue #418)', () => {
     const allowed = [
       SCRATCH_COMMAND,
       SCRATCH_OUT_DIR,
-      'npx tsc -p . --outDir "$HOME/.cache/agyloop/baseline-418/dist"',
+      'npx tsc -p . --outDir "$HOME/.cache/codeloop/baseline-418/dist"',
       'npx tsc -p . --outDir ./tmp/dist',
       'node -e \'require("./src/domain")\'',
       'ls dist',

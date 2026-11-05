@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan Document Kind Discriminator (Domain Layer)
+ * codeloop - Plan Document Kind Discriminator (Domain Layer)
  *
  * Distinguishes a DISCOVERY (RCA) document from an IMPLEMENTATION (technical
  * specification) document by its TITLE LINE only.

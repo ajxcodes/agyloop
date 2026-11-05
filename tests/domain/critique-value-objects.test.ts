@@ -1,5 +1,5 @@
 /**
- * agyloop - AI PR Reviewer Domain Value Objects Tests
+ * codeloop - AI PR Reviewer Domain Value Objects Tests
  */
 
 const { describe, test } = require('node:test');

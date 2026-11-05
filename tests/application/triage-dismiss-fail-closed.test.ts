@@ -1,5 +1,5 @@
 /**
- * agyloop - TRIAGE dismissal fail-closed tests (issue #336)
+ * codeloop - TRIAGE dismissal fail-closed tests (issue #336)
  *
  * A `dismiss` that posted nothing used to record a disposition and transition
  * the checkpoint to COMPLETED anyway — a dismissal the tool never performed.

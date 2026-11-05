@@ -1,11 +1,11 @@
 /**
- * agyloop - BuildDetectorPort Interface
+ * codeloop - BuildDetectorPort Interface
  *
  * Inversion of control contract for repository ecosystem detection and command resolution.
  */
 
 import { Ecosystem, GateCommandDefinition, GateCommandPlan } from '../domain';
-import { AgyLoopConfig } from './config-repository';
+import { CodeLoopConfig } from './config-repository';
 
 export interface ProjectDetectionOptions {
   readonly workspaceDir: string;
@@ -62,7 +62,7 @@ export interface BuildDetectorPort {
   /**
    * Inspects workspace markers and lockfiles to detect ecosystems and verification commands.
    */
-  detect(workspaceDir: string, config?: AgyLoopConfig): Promise<DetectedProject>;
+  detect(workspaceDir: string, config?: CodeLoopConfig): Promise<DetectedProject>;
 
   /**
    * Resolves the concrete verification commands WITH provenance (issue #298).
@@ -72,7 +72,7 @@ export interface BuildDetectorPort {
    */
   resolveCommandPlan(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     options?: GateCommandResolutionOptions
   ): Promise<GateCommandPlan>;
 
@@ -87,7 +87,7 @@ export interface BuildDetectorPort {
    */
   resolveCommands(
     workspaceDir: string,
-    config?: AgyLoopConfig,
+    config?: CodeLoopConfig,
     explicitCommands?: readonly string[] | readonly GateCommandDefinition[]
   ): Promise<readonly GateCommandDefinition[]>;
 

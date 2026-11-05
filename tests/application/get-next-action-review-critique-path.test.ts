@@ -1,5 +1,5 @@
 /**
- * agyloop - REVIEW directive Tier 1 critique path (issue #314)
+ * codeloop - REVIEW directive Tier 1 critique path (issue #314)
  *
  * The gap: `codeloop next` built its REVIEW directive with a
  * `ResolveSubagentUseCase` that had no critique port, so the Tier 1 command
@@ -102,7 +102,7 @@ describe('REVIEW directive Tier 1 quotes the critique path it resolved (issue #3
   };
 
   beforeEach(() => {
-    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-critique-path-'));
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-critique-path-'));
     stateFile = path.join(sandbox, '.agyloop', 'tasks', `${ISSUE}.json`);
     seedCheckpointFile(stateFile);
   });

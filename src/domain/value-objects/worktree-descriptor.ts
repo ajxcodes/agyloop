@@ -1,5 +1,5 @@
 /**
- * agyloop - WorktreeDescriptor Value Object (Domain Layer)
+ * codeloop - WorktreeDescriptor Value Object (Domain Layer)
  *
  * Immutable, self-validating value object representing an isolated git worktree session.
  * Pure domain value object: zero external dependencies, zero direct I/O.

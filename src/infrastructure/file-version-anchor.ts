@@ -1,5 +1,5 @@
 /**
- * agyloop - FileVersionAnchor Infrastructure Adapter
+ * codeloop - FileVersionAnchor Infrastructure Adapter
  *
  * Implements version anchor file management:
  * Ensures package.json exists if configured for package_json versioning strategy,

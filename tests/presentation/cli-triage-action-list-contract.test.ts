@@ -1,5 +1,5 @@
 /**
- * agyloop - Triage action-list contract (issue #277, absorbed into #241)
+ * codeloop - Triage action-list contract (issue #277, absorbed into #241)
  *
  * TA1 - every action in TRIAGE_DISPOSITION_ACTIONS is documented in every
  *       operator surface AND in both triage prompts
@@ -23,7 +23,7 @@ const {
 } = require('../../dist/domain');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
-const SKILL_FILE = path.join(PROJECT_ROOT, 'skills', 'agyloop', 'SKILL.md');
+const SKILL_FILE = path.join(PROJECT_ROOT, 'skills', 'codeloop', 'SKILL.md');
 const OPENCODE_SKILL_FILE = path.join(PROJECT_ROOT, 'integrations', 'opencode', 'codeloop-skill.md');
 
 const ISSUE = 277;
@@ -73,7 +73,7 @@ describe('Triage action-list contract (issue #277)', () => {
     const taskPrompt = new ResolveSubagentUseCase({}).buildTriageTaskPrompt({ issueNumber: ISSUE });
     const systemPrompt = buildDefaultTriageSystemPrompt();
 
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-actions-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-actions-'));
     try {
       seedTriage(sandbox);
       const hintRun = await runCliInSandboxCanonical(['triage'], { dir: sandbox.dir });
@@ -82,7 +82,7 @@ describe('Triage action-list contract (issue #277)', () => {
       for (const action of TRIAGE_DISPOSITION_ACTIONS) {
         assert.ok(help.includes(action), `--help must name '${action}'`);
         assert.ok(hint.includes(action), `the read-only hint must name '${action}'`);
-        assert.ok(skill.includes(action), `skills/agyloop/SKILL.md must name '${action}'`);
+        assert.ok(skill.includes(action), `skills/codeloop/SKILL.md must name '${action}'`);
         assert.ok(
           openCodeSkill.includes(action),
           `integrations/opencode/codeloop-skill.md must name '${action}'`
@@ -96,7 +96,7 @@ describe('Triage action-list contract (issue #277)', () => {
   });
 
   test('TA2: the parser rejects an action outside the list', async () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-actions-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-actions-'));
     try {
       const run = await runCliInSandboxCanonical(['triage', 'archive', '--issue', String(ISSUE)], { dir: sandbox.dir });
       assert.strictEqual(run.code, 1);
@@ -120,7 +120,7 @@ describe('Triage action-list contract (issue #277)', () => {
   });
 
   test('TA4: the TRIAGE operator summary names both completed and dismiss', async () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-actions-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-actions-'));
     try {
       seedTriage(sandbox);
       const run = await runCliInSandboxCanonical(['next', '--issue', String(ISSUE)], { dir: sandbox.dir });

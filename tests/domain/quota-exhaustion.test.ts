@@ -1,5 +1,5 @@
 /**
- * agyloop - Provider Quota Exhaustion Classification Tests (issue #218 AC4)
+ * codeloop - Provider Quota Exhaustion Classification Tests (issue #218 AC4)
  *
  * Covers the pure classifier, the human-facing diagnostic and the sealed
  * QuotaExhaustedError shape, including the false-positive boundary that must
@@ -13,7 +13,7 @@ const {
   classifyQuotaExhaustion,
   formatQuotaDiagnostic,
   QuotaExhaustedError,
-  AgyLoopError,
+  CodeLoopError,
   GATE_CIRCUIT_BREAKER,
   QUOTA_RESUME_COMMAND,
   QUOTA_STATUS
@@ -203,11 +203,11 @@ describe('QuotaExhaustedError', () => {
       ...overrides
     });
 
-  test('is registered under ERR_QUOTA_EXHAUSTED and extends AgyLoopError', () => {
+  test('is registered under ERR_QUOTA_EXHAUSTED and extends CodeLoopError', () => {
     const err = build();
 
     assert.ok(err instanceof Error);
-    assert.ok(err instanceof AgyLoopError);
+    assert.ok(err instanceof CodeLoopError);
     assert.strictEqual(err.code, ERR_QUOTA_EXHAUSTED);
     assert.strictEqual(err.name, 'QuotaExhaustedError');
     assert.strictEqual(ERROR_CODES.QUOTA_EXHAUSTED, ERR_QUOTA_EXHAUSTED);

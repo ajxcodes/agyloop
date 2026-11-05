@@ -1,5 +1,5 @@
 /**
- * agyloop - Host tool vocabulary (issue #290, D6 slice 2)
+ * codeloop - Host tool vocabulary (issue #290, D6 slice 2)
  *
  * HV1  - the registry has one entry per RunnerType and auto is unresolved
  * HV2  - the antigravity vocabulary names exactly the seven Antigravity identifiers

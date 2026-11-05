@@ -16,7 +16,7 @@ describe('Configuration & Model Routing Engine (TypeScript)', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-config-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-config-test-'));
   });
 
   afterEach(() => {

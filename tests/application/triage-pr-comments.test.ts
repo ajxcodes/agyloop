@@ -1,5 +1,5 @@
 /**
- * agyloop - Triage PR Comments & Lifecycle Routing Unit Tests
+ * codeloop - Triage PR Comments & Lifecycle Routing Unit Tests
  */
 
 const fs = require('node:fs');
@@ -206,7 +206,7 @@ describe('TriagePrCommentsUseCase & Lifecycle Routing', () => {
 
 describe('Issue #136 hardening', () => {
   const root = path.resolve(__dirname, '../..');
-  const skill = fs.readFileSync(path.join(root, 'skills/agyloop/SKILL.md'), 'utf8');
+  const skill = fs.readFileSync(path.join(root, 'skills/codeloop/SKILL.md'), 'utf8');
   const planner = fs.readFileSync(path.join(root, 'prompts/planner.md'), 'utf8');
 
   test('planner prompt filters already-implemented work', () => {

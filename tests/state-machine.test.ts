@@ -31,7 +31,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     originalCwd = process.cwd;
     process.cwd = () => '/mock/repo/root'; // Prevent IssueNumber.inferFromPath from seeing we're in .worktrees/174
 
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-'));
     stateFile = path.join(tempDir, '.agyloop', 'state.json');
     repo = createStateRepository({ stateFilePath: stateFile });
   });
@@ -387,7 +387,7 @@ describe('StateMachine Core & File Repository (TypeScript)', () => {
     // Use a dedicated git workspace owned by the current user so the probe succeeds
     // regardless of host/container ownership quirks (e.g. CI containers mount the
     // checkout as a different owner, which makes git refuse the real repo).
-    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-root-'));
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-root-'));
     childProcess.execFileSync('git', ['init', '-q'], { cwd: repoDir });
     process.cwd = () => repoDir;
 

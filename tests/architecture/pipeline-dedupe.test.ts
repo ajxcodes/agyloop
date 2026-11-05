@@ -1,5 +1,5 @@
 /**
- * agyloop - Architecture Fitness Tests: Pipeline Dedupe (issue #441)
+ * codeloop - Architecture Fitness Tests: Pipeline Dedupe (issue #441)
  *
  * Source-text structural tests for the YOLO/standard pipeline dedupe and the
  * CLI command-context resolver. They read the SOURCE files (no dist

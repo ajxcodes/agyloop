@@ -1,5 +1,5 @@
 /**
- * agyloop - GetPipelineStatusUseCase
+ * codeloop - GetPipelineStatusUseCase
  *
  * Rehydrates StateMachine and returns current pipeline status summary and history.
  */

@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan evidence paths (issue #432, TR-34)
+ * codeloop - Plan evidence paths (issue #432, TR-34)
  */
 
 const { test, describe } = require('node:test');

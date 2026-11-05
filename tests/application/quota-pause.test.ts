@@ -1,5 +1,5 @@
 /**
- * agyloop - Quota Pause & Persisted Circuit-Breaker Checkpoint Tests (issue #218 AC4)
+ * codeloop - Quota Pause & Persisted Circuit-Breaker Checkpoint Tests (issue #218 AC4)
  *
  * THE CORE BUG guarded here: `handleCircuitBreakerTrip` paused the state machine
  * in memory but never called `stateRepo.save()`, so the on-disk checkpoint kept

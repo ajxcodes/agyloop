@@ -17,7 +17,7 @@ const { writeBuildStamp } = require('../../bin/stale-dist.js');
  * simulated.
  */
 function makeFreshnessFixture(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-sync-freshness-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-sync-freshness-'));
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'dist', 'presentation'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'src', 'x.ts'), 'export const x = 1;\n');

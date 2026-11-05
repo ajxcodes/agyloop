@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan digest normalization (issue #298)
+ * codeloop - Plan digest normalization (issue #298)
  *
  * The approved plan is immutable during QUALITY_GATE, but two edits are NOT
  * content edits:

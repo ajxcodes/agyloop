@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Triage Dismissal Report Tests
+ * codeloop - CLI Triage Dismissal Report Tests
  *
  * The dismissal route reports what it really achieved, so the CLI must render
  * that outcome: a dismissal that only answered part of the feedback may never
@@ -258,7 +258,7 @@ describe('CLI triage dismissal reporting', () => {
  */
 describe('CLI triage dismissal call site', () => {
   test('triage dismiss refuses and writes nothing when there is no PR to dismiss', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-dismiss-callsite-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-dismiss-callsite-'));
     const prevCwd = process.cwd();
     const prevSubagent = process.env.AGY_SUBAGENT;
     const prevGhRepo = process.env.GH_REPO;

@@ -3,7 +3,7 @@ function runGit(cwd: string, args: string[]) {
 }
 
 /**
- * agyloop - Review AC evidence (issue #432, TR-27..TR-31)
+ * codeloop - Review AC evidence (issue #432, TR-27..TR-31)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -160,7 +160,7 @@ function writeInScopeMentionPlan(): void {
 
 describe('Review AC evidence (issue #432)', () => {
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-evidence-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-evidence-'));
     runGitOk(root, ['init', '-q', '-b', 'main']);
     runGitOk(root, ['config', 'user.email', 'smoke@example.com']);
     runGitOk(root, ['config', 'user.name', 'smoke']);

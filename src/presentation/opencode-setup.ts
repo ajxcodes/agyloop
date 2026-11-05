@@ -1,5 +1,5 @@
 /**
- * agyloop - OpenCode Setup & Integration Installer
+ * codeloop - OpenCode Setup & Integration Installer
  *
  * Installs the CodeLoop skill asset into the directory OpenCode actually scans and
  * auto-registers the `/codeloop` slash command in the active OpenCode config.

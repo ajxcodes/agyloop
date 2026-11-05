@@ -1,5 +1,5 @@
 /**
- * agyloop - Dispatched prompt host neutrality (issue #241, D6 slice 1)
+ * codeloop - Dispatched prompt host neutrality (issue #241, D6 slice 1)
  *
  * HN1 - no dispatched prompt names an Antigravity-only tool identifier
  * HN2 - each prompt names the capabilities it needs via the shared formatter
@@ -49,7 +49,7 @@ const OC_BACKTICKED_IDENTIFIER = /`(read|grep|glob|list|write|edit|shell)`/;
  * the operator's tree has no asset on disk.
  */
 function emptyWorkspace(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-290-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-290-'));
 }
 
 function hostAwareUseCase(): InstanceType<typeof ResolveSubagentUseCase> {
@@ -298,7 +298,7 @@ describe('Dispatched prompt host neutrality (issue #241, D6)', () => {
       }).system_prompt;
 
       assert.ok(dispatched.includes('your harness-provided'), dispatched);
-      assert.ok(systemPrompt.includes('AgyLoop Architectural Planning Subagent'), systemPrompt);
+      assert.ok(systemPrompt.includes('CodeLoop Architectural Planning Subagent'), systemPrompt);
 
       if (host === 'opencode') {
         assert.ok(

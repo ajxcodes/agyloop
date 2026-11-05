@@ -5,7 +5,7 @@ import type { LIFECYCLE_GATES } from './vocabulary';
 const _vocab = () => require('./vocabulary');
 
 /**
- * agyloop - Domain Constants
+ * codeloop - Domain Constants
  *
  * Centralized, immutable definitions for stages, transitions, subagents,
  * model tiers, tools, error codes, and default thresholds.
@@ -65,7 +65,7 @@ export type StageName = typeof STAGES[keyof typeof STAGES];
  *
  * Widening it (e.g. adding `COMPLETED` to IMPLEMENT's targets) was deliberately
  * rejected: it would make `codeloop transition COMPLETED` a one-keystroke way to
- * mark unverified, uncommitted work as complete, which `skills/agyloop/SKILL.md`
+ * mark unverified, uncommitted work as complete, which `skills/codeloop/SKILL.md`
  * forbids. Entering COMPLETED is bookkeeping, never a worktree teardown — see
  * `src/application/lifecycle-reentry-policy.ts` and issue #237.
  */

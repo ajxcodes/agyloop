@@ -1,5 +1,5 @@
 /**
- * agyloop - StateMachine plan deviations (issue #432, TR-4..TR-6)
+ * codeloop - StateMachine plan deviations (issue #432, TR-4..TR-6)
  */
 
 const { test, describe } = require('node:test');

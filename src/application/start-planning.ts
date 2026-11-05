@@ -1,5 +1,5 @@
 /**
- * agyloop - StartPlanningUseCase
+ * codeloop - StartPlanningUseCase
  *
  * Orchestrates the planning workflow:
  * 1. Fetches issue context from GitHubGateway (if issue specified)

@@ -1,6 +1,6 @@
 #!/bin/sh
 # ==============================================================================
-# agyloop - Installation & Plugin Verification
+# codeloop - Installation & Plugin Verification
 # ==============================================================================
 # Validates symlink resolution, manifest schema integrity, commands, and subagents.
 # ==============================================================================
@@ -29,7 +29,7 @@ resolve_path() {
   fi
 }
 
-echo "=== AgyLoop: Installation Verification ==="
+echo "=== CodeLoop: Installation Verification ==="
 echo ""
 
 # 1. Check symlink existence
@@ -93,7 +93,7 @@ if command -v jq >/dev/null 2>&1 && [ -f "${PLUGIN_MANIFEST}" ]; then
   GATE_SUBAGENT="$(jq -r '.subagents.gate.name // empty' "${PLUGIN_MANIFEST}" || true)"
   REVIEWER_SUBAGENT="$(jq -r '.subagents.reviewer.name // empty' "${PLUGIN_MANIFEST}" || true)"
 
-  if [ "${PLUGIN_NAME}" = "agyloop" ]; then
+  if [ "${PLUGIN_NAME}" = "codeloop" ]; then
     echo "   ✓ Plugin Name: ${PLUGIN_NAME}"
   else
     echo "   ✗ Unexpected or missing plugin name: '${PLUGIN_NAME}'"
@@ -136,7 +136,7 @@ fi
 echo ""
 echo "--------------------------------------------------"
 if [ "${FAILED}" -eq 0 ]; then
-  echo "🎉 Verification PASSED! AgyLoop plugin is properly installed."
+  echo "🎉 Verification PASSED! CodeLoop plugin is properly installed."
   echo "You can now reload Antigravity or type '/agyloop' in your chat canvas."
   exit 0
 else

@@ -1,5 +1,5 @@
 /**
- * agyloop - the ONE certifying `QUALITY_GATE -> REVIEW` chokepoint (issue #455)
+ * codeloop - the ONE certifying `QUALITY_GATE -> REVIEW` chokepoint (issue #455)
  *
  * The exit to REVIEW CERTIFIES a gate round (#327), so it consumes that round's
  * evidence or it does not exit. Before #455 that contract lived inline in

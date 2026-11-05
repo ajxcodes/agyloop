@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE review record: round, base commit, one note (issue #284, AC3/AC6)
+ * codeloop - ONE review record: round, base commit, one note (issue #284, AC3/AC6)
  *
  * The defect: each review round APPENDED its note, so a re-review left two
  * verdicts with no supersede marker and two `Suggested Commit` lines — the
@@ -138,7 +138,7 @@ function usableGate(): any {
 }
 
 function makeSummary(): { dir: string; summaryPath: string; planPath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-record-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-record-'));
   fs.writeFileSync(
     path.join(dir, 'implementation_plan.md'),
     '# [Implementation] - Probe\n\n- [ ] Step 1\n',
@@ -152,7 +152,7 @@ function makeSummary(): { dir: string; summaryPath: string; planPath: string } {
 describe('review record (issue #284, AC3/AC6)', () => {
   test('a re-review keeps both rounds and marks the latest current', async () => {
     const { dir, summaryPath, planPath } = makeSummary();
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-review-git-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-review-git-'));
     try {
       execFileSync('git', ['init', '-q'], { cwd: sandbox, stdio: 'ignore' });
       execFileSync('git', ['config', 'user.email', 'smoke@test'], { cwd: sandbox, stdio: 'ignore' });

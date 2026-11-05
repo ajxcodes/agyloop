@@ -1,5 +1,5 @@
 /**
- * agyloop - GateResultReport value object (issue #284)
+ * codeloop - GateResultReport value object (issue #284)
  *
  * The gate subagent's evidence block, validated before it is persisted.
  *

@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical BuildDetectorPort double (issue #544 / AC2)
+ * codeloop - ONE canonical BuildDetectorPort double (issue #544 / AC2)
  * Retires the 6 `BuildDetectorDouble` copies.
  */
 

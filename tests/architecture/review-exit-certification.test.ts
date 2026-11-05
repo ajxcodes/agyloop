@@ -1,5 +1,5 @@
 /**
- * agyloop - one shared chokepoint certifies the QUALITY_GATE exit (issue #455)
+ * codeloop - one shared chokepoint certifies the QUALITY_GATE exit (issue #455)
  *
  * AC3: the certifying guards live in ONE shared chokepoint used by both entry
  * points, so a future guard cannot be added to one and forgotten on the other.

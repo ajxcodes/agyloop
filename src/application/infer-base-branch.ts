@@ -1,5 +1,5 @@
 /**
- * agyloop - InferBaseBranchUseCase (Application Layer)
+ * codeloop - InferBaseBranchUseCase (Application Layer)
  *
  * Coordinates dynamic base branch inference and collector branch lifecycle:
  * 1. Discovers candidate branches and checks ancestor merged status.

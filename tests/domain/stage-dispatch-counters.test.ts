@@ -1,5 +1,5 @@
 /**
- * agyloop - Stage dispatch counters & re-plan transition tests
+ * codeloop - Stage dispatch counters & re-plan transition tests
  *
  * Covers issue #292 (the DISCOVERY/PLAN re-dispatch record), issue #267 AC-A3
  * (`IMPLEMENT -> PLAN` is legal) and #267 AC-A5 (the blank-plan park counter).

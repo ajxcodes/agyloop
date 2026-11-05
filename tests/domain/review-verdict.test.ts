@@ -1,5 +1,5 @@
 /**
- * agyloop - ReviewVerdict Value Object Unit Tests
+ * codeloop - ReviewVerdict Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');

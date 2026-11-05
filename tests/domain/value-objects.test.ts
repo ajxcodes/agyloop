@@ -75,7 +75,7 @@ describe('Domain Value Objects (Pure)', () => {
   // `Stage.canTransitionTo` may only allow the direct PLAN -> IMPLEMENT hop in
   // YOLO mode, and no COMPLETED edge may be added to IMPLEMENT's targets (which
   // would let `codeloop transition COMPLETED` mark unverified, uncommitted work
-  // as complete — exactly what skills/agyloop/SKILL.md forbids).
+  // as complete — exactly what skills/codeloop/SKILL.md forbids).
   describe('Stage PLAN -> IMPLEMENT restriction (issue #237)', () => {
     const { StateMachine, ALLOWED_TRANSITIONS, MODE_COMMIT, MODE_IMPLEMENT, MODE_PLAN } = require('../../dist/domain');
     const NON_YOLO_MODES = Object.freeze([MODE_STANDARD, MODE_PLAN, MODE_IMPLEMENT, MODE_COMMIT] as const);

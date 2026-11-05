@@ -2,7 +2,7 @@
 
 **Issue:** #{IssueNumber}  
 **Date:** {Date}  
-**Author:** AgyLoop Planning Subagent  
+**Author:** CodeLoop Planning Subagent  
 **Status:** DRAFT | APPROVED  
 
 ---

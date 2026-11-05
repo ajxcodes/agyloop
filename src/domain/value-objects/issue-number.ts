@@ -1,5 +1,5 @@
 /**
- * agyloop - IssueNumber Value Object
+ * codeloop - IssueNumber Value Object
  *
  * Self-validating value object enforcing positive integers for GitHub issue numbers.
  */

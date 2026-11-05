@@ -1,5 +1,5 @@
 /**
- * agyloop - HaltPipelineUseCase (Application Layer)
+ * codeloop - HaltPipelineUseCase (Application Layer)
  *
  * Inbound quota-halt channel (issue #220): an external agent runtime calls
  * `codeloop halt --reason quota` when it observes a 429. The use case persists

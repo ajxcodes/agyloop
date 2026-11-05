@@ -1,5 +1,5 @@
 /**
- * agyloop - ProcessCommandExecutor Infrastructure Adapter
+ * codeloop - ProcessCommandExecutor Infrastructure Adapter
  *
  * Implements CommandExecutorPort using isolated child processes (child_process.spawn)
  * with timeout enforcement and stdout/stderr stream buffering.

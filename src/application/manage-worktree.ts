@@ -1,5 +1,5 @@
 /**
- * agyloop - ManageWorktreeUseCase (Application Layer)
+ * codeloop - ManageWorktreeUseCase (Application Layer)
  *
  * Coordinates Git worktree isolation lifecycle operations:
  * - Provisioning isolated task worktrees

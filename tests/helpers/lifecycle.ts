@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical RunLifecycleUseCase assembly (issue #544 / AC3)
+ * codeloop - ONE canonical RunLifecycleUseCase assembly (issue #544 / AC3)
  *
  * Retires the five local `buildLifecycle*` builders in run-lifecycle.test.ts
  * (:494/:1326/:1446/:2200/:2556/:2925) and `run-lifecycle-shared-pipeline`'s

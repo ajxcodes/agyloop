@@ -1,5 +1,5 @@
 /**
- * agyloop - PlanGeneratorPort Interface
+ * codeloop - PlanGeneratorPort Interface
  *
  * Port interface for persistent plan directory scaffolding, templating,
  * and execution log maintenance.
@@ -281,7 +281,7 @@ export interface PlanGeneratorPort {
   generateSummaryLog(options: GenerateSummaryLogOptions): GenerateSummaryLogResult;
 
   /**
-   * Updates stage status or metrics in an existing AgyLoop Summary.md file.
+   * Updates stage status or metrics in an existing CodeLoop Summary.md file.
    */
   updateSummaryLog(summaryFilePath: string, updateData: SummaryUpdateData): boolean;
 

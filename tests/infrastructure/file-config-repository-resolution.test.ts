@@ -1,5 +1,5 @@
 /**
- * agyloop - `FileConfigRepository` workspace resolution (#333 AC2)
+ * codeloop - `FileConfigRepository` workspace resolution (#333 AC2)
  *
  * The defect: the workspace layer was built strictly from `path.join(cwd, …)`
  * for the one directory the caller handed in. A command run from a nested
@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 function sandbox(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-config-resolution-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-config-resolution-'));
   SANDBOXES.push(dir);
   return dir;
 }

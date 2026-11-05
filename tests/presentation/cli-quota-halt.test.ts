@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI quota/breaker halt exit-code tests (issue #218 AC4 / plan DoD 3.8-T7)
+ * codeloop - CLI quota/breaker halt exit-code tests (issue #218 AC4 / plan DoD 3.8-T7)
  *
  * `lifecycleHaltExitCode` and `persistedHaltExitCode` are the ONLY thing a human or
  * a CI job observes for a quota halt, and nothing pinned them before. The contract:

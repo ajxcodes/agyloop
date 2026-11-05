@@ -1,5 +1,5 @@
 /**
- * agyloop - Host Tool Vocabulary Value Object (issue #290, D6 slice 2)
+ * codeloop - Host Tool Vocabulary Value Object (issue #290, D6 slice 2)
  *
  * Maps the host-neutral `ToolCapability` words onto the concrete tool
  * identifiers each supported harness exposes, so a role prompt can name the

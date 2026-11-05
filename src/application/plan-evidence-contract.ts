@@ -1,5 +1,5 @@
 /**
- * agyloop - the ONE plan-evidence path guard (issue #432, AC4/AC6)
+ * codeloop - the ONE plan-evidence path guard (issue #432, AC4/AC6)
  *
  * An acceptance criterion or checklist step that targets a commit-excluded
  * path (`artifacts/`, `.agyloop/`, `node_modules/`) — or a path that lexically

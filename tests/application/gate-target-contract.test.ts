@@ -3,7 +3,7 @@ function runGit(cwd: string, args: string[]) {
 }
 
 /**
- * agyloop - Gate target contract regression suite (issue #348, AC1/AC3/AC4)
+ * codeloop - Gate target contract regression suite (issue #348, AC1/AC3/AC4)
  *
  * The defect: a plan's `### Quality Gate Targets` run in the task worktree
  * against the UNCOMMITTED change, before the commit gate. A target that asserts
@@ -192,7 +192,7 @@ function makePlanGenerator(planDir: string, planPath: string): any {
           planDir: path.dirname(options.planPath),
           planPath: options.planPath,
           planFileName: path.basename(options.planPath),
-          summaryPath: path.join(path.dirname(options.planPath), 'AgyLoop Summary.md')
+          summaryPath: path.join(path.dirname(options.planPath), 'CodeLoop Summary.md')
         };
       }
       if (!fs.existsSync(planDir)) return null;
@@ -200,7 +200,7 @@ function makePlanGenerator(planDir: string, planPath: string): any {
         planDir,
         planPath,
         planFileName: path.basename(planPath),
-        summaryPath: path.join(planDir, 'AgyLoop Summary.md')
+        summaryPath: path.join(planDir, 'CodeLoop Summary.md')
       };
     },
     readPlanDocument: (p: string) => fs.readFileSync(p, 'utf8'),
@@ -215,7 +215,7 @@ describe('Gate target contract (issue #348)', () => {
   let planPath: string;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gate-target-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-gate-target-'));
     // A REAL repository with an intended, uncommitted change to a tracked file.
     runGitOk(root, ['init', '-q']);
     runGitOk(root, ['config', 'user.email', 'smoke@example.com']);

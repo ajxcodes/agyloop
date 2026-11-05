@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan digest normalization tests (issue #298, AC9)
+ * codeloop - Plan digest normalization tests (issue #298, AC9)
  *
  * PD1 - checkbox ticks do not change the normalized plan
  * PD2 - a real content edit does

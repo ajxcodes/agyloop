@@ -1,5 +1,5 @@
 /**
- * agyloop - Stage Value Object
+ * codeloop - Stage Value Object
  *
  * Self-validating, immutable value object representing a lifecycle stage.
  */

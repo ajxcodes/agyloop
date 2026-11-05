@@ -1,5 +1,5 @@
 /**
- * agyloop - `--critique-report` documentation contract (issue #242 / AC13)
+ * codeloop - `--critique-report` documentation contract (issue #242 / AC13)
  *
  * The flag is the hermetic Tier 1 evidence channel, but it was documented only
  * in the `--help` flag list: the review COMMAND row and both shipped skills
@@ -8,7 +8,7 @@
  *
  * DOC1 - the help review row names --critique-report and keeps --verdict-file
  * DOC2 - the standalone flag line still documents <path|->
- * DOC3 - skills/agyloop/SKILL.md documents it on the review row
+ * DOC3 - skills/codeloop/SKILL.md documents it on the review row
  * DOC4 - the OpenCode skill names it and explains when to use it
  * DOC5 - both reviewer prompts carry the verdict-filing contract
  *
@@ -64,7 +64,7 @@ function readSkill(relativePath: string): string {
   return fs.readFileSync(path.join(PROJECT_ROOT, relativePath), 'utf8');
 }
 
-const SKILL = path.join('skills', 'agyloop', 'SKILL.md');
+const SKILL = path.join('skills', 'codeloop', 'SKILL.md');
 const OPENCODE_SKILL = path.join('integrations', 'opencode', 'codeloop-skill.md');
 
 /** Every blank-line-delimited paragraph that mentions the flag. */
@@ -93,7 +93,7 @@ describe('--critique-report documentation contract', () => {
   });
 
   test('DOC3: SKILL.md documents the flag on the review row', () => {
-    const skill = fs.readFileSync(path.join(PROJECT_ROOT, 'skills', 'agyloop', 'SKILL.md'), 'utf8');
+    const skill = fs.readFileSync(path.join(PROJECT_ROOT, 'skills', 'codeloop', 'SKILL.md'), 'utf8');
     const row = skill.split('\n').find((line: string) => line.startsWith('| `codeloop review`'));
     if (!row) {
       throw new Error('SKILL.md has no codeloop review row');
@@ -215,7 +215,7 @@ describe('--critique-report documentation contract', () => {
     const surfaces: Array<[string, string]> = [
       ['prompts/reviewer.md', fs.readFileSync(path.join(PROJECT_ROOT, 'prompts', 'reviewer.md'), 'utf8')],
       ['DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT', DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT],
-      ['skills/agyloop/SKILL.md', readSkill(SKILL)],
+      ['skills/codeloop/SKILL.md', readSkill(SKILL)],
       ['integrations/opencode/codeloop-skill.md', readSkill(OPENCODE_SKILL)]
     ];
     for (const [name, text] of surfaces) {

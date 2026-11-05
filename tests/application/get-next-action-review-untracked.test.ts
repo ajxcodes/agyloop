@@ -1,5 +1,5 @@
 /**
- * agyloop - REVIEW dispatch threads the probe's untracked files (issue #356, Defect 2)
+ * codeloop - REVIEW dispatch threads the probe's untracked files (issue #356, Defect 2)
  *
  * The reviewer's ONLY inspection command was `git diff <base> -- . <excludes>`,
  * which cannot see an untracked file. A change whose load-bearing part was a NEW

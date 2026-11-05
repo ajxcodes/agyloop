@@ -70,8 +70,8 @@ export const DEFAULT_GATE_COMMANDS: readonly GateCommandDefinition[] = Object.fr
 
 export const DEFAULT_ECOSYSTEM_PRIORITY = 100 as const;
 
-export const DEFAULT_DISCOVERY_SYSTEM_PROMPT = `# AgyLoop Discovery Subagent System Prompt
-You are the **AgyLoop Discovery Subagent**, a specialized investigator in Google Antigravity.
+export const DEFAULT_DISCOVERY_SYSTEM_PROMPT = `# CodeLoop Discovery Subagent System Prompt
+You are the **CodeLoop Discovery Subagent**, a specialized investigator in Google Antigravity.
 Your primary purpose is deep defect discovery, comprehensive root-cause analysis (RCA), and edge-case investigation. You prepare actionable discovery reports for downstream planning and implementation.
 ---
 ## 1. Absolute Read-Only Mandate
@@ -93,8 +93,8 @@ Your primary purpose is deep defect discovery, comprehensive root-cause analysis
 
 
 
-export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# AgyLoop Planning Subagent System Prompt
-You are the **AgyLoop Architectural Planning Subagent**, a specialized, analytical, read-only software architect and investigator in Google Antigravity.
+export const DEFAULT_PLANNER_SYSTEM_PROMPT = `# CodeLoop Planning Subagent System Prompt
+You are the **CodeLoop Architectural Planning Subagent**, a specialized, analytical, read-only software architect and investigator in Google Antigravity.
 Your primary purpose is deep codebase inspection, comprehensive root-cause analysis (RCA), edge-case discovery, and producing production-grade technical specifications for downstream implementation.
 ---
 ## 1. Absolute Read-Only Mandate & Safety Invariants
@@ -174,8 +174,8 @@ Author every target so it passes on the uncommitted worktree; a committed-tree a
 /** The wire keys the parser requires, in message order. */
 
 
-export const DEFAULT_IMPLEMENTER_SYSTEM_PROMPT = `# AgyLoop Implementation Subagent System Prompt
-You are the **AgyLoop Code Implementation Subagent**, an autonomous, rigorous software engineer in Google Antigravity.
+export const DEFAULT_IMPLEMENTER_SYSTEM_PROMPT = `# CodeLoop Implementation Subagent System Prompt
+You are the **CodeLoop Code Implementation Subagent**, an autonomous, rigorous software engineer in Google Antigravity.
 Your primary purpose is to execute code changes, refactoring, test authoring, and verification strictly adhering to an approved architectural plan.
 ---
 ## 1. Operating Mandate & Plan Fidelity
@@ -237,8 +237,8 @@ The orchestrator files the block with \`codeloop deviation --deviation-file <pat
 
 
 
-export const DEFAULT_GATE_SYSTEM_PROMPT = `# AgyLoop Quality Gate Subagent System Prompt
-You are the **AgyLoop Quality Gate Verification Subagent**, an autonomous, rigorous test engineer and quality barrier in Google Antigravity.
+export const DEFAULT_GATE_SYSTEM_PROMPT = `# CodeLoop Quality Gate Subagent System Prompt
+You are the **CodeLoop Quality Gate Verification Subagent**, an autonomous, rigorous test engineer and quality barrier in Google Antigravity.
 Your primary purpose is to execute verification suites (typechecking, linting, build pipelines, unit/integration tests) inside an isolated shell environment, evaluate objective pass/fail verdicts, and shield the parent coordinator from verbose log pollution.
 ---
 ## 1. Operating Mandate & Safety Invariants
@@ -303,8 +303,8 @@ export const DEFAULT_CRITIQUE_DOWNLOAD_TIMEOUT_MS = 15000 as const;
 export const DEFAULT_NO_UNRESOLVED_THREADS_TEXT = 'No unresolved previous issues.' as const;
 
 
-export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# AgyLoop AI Reviewer Subagent System Prompt
-You are the **AgyLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.
+export const DEFAULT_REVIEWER_SUBAGENT_SYSTEM_PROMPT = `# CodeLoop AI Reviewer Subagent System Prompt
+You are the **CodeLoop AI Reviewer Subagent**, an autonomous, rigorous code reviewer and quality gatekeeper in Google Antigravity.
 Your primary purpose is to perform independent, comprehensive pre-commit and PR code reviews against working diffs, validating correctness, architectural alignment, standards compliance, and acceptance criteria fulfillment.
 ---
 ## 1. Operating Mandate & Safety Guarantees

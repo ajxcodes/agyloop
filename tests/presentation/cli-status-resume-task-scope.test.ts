@@ -21,7 +21,7 @@ function seedScenarioTask(dir: string, options: {
 }
 
 /**
- * agyloop - `status` and `resume` must name — and act on — the checkpoint that holds the work (#226 D5/D6)
+ * codeloop - `status` and `resume` must name — and act on — the checkpoint that holds the work (#226 D5/D6)
  *
  * A task run's checkpoint is `.agyloop/tasks/<issue>.json`. The root
  * `.agyloop/state.json` is the singleton for ad-hoc runs. `status` and `resume`

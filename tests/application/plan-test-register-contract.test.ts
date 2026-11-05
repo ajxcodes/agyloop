@@ -3,7 +3,7 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 /**
- * agyloop - Test Register contract (issue #432, TR-15..TR-20)
+ * codeloop - Test Register contract (issue #432, TR-15..TR-20)
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -177,7 +177,7 @@ interface GitFixture {
  * `tests/added.test.ts` with the title `added by the implementation`.
  */
 function makeGitFixture(): GitFixture {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-489-register-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-489-register-'));
   const repo = path.join(root, 'repo');
   const wt = path.join(root, 'wt');
   fs.mkdirSync(path.join(repo, 'tests'), { recursive: true });
@@ -355,7 +355,7 @@ function planCheckpoint(): any {
 
 describe('Test Register contract (issue #432)', () => {
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-register-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-register-'));
     fs.mkdirSync(path.join(root, 'tests', 'application'), { recursive: true });
     fs.writeFileSync(path.join(root, 'tests', 'application', 'run-lifecycle.test.ts'), SOURCE);
     fs.writeFileSync(

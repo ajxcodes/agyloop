@@ -1,5 +1,5 @@
 /**
- * agyloop - SemVerCalculator (Domain Layer)
+ * codeloop - SemVerCalculator (Domain Layer)
  *
  * Pure domain engine for evaluating commit streams between main and milestone branches:
  * 1. Predicts SemVer bump: MAJOR > MINOR > PATCH

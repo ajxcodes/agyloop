@@ -1,5 +1,5 @@
 /**
- * agyloop - RunLifecycleUseCase (Application Layer)
+ * codeloop - RunLifecycleUseCase (Application Layer)
  *
  * Coordinates the full Antigravity development lifecycle orchestration:
  * INITIALIZED -> DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED
@@ -22,7 +22,7 @@
  *   positive evidence that the implementation exists in the active workspace.
  *
  * The invariant is deliberately phrased as an EVIDENCE rule and not as a
- * DISPATCH rule. agyloop is a dispatcher, not an executor: no path in this
+ * DISPATCH rule. codeloop is a dispatcher, not an executor: no path in this
  * repository ever runs a subagent (`codeloop next` hands an
  * `actionType: 'subagent'` payload to an EXTERNAL orchestrator), and
  * `AgentRunnerPort` is deliberately not wired into the lifecycle

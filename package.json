@@ -1,5 +1,5 @@
 {
-  "name": "agyloop",
+  "name": "codeloop",
   "version": "0.6.0",
   "description": "Multi-Subagent Development Lifecycle Orchestrator for Google Antigravity",
   "main": "dist/index.js",

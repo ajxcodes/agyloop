@@ -12,7 +12,7 @@ function makeFlagHelpSandbox(): string {
   }).dir;
 }
 /**
- * agyloop - flag & help contracts match the implementation (issue #339,
+ * codeloop - flag & help contracts match the implementation (issue #339,
  * absorbing #340: items 4, 7 + AC-2.5)
  *
  * T4.1  `opencode:install` declares `dryRun: 'supported'` — the command writes
@@ -43,7 +43,7 @@ const { makeSandbox } = require('../helpers/sandbox.ts');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'codeloop.js');
-const SKILL_FILE = path.join(REPO_ROOT, 'skills', 'agyloop', 'SKILL.md');
+const SKILL_FILE = path.join(REPO_ROOT, 'skills', 'codeloop', 'SKILL.md');
 
 
 /** Hash of the sandbox EXCLUDING `.git` (read-only git probes are allowed). */

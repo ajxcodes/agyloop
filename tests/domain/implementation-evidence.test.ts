@@ -1,5 +1,5 @@
 /**
- * agyloop - Implementation Evidence Predicate Unit Tests (issue #259, E1-E5)
+ * codeloop - Implementation Evidence Predicate Unit Tests (issue #259, E1-E5)
  *
  * Contract of the ONE shared noise-filter predicate:
  * `isImplementationEvidencePath(filePath, isUntracked)`.

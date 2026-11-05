@@ -1,5 +1,5 @@
 /**
- * agyloop - `sync` reads more than the newest 30 merged PRs (#447)
+ * codeloop - `sync` reads more than the newest 30 merged PRs (#447)
  *
  * The harness installs a FAKE `gh` first on `PATH` in an isolated sandbox. The
  * stub MODELS `--limit` (default 30, exactly like gh) and records argv; nothing
@@ -27,7 +27,7 @@ interface Sandbox {
 
 function makeSyncWindowSandbox(mode: 'complete' | 'truncated'): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-sync-window-',
+    prefix: 'codeloop-sync-window-',
     dirName: 'repo',
     gitignore: false,
     initialBranch: 'phase/test',

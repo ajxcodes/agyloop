@@ -1,5 +1,5 @@
 /**
- * agyloop - RunPreFlightCheckUseCase (Application Layer)
+ * codeloop - RunPreFlightCheckUseCase (Application Layer)
  *
  * Coordinates smart pre-flight checks before worktree provisioning:
  * 1. Anti-Duplicate: halts cleanly if task issue is CLOSED on GitHub

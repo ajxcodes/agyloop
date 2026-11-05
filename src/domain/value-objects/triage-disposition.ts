@@ -1,5 +1,5 @@
 /**
- * agyloop - TriageDisposition Value Object
+ * codeloop - TriageDisposition Value Object
  *
  * The record of a triage disposition: "the feedback on PR #7 was triaged at
  * <instant> and routed to <action>".

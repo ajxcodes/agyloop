@@ -1,5 +1,5 @@
 /**
- * agyloop - ReadlineConfirmationPrompt (Infrastructure Layer)
+ * codeloop - ReadlineConfirmationPrompt (Infrastructure Layer)
  *
  * Implements ConfirmationPromptPort using Node.js readline interface.
  * Prompts user for affirmative confirmation before executing state mutations.

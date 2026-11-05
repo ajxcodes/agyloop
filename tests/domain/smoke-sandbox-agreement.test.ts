@@ -1,5 +1,5 @@
 /**
- * agyloop - static ↔ runtime agreement for smoke sandbox paths (issue #364, AC-17; #383)
+ * codeloop - static ↔ runtime agreement for smoke sandbox paths (issue #364, AC-17; #383)
  *
  * AG-1…AG-5 run the SAME fixtures through both predicates:
  *
@@ -74,13 +74,13 @@ const FIXTURES: readonly Fixture[] = [
     name: 'AG-1: a tracked cd into the sandbox makes a relative mkdir permitted (#364 6a)',
     body: [
       '```bash',
-      'SANDBOX="$HOME/.cache/agyloop/smoke-364/pause"',
+      'SANDBOX="$HOME/.cache/codeloop/smoke-364/pause"',
       'cd "$SANDBOX"',
       'mkdir -p artifacts/plans/364-smoke',
       CLI_LINE,
       '```'
     ],
-    cwd: `${HOOK}/.cache/agyloop/smoke-364/pause`,
+    cwd: `${HOOK}/.cache/codeloop/smoke-364/pause`,
     created: 'artifacts/plans/364-smoke',
     clean: true
   },
@@ -88,12 +88,12 @@ const FIXTURES: readonly Fixture[] = [
     name: 'AG-2: a relative mktemp under the sandbox root is permitted by sandbox-path (#364 6b); its CLI invocation is unanchored (#440)',
     body: [
       '```bash',
-      'cd "$HOME/.cache/agyloop"',
+      'cd "$HOME/.cache/codeloop"',
       'SBX="$(mktemp -d smoke-364-XXXXXX)"',
       CLI_LINE,
       '```'
     ],
-    cwd: `${HOOK}/.cache/agyloop`,
+    cwd: `${HOOK}/.cache/codeloop`,
     created: 'smoke-364-XXXXXX',
     clean: true
   },
@@ -101,12 +101,12 @@ const FIXTURES: readonly Fixture[] = [
     name: 'AG-3: a ..-escaped path out of the sandbox is refused by ESCAPE (#364 6c, #383)',
     body: [
       FENCE + 'bash',
-      'cd "$HOME/.cache/agyloop/smoke-364"',
+      'cd "$HOME/.cache/codeloop/smoke-364"',
       'mkdir -p ../shared/smoke-364-escape',
       CLI_LINE,
       FENCE
     ],
-    cwd: `${HOOK}/.cache/agyloop/smoke-364`,
+    cwd: `${HOOK}/.cache/codeloop/smoke-364`,
     created: '../shared/smoke-364-escape',
     clean: false,
     pinsEscapeRule: true
@@ -129,8 +129,8 @@ before(() => {
   // Capture the REAL home BEFORE the env keys are deleted: the fixture HOME is
   // deliberately created under `$HOME`, never under `os.tmpdir()` (issue #383).
   realHome = os.homedir();
-  fs.mkdirSync(path.join(realHome, '.cache', 'agyloop'), { recursive: true });
-  fakeHome = fs.mkdtempSync(path.join(realHome, '.cache', 'agyloop', 'smoke-383-agreement-'));
+  fs.mkdirSync(path.join(realHome, '.cache', 'codeloop'), { recursive: true });
+  fakeHome = fs.mkdtempSync(path.join(realHome, '.cache', 'codeloop', 'smoke-383-agreement-'));
   originalCwd = process.cwd;
   for (const key of ['NODE_ENV', 'NODE_TEST_CONTEXT', 'HOME', 'AGYLOOP_SMOKE']) {
     savedEnv.set(key, process.env[key]);
@@ -183,7 +183,7 @@ describe('smoke sandbox: static and runtime agree (#364 AC-17)', () => {
   test('AG-0: the fixture HOME is under $HOME, never under os.tmpdir() (#383)', () => {
     const tmpRoot = path.resolve(os.tmpdir());
     assert.ok(
-      fakeHome.startsWith(path.join(realHome, '.cache', 'agyloop') + path.sep),
+      fakeHome.startsWith(path.join(realHome, '.cache', 'codeloop') + path.sep),
       fakeHome
     );
     assert.ok(
@@ -240,7 +240,7 @@ describe('smoke sandbox: static and runtime agree (#364 AC-17)', () => {
     // The negative control for AG-3: the refusal is about the SANDBOXED CWD,
     // not about the path string. Same target text, an unsandboxed cwd.
     const outsideCwd = path.join(fakeHome, 'project');
-    const escaped = path.resolve(outsideCwd, '../.cache/agyloop/shared/smoke-364-escape');
+    const escaped = path.resolve(outsideCwd, '../.cache/codeloop/shared/smoke-364-escape');
     fs.mkdirSync(path.join(escaped, '.agyloop'), { recursive: true });
     const repository = createStateRepository({
       stateFilePath: path.join(escaped, '.agyloop', 'state.json')

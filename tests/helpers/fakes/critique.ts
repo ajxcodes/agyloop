@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical CritiquePort double (issue #544 / AC2)
+ * codeloop - ONE canonical CritiquePort double (issue #544 / AC2)
  * Retires `CritiqueDouble` / `CritiqueDouble`.
  */
 

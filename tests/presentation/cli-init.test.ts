@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI init Presentation Tests
+ * codeloop - CLI init Presentation Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');

@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan entry stage tests (issue #379)
+ * codeloop - Plan entry stage tests (issue #379)
  *
  * Pins the entry decision the use case takes from the issue kind, and the
  * `next` directive it leaves behind. The issue-label lookup is stubbed through
@@ -30,7 +30,7 @@ import type {
   PlanGeneratorPort,
   ScaffoldParams,
   ScaffoldResult,
-  AgyLoopConfig
+  CodeLoopConfig
 } from '../../src/ports';
 
 const PLAN_DIR = '/fake/plans/11';
@@ -119,7 +119,7 @@ class GitHubGatewayDouble implements GitHubGateway {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return DEFAULT_CONFIG;
   }
 

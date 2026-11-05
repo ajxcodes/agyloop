@@ -1,5 +1,5 @@
 /**
- * agyloop - `release --dry-run` reports the range it validated (issue #315,
+ * codeloop - `release --dry-run` reports the range it validated (issue #315,
  * AC-30/AC-32, absorbing #294)
  *
  * Two failures this file pins:

@@ -1,5 +1,5 @@
 /**
- * agyloop - Tier 1 critique provenance (issue #445, #452)
+ * codeloop - Tier 1 critique provenance (issue #445, #452)
  *
  * RCP1-RCP6: a supplied critique report is evidence only when the provenance
  * sidecar beside it names the base ref and HEAD this review certifies. The

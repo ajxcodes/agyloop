@@ -1,5 +1,5 @@
 /**
- * agyloop - DISCOVERY execution contract (issue #389, AC1 / AC4a / AC4c)
+ * codeloop - DISCOVERY execution contract (issue #389, AC1 / AC4a / AC4c)
  *
  * The DISCOVERY dispatch used to mandate container-only execution while its own
  * evidence contract required a host build, and it named a `### Manual Bug Smoke

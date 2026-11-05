@@ -1,9 +1,9 @@
 /**
- * agyloop - CliCritiqueGateway (Infrastructure Adapter)
+ * codeloop - CliCritiqueGateway (Infrastructure Adapter)
  *
  * Implements CritiquePort with resolution hierarchy:
  * 1. Sibling ../critique (bin/critique or bin/critique.js)
- * 2. Bundled / local in agyloop repository root / cwd: bin/critique, bin/critique.js
+ * 2. Bundled / local in codeloop repository root / cwd: bin/critique, bin/critique.js
  * 3. User data tool dir (LOCALAPPDATA/critique on Windows, ~/Library/Application Support/critique on macOS, ~/.local/share/critique on Linux/macOS)
  * 4. User-local: ~/.local/bin/critique (or .cmd/.bat/.exe on Windows)
  * 5. System $PATH: critique executable on $PATH
@@ -170,7 +170,7 @@ export class CliCritiqueGateway implements CritiquePort {
       // Continue searching
     }
 
-    // 2. Bundled / local in agyloop repository root / cwd: bin/critique, bin/critique.js
+    // 2. Bundled / local in codeloop repository root / cwd: bin/critique, bin/critique.js
     const bundledDirs = [path.resolve(cwd)];
     if (path.resolve(cwd) !== repoRoot) {
       bundledDirs.push(repoRoot);

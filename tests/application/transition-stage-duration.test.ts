@@ -1,5 +1,5 @@
 /**
- * agyloop - Transition durations come from measurement, not from transition
+ * codeloop - Transition durations come from measurement, not from transition
  * gaps (issue #284, AC5)
  *
  * Each case seeds a synthetic checkpoint, runs the REAL TransitionStageUseCase
@@ -54,7 +54,7 @@ function iso(ms: number): string {
 }
 
 function makeWorkspace(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-transition-duration-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-transition-duration-'));
 }
 
 function scaffoldSummary(ws: string): string {

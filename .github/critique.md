@@ -1,4 +1,4 @@
-# AgyLoop Repository Review Standards
+# CodeLoop Repository Review Standards
 
 This repository adheres to strict software engineering, hexagonal architecture, and quality gate guidelines:
 
@@ -16,7 +16,7 @@ This repository adheres to strict software engineering, hexagonal architecture, 
 
 - **Zero Magic Constants**: All stages, modes, role names, model tiers, tool whitelists, error codes, command IDs, flags, timeouts, and regex patterns must be defined as named, immutable constants in the per-concept modules under `src/domain/` (e.g. `messages.ts`, `cli-contract.ts`, `regexes.ts`, `defaults.ts`, `output-labels.ts`, `vocabulary.ts`, `lifecycle-stages.ts`, `errors.ts`).
 - **Immutability**: Domain entities, value objects, and constant arrays/records must enforce immutability with `readonly` properties and `Object.freeze()`.
-- **Sealed Domain Errors**: Custom error hierarchy extending `AgyLoopError` with strongly-typed error codes (`ErrorCode`).
+- **Sealed Domain Errors**: Custom error hierarchy extending `CodeLoopError` with strongly-typed error codes (`ErrorCode`).
 - **Subagent Safety Invariants**:
   - `planner`: Scoped plan write permissions (`enable_write_tools: true`, restricted to populating specifications inside `artifacts/plans/`).
   - `gate`: Verification-only tooling (`run_command`, `view_file`) with log noise shielding and structured summary reporting.

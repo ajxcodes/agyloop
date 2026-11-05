@@ -1,5 +1,5 @@
 /**
- * agyloop - Shared JSON block scanner (issue #432)
+ * codeloop - Shared JSON block scanner (issue #432)
  *
  * The balanced-object slicer and the single-quote-tolerant JS-object fallback
  * were private copies in `gate-result-report.ts` and `gate-report-fixture.ts`.

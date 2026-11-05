@@ -1,5 +1,5 @@
 /**
- * agyloop - Pure StateMachine Domain Entity
+ * codeloop - Pure StateMachine Domain Entity
  *
  * Deterministic lifecycle state machine coordinating the 7-stage pair-programming contract:
  * INITIALIZED -> DISCOVERY -> PLAN -> APPROVAL -> IMPLEMENT -> QUALITY_GATE -> REVIEW -> COMMIT -> COMPLETED

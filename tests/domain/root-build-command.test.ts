@@ -1,5 +1,5 @@
 /**
- * agyloop - Root-build command detector (issue #402, Defect 2 / AC4)
+ * codeloop - Root-build command detector (issue #402, Defect 2 / AC4)
  *
  * RBC1 - the #383 shape (`npm run build >/dev/null 2>&1 && …`) is refused by name
  * RBC2 - `npm test` is refused
@@ -52,7 +52,7 @@ describe('detectRootBuildCommand (issue #402)', () => {
     assert.strictEqual(detectRootBuildCommand('node --test tests/domain/root-build-command.test.ts'), null);
     assert.strictEqual(detectRootBuildCommand('npx tsc --noEmit -p tsconfig.test.json'), null);
     assert.strictEqual(
-      detectRootBuildCommand('npx tsc --outDir "$HOME/.cache/agyloop/baseline-402/dist"'),
+      detectRootBuildCommand('npx tsc --outDir "$HOME/.cache/codeloop/baseline-402/dist"'),
       null
     );
   });
@@ -63,11 +63,11 @@ describe('detectRootBuildCommand (issue #402)', () => {
     assert.strictEqual(detectRootBuildCommand('npx tsc --outDir ./dist').label, 'tsc');
     assert.strictEqual(detectRootBuildCommand('npx tsc --noEmit'), null);
     assert.strictEqual(
-      detectRootBuildCommand('npx tsc --outDir "/home/agent/.cache/agyloop/baseline-402/dist"'),
+      detectRootBuildCommand('npx tsc --outDir "/home/agent/.cache/codeloop/baseline-402/dist"'),
       null
     );
     assert.strictEqual(
-      detectRootBuildCommand('npx tsc --outDir /home/agent/.cache/agyloop/baseline-402/dist'),
+      detectRootBuildCommand('npx tsc --outDir /home/agent/.cache/codeloop/baseline-402/dist'),
       null
     );
   });

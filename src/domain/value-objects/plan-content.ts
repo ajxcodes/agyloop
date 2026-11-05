@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan Content Predicate (Domain Layer)
+ * codeloop - Plan Content Predicate (Domain Layer)
  *
  * ONE definition of "does this plan document carry anything an implementer
  * could execute?" — used by the YOLO implementation park (issue #259) so the

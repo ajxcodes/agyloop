@@ -1,5 +1,5 @@
 /**
- * agyloop - SmokeProtocol tests (issue #298, AC8/AC10)
+ * codeloop - SmokeProtocol tests (issue #298, AC8/AC10)
  *
  * SP1 - the #283 JSON-quoted comparison shape is named at its plan line
  * SP2 - a bare relative module path is named; `node:`/`./`/builtins allowed
@@ -336,7 +336,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
   // ---------------------------------------------------------------------------
   // Issue #359: the sandbox-path rule — a CLI check may only sandbox where the
-  // state guard recognises its own sandbox ($HOME/.cache/agyloop/smoke-*).
+  // state guard recognises its own sandbox ($HOME/.cache/codeloop/smoke-*).
   // ---------------------------------------------------------------------------
 
   function sandboxFindings(markdown: string): any[] {
@@ -385,14 +385,14 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     assert.ok(finding.label.includes('Check 1'), finding.label);
     assert.strictEqual(finding.line, mktempLine, 'the finding names the mktemp plan line');
     assert.ok(finding.excerpt.includes('mktemp -d /tmp'), finding.excerpt);
-    assert.ok(finding.excerpt.includes('$HOME/.cache/agyloop/smoke-'), finding.excerpt);
+    assert.ok(finding.excerpt.includes('$HOME/.cache/codeloop/smoke-'), finding.excerpt);
   });
 
   test('SP11: the #351-shape smoke-<issue> sandbox still validates with 0 findings (#359)', () => {
     const markdown = planOf([
       '```bash',
-      'mkdir -p "$HOME/.cache/agyloop"',
-      'SBX=$(mktemp -d "$HOME/.cache/agyloop/smoke-351-next-XXXXXX")',
+      'mkdir -p "$HOME/.cache/codeloop"',
+      'SBX=$(mktemp -d "$HOME/.cache/codeloop/smoke-351-next-XXXXXX")',
       'git clone . "$SBX/repo"',
       'cd "$SBX/repo"',
       'env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 351 --to IMPLEMENT',
@@ -437,7 +437,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     const findings = sandboxFindings(markdown);
     assert.strictEqual(findings.length, 1, JSON.stringify(findings));
     assert.ok(findings[0].excerpt.includes('mktemp -d'), findings[0].excerpt);
-    assert.ok(findings[0].excerpt.includes('$HOME/.cache/agyloop/smoke-'), findings[0].excerpt);
+    assert.ok(findings[0].excerpt.includes('$HOME/.cache/codeloop/smoke-'), findings[0].excerpt);
   });
 
   test('SP14: mktemp -d staging with NO CLI invocation is not flagged (#359)', () => {
@@ -465,7 +465,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       );
 
     // Negatives: the sandbox ROOT parent is not a sandbox, nor a fixture dir.
-    assert.deepStrictEqual(findingsFor(['mkdir -p "$HOME/.cache/agyloop"']), []);
+    assert.deepStrictEqual(findingsFor(['mkdir -p "$HOME/.cache/codeloop"']), []);
     assert.deepStrictEqual(findingsFor(['mkdir -p fixtures/x']), []);
 
     // Positives: a TMPDIR-rooted mktemp, a /var/tmp root, and the reserved
@@ -608,7 +608,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     'if (f.checkIndex !== 1) { console.log("FAIL: finding names check " + f.checkIndex + ", expected 1"); process.exit(1); }',
     'if (!(f.line > 0)) { console.log("FAIL: finding carries no plan line"); process.exit(1); }',
     'if (!f.excerpt.includes("mktemp -d /tmp")) { console.log("FAIL: excerpt does not name the offending line: " + f.excerpt); process.exit(1); }',
-    'if (!f.excerpt.includes("$HOME/.cache/agyloop/smoke-")) { console.log("FAIL: excerpt does not name the required path: " + f.excerpt); process.exit(1); }',
+    'if (!f.excerpt.includes("$HOME/.cache/codeloop/smoke-")) { console.log("FAIL: excerpt does not name the required path: " + f.excerpt); process.exit(1); }',
     'console.log("OK S1: /tmp sandbox protocol rejected - check " + f.checkIndex + ", plan line " + f.line + ", " + f.excerpt);',
     "'"
   ].join('\n');
@@ -623,8 +623,8 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     '  "# Plan", "",',
     '  "## 6. Manual Smoke Test Protocol", "",',
     '  "```bash",',
-    '  "mkdir -p \\"$HOME/.cache/agyloop\\"",',
-    '  "SBX=$(mktemp -d \\"$HOME/.cache/agyloop/smoke-359-check-XXXXXX\\")",',
+    '  "mkdir -p \\"$HOME/.cache/codeloop\\"",',
+    '  "SBX=$(mktemp -d \\"$HOME/.cache/codeloop/smoke-359-check-XXXXXX\\")",',
     '  "git clone . \\"$SBX/repo\\"",',
     '  "cd \\"$SBX/repo\\"",',
     '  "env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 359 --to IMPLEMENT",',
@@ -665,7 +665,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     '  planDir: "artifacts/plans/359-x/",',
     '  planPath: "artifacts/plans/359-x/implementation_plan.md"',
     '});',
-    'if (!(p.match(/\\.cache\\/agyloop\\/smoke-/g) || []).length) {',
+    'if (!(p.match(/\\.cache\\/codeloop\\/smoke-/g) || []).length) {',
     '  console.log("FAIL: the planner prompt never names the required sandbox path");',
     '  process.exit(1);',
     '}',
@@ -673,7 +673,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     '  console.log("FAIL: the planner prompt never states the mktemp/sandbox constraint");',
     '  process.exit(1);',
     '}',
-    'console.log("OK S3: the planner task prompt names " + ".cache/agyloop/smoke-<issue>" + " and the mktemp constraint (" + p.length + " chars)");',
+    'console.log("OK S3: the planner task prompt names " + ".cache/codeloop/smoke-<issue>" + " and the mktemp constraint (" + p.length + " chars)");',
     "'"
   ].join('\n');
 
@@ -732,7 +732,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       {
         name: 'real invocation + recognised sandbox',
         body: [
-          'SBX=$(mktemp -d "$HOME/.cache/agyloop/smoke-362-x")',
+          'SBX=$(mktemp -d "$HOME/.cache/codeloop/smoke-362-x")',
           'env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 362'
         ],
         expected: 0
@@ -756,7 +756,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       {
         name: 'seeded escaped path + env-prefixed text (the #359 S2 pair)',
         body: [
-          String.raw`  "SBX=$(mktemp -d \"$HOME/.cache/agyloop/smoke-362-x\")",`,
+          String.raw`  "SBX=$(mktemp -d \"$HOME/.cache/codeloop/smoke-362-x\")",`,
           '  "env -u AGY_SUBAGENT node bin/codeloop.js transition --issue 362",'
         ],
         expected: 0
@@ -766,7 +766,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
         // that DOES invoke the CLI must be unescaped, not flagged.
         name: 'escaped recognised path in a real invocation check',
         body: [
-          String.raw`SBX=$(mktemp -d \"$HOME/.cache/agyloop/smoke-362-x\")`,
+          String.raw`SBX=$(mktemp -d \"$HOME/.cache/codeloop/smoke-362-x\")`,
           'node bin/codeloop.js status --issue 362'
         ],
         expected: 0
@@ -823,7 +823,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // a) The #284 shape: the recognised root arrives through a variable.
     const indirected = planOf([
       '```bash',
-      'ROOT="$PWD"; SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp -d "$SANDBOX/smoke-284-XXXXXX")"; cd "$WS"',
+      'ROOT="$PWD"; SANDBOX="$HOME/.cache/codeloop"; mkdir -p "$SANDBOX"; WS="$(mktemp -d "$SANDBOX/smoke-284-XXXXXX")"; cd "$WS"',
       'node bin/codeloop.js status --issue 284',
       '```'
     ]);
@@ -842,7 +842,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // splitter must not read the trailing `smoke` token as an assignment value.
     const statementsOnly = planOf([
       '```bash',
-      'SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp -d "$SANDBOX/smoke-284-XXXXXX")"',
+      'SANDBOX="$HOME/.cache/codeloop"; mkdir -p "$SANDBOX"; WS="$(mktemp -d "$SANDBOX/smoke-284-XXXXXX")"',
       '```'
     ]);
     assert.deepStrictEqual(sandboxFindings(statementsOnly), []);
@@ -975,7 +975,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   });
 
   test('SP22c: a missing or empty corpus fails loudly (#364 AC-11)', () => {
-    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-empty-corpus-'));
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-empty-corpus-'));
     try {
       assert.throws(() => readCorpus(empty), /corpus .*(missing|empty)/);
     } finally {
@@ -990,7 +990,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   test('SP23: a tracked cd into the sandbox makes a relative mkdir clean (#364 6a)', () => {
     const withCd = planOf([
       '```bash',
-      'SANDBOX="$HOME/.cache/agyloop/smoke-354/implement-pause"',
+      'SANDBOX="$HOME/.cache/codeloop/smoke-354/implement-pause"',
       'cd "$SANDBOX"',
       'mkdir -p artifacts/plans/354-smoke .agyloop/tasks',
       'env -u AGY_SUBAGENT node bin/codeloop.js implement --issue 354',
@@ -1002,7 +1002,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // The same block WITHOUT the cd is the unanchored shape SP15 pins.
     const withoutCd = planOf([
       '```bash',
-      'SANDBOX="$HOME/.cache/agyloop/smoke-354/implement-pause"',
+      'SANDBOX="$HOME/.cache/codeloop/smoke-354/implement-pause"',
       'mkdir -p artifacts/plans/354-smoke .agyloop/tasks',
       'env -u AGY_SUBAGENT node bin/codeloop.js implement --issue 354',
       '```'
@@ -1017,7 +1017,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   test('SP24: a relative mktemp under the sandbox root is clean for sandbox-path (#364 6b; unanchored for #440)', () => {
     const relative = planOf([
       '```bash',
-      'cd "$HOME/.cache/agyloop"',
+      'cd "$HOME/.cache/codeloop"',
       'SBX="$(mktemp -d smoke-354-XXXXXX)"',
       'node bin/codeloop.js transition --issue 354',
       '```'
@@ -1027,7 +1027,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // The absolute form is unchanged.
     const absolute = planOf([
       '```bash',
-      'SBX="$(mktemp -d "$HOME/.cache/agyloop/smoke-354-XXXXXX")"',
+      'SBX="$(mktemp -d "$HOME/.cache/codeloop/smoke-354-XXXXXX")"',
       'node bin/codeloop.js transition --issue 354',
       '```'
     ]);
@@ -1036,7 +1036,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // A relative template nested under an explicit sandbox cd.
     const nested = planOf([
       '```bash',
-      'SANDBOX="$HOME/.cache/agyloop/smoke-354"',
+      'SANDBOX="$HOME/.cache/codeloop/smoke-354"',
       'cd "$SANDBOX"',
       'SBX="$(mktemp -d repo-XXXXXX)"',
       'node bin/codeloop.js transition --issue 354',
@@ -1048,7 +1048,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   test('SP25: a ..-escaped path is refused (#364 6c)', () => {
     const escaped = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-362/../../../tmp/evil"',
+      'SBX="$HOME/.cache/codeloop/smoke-362/../../../tmp/evil"',
       'node bin/codeloop.js transition --issue 362',
       '```'
     ]);
@@ -1061,7 +1061,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // A `..` that normalises back INSIDE the sandbox matches the runtime guard.
     const inside = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-362/../smoke-362/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-362/../smoke-362/x"',
       'node bin/codeloop.js transition --issue 362',
       '```'
     ]);
@@ -1095,7 +1095,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       '#### Check 1 — sandboxed',
       '',
       '```bash',
-      'cd "$HOME/.cache/agyloop/smoke-364"',
+      'cd "$HOME/.cache/codeloop/smoke-364"',
       'mkdir -p artifacts/plans/364-smoke',
       'node bin/codeloop.js status --issue 364',
       '```',
@@ -1116,7 +1116,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   test('SP27: cwd tracking cannot launder a temp root', () => {
     const absoluteTmp = planOf([
       '```bash',
-      'cd "$HOME/.cache/agyloop/smoke-364"',
+      'cd "$HOME/.cache/codeloop/smoke-364"',
       'mkdir -p /tmp/evil',
       'node bin/codeloop.js status --issue 364',
       '```'
@@ -1125,7 +1125,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
     const tmpdir = planOf([
       '```bash',
-      'cd "$HOME/.cache/agyloop"',
+      'cd "$HOME/.cache/codeloop"',
       'mkdir -p "$TMPDIR/smoke-x"',
       'node bin/codeloop.js status --issue 364',
       '```'
@@ -1139,7 +1139,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     for (const separator of ['&&', ';']) {
       const trailingCd = planOf([
         '```bash',
-        'SBX="$HOME/.cache/agyloop/smoke-364"',
+        'SBX="$HOME/.cache/codeloop/smoke-364"',
         `mkdir -p artifacts/smoke364 ${separator} cd "$SBX"`,
         'node bin/codeloop.js status --issue 364',
         '```'
@@ -1152,7 +1152,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // The forward order is the shape AC-1 blesses: the cd is in force first.
     const leadingCd = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-364"',
+      'SBX="$HOME/.cache/codeloop/smoke-364"',
       'cd "$SBX" && mkdir -p artifacts/plans/364-smoke',
       'node bin/codeloop.js status --issue 364',
       '```'
@@ -1163,7 +1163,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // the cwd, so the statement index is irrelevant.
     const absoluteThenCd = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-364"',
+      'SBX="$HOME/.cache/codeloop/smoke-364"',
       'mkdir -p "$SBX/reports" && cd "$SBX"',
       'node bin/codeloop.js status --issue 364',
       '```'
@@ -1208,7 +1208,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // A seed under a tracked cd resolves against the same cwd.
     const tracked = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-388/seed"',
+      'SBX="$HOME/.cache/codeloop/smoke-388/seed"',
       'mkdir -p "$SBX/.agyloop/tasks"',
       'cd "$SBX"',
       'node -e \'require("fs").writeFileSync(".agyloop/tasks/388.json", "{}")\'',
@@ -1236,7 +1236,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     // A `..`-escaped parent is not covered by the mkdir below it.
     const escaped = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-388/escape"',
+      'SBX="$HOME/.cache/codeloop/smoke-388/escape"',
       'mkdir -p "$SBX/artifacts"',
       'printf x > "$SBX/artifacts/../../escaped/out.json"',
       '```'
@@ -1250,7 +1250,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
     const smokeRoot = planOf([
       '```bash',
-      'printf x > "$HOME/.cache/agyloop/out.log"',
+      'printf x > "$HOME/.cache/codeloop/out.log"',
       '```'
     ]);
     assert.deepStrictEqual(parentFindings(smokeRoot), []);
@@ -1660,7 +1660,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     const unsafe = planOf([
       '```bash',
       'WT="${WT:-$PWD}"; cd "$WT"',
-      'SBX="$HOME/.cache/agyloop/smoke-348/approval"',
+      'SBX="$HOME/.cache/codeloop/smoke-348/approval"',
       'PLAN="$SBX/artifacts/plans/x/implementation_plan.md"',
       'env -u AGY_SUBAGENT node "$WT/bin/codeloop.js" transition APPROVAL',
       '```'
@@ -1676,7 +1676,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     const safe = planOf([
       '```bash',
       'WT="${WT:-$PWD}"; cd "$WT"',
-      'SBX="$HOME/.cache/agyloop/smoke-348/approval"',
+      'SBX="$HOME/.cache/codeloop/smoke-348/approval"',
       'PLAN="$SBX/artifacts/plans/x/implementation_plan.md"',
       'cd "$SBX"',
       'env -u AGY_SUBAGENT node "$WT/bin/codeloop.js" transition APPROVAL',
@@ -1688,12 +1688,12 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
   test('SP43: every documented anchoring shape keeps the block executable (#440)', () => {
     const shapes: ReadonlyArray<readonly string[]> = [
-      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', 'cd "$SBX"', 'node bin/codeloop.js transition DISCOVERY --issue 440'],
-      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', 'cd "$SBX" && node bin/codeloop.js transition DISCOVERY --issue 440'],
-      ['SANDBOX="$HOME/.cache/agyloop"', 'WS="$SANDBOX/smoke-440-XXXXXX"', 'cd "$WS"', 'node bin/codeloop.js transition DISCOVERY --issue 440'],
-      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', '( cd "$SBX" && node bin/codeloop.js transition DISCOVERY --issue 440 )'],
-      ['WS="$HOME/.cache/agyloop/smoke-440/x"', 'OUT="$(cd "$WS" && node bin/codeloop.js transition DISCOVERY --issue 440)"'],
-      ['SBX="$HOME/.cache/agyloop/smoke-440/x"', 'node bin/codeloop.js gate-report --issue 440 --workspace "$SBX/ws"']
+      ['SBX="$HOME/.cache/codeloop/smoke-440/x"', 'cd "$SBX"', 'node bin/codeloop.js transition DISCOVERY --issue 440'],
+      ['SBX="$HOME/.cache/codeloop/smoke-440/x"', 'cd "$SBX" && node bin/codeloop.js transition DISCOVERY --issue 440'],
+      ['SANDBOX="$HOME/.cache/codeloop"', 'WS="$SANDBOX/smoke-440-XXXXXX"', 'cd "$WS"', 'node bin/codeloop.js transition DISCOVERY --issue 440'],
+      ['SBX="$HOME/.cache/codeloop/smoke-440/x"', '( cd "$SBX" && node bin/codeloop.js transition DISCOVERY --issue 440 )'],
+      ['WS="$HOME/.cache/codeloop/smoke-440/x"', 'OUT="$(cd "$WS" && node bin/codeloop.js transition DISCOVERY --issue 440)"'],
+      ['SBX="$HOME/.cache/codeloop/smoke-440/x"', 'node bin/codeloop.js gate-report --issue 440 --workspace "$SBX/ws"']
     ];
 
     for (const body of shapes) {
@@ -1707,7 +1707,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     const markdown = planOf([
       '```bash',
       'WT="${WT:-$PWD}"',
-      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-440/x"',
       'cd "$SBX"',
       'cd "$WT"',
       'node bin/codeloop.js transition DISCOVERY --issue 440',
@@ -1717,7 +1717,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
     const indirectMarkdown = planOf([
       '```bash',
-      'SANDBOX="$HOME/.cache/agyloop"',
+      'SANDBOX="$HOME/.cache/codeloop"',
       'WS="$SANDBOX/smoke-440-XXXXXX"',
       'node bin/codeloop.js transition DISCOVERY --issue 440',
       '```'
@@ -1726,7 +1726,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
     const outsideWorkspace = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-440/x"',
       'node bin/codeloop.js transition DISCOVERY --issue 440 --workspace /tmp/elsewhere',
       '```'
     ]);
@@ -1734,7 +1734,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
     const helpMarkdown = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-440/x"',
       'node bin/codeloop.js --help',
       '```'
     ]);
@@ -1750,7 +1750,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       '#### Check 1 — declare and enter',
       '',
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-440/x"',
       'cd "$SBX"',
       'node bin/codeloop.js transition DISCOVERY --issue 440',
       '```',
@@ -1774,7 +1774,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
       '',
       '```bash',
       'WT="$PWD"',
-      'SBX="$HOME/.cache/agyloop/smoke-440/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-440/x"',
       'cd "$SBX"',
       'node bin/codeloop.js transition DISCOVERY --issue 440',
       '```',
@@ -1828,7 +1828,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     assert.strictEqual(bareFinding.checkIndex, 1);
     assert.strictEqual(bareFinding.line, lineOf(bare, 'node bin/codeloop.js next --json'));
     assert.ok(bareFinding.excerpt.includes('declares no sandbox'), bareFinding.excerpt);
-    assert.ok(bareFinding.excerpt.includes('$HOME/.cache/agyloop/smoke-'), bareFinding.excerpt);
+    assert.ok(bareFinding.excerpt.includes('$HOME/.cache/codeloop/smoke-'), bareFinding.excerpt);
 
     const fromRoot = planOf([
       '```bash',
@@ -1839,7 +1839,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
     const named = planOf([
       '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-498/x"',
+      'SBX="$HOME/.cache/codeloop/smoke-498/x"',
       'mkdir -p "$SBX"',
       'node bin/codeloop.js next --json',
       '```'
@@ -1847,8 +1847,8 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     assert.deepStrictEqual(rulesOf(named), [SMOKE_RULE_SANDBOX_CWD]);
 
     const accepted: ReadonlyArray<readonly [string, readonly string[]]> = [
-      ['declared and entered', ['SBX="$HOME/.cache/agyloop/smoke-498/x"', 'cd "$SBX"', 'node bin/codeloop.js next --json']],
-      ['workspace inside the sandbox', ['SBX="$HOME/.cache/agyloop/smoke-498/x"', 'node bin/codeloop.js next --json --workspace "$SBX/ws"']],
+      ['declared and entered', ['SBX="$HOME/.cache/codeloop/smoke-498/x"', 'cd "$SBX"', 'node bin/codeloop.js next --json']],
+      ['workspace inside the sandbox', ['SBX="$HOME/.cache/codeloop/smoke-498/x"', 'node bin/codeloop.js next --json --workspace "$SBX/ws"']],
       ['help only', ['node bin/codeloop.js --help']],
       ['version only', ['node bin/codeloop.js --version']],
       ['no CLI invocation', ['echo smoke-498']]
@@ -1862,7 +1862,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     const inherited = [
       '# Plan', '', SMOKE_HEADING, '',
       '#### Check 1 — declare and enter', '', '```bash',
-      'SBX="$HOME/.cache/agyloop/smoke-498/x"', 'cd "$SBX"', '```', '',
+      'SBX="$HOME/.cache/codeloop/smoke-498/x"', 'cd "$SBX"', '```', '',
       '#### Check 2 — reuse the carried cwd', '', '```bash',
       'node bin/codeloop.js next --json', '```', ''
     ].join('\n');
@@ -2102,7 +2102,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
     for (const [label, line] of SPELLINGS) {
       const entered = planOf([
         '```bash',
-        'SBX="$HOME/.cache/agyloop/smoke-503/x"',
+        'SBX="$HOME/.cache/codeloop/smoke-503/x"',
         'cd "$SBX"',
         line,
         '```'
@@ -2111,7 +2111,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
 
       const declared = planOf([
         '```bash',
-        'SBX="$HOME/.cache/agyloop/smoke-503/x"',
+        'SBX="$HOME/.cache/codeloop/smoke-503/x"',
         'mkdir -p "$SBX"',
         line,
         '```'
@@ -2160,7 +2160,7 @@ describe('SmokeProtocol.fromPlan (issue #298)', () => {
   test("SP60: a shell -c program's own cd and --workspace anchor the invocation (#503 AC4)", () => {
     const rulesOf = (markdown: string): string[] =>
       SmokeProtocol.fromPlan(markdown).findings.map((finding: any) => finding.rule);
-    const declared = 'SBX="$HOME/.cache/agyloop/smoke-503/x"';
+    const declared = 'SBX="$HOME/.cache/codeloop/smoke-503/x"';
 
     const anchored: ReadonlyArray<readonly [string, string]> = [
       ['bare $SBX cd', 'sh -c "cd $SBX && codeloop next --json"'],

@@ -1,5 +1,5 @@
 /**
- * agyloop - StartPlanningUseCase Unit Tests
+ * codeloop - StartPlanningUseCase Unit Tests
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -40,7 +40,7 @@ import type {
   PlanGeneratorPort,
   ScaffoldParams,
   ScaffoldResult,
-  AgyLoopConfig
+  CodeLoopConfig
 } from '../../src/ports';
 
 class StateRepositoryDouble implements StateRepository {
@@ -89,7 +89,7 @@ class GitHubGatewayDouble implements GitHubGateway {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return DEFAULT_CONFIG;
   }
 
@@ -1024,7 +1024,7 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
       '',
       '**Issue:** #283',
       '**Date:** 2026-10-27',
-      '**Author:** AgyLoop Discovery Subagent (Read-Only)',
+      '**Author:** CodeLoop Discovery Subagent (Read-Only)',
       '',
       '## Summary & Symptoms',
       '',
@@ -1102,7 +1102,7 @@ describe('StartPlanningUseCase plan-artifact resolution (#283, #267)', () => {
   }
 
   caseBeforeEach(() => {
-    workspace = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'agyloop-start-planning-283-'));
+    workspace = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'codeloop-start-planning-283-'));
     stateRepo = new StateRepositoryDouble();
     githubGateway = new GitHubGatewayDouble();
     githubGateway.issueToReturn = {
@@ -1684,7 +1684,7 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
   });
 
   test('DRY-364.2: preview and real run name the same folder', async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-dry-364-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-dry-364-'));
     const realGenerator = new FilePlanGenerator();
     try {
       const dry = await new StartPlanningUseCase(
@@ -1725,7 +1725,7 @@ describe('StartPlanningUseCase - dry-run plan names (#364)', () => {
   });
 
   test('DRY-364.3: a legacy over-budget folder is previewed and adopted alike', async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-dry-legacy-364-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-dry-legacy-364-'));
     const plansDir = path.join(workspace, 'artifacts', 'plans');
     // 184 bytes: the shape of every plan folder written before #364 (the live
     // #364 folder is 183 B and #359 is 211 B). The workspace is a temp

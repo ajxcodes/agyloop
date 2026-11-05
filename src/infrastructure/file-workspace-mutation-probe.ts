@@ -1,5 +1,5 @@
 /**
- * agyloop - FileWorkspaceMutationProbe Adapter
+ * codeloop - FileWorkspaceMutationProbe Adapter
  *
  * Concrete boundary measurement implementing WorkspaceMutationProbePort
  * (issue #389). Two channels, because the reported defect class defeats the

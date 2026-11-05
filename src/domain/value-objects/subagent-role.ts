@@ -1,5 +1,5 @@
 /**
- * agyloop - SubagentRole Value Object
+ * codeloop - SubagentRole Value Object
  *
  * Self-validating value object representing recognized subagent roles.
  */

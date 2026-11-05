@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical StateRepository double (issue #544 / AC2)
+ * codeloop - ONE canonical StateRepository double (issue #544 / AC2)
  *
  * Retires the divergent spellings `StateRepositoryDouble` / `StateRepositoryDouble` /
  * `MockStateStore`-family copies. The one class is declared

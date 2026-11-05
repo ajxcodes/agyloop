@@ -1,5 +1,5 @@
 /**
- * agyloop - Domain Tests: Structured Quality Gate Summary Protocol & Value Objects
+ * codeloop - Domain Tests: Structured Quality Gate Summary Protocol & Value Objects
  *
  * Tests TestMetrics, DiagnosticSnippet, and GateSummaryReport value objects,
  * surgical stack trace extraction, bounded 25-line truncation, and structured token parsing.

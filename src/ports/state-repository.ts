@@ -1,5 +1,5 @@
 /**
- * agyloop - StateRepository Port Interface
+ * codeloop - StateRepository Port Interface
  *
  * Inversion of control interface for persisting and restoring StateMachine checkpoints.
  */

@@ -1,5 +1,5 @@
 /**
- * agyloop - Infrastructure Layer Public API
+ * codeloop - Infrastructure Layer Public API
  */
 
 export * from './file-state-repository';

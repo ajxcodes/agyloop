@@ -1,5 +1,5 @@
 /**
- * agyloop - ProjectScaffolderPort Interface
+ * codeloop - ProjectScaffolderPort Interface
  *
  * Inversion of control contract for filesystem concerns of `codeloop init`:
  * marker discovery, config persistence and .gitignore hygiene.
@@ -59,13 +59,13 @@ export interface ProjectScaffolderPort {
   /** Derives a multi-tier verification profile from detected markers and gate commands. */
   buildVerificationProfile(markers: ProjectMarkers, ecosystem: string, gateCommands: readonly { id: string; label: string; command: string }[]): VerificationConfig;
 
-  /** Returns the existing config location (codeloop first, then legacy agyloop) or null. */
+  /** Returns the existing config location (codeloop first, then legacy codeloop) or null. */
   findExistingConfig(workspaceDir: string): string | null;
 
   /** Absolute path of the canonical `.codeloop/config.json`. */
   getConfigPath(workspaceDir: string): string;
 
-  /** Absolute paths of legacy agyloop config candidates. */
+  /** Absolute paths of legacy codeloop config candidates. */
   getLegacyConfigPaths(workspaceDir: string): string[];
 
   /** Reports legacy .agyloop layout details. */

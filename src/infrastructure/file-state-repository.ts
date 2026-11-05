@@ -1,5 +1,5 @@
 /**
- * agyloop - FileStateRepository Infrastructure Adapter
+ * codeloop - FileStateRepository Infrastructure Adapter
  *
  * Implements StateRepository using atomic disk persistence in `.agyloop/state.json`.
  */
@@ -218,12 +218,14 @@ export class FileStateRepository implements StateRepository {
   ): void {
     const testMode = process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT);
     const sandboxRoot = this.realpathOfNearestExisting(this.resolveSmokeSandboxRoot());
+    const legacySandboxRoot = this.realpathOfNearestExisting(path.join(os.homedir(), '.cache', 'agyloop'));
     const normalise = (target: string): string => this.realpathOfNearestExisting(target);
 
     const cwd = normalise(process.cwd());
     const targets = [this.stateFilePath, ...additionalTargets].map(normalise);
 
-    const inSandbox = (target: string): boolean => this.isSmokeSandboxPath(target, sandboxRoot);
+    const inSandbox = (target: string): boolean =>
+      this.isSmokeSandboxPath(target, sandboxRoot) || this.isSmokeSandboxPath(target, legacySandboxRoot);
 
     // 1. ESCAPE: the one case the old cwd check caught by accident is now
     //    caught on purpose — a sandbox checkout must not reach real state.
@@ -294,7 +296,7 @@ export class FileStateRepository implements StateRepository {
   }
 
   /**
-   * The tool's own smoke-sandbox root: `$HOME/.cache/agyloop`.
+   * The tool's own smoke-sandbox root: `$HOME/.cache/codeloop`.
    *
    * Composed from the SAME domain segments the role prompts print, so the
    * mandated path and the predicate cannot disagree (issue #279, AC2).
@@ -337,7 +339,7 @@ export class FileStateRepository implements StateRepository {
   /**
    * True when `target` is inside the tool's smoke sandbox — i.e. under
    * `sandboxRoot` and its first relative segment is a `smoke-*` directory.
-   * `sandboxRoot` itself is the parent (`.cache/agyloop`), never a sandbox.
+   * `sandboxRoot` itself is the parent (`.cache/codeloop`), never a sandbox.
    */
   private isSmokeSandboxPath(target: string, sandboxRoot: string): boolean {
     if (!this.isInside(sandboxRoot, target)) {

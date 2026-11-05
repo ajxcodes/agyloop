@@ -10,7 +10,7 @@ function seedModelessCheckpoint(dir: string, issue: number, snapshot: Record<str
 }
 
 /**
- * agyloop - operator output is TRUE when piped and when the checkpoint is absent
+ * codeloop - operator output is TRUE when piped and when the checkpoint is absent
  * (issue #315, Defects A and G7)
  *
  * A pager is normal usage: `codeloop status | head -n 1`, `| less` (quit early).
@@ -653,7 +653,7 @@ describe('delivery is reported truthfully (AC-22, AC-24)', () => {
   test('--create-pr is documented outside --help', () => {
     const docs = [
       path.join(REPO_ROOT, 'README.md'),
-      path.join(REPO_ROOT, 'skills', 'agyloop', 'SKILL.md'),
+      path.join(REPO_ROOT, 'skills', 'codeloop', 'SKILL.md'),
       path.join(REPO_ROOT, 'integrations', 'opencode', 'codeloop-skill.md')
     ];
     for (const doc of docs) {

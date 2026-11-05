@@ -1,5 +1,5 @@
 /**
- * agyloop - ExecuteCommitUseCase (Application Layer)
+ * codeloop - ExecuteCommitUseCase (Application Layer)
  *
  * Coordinates commit execution & human confirmation gate:
  * 1. Validates pipeline stage (must be at STAGE_COMMIT).
@@ -7,7 +7,7 @@
  * 3. Enforces Human Approval Confirmation Gate (never commits silently in standard mode).
  * 4. Executes git commit via CommandExecutorPort upon confirmation.
  * 5. Advances StateMachine transition: STAGE_COMMIT -> STAGE_COMPLETED.
- * 6. Updates AgyLoop Summary.md stage Commit / PR with commit hash, message, and timestamp.
+ * 6. Updates CodeLoop Summary.md stage Commit / PR with commit hash, message, and timestamp.
  * 7. Checkpoints state to StateRepository.
  *
  * Strict Hexagonal Architecture: zero direct I/O, zero Node.js built-ins.
@@ -329,7 +329,7 @@ export class ExecuteCommitUseCase {
       if (committable.length === 0) {
         throw new CommitExecutionError(
           'git status',
-          `Nothing to commit: the working tree contains only paths agyloop excludes from every commit (${COMMIT_EXCLUDED_PATHSPECS.join(', ')}). Stage or create a real change first.`
+          `Nothing to commit: the working tree contains only paths codeloop excludes from every commit (${COMMIT_EXCLUDED_PATHSPECS.join(', ')}). Stage or create a real change first.`
         );
       }
 

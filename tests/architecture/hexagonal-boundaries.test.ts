@@ -1,5 +1,5 @@
 /**
- * agyloop - Architecture Fitness Tests: Hexagonal Architecture Boundaries
+ * codeloop - Architecture Fitness Tests: Hexagonal Architecture Boundaries
  *
  * Statically inspects source files and module imports across all architectural layers
  * to enforce strict Hexagonal Boundaries, Dependency Inversion, and zero direct I/O leakage:

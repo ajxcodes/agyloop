@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan directory grammar tests (issue #283)
+ * codeloop - Plan directory grammar tests (issue #283)
  *
  * T-283.4: the scaffold and the dispatch payload must agree on the slug, even
  * for apostrophes and punctuation. Before the fix only the scaffold had a
@@ -65,7 +65,7 @@ describe('plan directory grammar (#283)', () => {
     let generator: any;
 
     beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-dir-test-'));
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-dir-test-'));
       generator = new FilePlanGenerator();
     });
 

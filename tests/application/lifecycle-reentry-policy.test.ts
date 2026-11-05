@@ -1,5 +1,5 @@
 /**
- * agyloop - Lifecycle Re-Entry Policy unit tests (issue #237)
+ * codeloop - Lifecycle Re-Entry Policy unit tests (issue #237)
  *
  * Pins the two rule tables and the shared TRIAGE predicate that now form the
  * single chokepoint for every re-entry decision:

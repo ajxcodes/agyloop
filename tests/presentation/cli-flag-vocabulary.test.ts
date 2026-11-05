@@ -1,5 +1,5 @@
 /**
- * agyloop - flag vocabulary contract (#248 Wave 1)
+ * codeloop - flag vocabulary contract (#248 Wave 1)
  *
  * Source-derived, not a second hand-maintained list: the parser slice in
  * `src/presentation/cli.ts` is parsed and every `--flag` it understands must be

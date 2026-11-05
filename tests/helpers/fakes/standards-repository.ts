@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical StandardsRepository double (issue #544 / AC2)
+ * codeloop - ONE canonical StandardsRepository double (issue #544 / AC2)
  * Retires the 6 `StandardsRepositoryDouble` copies.
  */
 

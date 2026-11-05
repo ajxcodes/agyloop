@@ -1,5 +1,5 @@
 /**
- * agyloop - ManagePlanDeviationsUseCase (issue #432, TR-7..TR-10)
+ * codeloop - ManagePlanDeviationsUseCase (issue #432, TR-7..TR-10)
  */
 
 const { test, describe } = require('node:test');

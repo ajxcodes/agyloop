@@ -1,12 +1,12 @@
 /**
- * agyloop - RunnerFactory Infrastructure Factory
+ * codeloop - RunnerFactory Infrastructure Factory
  *
  * Resolves the appropriate AgentRunnerPort implementation based on
  * explicit configuration, environment variables, or runtime environment discovery.
  */
 
 import * as child_process from 'child_process';
-import { AgentRunnerPort, AgyLoopConfig, CommandExecutorPort } from '../ports';
+import { AgentRunnerPort, CodeLoopConfig, CommandExecutorPort } from '../ports';
 import { DEFAULT_OPENCODE_MODEL } from '../domain';
 import { AntigravityAgentRunner } from './antigravity-agent-runner';
 import { FailoverAgentRunner } from './failover-agent-runner';
@@ -14,7 +14,7 @@ import { OpenCodeAgentRunner } from './opencode-agent-runner';
 import { ProcessCommandExecutor } from './process-command-executor';
 
 export interface RunnerFactoryOptions {
-  readonly config?: AgyLoopConfig;
+  readonly config?: CodeLoopConfig;
   readonly commandExecutor?: CommandExecutorPort;
   readonly env?: NodeJS.ProcessEnv;
   /**

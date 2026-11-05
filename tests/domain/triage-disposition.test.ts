@@ -1,5 +1,5 @@
 /**
- * agyloop - TriageDisposition Value Object Tests (issue #269, Defect 1)
+ * codeloop - TriageDisposition Value Object Tests (issue #269, Defect 1)
  *
  * The disposition is the load-bearing part of the fix: it is what turns the
  * TRIAGE livelock into a one-shot gate. These tests pin its validation, its
@@ -148,7 +148,7 @@ describe('TriageDisposition value object (issue #269)', () => {
   });
 
   test('TD4: the disposition survives a FILE repository round-trip', () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-disposition-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-disposition-'));
     const originalCwd = process.cwd;
     try {
       const stateFile = path.join(tempDir, '.agyloop', 'state.json');

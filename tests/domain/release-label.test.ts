@@ -1,5 +1,5 @@
 /**
- * agyloop - Release-label value object tests (issue #502)
+ * codeloop - Release-label value object tests (issue #502)
  *
  * Pins the ONE owner of the `release:major|minor|patch` metadata and the exact
  * `gh label create` command the refusal text quotes.

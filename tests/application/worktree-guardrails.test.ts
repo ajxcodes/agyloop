@@ -1,5 +1,5 @@
 /**
- * agyloop - Worktree Guardrails & Teardown Unit Tests
+ * codeloop - Worktree Guardrails & Teardown Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -34,7 +34,7 @@ import type {
   CommandExecutorPort,
   ConfirmationPromptPort,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   PlanGeneratorPort
 } from '../../src/ports';
 import type { StateMachineSnapshot } from '../../src/domain';
@@ -111,7 +111,7 @@ function makeMockPrompt(confirmed = true): ConfirmationPromptPort {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -157,7 +157,7 @@ function makeMockPlanGenerator(): PlanGeneratorPort {
       type: 'implementation',
       planPath: '/repo/artifacts/plans/[Implementation] - Test.md',
       mirrorPath: '',
-      summaryPath: '/repo/artifacts/plans/AgyLoop Summary.md',
+      summaryPath: '/repo/artifacts/plans/CodeLoop Summary.md',
       directoryCreated: false,
       filesCreated: false,
       adoptedExisting: true
@@ -166,7 +166,7 @@ function makeMockPlanGenerator(): PlanGeneratorPort {
       planPath: '/repo/artifacts/plans/[Implementation] - Test.md',
       planDir: '/repo/artifacts/plans',
       planFileName: '[Implementation] - Test.md',
-      summaryPath: '/repo/artifacts/plans/AgyLoop Summary.md',
+      summaryPath: '/repo/artifacts/plans/CodeLoop Summary.md',
       exists: true,
       hasSummary: true
     }),
@@ -577,7 +577,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
     // predicate — a descriptor pointing at the root workspace is never torn down,
     // no matter how it labels itself.
     test('skips teardown entirely for a root-workspace descriptor (isIsolated false, path === rootDir) and preserves the workspace', async () => {
-      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-247-root-'));
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-247-root-'));
       try {
         const sentinelPath = path.join(rootDir, 'sentinel.txt');
         fs.writeFileSync(sentinelPath, 'alive', 'utf8');
@@ -638,7 +638,7 @@ describe('Worktree Guardrails & Mandatory Worktree Invariant', () => {
     });
 
     test('skips teardown for an isolated-labelled descriptor whose path resolves on the root (predicate does not trust isIsolated alone)', async () => {
-      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-247-deceptive-'));
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-247-deceptive-'));
       try {
         const sm = StateMachine.createInitial({ issue: 247, baseBranch: 'fix/247' });
         sm.setWorktree(

@@ -3,7 +3,7 @@ function readTriageExitCheckpoint(sandbox: Sandbox): any {
 }
 
 /**
- * agyloop - `next` exits the TRIAGE gate on a terminal PR (issue #351, AC-1)
+ * codeloop - `next` exits the TRIAGE gate on a terminal PR (issue #351, AC-1)
  *
  * The unit suite proves the decision; this one proves the CLI does not undo it.
  * The #349 failure was observed HERE: `codeloop next --json` at TRIAGE returned
@@ -64,7 +64,7 @@ interface Sandbox {
 
 /** A git repo parked at the TRIAGE gate for issue #351 — the #349 shape. */
 function seedSandbox(state: 'OPEN' | 'MERGED' | 'CLOSED'): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-triage-exit-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-triage-exit-'));
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:owner/repo.git'], { cwd: dir });
 

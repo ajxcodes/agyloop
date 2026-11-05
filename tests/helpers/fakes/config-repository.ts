@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical ConfigRepository double (issue #544 / AC2)
+ * codeloop - ONE canonical ConfigRepository double (issue #544 / AC2)
  *
  * Retires `ConfigRepositoryDouble` / `ConfigRepositoryDouble` / `ConfigRepositoryDouble`.
  * The canonical fake IS the recording surface: `calls` per port method, plus
@@ -7,13 +7,13 @@
  * ONE `tests/helpers/config.ts` defaults; divergences are explicit options.
  */
 
-import type { AgyLoopConfig, ConfigRepository } from '../../../src/ports';
+import type { CodeLoopConfig, ConfigRepository } from '../../../src/ports';
 
 const { makeMockConfig } = require('../config.ts');
 
 interface FakeConfigRepositoryOptions {
   /** Config overrides (models/options) identical to `tests/helpers/config.ts`. */
-  config?: Partial<AgyLoopConfig>;
+  config?: Partial<CodeLoopConfig>;
   mapModelToTier?: (inputModel: string) => string;
   /** Throw from loadConfig (corrupt-config fixtures). */
   loadConfigError?: Error | (() => never);
@@ -27,7 +27,7 @@ class FakeConfigRepository implements ConfigRepository {
     mapModelToTier: []
   };
 
-  public readonly config: AgyLoopConfig;
+  public readonly config: CodeLoopConfig;
   private readonly behaviour: {
     mapModelToTier: (inputModel: string) => string;
   };
@@ -40,7 +40,7 @@ class FakeConfigRepository implements ConfigRepository {
     this.behaviour = { mapModelToTier: options.mapModelToTier ?? defaultTierMapper };
   }
 
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     this.calls.loadConfig.push([]);
     if (typeof this.loadConfigError === 'function') {
       return (this.loadConfigError as () => never)();
@@ -51,7 +51,7 @@ class FakeConfigRepository implements ConfigRepository {
     return this.config;
   }
 
-  public resolveModel(role: string, provided?: AgyLoopConfig) {
+  public resolveModel(role: string, provided?: CodeLoopConfig) {
     this.calls.resolveModel.push([role]);
     const source = provided ?? this.config;
     const models = source.models as Record<string, string | undefined>;

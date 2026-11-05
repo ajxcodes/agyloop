@@ -1,5 +1,5 @@
 /**
- * agyloop - ResetPipelineUseCase
+ * codeloop - ResetPipelineUseCase
  *
  * Clears the persisted state checkpoint and returns a freshly initialized StateMachine.
  *

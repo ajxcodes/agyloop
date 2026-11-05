@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop review` certifies the QUALITY_GATE exit (issue #455)
+ * codeloop - `codeloop review` certifies the QUALITY_GATE exit (issue #455)
  *
  * RGC1 - no evidence: the real CLI refuses, exits non-zero and writes NOTHING
  * RGC2 - a filed report certifies the round, records the verdict and consumes it
@@ -78,7 +78,7 @@ function seedPlanDir(dir: string): void {
 
 function makeReviewGateEvidenceSandbox(): any {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-review-gate-evidence-',
+    prefix: 'codeloop-cli-review-gate-evidence-',
     dirName: '',
     gitignore: false,
     initialBranch: 'main',

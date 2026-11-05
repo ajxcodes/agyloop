@@ -1,5 +1,5 @@
 /**
- * agyloop - Architecture Fitness Test: package-lock.json ↔ package.json parity
+ * codeloop - Architecture Fitness Test: package-lock.json ↔ package.json parity
  * (issue #242 / Defect C, absorbs #285)
  *
  * `npm ci` does NOT validate the lockfile's root metadata, so a stale root

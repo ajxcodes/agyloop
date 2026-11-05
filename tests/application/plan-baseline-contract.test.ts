@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan baseline contract guard tests (issue #388, Defect 1)
+ * codeloop - Plan baseline contract guard tests (issue #388, Defect 1)
  *
  * PBC1 - the #382 DA-METRICS-1 shape (declared 3, measured 4) is REFUSED, and
  *        the message names the claim id, the declared value, the measured value
@@ -108,7 +108,7 @@ describe('assertPlanBaselineContract (issue #388)', () => {
   let planPath: string;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-baseline-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-baseline-'));
     planPath = path.join(root, 'implementation_plan.md');
   });
 
@@ -962,7 +962,7 @@ describe('assertPlanBaselineContract (issue #388)', () => {
   });
 
   test('PBC16: the documented scratch out-dir form is measured in the workspace cwd', async () => {
-    const scratchDir = path.join(os.homedir(), '.cache', 'agyloop', 'baseline-418', 'dist');
+    const scratchDir = path.join(os.homedir(), '.cache', 'codeloop', 'baseline-418', 'dist');
     fs.mkdirSync(scratchDir, { recursive: true });
     fs.writeFileSync(path.join(scratchDir, 'mod.js'), 'module.exports = { ok: true };\n', 'utf8');
 
@@ -973,7 +973,7 @@ describe('assertPlanBaselineContract (issue #388)', () => {
           {
             id: 'scratch-claim',
             declared: '{"ok":true}',
-            command: `node -e 'console.log(JSON.stringify({ok:require(process.env.HOME+"/.cache/agyloop/baseline-418/dist/mod.js").ok}))'`,
+            command: `node -e 'console.log(JSON.stringify({ok:require(process.env.HOME+"/.cache/codeloop/baseline-418/dist/mod.js").ok}))'`,
             output: '{"ok":true}'
           }
         ]),
@@ -993,7 +993,7 @@ describe('assertPlanBaselineContract (issue #388)', () => {
       assert.strictEqual(executor.calls.length, 1, 'the allowed claim is measured exactly once');
       assert.strictEqual(executor.calls[0].options.cwd, root);
     } finally {
-      fs.rmSync(path.join(os.homedir(), '.cache', 'agyloop', 'baseline-418'), {
+      fs.rmSync(path.join(os.homedir(), '.cache', 'codeloop', 'baseline-418'), {
         recursive: true,
         force: true
       });

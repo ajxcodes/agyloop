@@ -1,5 +1,5 @@
 /**
- * agyloop - BaselineEvidence value object tests (issue #388, Defect 1)
+ * codeloop - BaselineEvidence value object tests (issue #388, Defect 1)
  *
  * BE1 - a claim parses its declared value, command and output
  * BE2 - the #382 DA-METRICS-1 fixture declares `{ additions: 3 }` while its
@@ -234,7 +234,7 @@ describe('BaselineEvidence.fromPlan (issue #388)', () => {
       '',
       `${FENCE}bash`,
       'set -eu',
-      'SBX="$HOME/.cache/agyloop/smoke-388/fenced-sample"',
+      'SBX="$HOME/.cache/codeloop/smoke-388/fenced-sample"',
       'mkdir -p "$SBX/artifacts/plans/388-probe"',
       'cat > "$SBX/artifacts/plans/388-probe/implementation_plan.md" <<\'PLAN\'',
       ...sample,

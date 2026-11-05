@@ -1,5 +1,5 @@
 /**
- * agyloop - InitProjectUseCase Tests
+ * codeloop - InitProjectUseCase Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');

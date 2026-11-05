@@ -3,7 +3,7 @@ function readApprovalPauseCheckpoint(sandbox: Sandbox): any {
 }
 
 /**
- * agyloop - `implement` consumes the APPROVAL pause end-to-end (issue #367)
+ * codeloop - `implement` consumes the APPROVAL pause end-to-end (issue #367)
  *
  * Mirrors the issue's reproduction against a real git sandbox instead of a
  * mock: an APPROVAL-parked checkpoint with `pausedAtGate: 'APPROVAL'` is driven
@@ -52,7 +52,7 @@ interface Sandbox {
 
 /** A real git repo + worktree parked at APPROVAL for issue #354. */
 function seedSandbox(): Sandbox {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-implement-pause-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-implement-pause-'));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });

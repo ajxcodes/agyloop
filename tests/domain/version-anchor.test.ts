@@ -1,5 +1,5 @@
 /**
- * agyloop - VersionAnchor Value Object Unit Tests
+ * codeloop - VersionAnchor Value Object Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -50,7 +50,7 @@ describe('VersionAnchor Value Object', () => {
     const anchor = new VersionAnchor();
     const scaffold = anchor.generateMinimalPackageJson();
     const parsed = JSON.parse(scaffold);
-    assert.strictEqual(parsed.name, 'agyloop-project');
+    assert.strictEqual(parsed.name, 'codeloop-project');
     assert.strictEqual(parsed.version, '0.1.0');
   });
 });

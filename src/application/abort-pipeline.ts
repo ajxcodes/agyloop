@@ -1,12 +1,12 @@
 /**
- * agyloop - AbortPipelineUseCase (Application Layer)
+ * codeloop - AbortPipelineUseCase (Application Layer)
  *
  * Coordinates the Emergency Abort Protocol:
  * 1. Process Signal Propagation: abruptly terminates active subagents and child processes.
  * 2. Stale Git Lock Removal: safely deletes .git/index.lock if present.
  * 3. Worktree Quarantine: safely stashes uncommitted work or commits to a quarantine branch.
  * 4. Container Sandbox Teardown: terminates & removes ephemeral containers matching 'codeloop-sandbox-*' or label 'app=codeloop'.
- * 5. Audit Logging: appends an explicit '### [ABORTED]' entry to AgyLoop Summary.md.
+ * 5. Audit Logging: appends an explicit '### [ABORTED]' entry to CodeLoop Summary.md.
  */
 
 import {

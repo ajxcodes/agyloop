@@ -1,5 +1,5 @@
 /**
- * agyloop - Triage routing command contract (issue #241, D1)
+ * codeloop - Triage routing command contract (issue #241, D1)
  *
  * TR1 - the command the DISPATCHED prompt names runs verbatim (from dist/)
  * TR2 - every parser-accepted action appears in the prompt and is accepted
@@ -53,7 +53,7 @@ function installGhStub(binDir: string): void {
 }
 
 function seedSandbox(stage: string, issue = ISSUE): { dir: string; stateFile: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-triage-routing-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-triage-routing-'));
   const stateFile = path.join(dir, '.agyloop', 'tasks', `${issue}.json`);
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   const now = new Date().toISOString();

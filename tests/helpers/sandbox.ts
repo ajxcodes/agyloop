@@ -1,5 +1,5 @@
 /**
- * agyloop - canonical test sandbox (issue #544)
+ * codeloop - canonical test sandbox (issue #544)
  *
  * ONE definition of the `makeSandbox` family: a throwaway git workspace the CLI
  * and use-cases can run in, with the git user config every CLI-based suite
@@ -32,7 +32,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const DEFAULT_USER = { email: 'smoke@test', name: 'smoke' };
 
 interface TestSandboxOptions {
-  /** mkdtempSync prefix, default 'agyloop-test-'. */
+  /** mkdtempSync prefix, default 'codeloop-test-'. */
   prefix?: string;
   /** Subdirectory of the temp root that is the repo root. Default 'repo'; '' means dir === root. */
   dirName?: string;
@@ -109,7 +109,7 @@ function gitIn(
 
 function makeSandbox(options?: TestSandboxOptions): TestSandbox {
   const opts = options ?? {};
-  const prefix = opts.prefix ?? 'agyloop-test-';
+  const prefix = opts.prefix ?? 'codeloop-test-';
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const dirName = opts.dirName === undefined ? 'repo' : opts.dirName;
   const dir = dirName === '' ? root : path.join(root, dirName);

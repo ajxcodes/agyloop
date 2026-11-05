@@ -1,5 +1,5 @@
 /**
- * agyloop - MilestoneReleaseUseCase Application Unit Tests
+ * codeloop - MilestoneReleaseUseCase Application Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -16,7 +16,7 @@ import type {
   GitHubGateway,
   WorktreeManagerPort,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   CommandExecutorPort,
   CommandExecutionResult,
   CreatePullRequestOptions,
@@ -25,7 +25,7 @@ import type {
   GitHubIssueData
 } from '../../src/ports';
 
-function makeMockConfigLocal(config: AgyLoopConfig = DEFAULT_CONFIG): ConfigRepository {
+function makeMockConfigLocal(config: CodeLoopConfig = DEFAULT_CONFIG): ConfigRepository {
   return {
     loadConfig: () => config,
     resolveModel: () => ({ configured: 'inherit', tier: 'inherit' as const, apiModel: 'gemini-2.5-flash' }),

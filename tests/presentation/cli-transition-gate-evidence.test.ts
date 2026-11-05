@@ -1,5 +1,5 @@
 /**
- * agyloop - the QUALITY_GATE exit consumes evidence (issue #327, Defect 3)
+ * codeloop - the QUALITY_GATE exit consumes evidence (issue #327, Defect 3)
  *
  * GE1 - no evidence: `transition REVIEW` refuses, writes nothing, records no REVIEW row
  * GE2 - the production order: file, then transition -> the verdict is recorded and consumed
@@ -55,7 +55,7 @@ function seedPlanDir(dir: string): void {
 
 function makeGateEvidenceSandbox(options: { withPlan?: boolean } = {}) {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-gate-evidence-',
+    prefix: 'codeloop-cli-gate-evidence-',
     dirName: '',
     gitignore: false,
     initialBranch: 'main',

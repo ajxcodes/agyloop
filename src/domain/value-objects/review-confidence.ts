@@ -1,5 +1,5 @@
 /**
- * agyloop - ReviewConfidence Value Object
+ * codeloop - ReviewConfidence Value Object
  *
  * Immutable representation of an AI Review confidence rating and explanation.
  * Strictly avoids magic strings by using domain constants.

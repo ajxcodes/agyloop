@@ -1,5 +1,5 @@
 /**
- * agyloop - `InferBaseBranchUseCase` must be able to run WITHOUT writing (issue #250)
+ * codeloop - `InferBaseBranchUseCase` must be able to run WITHOUT writing (issue #250)
  *
  * `branch-info` is a diagnostic. It used to reach the checkpoint through TWO
  * hidden writes: the CLI's own "write the inferred issue back" block, and this

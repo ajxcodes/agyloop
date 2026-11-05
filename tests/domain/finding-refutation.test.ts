@@ -1,5 +1,5 @@
 /**
- * agyloop - Operator refutations (issue #349 / #242 AC4)
+ * codeloop - Operator refutations (issue #349 / #242 AC4)
  *
  * `--refute '<path>:<line>[#<severity>]=<reason>'` is the ONLY mechanism that
  * can release a FACTUAL false claim: "actions/checkout@v7 does not exist"

@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop next` terminal REVIEW directive (issue #272, AC4)
+ * codeloop - `codeloop next` terminal REVIEW directive (issue #272, AC4)
  *
  * Discovery must not depend on having read the OpenCode skill: the terminal
  * render — not only the JSON `Prompt` — names the verdict-filing channel and the
@@ -92,7 +92,7 @@ async function runNextJsonIn(dir: string): Promise<{ code: number; stdout: strin
 
 describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV5a: the terminal render names the channel and the exit condition', async () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-review-'));
     try {
       const stateFile = seedReviewCheckpoint(sandbox);
       const run = await runNextIn(sandbox);
@@ -123,7 +123,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   });
 
   test('RV5b (issue #397): the terminal render names the Tier 1 evidence path and --critique-report', async () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-397-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-review-397-'));
     try {
       seedReviewCheckpoint(sandbox);
       const run = await runNextIn(sandbox);
@@ -144,7 +144,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   });
 
   test('RV5b: a paused read does not record a dispatch', async () => {
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-'));
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-review-'));
     try {
       const stateFile = seedReviewCheckpoint(sandbox, {
         pausedAtGate: 'APPROVAL',
@@ -166,7 +166,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   test('RV6: the dispatched prompt quotes the critique binary the CLI resolved (issue #314)', async () => {
     // A nested root keeps the resolver's sibling candidate (`../critique`)
     // absent, so the bundled `<worktree>/bin/critique.js` is deterministic.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-314-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-review-314-'));
     const sandbox = path.join(root, 'worktree');
     try {
       fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
@@ -195,7 +195,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   });
 
   test('RV6b: the dispatched Tier 1 command names the worktree cwd and the checkpoint base (issue #445)', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-445-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-review-445-'));
     const sandbox = path.join(root, 'worktree');
     try {
       fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
@@ -215,7 +215,7 @@ describe('codeloop next terminal REVIEW directive (issue #272)', () => {
   });
 
   test('RV7: the live dispatch names a real untracked file and stages nothing (issue #356)', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-next-review-356-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-next-review-356-'));
     const sandbox = path.join(root, 'worktree');
     const gitRun = (args: string[]) =>
       execFileSync('git', args, { cwd: sandbox, stdio: ['ignore', 'pipe', 'ignore'] })

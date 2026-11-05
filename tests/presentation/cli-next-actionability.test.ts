@@ -3,7 +3,7 @@ function runGit(dir: string, args: readonly string[]): void {
 }
 
 /**
- * agyloop - `next --json` actionability, end to end (issue #337)
+ * codeloop - `next --json` actionability, end to end (issue #337)
  *
  * The documented contract is `actionable`/`actionType`: a harness dispatches the
  * payload only when `actionable` is true, and runs the named command otherwise.
@@ -158,7 +158,7 @@ function seedPlanDir(dir: string, documents: { plan?: string; discovery?: string
 
 /** A real repository whose task worktree is a real linked git worktree. */
 function makeImplementSandbox(): { dir: string; worktreePath: string } {
-  const dir = makeSandbox({ prefix: 'agyloop-cli-next-actionability-git-', initGit: false, dirName: '' }).dir;
+  const dir = makeSandbox({ prefix: 'codeloop-cli-next-actionability-git-', initGit: false, dirName: '' }).dir;
   runGit(dir, ['init', '-q', '-b', 'main']);
   runGit(dir, ['config', 'user.email', 'smoke@test']);
   runGit(dir, ['config', 'user.name', 'smoke']);

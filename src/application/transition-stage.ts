@@ -1,5 +1,5 @@
 /**
- * agyloop - TransitionStageUseCase
+ * codeloop - TransitionStageUseCase
  *
  * Rehydrates StateMachine, executes pure transition, and persists checkpoint.
  */

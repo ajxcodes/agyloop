@@ -1,5 +1,5 @@
 /**
- * agyloop - Smoke check coverage (issue #444)
+ * codeloop - Smoke check coverage (issue #444)
  *
  * Compares a filed gate report's `smokeProtocol` / `smokeChecks` with the
  * plan's frozen `### Manual Smoke Test Protocol`.

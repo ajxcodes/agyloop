@@ -1,5 +1,5 @@
 /**
- * agyloop - GetNextActionUseCase (Application Layer)
+ * codeloop - GetNextActionUseCase (Application Layer)
  *
  * Inspects pipeline checkpoint state and generates the exact next operational directive,
  * including copy-paste-ready `invoke_subagent` JSON payloads populated with issue context,

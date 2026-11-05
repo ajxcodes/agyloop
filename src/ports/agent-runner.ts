@@ -1,5 +1,5 @@
 /**
- * agyloop - AgentRunnerPort Interface
+ * codeloop - AgentRunnerPort Interface
  *
  * Inversion of control contract for platform-agnostic subagent dispatch
  * across Google Antigravity, OpenCode, and future agent runtimes.

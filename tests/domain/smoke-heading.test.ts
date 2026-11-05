@@ -1,5 +1,5 @@
 /**
- * agyloop - the ONE smoke-heading predicate (issue #364, AC-12)
+ * codeloop - the ONE smoke-heading predicate (issue #364, AC-12)
  *
  * SH-1  the SECTION predicate refuses an H1 (#362 Finding 1)
  * SH-2  the TITLE predicate is deliberately level-agnostic

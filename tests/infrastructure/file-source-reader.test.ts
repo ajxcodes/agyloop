@@ -3,7 +3,7 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 /**
- * agyloop - FileSourceReader revision reads (issue #489)
+ * codeloop - FileSourceReader revision reads (issue #489)
  *
  * The Test Register's `New test:` check asks the BASE revision whether a
  * title exists, while `Pins:` keeps resolving against the DELIVERED tree. The
@@ -35,7 +35,7 @@ after(() => {
 /** A repo whose base commit holds `tests/base.test.ts`, plus a dirty new file. */
 function makeRepo(): string {
   if (!GIT_AVAILABLE) return '';
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-489-reader-'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-489-reader-'));
   roots.push(repo);
   runGit(repo, ['init', '-q', '-b', 'main']);
   runGit(repo, ['config', 'user.email', 'test@example.com']);

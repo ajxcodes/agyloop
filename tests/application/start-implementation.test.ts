@@ -29,7 +29,7 @@ type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type GitHubGateway = import('../../src').GitHubGateway;
 type GitHubIssueData = import('../../src').GitHubIssueData;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 type PlanGeneratorPort = import('../../src').PlanGeneratorPort;
 type ScaffoldParams = import('../../src').ScaffoldParams;
 type ScaffoldResult = import('../../src').ScaffoldResult;
@@ -93,7 +93,7 @@ class GitHubGatewayDouble implements GitHubGateway {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  public config: AgyLoopConfig;
+  public config: CodeLoopConfig;
 
   constructor(customModels: Record<string, string> = {}) {
     this.config = {
@@ -113,7 +113,7 @@ class ConfigRepositoryDouble implements ConfigRepository {
     };
   }
 
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return this.config;
   }
 
@@ -183,7 +183,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
         planDir: path.dirname(options.planPath),
         planPath: options.planPath,
         planFileName: path.basename(options.planPath),
-        summaryPath: path.join(path.dirname(options.planPath), 'AgyLoop Summary.md')
+        summaryPath: path.join(path.dirname(options.planPath), 'CodeLoop Summary.md')
       };
     }
     const dir =
@@ -202,7 +202,7 @@ class PlanGeneratorDouble implements PlanGeneratorPort {
       planDir: dir,
       planPath,
       planFileName: planFile,
-      summaryPath: path.join(dir, 'AgyLoop Summary.md')
+      summaryPath: path.join(dir, 'CodeLoop Summary.md')
     };
   }
 
@@ -328,7 +328,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
   let testPlanPath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-impl-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-impl-test-'));
     testPlanDir = path.join(tempDir, 'artifacts/plans/16-test-task');
     fs.mkdirSync(testPlanDir, { recursive: true });
     testPlanPath = path.join(testPlanDir, 'implementation-plan.md');
@@ -338,7 +338,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
       'utf8'
     );
     fs.writeFileSync(
-      path.join(testPlanDir, 'AgyLoop Summary.md'),
+      path.join(testPlanDir, 'CodeLoop Summary.md'),
       `# Summary Log\n`,
       'utf8'
     );
@@ -799,7 +799,7 @@ describe('StartImplementationUseCase & Subagent Handoff (TypeScript)', () => {
     assert.strictEqual(def.capabilities.enable_write_tools, true);
     assert.strictEqual(def.capabilities.enable_subagent_tools, false);
     assert.strictEqual(def.capabilities.enable_mcp_tools, false);
-    assert.ok(def.system_prompt.includes('AgyLoop Code Implementation Subagent'));
+    assert.ok(def.system_prompt.includes('CodeLoop Code Implementation Subagent'));
   });
 
   test('IMPLEMENTER_SUBAGENT_DEF conforms to required invariants', () => {
@@ -1286,7 +1286,7 @@ describe('StartImplementationUseCase supplied-plan validation (#267)', () => {
   }
 
   caseTest('T-267.B3: a blank supplied plan is rejected before the implementer is prepared', async () => {
-    const tempDir = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'agyloop-supplied-plan-'));
+    const tempDir = fsReal.mkdtempSync(pathReal.join(osReal.tmpdir(), 'codeloop-supplied-plan-'));
     try {
       const blank = pathReal.join(tempDir, 'blank.md');
       fsReal.writeFileSync(blank, '', 'utf8');
@@ -1325,7 +1325,7 @@ describe('StartImplementationUseCase - approved plan digest (issue #298)', () =>
   let planPath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-impl-digest-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-impl-digest-'));
     planDir = path.join(tempDir, 'artifacts/plans/16-test-task');
     fs.mkdirSync(planDir, { recursive: true });
     planPath = path.join(planDir, 'implementation-plan.md');
@@ -1523,7 +1523,7 @@ describe('StartImplementationUseCase - frozen smoke directive (issue #388)', () 
   let planPath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-impl-smoke-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-impl-smoke-'));
     planDir = path.join(tempDir, 'artifacts/plans/388-smoke');
     fs.mkdirSync(planDir, { recursive: true });
     planPath = path.join(planDir, 'implementation_plan.md');

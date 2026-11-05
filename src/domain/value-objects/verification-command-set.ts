@@ -1,5 +1,5 @@
 /**
- * agyloop - VerificationCommandSet Value Object
+ * codeloop - VerificationCommandSet Value Object
  *
  * Immutable, self-validating value object encapsulating an ordered set of verification commands.
  */

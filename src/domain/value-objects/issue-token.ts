@@ -1,5 +1,5 @@
 /**
- * agyloop - IssueToken Value Object
+ * codeloop - IssueToken Value Object
  *
  * ONE grammar for the `--issue` token (issue #250).
  *

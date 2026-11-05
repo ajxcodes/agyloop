@@ -1,5 +1,5 @@
 /**
- * agyloop - Full-suite cwd regression (issue #298, AC5)
+ * codeloop - Full-suite cwd regression (issue #298, AC5)
  *
  * WCS1 — the FULL suite must pass when the process cwd is
  * `<tmp>/.worktrees/266` while fixtures seed a DIFFERENT issue (241).
@@ -73,7 +73,7 @@ test(
       return;
     }
 
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-worktree-cwd-'));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-worktree-cwd-'));
     const worktreeDir = path.join(tempRoot, '.worktrees', String(MISMATCH_ISSUE));
     fs.mkdirSync(worktreeDir, { recursive: true });
     seedMismatchedCheckpoint(worktreeDir);

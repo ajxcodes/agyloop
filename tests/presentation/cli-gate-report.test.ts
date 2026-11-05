@@ -12,7 +12,7 @@ function seedStageCheckpoint(sandbox: string, stage: string): string {
 }
 
 /**
- * agyloop - `gate-report` is the gate evidence channel (issue #284, AC1)
+ * codeloop - `gate-report` is the gate evidence channel (issue #284, AC1)
  *
  * It files exactly one record, prints exactly what it recorded, and NEVER
  * touches the checkpoint: the dispatched gate emits text, the orchestrator
@@ -59,7 +59,7 @@ interface Sandbox {
 
 function makeGateReportSandbox(stage: string): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-gate-report-',
+    prefix: 'codeloop-cli-gate-report-',
     dirName: '',
     gitignore: false,
     seed: (dir: string) => {

@@ -1,5 +1,5 @@
 /**
- * agyloop - external target repository config contract (#333 AC7)
+ * codeloop - external target repository config contract (#333 AC7)
  *
  * This is the end-to-end guard the issue asks for: initialise a *recognisable*
  * external project with `codeloop init --yes`, then prove the runtime consumes
@@ -49,7 +49,7 @@ function initWithExternalRepo(): {
   configPath: string;
   written: any;
 } {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-external-repo-'));
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-external-repo-'));
   SANDBOXES.push(base);
 
   const workspace = path.join(base, 'ws');

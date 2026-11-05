@@ -1,5 +1,5 @@
 /**
- * agyloop - BaselineEvidence Value Object (issue #388)
+ * codeloop - BaselineEvidence Value Object (issue #388)
  *
  * A plan may declare baseline numbers its later tests and smoke checks compare
  * against. Until #388 nothing compared those numbers with measurement: the

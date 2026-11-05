@@ -1,5 +1,5 @@
 /**
- * agyloop - architecture tripwire: `color-policy.ts` is the ONLY file under
+ * codeloop - architecture tripwire: `color-policy.ts` is the ONLY file under
  * `src/` allowed to construct an ANSI escape (issue #339, items 8/9, T9.5).
  *
  * The colour defect (#341) existed because ~30 call sites each built their own

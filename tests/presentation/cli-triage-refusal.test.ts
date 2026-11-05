@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI TRIAGE refusal tests (issue #336)
+ * codeloop - CLI TRIAGE refusal tests (issue #336)
  *
  * On build a3f1740, `codeloop triage dismiss` with no `-m` printed
  * `✓ State Updated : Pipeline transitioned to COMPLETED` and recorded a
@@ -77,7 +77,7 @@ esac
 
 function makeTriageRefusalSandbox(): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-triage-refusal-',
+    prefix: 'codeloop-cli-triage-refusal-',
     dirName: '',
     gitignore: false,
     seed: (dir: string) => {

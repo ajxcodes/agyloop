@@ -1,5 +1,5 @@
 /**
- * agyloop - FailoverAgentRunner Decorator Tests (issue #218 AC4)
+ * codeloop - FailoverAgentRunner Decorator Tests (issue #218 AC4)
  *
  * Contract: quota exhaustion triggers EXACTLY ONE fallback invocation; every
  * other failure propagates untouched so genuine errors are never masked.

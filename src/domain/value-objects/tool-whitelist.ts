@@ -1,5 +1,5 @@
 /**
- * agyloop - ToolWhitelist Value Object
+ * codeloop - ToolWhitelist Value Object
  *
  * Immutable, self-validating value object enforcing allowed and forbidden toolsets.
  */

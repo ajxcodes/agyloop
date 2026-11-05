@@ -1,5 +1,5 @@
 /**
- * agyloop - DetectImplementationDiffUseCase (Application Layer)
+ * codeloop - DetectImplementationDiffUseCase (Application Layer)
  *
  * The ONE implementation-evidence probe (issue #259).
  *

@@ -1,5 +1,5 @@
 /**
- * agyloop - Gate evidence documentation contract (issue #415)
+ * codeloop - Gate evidence documentation contract (issue #415)
  *
  * The `TEST_METRICS:` count token is the escape hatch for a runner that prints
  * no count of its own (`go test ./...`, `ctest`, a bare Gradle run). It existed

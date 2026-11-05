@@ -1,5 +1,5 @@
 /**
- * agyloop - Lexical path algebra for the `sandbox-path` rule (issue #364)
+ * codeloop - Lexical path algebra for the `sandbox-path` rule (issue #364)
  *
  * The static rule must judge a created path against the directory the command
  * actually runs in — a `cd` into the sandbox makes a RELATIVE `mkdir` legal,
@@ -17,7 +17,8 @@
  * No I/O, no external imports.
  */
 
-export const SMOKE_SANDBOX_HOME_SEGMENTS = Object.freeze(['.cache', 'agyloop'] as const);
+export const SMOKE_SANDBOX_HOME_SEGMENTS = Object.freeze(['.cache', 'codeloop'] as const);
+export const SMOKE_SANDBOX_LEGACY_HOME_SEGMENTS = Object.freeze(['.cache', 'agyloop'] as const);
 export const SMOKE_SANDBOX_DIR_PREFIX = 'smoke-' as const;
 export const SMOKE_SANDBOX_HOME_ANCHOR = '$HOME' as const;
 export const SMOKE_SANDBOX_ROOT_DISPLAY = `${SMOKE_SANDBOX_HOME_ANCHOR}/${SMOKE_SANDBOX_HOME_SEGMENTS.join('/')}`;
@@ -98,12 +99,9 @@ export function resolvePathAgainstCwd(cwd: string | null, path: string): string 
  * three documented anchor forms are recognised.
  *
  * @param absolutePath - The resolved candidate path.
- * @param root - The sandbox root (defaults to `$HOME/.cache/agyloop`).
+ * @param root - The sandbox root (defaults to `$HOME/.cache/codeloop`).
  */
-export function isWithinSmokeSandbox(
-  absolutePath: string,
-  root: string = SMOKE_SANDBOX_ROOT_DISPLAY
-): boolean {
+function isWithinRoot(absolutePath: string, root: string): boolean {
   const normalisedRoot = normaliseLexicalPath(root);
   const normalisedPath = normaliseLexicalPath(absolutePath);
   if (normalisedRoot.length === 0) return false;
@@ -114,4 +112,15 @@ export function isWithinSmokeSandbox(
   const relative = normalisedPath.slice(prefix.length);
   const firstSegment = relative.split('/')[0] ?? '';
   return firstSegment.startsWith(SMOKE_SANDBOX_DIR_PREFIX);
+}
+
+export function isWithinSmokeSandbox(
+  absolutePath: string,
+  root: string = SMOKE_SANDBOX_ROOT_DISPLAY
+): boolean {
+  if (isWithinRoot(absolutePath, root)) return true;
+  // Legacy compatibility: the smoke-sandbox root used to be `$HOME/.cache/agyloop`.
+  const legacyRoot = `${SMOKE_SANDBOX_HOME_ANCHOR}/${SMOKE_SANDBOX_LEGACY_HOME_SEGMENTS.join('/')}`;
+  if (root === SMOKE_SANDBOX_ROOT_DISPLAY && isWithinRoot(absolutePath, legacyRoot)) return true;
+  return false;
 }

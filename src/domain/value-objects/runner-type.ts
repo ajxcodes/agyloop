@@ -1,5 +1,5 @@
 /**
- * agyloop - RunnerType Value Object
+ * codeloop - RunnerType Value Object
  *
  * The ONE list of selectable subagent runners (issue #290).
  *

@@ -1,5 +1,5 @@
 /**
- * agyloop - canonical CLI invoke harness (issue #544)
+ * codeloop - canonical CLI invoke harness (issue #544)
  *
  * ONE definition of the `runIn` / `runCliInSandbox` / `runCliIn` family with an
  * explicit `mode: 'in-process' | 'subprocess'`:
@@ -100,7 +100,7 @@ interface CaptureResult {
 }
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const HARNESS_TEMP_PREFIX = 'agyloop-harness-';
+const HARNESS_TEMP_PREFIX = 'codeloop-harness-';
 const DEFAULT_TIMEOUT_MS = 20000;
 
 function defaultBin(): string {

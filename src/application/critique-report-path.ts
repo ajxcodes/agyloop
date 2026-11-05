@@ -1,5 +1,5 @@
 /**
- * agyloop - Tier 1 evidence path (Application Layer, issue #397)
+ * codeloop - Tier 1 evidence path (Application Layer, issue #397)
  *
  * The REVIEW directive and the orchestrator must name the SAME file, or the
  * reviewer's critique report dies inside its session and `codeloop review`

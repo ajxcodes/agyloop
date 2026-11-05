@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical ConfirmationPromptPort double (issue #544 / AC2)
+ * codeloop - ONE canonical ConfirmationPromptPort double (issue #544 / AC2)
  * Retires the 4 `ConfirmationPromptDouble` copies. Queue-init answers;
  * default `confirm()` plays its `defaultValue` (always-NO under the CLI's
  * non-interactive default).

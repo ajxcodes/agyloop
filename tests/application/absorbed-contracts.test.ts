@@ -1,5 +1,5 @@
 /**
- * agyloop - absorbed state/output contracts (#278, #293, #275, #251, #252)
+ * codeloop - absorbed state/output contracts (#278, #293, #275, #251, #252)
  *
  * Each describe is the regression suite for one absorbed report. They are
  * grouped here because they share the same setup seam: a checkpoint on disk
@@ -97,7 +97,7 @@ describe('#278: StateMachine.setMode is a no-op when the mode is unchanged', () 
 
 describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
   function makeAbsorbedStateSandbox(overrides: Record<string, unknown> = {}) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-278-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-278-'));
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'state.json');
     fs.writeFileSync(
@@ -229,7 +229,7 @@ describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
   });
 
   test('(d) a PLAN checkpoint switched to mode=plan persists the mode leg', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-278-plan-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-278-plan-'));
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'state.json');
     fs.writeFileSync(stateFile, JSON.stringify(snapshot({ currentStage: 'PLAN', mode: 'standard', issue: 909 })));
@@ -280,7 +280,7 @@ describe('#278: a bare run over a COMPLETED checkpoint is a pure read', () => {
   });
 
   test('(e) an unchanged mode performs no save at all', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-278-plan-same-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-278-plan-same-'));
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'state.json');
     fs.writeFileSync(stateFile, JSON.stringify(snapshot({ currentStage: 'PLAN', mode: 'standard', issue: 909 })));
@@ -432,7 +432,7 @@ describe('#251: corrupt checkpoints are rendered, one bad file does not brick th
 });
 
 describe('#248: critique installer dry run downloads nothing', () => {  test('fetches metadata once, writes no binary and no cache', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-critique-dry-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-critique-dry-'));
     const cacheFile = path.join(dir, 'cache.json');
     const targetBase = path.join(dir, 'data');
     const fetched: string[] = [];
@@ -495,7 +495,7 @@ describe('#301: a bare run is a read, provisioning is a transaction', () => {
   }
 
   function makeAbsorbedTaskSandbox(overrides: Record<string, unknown> = {}) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-301-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-301-'));
     fs.mkdirSync(path.join(dir, '.agyloop'), { recursive: true });
     const stateFile = path.join(dir, '.agyloop', 'tasks', '301.json');
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });

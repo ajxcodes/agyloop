@@ -1,5 +1,5 @@
 /**
- * agyloop - Shared JSON block scanner (issue #432, TR-35)
+ * codeloop - Shared JSON block scanner (issue #432, TR-35)
  */
 
 const { test, describe } = require('node:test');

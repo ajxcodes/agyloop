@@ -1,5 +1,5 @@
 /**
- * agyloop - implementer/reviewer deviation contract (issue #432, TR-41/42)
+ * codeloop - implementer/reviewer deviation contract (issue #432, TR-41/42)
  *
  * IDD6 - the reviewer prompt's AC_EVIDENCE contract teaches `out-of-scope` for a
  *        plan-declared operator step (issue #506).

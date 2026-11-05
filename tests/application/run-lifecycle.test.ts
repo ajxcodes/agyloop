@@ -1,5 +1,5 @@
 /**
- * agyloop - RunLifecycleUseCase End-to-End & Operational Flags Unit Tests
+ * codeloop - RunLifecycleUseCase End-to-End & Operational Flags Unit Tests
  */
 
 const { test, describe, beforeEach } = require('node:test');
@@ -1885,7 +1885,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
 **Issue:** #32
 **Date:** 2026-10-27
-**Author:** AgyLoop Discovery Subagent (Read-Only)
+**Author:** CodeLoop Discovery Subagent (Read-Only)
 
 ## 1. Problem Statement & Symptoms
 - **Observed Behavior:**
@@ -1911,7 +1911,7 @@ describe('RunLifecycleUseCase & Operational Modes Orchestration', () => {
 
 **Issue:** #32
 **Date:** 2026-10-27
-**Author:** AgyLoop Discovery Subagent (Read-Only)
+**Author:** CodeLoop Discovery Subagent (Read-Only)
 
 ## Summary & Symptoms
 

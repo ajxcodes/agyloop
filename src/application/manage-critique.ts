@@ -1,5 +1,5 @@
 /**
- * agyloop - ManageCritiqueUseCase (Application Layer)
+ * codeloop - ManageCritiqueUseCase (Application Layer)
  *
  * Coordinates critique binary lifecycle management:
  * 1. Resolves binary location and installed version.

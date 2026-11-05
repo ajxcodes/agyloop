@@ -1,5 +1,5 @@
 /**
- * agyloop - RunReviewUseCase: content-aware blocking (issue #349 AC2/AC3)
+ * codeloop - RunReviewUseCase: content-aware blocking (issue #349 AC2/AC3)
  *
  * The regression the issue names: a synthetic report carrying ONE affirmation
  * labelled `critical` beside a reviewer `APPROVED` must record `APPROVED` and

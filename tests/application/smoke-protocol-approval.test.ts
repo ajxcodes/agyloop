@@ -1,5 +1,5 @@
 /**
- * agyloop - Smoke protocol approval guard tests (issue #388, Defect 2)
+ * codeloop - Smoke protocol approval guard tests (issue #388, Defect 2)
  *
  * SPA1 - a plan whose frozen smoke block writes `.agyloop/tasks/<n>.json`
  *        without creating the parent is refused at `transition APPROVAL`; the
@@ -93,7 +93,7 @@ function makePlanGenerator(planDir: string, planPath: string): any {
       planDir,
       planPath,
       planFileName: path.basename(planPath),
-      summaryPath: path.join(planDir, 'AgyLoop Summary.md')
+      summaryPath: path.join(planDir, 'CodeLoop Summary.md')
     }),
     readPlanDocument: (target: string) => fs.readFileSync(target, 'utf8'),
     hashPlanDocument: (target: string) => `sha256:${fs.readFileSync(target, 'utf8')}`,
@@ -107,7 +107,7 @@ describe('Smoke protocol approval guard (issue #388)', () => {
   let planPath: string;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-smoke-approval-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-smoke-approval-'));
     planDir = path.join(root, 'artifacts/plans/388-smoke');
     fs.mkdirSync(planDir, { recursive: true });
     planPath = path.join(planDir, 'implementation_plan.md');
@@ -271,7 +271,7 @@ describe('Smoke protocol approval guard (issue #388)', () => {
     fs.writeFileSync(
       planPath,
       planWithSmoke([
-        'SBX="$(mktemp -d "$HOME/.cache/agyloop/smoke-413-fixture-XXXXXX")"',
+        'SBX="$(mktemp -d "$HOME/.cache/codeloop/smoke-413-fixture-XXXXXX")"',
         'mkdir -p "$SBX/ws"',
         '# parseBlock refuses a markerless report with missing GATE_REPORT_JSON: block',
         '// missing GATE_REPORT_JSON is the refusal this check expects',
@@ -307,7 +307,7 @@ describe('Smoke protocol approval guard (issue #388)', () => {
       planPath,
       planWithSmoke([
         'WT="${WT:-$PWD}"; cd "$WT"',
-        'SBX="$HOME/.cache/agyloop/smoke-348/approval"',
+        'SBX="$HOME/.cache/codeloop/smoke-348/approval"',
         'PLAN="$SBX/artifacts/plans/x/implementation_plan.md"',
         'env -u AGY_SUBAGENT node "$WT/bin/codeloop.js" transition APPROVAL'
       ]),
@@ -426,7 +426,7 @@ describe('Smoke protocol approval guard (issue #388)', () => {
     fs.writeFileSync(
       planPath,
       planWithSmoke([
-        'SBX="$HOME/.cache/agyloop/smoke-498/approval"',
+        'SBX="$HOME/.cache/codeloop/smoke-498/approval"',
         'mkdir -p "$SBX"',
         'cd "$SBX"',
         'node bin/codeloop.js next --json'

@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop triage` disposition output Tests (issue #269, Defect 1)
+ * codeloop - `codeloop triage` disposition output Tests (issue #269, Defect 1)
  *
  * The TRIAGE gate re-opens on every read while the pull request is open, so
  * the operator must be told (a) whether a disposition was recorded and (b)
@@ -75,7 +75,7 @@ interface Sandbox {
 
 function makeTriageDispositionSandbox(comments: unknown[] | null): Sandbox {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-triage-disposition-',
+    prefix: 'codeloop-cli-triage-disposition-',
     dirName: '',
     gitignore: false,
     seed: (dir: string) => {

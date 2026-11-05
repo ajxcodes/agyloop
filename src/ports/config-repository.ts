@@ -1,5 +1,5 @@
 /**
- * agyloop - ConfigRepository Port Interface
+ * codeloop - ConfigRepository Port Interface
  *
  * Inversion of control contract for multi-source hierarchical configuration loading.
  */
@@ -105,7 +105,7 @@ export interface VerificationConfig {
   readonly gates?: readonly VerificationCommandConfig[];
 }
 
-export interface AgyLoopConfig {
+export interface CodeLoopConfig {
   readonly runner?: RunnerType;
   readonly opencode?: OpenCodeConfig;
   readonly models: ModelRoutingConfig;
@@ -127,14 +127,14 @@ export interface ConfigRepository {
   /**
    * Loads hierarchical configuration.
    */
-  loadConfig(options?: ConfigLoadOptions): AgyLoopConfig;
+  loadConfig(options?: ConfigLoadOptions): CodeLoopConfig;
 
   /**
    * Resolves model tier and API model for a specific role.
    */
   resolveModel(
     role: SubagentRoleName | string,
-    config: AgyLoopConfig
+    config: CodeLoopConfig
   ): {
     configured: string;
     tier: ModelTierName;

@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI flag vocabulary and command capability policy (issue #248)
+ * codeloop - CLI flag vocabulary and command capability policy (issue #248)
  *
  * ONE table for the parser diagnostics, the capability gate, the help text and
  * the contract tests. The defect this module exists to stop is drift: the CLI

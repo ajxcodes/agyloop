@@ -1,5 +1,5 @@
 /**
- * agyloop - Recording a dispatched Reviewer Subagent's verdict (issue #269, Defect 2)
+ * codeloop - Recording a dispatched Reviewer Subagent's verdict (issue #269, Defect 2)
  *
  * `RunReviewParams.reviewOutput` was declared, parsed and consumed — and NO
  * caller ever supplied it, so the reviewer subagent's Tier 2 verdict was
@@ -58,7 +58,7 @@ import type {
   CritiquePort,
   CritiqueOptions,
   CritiqueResolution,
-  AgyLoopConfig,
+  CodeLoopConfig,
   ResolvedPlanLocation
 } from '../../src/ports';
 import type { AiReviewReport as AiReviewReportType } from '../../src/domain';
@@ -88,7 +88,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 class ConfigRepositoryDouble implements ConfigRepository {
-  public loadConfig(): AgyLoopConfig {
+  public loadConfig(): CodeLoopConfig {
     return DEFAULT_CONFIG;
   }
 

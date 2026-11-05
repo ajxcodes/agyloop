@@ -1,5 +1,5 @@
 /**
- * agyloop - CritiqueVersion Value Objects (Domain Layer)
+ * codeloop - CritiqueVersion Value Objects (Domain Layer)
  *
  * Defines version structures, cache manifests, installation results,
  * and pure SemVer comparison utilities for the Critique CLI.

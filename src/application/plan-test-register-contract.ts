@@ -1,5 +1,5 @@
 /**
- * agyloop - the ONE Test Register contract guard (issue #432, AC3)
+ * codeloop - the ONE Test Register contract guard (issue #432, AC3)
  *
  * A plan whose Test Register pins an existing test but declares a different
  * expected value is refused at APPROVAL, naming the contradicting test and its

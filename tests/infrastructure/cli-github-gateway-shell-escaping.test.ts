@@ -1,5 +1,5 @@
 /**
- * agyloop - CliGitHubGateway Shell-Escaping Regression Tests (#262)
+ * codeloop - CliGitHubGateway Shell-Escaping Regression Tests (#262)
  *
  * The defect this file pins: `commentOnIssue` interpolated the comment body
  * into a DOUBLE-QUOTED shell word and escaped only `"`. Inside a double-quoted
@@ -32,7 +32,7 @@ let origPath = '';
  * never reached.
  */
 function installFakeGh(): void {
-  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-gh-'));
+  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-gh-'));
   argvFile = path.join(workDir, 'gh-argv.txt');
   stdoutFile = path.join(workDir, 'gh-stdout.txt');
 
@@ -91,7 +91,7 @@ after(() => {
 describe('CliGitHubGateway free text reaches gh verbatim (#262)', () => {
   test('commentOnIssue hands the body to gh verbatim, as its own argv element', POSIX_ONLY, () => {
     const gateway = new CliGitHubGateway();
-    const body = 'Automatically closed by agyloop sync. Implemented and merged via PR #261 into `phase/6-codeloop`.';
+    const body = 'Automatically closed by codeloop sync. Implemented and merged via PR #261 into `phase/6-codeloop`.';
 
     gateway.commentOnIssue(259, body, { repo: 'ajxcodes/agyloop', cwd: workDir });
 

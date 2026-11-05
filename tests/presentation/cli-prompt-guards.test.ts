@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI prompt guard tests (issue #218 / AC6)
+ * codeloop - CLI prompt guard tests (issue #218 / AC6)
  *
  * Zero-Hang Invariant: `codeloop` must never open a confirmation prompt that a
  * human cannot answer. With a silent-but-open stdin pipe (CI, cron, `npm test`)

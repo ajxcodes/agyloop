@@ -1,5 +1,5 @@
 /**
- * agyloop - GeminiModelCatalog Infrastructure Adapter
+ * codeloop - GeminiModelCatalog Infrastructure Adapter
  *
  * Implements ModelCatalogPort to discover Gemini models and map them
  * to Antigravity subagent tiers, with local caching and static fallback catalog.
@@ -33,7 +33,7 @@ export class GeminiModelCatalog implements ModelCatalogPort {
   constructor(options: { cacheFilePath?: string; configRepo?: ConfigRepository } = {}) {
     this.cacheFilePath =
       options.cacheFilePath ||
-      path.join(os.homedir(), '.gemini', 'cache', 'agyloop-models.json');
+      path.join(os.homedir(), '.gemini', 'cache', 'codeloop-models.json');
     this.configRepo = options.configRepo || new FileConfigRepository();
   }
 

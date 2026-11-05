@@ -1,5 +1,5 @@
 /**
- * agyloop - Stage recovery path tests (issue #327, Defect 2)
+ * codeloop - Stage recovery path tests (issue #327, Defect 2)
  *
  * RG1 - the table widened by exactly one recovery hop (QUALITY_GATE -> PLAN)
  * RG2 - ONE legality predicate: `Stage.canTransitionTo` delegates to it

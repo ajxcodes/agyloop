@@ -1,5 +1,5 @@
 /**
- * agyloop - Implementer smoke directive tests (issue #388, Defect 3 / was #386)
+ * codeloop - Implementer smoke directive tests (issue #388, Defect 3 / was #386)
  *
  * ISD1 - a plan with a frozen smoke section renders `### Manual Smoke Test
  *        Protocol (frozen at dispatch)`, every check body verbatim, and its label

@@ -1,5 +1,5 @@
 /**
- * agyloop - StandardsRepository Port Interface
+ * codeloop - StandardsRepository Port Interface
  *
  * Inversion of control contract for discovering and loading repository-level
  * standards, guidelines, and quality rules.

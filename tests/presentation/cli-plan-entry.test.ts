@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan entry stage through the CLI (issue #379)
+ * codeloop - Plan entry stage through the CLI (issue #379)
  *
  * PE-CLI1: a bug issue parks at DISCOVERY and hands the operator a real
  *          discovery dispatch — it never claims to have advanced to PLAN.

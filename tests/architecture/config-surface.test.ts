@@ -1,5 +1,5 @@
 /**
- * agyloop - configuration surface fitness test (#333 AC5)
+ * codeloop - configuration surface fitness test (#333 AC5)
  *
  * A knob that is declared but never consumed looks functional while doing
  * nothing: `GitConfig.collectorPrefix` / `taskPrefix` were exactly that, and the

@@ -1,5 +1,5 @@
 /**
- * agyloop - Architecture Fitness Test: CI workflow hygiene (issue #242 / Defect B)
+ * codeloop - Architecture Fitness Test: CI workflow hygiene (issue #242 / Defect B)
  *
  * The workflows are the release-critical path's environment. This test pins the
  * declarations line-by-line (no YAML dependency; the repo has none) so an

@@ -1,5 +1,5 @@
 /**
- * agyloop - DiscoveryReport value object tests (issue #237)
+ * codeloop - DiscoveryReport value object tests (issue #237)
  *
  * The DISCOVERY park (Defect 1) needs CONTENT evidence that an RCA actually
  * ran, because existence is not evidence: the plan generator always writes the
@@ -50,16 +50,16 @@ const DISCOVERY_REPORT_FILE = /^(\[Discovery\].*|discovery[-_]plan)\.md$/;
  * document quotes the empty template inside a fence while explaining what it
  * replaced.
  */
-const NESTED_SHAPE_REPORT = `# [Discovery] - [Phase 5] [Bug] agyloop: Feature issues bypass Planner Subagent
+const NESTED_SHAPE_REPORT = `# [Discovery] - [Phase 5] [Bug] codeloop: Feature issues bypass Planner Subagent
 
 **Issue:** #169
 **Date:** 2026-10-02
-**Author:** AgyLoop Planning Subagent (Read-Only)
+**Author:** CodeLoop Planning Subagent (Read-Only)
 
 ---
 
 ## 1. Problem Statement & Symptoms
-- **Observed Behavior:** When processing a "Feature" issue, agyloop skips STAGE_DISCOVERY and advances directly to STAGE_PLAN, pausing at APPROVAL without ever invoking the planner.
+- **Observed Behavior:** When processing a "Feature" issue, codeloop skips STAGE_DISCOVERY and advances directly to STAGE_PLAN, pausing at APPROVAL without ever invoking the planner.
 - **Expected Behavior:** Even for Feature tasks, the ROLE_PLANNER subagent should be invoked before pausing for human approval.
 - **Affected Components / Paths:**
   - \`src/application/start-planning.ts\` (lines ~194-196): Fast-forwards non-bug issues to STAGE_PLAN.
@@ -127,7 +127,7 @@ function populatedReport(): string {
 
 **Issue:** #237  
 **Date:** 2026-10-16  
-**Author:** AgyLoop Planning Subagent (Read-Only)  
+**Author:** CodeLoop Planning Subagent (Read-Only)  
 
 ---
 
@@ -163,7 +163,7 @@ const HEADING_SHAPE_REPORT = `# [Discovery] - [Bug] probe: login crash without a
 
 **Issue:** #306
 **Date:** 2026-10-27
-**Author:** AgyLoop Discovery Subagent (Read-Only)
+**Author:** CodeLoop Discovery Subagent (Read-Only)
 
 ## Summary & Symptoms
 

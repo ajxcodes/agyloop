@@ -1,5 +1,5 @@
 /**
- * agyloop - ONE canonical WorktreeManagerPort double (issue #544 / AC2)
+ * codeloop - ONE canonical WorktreeManagerPort double (issue #544 / AC2)
  *
  * Retires `WorktreeManagerDouble` / `WorktreeManagerDouble` /
  * `WorktreeManagerDouble`. Recording is always on (`createWorktreeCallCount`

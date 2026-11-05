@@ -1,5 +1,5 @@
 /**
- * agyloop - The summary writer records evidence, not template defaults
+ * codeloop - The summary writer records evidence, not template defaults
  * (issue #284, AC2/AC3/AC6)
  *
  * The defect: the summary kept its scaffold defaults (`Build Status: PENDING`),
@@ -20,7 +20,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(REPO_ROOT, 'templates', 'summary-log.md');
 
 function tempSummary(): { dir: string; summaryPath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-evidence-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-summary-evidence-'));
   const summaryPath = path.join(dir, 'CodeLoop Summary.md');
   fs.copyFileSync(TEMPLATE, summaryPath);
   return { dir, summaryPath };
@@ -149,7 +149,7 @@ describe('summary writer evidence (issue #284)', () => {
   });
 
   test('a freshly scaffolded summary claims nothing and names the discovery subagent', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-scaffold-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-summary-scaffold-'));
     try {
       const generator = new FilePlanGenerator();
       const scaffold = generator.scaffoldPlanDirectory({
@@ -316,7 +316,7 @@ describe('summary writer metrics are this round’s (issue #338)', () => {
   });
 
   test('#338 T4.5: a missing metric is inserted in order, inside the metrics section', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-order-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-summary-order-'));
     const summaryPath = path.join(dir, 'CodeLoop Summary.md');
     fs.writeFileSync(
       summaryPath,
@@ -522,7 +522,7 @@ describe('summary renders remediation rounds (issue #376, absorbing #396)', () =
   });
 
   test('the Duration column sums to Session Started → Commit for a two-round run (#376)', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-summary-rounds-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-summary-rounds-'));
     const summaryPath = path.join(dir, 'CodeLoop Summary.md');
     const sessionStarted = '2026-11-03T01:00:00.000Z';
     const commitTimestamp = '2026-11-03T02:10:00.000Z';

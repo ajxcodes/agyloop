@@ -1,5 +1,5 @@
 /**
- * agyloop - GitWorktreeManager Infrastructure Adapter Unit Tests
+ * codeloop - GitWorktreeManager Infrastructure Adapter Unit Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -64,7 +64,7 @@ function withWorkTreeProbe(
  * The `-b` flag is POSITIONAL: it is the token immediately after `git worktree add `.
  * Scanning the whole command for the substring `-b` is therefore wrong -- the command
  * embeds the worktree path, so a path that happens to contain `-b` (e.g. the temp dir
- * `/tmp/agyloop-test-wt-bLeg0o`, whose random suffix begins with `b`) makes the correct
+ * `/tmp/codeloop-test-wt-bLeg0o`, whose random suffix begins with `b`) makes the correct
  * no-`-b` form look like the create-branch form. That is the flake that reddened CI on
  * PR #261, so both forms are recognised by the FLAG POSITION only.
  */
@@ -154,7 +154,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-wt-'));
   });
 
   afterEach(() => {
@@ -352,10 +352,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
 
   test('createWorktree symlinks .agyloop and artifacts into worktree if present in workspace', async () => {
     // Setup root .agyloop and artifacts
-    const agyloopDir = path.join(tmpDir, '.agyloop');
+    const codeloopDir = path.join(tmpDir, '.agyloop');
     const artifactsDir = path.join(tmpDir, 'artifacts');
-    fs.mkdirSync(agyloopDir, { recursive: true });
-    fs.writeFileSync(path.join(agyloopDir, 'state.json'), '{"stage":"PLAN"}', 'utf8');
+    fs.mkdirSync(codeloopDir, { recursive: true });
+    fs.writeFileSync(path.join(codeloopDir, 'state.json'), '{"stage":"PLAN"}', 'utf8');
     fs.mkdirSync(artifactsDir, { recursive: true });
 
     const mockExecutor: CommandExecutorPort = {
@@ -407,11 +407,11 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       workspaceDir: tmpDir
     });
 
-    const targetAgyloop = path.join(descriptor.worktreePath, '.agyloop');
+    const targetCodeloop = path.join(descriptor.worktreePath, '.agyloop');
     const targetArtifacts = path.join(descriptor.worktreePath, 'artifacts');
 
-    assert.ok(fs.existsSync(targetAgyloop));
-    assert.ok(fs.lstatSync(targetAgyloop).isSymbolicLink());
+    assert.ok(fs.existsSync(targetCodeloop));
+    assert.ok(fs.lstatSync(targetCodeloop).isSymbolicLink());
     assert.ok(fs.existsSync(targetArtifacts));
     assert.ok(fs.lstatSync(targetArtifacts).isSymbolicLink());
 
@@ -420,9 +420,9 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
       worktreePath: descriptor.worktreePath,
       workspaceDir: tmpDir
     });
-    assert.strictEqual(fs.existsSync(targetAgyloop), false);
+    assert.strictEqual(fs.existsSync(targetCodeloop), false);
     // Root .agyloop remains intact
-    assert.ok(fs.existsSync(agyloopDir));
+    assert.ok(fs.existsSync(codeloopDir));
   });
 
   test('createWorktree proactively queries branches and reuses existing fix/ branch without -b flag', async () => {
@@ -1011,10 +1011,10 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     // The already-existing worktree got the same link treatment as a freshly created one.
     assert.strictEqual(fs.lstatSync(path.join(holderPath, 'node_modules')).isSymbolicLink(), true);
     assert.strictEqual(fs.lstatSync(path.join(holderPath, 'artifacts')).isSymbolicLink(), true);
-    const linkedAgyloop = path.join(holderPath, '.agyloop');
-    assert.strictEqual(fs.lstatSync(linkedAgyloop).isSymbolicLink(), true);
+    const linkedCodeloop = path.join(holderPath, '.agyloop');
+    assert.strictEqual(fs.lstatSync(linkedCodeloop).isSymbolicLink(), true);
     assert.strictEqual(
-      fs.realpathSync(linkedAgyloop),
+      fs.realpathSync(linkedCodeloop),
       fs.realpathSync(path.join(rootRepo, '.agyloop'))
     );
 
@@ -1575,7 +1575,7 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
   test('createWorktree creates symlink pointing to root .agyloop when in isolated worktree', async () => {
     const rootRepo = path.resolve(tmpDir, 'primary-root');
     fs.mkdirSync(rootRepo, { recursive: true });
-    const rootAgyloop = path.join(rootRepo, '.agyloop');
+    const rootCodeloop = path.join(rootRepo, '.agyloop');
 
     const wtPath = path.resolve(rootRepo, '.worktrees', '87');
 
@@ -1608,15 +1608,15 @@ describe('GitWorktreeManager (Infrastructure Layer)', () => {
     assert.strictEqual(descriptor.worktreePath, wtPath);
 
     // Verify root .agyloop exists as directory
-    assert.ok(fs.existsSync(rootAgyloop));
-    assert.strictEqual(fs.lstatSync(rootAgyloop).isDirectory(), true);
+    assert.ok(fs.existsSync(rootCodeloop));
+    assert.strictEqual(fs.lstatSync(rootCodeloop).isDirectory(), true);
 
     // Verify target in worktree is a symlink pointing to root
-    const wtAgyloop = path.join(wtPath, '.agyloop');
-    assert.ok(fs.existsSync(wtAgyloop));
-    const wtStat = fs.lstatSync(wtAgyloop);
+    const wtCodeloop = path.join(wtPath, '.agyloop');
+    assert.ok(fs.existsSync(wtCodeloop));
+    const wtStat = fs.lstatSync(wtCodeloop);
     assert.strictEqual(wtStat.isSymbolicLink(), true);
-    assert.strictEqual(fs.realpathSync(wtAgyloop), fs.realpathSync(rootAgyloop));
+    assert.strictEqual(fs.realpathSync(wtCodeloop), fs.realpathSync(rootCodeloop));
   });
 
   test('listWorktrees filters out external subagent worktrees by default unless includeExternal is true', async () => {
@@ -2090,7 +2090,7 @@ describe('#428 workspace guard', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt428-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-wt428-'));
   });
 
   afterEach(() => {
@@ -2341,7 +2341,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt282-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-wt282-'));
   });
 
   afterEach(() => {
@@ -2401,7 +2401,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   }
 
   test('T-I1 rejects an external target before any side effect (AC-1)', async () => {
-    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim282-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-victim282-'));
     const decoyTarget = path.join(tmpDir, 'node-modules-target');
     fs.mkdirSync(decoyTarget, { recursive: true });
     fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
@@ -2434,7 +2434,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   });
 
   test('T-I2 never calls fs.rmSync for an external target (AC-1, AC-10)', async () => {
-    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim282-rm-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-victim282-rm-'));
     fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
 
     try {
@@ -2502,7 +2502,7 @@ describe('removeWorktree containment, ownership and post-conditions (#282)', () 
   });
 
   test('T-I4 refuses a .worktrees symlink that escapes and leaves the victim intact (AC-3)', async () => {
-    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-victim282-link-'));
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-victim282-link-'));
     fs.writeFileSync(path.join(victim, 'data'), 'keep', 'utf8');
     const linkDir = path.join(tmpDir, '.worktrees');
     fs.mkdirSync(linkDir, { recursive: true });
@@ -2814,7 +2814,7 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-wt266-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-wt266-'));
   });
 
   afterEach(() => {
@@ -3002,7 +3002,7 @@ describe('quarantineWorktree atomicity and recovery evidence (#266)', () => {
 
 describe('listWorktrees parses the prunable marker (issue #339 item 5, T5.1 / AC-2.2)', () => {
   function runList(porcelainOutput: string) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-test-prunable-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-test-prunable-'));
     const mockExecutor: CommandExecutorPort = {
       execute: async (cmd: string): Promise<CommandExecutionResult> => {
         if (cmd === 'git worktree list --porcelain') {

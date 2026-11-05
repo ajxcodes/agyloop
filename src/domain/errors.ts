@@ -1,5 +1,5 @@
 /**
- * agyloop - Sealed Domain Error Hierarchy
+ * codeloop - Sealed Domain Error Hierarchy
  *
  * Provides strongly-typed, discriminated error classes for domain rule
  * violations, storage errors, config issues, and write violations.
@@ -7,7 +7,7 @@
 
 
 
-export abstract class AgyLoopError extends Error {
+export abstract class CodeLoopError extends Error {
   public abstract readonly code: ErrorCode;
   public readonly details?: Record<string, unknown>;
 
@@ -19,7 +19,7 @@ export abstract class AgyLoopError extends Error {
   }
 }
 
-export class InvalidTransitionError extends AgyLoopError {
+export class InvalidTransitionError extends CodeLoopError {
   public readonly code = ERR_INVALID_TRANSITION;
   public readonly fromStage: string;
   public readonly toStage: string;
@@ -36,7 +36,7 @@ export class InvalidTransitionError extends AgyLoopError {
   }
 }
 
-export class PhysicalWriteViolationError extends AgyLoopError {
+export class PhysicalWriteViolationError extends CodeLoopError {
   public readonly code = ERR_PHYSICAL_WRITE_VIOLATION;
   public readonly toolOrCapability: string;
 
@@ -49,7 +49,7 @@ export class PhysicalWriteViolationError extends AgyLoopError {
   }
 }
 
-export class GitHubContextError extends AgyLoopError {
+export class GitHubContextError extends CodeLoopError {
   public readonly code = ERR_GITHUB_CONTEXT;
   public readonly operation: string;
 
@@ -63,7 +63,7 @@ export class GitHubContextError extends AgyLoopError {
   }
 }
 
-export class ConfigResolutionError extends AgyLoopError {
+export class ConfigResolutionError extends CodeLoopError {
   public readonly code = ERR_CONFIG_RESOLUTION;
   public readonly target: string;
 
@@ -74,7 +74,7 @@ export class ConfigResolutionError extends AgyLoopError {
   }
 }
 
-export class CircuitBreakerTrippedError extends AgyLoopError {
+export class CircuitBreakerTrippedError extends CodeLoopError {
   public readonly code = ERR_CIRCUIT_BREAKER_TRIPPED;
   public readonly breaker: string;
   public readonly limit: number;
@@ -99,7 +99,7 @@ export class CircuitBreakerTrippedError extends AgyLoopError {
   }
 }
 
-export class EmergencyAbortError extends AgyLoopError {
+export class EmergencyAbortError extends CodeLoopError {
   public readonly code = ERR_EMERGENCY_ABORT;
   public readonly reason: string;
 
@@ -109,7 +109,7 @@ export class EmergencyAbortError extends AgyLoopError {
   }
 }
 
-export class StateStorageError extends AgyLoopError {
+export class StateStorageError extends CodeLoopError {
   public readonly code = ERR_STATE_STORAGE;
   public readonly filePath: string;
   public readonly operation: string;
@@ -126,7 +126,7 @@ export class StateStorageError extends AgyLoopError {
   }
 }
 
-export class ValidationError extends AgyLoopError {
+export class ValidationError extends CodeLoopError {
   public readonly code = ERR_VALIDATION;
   public readonly field: string;
   public readonly value: unknown;
@@ -138,7 +138,7 @@ export class ValidationError extends AgyLoopError {
   }
 }
 
-export class QualityGateTimeoutError extends AgyLoopError {
+export class QualityGateTimeoutError extends CodeLoopError {
   public readonly code = ERR_GATE_TIMEOUT;
   public readonly command: string;
   public readonly timeoutSeconds: number;
@@ -155,7 +155,7 @@ export class QualityGateTimeoutError extends AgyLoopError {
   }
 }
 
-export class QualityGateExecutionError extends AgyLoopError {
+export class QualityGateExecutionError extends CodeLoopError {
   public readonly code = ERR_GATE_EXECUTION;
   public readonly command: string;
   public readonly exitCode: number;
@@ -172,7 +172,7 @@ export class QualityGateExecutionError extends AgyLoopError {
   }
 }
 
-export class BuildDetectionError extends AgyLoopError {
+export class BuildDetectionError extends CodeLoopError {
   public readonly code = ERR_BUILD_DETECTION;
   public readonly target: string;
   public readonly reason: string;
@@ -188,7 +188,7 @@ export class BuildDetectionError extends AgyLoopError {
   }
 }
 
-export class QualityGateSummaryParseError extends AgyLoopError {
+export class QualityGateSummaryParseError extends CodeLoopError {
   public readonly code = ERR_GATE_SUMMARY_PARSE;
   public readonly rawContent: string;
   public readonly reason: string;
@@ -200,7 +200,7 @@ export class QualityGateSummaryParseError extends AgyLoopError {
   }
 }
 
-export class CritiqueError extends AgyLoopError {
+export class CritiqueError extends CodeLoopError {
   public readonly code = ERR_CRITIQUE;
   public readonly operation: string;
   public readonly reason: string;
@@ -219,7 +219,7 @@ export class CritiqueError extends AgyLoopError {
 export const AiReviewerError = CritiqueError;
 export type AiReviewerError = CritiqueError;
 
-export class CritiqueInstallError extends AgyLoopError {
+export class CritiqueInstallError extends CodeLoopError {
   public readonly code = ERR_CRITIQUE_INSTALL;
   public readonly operation: string;
   public readonly reason: string;
@@ -235,7 +235,7 @@ export class CritiqueInstallError extends AgyLoopError {
   }
 }
 
-export class CritiqueUpdateError extends AgyLoopError {
+export class CritiqueUpdateError extends CodeLoopError {
   public readonly code = ERR_CRITIQUE_UPDATE;
   public readonly operation: string;
   public readonly reason: string;
@@ -251,7 +251,7 @@ export class CritiqueUpdateError extends AgyLoopError {
   }
 }
 
-export class ReviewerSubagentError extends AgyLoopError {
+export class ReviewerSubagentError extends CodeLoopError {
   public readonly code = ERR_REVIEWER_SUBAGENT;
   public readonly operation: string;
   public readonly reason: string;
@@ -278,7 +278,7 @@ export class ReviewerSubagentError extends AgyLoopError {
  * `refusals` carries one human-readable line per refused spec so the CLI can
  * print every diagnostic rather than just the first.
  */
-export class RefutationRefusedError extends AgyLoopError {
+export class RefutationRefusedError extends CodeLoopError {
   public readonly code = ERR_REFUTATION_REFUSED;
   public readonly operation = 'review' as const;
   public readonly refusals: readonly string[];
@@ -291,7 +291,7 @@ export class RefutationRefusedError extends AgyLoopError {
   }
 }
 
-export class CommitExecutionError extends AgyLoopError {
+export class CommitExecutionError extends CodeLoopError {
   public readonly code = ERR_COMMIT_EXECUTION;
   public readonly operation: string;
   public readonly reason: string;
@@ -307,7 +307,7 @@ export class CommitExecutionError extends AgyLoopError {
   }
 }
 
-export class WorktreeError extends AgyLoopError {
+export class WorktreeError extends CodeLoopError {
   public readonly code = ERR_WORKTREE;
   public readonly operation: string;
   public readonly reason: string;
@@ -335,7 +335,7 @@ export class WorktreeCleanupError extends WorktreeError {
   }
 }
 
-export class PreFlightHaltError extends AgyLoopError {
+export class PreFlightHaltError extends CodeLoopError {
   public readonly code = ERR_PREFLIGHT_HALT;
   public readonly reason: string;
   public readonly haltType: 'CLOSED' | 'MERGED' | string;
@@ -347,7 +347,7 @@ export class PreFlightHaltError extends AgyLoopError {
   }
 }
 
-export class MilestoneReleaseError extends AgyLoopError {
+export class MilestoneReleaseError extends CodeLoopError {
   public readonly code = ERR_MILESTONE_RELEASE;
   public readonly reason: string;
 
@@ -361,7 +361,7 @@ export class MilestoneReleaseError extends AgyLoopError {
   }
 }
 
-export class MilestoneSealedError extends AgyLoopError {
+export class MilestoneSealedError extends CodeLoopError {
   public readonly code = ERR_MILESTONE_SEALED;
   public readonly phaseBranch: string;
 

@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan Content Predicate Unit Tests (issue #259, Q1-Q3)
+ * codeloop - Plan Content Predicate Unit Tests (issue #259, Q1-Q3)
  *
  * Contract of the ONE shared plan-substance predicate:
  * `isPlanContentSubstantive(planContent)`.
@@ -72,7 +72,7 @@ describe('Plan Content Predicate (issue #259)', () => {
         '',
         '**Issue:** #adhoc  ',
         '**Date:** 2026-10-19  ',
-        '**Author:** AgyLoop Planning Subagent  ',
+        '**Author:** CodeLoop Planning Subagent  ',
         '**Status:** DRAFT | APPROVED  ',
         '',
         '---',

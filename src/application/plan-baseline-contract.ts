@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan baseline contract guard (issue #388, Defect 1)
+ * codeloop - Plan baseline contract guard (issue #388, Defect 1)
  *
  * Nothing used to compare a plan-declared baseline with measurement. The
  * declared value travelled through APPROVAL as normative, and the first actor

@@ -1,5 +1,5 @@
 /**
- * agyloop - CliCritiqueGateway Infrastructure Tests
+ * codeloop - CliCritiqueGateway Infrastructure Tests
  */
 
 const { describe, test } = require('node:test');

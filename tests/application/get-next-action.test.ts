@@ -1,5 +1,5 @@
 /**
- * agyloop - GetNextActionUseCase Unit Tests
+ * codeloop - GetNextActionUseCase Unit Tests
  */
 
 const { test, describe } = require('node:test');
@@ -33,7 +33,7 @@ const {
 import type {
   StateRepository,
   ConfigRepository,
-  AgyLoopConfig,
+  CodeLoopConfig,
   BuildDetectorPort,
   DetectedProject
 } from '../../src/ports';
@@ -86,7 +86,7 @@ class BuildDetectorDouble implements BuildDetectorPort {
 
   async resolveCommandPlan(
     workspaceDir: string,
-    _config?: AgyLoopConfig,
+    _config?: CodeLoopConfig,
     options?: import('../../src/ports').GateCommandResolutionOptions
   ): Promise<import('../../src/domain').GateCommandPlan> {
     const planTargets = options?.planTargets ?? [];
@@ -165,8 +165,8 @@ class PlanGeneratorDouble {
   }
 }
 
-function makeMockConfigLocal(overrides: Partial<AgyLoopConfig> = {}): ConfigRepository {
-  const config: AgyLoopConfig = {
+function makeMockConfigLocal(overrides: Partial<CodeLoopConfig> = {}): ConfigRepository {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',
@@ -689,7 +689,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       fetchIssue: (num: number) => ({
         repo: 'ajxcodes/agyloop',
         number: num,
-        title: '[Phase 5] [Bug] agyloop: GetNextAction reports baseBranch as main',
+        title: '[Phase 5] [Bug] codeloop: GetNextAction reports baseBranch as main',
         body: 'Details here',
         labels: ['phase:5', 'bug'],
         comments: [],
@@ -734,7 +734,7 @@ describe('GetNextActionUseCase Directives & Invocation Payloads', () => {
       fetchIssue: (num: number) => ({
         repo: 'ajxcodes/agyloop',
         number: num,
-        title: '[Phase 5] [Bug] agyloop: GetNextAction reports baseBranch as main',
+        title: '[Phase 5] [Bug] codeloop: GetNextAction reports baseBranch as main',
         body: 'Details here',
         labels: ['phase:5', 'bug'],
         comments: [],

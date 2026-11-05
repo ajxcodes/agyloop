@@ -1,5 +1,5 @@
 /**
- * agyloop - Baseline command cwd-contract detector (issue #418)
+ * codeloop - Baseline command cwd-contract detector (issue #418)
  *
  * `assertPlanBaselineContract` executes every `### Baseline Evidence` command
  * with `cwd = params.workspaceDir`, and the two surfaces that call it pass

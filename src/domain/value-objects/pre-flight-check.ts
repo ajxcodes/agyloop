@@ -1,5 +1,5 @@
 /**
- * agyloop - PreFlightCheckEngine (Domain Layer)
+ * codeloop - PreFlightCheckEngine (Domain Layer)
  *
  * Pure domain engine evaluating task status prior to worktree provisioning:
  * 1. Anti-Duplicate: halts if task issue is CLOSED on GitHub

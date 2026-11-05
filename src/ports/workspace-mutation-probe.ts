@@ -1,5 +1,5 @@
 /**
- * agyloop - WorkspaceMutationProbePort Interface
+ * codeloop - WorkspaceMutationProbePort Interface
  *
  * Inversion of control contract for measuring writes outside a stage's
  * sanctioned scope (issue #389). DISCOVERY may read anything but may only write

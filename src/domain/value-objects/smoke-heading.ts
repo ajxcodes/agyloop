@@ -1,5 +1,5 @@
 /**
- * agyloop - The ONE smoke-heading predicate (issue #364, absorbing #365)
+ * codeloop - The ONE smoke-heading predicate (issue #364, absorbing #365)
  *
  * The heading that opens a plan's `Manual Smoke Test Protocol` used to be
  * recognised by two private helpers with DIFFERENT contracts:

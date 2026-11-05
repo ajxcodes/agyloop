@@ -1,5 +1,5 @@
 /**
- * agyloop - FindingRefutation Value Object (issue #349 / #242 AC4)
+ * codeloop - FindingRefutation Value Object (issue #349 / #242 AC4)
  *
  * The EXPLICIT refutation channel: the operator has verified that a critique
  * finding is factually wrong (e.g. "`actions/checkout@v7` does not exist" when

@@ -1,5 +1,5 @@
 /**
- * agyloop - Pull-request ↔ issue association rules (Domain Layer) Tests
+ * codeloop - Pull-request ↔ issue association rules (Domain Layer) Tests
  *
  * Pure, no mocks. Covers the rule that separates *delivery evidence* (a GitHub
  * closing keyword in the PR body) from *mere association* (branch name, title).

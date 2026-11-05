@@ -1,5 +1,5 @@
 /**
- * agyloop - the `Execution Mode` cell names how the run actually executed
+ * codeloop - the `Execution Mode` cell names how the run actually executed
  * (issue #339, item 11 / AC-3.4, AC-3.5)
  *
  * T10.2  a checkpoint seeded with `mode: plan` that transitions

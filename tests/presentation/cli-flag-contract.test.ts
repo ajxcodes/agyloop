@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI flag contract (#248 Wave 1)
+ * codeloop - CLI flag contract (#248 Wave 1)
  *
  * The parser used to end with `else if (!arg.startsWith('-'))` and no terminal
  * branch, so a token it did not recognise was silently discarded. A misspelled

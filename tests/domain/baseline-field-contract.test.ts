@@ -1,5 +1,5 @@
 /**
- * agyloop - Baseline field contract, pinned in ONE place (issue #402, AC1/AC2/AC7)
+ * codeloop - Baseline field contract, pinned in ONE place (issue #402, AC1/AC2/AC7)
  *
  * BC1 - `BASELINE_DECLARED_SHAPE_SENTENCE` appears VERBATIM in the planner
  *       directive, the on-disk template, the embedded fallback template and
@@ -115,7 +115,7 @@ describe('baseline field contract (issue #402)', () => {
     assert.ok(MSG_PLAN_BASELINE_ROOT_BUILD.includes('{match}'));
     assert.ok(MSG_PLAN_BASELINE_ROOT_BUILD.includes('npx tsc --outDir'));
     assert.ok(
-      MSG_PLAN_BASELINE_ROOT_BUILD.includes('$HOME/.cache/agyloop/baseline-<issue>/dist'),
+      MSG_PLAN_BASELINE_ROOT_BUILD.includes('$HOME/.cache/codeloop/baseline-<issue>/dist'),
       'the recipe must point outside the workspace'
     );
   });
@@ -162,7 +162,7 @@ describe('baseline field contract (issue #402)', () => {
     assert.ok(MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT.includes('npx tsc --outDir'));
     assert.ok(
       MSG_PLAN_BASELINE_WORKSPACE_BUILD_OUTPUT.includes(
-        '$HOME/.cache/agyloop/baseline-<issue>/dist'
+        '$HOME/.cache/codeloop/baseline-<issue>/dist'
       ),
       'the recipe must point outside the workspace'
     );

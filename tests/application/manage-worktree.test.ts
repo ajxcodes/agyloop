@@ -1,5 +1,5 @@
 /**
- * agyloop - ManageWorktreeUseCase Unit Tests (Application Layer)
+ * codeloop - ManageWorktreeUseCase Unit Tests (Application Layer)
  */
 
 const { test, describe } = require('node:test');

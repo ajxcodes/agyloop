@@ -1,5 +1,5 @@
 /**
- * agyloop - SmokeProtocol Value Object (issue #298)
+ * codeloop - SmokeProtocol Value Object (issue #298)
  *
  * Pure extractor / linter / runner-script builder for a plan's
  * `Manual Smoke Test Protocol`.
@@ -512,7 +512,7 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
 
 // ---------------------------------------------------------------------------
 // Issue #359: the `sandbox-path` rule — a check that invokes the CLI must
-// create its directory sandbox under `$HOME/.cache/agyloop/smoke-*`, the only
+// create its directory sandbox under `$HOME/.cache/codeloop/smoke-*`, the only
 // root the state guard recognises. A purely textual mirror of the guard's
 // semantics; no filesystem probing (SmokeProtocol stays I/O-free).
 //
@@ -528,7 +528,7 @@ function isQuotedJsonComparison(line: string, jsonFunctions: ReadonlySet<string>
  * (`codeloop transition`), the shipped launcher (`./bin/codeloop`,
  * `bin/codeloop.js`, `/abs/bin/codeloop`), `node <…>/bin/codeloop.js …`, a shell
  * interpreter holding that script (`bash bin/codeloop.js`), `npx codeloop …`,
- * the deprecated `agyloop` launcher, each optionally prefixed
+ * the deprecated `codeloop` launcher, each optionally prefixed
  * `env [-u AGY_SUBAGENT] …` or `NAME=value` words (issue #503).
  *
  * Quote-precedence (issue #359, I4) is NOT a property of this pattern: for
@@ -597,7 +597,7 @@ function stripQuotes(text: string): string {
  * Removes backslash escapes of quote characters (issue #362, F2.1).
  *
  * A `node -e` fixture seeds plan TEXT as a JS string literal, so a correct
- * sandbox path arrives as `\"$HOME/.cache/agyloop/smoke-…\"`. `stripQuotes`
+ * sandbox path arrives as `\"$HOME/.cache/codeloop/smoke-…\"`. `stripQuotes`
  * alone left the backslashes behind (`\$HOME/…`), which failed recognition and
  * flagged the plan that documents the rule. Escape-then-strip is the correct
  * order because `\"` in a shell-seeded string IS quote syntax.
@@ -1010,10 +1010,10 @@ function splitStatements(line: string): string[] {
 
 /**
  * Every path-shaped assignment in a STATEMENT (`SBX=/tmp/…`,
- * `SBX="$HOME/.cache/agyloop/smoke-x"`).
+ * `SBX="$HOME/.cache/codeloop/smoke-x"`).
  *
  * The old single-candidate form read
- * `SANDBOX="$HOME/.cache/agyloop"; mkdir -p "$SANDBOX"; WS="$(mktemp …)"` as ONE
+ * `SANDBOX="$HOME/.cache/codeloop"; mkdir -p "$SANDBOX"; WS="$(mktemp …)"` as ONE
  * assignment whose value swallowed the rest of the line, so the trailing
  * `smoke` token still flagged a correct, runtime-accepted sandbox (#284).
  */
@@ -1172,7 +1172,7 @@ function sandboxCandidates(bodyLines: readonly string[]): SandboxCandidate[] {
 // Issue #440 / #498 / #503: the `sandbox-cwd` and `sandbox-missing` rules.
 //
 // `sandbox-path` (issue #359) asks only WHERE a check creates its sandbox. The
-// #370 reproduction declared `$HOME/.cache/agyloop/smoke-348/approval`, cd'd to
+// #370 reproduction declared `$HOME/.cache/codeloop/smoke-348/approval`, cd'd to
 // the worktree and then ran `transition APPROVAL`, so a legal transition would
 // have mutated the LIVE checkpoint while the plan validated clean. Naming a
 // sandbox is not entering it.
@@ -1614,7 +1614,7 @@ function collectSandboxCwdFindings(
 
 /** Parents that always exist, so a write into them needs no `mkdir` first. */
 const ALWAYS_PRESENT_PARENTS: readonly string[] = Object.freeze(
-  ['/tmp', '/var/tmp', '/dev/shm', '$TMPDIR', '$HOME', '$HOME/.cache/agyloop'].map(
+  ['/tmp', '/var/tmp', '/dev/shm', '$TMPDIR', '$HOME', '$HOME/.cache/codeloop'].map(
     (path) => normaliseLexicalPath(path)
   )
 );

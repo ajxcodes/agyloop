@@ -1,5 +1,5 @@
 /**
- * agyloop - CommandExecutorPort Interface
+ * codeloop - CommandExecutorPort Interface
  *
  * Inversion of control contract for executing shell commands, capturing outputs,
  * enforcing execution timeouts, and preventing direct child_process leaks.

@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop prompt` / `codeloop config` host vocabulary surfaces (issue #290)
+ * codeloop - `codeloop prompt` / `codeloop config` host vocabulary surfaces (issue #290)
  *
  * CP1 - `codeloop prompt implementer` under opencode prints only OpenCode tool names
  * CP2 - `codeloop prompt implementer` under antigravity prints only Antigravity tool names
@@ -51,7 +51,7 @@ function runPrompt(args: string[], runner: string, env: NodeJS.ProcessEnv): Spaw
 
 /** A HOME under the test's temp dir, so the operator's config cannot influence the run. */
 function withFakeHome(): { env: NodeJS.ProcessEnv; cleanup: () => void } {
-  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-290-home-'));
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-290-home-'));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome };
   delete env.NODE_TEST_CONTEXT;
   delete env.CODELOOP_RUNNER;

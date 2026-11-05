@@ -1,5 +1,5 @@
 /**
- * agyloop - DraftCommitUseCase (Application Layer)
+ * codeloop - DraftCommitUseCase (Application Layer)
  *
  * Coordinates semantic commit drafting:
  * 1. Validates pipeline stage (must be at or transitioning to STAGE_COMMIT).

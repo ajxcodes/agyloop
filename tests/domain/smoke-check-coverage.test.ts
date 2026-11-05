@@ -1,5 +1,5 @@
 /**
- * agyloop - smoke check coverage (issue #444)
+ * codeloop - smoke check coverage (issue #444)
  *
  * A PASSED gate report must evidence the plan's frozen
  * `### Manual Smoke Test Protocol`. The plan is the SOLE authority for check

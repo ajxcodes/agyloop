@@ -1,5 +1,5 @@
 /**
- * agyloop - AbortPipelineUseCase Tests
+ * codeloop - AbortPipelineUseCase Tests
  *
  * Issue #266: the Emergency Abort Protocol used to quarantine EVERY registered
  * worktree — other tasks' included — and never told the operator where the work
@@ -137,7 +137,7 @@ describe('AbortPipelineUseCase (Emergency Abort Protocol)', () => {
         folderName: '212-circuit-breakers',
         planDir: '/mock/workspace/artifacts/plans/212-circuit-breakers',
         planPath: '/mock/workspace/artifacts/plans/212-circuit-breakers/implementation-plan.md',
-        summaryPath: '/mock/workspace/artifacts/plans/212-circuit-breakers/AgyLoop Summary.md'
+        summaryPath: '/mock/workspace/artifacts/plans/212-circuit-breakers/CodeLoop Summary.md'
       }),
       updateSummaryLog: (summaryPath: string, data: any) => {
         mockPlanGenerator.updatedLogs.push({ summaryPath, data });

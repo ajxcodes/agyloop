@@ -1,5 +1,5 @@
 /**
- * agyloop - IMPLEMENT directive review remediation (issue #313, AC1-AC5)
+ * codeloop - IMPLEMENT directive review remediation (issue #313, AC1-AC5)
  *
  * When the REVIEW gate returns `CHANGES_REQUESTED`, `RunReviewUseCase` reverts
  * the machine to IMPLEMENT and records the full remediation in the history
@@ -43,7 +43,7 @@ const { DEFAULT_CONFIG } = require('../../dist/infrastructure');
 type StateRepository = import('../../src').StateRepository;
 type StateMachineSnapshot = import('../../src').StateMachineSnapshot;
 type ConfigRepository = import('../../src').ConfigRepository;
-type AgyLoopConfig = import('../../src').AgyLoopConfig;
+type CodeLoopConfig = import('../../src').CodeLoopConfig;
 
 const REMEDIATION_SENTINEL = 'REMEDIATION_SENTINEL_313';
 const LEGACY_SENTINEL = 'LEGACY_SENTINEL_313';
@@ -102,7 +102,7 @@ class StateRepositoryDouble implements StateRepository {
 }
 
 function makeMockConfigLocal(): ConfigRepository {
-  const config: AgyLoopConfig = {
+  const config: CodeLoopConfig = {
     models: {
       planner: 'pro',
       implementer: 'inherit',

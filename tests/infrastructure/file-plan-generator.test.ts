@@ -14,7 +14,7 @@ describe('FilePlanGenerator - Summary Naming & Backward Compatibility', () => {
   let generator: any;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-test-'));
     generator = new FilePlanGenerator();
   });
 
@@ -37,9 +37,9 @@ describe('FilePlanGenerator - Summary Naming & Backward Compatibility', () => {
     assert.strictEqual(fs.existsSync(path.join(tempDir, 'AgyLoop Summary.md')), false);
   });
 
-  test('retains and loads AgyLoop Summary.md if it already exists in the artifact directory', () => {
+  test('retains and loads CodeLoop Summary.md if it already exists in the artifact directory', () => {
     const legacyPath = path.join(tempDir, LEGACY_SUMMARY_FILENAME);
-    fs.writeFileSync(legacyPath, '# Legacy AgyLoop Execution Summary\n', 'utf8');
+    fs.writeFileSync(legacyPath, '# Legacy CodeLoop Execution Summary\n', 'utf8');
 
     // Generating summary in a directory that already has legacy summary
     const result = generator.generateSummaryLog({
@@ -86,7 +86,7 @@ describe('FilePlanGenerator - plan digest (issue #298, AC9)', () => {
   let planFile: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-digest-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-digest-'));
     generator = new FilePlanGenerator();
     planFile = path.join(tempDir, 'implementation_plan.md');
   });
@@ -115,7 +115,7 @@ describe('FilePlanGenerator - Release Notes dependency (issue #315, AC-32)', () 
   let generator: any;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-release-notes-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-release-notes-'));
     generator = new FilePlanGenerator();
   });
 
@@ -161,7 +161,7 @@ describe('FilePlanGenerator - bounded artifact names (issue #364)', () => {
   const { planArtifactFileName, planByteLength, PLAN_FILE_NAME_MAX_BYTES } = require('../../dist/domain');
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-name-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-name-test-'));
     generator = new FilePlanGenerator();
   });
 
@@ -217,7 +217,7 @@ describe('FilePlanGenerator - #383 residuals', () => {
   } = require('../../dist/domain');
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-plan-383-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-plan-383-'));
     generator = new FilePlanGenerator();
   });
 

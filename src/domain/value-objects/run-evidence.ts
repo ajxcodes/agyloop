@@ -1,5 +1,5 @@
 /**
- * agyloop - Run evidence primitives (issue #284)
+ * codeloop - Run evidence primitives (issue #284)
  *
  * ONE derivation for a stage duration, used by every writer of the CodeLoop
  * Summary.

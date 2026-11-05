@@ -1,5 +1,5 @@
 /**
- * agyloop - Test Register contract (issue #432, AC3)
+ * codeloop - Test Register contract (issue #432, AC3)
  *
  * The approved plan's Test Register pins each assertion to a real test or
  * declares a brand-new one. This module is the STATIC reader: it parses the

@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI transition help agrees with the APPROVAL baseline behaviour
+ * codeloop - CLI transition help agrees with the APPROVAL baseline behaviour
  * (issue #402, AC7)
  *
  * CH1 - `codeloop --help` names the APPROVAL baseline measurement, the

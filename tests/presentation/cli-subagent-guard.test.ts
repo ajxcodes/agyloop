@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Subagent Guard Presentation Tests
+ * codeloop - CLI Subagent Guard Presentation Tests
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -27,7 +27,7 @@ describe('CLI Subagent Guard', () => {
   beforeEach(() => {
     prevCwd = process.cwd();
     originalEnvSubagent = process.env.AGY_SUBAGENT;
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-subagent-guard-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-subagent-guard-'));
     const stateDir = path.join(tempDir, '.agyloop');
     fs.mkdirSync(stateDir, { recursive: true });
     

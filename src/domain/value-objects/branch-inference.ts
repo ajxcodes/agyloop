@@ -1,5 +1,5 @@
 /**
- * agyloop - BranchInferenceEngine (Domain Layer)
+ * codeloop - BranchInferenceEngine (Domain Layer)
  *
  * Pure domain engine responsible for:
  * 1. Dynamic base branch inference (label priority, title regex fallback)

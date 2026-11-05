@@ -1,5 +1,5 @@
 /**
- * agyloop - Release-label definitions (issue #502)
+ * codeloop - Release-label definitions (issue #502)
  *
  * The `release:major|minor|patch` vocabulary is the contract with
  * `ajxcodes/auto-tag`, so the label is a PROVISIONED resource, not a string

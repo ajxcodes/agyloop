@@ -1,5 +1,5 @@
 /**
- * agyloop - SourceFileReaderPort (issue #432, extended by issue #489)
+ * codeloop - SourceFileReaderPort (issue #432, extended by issue #489)
  *
  * The Test Register contract resolves a `Pins:` reference against a real test
  * file, and a `New test:` row against the BASE revision. The application layer

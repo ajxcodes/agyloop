@@ -1,18 +1,18 @@
 ---
-name: agyloop
+name: codeloop
 description: >-
   Multi-subagent development lifecycle orchestrator for Google Antigravity.
   Coordinates Context Discovery -> Planning -> Approval -> Implementation -> Quality Gates -> AI Review -> Conventional Commit.
-  Trigger whenever the user types /agyloop, /agyloop plan, /agyloop implement, /agyloop yolo, or requests to run the disciplined agyloop development pipeline.
+  Trigger whenever the user types /codeloop, /codeloop plan, /codeloop implement, /codeloop yolo, or requests to run the disciplined codeloop development pipeline.
 ---
 
-# AgyLoop Orchestrator Skill
+# CodeLoop Orchestrator Skill
 
-`agyloop` orchestrates autonomous pair programming across specialized, context-isolated subagents to prevent token degradation and guarantee verified, high-quality code changes.
+`codeloop` orchestrates autonomous pair programming across specialized, context-isolated subagents to prevent token degradation and guarantee verified, high-quality code changes.
 
 > [!IMPORTANT]
 > ### Mandatory Subagent Execution Contract (Zero Direct Root Mutation)
-> The root agent orchestrating `/agyloop` is **STRICTLY PROHIBITED** from:
+> The root agent orchestrating `/codeloop` is **STRICTLY PROHIBITED** from:
 > 1. Directly editing source code files in the primary repository or worktree (`write_to_file`, `replace_file_content` on project files).
 > 2. Directly running quality gate, build, or test commands (`npm test`, `npm run build`, `vitest`, `pytest`, etc.) in the root conversation context.
 > 3. Directly committing or pushing from the root working tree.
@@ -27,7 +27,7 @@ description: >-
 > 6. When invoking commit in an automated context, the orchestrator MUST use `codeloop commit -y` or `codeloop commit -y -m "<msg>"` after user confirmation, as interactive mode will abort in non-TTY environments.
 >
 > ### Worker Subagent Contract (Anti-Inception Guardrails)
-> Subagents spawned by agyloop are leaf workers and are STRICTLY PROHIBITED from acting as the orchestrator.
+> Subagents spawned by codeloop are leaf workers and are STRICTLY PROHIBITED from acting as the orchestrator.
 > Subagents must NEVER call `invoke_subagent`, `define_subagent`, or spawn duplicate subagents. Subagents must execute their designated task directly using only their permitted tools and report results back to the caller.
 
 ---
@@ -68,7 +68,7 @@ Run `codeloop next --json` at any stage to inspect the next step and obtain the 
   "Subagents": [
     {
       "TypeName": "self",
-      "Role": "AgyLoop Planner",
+      "Role": "CodeLoop Planner",
       "Model": "pro",
       "Workspace": "share",
       "Prompt": "Read issue context and codebase standards. Generate architectural plan and specifications in artifacts/plans/ with scoped write tools."
@@ -83,7 +83,7 @@ Run `codeloop next --json` at any stage to inspect the next step and obtain the 
   "Subagents": [
     {
       "TypeName": "self",
-      "Role": "AgyLoop Implementer",
+      "Role": "CodeLoop Implementer",
       "Model": "inherit",
       "Workspace": "share",
       "Prompt": "Execute code modifications strictly inside isolated worktree directory:\nCwd: .worktrees/<task-id>\nBranch: task/<task-id>-<slug>\n\nAdhere strictly to the approved plan in artifacts/plans/."
@@ -98,7 +98,7 @@ Run `codeloop next --json` at any stage to inspect the next step and obtain the 
   "Subagents": [
     {
       "TypeName": "self",
-      "Role": "AgyLoop Gatekeeper",
+      "Role": "CodeLoop Gatekeeper",
       "Model": "inherit",
       "Workspace": "share",
       "Prompt": "Execute verification quality gates strictly inside isolated worktree directory:\nCwd: .worktrees/<task-id>\n\nRun builds, typechecks, linters, and automated test suites."
@@ -113,7 +113,7 @@ Run `codeloop next --json` at any stage to inspect the next step and obtain the 
   "Subagents": [
     {
       "TypeName": "self",
-      "Role": "AgyLoop Reviewer",
+      "Role": "CodeLoop Reviewer",
       "Model": "inherit",
       "Workspace": "share",
       "Prompt": "Inspect isolated worktree diff against base '<baseBranch>':\nCwd: .worktrees/<task-id>\n\nRun critique pre-commit diagnostics and verify Acceptance Criteria fulfillment."
@@ -308,9 +308,9 @@ Never re-run `next` in a loop to clear a pause that is not the TRIAGE gate over 
 
 ## User Slash Commands
 
-- `/agyloop [task]` or `/codeloop [task]`: Full end-to-end lifecycle with human approval gates.
-- `/agyloop plan` or `/codeloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
-- `/agyloop implement` or `/codeloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
+- `/codeloop [task]` or `/codeloop [task]`: Full end-to-end lifecycle with human approval gates.
+- `/codeloop plan` or `/codeloop plan`: Stops at the `APPROVAL` gate for technical spec sign-off.
+- `/codeloop implement` or `/codeloop implement`: Resumes straight from an approved plan into isolated worktree modifications.
 - Quality gate stage: run the `gate` subagent from the payload in `codeloop next --json` against the active worktree diff.
-- `/agyloop yolo` or `/codeloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.
-- `/agyloop abort` or `/codeloop abort`: Emergency Stop halting all active subagents and restoring workspace stability.
+- `/codeloop yolo` or `/codeloop yolo`: Fast-path mode auto-approving plan gates while keeping quality checks.
+- `/codeloop abort` or `/codeloop abort`: Emergency Stop halting all active subagents and restoring workspace stability.

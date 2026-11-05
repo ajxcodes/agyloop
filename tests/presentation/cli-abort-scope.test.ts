@@ -1,5 +1,5 @@
 /**
- * agyloop - `codeloop abort` quarantine SCOPE End-to-End Tests (issue #266)
+ * codeloop - `codeloop abort` quarantine SCOPE End-to-End Tests (issue #266)
  *
  * The Emergency Abort Protocol used to quarantine EVERY worktree the repository
  * registered (`includeExternal: true`, no task filter). An operator aborting one
@@ -38,7 +38,7 @@ interface Sandbox {
 
 function makeAbortScopeSandbox() {
   const sandbox = makeSandboxCanonical({
-    prefix: 'agyloop-cli-abort-scope-',
+    prefix: 'codeloop-cli-abort-scope-',
     initialCommit: 'chore: probe init',
     seed: (dir: string) => {
       fs.writeFileSync(path.join(dir, 'README.md'), 'probe\n', 'utf8');

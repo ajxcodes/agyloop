@@ -1,5 +1,5 @@
 /**
- * agyloop - CLI Next Action and Branch Info Presentation Tests
+ * codeloop - CLI Next Action and Branch Info Presentation Tests
  *
  * Issue #250 (Scope A + Scope B):
  *
@@ -153,7 +153,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
 
   describe('runCli Dispatcher Execution', () => {
     test('runCli next outputs human readable action summary', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-next-test-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(
@@ -190,7 +190,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
     });
 
     test('runCli next --json outputs parseable JSON payload', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-json-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-next-json-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       // Issue #283: a canonical plan directory with the discovery artifact, so
@@ -242,7 +242,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
     });
 
     test('runCli branch-info outputs branch and PR routing table', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-branch-test-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-branch-test-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       // A LIVE worktree (#282): the fixture must exist on disk or the truthful
@@ -292,7 +292,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
     });
 
     test('runCli branch-info --json outputs structured JSON', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-branch-json-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-branch-json-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       const worktreeDir = path.join(tempDir, '.worktrees', '41');
@@ -343,7 +343,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
     });
 
     test('runCli next --issue 51 on a COMPLETED checkpoint is non-destructive', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-completed-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-next-completed-'));
       // `next --issue <n>` resolves the TASK-scoped checkpoint
       // (.agyloop/tasks/<n>.json), so that is where the seed must live.
       const stateDir = path.join(tempDir, '.agyloop', 'tasks');
@@ -419,7 +419,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
     });
 
     test('runCli next --issue 51 --restart re-opens the COMPLETED checkpoint at DISCOVERY', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-next-restart-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-next-restart-'));
       // Task-scoped checkpoint for the issue the operator is asking about.
       const stateDir = path.join(tempDir, '.agyloop', 'tasks');
       fs.mkdirSync(stateDir, { recursive: true });
@@ -477,7 +477,7 @@ describe('CLI Next & Branch-Info Subcommands', () => {
     });
 
     test('runCli branch-info auto-infers issue when state.issue is null', async () => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-branch-infer-'));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-branch-infer-'));
       const stateDir = path.join(tempDir, '.agyloop');
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(

@@ -1,5 +1,5 @@
 /**
- * agyloop - GithubCritiqueInstallerGateway (Infrastructure Adapter)
+ * codeloop - GithubCritiqueInstallerGateway (Infrastructure Adapter)
  *
  * Implements CritiqueInstallerPort:
  * 1. Checks GitHub Releases API (ajxcodes/critique/releases/latest) with non-blocking timeouts
@@ -94,7 +94,7 @@ export class GithubCritiqueInstallerGateway implements CritiqueInstallerPort {
         ? path.join('.agyloop', CRITIQUE_CACHE_FILENAME)
         : path.join(this.targetBaseDir, CRITIQUE_CACHE_FILENAME));
     this.fetcher = options.fetcher || globalThis.fetch;
-    this.userAgent = options.userAgent || `agyloop/${CLI_VERSION}`;
+    this.userAgent = options.userAgent || `codeloop/${CLI_VERSION}`;
   }
 
   /**

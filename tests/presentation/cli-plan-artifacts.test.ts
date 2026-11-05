@@ -1,5 +1,5 @@
 /**
- * agyloop - Plan artifact CLI behaviour (issues #283, #299, #240/Defect 5)
+ * codeloop - Plan artifact CLI behaviour (issues #283, #299, #240/Defect 5)
  *
  * T-283.1: discovery-then-plan produces exactly ONE directory and advances to
  *          PLAN without manual intervention.
@@ -81,7 +81,7 @@ describe('plan artifacts end to end (#283, #299, #240/5)', () => {
     // This test needs the sandbox to survive several CLI invocations, so it
     // builds its own temp dir instead of using runInSandbox's teardown.
     const prevCwd = process.cwd();
-    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-e2e-'));
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-plan-e2e-'));
     const originalLog = console.log;
     const originalError = console.error;
     let stdout = '';
@@ -132,7 +132,7 @@ describe('plan artifacts end to end (#283, #299, #240/5)', () => {
 
   test('T-240.D5: the first plan prints Initialized, the second prints Using existing', async () => {
     const prevCwd = process.cwd();
-    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-resume-'));
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-plan-resume-'));
     const originalLog = console.log;
     const originalError = console.error;
     let stdout = '';
@@ -174,7 +174,7 @@ describe('plan artifacts end to end (#283, #299, #240/5)', () => {
 
   test('T-299.1: a discovery scaffold never puts the RCA template in the spec mirror', async () => {
     const prevCwd = process.cwd();
-    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'agyloop-cli-plan-mirror-'));
+    const tempDir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'codeloop-cli-plan-mirror-'));
     const originalLog = console.log;
     const originalError = console.error;
     let stdout = '';
