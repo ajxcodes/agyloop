@@ -172,7 +172,8 @@ describe('CLI host vocabulary surfaces (issue #290)', () => {
   test('CP6: no source file outside the vocabulary modules names an Antigravity identifier (AC3)', () => {
     const srcDir = path.join(PROJECT_ROOT, 'src');
     const allowed = new Set([
-      path.join(srcDir, 'domain', 'constants.ts'),
+      path.join(srcDir, 'domain', 'tools.ts'),
+      path.join(srcDir, 'domain', 'defaults.ts'),
       path.join(srcDir, 'domain', 'value-objects', 'host-tool-vocabulary.ts')
     ]);
 

@@ -11,7 +11,8 @@
  * it; the hexagonal fitness test enforces the domain equivalent here).
  */
 
-import { isCommitExcludedPath } from '../constants';
+import { isCommitExcludedPath } from '../vocabulary';
+import { parseHeading as parseHeadingImpl, isFence as isFenceImpl, type HeadingLine } from './markdown';
 import { normaliseLexicalPath } from './smoke-sandbox';
 
 export type PlanEvidenceTarget = 'acceptance criteria' | 'implementation checklist';
@@ -37,20 +38,6 @@ interface PathOccurrence {
   readonly moduleSpecifier: boolean;
 }
 
-interface HeadingLine {
-  readonly level: number;
-  readonly text: string;
-}
-
-function parseHeading(line: string): HeadingLine | null {
-  const match = /^(#{1,6})\s+(.*)$/.exec(line.trim());
-  if (!match) return null;
-  return { level: match[1].length, text: match[2].replace(/^\s*\d+[.)]?\s+/, '').trim() };
-}
-
-function isFence(line: string): boolean {
-  return line.trim().startsWith('```');
-}
 
 /** A path-shaped token with an optional `:line` / `:line-range` suffix. */
 const PATH_TOKEN = /(?:[A-Za-z0-9_.~$-]+\/)+[A-Za-z0-9_.~$*-]+(:\d+(?:-\d+)?)?/g;
@@ -188,13 +175,13 @@ export function extractPlanTargetPaths(
     const line = lines[index];
     const lineNumber = index + 1;
 
-    if (isFence(line)) {
+    if (isFenceImpl(line)) {
       fence = !fence;
       continue;
     }
     if (fence) continue;
 
-    const heading = parseHeading(line);
+    const heading = parseHeadingImpl(line);
     if (inAc) {
       const closes =
         heading !== null &&
@@ -364,7 +351,7 @@ export function extractOutOfScopeDeclarations(
   };
 
   for (const line of planContent.split('\n')) {
-    if (isFence(line)) {
+    if (isFenceImpl(line)) {
       flush();
       fence = !fence;
       continue;

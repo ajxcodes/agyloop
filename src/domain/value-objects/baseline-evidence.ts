@@ -48,14 +48,8 @@
  * No I/O, no external imports.
  */
 
-import {
-  BASELINE_RULE_BODY_MISMATCH,
-  BASELINE_RULE_MISSING_COMMAND,
-  BASELINE_RULE_MISSING_EVIDENCE,
-  BASELINE_RULE_MISSING_OUTPUT,
-  BASELINE_RULE_MISSING_VALUE,
-  HEADING_BASELINE_EVIDENCE
-} from '../constants';
+import { HEADING_NUMBER_PREFIX, detectHeading as detectHeadingImpl, truncate as truncateImpl, type Heading } from './markdown';
+import { BASELINE_RULE_BODY_MISMATCH, BASELINE_RULE_MISSING_COMMAND, BASELINE_RULE_MISSING_EVIDENCE, BASELINE_RULE_MISSING_OUTPUT, BASELINE_RULE_MISSING_VALUE, HEADING_BASELINE_EVIDENCE } from '../vocabulary';
 
 export interface BaselineClaim {
   readonly id: string;
@@ -88,11 +82,8 @@ export interface BaselineEvidenceResult {
   readonly findings: readonly BaselineFinding[];
 }
 
-const HEADING_PATTERN = /^(#{1,6})\s+(.*)$/;
 const LEVEL_TWO_HEADING = /^##(?!#)/;
-const HEADING_NUMBER_PREFIX = /^\d+[.)]\s*/;
 const FENCE_TOKEN = /^\s*(`{3,}|~{3,})/;
-const MAX_EXCERPT_LENGTH = 160;
 /** A body line carries at most this many candidate value spans. */
 const MAX_VALUE_SPANS = 8;
 
@@ -120,17 +111,6 @@ const LABEL_PATTERN = /^\s*[-*]\s*\*\*(Declared|Command|Output):?\s*\*\*\s*:?\s*
  */
 const SCAFFOLD_STUB_CLAIM_ID = '<claim-id>';
 
-interface Heading {
-  readonly level: number;
-  readonly title: string;
-}
-
-function detectHeading(line: string): Heading | null {
-  const match = HEADING_PATTERN.exec(line.trim());
-  if (!match) return null;
-  return { level: match[1].length, title: match[2].replace(/#+\s*$/, '').trim() };
-}
-
 function normaliseHeadingTitle(title: string): string {
   return title.replace(HEADING_NUMBER_PREFIX, '').replace(/:\s*$/, '').trim();
 }
@@ -144,12 +124,6 @@ function isBaselineSectionHeading(heading: Heading): boolean {
   );
 }
 
-function truncate(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length > MAX_EXCERPT_LENGTH
-    ? `${trimmed.slice(0, MAX_EXCERPT_LENGTH)}…`
-    : trimmed;
-}
 
 /** Unwraps a single inline code span; anything else is returned trimmed. */
 function unwrapValue(raw: string): string {
@@ -377,7 +351,7 @@ function findSection(lines: readonly string[], fenceMask: readonly boolean[]): P
 
   for (let index = 0; index < lines.length; index++) {
     if (fenceMask[index]) continue;
-    const heading = detectHeading(lines[index]);
+    const heading = detectHeadingImpl(lines[index]);
     if (!heading || !isBaselineSectionHeading(heading)) continue;
     candidates.push({ index, level: heading.level });
   }
@@ -393,7 +367,7 @@ function findSection(lines: readonly string[], fenceMask: readonly boolean[]): P
 
   for (let cursor = chosen.index + 1; cursor < lines.length; cursor++) {
     if (fenceMask[cursor]) continue;
-    const inner = detectHeading(lines[cursor]);
+    const inner = detectHeadingImpl(lines[cursor]);
     if (inner && inner.level <= chosen.level) {
       return { start: chosen.index, end: cursor };
     }
@@ -410,7 +384,7 @@ function claimRegions(
   const regionLines: ParsedRegion[] = [];
   for (let index = section.start + 1; index < section.end; index++) {
     if (fenceMask[index]) continue;
-    const heading = detectHeading(lines[index]);
+    const heading = detectHeadingImpl(lines[index]);
     if (heading) {
       regionLines.push({ start: index, end: section.end });
     }
@@ -501,7 +475,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
       if (!armed) continue;
       claimedReproduction = true;
       claimLine = index + 1;
-      claimExcerpt = truncate(line);
+      claimExcerpt = truncateImpl(line);
       break;
     }
 
@@ -510,7 +484,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
 
     if (section !== null) {
       for (const region of claimRegions(lines, section, fenceMask)) {
-        const heading = detectHeading(lines[region.start]);
+        const heading = detectHeadingImpl(lines[region.start]);
         if (!heading) continue;
         const id = normaliseHeadingTitle(heading.title);
         if (id.length === 0) continue;
@@ -555,7 +529,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
             rule: BASELINE_RULE_MISSING_VALUE,
             claim: claim.id,
             line: claim.line,
-            excerpt: truncate(heading.title)
+            excerpt: truncateImpl(heading.title)
           });
         }
         if (claim.command.length === 0) {
@@ -563,7 +537,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
             rule: BASELINE_RULE_MISSING_COMMAND,
             claim: claim.id,
             line: claim.line,
-            excerpt: truncate(heading.title)
+            excerpt: truncateImpl(heading.title)
           });
         }
         if (claim.output.length === 0) {
@@ -571,7 +545,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
             rule: BASELINE_RULE_MISSING_OUTPUT,
             claim: claim.id,
             line: claim.line,
-            excerpt: truncate(heading.title)
+            excerpt: truncateImpl(heading.title)
           });
         }
       }
@@ -599,7 +573,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
       if (fenceMask[index]) continue;
       const line = lines[index];
       if (inSection(index)) continue;
-      if (detectHeading(line)) continue;
+      if (detectHeadingImpl(line)) continue;
 
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -611,7 +585,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
             rule: BASELINE_RULE_MISSING_EVIDENCE,
             claim: null,
             line: index + 1,
-            excerpt: truncate(line)
+            excerpt: truncateImpl(line)
           });
         }
         continue;
@@ -629,7 +603,7 @@ export class BaselineEvidence implements BaselineEvidenceResult {
         rule: BASELINE_RULE_BODY_MISMATCH,
         claim: claim.id,
         line: index + 1,
-        excerpt: truncate(line),
+        excerpt: truncateImpl(line),
         declared: claim.declared,
         restated: values.join(' / ')
       });

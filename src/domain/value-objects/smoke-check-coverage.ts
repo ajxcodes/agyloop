@@ -18,11 +18,8 @@
  * Pure domain: no I/O, no clock. The caller resolves and reads the plan.
  */
 
-import {
-  SMOKE_PROTOCOL_NOT_DECLARED,
-  STATUS_FAILED,
-  STATUS_PASSED
-} from '../constants';
+import { SMOKE_PROTOCOL_NOT_DECLARED } from './smoke-protocol';
+import { STATUS_FAILED, STATUS_PASSED } from '../gate-verdicts';
 import { splitSmokeChecks } from './gate-result-report';
 import type { SmokeProtocol } from './smoke-protocol';
 

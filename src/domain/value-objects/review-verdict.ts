@@ -8,28 +8,11 @@
  * Pure domain value object: 100% free of filesystem, child processes, or network I/O.
  */
 
-import {
-  VERDICT_APPROVED,
-  VERDICT_CHANGES_REQUESTED,
-  VERDICT_SKIPPED,
-  ReviewVerdictState,
-  TOKEN_REVIEW_STATUS,
-  TOKEN_REVIEW_SUMMARY,
-  TOKEN_UNFULFILLED_AC,
-  TOKEN_REMEDIATION_GUIDANCE,
-  HEADER_REVIEW_VERDICT_REPORT,
-  LABEL_REVIEW_STATUS,
-  LABEL_REVIEW_SUMMARY,
-  LABEL_UNFULFILLED_AC,
-  LABEL_REMEDIATION_GUIDANCE,
-  SECTION_REVIEW_SELF_CORRECTION_TITLE,
-  REGEX_REVIEW_STATUS_TOKEN,
-  REGEX_REVIEW_SUMMARY_TOKEN,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  REGEX_UNFULFILLED_AC_TOKEN,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  REGEX_REMEDIATION_GUIDANCE_TOKEN
-} from '../constants';
+import { VERDICT_APPROVED, VERDICT_CHANGES_REQUESTED, VERDICT_SKIPPED } from '../gate-verdicts';
+import { ReviewVerdictState, HEADER_REVIEW_VERDICT_REPORT, SECTION_REVIEW_SELF_CORRECTION_TITLE } from '../vocabulary';
+import { TOKEN_REVIEW_STATUS, TOKEN_REVIEW_SUMMARY, TOKEN_UNFULFILLED_AC, TOKEN_REMEDIATION_GUIDANCE } from '../cli-contract';
+import { LABEL_REVIEW_STATUS, LABEL_REVIEW_SUMMARY, LABEL_UNFULFILLED_AC, LABEL_REMEDIATION_GUIDANCE } from '../output-labels';
+import { REGEX_REVIEW_STATUS_TOKEN, REGEX_REVIEW_SUMMARY_TOKEN } from '../regexes';
 import { ReviewerSubagentError, ValidationError } from '../errors';
 import { AiReviewReport } from './ai-review-report';
 import { AiReviewFinding } from './ai-review-finding';

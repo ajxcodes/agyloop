@@ -29,7 +29,7 @@ const {
   GATE_CIRCUIT_BREAKER,
   QUOTA_RESUME_COMMAND
 } = require('../../dist/domain');
-const { EXIT_CODE_FAILURE, EXIT_CODE_QUOTA_EXHAUSTED } = require('../../dist/domain/constants');
+const { EXIT_CODE_FAILURE, EXIT_CODE_QUOTA_EXHAUSTED } = require('../../dist/domain');
 const { runCliInSandbox: runCliInSandboxCanonical } = require('../helpers/cli-harness.ts');
 
 const FIXED_NOW = new Date('2026-10-14T12:00:00.000Z');

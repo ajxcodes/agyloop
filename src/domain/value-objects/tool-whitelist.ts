@@ -4,14 +4,9 @@
  * Immutable, self-validating value object enforcing allowed and forbidden toolsets.
  */
 
-import {
-  READ_ONLY_TOOLS,
-  PLANNER_TOOLS,
-  FORBIDDEN_WRITE_TOOLS,
-  IMPLEMENTER_TOOLS,
-  GATE_TOOLS,
-  REVIEWER_TOOLS
-} from '../constants';
+import { READ_ONLY_TOOLS } from '../tools';
+import { PLANNER_TOOLS, FORBIDDEN_WRITE_TOOLS, IMPLEMENTER_TOOLS, REVIEWER_TOOLS } from '../vocabulary';
+import { GATE_TOOLS } from '../gate-verdicts';
 
 import { PhysicalWriteViolationError, ValidationError } from '../errors';
 

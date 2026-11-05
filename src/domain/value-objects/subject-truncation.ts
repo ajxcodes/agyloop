@@ -269,11 +269,7 @@ export function truncateSubjectDescription(description: string, budget: number):
   return trimDanglingTail(head);
 }
 
-/** Escapes a string for literal use inside a `RegExp`. */
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
+import { escapeRegExp as escapeRegExpImpl } from './markdown';
 /**
  * Removes THIS issue's own token from a description (issue #376, AC8/AC9).
  *
@@ -297,10 +293,10 @@ export function stripOwnIssueToken(description: string, issueNumber: number | nu
 
   const token = `#${issueNumber}`;
   const parenPattern = new RegExp(
-    `(^|\\s)\\(${escapeRegExp(token)}\\)(?=\\s|$)`,
+    `(^|\\s)\\(${escapeRegExpImpl(token)}\\)(?=\\s|$)`,
     'g'
   );
-  const barePattern = new RegExp(`(^|\\s)${escapeRegExp(token)}$`);
+  const barePattern = new RegExp(`(^|\\s)${escapeRegExpImpl(token)}$`);
 
   let stripped = description.replace(parenPattern, '$1');
   stripped = stripped.replace(barePattern, '$1');

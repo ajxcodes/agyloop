@@ -17,11 +17,10 @@
  * No I/O, no external imports.
  */
 
-import {
-  SMOKE_SANDBOX_DIR_PREFIX,
-  SMOKE_SANDBOX_HOME_ANCHOR,
-  SMOKE_SANDBOX_ROOT_DISPLAY
-} from '../constants';
+export const SMOKE_SANDBOX_HOME_SEGMENTS = Object.freeze(['.cache', 'agyloop'] as const);
+export const SMOKE_SANDBOX_DIR_PREFIX = 'smoke-' as const;
+export const SMOKE_SANDBOX_HOME_ANCHOR = '$HOME' as const;
+export const SMOKE_SANDBOX_ROOT_DISPLAY = `${SMOKE_SANDBOX_HOME_ANCHOR}/${SMOKE_SANDBOX_HOME_SEGMENTS.join('/')}`;
 
 /** A `$HOME`/`${HOME}`/`~` anchor at the start of a path. */
 const HOME_ANCHOR_PATTERN = /^(?:\$\{HOME\}|\$HOME|~)(?=\/|$)/;

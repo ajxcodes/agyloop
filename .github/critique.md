@@ -14,7 +14,7 @@ This repository adheres to strict software engineering, hexagonal architecture, 
 
 ## 2. Code Quality & Domain Invariants
 
-- **Zero Magic Constants**: All stages, modes, role names, model tiers, tool whitelists, error codes, command IDs, flags, timeouts, and regex patterns must be defined as named, immutable constants in `src/domain/constants.ts`.
+- **Zero Magic Constants**: All stages, modes, role names, model tiers, tool whitelists, error codes, command IDs, flags, timeouts, and regex patterns must be defined as named, immutable constants in the per-concept modules under `src/domain/` (e.g. `messages.ts`, `cli-contract.ts`, `regexes.ts`, `defaults.ts`, `output-labels.ts`, `vocabulary.ts`, `lifecycle-stages.ts`, `errors.ts`).
 - **Immutability**: Domain entities, value objects, and constant arrays/records must enforce immutability with `readonly` properties and `Object.freeze()`.
 - **Sealed Domain Errors**: Custom error hierarchy extending `AgyLoopError` with strongly-typed error codes (`ErrorCode`).
 - **Subagent Safety Invariants**:

@@ -20,11 +20,7 @@
  *   manager injects into every task worktree.
  */
 
-import {
-  DIFF_EXCLUDED_PATTERNS,
-  IMPLEMENTATION_EVIDENCE_EXCLUDED_FILES,
-  IMPLEMENTATION_EVIDENCE_EXCLUDED_PREFIXES
-} from '../constants';
+import { DIFF_EXCLUDED_PATTERNS, IMPLEMENTATION_EVIDENCE_EXCLUDED_FILES, IMPLEMENTATION_EVIDENCE_EXCLUDED_PREFIXES } from '../vocabulary';
 
 /**
  * True when `filePath` is `prefix` itself or lives underneath it.

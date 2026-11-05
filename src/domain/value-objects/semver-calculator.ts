@@ -9,19 +9,9 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import {
-  RELEASE_BUMP_MAJOR,
-  RELEASE_BUMP_MINOR,
-  RELEASE_BUMP_PATCH,
-  ReleaseBumpType,
-  RELEASE_LABEL_MAJOR,
-  RELEASE_LABEL_MINOR,
-  RELEASE_LABEL_PATCH,
-  ReleaseLabelName,
-  TOKEN_BREAKING_CHANGE,
-  REGEX_BREAKING_CHANGE_FOOTER,
-  REGEX_CONVENTIONAL_HEADER
-} from '../constants';
+import { RELEASE_BUMP_MAJOR, RELEASE_BUMP_MINOR, RELEASE_BUMP_PATCH, ReleaseBumpType, RELEASE_LABEL_MAJOR, RELEASE_LABEL_MINOR, RELEASE_LABEL_PATCH, ReleaseLabelName } from '../vocabulary';
+import { TOKEN_BREAKING_CHANGE } from '../cli-contract';
+import { REGEX_BREAKING_CHANGE_FOOTER, REGEX_CONVENTIONAL_HEADER } from '../regexes';
 import { PublicSanitizer, PublicSanitizerOptions } from './public-sanitizer';
 
 export interface ParsedCommitEntry {

@@ -10,16 +10,9 @@
  * [optional footer(s)]
  */
 
-import {
-  ConventionalCommitType,
-  CONVENTIONAL_COMMIT_TYPES,
-  REGEX_CONVENTIONAL_HEADER,
-  REGEX_BREAKING_CHANGE_FOOTER,
-  REGEX_ISSUE_NUMBER_REF,
-  TOKEN_BREAKING_CHANGE,
-  TOKEN_BREAKING_EXCLAMATION,
-  COMMIT_SUBJECT_MAX_LENGTH
-} from '../constants';
+import { ConventionalCommitType, CONVENTIONAL_COMMIT_TYPES, COMMIT_SUBJECT_MAX_LENGTH } from '../vocabulary';
+import { REGEX_CONVENTIONAL_HEADER, REGEX_BREAKING_CHANGE_FOOTER, REGEX_ISSUE_NUMBER_REF } from '../regexes';
+import { TOKEN_BREAKING_CHANGE, TOKEN_BREAKING_EXCLAMATION } from '../cli-contract';
 import { ValidationError } from '../errors';
 import { stripOwnIssueToken, truncateSubjectDescription } from './subject-truncation';
 

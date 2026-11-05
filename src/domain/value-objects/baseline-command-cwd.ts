@@ -42,6 +42,9 @@
  * No imports, no I/O.
  */
 
+
+import { truncate as truncateImpl } from "./markdown";
+
 export interface WorkspaceBuildOutputMatch {
   /** The offending construct, e.g. `./dist`, `--outDir dist`, `cd dist`, `node dist/`. */
   readonly label: string;
@@ -49,7 +52,6 @@ export interface WorkspaceBuildOutputMatch {
   readonly excerpt: string;
 }
 
-const MAX_EXCERPT_LENGTH = 160;
 
 /** A workspace-relative `./dist` / `./build` path token. */
 const RELATIVE_BUILD_OUTPUT = /(?:^|[\s'"=:(])\.\/(dist|build)(?=[/\s'"`);&|]|$)/;
@@ -66,9 +68,6 @@ function normalise(command: string): string {
     .trim();
 }
 
-function truncate(text: string): string {
-  return text.length > MAX_EXCERPT_LENGTH ? `${text.slice(0, MAX_EXCERPT_LENGTH)}…` : text;
-}
 
 /**
  * Returns the workspace build-output construct the command resolves, or `null`.
@@ -84,17 +83,17 @@ export function detectWorkspaceBuildOutputCommand(
   if (normalised.length === 0) return null;
 
   const relative = RELATIVE_BUILD_OUTPUT.exec(normalised);
-  if (relative) return { label: `./${relative[1]}`, excerpt: truncate(normalised) };
+  if (relative) return { label: `./${relative[1]}`, excerpt: truncateImpl(normalised, { trim: false }) };
 
   const outDir = WORKSPACE_OUT_DIR.exec(normalised);
-  if (outDir) return { label: `--outDir ${outDir[1]}`, excerpt: truncate(normalised) };
+  if (outDir) return { label: `--outDir ${outDir[1]}`, excerpt: truncateImpl(normalised, { trim: false }) };
 
   const cd = CD_INTO_BUILD_OUTPUT.exec(normalised);
-  if (cd) return { label: `cd ${cd[1]}`, excerpt: truncate(normalised) };
+  if (cd) return { label: `cd ${cd[1]}`, excerpt: truncateImpl(normalised, { trim: false }) };
 
   const executable = EXECUTABLE_IN_BUILD_OUTPUT.exec(normalised);
   if (executable) {
-    return { label: `${executable[1]} ${executable[2]}/`, excerpt: truncate(normalised) };
+    return { label: `${executable[1]} ${executable[2]}/`, excerpt: truncateImpl(normalised, { trim: false }) };
   }
 
   return null;

@@ -22,7 +22,7 @@ const { CLI_DOCUMENTED_COMMANDS } = require('../../dist/domain');
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const MANIFEST_FILE = path.join(PROJECT_ROOT, 'plugin.json');
 const CLI_SOURCE = path.join(PROJECT_ROOT, 'src', 'presentation', 'cli.ts');
-const CONSTANTS_SOURCE = path.join(PROJECT_ROOT, 'src', 'domain', 'constants.ts');
+const CONSTANTS_SOURCE = path.join(PROJECT_ROOT, 'src', 'domain', 'cli-contract.ts');
 
 function loadManifest(): any {
   return JSON.parse(fs.readFileSync(MANIFEST_FILE, 'utf8'));

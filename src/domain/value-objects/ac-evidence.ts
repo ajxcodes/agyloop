@@ -29,13 +29,7 @@
  * `out-of-scope` approval.
  */
 
-import {
-  AC_EVIDENCE_MARKER,
-  AC_EVIDENCE_STATUS_MET,
-  AC_EVIDENCE_STATUS_OUT_OF_SCOPE,
-  AC_EVIDENCE_STATUS_UNVERIFIABLE,
-  type AcEvidenceStatus
-} from '../constants';
+import { AC_EVIDENCE_MARKER, AC_EVIDENCE_STATUS_MET, AC_EVIDENCE_STATUS_OUT_OF_SCOPE, AC_EVIDENCE_STATUS_UNVERIFIABLE, type AcEvidenceStatus } from '../vocabulary';
 import { isInCommitExcludedTree, isOutsideWorkspace, stripLineSuffix } from './plan-evidence-paths';
 
 export interface AcEvidenceEntry {

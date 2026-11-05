@@ -38,7 +38,7 @@ const {
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SKILL_FILE = path.join(PROJECT_ROOT, OPENCODE_SKILL_ASSET_RELATIVE_PATH);
 const CLI_SOURCE = path.join(PROJECT_ROOT, 'src', 'presentation', 'cli.ts');
-const CONSTANTS_SOURCE = path.join(PROJECT_ROOT, 'src', 'domain', 'constants.ts');
+const CONSTANTS_SOURCE = path.join(PROJECT_ROOT, 'src', 'domain', 'cli-contract.ts');
 
 describe('Skill <-> CLI command contract (issue #269)', () => {
   test('SK1: every command the skill mentions is a documented CLI command', () => {

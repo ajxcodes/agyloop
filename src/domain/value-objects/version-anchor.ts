@@ -8,12 +8,7 @@
  * Strict Hexagonal Boundary: Zero direct I/O, zero external dependencies.
  */
 
-import {
-  VERSIONING_STRATEGY_PACKAGE_JSON,
-  VERSIONING_STRATEGY_GIT_TAG_ONLY,
-  VERSIONING_STRATEGY_NONE,
-  VersioningStrategyType
-} from '../constants';
+import { VERSIONING_STRATEGY_PACKAGE_JSON, VERSIONING_STRATEGY_GIT_TAG_ONLY, VERSIONING_STRATEGY_NONE, VersioningStrategyType } from '../vocabulary';
 
 export interface VersionAnchorConfig {
   readonly strategy?: VersioningStrategyType | string;

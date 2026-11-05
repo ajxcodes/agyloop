@@ -29,11 +29,10 @@
  * only, so a single-quoted JS string containing a brace ends it early.
  */
 
-import {
-  GATE_REPORT_JSON_MARKER,
-  GATE_REPORT_MARKER_PRODUCER,
-  REGEX_GATE_REPORT_MARKER_REFUSAL
-} from '../constants';
+import { GATE_REPORT_JSON_MARKER, GATE_REPORT_MARKER_PRODUCER } from '../gate-verdicts';
+import { isCommentLine as isCommentLineBase } from './markdown';
+const isCommentLine = (line: string): boolean => isCommentLineBase(line, ['#', '//']);
+import { REGEX_GATE_REPORT_MARKER_REFUSAL } from '../regexes';
 import { GateResultReport } from './gate-result-report';
 import { jsObjectLiteralToJson, sliceBalancedObject } from './json-block';
 
@@ -53,19 +52,6 @@ export interface ParsedGateReportFixture {
   readonly span: GateReportFixtureSpan;
 }
 
-const COMMENT_PREFIXES: readonly string[] = ['#', '//'];
-
-/**
- * The same comment/blank-line rule `SmokeProtocol` uses, extended with `//`
- * so a plan that documents a marker or a fixture in a comment cannot satisfy
- * a rule with prose alone.
- */
-function isCommentLine(line: string): boolean {
-  const trimmed = line.trim();
-  return (
-    trimmed.length === 0 || COMMENT_PREFIXES.some((prefix) => trimmed.startsWith(prefix))
-  );
-}
 
 /** True when `offset` sits on a comment line of `body`. */
 function isCommentOffset(body: string, offset: number): boolean {

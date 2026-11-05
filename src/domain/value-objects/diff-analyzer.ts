@@ -6,28 +6,9 @@
  * infers conventional commit type and component scope, and drafts compliant CommitMessage.
  */
 
-import {
-  ConventionalCommitType,
-  COMMIT_TYPE_FEAT,
-  COMMIT_TYPE_FIX,
-  COMMIT_TYPE_REFACTOR,
-  COMMIT_TYPE_TEST,
-  COMMIT_TYPE_CHORE,
-  COMMIT_TYPE_PERF,
-  COMMIT_TYPE_DOCS,
-  COMMIT_TYPE_BUILD,
-  COMMIT_TYPE_CI,
-  CONVENTIONAL_COMMIT_TYPES,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  REGEX_DIFF_FILE_HEADER,
-  REGEX_BREAKING_CHANGE_FOOTER,
-  REGEX_ISSUE_NUMBER_REF,
-  REGEX_LEADING_CONVENTIONAL_PREFIX,
-  REGEX_MILESTONE_TAG,
-  REGEX_KIND_TAG,
-  TOKEN_BREAKING_CHANGE,
-  DIFF_EXCLUDED_PATTERNS
-} from '../constants';
+import { ConventionalCommitType, COMMIT_TYPE_FEAT, COMMIT_TYPE_FIX, COMMIT_TYPE_REFACTOR, COMMIT_TYPE_TEST, COMMIT_TYPE_CHORE, COMMIT_TYPE_PERF, COMMIT_TYPE_DOCS, COMMIT_TYPE_BUILD, COMMIT_TYPE_CI, CONVENTIONAL_COMMIT_TYPES, DIFF_EXCLUDED_PATTERNS } from '../vocabulary';
+import { REGEX_BREAKING_CHANGE_FOOTER, REGEX_ISSUE_NUMBER_REF, REGEX_LEADING_CONVENTIONAL_PREFIX, REGEX_MILESTONE_TAG, REGEX_KIND_TAG } from '../regexes';
+import { TOKEN_BREAKING_CHANGE } from '../cli-contract';
 import { CommitMessage } from './commit-message';
 
 export interface DiffAnalysisContext {

@@ -5,6 +5,7 @@
  * default runtime settings, migrating legacy `.agyloop` configuration.
  */
 
+import { isPlainObject } from '../domain/value-objects/markdown';
 import {
   CommandExecutorPort,
   BuildDetectorPort,
@@ -67,9 +68,6 @@ export interface InitProjectResult {
   readonly dryRun: boolean;
 }
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
 
 /**
  * Builds the `verification.ecosystem` label (#334).

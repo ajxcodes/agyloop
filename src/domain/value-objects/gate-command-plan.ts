@@ -8,18 +8,9 @@
  * Pure domain: no I/O, no external imports.
  */
 
-import {
-  GateCommandDefinition,
-  CMD_ID_LINT,
-  GATE_COMMAND_SOURCE_EXPLICIT,
-  GATE_COMMAND_SOURCE_PLAN,
-  GATE_COMMAND_SOURCE_CONFIG,
-  GATE_COMMAND_SOURCE_ACT,
-  GATE_COMMAND_SOURCE_AUTO_DETECT,
-  GATE_COMMAND_SOURCE_DEFAULT,
-  GATE_TARGET_RULE_WORKFLOW_LINT_MISSING,
-  WORKFLOW_LINT_BINARY
-} from '../constants';
+import { GateCommandDefinition, GATE_COMMAND_SOURCE_EXPLICIT, GATE_COMMAND_SOURCE_PLAN, GATE_COMMAND_SOURCE_CONFIG, GATE_COMMAND_SOURCE_ACT, GATE_COMMAND_SOURCE_AUTO_DETECT, GATE_COMMAND_SOURCE_DEFAULT, GATE_TARGET_RULE_WORKFLOW_LINT_MISSING } from '../gate-verdicts';
+import { CMD_ID_LINT } from '../cli-contract';
+import { WORKFLOW_LINT_BINARY } from '../vocabulary';
 import { GateTargetFinding } from './quality-gate-targets';
 
 /** Where the executed command list came from. */

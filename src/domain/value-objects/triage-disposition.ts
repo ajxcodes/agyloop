@@ -30,14 +30,8 @@
  * network I/O.
  */
 
-import {
-  MAX_TRIAGE_DISPOSITION_FEEDBACK_KEYS,
-  TRIAGE_DISPOSITION_ACTIONS,
-  TRIAGE_DISPOSITION_LINE_TEMPLATES,
-  LABEL_TRIAGE_DISPOSITION,
-  TriageDispositionAction,
-  TriageDispositionSurface
-} from '../constants';
+import { MAX_TRIAGE_DISPOSITION_FEEDBACK_KEYS, TRIAGE_DISPOSITION_ACTIONS, TRIAGE_DISPOSITION_LINE_TEMPLATES, TriageDispositionAction, TriageDispositionSurface } from '../vocabulary';
+import { LABEL_TRIAGE_DISPOSITION } from '../output-labels';
 import { ValidationError } from '../errors';
 
 export interface TriageDispositionProps {
@@ -99,7 +93,7 @@ export function formatTriageDispositionLine(
     label: LABEL_TRIAGE_DISPOSITION
   };
 
-  return template.replace(/\{(\w+)\}/g, (_match, key: string) => values[key] ?? '');
+  return template.replace(/\{(\w+)\}/g, (_match: string, key: string) => values[key] ?? '');
 }
 
 /**

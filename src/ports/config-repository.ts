@@ -65,7 +65,7 @@ export interface GitConfig {
   readonly remote?: string;
   readonly baseBranch?: string;
   // Branch prefixes (`phase/`, `feature/`, `task/`, `fix/`) are domain
-  // constants, not configuration (#333 AC5): see `src/domain/constants.ts`.
+  // constants, not configuration (#333 AC5): see `src/domain/defaults.ts`.
   readonly forge?: 'github' | 'gitlab' | 'generic' | string;
 }
 

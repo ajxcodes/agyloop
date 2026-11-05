@@ -10,17 +10,9 @@
  * Zero I/O: every regex lives here, never in an adapter.
  */
 
-import {
-  CB_ACTION_FAILOVER,
-  CB_ACTION_PAUSE_FOR_HUMAN,
-  CB_FAILOVER_BREAKER_NAME,
-  ERR_QUOTA_EXHAUSTED,
-  GATE_CIRCUIT_BREAKER,
-  QUOTA_DEFAULT_RETRY_AFTER_SECONDS,
-  QUOTA_EVIDENCE_MAX_CHARS,
-  QUOTA_RESUME_COMMAND,
-  QUOTA_STATUS
-} from './constants';
+import { CB_ACTION_FAILOVER, CB_ACTION_PAUSE_FOR_HUMAN, CB_FAILOVER_BREAKER_NAME, QUOTA_DEFAULT_RETRY_AFTER_SECONDS, QUOTA_EVIDENCE_MAX_CHARS, QUOTA_RESUME_COMMAND, QUOTA_STATUS } from './vocabulary';
+import { ERR_QUOTA_EXHAUSTED } from './errors';
+import { GATE_CIRCUIT_BREAKER } from './gate-verdicts';
 import { AgyLoopError } from './errors';
 
 /** Structured result of inspecting raw provider output for a quota rejection. */

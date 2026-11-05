@@ -6,7 +6,8 @@
  */
 
 import { ValidationError } from '../errors';
-import { DEFAULT_WORKTREES_DIR, DEFAULT_TASK_BRANCH_PREFIX } from '../constants';
+import { DEFAULT_WORKTREES_DIR } from '../defaults';
+import { DEFAULT_TASK_BRANCH_PREFIX } from '../defaults';
 
 export interface WorktreeDescriptorProps {
   readonly taskId: string | number;

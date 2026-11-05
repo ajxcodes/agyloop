@@ -4,17 +4,10 @@
  * Immutable, self-validating value object encapsulating an ordered set of verification commands.
  */
 
-import {
-  GateCommandDefinition,
-  DEFAULT_GATE_COMMANDS,
-  CMD_ID_BUILD,
-  CMD_ID_TYPECHECK,
-  CMD_ID_TEST,
-  CMD_ID_PLAYWRIGHT,
-  CMD_ID_E2E,
-  KEYWORD_CHECK,
-  KEYWORD_VET
-} from '../constants';
+import { GateCommandDefinition } from '../gate-verdicts';
+import { DEFAULT_GATE_COMMANDS } from '../defaults';
+import { CMD_ID_BUILD, CMD_ID_TYPECHECK, CMD_ID_TEST, CMD_ID_PLAYWRIGHT, CMD_ID_E2E } from '../cli-contract';
+import { KEYWORD_CHECK, KEYWORD_VET } from '../vocabulary';
 import { ValidationError } from '../errors';
 
 export class VerificationCommandSet {

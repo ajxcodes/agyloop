@@ -4,15 +4,7 @@
  * Self-validating value object representing Antigravity subagent model tiers.
  */
 
-import {
-  MODEL_TIERS,
-  ModelTierName,
-  STATIC_MODELS,
-  TIER_INHERIT,
-  TIER_FLASH_LITE,
-  TIER_FLASH,
-  TIER_PRO
-} from '../constants';
+import { MODEL_TIERS, ModelTierName, STATIC_MODELS, TIER_INHERIT, TIER_FLASH_LITE, TIER_FLASH, TIER_PRO } from '../model-tiers';
 import { ValidationError } from '../errors';
 
 export class ModelTier {

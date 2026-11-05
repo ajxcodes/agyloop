@@ -17,7 +17,7 @@
  * to the neutral form above.
  */
 
-import { TOOL_PROSE_QUALIFIER, ToolCapability } from '../constants';
+import { TOOL_PROSE_QUALIFIER, ToolCapability } from '../tools';
 import { HostToolVocabulary } from './host-tool-vocabulary';
 
 export interface FormatToolProseOptions {

@@ -4,17 +4,8 @@
  * Self-validating, immutable value object representing a lifecycle stage.
  */
 
-import {
-  STAGES,
-  StageName,
-  ALLOWED_TRANSITIONS,
-  LIFECYCLE_STAGE_ORDER,
-  STAGE_PLAN,
-  STAGE_IMPLEMENT,
-  MODE_STANDARD,
-  MODE_YOLO,
-  formatTransitionCommand
-} from '../constants';
+import { STAGES, StageName, ALLOWED_TRANSITIONS, LIFECYCLE_STAGE_ORDER, STAGE_PLAN, STAGE_IMPLEMENT, formatTransitionCommand } from '../lifecycle-stages';
+import { MODE_STANDARD, MODE_YOLO } from '../execution-modes';
 import { ValidationError } from '../errors';
 
 /**
